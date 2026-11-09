@@ -188,14 +188,14 @@ def test_w8a8_default_differs_by_route(monkeypatch, env, expect_amd, expect_nvid
 
 def test_explicit_int8_keeps_its_weight_only_default_on_rdna(rocm, monkeypatch):
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
-    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
     assert tq.native_int8_act(_target()) is False
 
 
 def test_rdna_auto_w8a8_reason_is_per_family_with_a_kill_switch(rocm, monkeypatch):
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
     monkeypatch.setattr(tq._sys, "platform", "linux")
-    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
     monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") == "measured"
     assert tq.rdna_auto_w8a8_reason(_target(), "Toy-Family ") == "measured"
@@ -205,9 +205,9 @@ def test_rdna_auto_w8a8_reason_is_per_family_with_a_kill_switch(rocm, monkeypatc
     monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, "0")
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV)
-    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: False)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: False)
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
-    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
     monkeypatch.setitem(tq._FAMILY_SCHEME_DENY, "toy-family", frozenset({tq.TQ_INT8}))
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
 
@@ -219,14 +219,14 @@ def test_rdna_auto_w8a8_ships_only_for_the_measured_families():
 
 def test_rdna_auto_w8a8_reason_is_linux_only(rocm, monkeypatch):
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
-    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
     monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
     monkeypatch.setattr(tq._sys, "platform", "win32")
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
 
 
 def test_rdna_auto_w8a8_reason_is_rocm_only(nvidia, monkeypatch):
-    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
     monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
 

@@ -313,7 +313,7 @@ def nvfp4_dynamic_linear_class():
             if self.protect.armed and self.protect.protected:
                 out = F.linear(
                     flat,
-                    dequantize_nvfp4_weight(self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16),
+                    dequantize_nvfp4_weight(self.wq, self.w_sf, self.w_scale, dtype = flat.dtype),
                 )
             else:
                 with _device_guard(flat):

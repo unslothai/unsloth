@@ -1989,6 +1989,8 @@ def _copy_module(module: Any, device: Any) -> Any:
             continue
         memo[id(buffer)] = buffer.detach().to(device)
         keep.append(buffer)
+    from .diffusion_qwenimage21_dense_fused import is_replica_record, rebuild_replica
+
     for sub in module.modules():
         offload_keys = set(_offload_attr_keys(sub))
         for key, value in sub.__dict__.items():
@@ -1996,6 +1998,7 @@ def _copy_module(module: Any, device: Any) -> Any:
                 isinstance(value, CfgParallelRouter)
                 or key in offload_keys
                 or key in _SOURCE_ONLY_ATTRS
+                or is_replica_record(key, value)
             ):
                 # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
                 # source-only cache holds source-card tensors
@@ -2034,6 +2037,16 @@ def _copy_module(module: Any, device: Any) -> Any:
                     del hooks[hook_id]
                     for other in _ROOT_HOOK_DICTS:
                         sub.__dict__.get(other, {}).pop(hook_id, None)
+    # Release the copies before re-fusing on the replica's card, else each replaced allocation stays alive.
+    memo.clear()
+    del keep
+    param = copied = new = buffer = (
+        None  # the copy loop's last parameter, still referenced by these names
+    )
+    try:
+        rebuild_replica(module, replica)
+    except Exception:  # noqa: BLE001 - the replica keeps the stock projections
+        pass
     if isinstance(router, CfgParallelRouter) and router.had_override:
         _rebind_root_forward(router.orig_forward, module, replica)
     # The source's own __call__ runs its root hooks around every branch; the copy must not run them a second time.

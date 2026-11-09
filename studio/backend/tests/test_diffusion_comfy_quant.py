@@ -1026,7 +1026,8 @@ def test_buffers_built_in_init_follow_the_compute_dtype(comfy_file):
 
 
 def test_a_timestep_table_built_in_fp32_stays_fp32(comfy_file):
-    """Qwen-Image-2.1's sinusoidal timestep table is computed in fp32; bf16 frequencies shift every timestep."""
+    """fp32 tables built in __init__ (Qwen-Image-2.1's timesteps, MiniMax-H3's RoPE) stay fp32, as from_pretrained
+    leaves them; a float64 one still follows the compute dtype."""
     path, _, _ = comfy_file
 
     class QwenImage21TemporalTimesteps(nn.Module):
@@ -1040,6 +1041,7 @@ def test_a_timestep_table_built_in_fp32_stays_fp32(comfy_file):
             super().__init__(**kwargs)
             self.time_proj = QwenImage21TemporalTimesteps()
             self.register_buffer("rope", torch.ones(4, dtype = torch.float32), persistent = False)
+            self.register_buffer("wide", torch.ones(4, dtype = torch.float64), persistent = False)
 
     model = cq.load_comfy_quant_transformer(
         _Timed,
@@ -1051,9 +1053,8 @@ def test_a_timestep_table_built_in_fp32_stays_fp32(comfy_file):
     )
     assert model.time_proj.freqs.dtype == torch.float32
     assert torch.equal(model.time_proj.freqs, QwenImage21TemporalTimesteps().freqs)
-    assert (
-        model.rope.dtype == torch.bfloat16
-    )  # every other __init__ buffer still follows the compute dtype
+    assert model.rope.dtype == torch.float32
+    assert model.wide.dtype == torch.bfloat16
 
 
 def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monkeypatch):
@@ -1506,3 +1507,185 @@ def test_planner_prices_keep_fp32_layers_at_fp32_only_on_fp16(monkeypatch):
     assert bf16["keep_fp32_bytes"] is None
     flux = types.SimpleNamespace(transformer_class = "FluxTransformer2DModel")
     assert d._comfy_keep_fp32_pricing(flux, types.SimpleNamespace(dtype = torch.float16)) == {}
+
+
+# ------------------------------------------------------------------------------------- int8 storage
+import core.inference.diffusion_transformer_quant as tq  # noqa: E402
+
+_STORAGE_ENV = "UNSLOTH_DIFFUSION_INT8_STORAGE"
+
+
+def _target(device, dtype):
+    return types.SimpleNamespace(device = device, dtype = dtype, backend = device)
+
+
+def _nvidia(monkeypatch):
+    monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(tq, "is_stubbed", lambda pkg: False)
+    # no torchao smoke probe here
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda *a, **k: None)
+
+
+@pytest.mark.parametrize(
+    "device, dtype, offload, env, want",
+    [
+        # pre-Ampere NVIDIA (fp16 compute) and XPU: stored under offload, or everywhere when forced
+        ("cuda", torch.float16, True, None, "native"),
+        ("cuda", torch.float16, False, None, None),
+        ("cuda", torch.float16, False, "1", "native"),
+        ("cuda", torch.float16, True, "0", None),
+        ("xpu", torch.bfloat16, True, None, "native"),
+        ("xpu", torch.float16, True, None, "native"),
+        ("xpu", torch.bfloat16, False, None, None),
+        ("xpu", torch.bfloat16, False, "1", "native"),
+        ("xpu", torch.bfloat16, True, "0", None),
+        # untouched: Ampere+ keeps its W8A8 offload route, CPU and an fp32 XPU expand
+        ("cuda", torch.bfloat16, True, None, "native"),
+        ("cuda", torch.bfloat16, True, "0", "native"),
+        ("cuda", torch.bfloat16, False, "1", None),
+        ("cpu", torch.float32, True, "1", None),
+        ("xpu", torch.float32, True, None, None),
+    ],
+)
+def test_int8_storage_backend_choice(monkeypatch, device, dtype, offload, env, want):
+    _nvidia(monkeypatch)
+    if env is None:
+        monkeypatch.delenv(_STORAGE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_STORAGE_ENV, env)
+    assert cq.comfy_int8_backend(_target(device, dtype), "z-image", offload = offload) == want
+
+
+def test_int8_storage_never_on_rocm_or_the_stub(monkeypatch):
+    monkeypatch.setenv(_STORAGE_ENV, "1")
+    monkeypatch.setattr(tq, "torch_is_rocm", lambda: True)
+    assert not tq.int8_storage_host(_target("cuda", torch.float16))
+    monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(tq, "is_stubbed", lambda pkg: True)
+    assert not tq.int8_storage_host(_target("cuda", torch.float16))
+
+
+def test_int8_storage_respects_the_family_deny(monkeypatch):
+    _nvidia(monkeypatch)
+    monkeypatch.setattr(tq, "_family_denied", lambda family, scheme, *a: scheme == "int8")
+    assert cq.comfy_int8_backend(_target("cuda", torch.float16), "z-image", offload = True) is None
+
+
+def test_int8_storage_hosts_never_take_the_int8_gemm(monkeypatch):
+    _nvidia(monkeypatch)
+    monkeypatch.delenv(_STORAGE_ENV, raising = False)
+    assert tq.native_int8_act(_target("cuda", torch.float16)) is False
+    assert tq.native_int8_act(_target("xpu", torch.bfloat16)) is False
+    assert tq.native_int8_act(_target("cuda", torch.bfloat16)) is (not tq.int8_act_disabled())
+    monkeypatch.setenv(_STORAGE_ENV, "0")
+    assert tq.native_int8_act(_target("cuda", torch.float16)) is (not tq.int8_act_disabled())
+
+
+@pytest.fixture
+def plain_int8_file(tmp_path, monkeypatch):
+    """A ComfyUI int8_tensorwise file (no ConvRot) of ``_Tiny``."""
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    torch.manual_seed(1)
+    dense = _Tiny()
+    tensors = {}
+    for b, block in enumerate(dense.blocks):
+        qkv = torch.cat([block.to_q.weight, block.to_k.weight, block.to_v.weight]).detach()
+        bias = torch.cat([block.to_q.bias, block.to_k.bias, block.to_v.bias])
+        for name, (weight, b_) in {
+            f"blocks.{b}.qkv": (qkv, bias),
+            f"blocks.{b}.out": (block.to_out.weight.detach(), block.to_out.bias),
+        }.items():
+            q, s = _int8(weight)
+            tensors[f"{name}.weight"] = q
+            tensors[f"{name}.weight_scale"] = s
+            tensors[f"{name}.bias"] = b_.detach().clone()
+            tensors[f"{name}.comfy_quant"] = _conf(format = "int8_tensorwise")
+        tensors[f"blocks.{b}.adaLN_modulation.0.weight"] = (
+            block.adaLN_modulation[0].weight.detach().clone()
+        )
+        tensors[f"blocks.{b}.adaLN_modulation.0.bias"] = (
+            block.adaLN_modulation[0].bias.detach().clone()
+        )
+    tensors["norm.weight"] = dense.norm.weight.detach().clone()
+    tensors["norm.bias"] = dense.norm.bias.detach().clone()
+    return _save(tmp_path / "tiny_int8.safetensors", tensors)
+
+
+def _load_as(path, target, backend):
+    return cq.load_comfy_quant_transformer(
+        _Tiny,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": target.dtype, "config": "base/repo", "subfolder": "transformer"},
+        int8_backend = backend,
+        family = "z-image",
+        target = target,
+    )
+
+
+def _run(model, x):
+    outs = []
+    for block in model.blocks:
+        for name in ("to_q", "to_k", "to_v", "to_out"):
+            outs.append(getattr(block, name)(x))
+    return outs
+
+
+def _held(model) -> int:
+    return sum(t.nbytes for t in (*model.parameters(), *model.buffers()))
+
+
+@pytest.mark.parametrize("device, dtype", [("cuda", torch.float16), ("xpu", torch.bfloat16)])
+def test_int8_storage_keeps_codes_and_matches_the_expanded_dit_bitwise(
+    monkeypatch, plain_int8_file, device, dtype
+):
+    from core.inference.diffusion_native_quant import is_native_linear
+
+    _nvidia(monkeypatch)
+    monkeypatch.delenv(_STORAGE_ENV, raising = False)
+    target = _target(device, dtype)
+    backend = cq.comfy_int8_backend(target, "z-image", offload = True)
+    assert backend == "native"
+    expanded = _load_as(plain_int8_file, target, None)
+    stored = _load_as(plain_int8_file, target, backend)
+    assert (
+        stored._unsloth_comfy_quant["int8"] == 8
+        and stored._unsloth_comfy_quant["backend"] == "native"
+    )
+    for block in stored.blocks:
+        for name in ("to_q", "to_k", "to_v", "to_out"):
+            layer = getattr(block, name)
+            assert is_native_linear(layer) and not layer.act_int8 and not layer.rot_group
+            assert layer.weight_q.dtype == torch.int8
+    # 1 byte + a 4-byte row scale against itemsize per weight
+    assert _held(expanded) - _held(stored) == 8 * (DIM * DIM * (dtype.itemsize - 1) - 4 * DIM)
+    x = torch.randn(3, DIM).to(dtype)
+    for got, want in zip(_run(stored, x), _run(expanded, x)):
+        assert torch.equal(got, want)
+
+
+def test_int8_storage_convrot_rotates_activations_like_the_native_route(monkeypatch, comfy_file):
+    _nvidia(monkeypatch)
+    monkeypatch.delenv(_STORAGE_ENV, raising = False)
+    path, dense, _ = comfy_file
+    target = _target("cuda", torch.float16)
+    stored = _load_as(path, target, cq.comfy_int8_backend(target, "z-image", offload = True))
+    expanded = _load_as(path, target, None)
+    assert stored._unsloth_comfy_quant["convrot"] == 8
+    layer = stored.blocks[0].to_k
+    assert layer.rot_group == GROUP and not layer.act_int8
+    x = torch.randn(5, DIM).to(torch.float16)
+    for got, want in zip(_run(stored, x), _run(expanded, x)):
+        assert _cos(got, want) > 0.9999
+
+
+def test_int8_storage_stays_off_under_a_lora(monkeypatch):
+    _nvidia(monkeypatch)
+    monkeypatch.delenv(_STORAGE_ENV, raising = False)
+    t4 = _target("cuda", torch.float16)
+    assert cq.comfy_int8_backend(t4, "z-image", offload = True) == "native"
+    assert cq.comfy_int8_backend(t4, "z-image", offload = True, lora = True) is None
+    assert (
+        cq.comfy_int8_backend(_target("cuda", torch.bfloat16), "z-image", offload = True, lora = True)
+        == "native"
+    )

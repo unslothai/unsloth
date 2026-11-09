@@ -71,8 +71,8 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# int8 ConvRot (ComfyUI's LTX-2.5 encoder) is opt-in: its LPIPS vs bf16 sits above the compile floor. Unset keeps
-# bf16 unless UNSLOTH_LTX25_TE_INT8=1.
+# Auto takes the hosted int8 file only when confirmed, else bf16 (never quantizes at load). A100-40 LPIPS vs bf16
+# 0.133 (bf16 encoder 0.141), peak host 71 -> 52 GiB. Env =0 keeps bf16 auto, =1 makes auto an explicit int8.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
@@ -361,6 +361,12 @@ def load_ltx25_transformer(
 
     from .video_ltx2 import _ltx23_pre_convert, ltx23_is_dit_key
 
+    if is_gguf:
+        from .diffusion_gguf_exact import install_exact_dequant
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+
+        install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
+        install_exact_dequant()
     state = load_single_file_checkpoint(str(checkpoint_path))
     dit_state = _ltx23_pre_convert({k: v for k, v in state.items() if ltx23_is_dit_key(k)})
     del state
@@ -587,6 +593,12 @@ def _read_tensors(path: str, keep: Callable[[str], bool]) -> dict[str, Any]:
     """The tensors of ``path`` whose names pass ``keep``, read selectively (GGUF files are read whole)."""
     if not str(path).lower().endswith(".safetensors"):
         from diffusers.loaders.single_file_utils import load_single_file_checkpoint
+
+        from .diffusion_gguf_exact import install_exact_dequant
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+
+        install_lowbit_iq()
+        install_exact_dequant()
         return {k: v for k, v in load_single_file_checkpoint(str(path)).items() if keep(k)}
     from safetensors import safe_open
 
@@ -697,13 +709,16 @@ def encoder_resident_for_plan(plan: Any) -> bool:
 
 
 def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
-    """``"int8"`` or None (bf16); any other scheme raises ValueError (the worker has only the ConvRot INT8 build)."""
-    from .diffusion_precision import normalize_te_quant, te_quant_is_auto
+    """``"int8"``, None (bf16) or ``AutoTeQuant("int8")`` for auto; other schemes raise ValueError."""
+    from .diffusion_precision import AutoTeQuant, normalize_te_quant, te_quant_is_auto
 
     if te_quant_is_auto(text_encoder_quant):
-        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in _ON:
+        env = (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower()
+        if env in _ON:
             return LTX25_TE_QUANT_DEFAULT
-        return None
+        if env in _OFF:
+            return None
+        return AutoTeQuant(LTX25_TE_QUANT_DEFAULT)
     scheme = normalize_te_quant(text_encoder_quant)
     if scheme is None or scheme == LTX25_TE_QUANT_DEFAULT:
         return scheme
@@ -721,13 +736,15 @@ def ltx25_te_prequant_sources(
     The video backend's pre-cast planner asks this for LTX-2.5, so the hosted file is fetched with the load's progress
     and cancel, and only a file that resolves drops the dense ``text_encoder/`` shards. Pack loads of the base the file
     was cut from only: the single-file release reads its text projections out of its own encoder file, and a custom
-    pack may carry other weights. Pure, never raises."""
+    pack may carry other weights. An automatic pick also needs the file confirmed. Never raises."""
     try:
-        if ltx25_te_quant_scheme(text_encoder_quant) != LTX25_TE_QUANT_DEFAULT:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+        if scheme != LTX25_TE_QUANT_DEFAULT:
             return {}
         if not base or is_ltx25_single_file_base(base):
             return {}
         from .diffusion_families import canonical_base
+        from .diffusion_precision import AutoTeQuant
         from .diffusion_te_prequant import TePrequantSource
         from .model_ids import hf_cache_repo_id
 
@@ -737,13 +754,54 @@ def ltx25_te_prequant_sources(
         identity = hf_cache_repo_id(str(base)) or str(base)
         if canonical_base(identity).lower() != canonical_base(LTX25_TE_HOSTED_BASE).lower():
             return {}
-        return {
+        sources = {
             "text_encoder": TePrequantSource(
                 kind = "repo", location = LTX25_TE_HOSTED_REPO, filename = LTX25_TE_HOSTED_FILE
             )
         }
+        if isinstance(scheme, AutoTeQuant):
+            from .diffusion_te_prequant import te_prequant_sources_confirmed
+            if not te_prequant_sources_confirmed(sources):
+                return {}
+        return sources
     except Exception:  # noqa: BLE001 -- no hosted encoder: the worker quantizes the dense one
         return {}
+
+
+def ltx25_resolve_te_request(
+    text_encoder_quant: Optional[str],
+    base: Optional[str],
+    failures: Optional[dict] = None,
+) -> Optional[str]:
+    """The request a load hands its plan and its worker: an automatic int8 pick becomes ``"int8"`` when the hosted
+    file serves this load, else ``"none"`` (bf16, never the at-load quantization). ``failures`` is the pre-fetch's
+    ``{component: reason}``: a hosted file that could not be fetched keeps bf16. Anything else comes back unchanged."""
+    from .diffusion_precision import AutoTeQuant
+
+    try:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return text_encoder_quant
+    if not isinstance(scheme, AutoTeQuant):
+        return text_encoder_quant
+    if failures and "text_encoder" in failures:
+        logger.info(
+            "video.ltx25_te: hosted int8 ConvRot encoder not fetched (%s); the bf16 text encoder loads",
+            failures["text_encoder"],
+        )
+        return "none"
+    if not ltx25_te_prequant_sources(text_encoder_quant, base):
+        logger.info(
+            "video.ltx25_te: hosted int8 ConvRot encoder not available for '%s'; the bf16 text encoder loads",
+            base,
+        )
+        return "none"
+    logger.info(
+        "video.ltx25_te: int8 ConvRot encoder selected automatically (hosted %s/%s)",
+        LTX25_TE_HOSTED_REPO,
+        LTX25_TE_HOSTED_FILE,
+    )
+    return LTX25_TE_QUANT_DEFAULT
 
 
 def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
@@ -834,6 +892,8 @@ _NEVER_PARKED = ("transformer", "transformer_2", "unconditional_transformer")
 _PARK_HOST_ATTR = "_unsloth_ltx25_park_host"
 # "0" lends only resident denoiser blocks (a short card then encodes on the CPU, as before).
 PARK_COMPANIONS_ENV = "UNSLOTH_LTX25_PARK_FOR_ENCODE"
+# "0" lends the denoiser's room once per prompt encode again, so a CFG request's two misses park and restore twice.
+ONE_LEASE_ENV = "UNSLOTH_LTX25_TE_ONE_LEASE"
 
 
 def _module_tensors(module: Any) -> list:
@@ -1301,8 +1361,10 @@ class Ltx25TextEncoderClient:
         clone per call is ~40 ms on a B200 host."""
         key = (tuple(prompts), int(max_sequence_length))
         with self._lock:
-            for cached_key, value in self._cache:
+            for i, (cached_key, value) in enumerate(self._cache):
                 if cached_key == key:
+                    # LRU: a negative prompt hit every render is never the one evicted.
+                    self._cache.append(self._cache.pop(i))
                     return (value[0].clone(), value[1].clone()) if copy else value
             if not self.alive():
                 logger.warning("video.ltx25_te: encoder worker not running; restarting it")
@@ -1372,17 +1434,18 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         device = device or pipe._execution_device
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
-        def _one(texts: list[str]) -> tuple[Any, Any]:
+        def _lend(*texts: list[str]) -> Optional[Callable[..., None]]:
             # Cache miss: lend resident DiT blocks to the worker for the encode.
             is_cached = getattr(client, "cached", None)
-            restore = (
-                lend_resident_dit_for_encode(pipe, client)
-                if callable(is_cached) and not is_cached(texts, max_sequence_length)
-                else None
-            )
+            if not callable(is_cached) or all(is_cached(t, max_sequence_length) for t in texts):
+                return None
+            return lend_resident_dit_for_encode(pipe, client)
+
+        def _hosts(*texts: list[str]) -> list:
+            """Cached (read-only) tensors per prompt list, all encoded under one lease."""
+            restore = _lend(*texts)
             try:
-                # The client's own cached tensors (read only): every op below returns a new tensor.
-                cached, mask = client.encode(texts, max_sequence_length, copy = False)
+                return [client.encode(t, max_sequence_length, copy = False) for t in texts]
             except BaseException:
                 # A cancelled encode may still use the lent memory: stop it before pinning back.
                 stop = getattr(client, "stop_if_busy", None)
@@ -1392,6 +1455,9 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
             finally:
                 if restore is not None:
                     restore()
+
+        def _one(texts: list[str], host: Optional[tuple] = None) -> tuple[Any, Any]:
+            cached, mask = host if host is not None else _hosts(texts)[0]
             batch = cached.shape[0]
             embeds = cached.to(device = device, dtype = dtype)
             mask = mask.to(device = device)
@@ -1410,6 +1476,24 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0]
+        if (
+            prompt_embeds is None
+            and do_classifier_free_guidance
+            and negative_prompt_embeds is None
+            and (os.environ.get(ONE_LEASE_ENV) or "").strip() != "0"
+        ):
+            negative = negative_prompt or ""
+            negative = batch_size * [negative] if isinstance(negative, str) else negative
+            if batch_size != len(negative):
+                raise ValueError(
+                    f"`negative_prompt` has batch size {len(negative)}, but `prompt` has batch size "
+                    f"{batch_size}."
+                )
+            positive_host, negative_host = _hosts(
+                [p.strip() for p in prompt], [p.strip() for p in negative]
+            )
+            prompt_embeds, prompt_attention_mask = _one([], positive_host)
+            negative_prompt_embeds, negative_prompt_attention_mask = _one([], negative_host)
         if prompt_embeds is None:
             prompt_embeds, prompt_attention_mask = _one([p.strip() for p in prompt])
         if do_classifier_free_guidance and negative_prompt_embeds is None:
