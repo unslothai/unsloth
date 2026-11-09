@@ -892,7 +892,9 @@ def _moe_ddp_worker(rank, world, cp_active, lora):
                 if not got.requires_grad:
                     continue
                 expert = int(name.split(".")[1]) if name.startswith("experts.") else None
-                assert got.grad is not None, name  # a zero gradient, never None, for DDP
+                assert (
+                    got.grad is not None
+                ), f"{name}: no gradient"  # a zero gradient, never None, for DDP
                 if want.grad is None:
                     assert expert is not None and expert not in used, name
                     assert not got.grad.any(), name
@@ -917,7 +919,11 @@ def test_context_parallel_ranks_routing_disjoint_experts_train_under_ddp(lora):
 def test_without_context_parallelism_idle_experts_stall_ddp():
     # Negative control: the CP-off dispatch leaves idle experts' gradients None, so DDP without
     # find_unused_parameters never reduces that bucket (local gradients) and refuses the next step.
-    with pytest.raises(Exception, match = "not close|finished reduction|did not receive grad"):
+    # Whichever rank fails first is the error spawn reports: the rank that used an expert sees its
+    # unreduced gradient (not close), the rank that left it idle sees no gradient at all.
+    with pytest.raises(
+        Exception, match = "not close|finished reduction|did not receive grad|no gradient"
+    ):
         _moe_spawn(_moe_ddp_worker, 2, False, False)
 
 

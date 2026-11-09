@@ -38,6 +38,9 @@ def _no_host_default_hf_cache(monkeypatch, tmp_path):
     ):
         monkeypatch.setattr(utils.paths, name, lambda: [])
     monkeypatch.chdir(tmp_path)
+    # Module state an earlier test may leave: its media picks and a resident image or video engine.
+    monkeypatch.setattr(inf, "_MEDIA_PICK_CACHE", {"at": None, "picks": {}})
+    monkeypatch.setattr(inf, "_resident_media_status", lambda task: None)
 
 
 class _Info:

@@ -2161,6 +2161,10 @@ def enhance_for_generation(
     variant = variant_for_family(family_name)
     distinct = list(dict.fromkeys(p for p in prompts if isinstance(p, str)))
     cancel_event = cancel_event or threading.Event()
+    from core.inference.generation_ticket import bind_generation_cancel
+
+    # A queued job's or chat image's own Stop reaches its captioning too, not only the denoise.
+    bind_generation_cancel(cancel_event)
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
     # On every exit, a Stop included: a retry with enhancement off must not denoise beside a tight server.

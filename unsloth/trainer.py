@@ -1926,6 +1926,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # condition the post-init check skips on, so leaving it armed is free.
         cp_size = getattr(config_arg, "context_parallel_size", 1) or 1
         is_ring_context_parallel = False
+        ulysses_packing_blocker = None
         if isinstance(cp_size, int) and cp_size > 1:
             from .context_parallel import resolve_cp_backend
 
@@ -1937,6 +1938,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
             is_ring_context_parallel = cp_backend == "ring"
+            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an
+            # automatic padding-free choice would fail the first CP step.
+            # A deferred (string) model is classified by its resolved config's model types.
+            if cp_backend == "ulysses":
+                from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
+                ulysses_packing_blocker = _ulysses_packing_blocker(
+                    None if _packing_gate_deferred else model,
+                    model_types if _packing_gate_deferred else (),
+                )
         boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
@@ -1954,6 +1964,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         blocked = (
             (data_collator is not None)
             or is_ring_context_parallel
+            or ulysses_packing_blocker is not None
             or is_pipeline_parallel_env
             or auto_off_cp_tp
             or (is_processor and not processor_text_only)
@@ -1987,7 +1998,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 setattr(config_arg, "padding_free", False)
         # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
         if (
-            is_ring_context_parallel or is_pipeline_parallel_env or boundary_blocker is not None
+            is_ring_context_parallel
+            or ulysses_packing_blocker is not None
+            or is_pipeline_parallel_env
+            or boundary_blocker is not None
         ) and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
 
@@ -2011,6 +2025,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     f"{cp_size} ranks)"
                     if getattr(config_arg, "_unsloth_cp_backend_auto", False)
                     else "ring context parallelism; context_parallel_backend = 'ulysses' keeps it"
+                )
+            elif ulysses_packing_blocker is not None:
+                reason = (
+                    f"Ulysses context parallelism: {ulysses_packing_blocker} refuses packed batches"
                 )
             elif is_pipeline_parallel_env:
                 reason = "pipeline parallel (UNSLOTH_PP_SIZE)"

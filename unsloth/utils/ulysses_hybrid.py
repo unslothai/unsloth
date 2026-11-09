@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """Ulysses context parallelism for Hugging Face attention (any model whose attention calls ALL_ATTENTION_FUNCTIONS
-runs its own attention function after the exchange) and for hybrid models (Gated DeltaNet, Kimi delta attention),
-whose scans need the full sequence so they run on heads."""
+runs its own attention function after the exchange) and for hybrid models (Gated DeltaNet, Kimi delta and MiniMax
+Lightning attention), whose scans need the full sequence so they run on heads."""
 
 import builtins
 import functools
@@ -19,11 +19,13 @@ __all__ = [
     "GATED_DELTA_ATTENTION_CLASSES",
     "is_ulysses_gated_delta",
     "is_ulysses_kimi_delta",
+    "is_ulysses_lightning",
     "is_ulysses_mixer",
     "check_gated_delta_heads",
     "check_ulysses_mixer_heads",
     "ulysses_gated_delta_forward",
     "ulysses_kimi_delta_forward",
+    "ulysses_lightning_forward",
     "wrap_gated_delta_forward",
     "wrap_ulysses_mixer_forward",
     "install_hf_attention_wrapper",
@@ -56,8 +58,20 @@ def is_ulysses_kimi_delta(module) -> bool:
     return hasattr(module, "f_a_proj") or hasattr(module, "f_proj")
 
 
+def is_ulysses_lightning(module) -> bool:
+    if not type(module).__name__.endswith("LightningAttention"):
+        return False
+    needed = ("qkv_proj", "norm", "output_gate", "out_proj", "block_size", "num_attention_heads")
+    buffers = ("slope_rate", "query_decay", "key_decay", "diagonal_decay")
+    return all(hasattr(module, n) for n in needed + buffers)
+
+
 def is_ulysses_mixer(module) -> bool:
-    return is_ulysses_gated_delta(module) or is_ulysses_kimi_delta(module)
+    return (
+        is_ulysses_gated_delta(module)
+        or is_ulysses_kimi_delta(module)
+        or is_ulysses_lightning(module)
+    )
 
 
 def check_gated_delta_heads(module, cp_size) -> None:
@@ -71,12 +85,16 @@ def check_gated_delta_heads(module, cp_size) -> None:
 
 
 def check_ulysses_mixer_heads(module, cp_size) -> None:
-    if not is_ulysses_kimi_delta(module):
+    if is_ulysses_kimi_delta(module):
+        name, heads = "Kimi delta attention num_heads", module.num_heads
+    elif is_ulysses_lightning(module):
+        name, heads = "Lightning attention num_attention_heads", module.num_attention_heads
+    else:
         return check_gated_delta_heads(module, cp_size)
-    if module.num_heads % cp_size != 0:
+    if heads % cp_size != 0:
         raise ValueError(
-            f"Unsloth: Ulysses context parallelism needs Kimi delta attention num_heads "
-            f"({module.num_heads}) to be divisible by context_parallel_size ({cp_size})."
+            f"Unsloth: Ulysses context parallelism needs {name} ({heads}) to be divisible by "
+            f"context_parallel_size ({cp_size})."
         )
 
 
@@ -419,6 +437,68 @@ def ulysses_kimi_delta_forward(
     return out
 
 
+def ulysses_lightning_forward(
+    module,
+    hidden_states,
+    position_embeddings = None,
+    attention_mask = None,
+    past_key_values = None,
+    *,
+    group,
+    **kwargs,
+):
+    """Training forward of a MiniMax LightningAttention on a contiguous sequence shard."""
+    if past_key_values is not None:
+        raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
+    if kwargs.get("packed_seq_lengths") is not None:
+        raise NotImplementedError(
+            "Unsloth: Ulysses context parallelism does not support packing for Lightning attention."
+        )
+    size = dist.get_world_size(group)
+    rank = dist.get_rank(group)
+    check_ulysses_mixer_heads(module, size)
+    bsz, local_len, _ = hidden_states.shape
+    heads, dim = module.num_attention_heads // size, module.head_dim
+
+    qkv = module.act_fn(module.qkv_proj(hidden_states))
+    if isinstance(attention_mask, torch.Tensor) and attention_mask.ndim == 2:
+        # The stock forward zeroes padded values; zeroing q / k too changes nothing downstream.
+        qkv = qkv * attention_mask[:, -local_len:, None].to(qkv.dtype)
+    # [B, T/N, H, 3D] -> [B, T, H/N, 3D]: one exchange for q, k and v of each head.
+    qkv = _AllToAll.apply(
+        qkv.reshape(bsz, local_len, module.num_attention_heads, 3 * dim), 2, 1, group
+    )
+    q, k, v = (x.transpose(1, 2) for x in torch.split(qkv, dim, dim = -1))
+
+    head = slice(rank * heads, (rank + 1) * heads)
+    dtype = v.dtype
+    slope = module.slope_rate[head].to(dtype)
+    query_decay = module.query_decay[head].to(dtype)
+    key_decay = module.key_decay[head].to(dtype)
+    diagonal_decay = module.diagonal_decay[:, head].to(dtype)
+    block, total = module.block_size, q.shape[2]
+
+    state = v.new_zeros(bsz, heads, dim, dim)
+    outs = []
+    for start in range(0, total, block):
+        end = min(start + block, total)
+        n = end - start
+        qb, kb, vb = q[:, :, start:end], k[:, :, start:end], v[:, :, start:end]
+        intra = torch.matmul(
+            torch.matmul(qb, kb.transpose(-1, -2)) * diagonal_decay[:, :, :n, :n], vb
+        )
+        inter = torch.matmul(qb * query_decay[:, :n], state)
+        outs.append(inter + intra)
+        state = state * torch.exp(-slope * n) + torch.matmul(
+            (kb * key_decay[:, -n:]).transpose(-1, -2), vb
+        )
+    out = _AllToAll.apply(torch.cat(outs, dim = 2).transpose(1, 2), 1, 2, group)
+
+    out = module.norm(out.reshape(bsz, local_len, -1))
+    out = torch.sigmoid(module.output_gate(hidden_states)) * out
+    return module.out_proj(out), None
+
+
 def _wrap_ulysses_forward(module, get_cp_manager, name) -> None:
     if getattr(module, "_unsloth_cp_orig_forward", None) is not None:
         return
@@ -453,6 +533,8 @@ def wrap_gated_delta_forward(module, get_cp_manager) -> None:
 def wrap_ulysses_mixer_forward(module, get_cp_manager) -> None:
     if is_ulysses_kimi_delta(module):
         return _wrap_ulysses_forward(module, get_cp_manager, "ulysses_kimi_delta_forward")
+    if is_ulysses_lightning(module):
+        return _wrap_ulysses_forward(module, get_cp_manager, "ulysses_lightning_forward")
     return wrap_gated_delta_forward(module, get_cp_manager)
 
 

@@ -999,6 +999,42 @@ def test_client_caches_recent_encodes_and_reports_a_dead_worker(monkeypatch):
         client._get(None, "encoding")
 
 
+def test_a_fixed_negative_prompt_stays_cached_across_alternating_prompts():
+    import torch
+
+    client = v25.Ltx25TextEncoderClient(
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
+    client._ready = True
+    sent = []
+
+    def fake_put(msg):
+        sent.append(msg["prompts"][0])
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
+
+    client._cmd.put = fake_put
+    for positive in ("p1", "p2", "p1", "p2"):
+        client.encode([positive], 2)
+        client.encode(["neg"], 2)
+    assert sent == ["p1", "neg", "p2", "p1", "p2"]
+
+
 def test_an_abandoned_encodes_error_does_not_fail_the_next_one():
     import torch
 

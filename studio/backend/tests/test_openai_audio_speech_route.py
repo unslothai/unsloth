@@ -282,6 +282,8 @@ def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
     monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
     monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
     monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+    # The resident model is a speech model, so an unnamed request is answered by it.
+    monkeypatch.setattr(routes_module, "_serves_audio_workflow", lambda _w: True)
     payload = SimpleNamespace(audio_instructions = None, audio_language = None)
     request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
     model = "org/B-GGUF" if named else routes_module._RELOAD_ONLY_MODEL

@@ -33,6 +33,14 @@ def _shared_setup_1(client):
     )
 
 
+def _nvfp4_not_rerouted(monkeypatch):
+    """Blackwell host: explicit nvfp4 still reaches the precision gates."""
+    from core.inference import diffusion_nvfp4_route as nvfp4_route
+    monkeypatch.setattr(
+        nvfp4_route, "device_profile", lambda **kw: nvfp4_route.DeviceProfile("nvidia", ((10, 0),))
+    )
+
+
 def _shared_setup_2(monkeypatch):
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
@@ -1587,6 +1595,7 @@ def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
 
 
 def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     # Stub the host precision gate so the partition refusal is tested on CPU CI too.
     monkeypatch.setattr(
         video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
@@ -1651,6 +1660,7 @@ def test_video_download_plan_refuses_an_unsupported_combination_before_staging(c
 
 
 def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
@@ -1673,6 +1683,7 @@ def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, mo
 
 
 def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,

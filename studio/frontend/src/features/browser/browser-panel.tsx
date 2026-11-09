@@ -140,7 +140,7 @@ import { browserTabType, fileBarKind, mediaKind } from "./file-kind";
 import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
 import { FLOATING_SCALE_VAR } from "./floating-events";
-import { nudgeFloating, startFloatingGesture } from "./floating-preview";
+import { announceGrab, nudgeFloating, startFloatingGesture } from "./floating-preview";
 import { closeOrFloatBrowser } from "./close-browser";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
 import {
@@ -262,6 +262,7 @@ type ButtonProps = {
   disabled?: boolean;
   className?: string;
   children?: ReactNode;
+  tooltip?: boolean;
 };
 
 function IconButton({
@@ -272,31 +273,34 @@ function IconButton({
   disabled,
   className,
   children,
+  tooltip = true,
 }: ButtonProps) {
+  const button = (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        TOOLBAR_ICON_BUTTON,
+        className,
+      )}
+    >
+      {icon ? (
+        <HugeiconsIcon
+          icon={icon}
+          strokeWidth={1.75}
+          className="size-4.5"
+        />
+      ) : (
+        children
+      )}
+    </button>
+  );
+  if (!tooltip) return button;
   return (
     <Tooltip>
-      <TooltipTrigger asChild={true}>
-        <button
-          type="button"
-          aria-label={label}
-          onClick={onClick}
-          disabled={disabled}
-          className={cn(
-            TOOLBAR_ICON_BUTTON,
-            className,
-          )}
-        >
-          {icon ? (
-            <HugeiconsIcon
-              icon={icon}
-              strokeWidth={1.75}
-              className="size-4.5"
-            />
-          ) : (
-            children
-          )}
-        </button>
-      </TooltipTrigger>
+      <TooltipTrigger asChild={true}>{button}</TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
         {shortcut ? (
           <span className="flex items-center gap-1.5">
@@ -1514,35 +1518,25 @@ function FloatingBar({ tab, active }: { tab: BrowserTab | undefined; active: boo
   return (
     <div
       onPointerDown={(event) => startFloatingGesture(event, "move")}
+      onPointerEnter={announceGrab}
       onDoubleClick={(event) => {
         if (!(event.target as Element).closest("button:not([data-floating-handle])")) setFloating(false);
       }}
       className="browser-chrome flex h-[calc(30px*var(--ui-space-scale,1))] shrink-0 cursor-grab touch-none select-none items-center gap-px border-b border-border/70 px-1"
     >
-      <IconButton label={t("browser.back")} disabled={!canGoBackIn(tab)} onClick={() => goBackIn(tab)} className={FLOATING_BUTTON}>
+      <IconButton label={t("browser.back")} tooltip={false} disabled={!canGoBackIn(tab)} onClick={() => goBackIn(tab)} className={FLOATING_BUTTON}>
         <ArrowLeft strokeWidth={NAV_STROKE} className={FLOATING_GLYPH} />
       </IconButton>
       <button
         type="button"
         data-floating-handle=""
         aria-label={t("browser.floating.handle")}
-        title={title}
         onKeyDown={nudgeFloating}
         className="flex h-6 min-w-0 flex-1 cursor-grab items-center gap-1.5 rounded-[7px] px-1 text-start text-ui-11 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_img]:size-3.5 [&_svg]:size-3"
       >
         {tab ? <TabIcon tab={tab} /> : null}
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </button>
-      <IconButton
-        label={t("browser.floating.dock")}
-        onClick={() => {
-          setFloating(false);
-          focusAfterLayout(SHOWN_TAB);
-        }}
-        className={FLOATING_BUTTON}
-      >
-        {glyph(chatOnRight ? PanelLeftIcon : PanelRightIcon)}
-      </IconButton>
       <IconButton
         label={t("browser.fullView.enter")}
         shortcut={fullViewShortcut}
@@ -1553,6 +1547,16 @@ function FloatingBar({ tab, active }: { tab: BrowserTab | undefined; active: boo
         className={FLOATING_BUTTON}
       >
         {glyph(EnterFullViewIcon)}
+      </IconButton>
+      <IconButton
+        label={t("browser.floating.dock")}
+        onClick={() => {
+          setFloating(false);
+          focusAfterLayout(SHOWN_TAB);
+        }}
+        className={FLOATING_BUTTON}
+      >
+        {glyph(chatOnRight ? PanelLeftIcon : PanelRightIcon)}
       </IconButton>
       <IconButton label={t("browser.floating.close")} onClick={closePanel} className={FLOATING_BUTTON}>
         {glyph(Cancel01Icon)}
@@ -1598,11 +1602,12 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
   return (
     <>
       <div className="flex shrink-0 items-center gap-0.5">
-        <IconButton label={t("browser.back")} disabled={!canGoBack} onClick={back} className={NAV_BUTTON}>
+        <IconButton label={t("browser.back")} tooltip={false} disabled={!canGoBack} onClick={back} className={NAV_BUTTON}>
           <ArrowLeft strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
         <IconButton
           label={t("browser.forward")}
+          tooltip={false}
           disabled={!canGoForward}
           onClick={forward}
           className={NAV_BUTTON}
@@ -1611,6 +1616,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
         </IconButton>
         <IconButton
           label={t("browser.reload")}
+          tooltip={false}
           disabled={!tab || currentEntry(tab).kind !== "web"}
           onClick={() => {
             if (!tab) return;
@@ -1716,6 +1722,7 @@ function BrowserFileToolbar({
       <div className="flex shrink-0 items-center gap-0.5">
         <IconButton
           label={t("browser.back")}
+          tooltip={false}
           disabled={tab.index === 0}
           onClick={() => goBack(tab.id)}
           className={NAV_BUTTON}
@@ -1724,6 +1731,7 @@ function BrowserFileToolbar({
         </IconButton>
         <IconButton
           label={t("browser.forward")}
+          tooltip={false}
           disabled={tab.index >= tab.history.length - 1}
           onClick={() => goForward(tab.id)}
           className={NAV_BUTTON}
@@ -1732,6 +1740,7 @@ function BrowserFileToolbar({
         </IconButton>
         <IconButton
           label={t(kind === "html" ? "browser.file.runAgain" : "browser.reload")}
+          tooltip={kind === "html"}
           onClick={runAgain}
           className={NAV_BUTTON}
         >

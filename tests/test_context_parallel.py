@@ -1557,3 +1557,20 @@ def test_a_forwarded_cp_size_of_one_installs_no_wrappers(monkeypatch, forwarded)
     Trainer(None, args = args, context_parallel_size = forwarded)
     assert built == []
     assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)
+
+
+@pytest.mark.parametrize(
+    "model_type, blocker",
+    [
+        ("kimi_linear", "KimiDeltaAttention"),
+        ("kimi_k3", "KimiDeltaAttention"),
+        ("minimax", "MiniMaxLightningAttention"),
+        ("deepseek_v32", "DeepseekV32Attention"),
+        ("llama", None),
+        ("minimax_m2", None),
+    ],
+)
+def test_ulysses_packing_blocker_classifies_model_id_strings(model_type, blocker):
+    # A model ID string has no modules yet: its config's model type must give the instance outcome,
+    # so SFT also turns eval_packing off for hybrids whose Ulysses mixers refuse packed batches.
+    assert cp.ulysses_packing_blocker("some/model-id", model_types = (model_type,)) == blocker

@@ -2626,6 +2626,35 @@ class TestLoopBehaviour:
 
         assert exec_fn.calls == [("python", {"code": "print(1)"})] * (1 if deduplicate else 2)
 
+    def test_two_identical_unseeded_studio_generations_in_one_turn_both_run(self):
+        from core.inference import tool_facts
+
+        name = "mcp__unsloth__generate_image"
+        tool_facts.note_mcp_tool(name, {"name": "generate_image"}, studio = True)
+        call = '<tool_call>{"name":"%s","arguments":{"prompt":"a cat"}}</tool_call>' % name
+        turns = iter([[call * 2], ["final"]])
+
+        def fake_single_turn(messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["img1", "img2"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "two cats"}],
+                tools = [{"type": "function", "function": {"name": name}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+                deduplicate_tool_calls = True,
+            )
+        )
+        tool_facts.note_mcp_tool(name, {"name": "generate_image"})
+
+        assert exec_fn.calls == [(name, {"prompt": "a cat"})] * 2
+
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
         captured_tool_names: list[list[str]] = []
