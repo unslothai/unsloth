@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 cuDNN attention on the projections' own [B, S, H, D] strides (UNSLOTH_DIFFUSION_FLUX3_STRIDED_ATTN=0
-disables). diffusers' ``_native_cudnn`` backend makes Q, K and V contiguous [B, H, S, D] before SDPA; cuDNN reads
-the permuted views directly, and its output then flattens back to [B, S, H * D] without another copy. Installed only
-when a load-time probe on the target card finds the strided call bitwise equal to the contiguous one."""
+"""FLUX.3 cuDNN attention on strided [B, S, H, D] views, skipping diffusers' contiguous Q/K/V copies. Installed only
+when a load-time probe finds it bitwise equal to the contiguous call (UNSLOTH_DIFFUSION_FLUX3_STRIDED_ATTN=0 disables)."""
 
 from __future__ import annotations
 
@@ -40,8 +38,7 @@ def _backend_value(backend: Any) -> Optional[str]:
 
 @lru_cache(maxsize = None)
 def strided_processor_class() -> Any:
-    """``Flux3AttnProcessor`` subclass. Built once: dynamo guards on the class, so one class keeps one graph. Masks,
-    context parallelism and every backend other than cuDNN take the stock ``__call__``."""
+    """Built once: dynamo guards on the class. Masks, context parallelism and non-cuDNN backends use the stock call."""
     import torch.nn.functional as F
     from diffusers.models.transformers import transformer_flux3 as tf3
     from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -118,7 +115,7 @@ def _device(target: Any) -> Any:
 
 
 def strided_matches(device: Any, dtype: Any, heads: int, head_dim: int) -> bool:
-    """One small cuDNN call per (card, dtype, heads, head_dim), strided vs contiguous inputs; False on any error."""
+    """Cached per (card, dtype, heads, head_dim); False on any error."""
     import torch
     import torch.nn.functional as F
     from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -155,8 +152,7 @@ def install(
     target: Any,
     logger: Any = None,
 ) -> int:
-    """Swap every FLUX.3 attention processor that runs ``_native_cudnn`` for the strided subclass. Returns how many
-    were swapped (0: nothing changed). Idempotent; never raises."""
+    """Returns the number of processors swapped. Idempotent; never raises."""
     try:
         return _install(pipe, backend, target, logger)
     except Exception as exc:  # noqa: BLE001 - the stock processors stay

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 strided cuDNN attention (diffusion_flux3_attn). CPU: cuDNN's kernel selector is replaced by a no-op so the
-math runs on CPU SDPA; this checks the processor op for op against diffusers' ``_native_cudnn`` call, the install
-gates and the compiled trace, not cuDNN itself (the CUDA probe does that at load)."""
+"""CPU checks for diffusion_flux3_attn: cuDNN selection is a no-op, so this verifies the math, gates and trace, not cuDNN."""
 
 from __future__ import annotations
 
@@ -20,7 +18,6 @@ from core.inference import diffusion_flux3_attn as fa  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _cpu_cudnn(monkeypatch):
-    """No cuDNN on CPU: the backend pin becomes a no-op for both diffusers' wrapper and the subclass."""
     monkeypatch.setattr(torch.nn.attention, "sdpa_kernel", lambda *a, **k: contextlib.nullcontext())
     monkeypatch.delenv(fa.STRIDED_ATTN_ENV, raising = False)
     fa.strided_processor_class.cache_clear()
