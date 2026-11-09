@@ -706,3 +706,21 @@ def test_start_refuses_a_fenced_account(weights):
     finally:
         active_generations.lift_fence("alice")
     runner.start(prompt = "x", frames = _frames(5), owner = "alice")
+
+
+def test_route_refuses_a_restyle_beside_training(weights, monkeypatch):
+    import core.training as training_pkg
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    client = _route_client(monkeypatch, runner)
+    monkeypatch.setattr(vr, "frames_from_video", lambda data: _frames(5))
+
+    class _Training:
+        def is_training_active(self):
+            return True
+
+    monkeypatch.setattr(training_pkg, "get_training_backend", lambda: _Training())
+    files = [("video", ("a.mp4", b"x", "video/mp4"))]
+    res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
+    assert res.status_code == 409 and "training" in res.json()["detail"]
+    assert not runner.progress().get("active")

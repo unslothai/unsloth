@@ -93,6 +93,16 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
         video_restyle.runner.release(reservation)
 
 
+def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
+    # Same interlock as a video load: refuse beside training, and hold the training admission while
+    # the runner turns active so a training start in between sees it and refuses.
+    from routes.inference import _diffusion_training_admission
+    from routes.video import _guard_video_load_against_training
+    with _diffusion_training_admission():
+        _guard_video_load_against_training()
+        return video_restyle.runner.start(**kwargs)
+
+
 async def _start_reserved(request: Request, reservation: str):
     fields, files = await _read_upload(request)
     seed: Optional[int] = None
@@ -104,7 +114,7 @@ async def _start_reserved(request: Request, reservation: str):
     try:
         frames, _ = await _frames_from_upload(files)
         job = await asyncio.to_thread(
-            video_restyle.runner.start,
+            _admit_and_start,
             prompt = fields.get("prompt") or "",
             frames = frames,
             seed = seed,

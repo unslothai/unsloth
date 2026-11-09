@@ -106,9 +106,17 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
         loadedFor.current = next.id;
         if (next.video) notifyGalleryChanged("videos");
         const ticket = clipsFor.current;
-        const [input, control, output] = await Promise.all(
-          CLIPS.map((clip) => fetchVideoRestyleClip(next.id as string, clip.kind)),
-        );
+        let clips: Blob[];
+        try {
+          clips = await Promise.all(
+            CLIPS.map((clip) => fetchVideoRestyleClip(next.id as string, clip.kind)),
+          );
+        } catch (err) {
+          // Let the next refresh retry the downloads.
+          if (loadedFor.current === next.id) loadedFor.current = null;
+          throw err;
+        }
+        const [input, control, output] = clips;
         if (ticket !== clipsFor.current) return;
         setInputClip(input);
         setControlClip(control);
