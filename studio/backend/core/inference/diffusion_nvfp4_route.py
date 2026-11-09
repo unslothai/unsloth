@@ -74,7 +74,10 @@ def _probe_device_profile() -> DeviceProfile:
     try:
         if torch.cuda.is_available():
             # ROCm reports gfx versions through the same call (RDNA 3 is 11.x), so it must never read as Blackwell.
-            kind = ROCM if getattr(torch.version, "hip", None) else NVIDIA
+            from .rocm_bf16 import is_rocm_torch
+
+            # The backend's own detector: AMD SDK / Radeon wheels leave ``torch.version.hip`` unset.
+            kind = ROCM if is_rocm_torch(torch) else NVIDIA
             caps = tuple(
                 tuple(int(v) for v in torch.cuda.get_device_capability(index))
                 for index in range(torch.cuda.device_count())
@@ -268,8 +271,11 @@ def _family_int8_base(
 ) -> Optional[str]:
     """The diffusers pipeline whose normal INT8 resolution replaces an NVFP4 single file of ``fam``, or None when the
     pick does not say which variant it is (a different size or distill must never load in its place)."""
+    names = [n for n in (model_path, filename) if n]
+    if media == "video":
+        return _video_int8_base(fam, base_repo, names)
     base = str(base_repo or "").strip()
-    if not base and media != "video":
+    if not base:
         try:
             from .diffusion_families import named_variant_base
 
@@ -279,20 +285,33 @@ def _family_int8_base(
             base = ""
         if not base:
             plain = _fold(str(getattr(fam, "base_repo", "") or "").rsplit("/", 1)[-1])
-            if not plain or not any(plain in _fold(n) for n in (model_path, filename) if n):
+            if not plain or not any(plain in _fold(n) for n in names):
                 return None
-    base = base or str(getattr(fam, "base_repo", "") or "").strip()
-    if not base:
+    return base or str(getattr(fam, "base_repo", "") or "").strip() or None
+
+
+def _name_tokens(names: Iterable[str]) -> set:
+    return {
+        t for n in names for t in re.split(r"[^a-z0-9.]+", os.path.basename(str(n)).lower()) if t
+    }
+
+
+def _video_int8_base(fam: Any, base_repo: Optional[str], names: list) -> Optional[str]:
+    """Video: only where the family's INT8 pipeline is provably the same model as the file. LTX-2.5's pack runs only
+    its distilled DiT, so a dev file is kept; the ``ltx-2`` family spans 2.0 to 2.3 with a 2.0 pipeline, so its files
+    are kept; anything else must spell its pipeline's name."""
+    name = str(getattr(fam, "name", "") or "")
+    pack = str(getattr(fam, "base_repo", "") or "").strip()
+    if not pack:
         return None
-    if media == "video" and getattr(fam, "name", None) == "ltx-2.5":
-        try:
-            from .video_ltx25 import is_ltx25_single_file_base
-            if is_ltx25_single_file_base(base, fold_mirror = False):
-                # The split single-file release is not a pipeline: the family's INT8 is seeded on its diffusers repo.
-                base = str(getattr(fam, "base_repo", "") or "").strip() or None
-        except Exception:  # noqa: BLE001
-            pass
-    return base
+    if name == "ltx-2.5":
+        return pack if "distilled" in _name_tokens(names) else None
+    if name == "ltx-2":
+        return None
+    stem = _fold(re.sub(r"-diffusers$", "", pack.rsplit("/", 1)[-1], flags = re.IGNORECASE))
+    if not stem or not any(stem in _fold(n) for n in names):
+        return None
+    return str(base_repo or "").strip() or pack
 
 
 def _int8_denied(fam_name: Optional[str], base_repo: Optional[str]) -> bool:

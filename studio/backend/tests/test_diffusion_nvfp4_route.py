@@ -199,6 +199,42 @@ def test_a_known_family_file_keeps_its_variant(monkeypatch, tmp_path, name, base
         assert got.updates["transformer_quant"] == "int8"
 
 
+@pytest.mark.parametrize(
+    "name,override,base",
+    [
+        (
+            "ltx-2.5-22b-distilled-transformer-nvfp4.safetensors",
+            "ltx-2.5",
+            "Lightricks/LTX-2.5-Diffusers",
+        ),
+        # The pack runs only its distilled DiT: a dev file is a different model.
+        ("ltx-2.5-22b-dev-nvfp4.safetensors", "ltx-2.5", None),
+        # The ltx-2 family spans 2.0 to 2.3 on a 2.0 pipeline.
+        ("ltx-2.3-22b-distilled-nvfp4.safetensors", None, None),
+        ("Wan2.2-TI2V-5B-nvfp4.safetensors", None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers"),
+    ],
+)
+def test_a_video_file_is_replaced_only_by_the_same_model(
+    monkeypatch, tmp_path, name, override, base
+):
+    _fake_device(monkeypatch, "cuda", (8, 0))
+    folder = tmp_path / "videos"
+    folder.mkdir()
+    (folder / name).write_bytes(b"\0" * 64)
+    got = route.plan_nvfp4_route(
+        media = "video",
+        model_path = str(folder),
+        gguf_filename = name,
+        model_kind = "single_file",
+        family_override = override,
+    )
+    if base is None:
+        assert got is None
+    else:
+        assert got.updates["model_path"] == base
+        assert got.updates["transformer_quant"] == "int8"
+
+
 def test_a_family_that_denies_int8_gets_auto(monkeypatch):
     from core.inference import diffusion_transformer_quant as tq
 
@@ -259,14 +295,22 @@ def test_the_device_is_read_once(monkeypatch):
         route._probe_device_profile.cache_clear()
 
 
-def test_rocm_never_reads_as_blackwell(monkeypatch):
+@pytest.mark.parametrize(
+    "hip,version",
+    [
+        ("7.0", "2.9.0+rocm7.0"),
+        (None, "2.9.0+rocm7.0"),
+    ],  # AMD SDK / Radeon wheels leave torch.version.hip unset
+)
+def test_rocm_never_reads_as_blackwell(monkeypatch, hip, version):
     import torch
 
     route._probe_device_profile.cache_clear()
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = None: (12, 0))
-    monkeypatch.setattr(torch.version, "hip", "7.0")
+    monkeypatch.setattr(torch.version, "hip", hip)
+    monkeypatch.setattr(torch, "__version__", version)
     try:
         got = route.plan_nvfp4_route(
             model_path = "Tongyi-MAI/Z-Image-Turbo", transformer_quant = "nvfp4"
