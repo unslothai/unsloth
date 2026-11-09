@@ -651,12 +651,10 @@ function browserPanelDefaultSize(split: HTMLElement | null | undefined): string 
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_LAYOUT_INSTANT_ATTRIBUTE = "data-artifact-layout-instant";
 
-/** A sliding width re-wraps every row in reach each frame (~200 ms on macOS WebKit in a long chat), so
- *  a chat taller than that reach takes the new width in one step. Read the frame before the resize. */
+/** A sliding width re-wraps every row in reach each frame, so a taller chat resizes in one step. */
 function markInstantLayout(surface: HTMLElement | null): void {
   const split = surface?.closest<HTMLElement>(".chat-artifact-split");
   if (!split) return;
-  // The first match, ahead of every message row in document order.
   const viewport = split.querySelector<HTMLElement>("#chat-thread .aui-thread-viewport");
   split.toggleAttribute(
     ARTIFACT_LAYOUT_INSTANT_ATTRIBUTE,
@@ -856,8 +854,7 @@ const SingleContent = memo(function SingleContent({
     const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
     if (!surface || !root || !browserDocked) return;
     let width = "";
-    // Children, not `:scope >`: that matches every node below the root (the whole thread), and the
-    // resize observer runs it each frame of the pane's open and close.
+    // Children, not `:scope >`, which matches against the whole thread on every resize frame.
     const insets = () =>
       [...root.children].filter(
         (element): element is HTMLElement =>
