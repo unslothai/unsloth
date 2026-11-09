@@ -3952,7 +3952,7 @@ html[data-chat-font] .aui-root {
 		white-space: nowrap;
 	}
 
-	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
+	.chat-artifact-split[data-artifact-layout-animating="true"]:not([data-artifact-layout-instant]) > [data-panel] {
 		transition:
 			flex-basis 260ms var(--ease-out-cubic),
 			flex-grow 260ms var(--ease-out-cubic),
