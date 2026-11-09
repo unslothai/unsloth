@@ -2513,12 +2513,10 @@ def test_mcp_listing_keeps_its_order_when_a_listed_tool_runs(tmp_path, monkeypat
     first = _thread_listing(tools_mod, searching, chat)
     assert _names(first) == ["mcp_tool_search", ping, create]
 
-    # Rerunning a listed tool, in either order, sends the same tool block.
     for ran in ([create], [ping], [create, ping]):
         tools_mod.mcp_record_loaded_tools("thread-1", ran)
         assert _thread_listing(tools_mod, searching, chat) == first
 
-    # A newly run tool goes after the listed ones.
     tools_mod.mcp_record_loaded_tools("thread-1", [move])
     assert _names(_thread_listing(tools_mod, searching, chat)) == [*_names(first), move]
 
@@ -2552,7 +2550,6 @@ def test_mcp_listing_token_count_leaves_the_held_listing_alone(tmp_path, monkeyp
     chat = [{"role": "user", "content": "ab"}]
     first = _thread_listing(tools_mod, searching, chat)
     assert _names(first) == ["mcp_tool_search", a, b]
-    # A count of another branch prices that branch's listing without moving the one generation holds.
     assert count([{"role": "user", "content": "cb"}]) == ["mcp_tool_search", b, c]
     assert _thread_listing(tools_mod, searching, chat) == first
 
