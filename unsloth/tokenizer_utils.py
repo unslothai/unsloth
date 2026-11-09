@@ -198,8 +198,9 @@ def _strip_bos_from_chat_template_text(chat_template):
     if not isinstance(chat_template, str) or not chat_template:
         return chat_template
     stripped = re.sub(r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\}[\s\-]*\}", "", chat_template, count = 1)
-    # Keep the opening `{{` for Llama 2 expressions so removing bos_token does not leave a dangling `}}`.
-    return re.sub(r"(\{[\s\-]*\{[\s\-]*)bos\_token[\s\-]*\+[\s\-]*", r"\1", stripped, count = 1)
+    # Drop only the `bos_token +` term, so Llama 2's `{{ bos_token + ... }}` keeps its `{{ }}` and
+    # Llama 3's `{% set content = bos_token + content %}` keeps its statement.
+    return re.sub(r"\bbos\_token\s*\+\s*", "", stripped, count = 1)
 
 
 def _dedupe_bos_chat_template(tokenizer):
