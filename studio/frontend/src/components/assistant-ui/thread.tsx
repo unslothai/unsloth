@@ -222,9 +222,11 @@ import {
   NativeAttachmentDragContext,
   type NativeIntent,
   useNativeAttachmentTargetKey,
+  useNativeAttachmentOwnerScope,
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
+import { wasAttachmentAddCancelled } from "@/features/chat/draft-attachment-adapter";
 import {
   attachLibraryChatFiles,
   useLibraryChatHandoffStore,
@@ -3169,6 +3171,7 @@ const Composer: FC<{
         event,
         async (file) => {
           await aui.composer().addAttachment(file);
+          if (wasAttachmentAddCancelled(file)) return;
           dropReplacedSelection();
         },
         () =>
@@ -3354,7 +3357,11 @@ const Composer: FC<{
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const nativeAttachmentOwnerScope = useNativeAttachmentOwnerScope();
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
 
@@ -3368,6 +3375,10 @@ const Composer: FC<{
         throw new Error("The chat changed before this file was attached.");
       }
       await aui.composer().addAttachment(file);
+      // The draft-scoped adapter resolves a cancelled add; throwing keeps the file held.
+      if (wasAttachmentAddCancelled(file)) {
+        throw new Error("The chat changed before this file was attached.");
+      }
     };
     const drain = async () => {
       const held = await attachLibraryChatFiles(targetKey, add);
@@ -3457,6 +3468,11 @@ const Composer: FC<{
   // A parked send must not fire on a failed drop. Assigned below once the callback exists.
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
   const composerIdentityRef = useRef("");
+  const nativeAttachmentOwner = nativeAttachmentOwnerScope
+    ? JSON.stringify([nativeAttachmentOwnerScope, threadListItemId ?? ""])
+    : threadListItemId ?? "";
+  const nativeAttachmentOwnerRef = useRef(nativeAttachmentOwner);
+  nativeAttachmentOwnerRef.current = nativeAttachmentOwner;
   const imageDropFailures = useNativeIntentStore(
     (s) => (nativeAttachmentTargetKey ? s.imageDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
   );
@@ -3489,20 +3505,22 @@ const Composer: FC<{
   }, [videoDropFailures]);
   // Hold the send gate while the dropped clip is registered and read.
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    // aui.composer() is still the previous chat until the runtime reaches this route's thread.
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimAudioAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     // A re-key follows the same composer; a thread switch parks the clip back.
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     // A remount hides the new key, so tag the batch; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
@@ -3549,6 +3567,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // The adapter toasted. Keep going: a later, smaller clip may still fit.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3596,23 +3628,24 @@ const Composer: FC<{
       setMaterializingDroppedAudio(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   // Same drain as audio: one clip per message, and the send gate holds across the read.
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimVideoAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3657,6 +3690,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // Chat-wide failure and the adapter already toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3700,23 +3747,24 @@ const Composer: FC<{
       setMaterializingDroppedVideo(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     // A fresh chat re-keys from "single:new" to its thread id under the same composer, so follow it.
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeueKey = () =>
       stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3772,6 +3820,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // Chat-wide failure and the adapter already toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3796,7 +3858,7 @@ const Composer: FC<{
         const pending =
           useNativeIntentStore.getState().pendingImageAttachments[targetKey]
             ?.length ?? 0;
-        if (pending > 0) {
+        if (pending > 0 && stillThisComposer()) {
           void drainPendingImages();
         } else {
           setMaterializingDroppedImages(false);
@@ -3829,21 +3891,22 @@ const Composer: FC<{
       setMaterializingDroppedImages(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3888,6 +3951,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
             }
@@ -3932,7 +4009,7 @@ const Composer: FC<{
       setMaterializingDroppedOpenDocuments(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   const hasMaterializingImageAttachments =
     registeringImageDrops ||
     hasPendingImageAttachments ||
@@ -3948,9 +4025,6 @@ const Composer: FC<{
     hasPendingVideoAttachments ||
     materializingDroppedVideo;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const threadListItemId = useAuiState(
-    ({ threadListItem }) => threadListItem.id,
-  );
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
   );

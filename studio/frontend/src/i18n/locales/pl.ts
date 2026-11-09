@@ -1870,6 +1870,13 @@ export const pl = {
         sttQuantDescription:
           "Wybierz lub wyszukaj model STT do uruchomienia lokalnie, a następnie jego kwantyzację.",
         sttDeviceLabel: "Wczytaj do",
+        sttContextLabel: "Kontekst głosu",
+        sttContextAuto: "Automatycznie (zalecane)",
+        sttContextAutoDescription:
+          "Dopasowuje się do każdego nagrania, używając więcej pamięci przy dłuższym dźwięku. Starsze środowiska uruchomieniowe mogą wymagać stałego rozmiaru, aby ograniczyć użycie pamięci. Dotyczy Qwen3-ASR w sekcjach Głos i Transkrypcja.",
+        sttContextFixedDescription:
+          "Mniejsze limity zużywają mniej pamięci. Nagrania, które się nie mieszczą, wymagają wyższego limitu lub trybu Automatycznie. Dotyczy Qwen3-ASR w sekcjach Głos i Transkrypcja.",
+        sttContextTokens: "tokeny: {count}",
         sttDeviceAuto: "GPU, gdy jest dostępny",
         sttDeviceCpu: "RAM procesora CPU",
         sttDeviceAutoDescription:
