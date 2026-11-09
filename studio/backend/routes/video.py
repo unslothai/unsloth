@@ -156,10 +156,13 @@ async def video_download_plan(
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
     from routes.inference import (
+        _nvfp4_route_kwarg,
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
+        _route_nvfp4_request,
     )
 
+    request, nvfp4_route = await _route_nvfp4_request(request, "video")
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
@@ -307,10 +310,13 @@ async def load_video_model_gated(
     route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
     from routes.inference import (
+        _nvfp4_route_kwarg,
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
+        _route_nvfp4_request,
     )
 
+    request, nvfp4_route = await _route_nvfp4_request(request, "video")
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
@@ -460,6 +466,7 @@ async def load_video_model_gated(
                 # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
                 allow_oversized_load = request.allow_oversized_load,
+                **_nvfp4_route_kwarg(backend.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("video", backend, request.load_token, prior)
             return started

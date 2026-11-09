@@ -48398,6 +48398,26 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
     )
 
 
+async def _route_nvfp4_request(request: Any, media: str = "image") -> tuple:
+    """``(request, route)``: an explicit NVFP4 pick rerouted to INT8 / Auto on a pre-Blackwell host, before any check
+    or download plan reads it (``diffusion_nvfp4_route``); the same request and None otherwise."""
+    from core.inference.diffusion_nvfp4_route import route_load_request
+    return await asyncio.to_thread(route_load_request, request, media = media)
+
+
+def _nvfp4_route_kwarg(begin_load: Any, route: Any) -> dict:
+    """Hands the reroute to a backend whose ``begin_load`` records it; native engines take no such argument."""
+    if route is None:
+        return {}
+    try:
+        import inspect
+        if "nvfp4_route" in inspect.signature(begin_load).parameters:
+            return {"nvfp4_route": route}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _refuse_disabled_nvfp4_request(request: Any) -> None:
     """Refuses NVFP4 with 400 while UNSLOTH_NVFP4_DIFFUSION is off, ahead of any precision fallback."""
     from core.inference.diffusion_nvfp4_flag import refuse_disabled_nvfp4
@@ -48485,6 +48505,7 @@ async def diffusion_download_plan(
 
     Validates the same way /images/load does, so an unloadable pick fails here rather than
     after a multi-GB download."""
+    request, nvfp4_route = await _route_nvfp4_request(request, "image")
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
@@ -48776,6 +48797,7 @@ async def load_diffusion_model_gated(
     user_initiated: bool = False,
 ):
     """Media auto-switch awaits this so the idle unload can tell API loads from user-picked ones."""
+    request, nvfp4_route = await _route_nvfp4_request(request, "image")
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
@@ -49194,6 +49216,7 @@ async def load_diffusion_model_gated(
                     engine.begin_load,
                     _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode),
                 ),
+                **_nvfp4_route_kwarg(engine.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("diffusion", engine, request.load_token, prior_load)
             # A warm start that took the generation slot between the stop above and begin_load publishing the load would
