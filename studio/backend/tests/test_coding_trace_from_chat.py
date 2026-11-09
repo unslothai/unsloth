@@ -190,7 +190,7 @@ def test_rows_from_a_service_need_no_database():
     assert [(c.id, c.arguments) for c in assistant.tool_calls] == [("k", {}), ("k#2", raw)]
     # Byte-exact JSON.stringify, as the UI replays a non-sandbox tool result.
     assert (tool.tool_call_id, tool.text, tool.is_error) == ("k", '{"text":"ok"}', True)
-    assert set(_codes(trace)) == {"unsupported_part", "duplicate_tool_call_id", "unknown_role"}
+    assert _codes(trace) == ["unsupported_part", "duplicate_tool_call_id", "unknown_role"]
 
 
 def test_unreadable_threads_and_cut_branches():
@@ -217,14 +217,14 @@ def _local(cid, round_id = None):
 @pytest.mark.parametrize(
     "parts, shape",
     [
-        # One row's calls replay as one group; tool messages follow it before the next text.
+        # One row's calls replay as one group past skipped parts; tool messages follow it.
         (
-            [_call("A"), _call("B"), *_text("done")],
+            [_call("A"), {"type": "image", "image": "x"}, _call("B"), *_text("done")],
             [("assistant", ["A", "B"]), ("tool", "A"), ("tool", "B"), ("assistant", "done")],
         ),
         # A new local round closes the group.
         (
-            [_local("A", 1), _local("B", 1), _local("C", 2)],
+            [_local("A", 1), {"type": "thinking", "thinking": "x"}, _local("B", 1), _local("C", 2)],
             [
                 ("assistant", ["A", "B"]),
                 ("tool", "A"),
@@ -249,14 +249,14 @@ def test_tool_calls_group_like_the_ui_replay(parts, shape):
     trace = _assistant(parts)
     assert _shape(trace)[1:] == shape
     assert len({m.id for m in trace.messages}) == len(trace.messages)
-    assert _codes(trace) == []
+    assert set(_codes(trace)) <= {"unsupported_part"}
 
 
 def test_adjacent_rows_alternate_calls_and_results():
     reasoning = [{"type": "reasoning", "text": t} for t in ("r1", "", "r2")]
     rows = [
         _row("u", "user", _text("go"), None, 1),
-        _row("a1", "assistant", [_call("A")], "u", 2),
+        _row("a1", "assistant", [_call("A"), {"type": "source", "url": "http://e"}], "u", 2),
         _row("a2", "assistant", [_call("B")], "a1", 3),
         _row("a3", "assistant", reasoning + _text("done"), "a2", 4),
         _row("a4", "assistant", _text("more"), "a3", 5),
@@ -269,7 +269,8 @@ def test_adjacent_rows_alternate_calls_and_results():
         ("tool", "B"),
         ("assistant", "done\nmore"),
     ]
-    assert trace.messages[-1].reasoning == "r1\n\nr2"
+    # A trailing source part must not open a piece that the next row merges into.
+    assert (trace.messages[3].id, trace.messages[-1].reasoning) == ("a2", "r1\n\nr2")
 
 
 @pytest.mark.parametrize(
@@ -354,7 +355,7 @@ _STOPPED = {"incomplete": {"reason": "cancelled"}}
     "custom, content, before",
     [
         ({}, [], []),
-        ({}, _text("   "), []),
+        ({}, _text("   ") + [{"type": "image", "image": ""}], []),
         ({"anthropicRefusal": True}, _text("no"), []),
         (_STOPPED, [], [("user", "go"), ("assistant", "Response stopped")]),
         (_STOPPED, _text("   "), [("user", "go"), ("assistant", "Response stopped")]),

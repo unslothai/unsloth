@@ -157,12 +157,12 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
             out.append(current)
         # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
         pending: list[TraceMessage] = []
-        pending_round = reasoned = None
+        pending_round = reasoned = imaged = None
         # collectTextParts joins all text parts, even "", and toThreadMessage loads [] as one "".
         pieces, texted = 0, (current if role == "user" and not message.get("content") else None)
         for position, part in enumerate(_model_parts(message)):
             kind = part.get("type") if isinstance(part, dict) else None
-            if role == "assistant":
+            if role == "assistant" and kind in ("text", "reasoning", "tool-call"):
                 skipped = _skipped_call(part, message_id, position) if kind == "tool-call" else None
                 if skipped:
                     warnings.append(skipped)
@@ -182,19 +182,15 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                 # Importers split one reply into a row per block; merge rows until a tool result.
                 if not out or out[-1].role != "assistant":
                     pieces += 1
-                    out.append(
-                        TraceMessage(
-                            id = message_id if pieces == 1 else f"{message_id}#{pieces}",
-                            role = "assistant",
-                            created_at = message.get("createdAt"),
-                        )
-                    )
+                    piece = message_id if pieces == 1 else f"{message_id}#{pieces}"
+                    at = message.get("createdAt")
+                    out.append(TraceMessage(piece, "assistant", created_at = at))
                 current = out[-1]
             if kind == "text":
                 text = str(part.get("text") or "")
                 current.text, texted = _append_text(current.text, text, current is texted), current
-            elif kind in ("reasoning", "thinking") and role == "assistant":
-                reasoning = str(part.get("text") or part.get("thinking") or "")
+            elif kind == "reasoning" and role == "assistant":
+                reasoning = str(part.get("text") or "")
                 current.reasoning = _append_text(current.reasoning, reasoning, current is reasoned)
                 reasoned = current  # pendingReasoningParts.join("\n") also keeps "" parts
             elif kind == "tool-call" and role == "assistant":
@@ -242,11 +238,12 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     out.extend(pending)
                     pending, pending_round = [], None
             else:
-                kept += out[start:][:1] if kind == "image" and part.get("image") else []
+                imaged = imaged or (kind == "image" and part.get("image"))
                 warnings.append(
                     TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
                 )
         out.extend(pending)
+        kept += out[start:][:1] if imaged else []  # collectImageParts: the row's first UI group
         reason = _as_dict(_as_dict(message.get("metadata")).get("incomplete")).get("reason")
         if isinstance(reason, str) and reason in _STOP_LABELS:
             for m in out[start:]:
@@ -317,7 +314,8 @@ def _prune(chain: list[dict]) -> list[dict]:
         payload = any(
             isinstance(p, dict)
             and (
-                p.get("type") in ("image", "reasoning")
+                p.get("type") == "reasoning"
+                or (p.get("type") == "image" and p.get("image"))
                 or (p.get("type") == "text" and str(p.get("text") or "").strip())
             )
             for p in _model_parts(message)
