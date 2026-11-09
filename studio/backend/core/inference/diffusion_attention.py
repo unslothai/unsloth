@@ -117,8 +117,7 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _ROCM_PROBE_RETRY_S = 120.0
 _ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
 
-# Set while a card is only being asked about (a layer-split candidate): its answer must not touch the process-wide
-# torch.backends.cuda SDPA switches, which also govern the card the model already runs on.
+# Candidate-card probes must not flip the process-wide SDPA switches the running card also uses.
 _SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "_sdpa_probe_read_only", default = False
 )
@@ -126,7 +125,6 @@ _SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def read_only_sdpa_probe():
-    """Probes inside cache their answer but do not apply the ROCm fused-SDPA guard."""
     token = _SDPA_PROBE_READ_ONLY.set(True)
     try:
         yield
@@ -144,7 +142,6 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
-        # Only fp16 / bf16 answers drive the guard; a read-only probe (a layer-split candidate) never does.
         if (
             not _SDPA_PROBE_READ_ONLY.get()
             and _rocm_guard_allowed()
@@ -460,14 +457,14 @@ def guard_rocm_fused_sdpa_cards(
     dtype: Any,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Guard for all layer-split cards: the switches are process-wide, so only kernels that ran on ALL stay on."""
+    """Switches are process-wide, so only kernels that ran on ALL cards stay on."""
     from types import SimpleNamespace
 
     if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
         return ()
     if dtype is None:
         import torch
-        dtype = torch.float16  # the probe's own default (_sdpa_capability)
+        dtype = torch.float16  # _sdpa_capability's default
     if str(dtype) not in ("torch.float16", "torch.bfloat16"):
         return ()
     answers = []

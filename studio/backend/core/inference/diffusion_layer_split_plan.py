@@ -712,7 +712,6 @@ def _probe_dtype(dtype: Any) -> Any:
 
 
 def _projection_dtype(proj: Any) -> Any:
-    """Compute dtype of a Q/QKV projection; None when only packed or fp8 storage is readable."""
     registry = getattr(proj, "_diffusers_hook", None)
     get_hook = getattr(registry, "get_hook", None)
     if callable(get_hook):
@@ -732,8 +731,7 @@ def _projection_dtype(proj: Any) -> Any:
 
 
 def _attention_dtype(module: Any) -> Any:
-    """Read only ``to_q`` / ``to_qkv``: MiniMax-H3's ``proj_in`` and Krea-2 / FLUX.3's ``norm_q``/``norm_k`` are fp32
-    while attention runs in bf16."""
+    # Only to_q / to_qkv: MiniMax-H3 proj_in and Krea-2 / FLUX.3 norm_q/norm_k stay fp32 under bf16 attention.
     with contextlib.suppress(Exception):
         for sub in module.modules():
             proj = getattr(sub, "to_q", None)
@@ -748,8 +746,7 @@ def _attention_dtype(module: Any) -> Any:
 
 
 def _unpinned_param_dtype(module: Any) -> Any:
-    """The first fp16 / bf16 / fp32 parameter outside the model's ``_keep_in_fp32_modules`` (diffusers' own
-    ``ModelMixin.dtype`` rule): the load dtype when every projection is quantized storage."""
+    # diffusers' ModelMixin.dtype rule: skip _keep_in_fp32_modules.
     keep = tuple(getattr(module, "_keep_in_fp32_modules", None) or ())
     with contextlib.suppress(Exception):
         for name, param in module.named_parameters():
@@ -784,7 +781,6 @@ _PROBE_DTYPES = ("torch.float16", "torch.bfloat16", "torch.float32")
 
 
 def _rocm_attention_dtype(pipe: Any) -> Any:
-    """SDPA probe dtype; None (probe's fp16 default) when only quantized storage is readable."""
     from . import diffusion_multigpu as mg
 
     modules = [m for m in (getattr(pipe, n, None) for n in mg.DENOISER_ATTRS) if m is not None]
@@ -809,8 +805,7 @@ def _rocm_sdpa_math_only(
     read_only: bool = False,
 ) -> bool:
     """diffusion_attention's per-device SDPA probe: True only when math ran and every fused kernel refused on this
-    card at this dtype (an unanswered probe is False). ``read_only`` (a candidate secondary) leaves the process-wide
-    SDPA switches alone: they also drive the primary, so a rejected card must not turn its fused kernels off."""
+    card at this dtype (an unanswered probe is False). ``read_only``: do not flip the primary's process-wide switches."""
     try:
         from types import SimpleNamespace
 
@@ -826,7 +821,6 @@ def _rocm_sdpa_math_only(
 
 
 def _rocm_fused_sdpa_kernels(ordinal: int, dtype: Any) -> Optional[tuple[str, ...]]:
-    """Fused SDPA kernels that ran on this card (read-only); None if unanswered or the guard would not act."""
     try:
         from types import SimpleNamespace
 
@@ -860,7 +854,7 @@ def _rocm_drop_math_only(
     """Drop a secondary whose native SDPA is math-only when the primary's is not: the plan's activation figures were
     priced for the primary's fused kernel, and math SDPA materialises the full score matrix on the card running the
     block. A math-only primary priced that peak already, so cards matching it are kept. A secondary sharing no fused
-    kernel with the primary and the cards kept before it is dropped too: the guard keeps only the common kernels."""
+    kernel with the cards kept so far is dropped too (the guard keeps only common kernels)."""
     if not cards:
         return cards
     dtype = _rocm_attention_dtype(pipe)
@@ -868,7 +862,6 @@ def _rocm_drop_math_only(
         return cards
     dropped = tuple(o for o in cards if _rocm_sdpa_math_only(o, dtype, read_only = True))
     mismatched: list[int] = []
-    # Switches are process-wide: a secondary that would empty the common fused set is dropped like a math-only one.
     common = _rocm_fused_sdpa_kernels(primary, dtype)
     if common:
         for o in cards:
@@ -891,7 +884,6 @@ def _rocm_drop_math_only(
         )
     kept = tuple(o for o in cards if o not in dropped)
     if kept:
-        # Secondaries were probed read-only; apply the guard now that they run blocks.
         with contextlib.suppress(Exception):
             from .diffusion_attention import guard_rocm_fused_sdpa_cards
             guard_rocm_fused_sdpa_cards([f"cuda:{int(o)}" for o in (primary, *kept)], dtype, logger)

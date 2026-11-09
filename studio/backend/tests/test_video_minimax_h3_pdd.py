@@ -744,9 +744,7 @@ def test_the_whole_pdd_denoiser_forward_compiles_fullgraph_without_recompiles():
 
 
 def test_studio_regional_fullgraph_compile_keeps_the_pdd_hook_eager():
-    """Studio compiles a DiT only through ``compile_repeated_blocks`` (or each block's forward below its offload hook):
-    the root keeps an eager ``__call__``, so the pre-hook (whose ``is_inference()`` Dynamo cannot trace) never enters a
-    fullgraph region, and the root-level banks read each step's sigmas."""
+    """Regional compile keeps the root eager, so the pre-hook (``is_inference()``, untraceable) stays out of fullgraph."""
     import torch._dynamo as dynamo
 
     model = _tiny()
