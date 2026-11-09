@@ -3099,8 +3099,7 @@ def _h3_dense_demote(
     *,
     logger: Any = None,
 ) -> bool:
-    """Return a denoiser pinned beside a streamed conditioner to the CPU-offload rotation. True when in the rotation;
-    False, nothing changed, when there is no rotation to join or no host RAM for its copy."""
+    """Move a streamed-conditioner-pinned denoiser back into the CPU-offload rotation; False = unchanged."""
     try:
         manager = getattr(pipe, "_components_manager", None)
         hooks = list(getattr(manager, "model_hooks", None) or ())
@@ -3116,7 +3115,6 @@ def _h3_dense_demote(
         from .diffusion_memory import _available_system_memory_mib
         from .diffusion_prequant import tensor_payload_bytes
 
-        # The rotation keeps an anonymous host copy; the load's mmap view of it is gone.
         need_mib = sum(tensor_payload_bytes(t) for t in denoiser.parameters()) >> 20
         available_mib = _available_system_memory_mib()
         if available_mib is None or available_mib < need_mib + max(4096, need_mib // 10):
