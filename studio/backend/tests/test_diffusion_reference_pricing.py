@@ -124,7 +124,6 @@ def test_kv_cache_size_matches_the_logged_release():
 def test_one_1024_reference_is_priced_from_its_tokens(store):
     # (768 x 2 joint sequence + 2048 MiB cache x 1.15), rounded up to 256: 4096, against the 768 denoise reserve
     assert _edit(_pipe()) == 4096 - PHASE
-    # the flat allowance on the whole-render reserve streamed every resident block out
     assert _flat_extra() == 4550
     assert _edit(_pipe()) < _flat_extra()
 

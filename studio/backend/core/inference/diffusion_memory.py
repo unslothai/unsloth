@@ -6050,8 +6050,7 @@ def install_encode_release(
 MEASURED_RESERVE_DENOISE_PHASE_INDEX = 13
 
 DERIVED_REFERENCE_PRICE_ENV = "UNSLOTH_DIFFUSION_DERIVED_REFERENCE_PRICE"
-# Families whose references are priced from their token count, not the flat 8192 MiB/MP allowance. Qwen-Image-2.1
-# edit 1024^2 (A100 / L4, int8): learned edit peak 3271-3447 MiB, 2061 of it the condition K/V cache.
+# References priced by token count, not the flat 8192 MiB/MP (Qwen-Image-2.1 edit 1024^2: 3271-3447 MiB, 2061 K/V cache).
 _DERIVED_REFERENCE_FAMILIES = frozenset({"qwen-image-2.1"})
 
 
@@ -6109,9 +6108,8 @@ def derived_reference_need_mib(
     compute_bytes: int = 2,
     quadratic_attention: bool = False,
 ) -> Optional[int]:
-    """Denoise-phase MiB of a reference request, margin included: ``phase_mib`` scaled by the joint sequence over the
-    1024^2 bucket plus the condition K/V cache, both doubled when CFG may run. None (keep the flat allowance) for an
-    unmeasured family, the kill switch, quadratic attention or an unreadable denoiser."""
+    """Denoise MiB of a reference request: ``phase_mib`` scaled by joint sequence / 1024^2 plus the condition K/V cache,
+    doubled under CFG. None keeps the flat allowance (unmeasured family, kill switch, quadratic attention, unreadable)."""
     if not derived_reference_pricing_enabled() or quadratic_attention:
         return None
     name = (str(family or "").split() or [""])[0].lower()
@@ -6161,8 +6159,7 @@ def measured_request_extra_mib(
     only that phase's reserve while the steps run: a request it was sized for (text-to-image, at most the 1024x1024
     bucket, no condition images or tier peak, within the whole-render reserve) releases nothing, its encode and decode
     priced by their own hooks; any other request is priced against the denoise reserve, which first streams the blocks
-    the phase sizing added. ``reference_pixels`` (unweighted): an otherwise sized reference request is priced by
-    ``derived_reference_need_mib`` (or its workflow's larger learned peak) against the denoise reserve."""
+    the phase sizing added. ``reference_pixels`` (unweighted): priced by ``derived_reference_need_mib`` when set."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
