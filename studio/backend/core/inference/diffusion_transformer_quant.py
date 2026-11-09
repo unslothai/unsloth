@@ -1311,8 +1311,8 @@ def native_int8_act(target: Any) -> bool:
     # MPS has no ``_int_mm``: W8A8 would only add the activation quant.
     if _mps_bf16(target):
         return False
-    # storage only (int8_storage_scheme): never an int8 GEMM
-    if int8_storage_host(target):
+    # storage only (int8_storage_scheme): never an int8 GEMM, unless the host also runs a native W8A8 path
+    if int8_storage_host(target) and not (native_quant_host(target) or native_offload_host(target)):
         return False
     if native_quant_host(target):
         return int8_act_requested()
