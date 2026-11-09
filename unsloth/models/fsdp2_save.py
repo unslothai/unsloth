@@ -99,10 +99,25 @@ def _root_mesh(mesh):
     return _mesh_resources.get_root_mesh(mesh)
 
 
+def _same_mesh(a, b):
+    """Same device type, dim names and rank layout. DTensor ops may hand back an equal mesh from an earlier
+    init_device_mesh of the same shape (torch caches specs by mesh equality), so identity is not enough."""
+    if a is b:
+        return True
+    try:
+        return (
+            a.device_type == b.device_type
+            and tuple(a.mesh_dim_names or ()) == tuple(b.mesh_dim_names or ())
+            and torch.equal(a.mesh, b.mesh)
+        )
+    except Exception:
+        return False
+
+
 def _composed_writer_rank(meshes):
     try:
         root = _root_mesh(meshes[0])
-        if any(_root_mesh(m) is not root for m in meshes[1:]):
+        if any(not _same_mesh(_root_mesh(m), root) for m in meshes[1:]):
             return None
         axes = set()
         for m in meshes:
