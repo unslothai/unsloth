@@ -65,7 +65,8 @@ Object.defineProperty(globalThis, "navigator", {
   configurable: true,
 });
 
-const { discardClipWhenModelChanges, listenForAudioClip } = loadWithStubs<
+const { discardClipOnRelease, discardClipWhenModelChanges, listenForAudioClip } =
+  loadWithStubs<
   typeof import("../src/features/chat/adapters/studio-audio-clip-adapter.ts")
 >(
   new URL("../src/features/chat/adapters/studio-audio-clip-adapter.ts", import.meta.url),
@@ -344,4 +345,34 @@ test("the same room is enough at 16 kHz", async () => {
   await flush();
   assert.equal(session.status.type, "running");
   session.cancel();
+});
+
+test("switching chats mid-recording discards the clip instead of attaching it elsewhere", async () => {
+  toasts.length = 0;
+  const clips: File[] = [];
+  const onRelease = new Set<() => void>();
+  const session = listenForAudioClip((file) => clips.push(file));
+  discardClipOnRelease(session, onRelease);
+  await flush();
+  assert.equal(session.status.type, "running");
+  for (const listener of [...onRelease]) listener();
+  await flush();
+  assert.deepEqual(session.status, { type: "ended", reason: "cancelled" });
+  assert.equal(lastRecorder?.discarded, true);
+  assert.equal(clips.length, 0);
+  assert.deepEqual(toasts, ["Recording discarded because the chat changed."]);
+  assert.equal(onRelease.size, 0);
+});
+
+test("a finished recording is not discarded by a later chat switch", async () => {
+  toasts.length = 0;
+  const clips: File[] = [];
+  const onRelease = new Set<() => void>();
+  const session = listenForAudioClip((file) => clips.push(file));
+  discardClipOnRelease(session, onRelease);
+  await flush();
+  await session.stop();
+  assert.equal(clips.length, 1);
+  assert.equal(onRelease.size, 0);
+  assert.deepEqual(toasts, []);
 });

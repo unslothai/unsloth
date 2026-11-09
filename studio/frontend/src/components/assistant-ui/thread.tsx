@@ -5356,7 +5356,8 @@ const Composer: FC<{
               attachment.file ? [attachment.file] : [],
             ),
       }),
-    [aui],
+    // Per chat: the old chat's unregister discards its unfinished clip.
+    [aui, composerIdentity],
   );
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;

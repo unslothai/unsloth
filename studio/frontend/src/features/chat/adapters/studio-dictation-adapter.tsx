@@ -25,6 +25,7 @@ import {
 } from "./studio-model-dictation-adapter";
 import { PcmRecorder } from "./pcm-recorder";
 import {
+  discardClipOnRelease,
   discardClipWhenModelChanges,
   listenForAudioClip,
 } from "./studio-audio-clip-adapter";
@@ -47,13 +48,16 @@ type AudioClipTarget = {
   add: (file: File) => Promise<unknown> | unknown;
   attached: () => readonly { name: string; type: string; size: number }[];
 };
+type RegisteredClipTarget = AudioClipTarget & { onRelease: Set<() => void> };
 // Compare registers none, so it keeps transcribing.
-let audioClipTarget: AudioClipTarget | null = null;
+let audioClipTarget: RegisteredClipTarget | null = null;
 
 export function setMicAudioClipTarget(target: AudioClipTarget): () => void {
-  audioClipTarget = target;
+  const entry: RegisteredClipTarget = { ...target, onRelease: new Set() };
+  audioClipTarget = entry;
   return () => {
-    if (audioClipTarget === target) audioClipTarget = null;
+    if (audioClipTarget === entry) audioClipTarget = null;
+    for (const listener of [...entry.onRelease]) listener();
   };
 }
 
@@ -138,6 +142,7 @@ export class StudioDictationAdapter implements DictationAdapter {
       );
       const session = listenForAudioClip(clipTarget.add, room);
       discardClipWhenModelChanges(session, useChatRuntimeStore);
+      discardClipOnRelease(session, clipTarget.onRelease);
       return session;
     }
     const { dictationEngine } = useVoiceSettingsStore.getState();

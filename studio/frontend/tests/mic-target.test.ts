@@ -90,7 +90,10 @@ test("Compare and the adapter route only through the gate", () => {
   assert.match(
     source,
     /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{[\s\S]*?listenForAudioClip\(clipTarget\.add, room\);\s*discardClipWhenModelChanges\(session, useChatRuntimeStore\)/,
-  );
+  );  assert.match(source, /discardClipOnRelease\(session, clipTarget\.onRelease\)/);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const register = thread.slice(thread.indexOf("setMicAudioClipTarget({"));
+  assert.match(register.slice(0, 700), /\[aui, composerIdentity\]/);
 });
 
 test("a recorded clip is a WAV named for the attachment chip", () => {
