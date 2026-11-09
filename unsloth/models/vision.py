@@ -1751,6 +1751,7 @@ class _NonFlexGenerate:
         self,
         decode,
         static = False,
+        batch = None,
     ):
         state = self.model.__dict__
         if state.get("_unsloth_non_flex_generate_pinned", False):
@@ -1760,7 +1761,9 @@ class _NonFlexGenerate:
             # Flex decode needs fixed mask / KV shapes (a dynamic cache decodes on the non-flex path instead), and
             # pays off only when the step is replayed from a CUDA graph (eager flex decode is slower than SDPA).
             if value == _flex_decode.ATTN_KEY and not (
-                static and (_flex_decode.forced() or _decode_graphs.call_plan() == "graph")
+                static
+                and _flex_decode.batch_ok(batch)
+                and (_flex_decode.forced() or _decode_graphs.call_plan() == "graph")
             ):
                 value = _NON_FLEX_DECODE if prefill == "flex_attention" else prefill
             if _config_get(c, "_attn_implementation", None) != value:
@@ -1778,11 +1781,13 @@ class _NonFlexGenerate:
                 decode = scope.steps > 0
             scope.steps += 1
             static = _static_cache(kwargs.get("past_key_values"))
-            scope._set(decode, static)
+            ids = args[0] if args else kwargs.get("input_ids")
+            batch = ids.shape[0] if isinstance(ids, torch.Tensor) and ids.dim() >= 1 else None
+            scope._set(decode, static, batch)
             model_inputs = prepare(*args, **kwargs)
             q_len = _step_query_length(model_inputs)
             if q_len is not None and (q_len == 1) != decode:
-                scope._set(q_len == 1, static)
+                scope._set(q_len == 1, static, batch)
                 model_inputs = prepare(*args, **kwargs)
             return model_inputs
 

@@ -65,10 +65,11 @@ def _steps(
     cache,
     n_new = 3,
     prompt = 5,
+    batch = 1,
 ):
     for step in range(n_new):
         n = prompt + step
-        ids = torch.zeros(1, n, dtype = torch.long)
+        ids = torch.zeros(batch, n, dtype = torch.long)
         cp = torch.arange(n) if step == 0 else torch.tensor([n - 1])
         model.prepare_inputs_for_generation(ids, cache_position = cp, past_key_values = cache)
 
@@ -107,6 +108,30 @@ def test_auto_routes_only_graph_planned_calls(flex_on, monkeypatch):
     model = _model("gemma4_text", "sdpa")
     with _NonFlexGenerate(model):
         _steps(model, _Static())
+    assert model.seen == ["sdpa", FD.ATTN_KEY, FD.ATTN_KEY]
+
+
+def test_auto_caps_the_batch(flex_on, monkeypatch):
+    # auto: batches over UNSLOTH_FLEX_DECODE_MAX_BATCH (default 4) keep SDPA; the env var moves the cap, =1 lifts it.
+    for batch, env, expected in (
+        (4, None, FD.ATTN_KEY),
+        (8, None, "sdpa"),
+        (8, "8", FD.ATTN_KEY),
+        (8, "0", FD.ATTN_KEY),
+    ):
+        if env is None:
+            monkeypatch.delenv(FD.MAX_BATCH_ENV, raising = False)
+        else:
+            monkeypatch.setenv(FD.MAX_BATCH_ENV, env)
+        model = _model("gemma4_text", "sdpa")
+        with _NonFlexGenerate(model):
+            _steps(model, _Static(), batch = batch)
+        assert model.seen == ["sdpa", expected, expected], (batch, env)
+    monkeypatch.delenv(FD.MAX_BATCH_ENV, raising = False)
+    monkeypatch.setenv(FD.ENV, "1")
+    model = _model("gemma4_text", "sdpa")
+    with _NonFlexGenerate(model):
+        _steps(model, _Static(), batch = 8)
     assert model.seen == ["sdpa", FD.ATTN_KEY, FD.ATTN_KEY]
 
 

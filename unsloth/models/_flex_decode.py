@@ -166,8 +166,23 @@ def _mode():
 
 
 def forced():
-    """UNSLOTH_FLEX_DECODE=1: flex decode whether or not the call decodes through CUDA graphs."""
+    """UNSLOTH_FLEX_DECODE=1: flex decode whether or not the call decodes through CUDA graphs, any batch."""
     return _mode() in ("1", "true", "on", "yes", "force")
+
+
+MAX_BATCH_ENV = "UNSLOTH_FLEX_DECODE_MAX_BATCH"
+
+
+def batch_ok(batch):
+    """auto: batches up to UNSLOTH_FLEX_DECODE_MAX_BATCH (default 4). Graphed on an A100, gemma-4-E2B decodes 1-22%
+    faster on flex at batch 1-4 and 2-4% slower at batch 8; gemma-4-26B-A4B 16-25% faster at batch 1-4."""
+    if forced() or batch is None:
+        return True
+    try:
+        limit = int(os.environ.get(MAX_BATCH_ENV, "4"))
+    except ValueError:
+        limit = 4
+    return limit <= 0 or int(batch) <= limit
 
 
 def wanted(device):
