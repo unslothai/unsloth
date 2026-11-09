@@ -2035,8 +2035,14 @@ class _MarkdownRenderer(HTMLParser):
         text = _COLLAPSIBLE_RUN.sub(" ", data)
         # Count with U+00A0 collapsed too: raw spaces in a link inflated it past the floor.
         self._count_header_text(_WHITESPACE_RUN.sub(" ", text) if "\xa0" in text else text)
-        # Suppress whitespace-only nodes between table elements (source indentation, a lone &nbsp;).
-        if self._in_table and not self._in_cell and not text.strip():
+        # Suppress whitespace-only nodes between table elements (source indentation, a lone &nbsp;),
+        # but keep a caption's &nbsp;, which separates Javadoc's method-summary tabs.
+        if (
+            self._in_table
+            and not self._in_cell
+            and not text.strip()
+            and not ("\xa0" in text and self._open_at.get("caption"))
+        ):
             return
         # Source indentation between <li> and its first block must not end the marker line.
         if self._li_marker_pending and not text.strip():
