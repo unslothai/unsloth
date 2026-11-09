@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether a weight file already on this machine is byte-identical to the Hub's copy, so a load can reuse a cached
-``.pt`` / ``.bin`` instead of downloading the ``.safetensors`` twin.
+"""Verify a cached ``.pt`` / ``.bin`` is byte-identical to the Hub's copy (LFS sha256) so a load can reuse it.
 
-The Hub records the sha256 of every LFS file (``HfApi.get_paths_info`` -> ``RepoFile.lfs.sha256``); the local file is
-hashed in 8 MiB chunks and the digest is remembered per (real path, size, mtime) in memory and in a small JSON file
-under Studio's cache root, so a file is hashed once, not on every load. Every unanswerable case (offline, no LFS
-record, a network or cache error) is "not verified": the caller then keeps safetensors first. Never raises."""
+Digests are memoised per (real path, size, mtime) in memory and on disk. Any unanswerable case (offline, no LFS
+record, error) is "not verified", so the caller keeps safetensors first. Never raises."""
 
 from __future__ import annotations
 
@@ -21,8 +18,7 @@ from typing import Iterable, Optional
 
 ENV_DISABLE = "UNSLOTH_REUSE_CACHED_PICKLE_WEIGHTS"
 _CHUNK = 8 * 1024 * 1024
-# An unanswered Hub lookup is retried after this many seconds; an answer for a moving revision (``main``, a branch)
-# after _MUTABLE_TTL_S; an answer for a commit id is kept for the process.
+# Hub misses retry after _MISS_TTL_S, branch answers after _MUTABLE_TTL_S; commit-id answers never expire.
 _MISS_TTL_S = 60.0
 _MUTABLE_TTL_S = 300.0
 _FILE_NAME = "weight_sha256.json"

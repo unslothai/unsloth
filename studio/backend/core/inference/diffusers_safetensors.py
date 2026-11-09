@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""When a diffusers load may pass ``use_safetensors = True``, and which repo files a diffusers pipeline download skips.
+"""When a diffusers load may pass ``use_safetensors``, and which repo files a pipeline download skips.
 
-``use_safetensors = True`` turns diffusers' (and transformers') silent pickle fallback into an error, so it is passed
-only when the folder the load reads is known to ship ``.safetensors`` weights for every weight-bearing component. A
-folder that cannot be inspected (a Hub id nothing is cached for) keeps the library default, which is safetensors
-first and a ``.bin`` only for a component that has no safetensors at all.
-
-``use_safetensors = False`` is passed only to reuse ``.bin`` weights already in the Hub cache whose sha256 matches the
-Hub's record, when the safetensors copy is not cached: the load then reads what is on disk instead of downloading the
-safetensors twin. Offline nothing can be downloaded or hashed against the Hub, so a snapshot cached only as ``.bin``
-loads that ``.bin`` (the library default would refuse the load). diffusers and transformers read a ``.bin`` with ``torch.load(weights_only = True)``. No torch, never
-raises."""
+``True`` turns the silent pickle fallback into an error, so it is passed only when every weight-bearing component of
+the folder ships ``.safetensors``; an uninspectable folder keeps the library default. ``False`` is passed only to
+reuse cached ``.bin`` weights whose sha256 matches the Hub (or offline, where the default would refuse the load).
+No torch, never raises."""
 
 from __future__ import annotations
 
@@ -27,12 +21,10 @@ _PICKLE_WEIGHT_SUFFIXES = (".pt", ".pth", ".ckpt", ".bin", ".pkl", ".pickle")
 
 
 def is_pickle_weight(name: Optional[Any]) -> bool:
-    """True when ``name`` (a file name or path) ends in a pickle container suffix."""
     return str(name or "").strip().lower().endswith(_PICKLE_WEIGHT_SUFFIXES)
 
 
 _MANIFESTS = ("model_index.json", "modular_model_index.json")
-# Files a diffusers / transformers model load could read as weights.
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle")
 # Pickle containers no diffusers / transformers component load reads: always skipped in a pipeline download.
 _NEVER_READ_PICKLES = (".pt", ".pth", ".ckpt", ".pkl", ".pickle")
@@ -341,11 +333,8 @@ def component_safetensors_kwargs(
 
 
 def pipeline_pickle_files(filenames: Iterable[str]) -> list:
-    """Repo files a diffusers pipeline download skips (exact names, for a repo with a pipeline manifest at its root):
-    every ``.pt`` / ``.pth`` / ``.ckpt`` / ``.pkl`` inside a component folder (no component loader reads them) or at the
-    root beside its same-stem ``.safetensors`` twin, and every ``.bin`` in a folder that also holds the component's own
-    non-variant ``.safetensors`` weight. A root pickle with no safetensors twin (a pre-quantized checkpoint only hosted
-    as ``.pt``) and a ``.bin`` in a folder without safetensors stay: they are the only copy. Empty for any other repo."""
+    """Pipeline repo files to skip: pickles in a component folder or beside a same-stem root ``.safetensors``, and
+    ``.bin`` beside the component's own safetensors. A pickle with no twin is the only copy and stays."""
     names = [n for n in filenames if isinstance(n, str)]
     if not any(n in _MANIFESTS for n in names):
         return []
