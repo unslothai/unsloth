@@ -527,7 +527,8 @@ from .diffusion_transformer_quant import (
     explain_unusable_scheme,
     family_denies_scheme,
     fp16_card_int8_host,
-    fp16_card_int8_scheme,
+    fp16_card_native_host,
+    fp16_card_native_scheme,
     mark_source_precision,
     nvfp4_gated_base,
     native_int8_act,
@@ -4505,8 +4506,11 @@ class DiffusionBackend:
             ):
                 if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
-            elif model_kind == "pipeline" and pinned == TQ_INT8 and fp16_card_int8_host(target):
-                if fp16_card_int8_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
+            elif model_kind == "pipeline" and fp16_card_native_host(target, pinned):
+                if (
+                    fp16_card_native_scheme(target, pinned, family = getattr(fam, "name", None))
+                    is None
+                ):
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
             elif (
                 model_kind == "pipeline"
@@ -8647,7 +8651,7 @@ class DiffusionBackend:
                         TQ_INT8 if rdna_auto_w8a8 is not None else transformer_quant_pinned,
                         family = getattr(fam, "name", None),
                     )
-                    or fp16_card_int8_scheme(
+                    or fp16_card_native_scheme(
                         target, transformer_quant_pinned, family = getattr(fam, "name", None)
                     )
                     if kind == "pipeline"

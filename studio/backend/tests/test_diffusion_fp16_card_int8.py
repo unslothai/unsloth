@@ -211,7 +211,7 @@ def test_image_gate_admits_int8_on_turing(nvidia, monkeypatch, family, dtype, me
     _image_gate(monkeypatch, _image_family(family), "int8", dtype, memory_mode = memory_mode)
 
 
-@pytest.mark.parametrize("pinned", ["fp8", "mxfp8"])
+@pytest.mark.parametrize("pinned", ["mxfp8"])
 def test_image_gate_still_refuses_other_schemes_on_turing(nvidia, monkeypatch, pinned):
     _cap(monkeypatch, (7, 5))
     with pytest.raises(RuntimeError, match = "transformer_quant"):
