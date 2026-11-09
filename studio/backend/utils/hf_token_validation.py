@@ -15,7 +15,7 @@ from typing import Literal
 from utils.account_context import current_account_id
 from utils.hub_settings import MODELSCOPE, active_source, hugging_face_endpoint
 
-from huggingface_hub import HfApi
+# huggingface_hub.utils is already loaded at boot; HfApi (huggingface_hub.hf_api) is imported on first use.
 from huggingface_hub.utils import build_hf_headers, get_session
 
 
@@ -153,7 +153,11 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
         return TokenValidationResult(status = "invalid")
     account_id = current_account_id()
     # Per endpoint: a token one Hub rejects may be another's. The ModelScope adapter has no whoami.
-    endpoint = hugging_face_endpoint() if active_source() == MODELSCOPE else HfApi().endpoint
+    if active_source() == MODELSCOPE:
+        endpoint = hugging_face_endpoint()
+    else:
+        from huggingface_hub import HfApi
+        endpoint = HfApi().endpoint
     token_fingerprint = (account_id, _fingerprint(normalized), endpoint.rstrip("/"))
     account_rate_key = (account_id, rate_key)
     owner_event: threading.Event | None = None
