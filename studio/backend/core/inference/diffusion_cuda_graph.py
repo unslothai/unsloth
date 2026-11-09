@@ -2669,7 +2669,7 @@ def fp8_rowwise_capture_refusal(modules: Any, device: Any = None) -> Optional[st
     caps: dict = {}
 
     def _weight_cap(w: Any) -> Any:
-        # A layer split puts blocks on their own cards: an sm_89 secondary hangs the same way under another primary.
+        # Layer split: an sm_89 secondary card hangs too.
         if cap in FP8_ROWWISE_STREAMK_CAPS:
             return cap
         d = getattr(w, "device", None)

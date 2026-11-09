@@ -921,7 +921,7 @@ def test_fp8_streamk_check_reads_the_onload_card(stub_torch, monkeypatch):
 
 
 def test_fp8_streamk_check_reads_each_split_card(stub_torch, monkeypatch):
-    """A layer split keeps each block's weights on its own card: an sm_89 secondary under an sm_90 primary hangs too."""
+    """An sm_89 split card under an sm_90 primary is refused too."""
     _hazard_torch(stub_torch, monkeypatch)
     caps = {"cuda:0": (9, 0), "cuda:1": (8, 9), "cuda:2": (8, 6)}
     stub_torch.cuda.get_device_capability = lambda device = None: caps[str(device)]
@@ -940,7 +940,6 @@ def test_fp8_streamk_check_reads_each_split_card(stub_torch, monkeypatch):
         transformer = _QuantDiT(on(0, _fp8_weight()), on(2, _fp8_weight()))
     )
     assert _eligible(monkeypatch, target = target, pipe = ampere) == (True, "eligible")
-    # only row-wise fp8 weights on the sm_89 card matter
     plain = Int8Tensor()
     plain.device = _Dev("cuda:1")
     mixed = types.SimpleNamespace(transformer = _QuantDiT(on(0, _fp8_weight()), plain))
