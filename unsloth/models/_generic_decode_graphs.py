@@ -301,6 +301,22 @@ class _SegmentRecorder:
             self.segments.parts.append(("copy", dst, value))
             self.pending = card
             return dst
+        if (
+            _BlockMask is not None
+            and isinstance(value, _BlockMask)
+            and "_unsloth_graph_closure" in value.__dict__
+        ):
+            # A graph BlockMask (_build): its fields and the tensors its mask_mod reads cross like tensors
+            # (eager hand-offs refilled every replay); BlockMask.to would leave mask_mod's tensors on this
+            # card, and a cross-card copy inside the capture is refused.
+            key = (id(value), card)
+            hit = self.moved.get(key)
+            if hit is None:
+                hit = self.moved[key] = (
+                    value,
+                    _block_mask_moved(value, lambda t: self._move(t, card, target, skip_keys)),
+                )
+            return hit[1]
         if hasattr(value, "to"):
             # Not a tensor but movable (BatchEncoding, ...): accelerate's own move, as eager. A real
             # cross-card copy in it fails the capture, which refuses the key.
@@ -1362,10 +1378,42 @@ def _build(value, buffers, cache):
         tensors, rebuild = value.__dict__["_unsloth_graph_closure"]
         static = tuple(next(buffers) for _ in tensors)
         built.mask_mod = rebuild(static)
-        built.__dict__.pop("_unsloth_on_device", None)
         built._unsloth_graph_closure = (static, rebuild)
+        # The builder's per-device rebuild reads its own tensors, not these static copies: replaced by one
+        # over the static copies, so an accelerate hook moving the mask to another card of a split model
+        # (BlockMask.to leaves mask_mod's tensors behind) hands that card's layers a mask_mod on their card.
+        built._unsloth_on_device = functools.partial(_block_mask_on_device, built)
         return built
     return value
+
+
+def _block_mask_moved(value, move):
+    """A graph BlockMask with every tensor field and closure tensor passed through `move` (tensor -> tensor
+    on the target card) and mask_mod rebuilt over the moved closure tensors; `value` itself when nothing
+    moved (accelerate also "moves" the mask to the card it is on: the root hook, the first card's layers),
+    so it keeps the per-device move for the next card's hook."""
+    fields = [
+        (name, field, move(field))
+        for name, field in _block_mask_fields(value)
+        if isinstance(field, torch.Tensor)
+    ]
+    tensors, rebuild = value.__dict__["_unsloth_graph_closure"]
+    moved_tensors = tuple(move(t) for t in tensors)
+    if all(a is b for _, a, b in fields) and all(a is b for a, b in zip(tensors, moved_tensors)):
+        return value
+    moved = copy.copy(value)
+    for name, _, field in fields:
+        setattr(moved, name, field)
+    moved.mask_mod = rebuild(moved_tensors)
+    moved._unsloth_graph_closure = (moved_tensors, rebuild)
+    moved._unsloth_on_device = functools.partial(_block_mask_on_device, moved)
+    return moved
+
+
+def _block_mask_on_device(value, device):
+    """Eager (warm-up) move of a graph BlockMask: fresh copies of the current static values, never cached."""
+    device = torch.device(device)
+    return _block_mask_moved(value, lambda t: t.to(device))
 
 
 def _map_outputs(value, fn):
