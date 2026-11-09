@@ -84,6 +84,8 @@ studio = [
     "backend/assets/docs_ui/*",
     # Gate verdicts the auto ladder reads: if missing from the wheel, nvfp4 silently drops out.
     "backend/core/inference/nvfp4_gate_record.json",
+    # Measured ROCm GEMM solution tables; if missing from the wheel, gfx1151 keeps the slower default pick.
+    "backend/core/inference/rocm_gemm_tables/*.csv",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",

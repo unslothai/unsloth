@@ -253,3 +253,37 @@ def test_table_with_a_missing_validator_does_not_match(fake, tmp_path):
     _table(tmp_path, (("PT_VERSION", "2.11.0"),))
     assert rt.shipped_tables("gfx1151", dict(fake.get_validators())) == []
     assert rt.shipped_tables("gfx1100", dict(fake.get_validators())) == []
+
+
+def test_shipped_tables_are_torch_result_files_with_full_validators():
+    from pathlib import Path
+
+    tables = sorted(Path(rt.__file__).resolve().parent.joinpath("rocm_gemm_tables").glob("*.csv"))
+    assert tables
+    for path in tables:
+        text = path.read_text(encoding = "utf-8")
+        validators = rt._validators(text)
+        assert set(validators) >= {
+            "PT_VERSION",
+            "HIP_VERSION",
+            "HIPBLASLT_VERSION",
+            "ROCBLAS_VERSION",
+            "GCN_ARCH_NAME",
+        }
+        assert path.name.startswith(validators["GCN_ARCH_NAME"] + "_")
+        assert validators["GCN_ARCH_NAME"] in rt.TUNED_ARCHES
+        rows = [
+            line.split(",")
+            for line in text.splitlines()
+            if line and not line.startswith("Validator,")
+        ]
+        assert rows and all(len(r) == 4 and r[0].startswith("GemmTunableOp_") for r in rows)
+        assert rt.shipped_tables(validators["GCN_ARCH_NAME"], validators) == [path]
+
+
+def test_shipped_tables_are_package_data():
+    from pathlib import Path
+
+    root = Path(rt.__file__).resolve().parents[4]
+    text = (root / "pyproject.toml").read_text(encoding = "utf-8")
+    assert '"backend/core/inference/rocm_gemm_tables/*.csv"' in text
