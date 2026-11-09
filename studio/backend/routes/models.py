@@ -1936,7 +1936,7 @@ def browse_folders(
 
     managed = account_access.managed_account()
     if managed:
-        path = account_access.private_directory(path or str(workspace_root()), "")
+        path = account_access.private_directory(path or str(workspace_root().resolve()), "")
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
     from utils.paths import external_media
     from storage.studio_db import (
