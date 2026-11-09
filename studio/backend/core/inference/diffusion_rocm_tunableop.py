@@ -124,9 +124,9 @@ def results_file(arch: str) -> Path:
 
     from .diffusion_compile_cache import cache_root
 
-    tag = "_".join(
-        re.sub(r"[^A-Za-z0-9.]+", "-", str(x)) for x in (arch, torch.__version__, torch.version.hip)
-    )
+    # The HIP build string only labels the file (an f-string, as the ROCm gate guard expects); None on CUDA.
+    hip = f"{getattr(torch.version, 'hip', None)}"
+    tag = "_".join(re.sub(r"[^A-Za-z0-9.]+", "-", str(x)) for x in (arch, torch.__version__, hip))
     return cache_root() / "tunableop" / f"{tag}.csv"
 
 
