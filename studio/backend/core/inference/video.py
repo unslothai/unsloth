@@ -9046,8 +9046,7 @@ class VideoBackend:
             speed_mode = speed_mode,
         )
         if fam.name == "ltx-2.5":
-            # LTX-2.5's automatic int8 settles here, once: the hosted file (confirmed, and fetched when the pre-fetch
-            # ran) or "none" (bf16), so the memory plan and the encoder worker below read one decision.
+            # Settle auto once so the memory plan and the encoder worker read one decision.
             from .video_ltx25 import ltx25_resolve_te_request
             text_encoder_quant = ltx25_resolve_te_request(
                 text_encoder_quant,

@@ -243,7 +243,6 @@ def test_budget_prices_the_int8_encoder(monkeypatch):
     scale = te_prequant_budget_scale(fam, te_quant_mode = "int8", **kw)
     assert scale == pytest.approx(v25.LTX25_TE_INT8_GB / bf16_gb)
     assert scale < 0.6
-    # The hosted file (13,028,751,080 bytes) fits the int8 price.
     assert v25.LTX25_TE_INT8_GB * 1e9 >= 13_028_751_080
     assert te_prequant_budget_scale(fam, te_quant_mode = "none", **kw) == 1.0
     # Auto prices the hosted file only when it is confirmed, else the bf16 encoder it then loads.

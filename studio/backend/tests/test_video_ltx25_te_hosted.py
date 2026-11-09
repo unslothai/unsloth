@@ -114,7 +114,6 @@ def test_resolve_settles_the_automatic_pick_per_load(monkeypatch):
     # A pre-fetch that could not get the file keeps bf16, never the at-load quantization.
     failed = v25.ltx25_resolve_te_request(None, BASE, {"text_encoder": "EntryNotFoundError: 404"})
     assert failed == "none" and v25.ltx25_te_quant_scheme(failed) is None
-    # Other components' failures do not matter.
     assert v25.ltx25_resolve_te_request(None, BASE, {"text_encoder_2": "x"}) == "int8"
     _confirmed(monkeypatch, False)
     assert v25.ltx25_resolve_te_request(None, BASE) == "none"
@@ -122,7 +121,6 @@ def test_resolve_settles_the_automatic_pick_per_load(monkeypatch):
     # Explicit requests are untouched: int8 keeps its hosted-else-at-load path, off / none keep bf16.
     for mode in ("int8", "none", "off", "fp8"):
         assert v25.ltx25_resolve_te_request(mode, BASE, {"text_encoder": "x"}) == mode
-    # Kill switch and the env opt-in both behave as before the hosted auto.
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
     assert v25.ltx25_resolve_te_request(None, BASE) is None
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
