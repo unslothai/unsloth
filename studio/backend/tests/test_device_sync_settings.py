@@ -62,6 +62,13 @@ def test_client_preferences_start_unsaved_and_merge_by_section(client):
     assert isinstance(body["updatedAt"], int)
 
 
+def test_download_prompts_follow_the_account(client):
+    prompts = {"askBeforeDownloading": False, "askBeforeProgramDownloads": False}
+    client.put("/api/settings/client-preferences", json = {"browser": prompts})
+    body = client.get("/api/settings/client-preferences").json()
+    assert {k: body["browser"][k] for k in prompts} == prompts
+
+
 def test_client_preferences_reject_out_of_range_values(client):
     assert (
         client.put("/api/settings/client-preferences", json = {"interfaceScale": 400}).status_code
