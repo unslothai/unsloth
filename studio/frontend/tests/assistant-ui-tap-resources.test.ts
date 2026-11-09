@@ -43,9 +43,10 @@ const harness = (impl: typeof tapResources) => {
     ),
   );
   const root = createResourceRoot();
-  const sub = root.render(Parent({ items: [] }) as never) as { getValue: () => unknown; subscribe: (f: () => void) => () => void };
+  type Sub = { getValue: () => unknown; subscribe: (f: () => void) => () => void };
+  root.render(Parent({ items: [] }) as never);
   const render = (items: { id: string; label: string }[]) =>
-    (flushResourcesSync(() => root.render(Parent({ items }) as never)) as typeof sub).getValue() as string[];
+    (flushResourcesSync(() => root.render(Parent({ items }) as never)) as Sub).getValue() as string[];
   return { probe, render, root };
 };
 
@@ -115,8 +116,13 @@ test("props compare key by key and nested resource elements by type, key and pro
 
 test("the app and assistant-ui load tap through the stand-in, and only tapResources and withContextProvider differ", () => {
   const vite = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
-  assert.match(vite, /find: \/\^@assistant-ui\\\/tap\$\/,\s*replacement: path\.resolve\(__dirname, "\.\/src\/lib\/assistant-ui-tap\.ts"\)/);
-  assert.match(vite, /find: \/\^@assistant-ui\\\/tap\\\/react\$\/,\s*replacement: path\.resolve\(__dirname, "\.\/src\/lib\/assistant-ui-tap-react\.ts"\)/);
+  assert.match(vite, /\["@assistant-ui\/tap", path\.resolve\(__dirname, "\.\/src\/lib\/assistant-ui-tap\.ts"\)\]/);
+  assert.match(vite, /\["@assistant-ui\/tap\/react", path\.resolve\(__dirname, "\.\/src\/lib\/assistant-ui-tap-react\.ts"\)\]/);
+  // The build resolves the stand-in with the plugin, the dev server's optimizer with the same plugin; a
+  // resolve alias would send the app's own import to tap's raw files on the dev server, a second copy.
+  assert.match(vite, /plugins: \[[^\]]*\{ \.\.\.assistantUiTapStandIn\(\), apply: "build", enforce: "pre" \}/);
+  assert.match(vite, /rolldownOptions: \{ plugins: \[assistantUiTapStandIn\(\)\] \}/);
+  assert.doesNotMatch(vite, /find: \/\^@assistant-ui\\\/tap/);
   const shim = readFileSync(new URL("../src/lib/assistant-ui-tap.ts", import.meta.url), "utf8");
   assert.match(shim, /export \* from "\.\.\/\.\.\/node_modules\/@assistant-ui\/tap\/dist\/index\.js";\nexport \{ tapResources, withContextProvider \} from "\.\/assistant-ui-tap-resources";/);
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
