@@ -708,7 +708,7 @@ def restore_kv_resume(backend, manifest) -> None:
             identity = getattr(backend, "_gguf_file_identity", None)
             same_gguf = callable(identity) and identity(current) == manifest.get("gguf_stat")
         if same_gguf:
-            # Launch overrides can invalidate KV numerics; doubles without slot_resume_fits compare strictly.
+            # Doubles without slot_resume_fits compare the launch strictly.
             fits = getattr(backend, "slot_resume_fits", None)
             if callable(fits):
                 same_gguf = bool(fits(manifest))
