@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF dequant bit-identical to llama.cpp's ggml-quants.c ``dequantize_row_*`` for Q4_0, Q4_1, Q5_0, Q5_1, Q8_0,
-Q2_K, Q3_K, Q4_K, Q5_K, Q6_K and IQ4_XS (diffusers' compute in fp16), rounded once to the compute dtype. ggml's
-formula and order in fp32; every product is exact in fp32 (11-bit mantissa x at most 13 bits of scale and code), so
-only the final ``+ m`` / ``- m`` rounds and FMA cannot change a bit. UNSLOTH_DIFFUSION_GGUF_EXACT=0 keeps diffusers'."""
+"""GGUF dequant bit-identical to llama.cpp's ``dequantize_row_*`` (diffusers' rounds in fp16), rounded once to the
+compute dtype. Products are exact in fp32, so only ``+ m`` / ``- m`` rounds and FMA cannot change a bit.
+UNSLOTH_DIFFUSION_GGUF_EXACT=0 keeps diffusers'."""
 
 from __future__ import annotations
 
@@ -22,16 +21,13 @@ def exact_enabled() -> bool:
 
 
 def _scale(blocks: Any, word: int) -> Any:
-    """fp16 field at byte ``2 * word`` as fp32 ``(n, 1)``. Only the 2-byte slice is reinterpreted: inductor copies a
-    dtype view of a different width."""
+    """fp16 at byte ``2 * word`` as fp32 ``(n, 1)``; view only 2 bytes: inductor copies a wider dtype view."""
     import torch
     return blocks[:, 2 * word : 2 * word + 2].view(torch.float16).to(torch.float32)
 
 
 def _half_math(blocks: Any, dtype: Any) -> Any:
-    """Eager fp16 ``dtype``: the fp16 ``d``. fp16 math rounds the exact ``d * q`` once, on the vectorised kernel."""
     import torch
-
     if dtype != torch.float16 or torch.compiler.is_compiling():
         return None
     return blocks[:, :2].view(torch.float16)
@@ -47,12 +43,8 @@ def _shifts(like: Any, start: int, stop: int, step: int, shape: tuple) -> Any:
 
 
 def _emit(scale: Any, q: Any, m: Any, op: str, n: int, block_size: int, dtype: Any) -> Any:
-    """``scale * q`` then ``+ m`` / ``- m`` as ``(n, block_size)``, rounded once to ``dtype`` (fp32 when None).
-
-    Inputs broadcast in output order so the only reshape is of the contiguous result (a reshape of a strided
-    intermediate makes inductor divide by the dynamic block count per element: 1.7x slower Q6_K on a T4). Eager on
-    CUDA / CPU the result is stored straight into ``dtype`` (TensorIterator computes in fp32). Traced:
-    ``(scale * q) - m``, not ``addcmul(-m, ...)``: Triton lowers that negation as ``0 - m`` (``-0 - +0`` -> ``+0``)."""
+    """``scale * q +/- m`` as ``(n, block_size)``, rounded once to ``dtype``. Only the contiguous result is reshaped
+    (a strided reshape is 1.7x slower Q6_K compiled). Traced, not ``addcmul(-m, ...)``: Triton's ``0 - m`` loses -0."""
     import torch
 
     if (
@@ -348,7 +340,6 @@ def dequantize_cast(
     dtype: Any,
     blocks_fn: Any = None,
 ) -> Any:
-    """GGUF bytes ``(rows, row_bytes)`` -> ``(rows, cols)`` in ``dtype``; ``blocks_fn``: the (compiled) block fn."""
     import torch
 
     block_size, type_size = _sizes()[quant_type]
@@ -356,7 +347,6 @@ def dequantize_cast(
     if blocks_fn is None:
         blocks_fn = exact_function(quant_type)
     elif not torch.compiler.is_compiling():
-        # static block width, dynamic block count: one graph per type, no recompile
         torch._dynamo.maybe_mark_dynamic(blocks, 0)
     return blocks_fn(blocks, block_size, type_size, dtype).reshape(*raw.shape[:-1], -1)
 
@@ -385,8 +375,6 @@ def set_compiled_dequant(on: bool) -> None:
 
 
 def _exact_forward(self: Any, inputs: Any) -> Any:
-    """Dequantise straight to the compute dtype; other types, or a compiled ``dequantize_gguf_tensor`` without
-    its fused forward, take diffusers' forward (fp32 out, one ``.to``)."""
     weight = self.weight
     dtype = self.compute_dtype
     quant_type = getattr(weight, "quant_type", None)
@@ -411,7 +399,6 @@ def stock_forward() -> Any:
 
 
 def install_exact_dequant(logger: Any = None) -> list:
-    """Swap our functions into diffusers' table in place and patch GGUFLinear's forward. Returns the types swapped."""
     if not exact_enabled():
         return []
     try:
@@ -444,7 +431,6 @@ def install_exact_dequant(logger: Any = None) -> list:
 
 
 def uninstall_exact_dequant() -> None:
-    """Undo ``install_exact_dequant`` where its own objects are still installed. Idempotent."""
     table = _STATE.get("table")
     if isinstance(table, dict):
         for qtype, original in _replaced.items():

@@ -12,9 +12,7 @@ so the weight it produces is bit-identical to the stock one.
 
 Other fp16-dequantised types under a bf16 compute dtype are cast in the dequant's own buffer, bit-identical to the stock
 cast (UNSLOTH_DIFFUSION_GGUF_FUSED_CAST=0 disables); a compiled-in cast was not bit-identical for Q4_K / Q5_K.
-
-Types with diffusion_gguf_exact installed instead run its dequant compiled per type, cast inside the kernel (same
-switches)."""
+diffusion_gguf_exact types compile its dequant per type, cast inside the kernel."""
 
 from __future__ import annotations
 
@@ -204,7 +202,7 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
 
         compiled = torch.compile(_q8_0_blocks_dequant_cast, dynamic = True)
         blocks_fn = _guard(compiled, _q8_0_blocks_dequant_cast, logger)
-        # one compile per type: separate code objects, so no type evicts another
+        # one compile per type, so no type evicts another
         exact_fns = {fn: _guard(torch.compile(fn), fn, logger) for fn in gguf_exact.EXACT_FUNCTIONS}
         stock_forward = getattr(linear_cls, _FORWARD_ATTR)
         F = torch.nn.functional

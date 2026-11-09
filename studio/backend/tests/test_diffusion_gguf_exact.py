@@ -47,17 +47,17 @@ ORACLE_BLOCKS = {name: 37 for name in F16_OFFSETS}  # odd: no even-count assumpt
 # ggml-org/llama.cpp ggml-quants.c dequantize_row_* (f477f79, -O0, no FMA) on oracle_blocks(name, 37): sha256 of the
 # fp32 output, NaN canonicalised. Regenerate with scripts/ggml_parity/make_oracle.py against a compiled ggml-quants.c.
 GGML_DIGESTS = {
-    "Q4_0": "11f2f408ad3ecc40298fc34e7d36e010e5a7f3338b2e49c3d67d1c1ea801c95f",  # nan=198 inf=122
-    "Q4_1": "ea2dc4832791b6bb8c0a1800d75a153840f29b89064a6909109786ec0a6538b6",  # nan=395 inf=245
-    "Q5_0": "84de0e848a5d8f7e62b9eadc0d9ee4f254e5f426643723da9ade8ed8a1e3ede9",  # nan=194 inf=126
-    "Q5_1": "9cf75e735c74127787ffe0c1d5b02189c9aa5ac9339d3714693c7ed57e9e2e4b",  # nan=389 inf=251
-    "Q8_0": "f46e3b0ed5965df250f13728201a942c5f06de257a2a7ae96d20c7fc1545d729",  # nan=196 inf=124
-    "Q2_K": "d5437758841860ef8b258b2c7d4fc223bc8421b371b0e0c22f0da3b6a10e466f",  # nan=3398 inf=1722
-    "Q3_K": "7a2776ee811eaa09ed093f1ebc856869783bffc16c4999ee95cf9735194edbe4",  # nan=1667 inf=893
-    "Q4_K": "5cae66ba58e1344b4c7a8ff706a5f8ce7e7d9bf346f6a3f20dc341e1e1f9d567",  # nan=3213 inf=1907
-    "Q5_K": "28591e1ba7c6aa0f852e8107ad503b0e6b4c2e3a7b9e4718c800505301a9c03c",  # nan=3102 inf=2018
-    "Q6_K": "94229b879c82509f6cdefa56bdd8852fefd787fe9946aa36f03997f1c57bb680",  # nan=1552 inf=1008
-    "IQ4_XS": "510c1a39bb8c42cba718de1238d99df8ef6abaa6d8a84a0a6ed89f32f1fa221d",  # nan=1536 inf=1024
+    "Q4_0": "11f2f408ad3ecc40298fc34e7d36e010e5a7f3338b2e49c3d67d1c1ea801c95f",
+    "Q4_1": "ea2dc4832791b6bb8c0a1800d75a153840f29b89064a6909109786ec0a6538b6",
+    "Q5_0": "84de0e848a5d8f7e62b9eadc0d9ee4f254e5f426643723da9ade8ed8a1e3ede9",
+    "Q5_1": "9cf75e735c74127787ffe0c1d5b02189c9aa5ac9339d3714693c7ed57e9e2e4b",
+    "Q8_0": "f46e3b0ed5965df250f13728201a942c5f06de257a2a7ae96d20c7fc1545d729",
+    "Q2_K": "d5437758841860ef8b258b2c7d4fc223bc8421b371b0e0c22f0da3b6a10e466f",
+    "Q3_K": "7a2776ee811eaa09ed093f1ebc856869783bffc16c4999ee95cf9735194edbe4",
+    "Q4_K": "5cae66ba58e1344b4c7a8ff706a5f8ce7e7d9bf346f6a3f20dc341e1e1f9d567",
+    "Q5_K": "28591e1ba7c6aa0f852e8107ad503b0e6b4c2e3a7b9e4718c800505301a9c03c",
+    "Q6_K": "94229b879c82509f6cdefa56bdd8852fefd787fe9946aa36f03997f1c57bb680",
+    "IQ4_XS": "510c1a39bb8c42cba718de1238d99df8ef6abaa6d8a84a0a6ed89f32f1fa221d",
 }
 
 
@@ -141,7 +141,6 @@ def test_fp32_matches_the_vendored_ggml_output(name):
     out = ex._FUNCTIONS[name](torch.from_numpy(raw), bs, sz)
     assert out.dtype == torch.float32 and out.shape == (raw.shape[0], bs)
     assert canonical_digest(out.numpy()) == GGML_DIGESTS[name]
-    # the vendored input really exercises the special scale bits
     assert np.isnan(out.numpy()).any() and np.isinf(out.numpy()).any()
 
 
@@ -167,7 +166,7 @@ def test_a_compute_dtype_is_one_rounding_of_the_fp32_result(name, dtype):
 
 
 def test_diffusers_fp16_functions_are_not_exact():
-    # Guards the premise: if diffusers' own function were already exact, this module would be redundant.
+    # if diffusers' own function were already exact, this module would be redundant
     bs, sz = gguf.GGML_QUANT_SIZES[T.Q4_K]
     raw = torch.from_numpy(_random_blocks("Q4_K", 512, seed = 5))
     stock = gguf_utils.dequantize_functions[T.Q4_K](raw, bs, sz)
