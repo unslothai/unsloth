@@ -557,16 +557,20 @@ def test_deep_research_on_claude_agent_cannot_start_from_an_api_key(
             assert error.status_code != 403, error.detail
 
 
-@pytest.mark.parametrize("via_api_key, sent", [(False, "t1"), (True, None)])
-def test_only_a_studio_ui_chat_keeps_a_claude_session(
-    monkeypatch, claude_agent_row, via_api_key, sent
+@pytest.mark.parametrize(
+    "via_api_key, saved, sent", [(False, True, "t1"), (True, True, None), (False, False, None)]
+)
+def test_only_a_saved_studio_ui_chat_keeps_a_claude_session(
+    monkeypatch, claude_agent_row, via_api_key, saved, sent
 ):
     from core.inference.external_provider import ExternalProviderClient
     from models.inference import ChatCompletionRequest
+    from storage import studio_db
 
     inference = claude_agent_row
     monkeypatch.setenv(ENV, "1")
     monkeypatch.setattr(inference, "_request_has_api_key", lambda request: via_api_key)
+    monkeypatch.setattr(studio_db, "chat_thread_has_messages", lambda thread_id: saved)
     monkeypatch.setattr(inference, "_request_is_saved_credential_workflow", lambda request: True)
     seen = {}
 

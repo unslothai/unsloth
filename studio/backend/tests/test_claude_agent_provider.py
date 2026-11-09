@@ -1445,7 +1445,33 @@ def test_deleting_a_chat_forgets_its_claude_session(monkeypatch, tmp_path):
     assert _record() is None
     assert session in sdk.deleted
     routes = (Path(__file__).resolve().parents[1] / "routes" / "chat_history.py").read_text()
-    assert routes.count("_forget_claude_agent_sessions,") == 2
+    assert routes.count("_forget_claude_agent_sessions,") == 3
+
+
+def test_deleting_a_project_forgets_its_chats_claude_sessions(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from routes import chat_history
+
+    sdk = _install(monkeypatch, tmp_path, turns = [_reply("Hi Ada.")])
+    _stream([U1], thread_id = "t1")
+    session = _record()["claude_session_id"]
+    project = {"id": "p1", "name": "P", "createdAt": 1, "updatedAt": 1, "memberIds": ["t1"]}
+    monkeypatch.setattr(chat_history, "delete_chat_project", lambda *a, **k: project)
+    monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda project_id: None)
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda ids, cutoff = None: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+
+    async def no_sandboxes(ids, delete_files):
+        return [], []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", no_sandboxes)
+    monkeypatch.setattr(chat_history.chat_originals, "sweep", lambda: None)
+
+    asyncio.run(chat_history.delete_project("p1", SimpleNamespace(), current_subject = "t"))
+
+    assert _record() is None
+    assert session in sdk.deleted
 
 
 def test_a_client_that_leaves_while_closing_still_saves_the_session(monkeypatch, tmp_path):

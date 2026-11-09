@@ -1594,6 +1594,7 @@ async def delete_project(
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
+    await run_in_threadpool(_forget_claude_agent_sessions, member_ids)
     await run_in_threadpool(chat_originals.sweep)
     if project.get("sandboxPath"):
         from core.inference.tools import (

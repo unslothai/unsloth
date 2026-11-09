@@ -3575,6 +3575,15 @@ def _request_has_api_key(request: Any) -> bool:
     return admitted_without_session(request)
 
 
+def _thread_is_saved(thread_id: str) -> bool:
+    # A temporary chat sends a thread_id but is never written to chat_messages.
+    try:
+        from storage.studio_db import chat_thread_has_messages
+        return chat_thread_has_messages(thread_id)
+    except Exception:
+        return False
+
+
 def _request_is_internal_workflow(request: Any) -> bool:
     """Matched against stored internal-key hashes, never a prefix, and fails closed on a storage error."""
     token = _request_api_key_token(request)
@@ -29363,10 +29372,13 @@ async def _proxy_to_external_provider(
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
-    # Deep Research hops share one id per run; only a Studio UI chat keeps a Claude session.
+    # Deep Research hops share one id per run; only a saved Studio UI chat keeps a Claude session.
     _claude_thread = (
         payload.thread_id
-        if provider_type == "claude_agent" and not _request_has_api_key(request)
+        if provider_type == "claude_agent"
+        and payload.thread_id
+        and not _request_has_api_key(request)
+        and await asyncio.to_thread(_thread_is_saved, payload.thread_id)
         else None
     )
 
