@@ -1258,11 +1258,30 @@ def _no_context() -> Any:
     return contextlib.nullcontext()
 
 
+def _bind_device(config: dict) -> None:
+    """Make the configured card current (not cuda:0), re-resolving the ordinal by the server's card UUID."""
+    device = str(config.get("device") or "")
+    if not config.get("bind_device") or not device.startswith("cuda"):
+        return
+    import torch
+
+    index = torch.device(device).index or 0
+    uuid = config.get("device_uuid")
+    if uuid:
+        for i in range(torch.cuda.device_count()):
+            if str(torch.cuda.get_device_properties(i).uuid) == uuid:
+                index = i
+                break
+    config["device"] = f"cuda:{index}"
+    torch.cuda.set_device(index)
+
+
 def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
     if _BACKEND_PATH not in sys.path:
         sys.path.insert(0, _BACKEND_PATH)
     try:
         _activate_sidecar(config.get("venv_dir") or "")
+        _bind_device(config)
         tokenizer, model = _load(config)
         import transformers
 

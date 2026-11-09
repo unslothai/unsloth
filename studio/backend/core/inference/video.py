@@ -4733,9 +4733,28 @@ def _video_offload_vram_floor_mib(
         return None
 
 
-# Families whose text encoder runs outside ``pipe.components`` (a sidecar worker on the primary): a multi-GPU split
-# cannot move it, so the companion split the planner priced with it would leave it on the primary beside the DiT.
+# Text encoder runs in a sidecar worker outside ``pipe.components``: a split cannot move it.
 _VIDEO_SIDECAR_ENCODER_FAMILIES = frozenset({"ltx-2.5"})
+# "0" keeps LTX-2.5 on one card under a multi-GPU selection.
+LTX25_MULTI_GPU_ENV = "UNSLOTH_LTX25_MULTI_GPU"
+
+
+def _video_sidecar_multigpu(fam: Any) -> bool:
+    """Sidecar-encoder family may use two cards: lever on, multi-card selection active, CUDA (not ROCm)."""
+    if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
+        return False
+    if (os.environ.get(LTX25_MULTI_GPU_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    from .diffusion_multigpu import _rocm_torch, current_selection
+
+    return current_selection() is not None and not _rocm_torch()
+
+
+def _video_sidecar_worker_card(fam: Any, plan: Any) -> Optional[int]:
+    secondary = getattr(plan, "secondary_ordinal", None)
+    if secondary is None or not _video_sidecar_multigpu(fam):
+        return None
+    return int(secondary)
 
 
 def _video_single_card_for_sidecar(
@@ -4743,18 +4762,79 @@ def _video_single_card_for_sidecar(
     plan: Any,
     logger: Any = None,
 ) -> Any:
-    """The single-card plan in place of a companion split for a sidecar-encoder family; any other plan unchanged."""
+    """Single-card plan for a sidecar-encoder split, unless the partner can also hold the worker's context."""
     if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
         return plan
     fallback = getattr(plan, "fallback_plan", None)
-    if getattr(plan, "secondary_ordinal", None) is None or fallback is None:
+    secondary = getattr(plan, "secondary_ordinal", None)
+    if secondary is None or fallback is None:
         return plan
+    why = f"the {fam.name} text encoder runs in a sidecar a split cannot move"
+    if _video_sidecar_multigpu(fam):
+        from .diffusion_multigpu import secondary_resident_limit_mib
+        from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
+
+        need = (getattr(plan, "estimates", None) or {}).get("multigpu_secondary_required_mib")
+        limit = secondary_resident_limit_mib(int(secondary), getattr(plan, "requested_mode", None))
+        context = int(LTX25_WORKER_RESIDENT_GB * 1024)
+        if need is not None and limit is not None and int(need) + context <= int(limit):
+            if logger is not None:
+                logger.info(
+                    "video.multigpu: the %s text encoder worker runs on cuda:%s with the split (%d MiB of %d MiB)",
+                    fam.name,
+                    secondary,
+                    int(need) + context,
+                    int(limit),
+                )
+            return plan
+        why = f"cuda:{secondary} cannot also hold the {fam.name} text encoder worker"
     if logger is not None:
-        logger.info(
-            "video.multigpu: one card (the %s text encoder runs in a sidecar a split cannot move)",
-            fam.name,
-        )
+        logger.info("video.multigpu: one card (%s)", why)
     return fallback
+
+
+def _video_sidecar_card_reserve_mib(pipe: Any, plan: Any = None) -> Optional[dict[int, int]]:
+    """``{ordinal: MiB}`` peak the sidecar encoder holds, unseen by ``_loaded_component_mib``; None = unpriceable.
+    On the primary a host-kept encoder reuses the denoise headroom (encode runs first). Waits for the worker's load
+    report and raises its load error here (the message is read once)."""
+    client = getattr(pipe, "_unsloth_ltx25_encoder", None)
+    config = getattr(client, "config", None) or {}
+    device = str(config.get("device") or "")
+    if client is None or not device.startswith("cuda"):
+        return None
+    info = client.wait_ready(getattr(client, "cancel_event", None))
+    try:
+        import torch
+
+        from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
+        from .video_ltx25_te_worker import ENCODE_MARGIN_MIB
+
+        ordinal = torch.device(device).index
+        ordinal = int(ordinal if ordinal is not None else torch.cuda.current_device())
+        weights = int(info.get("weights_mib") or 0)
+        if weights <= 0:
+            return None
+        if info.get("resident"):
+            need = weights
+        else:
+            stream = info.get("stream_need_mib")
+            need = int(stream) if stream else weights + ENCODE_MARGIN_MIB
+            from .diffusion_multigpu import current_selection
+
+            selection = current_selection()
+            if selection is not None and int(selection.primary) == ordinal:
+                estimates = getattr(plan, "estimates", None) or {}
+                flat = (
+                    estimates.get("calibrated_headroom_mib")
+                    or estimates.get("calibrated_split_headroom_mib")
+                    or estimates.get("runtime_headroom_mib")
+                )
+                headroom = int(estimates.get("measured_runtime_headroom_mib") or flat or 0)
+                need = max(0, need - headroom)
+        return {ordinal: int(need + LTX25_WORKER_RESIDENT_GB * 1024)}
+    except Exception as exc:  # noqa: BLE001 -- unpriced: one card, the worker's load error surfaces later
+        logger.info("video.multigpu: the sidecar encoder could not be priced (%s)", exc)
+        return None
 
 
 def _video_refine_for_multigpu(
@@ -4763,10 +4843,29 @@ def _video_refine_for_multigpu(
     plan: Any,
     logger: Any = None,
 ) -> Any:
-    """``refine_plan_for_multigpu``, declined for a sidecar-encoder family (its loaded sizes omit the encoder)."""
-    if getattr(fam, "name", None) in _VIDEO_SIDECAR_ENCODER_FAMILIES:
+    """``refine_plan_for_multigpu``; sidecar families only under ``_video_sidecar_multigpu``, charged for the worker."""
+    if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
+        return refine_plan_for_multigpu(pipe, plan, logger)
+    if not _video_sidecar_multigpu(fam):
         return plan
-    return refine_plan_for_multigpu(pipe, plan, logger)
+    if (
+        getattr(plan, "secondary_ordinal", None) is not None
+        or getattr(plan, "layer_split", None) is not None
+    ):
+        return refine_plan_for_multigpu(pipe, plan, logger, card_reserve_mib = {})
+    from .diffusion_layer_split_plan import layer_split_mode
+
+    if (
+        getattr(plan, "offload_policy", None) == "none"
+        and multigpu_mode() != "force"
+        and layer_split_mode() != "force"
+    ):
+        # resident: nothing is priced, so do not wait for the worker
+        return refine_plan_for_multigpu(pipe, plan, logger, card_reserve_mib = {})
+    reserve = _video_sidecar_card_reserve_mib(pipe, plan)
+    if reserve is None:
+        return plan
+    return refine_plan_for_multigpu(pipe, plan, logger, card_reserve_mib = reserve)
 
 
 def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
@@ -9660,6 +9759,16 @@ class VideoBackend:
                 stale_encoder, self._ltx25_pending_encoder = self._ltx25_pending_encoder, None
             if stale_encoder is not None:
                 _stop_ltx25_encoder(stale_encoder[1])
+            worker_card = _video_sidecar_worker_card(fam, plan)
+            if worker_card is not None:
+                from .diffusion_multigpu import secondary_safe_budget_mib
+                worker_device = f"cuda:{worker_card}"
+                worker_budget = secondary_safe_budget_mib(worker_card)
+            else:
+                worker_device = str(target.torch_device)
+                worker_budget = (getattr(plan, "estimates", None) or {}).get(
+                    "safe_device_budget_mib"
+                )
             ltx25_client = start_text_encoder(
                 repo = _base_local_dir or fetch_base,
                 # The plan's commit when the worker reads the hub id (a staged dir already is that commit).
@@ -9667,12 +9776,13 @@ class VideoBackend:
                 hf_token = hf_token,
                 cache_dir = hub_cache_dir(),
                 local_files_only = local_files_only,
-                device = str(target.torch_device),
+                device = worker_device,
                 dtype = str(dtype).replace("torch.", ""),
                 resident = encoder_resident_for_plan(plan),
-                budget_mib = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib"),
+                budget_mib = worker_budget,
                 te_quant = ltx25_te_quant_scheme(text_encoder_quant),
                 base_repo = base,
+                bind_device = _video_sidecar_multigpu(fam),
             )
             # Installed only while this load is current: a load superseded during the start must not overwrite the
             # newer load's worker (whose token-scoped cleanup could then never find it).

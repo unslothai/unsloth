@@ -17,7 +17,7 @@ import time
 import types
 import weakref
 from collections import OrderedDict
-from typing import Any, Callable, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 MULTIGPU_ENV = "UNSLOTH_DIFFUSION_MULTIGPU"
 CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL"
@@ -924,8 +924,11 @@ def refine_plan_for_multigpu(
     pipe: Any,
     plan: Any,
     logger: Any = None,
+    *,
+    card_reserve_mib: Optional[Mapping[int, int]] = None,
 ) -> Any:
     """Post-load: an offloading plan becomes a resident split when the LOADED components can be shared by the cards.
+    ``card_reserve_mib`` (ordinal -> MiB): memory a sidecar process holds on a card, uncounted by the loaded sizes.
 
     No-op without a selection, for explicit offload modes, a plan already resident (unless forced) or split, unified memory
     or an unknown budget. When no component assignment fits, a layer split (diffusion_layer_split_plan) is tried before
@@ -1001,7 +1004,13 @@ def refine_plan_for_multigpu(
     secondary = best_secondary(selection, mode = mode)
     if secondary is None:
         return one_card_plan("no second card")
-    sec_limit = secondary_resident_limit_mib(secondary, mode)
+    reserve = {int(o): max(0, int(m)) for o, m in (card_reserve_mib or {}).items()}
+
+    def card_limit(ordinal: int) -> Optional[int]:
+        limit = secondary_resident_limit_mib(ordinal, mode)
+        return None if limit is None else int(limit) - reserve.get(int(ordinal), 0)
+
+    sec_limit = card_limit(secondary)
     if sec_limit is None:
         return one_card_plan(f"free memory of cuda:{secondary} is unknown")
     from .diffusion_memory import _fast_device_budget_mib
@@ -1019,6 +1028,7 @@ def refine_plan_for_multigpu(
         # refuse a split that is lighter than the plan it replaces (the text encoder then streamed from host memory
         # beside an idle second card).
         primary_limit = max(int(primary_limit), int(budget))
+    primary_limit = int(primary_limit) - reserve.get(primary, 0)
     measured_headroom = plan.estimates.get("measured_runtime_headroom_mib")
     flat_headroom = (
         plan.estimates.get("calibrated_headroom_mib")
@@ -1054,7 +1064,7 @@ def refine_plan_for_multigpu(
             selection = selection,
             sizes = sizes,
             primary_limit_mib = int(primary_limit),
-            secondary_limit_mib = lambda o: secondary_resident_limit_mib(o, mode),
+            secondary_limit_mib = card_limit,
             headroom_mib = headroom,
             overhead_mib = overhead,
             logger = logger,
@@ -1109,6 +1119,7 @@ def refine_plan_for_multigpu(
     if layer_force:
         return layer_split_or_plan()
     move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger)
+    encoders_limit = encoder_card_limit_mib(secondary)
     trials = component_assignment_trials(
         sizes,
         headroom_mib = headroom,
@@ -1116,7 +1127,9 @@ def refine_plan_for_multigpu(
         primary_limit_mib = int(primary_limit),
         secondary_limit_mib = int(sec_limit),
         move_denoisers = move_denoisers,
-        encoders_only_limit_mib = encoder_card_limit_mib(secondary),
+        encoders_only_limit_mib = (
+            None if encoders_limit is None else int(encoders_limit) - reserve.get(int(secondary), 0)
+        ),
     )
     winner = next((t for t in trials if t.fits), None)
     moved = winner.moved if winner is not None else None

@@ -1228,6 +1228,7 @@ class Ltx25TextEncoderClient:
         self._cmd: Any = None
         self._resp: Any = None
         self._ready = False
+        self._ready_error: Optional[BaseException] = None
         self._seq = 0
         # Request the worker is still computing (a cancel abandons it).
         self._inflight: Optional[int] = None
@@ -1273,6 +1274,7 @@ class Ltx25TextEncoderClient:
             spawn_on_lifetime_thread(proc.start)
         self._proc = proc
         self._ready = False
+        self._ready_error = None
         try:
             from utils.process_lifetime import adopt_pid
             adopt_pid(proc.pid)
@@ -1345,7 +1347,14 @@ class Ltx25TextEncoderClient:
     def wait_ready(self, cancel: Optional[threading.Event] = None) -> dict:
         if self._ready:
             return self.info
-        msg = self._get(cancel, "loading the Gemma 4 encoder")
+        if getattr(self, "_ready_error", None) is not None:
+            # The worker sends its load error once: a second caller (a placement preview read it first) gets the same one.
+            raise self._ready_error
+        try:
+            msg = self._get(cancel, "loading the Gemma 4 encoder")
+        except TextEncoderWorkerError as exc:
+            self._ready_error = exc
+            raise
         if msg.get("type") != "ready":
             raise TextEncoderWorkerError(
                 f"Unexpected reply from the text encoder worker: {msg.get('type')}"
@@ -1358,6 +1367,7 @@ class Ltx25TextEncoderClient:
     def close(self) -> None:
         proc, self._proc = self._proc, None
         self._ready = False
+        self._ready_error = None
         self._inflight = None
         self._cache.clear()
         if proc is None:
@@ -1615,6 +1625,7 @@ def start_text_encoder(
     budget_mib: Optional[int] = None,
     te_quant: Optional[str] = None,
     base_repo: Optional[str] = None,
+    bind_device: bool = False,
 ) -> Ltx25TextEncoderClient:
     """Check the sidecar (a named refusal before any weight is read), then spawn the encoder worker so the Gemma 4
     load overlaps the DiT load. ``base_repo`` is the upstream pack id (``repo`` may be its local snapshot); an int8
@@ -1656,8 +1667,23 @@ def start_text_encoder(
     share = user_budget_reserve_share()
     if share > 0:
         client.config["vram_reserve_share"] = share
+    if bind_device:
+        # by UUID: a spawned child may enumerate cards in another order
+        client.config.update(bind_device = True, device_uuid = _cuda_device_uuid(device))
     client.start()
     return client
+
+
+def _cuda_device_uuid(device: str) -> Optional[str]:
+    try:
+        import torch
+
+        index = torch.device(device).index
+        if torch.device(device).type != "cuda" or index is None:
+            return None
+        return str(torch.cuda.get_device_properties(index).uuid)
+    except Exception:  # noqa: BLE001 -- the worker then binds the ordinal as given
+        return None
 
 
 def attach_to_pipeline(
