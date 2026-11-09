@@ -112,18 +112,22 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
 
 def _take_the_gpu() -> None:
     # The restyle sd-server (~30 GB) is a video workload: chat and image models go through the
-    # arbiter's eviction, and the Create video model, which shares the VIDEO owner, is unloaded here.
+    # arbiter's eviction, and the Create video model, which shares the VIDEO owner, is checked and
+    # unloaded in ``admit``, under the arbiter lock, so a Create load cannot register in between.
     from core.inference import gpu_arbiter
     from core.inference.video import generation_account_in_flight, get_video_backend
     from utils.multi_model_settings import get_multi_model_mode
 
     mode = get_multi_model_mode()
     video = get_video_backend()
-    if video.loading_repo_ids():
-        raise HTTPException(
-            status_code = 409, detail = "A video model is loading. Try again when it finishes."
-        )
-    if video.status().get("loaded"):
+
+    def admit() -> None:
+        if video.loading_repo_ids():
+            raise HTTPException(
+                status_code = 409, detail = "A video model is loading. Try again when it finishes."
+            )
+        if not video.status().get("loaded"):
+            return
         if generation_account_in_flight() is not None:
             raise HTTPException(
                 status_code = 409, detail = "A video is generating. Try again when it finishes."
@@ -134,9 +138,10 @@ def _take_the_gpu() -> None:
                 detail = "Unload the Create video model first: Keep multiple models loaded is set to Always.",
             )
         video.unload()
+
     handoff = gpu_arbiter.restyle_handoff.set(True)
     try:
-        gpu_arbiter.acquire_for_request(gpu_arbiter.VIDEO, policy = mode)
+        gpu_arbiter.acquire_for_request(gpu_arbiter.VIDEO, policy = mode, admit = admit)
     except gpu_arbiter.MultiModelAlwaysRefusal as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     finally:

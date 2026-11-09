@@ -805,9 +805,16 @@ def _gpu_handoff(
     monkeypatch.setattr(mms, "get_multi_model_mode", lambda: mode)
     monkeypatch.setattr(video_module, "get_video_backend", lambda: video)
     monkeypatch.setattr(video_module, "generation_account_in_flight", lambda: generating)
-    monkeypatch.setattr(
-        arb, "acquire_for_request", lambda owner, **kw: acquired.append((owner, kw))
-    )
+
+    def acquire(
+        owner,
+        admit = None,
+        **kw,
+    ):
+        admit()
+        acquired.append((owner, kw))
+
+    monkeypatch.setattr(arb, "acquire_for_request", acquire)
     return acquired
 
 
@@ -890,3 +897,28 @@ def test_an_invalid_request_is_refused_before_the_gpu_handoff(weights, monkeypat
     files = [("video", ("a.mp4", b"x", "video/mp4"))]
     res = client.post("/api/inference/video/restyle", data = {"prompt": " "}, files = files)
     assert res.status_code == 400 and took == []
+
+
+def test_the_create_check_runs_under_the_arbiter_lock(weights, monkeypatch):
+    import core.inference.gpu_arbiter as arb
+    import core.inference.video as video_module
+    import utils.multi_model_settings as mms
+    from fastapi import HTTPException
+
+    from routes import video_restyle as route
+
+    held = []
+
+    class _Loading(_Video):
+        def loading_repo_ids(self):
+            held.append(arb._lock.locked())
+            return ("org/some-video-model",)
+
+    evicted = []
+    monkeypatch.setattr(mms, "get_multi_model_mode", lambda: "off")
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Loading(False))
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setitem(arb._EVICTORS, arb.CHAT, lambda: evicted.append("chat"))
+    with pytest.raises(HTTPException) as exc:
+        route._take_the_gpu()
+    assert exc.value.status_code == 409 and held == [True] and evicted == []
