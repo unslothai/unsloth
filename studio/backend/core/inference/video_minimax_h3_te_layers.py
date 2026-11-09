@@ -45,6 +45,21 @@ def _noop(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
+def _fenced_onload(group: Any) -> Any:
+    """A quieted group's onload: moves nothing, but keeps the fence its stock onload gave the group before it in the
+    prefetch chain (that group's transfer on the diffusers side stream), as a device-side wait instead of a host sync."""
+
+    def onload_(*_args: Any, **_kwargs: Any) -> None:
+        stream = getattr(group, "stream", None)
+        if stream is None:
+            return
+        import torch
+
+        torch.cuda.current_stream(getattr(group, "onload_device", None)).wait_stream(stream)
+
+    return onload_
+
+
 def _has_tensors(module: Any) -> bool:
     return (
         next(iter(module.parameters()), None) is not None
@@ -158,9 +173,11 @@ class H3TELayerStream:
     def _start(self) -> None:
         import torch
 
-        self.slots = [
-            torch.empty(self.slot_bytes, dtype = torch.uint8, device = self.device) for _ in range(2)
-        ]
+        with torch.inference_mode(False):
+            self.slots = [
+                torch.empty(self.slot_bytes, dtype = torch.uint8, device = self.device)
+                for _ in range(2)
+            ]
         if self.copy_stream is not None:
             # The slots may reuse blocks the compute stream still has queued work on: the uploads wait for it.
             self.copy_stream.wait_stream(torch.cuda.current_stream(self.device))
@@ -317,6 +334,8 @@ class H3TELayerStream:
     # -- hooks -----------------------------------------------------------------------------------------------------
     def pre(self, index: int) -> None:
         with self._lock:
+            if index == 0 and (self.active or self.swapped):
+                self.finish()  # a pass that stopped part way left its session behind
             if index in self.swapped:
                 return
             try:
@@ -351,7 +370,10 @@ class H3TELayerStream:
             self._release(index)
             self.layers_streamed += 1
             if index + 1 < len(self.plans):
-                self._issue(index + 1)
+                try:
+                    self._issue(index + 1)
+                except Exception:  # noqa: BLE001 -- the next pre() starts again, or uploads that layer alone
+                    self.finish()
             else:
                 # The last layer: drop the slots (the denoiser runs next) once its kernels are queued.
                 self.done.clear()
@@ -393,11 +415,13 @@ def _staging_ring(device: Any) -> Optional[list]:
         if budget is None or budget < (_CHUNK_BYTES * _CHUNKS) >> 20:
             return None
         ring = []
-        for _ in range(_CHUNKS):
-            chunk = registered_pinned_empty(_CHUNK_BYTES)
-            if chunk is None:
-                chunk = torch.empty(_CHUNK_BYTES, dtype = torch.uint8, pin_memory = True)
-            ring.append(chunk)
+        # Normal tensors: the fill runs on worker threads, outside any inference_mode of the caller.
+        with torch.inference_mode(False):
+            for _ in range(_CHUNKS):
+                chunk = registered_pinned_empty(_CHUNK_BYTES)
+                if chunk is None:
+                    chunk = torch.empty(_CHUNK_BYTES, dtype = torch.uint8, pin_memory = True)
+                ring.append(chunk)
         return ring
     except Exception:  # noqa: BLE001 -- no ring: driver-staged pageable copies
         return None
@@ -445,16 +469,26 @@ def attach_h3_te_layer_stream(
         # The diffusers groups of these layers stay registered (host copies, resident share) but move nothing.
         for _entries, layer_groups, _size in plans:
             for group in layer_groups:
-                group.onload_ = _noop
+                quieted.append(
+                    (
+                        group,
+                        {
+                            n: group.__dict__[n]
+                            for n in ("onload_", "offload_")
+                            if n in group.__dict__
+                        },
+                    )
+                )
+                group.onload_ = _wrap(_fenced_onload(group))
                 group.offload_ = _noop
-                quieted.append(group)
         setattr(target, _ATTR, streamer)
     except Exception:
         for handle in handles:
             handle.remove()
-        for group in quieted:
+        for group, saved in quieted:
             group.__dict__.pop("onload_", None)
             group.__dict__.pop("offload_", None)
+            group.__dict__.update(saved)
         raise
     streamer.handles = handles
 

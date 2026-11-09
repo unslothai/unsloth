@@ -272,3 +272,82 @@ def test_uploads_wait_for_the_stream_that_allocated_the_slots(monkeypatch):
     streamer.copy_stream = _Stream()
     streamer._start()
     assert calls == [(compute, 2)]  # after both slots exist, before any upload
+
+
+def test_quieted_groups_keep_the_side_stream_fence(monkeypatch):
+    """Diffusers fences a prefetched group's transfer in the NEXT group's onload_; a quieted decoder group keeps
+    that fence as a device-side wait on the side stream."""
+    model = _conditioner()
+    groups = _groups(model)
+    _streamer(model, groups)
+    waits = []
+
+    class _Compute:
+        def wait_stream(self, other):
+            waits.append(other)
+
+    side = object()
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device = None: _Compute())
+    groups[0].stream = side
+    groups[0].onload_device = torch.device("cuda")
+    groups[0].onload_()
+    assert waits == [side]
+    groups[1].onload_()  # no side stream (CPU groups): nothing to wait on
+    assert waits == [side]
+
+
+def test_attach_rollback_restores_existing_overrides():
+    model = _conditioner()
+    groups = _groups(model)
+    layers = list(model.layers)
+    plans = tl._layer_plans(layers, groups)
+    marker = lambda: None  # noqa: E731
+    groups[0].onload_ = marker
+
+    class Frozen(torch.nn.Module):
+        def __setattr__(self, name, value):
+            if name == tl._ATTR:
+                raise AttributeError(name)
+            super().__setattr__(name, value)
+
+    with pytest.raises(AttributeError):
+        tl.attach_h3_te_layer_stream(
+            Frozen(), layers, plans, tl.H3TELayerStream(layers, plans, "cpu")
+        )
+    assert groups[0].__dict__["onload_"] is marker
+    assert all("onload_" not in g.__dict__ for g in groups[1:])
+
+
+def test_a_pass_that_stopped_part_way_is_reset_at_layer_zero():
+    model = _conditioner()
+    reference = _run(model, IDS)
+    streamer, plans = _streamer(model, _groups(model))
+    streamer.pre(0)  # a pass that never reached the post hooks
+    assert streamer.active and 0 in streamer.swapped
+    for a, b in zip(_run(model, IDS), reference):
+        assert torch.equal(a, b)
+    assert not streamer.active and streamer.swapped == {}
+
+
+def test_works_under_inference_mode_and_the_ring_is_a_normal_tensor(monkeypatch):
+    model = _conditioner()
+    reference = _run(model, IDS)
+    _streamer(model, _groups(model))
+    with torch.inference_mode():
+        got = model(input_ids = IDS, output_hidden_states = True).hidden_states
+    for a, b in zip(got, reference):
+        assert torch.equal(a, b)
+    import core.inference.diffusion_memory as dm
+    import core.inference.host_pinning as hp
+
+    monkeypatch.setattr(hp, "host_pinning_allowed", lambda device = None: True)
+    monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1 << 20)
+    monkeypatch.setattr(
+        dm, "registered_pinned_empty", lambda n, fill = None: torch.empty(n, dtype = torch.uint8)
+    )
+    monkeypatch.setattr(tl, "_CHUNK_BYTES", 1 << 10)
+    with torch.inference_mode():
+        ring = tl._staging_ring("cuda")
+    assert ring is not None and len(ring) == tl._CHUNKS
+    assert not any(r.is_inference() for r in ring)
