@@ -2184,7 +2184,7 @@ def test_display_polls_share_one_combined_counter_read(win_rocm_solo, monkeypatc
 
     clock = Clock()
     monkeypatch.setattr(hw, "time", clock)
-    monkeypatch.setattr(hw, "_rocm_win_counter_cache", {})
+    monkeypatch.setattr(hw, "_rocm_win_counter_cache", {}, raising = False)
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "1")
     monkeypatch.delenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", raising = False)
     adapters = _adapter_output(SOLO_ADAPTERS)

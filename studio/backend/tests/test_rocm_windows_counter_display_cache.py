@@ -39,7 +39,7 @@ def _tagged(tag, body):
 
 @pytest.fixture
 def counters(monkeypatch):
-    monkeypatch.setattr(hw, "_rocm_win_counter_cache", {})
+    monkeypatch.setattr(hw, "_rocm_win_counter_cache", {}, raising = False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(gpu_query, "enabled", lambda: True)
     monkeypatch.setattr(gpu_query, "ttl_for", lambda kind: 3.0)
