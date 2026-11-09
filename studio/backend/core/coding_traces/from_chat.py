@@ -149,11 +149,10 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
     out: list[TraceMessage] = []
     call_ids: set[str] = set()
     for message in chain:
-        role, message_id, start, kept = message.get("role"), message["id"], len(out), []
-        if role not in ("system", "user", "assistant"):
-            warnings.append(TraceWarning("unknown_role", f"Skipped role {role!r}", message_id))
-            continue
-        if role != "assistant":
+        # toThreadMessage loads every row that is not "user" as an assistant turn.
+        role = "user" if message.get("role") == "user" else "assistant"
+        message_id, start, kept = message["id"], len(out), []
+        if role == "user":
             current = TraceMessage(id = message_id, role = role, created_at = message.get("createdAt"))
             out.append(current)
         # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
@@ -326,7 +325,7 @@ def _prune(chain: list[dict]) -> list[dict]:
         return not payload and not replayed(message, reasoning = True)
 
     meta = [_as_dict(m.get("metadata")) for m in chain]  # runtime-provider.tsx: metadata.custom
-    assistant = [m.get("role") == "assistant" for m in chain]
+    assistant = [m.get("role") != "user" for m in chain]
     refused = [a and d.get("anthropicRefusal") is True for d, a in zip(meta, assistant)]
     reasons = [_as_dict(d.get("incomplete")).get("reason") for d in meta]
     stopped = [isinstance(r, str) and r in _STOP_LABELS for r in reasons]

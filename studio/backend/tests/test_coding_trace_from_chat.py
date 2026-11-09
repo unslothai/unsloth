@@ -187,7 +187,8 @@ def test_rows_from_a_service_need_no_database():
     assert assistant.tool_calls[2].arguments == {"n": 2**53 + 1}  # exact argsText, as the UI sends
     # Byte-exact JSON.stringify, as the UI replays a non-sandbox tool result.
     assert (tool.tool_call_id, tool.text, tool.is_error) == ("k", '{"text":"ok"}', True)
-    assert _codes(trace) == ["unsupported_part", "duplicate_tool_call_id", "unknown_role"]
+    assert (trace.messages[-1].role, trace.messages[-1].text) == ("assistant", "stray")
+    assert _codes(trace) == ["unsupported_part", "duplicate_tool_call_id"]
 
 
 def test_unreadable_threads_and_cut_branches():
