@@ -39,7 +39,8 @@ type Slot = {
   next: Rendered | [Fiber, Rendered] | "delete" | null;
   /** Set by the child's own updates; cleared when a render of it commits. */
   dirty: boolean;
-  committed: { props: unknown; output: unknown } | null;
+  /** The last committed render, re-committed if the child was unmounted under it (see the commit effect). */
+  committed: Rendered | null;
 };
 
 /** Context values provided above the resource being rendered, outermost first. */
@@ -107,7 +108,7 @@ export function tapResources(getElements: () => Element[], getElementsDeps?: rea
   const slots = tapConst(() => new Map<string | number, Slot>(), []);
   const committedContext = tapRef<unknown[] | null>(null);
   const getElementsMemo = getElementsDeps
-    ? // eslint-disable-next-line react-hooks/exhaustive-deps -- deps are the caller's, as upstream
+    ? // deps are the caller's, as upstream
       tapCallback(getElements, getElementsDeps)
     : getElements;
 
@@ -178,15 +179,21 @@ export function tapResources(getElements: () => Element[], getElementsDeps?: rea
         slots.delete(key);
         continue;
       }
-      if (next === null) continue;
+      if (next === null) {
+        // Reused, but tap's dev strict mode runs this fiber's effects, cleans them up (unmounting
+        // every child) and runs them again on first mount: remount from the last commit, as upstream
+        // re-commits its kept result.
+        if (!slot.fiber.isMounted && slot.committed !== null) commitResourceFiber(slot.fiber, slot.committed);
+        continue;
+      }
       if (Array.isArray(next)) {
         unmountResourceFiber(slot.fiber);
         slot.fiber = next[0];
         commitResourceFiber(slot.fiber, next[1]);
-        slot.committed = { props: next[1].props, output: next[1].output };
+        slot.committed = next[1];
       } else {
         commitResourceFiber(slot.fiber, next);
-        slot.committed = { props: next.props, output: next.output };
+        slot.committed = next;
       }
       slot.dirty = false;
       slot.next = null;
