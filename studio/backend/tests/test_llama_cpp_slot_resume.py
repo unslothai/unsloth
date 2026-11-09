@@ -600,7 +600,7 @@ def _ctx_backend(
 ):
     backend = _resume_backend(tmp_path, n_slots = n_slots)
     backend._requested_n_ctx = n_ctx
-    backend._effective_context_length = n_ctx
+    backend._effective_context_length = n_ctx if unified else n_ctx // n_slots
     backend._kv_cache_unified = unified
     return backend
 
@@ -624,8 +624,10 @@ def test_slot_capacity_is_the_context_split_across_slots_unless_unified(tmp_path
     assert (
         _ctx_backend(tmp_path, n_ctx = 8192, n_slots = 4, unified = True)._slot_context_capacity() == 8192
     )
-    backend = _ctx_backend(tmp_path, n_ctx = 0)
-    backend._requested_n_ctx = backend._effective_context_length = None
+    backend = _ctx_backend(tmp_path, n_ctx = 8192, n_slots = 4)
+    backend._effective_context_length = None
+    assert backend._slot_context_capacity() == 2048
+    backend._requested_n_ctx = None
     assert backend._slot_context_capacity() is None
 
 
@@ -637,7 +639,9 @@ def test_an_identical_launch_fits(tmp_path):
 def test_a_launch_that_only_raised_the_context_fits_when_the_slots_hold_the_tokens(tmp_path):
     saved = _manifest_from(_ctx_backend(tmp_path, n_ctx = 8192), n_saved = 8000)
     assert _ctx_backend(tmp_path, n_ctx = 32768).slot_resume_fits(saved) is True
-    assert _ctx_backend(tmp_path, n_ctx = 32768, n_slots = 4).slot_resume_fits(saved) is False
+    assert _ctx_backend(tmp_path, n_ctx = 16384, n_slots = 4).slot_resume_fits(saved) is False
+    split = _manifest_from(_ctx_backend(tmp_path, n_ctx = 16384, n_slots = 4), n_saved = 4000)
+    assert _ctx_backend(tmp_path, n_ctx = 32768, n_slots = 4).slot_resume_fits(split) is True
     assert _ctx_backend(tmp_path, n_ctx = 4096).slot_resume_fits(saved) is False
     assert (
         _ctx_backend(tmp_path, n_ctx = 8192, n_slots = 4, unified = True).slot_resume_fits(saved) is False

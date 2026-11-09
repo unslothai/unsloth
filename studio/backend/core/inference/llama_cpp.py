@@ -35520,15 +35520,14 @@ class LlamaCppBackend:
         )
 
     def _slot_context_capacity(self) -> Optional[int]:
-        try:
-            n_ctx = int(self._effective_context_length or self._requested_n_ctx or 0)
-        except (TypeError, ValueError):
+        # The reconciled effective context is already per slot (/props n_ctx).
+        if self._effective_context_length:
+            return int(self._effective_context_length)
+        if not self._requested_n_ctx:
             return None
-        if n_ctx <= 0:
-            return None
-        if self._kv_cache_unified:
-            return n_ctx
-        return n_ctx // max(1, int(self.effective_parallel_slots or 1))
+        return int(self._requested_n_ctx) // (
+            1 if self._kv_cache_unified else self.effective_parallel_slots
+        )
 
     def slot_resume_fits(self, manifest: dict) -> bool:
         """Only the context fields may differ: saved KV stays valid if every slot still fits (#9037)."""
