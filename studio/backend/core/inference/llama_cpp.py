@@ -35553,8 +35553,8 @@ class LlamaCppBackend:
         if capacity is None or not slots:
             return False
         # These flags can move the RoPE threshold or n_ctx_seq away from what is checked below.
-        if any(
-            str(arg).split("=", 1)[0] in _SLOT_RESUME_STRICT_FLAGS for arg in current.extra_args
+        if os.environ.get("LLAMA_ARG_KV_UNIFIED_PER_SLOT") or any(
+            _flag_name(str(arg)) in _SLOT_RESUME_STRICT_FLAGS for arg in current.extra_args
         ):
             return False
         # llama.cpp picks LongRoPE long/short factors by whether n_ctx_seq exceeds this threshold.
