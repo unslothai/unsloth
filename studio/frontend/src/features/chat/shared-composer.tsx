@@ -97,7 +97,7 @@ import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
   CONVERSATION_HTML_LABEL,
   CONVERSATION_PDF_LABEL,
-} from "./utils/conversation-html";
+} from "./utils/conversation-html-format";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";

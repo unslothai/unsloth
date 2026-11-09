@@ -125,7 +125,7 @@ import {
   CONVERSATION_HTML_LABEL,
   CONVERSATION_PDF_FORMAT,
   CONVERSATION_PDF_LABEL,
-} from "./utils/conversation-html";
+} from "./utils/conversation-html-format";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArchiveIcon,
