@@ -720,8 +720,7 @@ def device_backend_flags(
     te_device: Optional[str] = None,
     vae_device: Optional[str] = None,
 ) -> list[str]:
-    """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu.
-    ``te_device`` / ``vae_device``: another card for the encoders / the VAE (a multi-GPU split; default the same card)."""
+    """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu."""
     if not device_name:
         return []
     flags = offload or []

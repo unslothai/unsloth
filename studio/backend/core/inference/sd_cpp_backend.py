@@ -2916,9 +2916,7 @@ class _SdState:
     child_env: tuple[tuple[str, str], ...] = ()
     # The user picked the GPU (a gpu_ids pool or UNSLOTH_DIFFUSION_SD_CPP_DEVICE): never moved to CPU behind their back.
     gpu_explicit: bool = False
-    # A multi-GPU split the committed argv carries (sd_cpp_multigpu), as ``status()["multi_gpu"]``; None on one card.
     multi_gpu: Optional[dict[str, Any]] = None
-    # The split's diffusion card: card-sharing helpers keep to it, while no single card is charged for the weights.
     split_physical_gpu_id: Optional[int] = None
 
     def spawn_env(self) -> Optional[dict[str, str]]:
@@ -2946,8 +2944,7 @@ def _offload_with_device_pin_impl(
     ordinal: Optional[int],
     split: Any = None,
 ) -> list[str]:
-    """``offload`` plus the ``--backend`` pin for whichever build is about to run it. ``split`` (an ``SdCppCardSplit``
-    for ``ordinal``): the text encoders (and the VAE when it says so) run on its second card."""
+    """``offload`` plus the ``--backend`` pin for whichever build is about to run it."""
     flags = list(offload)
     if ordinal is None:
         return flags
@@ -3010,7 +3007,6 @@ def _resolved_server_physical_gpu_id(
     if device != "cuda" or "--offload-to-cpu" in committed_flags:
         return None
     if len(_backend_devices(committed_flags)) > 1:
-        # a multi-GPU split: its weights are on two cards, so no single card can be charged for them
         return None
     try:
         from utils.hardware import get_parent_visible_gpu_ids
@@ -3583,7 +3579,6 @@ class SdCppDiffusionBackend:
         if auto_ordinal:
             # Automatic ranks the torch cards too, after validation, unless sd.cpp runs on one torch cannot see.
             gpu_ordinal = auto_cuda_ordinal_for_load()
-        # The multi-card selection, exactly as the diffusers backend builds it; an off-torch card stays one card.
         gpu_ordinals: Any = None
         if (
             off_torch is None
@@ -3668,7 +3663,6 @@ class SdCppDiffusionBackend:
         return self.status()
 
     @_invalidates_gpu_memory("sd.cpp load")
-    # The multi-card selection (begin_load's ``_gpu_ordinals``) is visible to this load's placement only.
     @with_load_selection
     def _run_load(
         self,
@@ -3875,7 +3869,6 @@ class SdCppDiffusionBackend:
             split_memo: dict[tuple, Any] = {}
 
             def _split() -> Any:
-                # Under a multi-card selection only (diffusion_multigpu), for the placement and flags in force now.
                 key = (device, _ordinal(), tuple(offload))
                 if key not in split_memo:
                     split_memo[key] = (
@@ -3886,12 +3879,10 @@ class SdCppDiffusionBackend:
                 return split_memo[key]
 
             def _split_arg() -> tuple:
-                # Passed only when there is a split: a one-card load calls the pin exactly as before.
                 split = _split()
                 return () if split is None else (split,)
 
             def _pin_ordinal() -> Optional[int]:
-                # A split pins its diffusion card even when Automatic left the load unpinned (identical idle cards).
                 split = _split()
                 return int(split.primary) if split is not None else _ordinal()
 

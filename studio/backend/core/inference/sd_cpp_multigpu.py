@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two CUDA cards for the native (sd.cpp) engine: the load's multi-card selection (diffusion_multigpu) decides, sd-cli
-places through its own per-module ``--backend`` assignment (``diffusion=CUDA0,te=CUDA1,vae=CUDA0``). Every card is
-sized from nvidia-smi, so the Studio process never opens a CUDA context on a card the child owns. A selection of one
-card, an explicit offload mode, an off-torch card or ``UNSLOTH_DIFFUSION_MULTIGPU_ALL=0`` keeps the one-card argv."""
+"""Two-card sd-cli split via per-module ``--backend``. Cards are sized from nvidia-smi so Studio never opens a CUDA
+context on a card the child owns."""
 
 from __future__ import annotations
 
@@ -13,9 +11,7 @@ import json
 import os
 from typing import Any, Callable, Optional, Sequence
 
-# Working memory beside the weights: a card running the diffusion model (sd.cpp compute buffers at 1024 px plus the
-# child's CUDA context and cuBLAS workspaces, the same 2 GiB the graph-cut budget keeps), a card running only the text
-# encoders (one forward per prompt), and a VAE decode.
+# Working memory beside the weights; denoise matches the graph-cut budget's 2 GiB.
 DENOISE_HEADROOM_MIB = 2048
 ENCODER_HEADROOM_MIB = 1024
 VAE_DECODE_HEADROOM_MIB = 1536
@@ -23,9 +19,6 @@ VAE_DECODE_HEADROOM_MIB = 1536
 
 @dataclasses.dataclass(frozen = True)
 class SdCppCardSplit:
-    """Where sd-cli runs each module: the diffusion model on ``primary``, the text encoders on ``secondary``, the VAE
-    on ``secondary`` only when ``vae_on_secondary``."""
-
     primary: int
     secondary: int
     vae_on_secondary: bool
@@ -54,11 +47,8 @@ def plan_sd_cpp_split(
     primary_limit_mib: Optional[int],
     secondary_limits_mib: dict[int, Optional[int]],
 ) -> tuple[Optional[SdCppCardSplit], str]:
-    """Pure decision: ``(split, reason)`` or ``(None, why one card)``. A split only when one card cannot hold every
-    module resident, where sd.cpp's auto-fit keeps the weights that do not fit in host RAM and streams them: the text
-    encoders (and the VAE, when that card also has a decode's room) then run on the roomiest other card, so the
-    primary holds as much of the diffusion model as it can (auto-fit still places what remains). Limits are each
-    card's free memory after its reserve."""
+    """``(split, reason)`` or ``(None, reason)``. Splits only when one card cannot hold every module; encoders (and
+    VAE if room) move to the roomiest other card."""
     if primary_limit_mib is None:
         return None, f"free memory of cuda:{primary} is unknown"
     if text_encoder_mib <= 0:
@@ -120,8 +110,7 @@ TEXT_ENCODER_FIELDS: tuple[str, ...] = ("clip_l", "clip_g", "t5xxl", "llm", "llm
 
 
 def card_limit_mib(ordinal: int) -> Optional[int]:
-    """A card's free memory after the larger of 1 GiB and the user's VRAM Budget reserve, read from nvidia-smi (no CUDA
-    context in this process). None when unreadable."""
+    """Free MiB minus max(1 GiB, VRAM Budget reserve), via nvidia-smi (no CUDA context here). None when unreadable."""
     from .diffusion_device import smi_free_total_mib
     from .diffusion_memory import _user_budget_reserve_mib
 
@@ -140,15 +129,13 @@ def split_for_load(
     limit_of: Optional[Callable[[int], Optional[int]]] = None,
     logger: Any = None,
 ) -> Optional[SdCppCardSplit]:
-    """The split for this load under the current multi-card selection, else None (one card). Only for the default
-    memory policy (no offload flags: sd.cpp auto-fit); balanced / low_vram / cpu_offload keep their one-card meaning."""
+    """Split for this load, else None. Only without offload flags; balanced / low_vram / cpu_offload stay one card."""
     from .diffusion_multigpu import current_selection, multigpu_all_enabled
 
     selection = current_selection()
     if selection is None or not multigpu_all_enabled() or not selection.secondaries:
         return None
     if primary is None and selection.automatic:
-        # Automatic left the card unpinned (identical idle cards): the selection's primary is the one sd.cpp defaults to
         primary = selection.primary
     if primary is None or int(primary) != int(selection.primary):
         return None
@@ -159,7 +146,6 @@ def split_for_load(
         return None
     from .diffusion_memory import vram_budget_scope
 
-    # priced under the image owner's VRAM Budget, as the diffusers image load prices its split
     limits = vram_budget_scope("image", load = True)(
         lambda: {int(o): limit_of(int(o)) for o in (int(primary), *selection.secondaries)}
     )()
