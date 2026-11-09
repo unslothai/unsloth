@@ -1583,7 +1583,6 @@ def test_int8_storage_hosts_never_take_the_int8_gemm(monkeypatch):
     assert tq.native_int8_act(_target("cuda", torch.float16)) is False
     assert tq.native_int8_act(_target("xpu", torch.bfloat16)) is False
     assert tq.native_int8_act(_target("cuda", torch.bfloat16)) is (not tq.int8_act_disabled())
-    # CPU has no Studio int8 GEMM: weight-only, never W8A8
     assert tq.native_int8_act(_target("cpu", torch.float32)) is False
     monkeypatch.setenv(_STORAGE_ENV, "0")
     assert tq.native_int8_act(_target("cuda", torch.float16)) is (not tq.int8_act_disabled())
@@ -1681,7 +1680,6 @@ def test_cpu_keeps_int8_codes_resident_and_matches_the_expanded_dit_bitwise(
     monkeypatch.delenv(_STORAGE_ENV, raising = False)
     dtype = torch.float32
     target = _target("cpu", dtype)
-    # resident: a CPU target never offloads
     backend = cq.comfy_int8_backend(target, "z-image")
     assert backend == "native"
     stored = _load_as(plain_int8_file, target, backend)
@@ -1737,10 +1735,8 @@ def test_cpu_forward_widens_into_a_reused_scratch_bitwise():
         again = small(x_small)
     assert torch.equal(got_small, want_small) and torch.equal(got_big, want_big)
     assert torch.equal(again, want_small)
-    # grown once to the larger layer, then reused (no weight-sized tensor per call)
     assert buf.numel() == 48 * 64 and grown.numel() == 96 * 128
     assert nq._CPU_WIDEN.buf is grown
-    # what the layer hands out (``weight``) is never the scratch
     assert small.weight.data_ptr() != grown.data_ptr()
 
 

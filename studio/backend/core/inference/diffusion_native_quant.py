@@ -467,8 +467,7 @@ def fused_w8a8_state() -> dict:
     }
 
 
-# A CPU int8 forward widens into this per-thread float32 buffer: a fresh weight-sized tensor per call pays its page
-# faults (about 4x the widen). Grown to the largest layer; nothing past the F.linear that reads it sees it.
+# Per-thread fp32 widen buffer: a fresh weight-sized tensor per call costs ~4x the widen in page faults.
 _CPU_WIDEN = threading.local()
 
 
@@ -614,8 +613,7 @@ def native_linear_class():
             return (wide * scale[:, None]).to(dtype)
 
         def _forward_weight(self, x: Any) -> Any:
-            """The float32 CPU weight in the reused scratch (bitwise ``_stored_weight``), else ``_stored_weight``.
-            Not under autograd: a graph would save the buffer the next layer overwrites."""
+            # Not under autograd: a graph would save the buffer the next layer overwrites.
             if (
                 self.scheme == NATIVE_INT8
                 and x.dtype is torch.float32
