@@ -10,16 +10,15 @@ import {
 } from "@/components/ui/popover";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Bookmark,
-  Check,
-  ClipboardPaste,
-  ImageUp,
-  Trash2,
-} from "lucide-react";
+  ClipboardPasteIcon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 interface MediaGenerationPresetControlProps {
   kind: "image" | "video";
@@ -116,7 +115,7 @@ export function MediaGenerationPresetControl({
           )}
           data-testid={`${kind}-generation-presets`}
         >
-          <Bookmark className="size-3.5 shrink-0 text-muted-foreground" />
+          <HugeiconsIcon icon={BookmarkIcon} strokeWidth={1.75} className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="hidden min-w-0 truncate sm:block">
             {activePreset}
           </span>
@@ -142,8 +141,6 @@ export function MediaGenerationPresetControl({
         collisionPadding={12}
         className="max-h-[var(--radix-popover-content-available-height)] w-[min(320px,calc(100vw-24px))] gap-0 overflow-hidden rounded-xl border-border/70 p-0 shadow-xl"
       >
-        {/* The list gives way on a short window, not the popover: a scrollbar on the rounded,
-            shadowed surface squares its corners. */}
         <div className="shrink-0 border-b border-border/60 px-4 py-3.5">
           <div className="flex items-center justify-between gap-3">
             <p className="font-heading text-sm font-medium">
@@ -185,7 +182,7 @@ export function MediaGenerationPresetControl({
                     </span>
                   ) : null}
                   {isActive ? (
-                    <Check className="size-3.5 shrink-0 text-primary" />
+                    <HugeiconsIcon icon={Tick02Icon} className="size-3.5 shrink-0 text-primary" />
                   ) : null}
                 </button>
               </Fragment>
@@ -193,10 +190,11 @@ export function MediaGenerationPresetControl({
           })}
         </div>
 
-        <div className="shrink-0 border-t border-border/60 bg-muted/20 p-3">
+        {/* px-2 as the preset list, so the name field and Save meet the rows' hover edges. */}
+        <div className="shrink-0 border-t border-border/60 bg-muted/20 px-2 py-3">
           <label
             htmlFor={`${kind}-generation-preset-name`}
-            className="mb-2 block text-xs font-medium"
+            className="mb-2 block px-1 text-xs font-medium"
           >
             Save current settings
           </label>
@@ -237,7 +235,7 @@ export function MediaGenerationPresetControl({
               }}
               className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <ImageUp className="size-3.5" />
+              <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-3.5" />
               Load settings from an image
             </button>
           ) : null}
@@ -251,7 +249,7 @@ export function MediaGenerationPresetControl({
               }}
               className="mt-1 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <ClipboardPaste className="size-3.5" />
+              <HugeiconsIcon icon={ClipboardPasteIcon} strokeWidth={1.75} className="size-3.5" />
               Paste generation parameters
             </button>
           ) : null}
@@ -262,7 +260,7 @@ export function MediaGenerationPresetControl({
               onClick={() => remove().catch(() => undefined)}
               className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <Trash2 className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-3.5" />
               Delete preset
             </button>
           ) : null}

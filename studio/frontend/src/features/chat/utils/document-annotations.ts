@@ -9,7 +9,6 @@ export type DocumentAnnotations = { file: string; url?: string; items: DocumentA
 const TAG = "document_annotations";
 const MIME = "text/plain";
 
-// Like pasted text: the File identity marks it while it sits in the composer.
 const annotationsByFile = new WeakMap<File, DocumentAnnotations>();
 
 export function createAnnotationsFile(annotations: DocumentAnnotations): File {
@@ -28,10 +27,9 @@ export function annotationsOfFile(
   return file === undefined ? undefined : annotationsByFile.get(file);
 }
 
-// One line with no quotes or tags: a page picks its title, and must not end the block early.
+// One line with no quotes or tags, so a page title cannot end the block early.
 const quoteAttr = (value: string) => value.replace(/[\r\n"<>]/g, " ");
 
-/** What the model reads: JSON items, so the chip can parse them back from a stored message. */
 export function annotationsContentText({
   file,
   url,
@@ -61,7 +59,6 @@ export function parseAnnotationsContent(
   text: string | undefined,
 ): DocumentAnnotations | null {
   if (!text || !isAnnotationsContent(text)) return null;
-  // The header is the first line: its attributes never hold a newline, but a page's address can be long.
   const header = /^<document_annotations file="([^"]*)"(?: url="([^"]*)")?>/.exec(
     text.split("\n", 1)[0],
   );

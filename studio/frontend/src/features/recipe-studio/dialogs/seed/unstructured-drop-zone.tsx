@@ -26,7 +26,6 @@ const ACCEPTED_EXTENSIONS = [
   ".eml", ".msg", ".mht", ".mhtml",
 ];
 
-/** One queued upload: browser bytes, or a desktop drop the backend redeems. */
 type UploadCandidate = {
   name: string;
   size: number;
@@ -186,10 +185,8 @@ export function UnstructuredDropZone({
       if (!needsServerRemove) return;
       deletedIdsRef.current.add(entry.id);
       removeUnstructuredFile(blockId, entry.id).catch(() => {
-        // Skip if the drop zone unmounted or its block changed: the id no
-        // longer belongs here and restoring would leak it into another block.
+        // The id would leak into another block if the zone unmounted or its block changed.
         if (!mountedRef.current || blockIdRef.current !== blockId) return;
-        // Still exists server-side (counts toward quota); restore it at its original position.
         deletedIdsRef.current.delete(entry.id);
         onFilesChange((prev) => {
           const next = [...prev];
@@ -207,12 +204,10 @@ export function UnstructuredDropZone({
     [blockId, onFilesChange],
   );
 
-  // Tauri suppresses webview drop events, so the plain `onDrop` this zone
-  // carried was dead on desktop (#9036).
+  // Tauri suppresses webview drop events, so a plain onDrop is dead on desktop.
   const { ref: dropRef, dragging: isDragOver, dragHandlers } = useNativeFileDrop({
     onFiles: handleFiles,
-    // A seed corpus can run to hundreds of MB, so the backend redeems the
-    // signed path itself rather than routing bytes through the webview.
+    // A seed corpus can be hundreds of MB, so the backend redeems the signed path itself.
     onNativeIntents: (intents) =>
       uploadCandidates(
         intents.map((intent) => ({
@@ -300,7 +295,6 @@ export function UnstructuredDropZone({
                   className="size-4 text-red-500"
                 />
               )}
-              {/* Queued local upload, so keep the name out of the snapshot. */}
               <span data-reload-snapshot-sensitive className="flex-1 truncate">
                 {entry.name}
               </span>

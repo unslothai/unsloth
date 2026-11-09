@@ -79,9 +79,12 @@ def test_tool_call_outlives_sdk_read_timeout(slow_server, monkeypatch, scope):
     import mcp.shared._httpx_utils as httpx_utils
 
     monkeypatch.setattr(httpx_utils, "MCP_DEFAULT_SSE_READ_TIMEOUT", 1.0)
-    out = mcp_client.call_tool_sync(
-        slow_server, None, "slow", {"seconds": 2}, timeout = 30, scope = scope
-    )
+    try:
+        out = mcp_client.call_tool_sync(
+            slow_server, None, "slow", {"seconds": 2}, timeout = 30, scope = scope
+        )
+    finally:
+        mcp_client.close_mcp_sessions()  # the scoped case caches a session
     assert "slept 2" in out, out
 
 

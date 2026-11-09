@@ -1,9 +1,10 @@
 import { revealPathToken } from "../api";
 import { useNativeIntentStore } from "../store";
 import type { NativeIntent } from "../types";
-import { XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "@/lib/toast";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 interface NativeModelChipProps {
   intent: NativeIntent;
@@ -100,7 +101,7 @@ export function NativeModelChip({
         className="flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"
         aria-label="Dismiss local model"
       >
-        <XIcon className="size-3" />
+        <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
       </button>
     </div>
   );

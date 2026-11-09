@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// No imports: the chat adapter, the tool card and the search index share it, and node tests load it as is.
+// No imports: shared by several modules and loaded as is by node tests.
 
 export interface McpUiEnvelope {
   resourceUri: string;
-  /** Image blocks carry no `data`: it rides the image envelope, in order. */
   content?: { type?: string; data?: string; [key: string]: unknown }[];
   structuredContent?: unknown;
   _meta?: Record<string, unknown>;
-  /** Seed data was too large to persist; the widget must fetch it itself. */
   structuredContentOmitted?: boolean;
 }
 
@@ -76,7 +74,6 @@ export function mcpUiReplayImages(
   );
 }
 
-/** The scope the chat adapter records "Always allow" under, shared so it covers model and widget calls. */
 export function toolApprovalScope(
   sessionId: string | null | undefined,
   threadId: string | null | undefined,
@@ -162,7 +159,6 @@ const CSP_PARAMS: [string, string][] = [
   ["base_uri", "baseUriDomains"],
 ];
 
-/** The frame shell's query from the template's declared CSP; a server may send `"csp": null`. */
 export function cspFrameQuery(csp: unknown): string {
   const query = new URLSearchParams();
   const declared =
@@ -189,7 +185,6 @@ export function newBridgeToken(): string | null {
 
 /** A MessageChannel port bound to THIS document (a navigated page cannot use it), exposed as window.parent/top. */
 export function bridgeShim(token: string, hostOrigin: string): string {
-  // postMessage widened to Window's (message, targetOrigin, transfer); replies re-dispatched as the port's.
   return `(() => { try {
   const real = window.parent, channel = new MessageChannel(), port = channel.port1;
   const raw = port.postMessage.bind(port);

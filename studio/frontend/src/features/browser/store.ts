@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentAnnotations, onChatThreadsDeleted, useChatRuntimeStore } from "@/features/chat";
+import type { DocumentAnnotations } from "@/features/chat/utils/document-annotations";
+import { onChatThreadsDeleted } from "@/features/chat/utils/chat-thread-tombstones";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { create } from "zustand";
 import { localOriginOf, unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
@@ -49,7 +51,6 @@ export type RequestEdits = (prompt: string) => void;
 /** false keeps marks when the composer rejects them and explains why; `files` carries the annotation screenshot. */
 export type SendAnnotations = (annotations: DocumentAnnotations, files?: File[]) => Promise<boolean>;
 
-/** Stages a file in the chat's composer; false when it refused it (it says why). */
 export type AttachToChat = (file: File) => Promise<boolean>;
 
 export type FileViewMode = "preview" | "source";
@@ -94,13 +95,12 @@ export type BrowserTab = {
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
-  /** The sidebar pin this tab shows (pinned-pages-store), kept as it navigates. */
   pinnedId: string | null;
   /** The chat the tab belongs to (`BrowserState.chat`); the panel shows only that chat's tabs. */
   chat: string;
 };
 
-type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean };
+type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean; floating: boolean };
 
 /** The chat on screen before the chat page names it (chat-page.tsx `shownChatKey`). */
 export const NEW_CHAT = "new";
@@ -149,8 +149,7 @@ export function setNativeWebHistory(native: boolean): void {
 
 const MAX_HISTORY = 50;
 
-// Loaded pages by history entry, so back and forward skip the fetch. Reload drops only its own entry.
-// Fewer on a low-memory machine.
+// Page cache by history entry for back/forward; smaller on low-memory machines.
 const cacheLimit = cacheLimits(reportedDeviceMemory());
 const pageCache = new PageCache<BrowserEntry>(cacheLimit.maxPages, cacheLimit.maxTotalBytes);
 
@@ -324,7 +323,7 @@ type BrowserState = {
   /** A new chat got its id on its first save: its tabs go with it. */
   adoptChat: (from: string, to: string) => void;
   /** A web tab for `chat`, in front only when that chat is on screen (`background`: behind its front tab); its id. */
-  openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean }) => string | null;
+  openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean; temporary?: boolean }) => string | null;
   forgetChat: (chat: string) => void;
   /** `tabId` in front of `chat`'s open panel: now if it is on screen, else when it comes back. */
   revealIn: (chat: string, tabId: string) => void;
@@ -335,9 +334,12 @@ type BrowserState = {
   bookmarkSequence: number;
   device: DeviceMode;
   fullView: boolean;
+  /** The floating window layout of the chat on screen, kept across closes (others keep theirs in `chats`). */
+  floating: boolean;
+  /** Floated by a close mid-run (close-browser.ts): its own close restores the chosen layout. */
+  floatedForAgent: boolean;
   chatDock: ChatDock;
   chatSide: ChatSide;
-  /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
   sendAnnotations: SendAnnotations | null;
   attachToChat: AttachToChat | null;
@@ -368,6 +370,7 @@ type BrowserState = {
     options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string; from?: string },
   ) => void;
   openFile: (input: OpenFileInput) => void;
+  editFile: (tabId: string, blob: Blob) => void;
   navigate: (
     tabId: string,
     request: { url: string; method?: "GET" | "POST"; body?: string; from?: string; temporary?: boolean },
@@ -380,7 +383,6 @@ type BrowserState = {
   reload: (tabId: string) => void;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
-  /** Moves a tab to `index` in the strip, as dragging it there does. */
   moveTab: (tabId: string, index: number) => void;
   updateTab: (
     tabId: string,
@@ -408,6 +410,8 @@ type BrowserState = {
   setFullView: (fullView: boolean) => void;
   setChatDock: (dock: ChatDock) => void;
   splitWithChatOn: (side: ChatSide) => void;
+  setFloating: (floating: boolean) => void;
+  floatForAgent: () => void;
 };
 
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
@@ -501,7 +505,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         // Another chat's: it shows there next time, without moving this chat's panel.
         const saved = state.chats[chat];
         const activeTabId = background && saved?.activeTabId ? saved.activeTabId : owned.id;
-        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, activeTabId } } };
+        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, floating: saved?.floating ?? false, activeTabId } } };
       }
       return {
         open: true,
@@ -530,7 +534,12 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (chat === state.chat) return;
       const chats = { ...state.chats };
       if (state.tabs.some((tab) => tab.chat === state.chat)) {
-        chats[state.chat] = { open: state.open, activeTabId: state.activeTabId, fullView: state.fullView };
+        chats[state.chat] = {
+          open: state.open,
+          activeTabId: state.activeTabId,
+          fullView: state.fullView,
+          floating: state.floating && !state.floatedForAgent,
+        };
       } else {
         delete chats[state.chat];
       }
@@ -549,6 +558,9 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         activeTabId: fresh?.id ?? activeTabId,
         open,
         fullView: open && (saved ? saved.fullView : state.fullView),
+        // Each chat floats only once it was floated there; a chat new to the browser opens beside it.
+        floating: saved?.floating ?? false,
+        floatedForAgent: false,
         annotateTabId: null,
         renamingTabId: null,
       });
@@ -572,12 +584,20 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         return;
       }
       set((state) => ({
-        chats: { ...state.chats, [chat]: { open: true, fullView: state.chats[chat]?.fullView ?? false, activeTabId: tabId } },
+        chats: {
+          ...state.chats,
+          [chat]: {
+            open: true,
+            fullView: state.chats[chat]?.fullView ?? false,
+            floating: state.chats[chat]?.floating ?? false,
+            activeTabId: tabId,
+          },
+        },
       }));
     },
     openTabIn: (chat, url, options) => {
       if (!isWeb(url)) return null;
-      const tab = createTab(webEntry(unwrapRedirect(url), undefined, undefined, options?.from));
+      const tab = createTab(webEntry(unwrapRedirect(url), undefined, undefined, options?.from, options?.temporary));
       openTab(tab, options?.background, undefined, chat);
       return tab.id;
     },
@@ -594,6 +614,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     bookmarkSequence: 0,
     device: "off",
     fullView: false,
+    floating: false,
+    floatedForAgent: false,
     chatDock: "composer",
     chatSide: "left",
     requestEdits: null,
@@ -616,7 +638,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       }
       set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
     },
-    closePanel: () => set({ open: false, fullView: false, annotateTabId: null }),
+    closePanel: () =>
+      set((state) => ({
+        open: false,
+        fullView: false,
+        annotateTabId: null,
+        ...(state.floatedForAgent ? { floating: false, floatedForAgent: false } : {}),
+      })),
     togglePanel: () => (get().open ? get().closePanel() : get().openPanel()),
     newTab: () => {
       openTab(createTab({ kind: "newtab" }));
@@ -732,6 +760,16 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const tab = createTab(entry, openKey);
       openTab(tab);
       if (page) get().setFileView(tab.id, { pageTarget: { page } });
+    },
+    editFile: (tabId, blob) => {
+      const tab = get().tabs.find((candidate) => candidate.id === tabId);
+      const shown = tab && currentEntry(tab);
+      if (shown?.kind !== "file") return;
+      const fileId = newId("file");
+      files.set(fileId, blob);
+      // No openKey: a reopen from chat would replace the edit in place.
+      const { openKey: _, ...rest } = shown;
+      set((state) => ({ tabs: patchTab(state.tabs, tabId, (current) => pushEntry(current, { ...rest, fileId })) }));
     },
     navigate: (tabId, request, options) => {
       if (!isWeb(request.url)) return;
@@ -851,9 +889,26 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, zoom: Math.min(5, Math.max(0.25, zoom)) })),
       })),
     setDevice: (device) => set({ device }),
-    setFullView: (fullView) => set({ fullView, chatDock: "composer" }),
+    setFullView: (fullView) =>
+      set(
+        fullView
+          ? { fullView, chatDock: "composer", floating: false, floatedForAgent: false }
+          : { fullView, chatDock: "composer" },
+      ),
     setChatDock: (chatDock) => set({ chatDock }),
-    splitWithChatOn: (chatSide) => set({ fullView: false, chatSide }),
+    splitWithChatOn: (chatSide) => set({ fullView: false, floating: false, floatedForAgent: false, chatSide }),
+    // Marks would land on the unscaled page.
+    setFloating: (floating) =>
+      set(
+        floating
+          ? { floating, floatedForAgent: false, fullView: false, chatDock: "composer", annotateTabId: null }
+          : { floating, floatedForAgent: false },
+      ),
+    floatForAgent: () => {
+      if (get().floating) return;
+      get().setFloating(true);
+      set({ floatedForAgent: true });
+    },
   };
 });
 

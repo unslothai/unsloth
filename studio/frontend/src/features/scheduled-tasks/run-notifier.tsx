@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { AUTH_SESSION_STORED_EVENT, getAuthSessionEpoch, hasSettledAuthSession } from "@/features/auth";
-import { notifyChatHistoryUpdated, useChatNavigationStore } from "@/features/chat";
+import { notifyChatHistoryUpdated } from "@/features/chat/api/chat-api";
+import { useChatNavigationStore } from "@/features/chat/stores/chat-navigation-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { translate } from "@/i18n";
 import { browserAccountKey } from "@/lib/account-transition";
 import { isTauri } from "@/lib/api-base";
@@ -13,6 +15,7 @@ import { toast } from "@/lib/toast";
 import { type FinishedScheduledTaskRun, getScheduledTaskActivity } from "./api";
 import {
   IDLE_POLL_MS,
+  asksToLoadModel,
   SCHEDULED_TASKS_CHANGED_EVENT,
   SCHEDULED_TASKS_WRITTEN_KEY,
   SCHEDULED_TASK_RUNS_FINISHED_EVENT,
@@ -25,6 +28,7 @@ import {
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
+  runsAskingToLoad,
   runsToNotify,
   readInRecents,
   unseenChatChanges,
@@ -34,6 +38,7 @@ import { useUnseenScheduledRuns } from "./unseen";
 
 // More than this at once, e.g. on reopening Studio, and one toast speaks for them all.
 const INDIVIDUAL_TOASTS = 2;
+const ModelLoadPrompt = lazy(() => import("./model-load-prompt"));
 const RECHECK_MS = 500;
 // Lock one tab holds while claiming what to announce (account name appended).
 const ANNOUNCE_LOCK_PREFIX = "unsloth-scheduled-task-results:";
@@ -119,14 +124,21 @@ function notifySystem(runs: FinishedScheduledTaskRun[]): void {
 /** Watches for scheduled results: refreshes Recents, marks chats unread, toasts and notifies. Renders nothing. */
 export function ScheduledTaskRunNotifier() {
   const navigate = useNavigate();
+  const [asking, setAsking] = useState<FinishedScheduledTaskRun[]>([]);
   const navigateRef = useRef(navigate);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const pathnameRef = useRef(pathname);
   const openThread = useRouterState({
-    select: (state) => (state.location.search as { thread?: unknown }).thread,
+    select: (state) => {
+      const search = state.location.search as { thread?: unknown; compare?: unknown };
+      return state.location.pathname === "/chat" && !search.compare && typeof search.thread === "string"
+        ? search.thread
+        : null;
+    },
   });
   useEffect(() => {
-    if (typeof openThread === "string") useUnseenScheduledRuns.getState().clearThread(openThread);
+    const { ttsEnabled, autoReadAloud } = useVoiceSettingsStore.getState();
+    useUnseenScheduledRuns.getState().openThread(openThread, ttsEnabled && autoReadAloud);
   }, [openThread]);
   // Recents' unread marks follow the account's stored unseen results, so every tab and a reload
   // show them, and opening one anywhere clears it everywhere.
@@ -193,7 +205,14 @@ export function ScheduledTaskRunNotifier() {
         })),
         pathnameRef.current === "/tasks",
       );
-      const notified = runsToNotify(runs);
+      const asks = runsAskingToLoad(runs);
+      if (asks.length > 0) {
+        setAsking((current) => [
+          ...current.filter((run) => !asks.some((ask) => ask.taskId === run.taskId)),
+          ...asks,
+        ]);
+      }
+      const notified = runsToNotify(runs.filter((run) => !asksToLoadModel(run)));
       if (notified.length === 0) return;
       if (notified.length > INDIVIDUAL_TOASTS) {
         toast(translate("scheduledTasks.toast.many", { count: notified.length }), {
@@ -303,5 +322,16 @@ export function ScheduledTaskRunNotifier() {
     };
   }, []);
 
-  return null;
+  const ask = asking[0];
+  if (!ask) return null;
+  return (
+    <Suspense fallback={null}>
+      <ModelLoadPrompt
+        key={ask.id}
+        run={ask}
+        // By id: Load and run closes the dialog too, and both must not drop the next prompt.
+        onDone={() => setAsking((current) => current.filter((run) => run.id !== ask.id))}
+      />
+    </Suspense>
+  );
 }

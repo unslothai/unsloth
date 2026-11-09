@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  Archive03Icon,
+  ArchiveIcon,
   ArchiveRestoreIcon,
-  Delete02Icon,
   Download01Icon,
   MoreVerticalIcon,
   PinIcon,
@@ -23,18 +22,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
 
-/**
- * Actions for one gallery item, shared by the Images, Video and Audio pages. Matches a chat row's menu.
- *
- * "toolbar" sits in the glass toolbar over the preview; "overlay" is the badge that appears on a
- * filmstrip tile on hover; "row" is the quiet trigger at the end of a list row. A tile is itself a
- * <button>, so the menu must be rendered as its SIBLING, never a child -- nested buttons are invalid
- * and break keyboard activation.
- */
+/** A tile is itself a <button>, so the menu must be its SIBLING, never a child. */
 export type GalleryItemMenuVariant = "toolbar" | "overlay" | "row";
 
 export function GalleryItemMenu({
@@ -51,6 +43,8 @@ export function GalleryItemMenu({
   variant = "toolbar",
   noun,
   active = true,
+  open: openProp,
+  onOpenChange,
   className,
 }: {
   pinned: boolean;
@@ -60,28 +54,31 @@ export function GalleryItemMenu({
   onTogglePin: () => void;
   onToggleArchive: () => void;
   onDelete: () => void;
-  /** One-click download of the original file. */
   onDownload?: () => void;
-  /** Copies the item into a project's folder. */
   onAddToProject?: (projectId: string) => Promise<{ already: boolean }>;
-  /** Page-specific items shown first, above a separator. */
   leadingItems?: ReactNode;
   variant?: GalleryItemMenuVariant;
-  /** Used in the aria-label and messages, e.g. "image" or "video". */
   noun: MediaNoun;
   /** False while the page is off-tab; forces the menu shut so a portalled popup cannot outlive it. */
   active?: boolean;
+  /** Opens the menu from outside, e.g. a right-click on the tile it sits on. Uncontrolled when omitted. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   className?: string;
 }) {
-  // Controlled like RecipePopover: DropdownMenuContent portals to body, so the inert page wrapper
-  // cannot contain it when the tab goes away.
+  // Controlled: the menu portals to body, so the inert page wrapper cannot contain it.
   const t = useT();
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = openProp ?? ownOpen;
+  const setOpen = (next: boolean) => {
+    setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const project = useProjectSubmenu({ noun, onAddToProject });
   const closeProject = project.close;
   useEffect(() => {
     if (!active) {
-      setOpen(false);
+      setOwnOpen(false);
       closeProject();
     }
   }, [active, closeProject]);
@@ -110,7 +107,6 @@ export function GalleryItemMenu({
           />
         </Button>
       </DropdownMenuTrigger>
-      {/* Same styling as a chat row's menu. */}
       <DropdownMenuContent
         align="end"
         className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-52"
@@ -143,12 +139,12 @@ export function GalleryItemMenu({
         ) : null}
         {project.submenu}
         <DropdownMenuItem onClick={onToggleArchive}>
-          <HugeiconsIcon icon={archived ? ArchiveRestoreIcon : Archive03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={archived ? ArchiveRestoreIcon : ArchiveIcon} strokeWidth={1.75} className="size-icon" />
           {archived ? "Restore from archive" : "Archive"}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onClick={onDelete}>
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -180,7 +176,6 @@ export function GalleryItemMenu({
   );
 }
 
-/** A pinned tile's marker, which unpins on click. Shows the unpin icon on hover or focus. */
 export function GalleryPinBadge({
   noun,
   onUnpin,

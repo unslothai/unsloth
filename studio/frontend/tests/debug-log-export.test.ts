@@ -196,7 +196,11 @@ function makeWorld(options: {
       cn: (...parts: unknown[]) => parts.filter(Boolean).join(" "),
     },
     "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/hugeicons-derived": { LineWrapDisableIcon: {}, LineWrapIcon: {} },
     "@hugeicons/react": { HugeiconsIcon: () => null },
+    "@/lib/tick-icon": { Tick02Icon: {} },
+    "@/lib/copy-icon": { Copy01Icon: {} },
     "lucide-react": { ArrowDownIcon: () => null },
     "../api/debug-logs": api,
     "../components/settings-row": {

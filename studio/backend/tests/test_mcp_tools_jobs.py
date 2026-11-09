@@ -252,12 +252,28 @@ def test_a_status_read_that_stalls_never_holds_a_wait_past_wait_s(monkeypatch, f
 
 
 def test_a_first_read_that_stalls_ends_with_a_retry_hint(monkeypatch):
-    from studio_mcp.tools import jobs
+    from studio_mcp import jobs as job_reads
 
-    monkeypatch.setattr(jobs, "FIRST_READ_S", 0.2)
+    monkeypatch.setattr(job_reads, "FIRST_READ_S", 0.2)
     studio = fake_studio({VIDEO: slow(_video("in_progress", 10), 10)})
     started = time.monotonic()
     result, _studio = run_tool(monkeypatch, studio, "get_job", {"kind": "video", "id": "vid-1"})
     assert time.monotonic() - started < 5
     assert result["isError"] is True
     assert "call get_job again" in result["content"][0]["text"]
+
+
+def test_the_wait_bound_holds_while_max_wait_is_shortened(monkeypatch):
+    # get_job's annotations are lazy: the schema is built on first use, which can be inside a test that has
+    # shortened MAX_WAIT_S to 0.1. An int field bounded by that float cannot be built at all.
+    import typing
+
+    from pydantic import TypeAdapter, ValidationError
+
+    from studio_mcp.tools import jobs
+
+    monkeypatch.setattr(loading, "MAX_WAIT_S", 0.1)
+    wait_s = TypeAdapter(typing.get_type_hints(jobs.get_job, include_extras = True)["wait_s"])
+    assert wait_s.validate_python(240) == 240
+    with pytest.raises(ValidationError):
+        wait_s.validate_python(241)

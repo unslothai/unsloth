@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Original-layout (ComfyUI / reference repo) single files -> diffusers state dicts for Krea 2 and
-HunyuanImage 2.1, which diffusers ships without a single-file converter.
-
-Rules only rename, split rows or reorder whole rows, never columns: ``diffusion_comfy_quant`` traces
-each int8 / fp8 row (and GGUF block) back to its source and refuses anything else. Unknown keys raise.
-No module-level torch import: ``diffusion.py`` imports this on every load.
-"""
+"""Krea 2 / HunyuanImage 2.1 single files to diffusers; row-wise renames and splits only, never
+columns; unknown keys raise; no module-level torch import"""
 
 from __future__ import annotations
 
@@ -121,6 +116,38 @@ def krea2_checkpoint_to_diffusers(checkpoint: Any = None, **kwargs: Any) -> dict
         if new is None:
             raise ValueError(f"{raw_key}: not a Krea 2 transformer key this converter knows")
         converted[stem + new] = value
+    return converted
+
+
+_MOSS_QKV_RE = re.compile(r"^(layers\.\d+\.proj\.)qkv\.(weight|bias)$")
+
+
+def moss_image_checkpoint_to_diffusers(checkpoint: Any = None, **kwargs: Any) -> dict:
+    """Reference-layout MOSS-Image -> the in-tree names: split the fused ``proj.qkv`` (equal q, k, v thirds), drop the
+    ``comfy_attention.config`` hint."""
+    converted: dict = {}
+    for raw_key, value in (checkpoint or {}).items():
+        key = _strip_prefix(raw_key)
+        if key.endswith(".comfy_attention.config"):
+            continue
+        match = _MOSS_QKV_RE.match(key)
+        if match is None:
+            converted[key] = value
+            continue
+        stem, kind = match.groups()
+        rows = int(value.shape[0])
+        if rows % 3:
+            raise ValueError(f"{raw_key}: {rows} rows do not split into q, k and v")
+        for part, piece in zip(("q", "k", "v"), _split_rows(raw_key, value, (rows // 3,) * 3)):
+            converted[f"{stem}{part}.{kind}"] = piece
+    config = kwargs.get("config") or {}
+    if "rope.bands" not in converted and config.get("dim") and config.get("num_heads"):
+        # Some converters drop the RoPE band buffer; it is a function of the config (_RoPE._default_bands).
+        import torch
+
+        bands = int(config["dim"]) // int(config["num_heads"]) // 8
+        exponent = torch.arange(bands, dtype = torch.float32) / bands
+        converted["rope.bands"] = 1 / (float(config.get("rope_base", 10000.0)) ** exponent)
     return converted
 
 
@@ -348,6 +375,7 @@ def _cat_rows(first: Any, second: Any) -> Any:
 
 CONVERTERS: dict = {
     "Krea2Transformer2DModel": krea2_checkpoint_to_diffusers,
+    "MOSSImageTransformer": moss_image_checkpoint_to_diffusers,
     "HunyuanImageTransformer2DModel": hunyuanimage_checkpoint_to_diffusers,
 }
 

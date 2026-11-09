@@ -65,8 +65,7 @@ function SelectTrigger({
   children,
   icon,
   iconClassName,
-  /* Off by default: the radius morph matched the old item-aligned popup
-     that overlaid the trigger; popper menus drop below it instead. */
+  /* Off by default: popper menus drop below the trigger, so the radius morph is moot. */
   animateRadius = false,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
@@ -144,14 +143,10 @@ function SelectContent({
         {...props}
       >
         <SelectScrollUpButton />
-        {/* The Radix viewport is the scroller (not the rounded surface, whose
-            scrollbar would square its corners in WebKit; not a wrapper, which
-            would blind Radix's scroll handling). The surface padding insets
-            the scrollbar clear of the curve. */}
+        {/* The Radix viewport scrolls: the surface's scrollbar squares corners, a wrapper blinds Radix. */}
         <SelectPrimitive.Viewport
           data-position={position}
-          // Inline: Radix injects a scrollbar-width:none stylesheet rule that
-          // Firefox lets win over author !important.
+          // Inline: Firefox lets Radix's scrollbar-width:none rule beat author !important.
           style={{ scrollbarWidth: "thin" }}
           className={cn(
             "min-h-0 flex-1 overflow-x-hidden overflow-y-auto",

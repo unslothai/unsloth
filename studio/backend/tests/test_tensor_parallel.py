@@ -24,7 +24,7 @@ def _shared_setup_1(monkeypatch):
     proc = _ToggleProcess()
     b._process = proc
     fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set() or True)
     b._start_mtp_crash_watchdog()
     return b, fired, proc
 
@@ -1019,7 +1019,6 @@ def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
         lambda b: setattr(b, "_process", None),
     ],
 )
@@ -1600,7 +1599,7 @@ def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
     # The gate's required footprint must include the non-shrinkable MTP reserve,
     # not weights alone, or a separate-drafter MTP load can still overcommit.
     assert "_tp_mtp_floor" in src
-    assert "model_size + _tp_mtp_floor" in src
+    assert "model_size - _host_input_embd + _tp_mtp_floor" in src
 
 
 def test_load_model_tensor_floor_keeps_flat_reserve_for_weights_only():

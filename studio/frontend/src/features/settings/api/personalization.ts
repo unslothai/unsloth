@@ -12,6 +12,11 @@ export type PersonalizationProfile = {
   avatarDataUrl: string | null;
   avatarShape: "circle" | "rounded";
   showGreetingSloth: boolean;
+  greetingStyle: "text" | "image";
+  greetingIcon: "sloth" | "custom" | "none";
+  greetingIconDataUrl: string | null;
+  greetingText: string;
+  greetingImageDataUrl: string | null;
 };
 
 export type PersonalizationAppearance = {
@@ -25,15 +30,14 @@ export type Personalization = {
   version: number;
   profile: PersonalizationProfile;
   appearance: PersonalizationAppearance;
-  // Distinguishes server hydrate from first local migration.
   saved: boolean;
-  // False when the stored record predates these fields (legacy migration): the
-  // client then keeps local values instead of the server-filled defaults.
+  // False for legacy records: the client keeps local values over server-filled defaults.
   customizationSaved: boolean;
   chatWidthSaved?: boolean;
   sentAttachmentsSaved?: boolean;
   paletteSaved: boolean;
   greetingSlothSaved: boolean;
+  greetingCustomSaved?: boolean;
 };
 
 export async function loadPersonalization(): Promise<Personalization> {
@@ -55,6 +59,7 @@ export async function savePersonalization(
     | "sentAttachmentsSaved"
     | "paletteSaved"
     | "greetingSlothSaved"
+    | "greetingCustomSaved"
   >,
 ): Promise<void> {
   const res = await authFetch("/api/settings/personalization", {

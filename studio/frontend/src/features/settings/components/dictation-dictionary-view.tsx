@@ -5,16 +5,14 @@ import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { useVoiceSettingsStore } from "../stores/voice-settings-store";
 
-// Full-page editor for the dictation dictionary. Kept on its own subpage so a
-// long list of entries does not crowd the main Voice settings.
 export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   const t = useT();
   const dictionary = useVoiceSettingsStore((s) => s.dictionary);
@@ -72,8 +70,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
             <Input
               value={entry}
               onChange={(e) => updateDictionaryEntry(index, e.target.value)}
-              // Tabbing to this row's remove button must not commit-splice the
-              // row first, which shifts indices and deletes the wrong entry.
+              // Tabbing to remove must not commit-splice first, which would delete the wrong entry.
               onBlur={(e) => {
                 if (
                   e.relatedTarget instanceof HTMLElement &&
@@ -93,15 +90,14 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
               size="icon"
               className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
               data-remove-index={index}
-              // Keep the click from blurring an empty input first, which would
-              // commit-splice this row and make onClick delete the next one.
+              // Prevent blur on an empty input, which would splice this row and delete the next.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => removeDictionaryEntry(index)}
               aria-label={t("settings.voice.dictionary.removeEntryAria", {
                 index: index + 1,
               })}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
             </Button>
           </div>
         ))}

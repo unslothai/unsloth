@@ -1,31 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Throughput layout for native FSDP2 when the model fits on one GPU.
-
-Plain FSDP2 is slower than DDP for a model that fits on each GPU because it moves weights DDP never
-moves: every block's frozen LoRA base weights are all-gathered in forward and again for the backward
-(or gradient checkpointing) recompute, and full fine-tuning all-gathers each block twice per step.
-When the model fits, the layout here keeps:
-
-  * frozen parameters replicated (passed as ``ignored_params``): never gathered, never reduced, exactly
-    like DDP, and bitsandbytes 4-bit base weights stay plain ``Params4bit``;
-  * trainable parameters, their gradients and optimizer state sharded as usual;
-  * the gathered trainable weights resident from forward to backward (``reshard_after_forward=False``),
-    one all-gather per step instead of two;
-  * explicit next-block prefetch in forward and backward;
-  * when only small trainable params are left (LoRA adapters), a single root unit: one all-gather and
-    one reduce-scatter per step, no per-block hooks.
-
-Units holding no trainable parameter are not wrapped (no hooks, no empty collectives). Peak memory stays
-at or below DDP: frozen weights are what DDP holds, trainable weights are held once gathered plus one
-shard, and gradients plus optimizer state are sharded.
-
-Env overrides (read only when native FSDP2 is used): ``UNSLOTH_FSDP2_REPLICATE_FROZEN`` = auto | 1 | 0,
-``UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD`` = auto | 1 | 0, ``UNSLOTH_FSDP2_PREFETCH`` = 1 | 0,
-``UNSLOTH_FSDP2_FIT_FRACTION`` (default 0.4 of one device's memory), ``UNSLOTH_FSDP2_FREE_FIT_FRACTION``
-(default max(0.5, fit fraction / 0.8) of free + cached + resident model memory, read after process group init).
-"""
+"""Throughput FSDP2 layout for models fitting one GPU: frozen weights replicated, trainable sharded."""
 
 from dataclasses import dataclass, field
 from typing import Optional

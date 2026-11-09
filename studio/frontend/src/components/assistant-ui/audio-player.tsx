@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Download01Icon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { PauseIcon, PlayIcon } from "lucide-react";
+import { PlayIcon } from "lucide-react";
 import { type FC, useRef, useState } from "react";
 
 interface AudioPlayerProps {
@@ -33,8 +34,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
       setIsPlaying(false);
       return;
     }
-    // An uploaded file can carry a codec the webview cannot decode, so the
-    // button only flips once playback has actually started.
+    // The file may carry a codec the webview cannot decode, so flip only once playback starts.
     audio.play().then(
       () => setIsPlaying(true),
       () => setIsPlaying(false),
@@ -98,7 +98,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
         onClick={togglePlay}
       >
         {isPlaying ? (
-          <PauseIcon className="size-4" />
+          <HugeiconsIcon icon={PauseIcon} className="size-4" />
         ) : (
           <PlayIcon className="size-4" />
         )}

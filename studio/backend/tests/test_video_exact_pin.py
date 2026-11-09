@@ -52,7 +52,7 @@ def fake(monkeypatch):
     monkeypatch.setattr(dm, "host_pinning_allowed", lambda *a, **k: True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch, "empty", empty)
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: True)
     monkeypatch.setattr(dm, "_RegisteredHostBuffer", _FakeRegistered)
     return stock
 
@@ -127,7 +127,7 @@ def test_the_kill_switch_restores_the_power_of_two_chunks(fake, monkeypatch, val
 
 
 def test_unsupported_registration_keeps_the_stock_pin(fake, monkeypatch):
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: False)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: False)
     module = _module()
     dm._pin_host_weights(module, _host(module), None, buffer_host = {}, layout = [], exact = True)
     assert not _FakeRegistered.made
@@ -202,7 +202,7 @@ def test_a_gguf_weight_pins_registered_and_keeps_its_quant_type(monkeypatch):
         return t.clone()
 
     monkeypatch.setattr(dm, "registered_host_copy", fake_copy)
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: True)
     monkeypatch.delenv(dm.EXACT_PIN_ENV, raising = False)
     out = dm._registered_pin(src)
     assert made == [src.nbytes]
@@ -214,7 +214,7 @@ def test_a_gguf_weight_pins_registered_and_keeps_its_quant_type(monkeypatch):
 def test_the_kill_switch_pins_a_gguf_weight_through_the_allocator(monkeypatch):
     src = _gguf_weight()
     monkeypatch.setattr(dm, "registered_host_copy", lambda t: pytest.fail("registered"))
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: True)
     monkeypatch.setenv(dm.EXACT_PIN_ENV, "0")
     calls = []
     monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: calls.append(1) or self.clone())

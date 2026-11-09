@@ -202,7 +202,7 @@ def test_default_still_refuses_with_a_coded_runtime_error():
     assert excinfo.value.code == UNIFIED_OVERSIZE_REFUSAL_CODE == "unified-memory-load"
     message = str(excinfo.value)
     assert "Load anyway" in message
-    assert "'Allow oversized model loads' in Settings > System > Model memory" in message
+    assert "'Allow oversized model loads' in Settings > System > Model loading" in message
     assert "allow_oversized_load" in message
     assert f"{UNIFIED_OVERSIZE_ENV}=1" in message
 

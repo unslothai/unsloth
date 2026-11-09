@@ -5,9 +5,9 @@ import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   CheckmarkCircle02Icon,
-  Copy01Icon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {

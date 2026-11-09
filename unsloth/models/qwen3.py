@@ -15,17 +15,20 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
 from ..utils.packing import get_packed_info_from_kwargs
+from ..context_parallel import get_cp_manager
 from ..kernels import qk_norm_rope as _qk_norm_rope
 from ..kernels.qk_norm_rope import fast_qk_norm_rope, decode_qk_norm_rope
 from . import _decode_graphs
-from .llama import _decode_attention_core
+from .llama import _decode_attention_core, _decode_attention_span
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
+    context_parallel_attention,
     run_attention,
     SDPA,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -68,6 +71,8 @@ except:
     Qwen3FlashAttention2 = Qwen3Attention
 
 
+@applies_prefix_seg_info
+@context_parallel_attention(rl = True)
 def Qwen3Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -109,13 +114,17 @@ def Qwen3Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    # Under context parallel this rank holds a shard of the sequence but its positions are global.
+    cp_manager = get_cp_manager()
+    rope_seq_len = kv_seq_len * cp_manager.size if cp_manager is not None else kv_seq_len
+
     # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
-    if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
+    if position_embeddings and rope_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
         rotary_emb = self.rotary_emb
-        rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-        cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
+        rotary_emb.extend_rope_embedding(V, seq_len = rope_seq_len)
+        cos, sin = rotary_emb.get_cached(rope_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if _qk_norm_rope.QK_NORM_ROPE_ENABLED:
@@ -149,8 +158,7 @@ def Qwen3Attention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in **kwargs; misuse (KV cache or padding mask) raises; None is default
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -273,9 +281,12 @@ def Qwen3Attention_fast_forward_inference(
         # between two captured segments (static.attention), over the true length.
         self.paged_attention_K.index_copy_(0, static.slot, Kn.permute(2, 0, 1, 3))
         self.paged_attention_V.index_copy_(0, static.slot, Vn.permute(2, 0, 1, 3))
-        A = static.attention(
-            lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, False)[0]
-        )
+        if static.span is not None:
+            A = _decode_attention_span(self, Qn, static, bsz, False)
+        else:
+            A = static.attention(
+                lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, False)[0]
+            )
         A = A.transpose(1, 2).reshape(bsz, 1, attention_size)
         return fast_linear_forward(self.o_proj, A, out = self.temp_O), (None, None)
     self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
@@ -382,8 +393,7 @@ class FastQwen3Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen3ForCausalLM)
 
-        # Retain the old rotary embeddings: the static KV cache (transformers 4.38.0) slowed training.
-        # See unslothai/unsloth#168 and huggingface/transformers#27931.
+        # Static KV cache (4.38.0) slowed training (#168), so the old rotary embeddings are retained.
         import transformers.models.qwen3.modeling_qwen3
 
         transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = LlamaRotaryEmbedding

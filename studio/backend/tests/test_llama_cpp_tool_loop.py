@@ -189,7 +189,9 @@ def _make_backend(
         stream = streams.pop(0)
         if isinstance(stream, BaseException):
             raise stream
-        yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
+        yield type(
+            "FakeResponse", (), {"status_code": 200, "chunks": stream, "close": lambda self: None}
+        )()
 
     def fake_iter_text_cancellable(
         response,
@@ -3461,6 +3463,50 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert len(payloads[1]["messages"]) == 1
 
 
+@pytest.fixture
+def fresh_cut_memory():
+    from core.inference import prefix_boundary
+
+    prefix_boundary.clear()
+    yield
+    prefix_boundary.clear()
+
+
+def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(monkeypatch, fresh_cut_memory):
+    from core.inference import checkpoint
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    rounds = 16
+    streams = [
+        _structured_tool_call("python", {"code": f"print(open('f{i}').read())"}, f"call_{i}")
+        for i in range(rounds)
+    ] + [[_sse({"content": "Done."}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    backend._effective_context_length = 8192
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(len(str(m.get("content") or "")) for m in candidate),
+    )
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "x" * 1200
+    )
+
+    _run_tool_loop(
+        backend,
+        [{"role": "system", "content": "agent"}, {"role": "user", "content": "read every file"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = rounds,
+        max_tokens = 512,
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+    )
+
+    heads = [json.dumps(payload["messages"][:3]) for payload in payloads]
+    moves = sum(before != after for before, after in zip(heads, heads[1:]))
+    assert moves < len(payloads) // 2, moves
+
+
 def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
     """Unpriced media must not disable compaction that the text alone requires."""
     backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])
@@ -3639,6 +3685,64 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
         if isinstance(part, dict)
     )
     assert payloads[0]["messages"][-1] == audio_turn
+
+
+def test_recall_searches_the_users_question_not_the_loops_own_notices(monkeypatch):
+    """Repeated calls leave user-role notices at the end of the loop; the compacting final pass
+    must still search the archive for what the user asked (#16187)."""
+    from core.rag import conversation_archive
+
+    rounds = 4
+    payloads: list[dict] = []
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "a"}, f"c{r}a", index = 0),
+            _tool_call_sse("web_search", {"query": "b"}, f"c{r}b", index = 1),
+            _finish("tool_calls"),
+            _done(),
+        ]
+        for r in range(rounds)
+    ] + [[_sse({"content": "answer"}), _finish("stop"), _done()]]
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._effective_context_length = 4000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+    _record_tool_calls(monkeypatch, "R" * 500)
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(conversation_archive, "archive_turns", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(conversation_archive, "note_branch", lambda *_args, **_kwargs: None)
+    queries: list[str] = []
+
+    def fake_recall(_thread_id, query, **_kwargs):
+        queries.append(query)
+        return None
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    question = "what did the VULPINE search find"
+
+    events = _run_tool_loop(
+        backend,
+        [
+            {"role": "user", "content": "u" * 1200},
+            {"role": "assistant", "content": "a" * 1200},
+            {"role": "user", "content": question},
+        ],
+        [_web_search_tool()],
+        max_tool_iterations = rounds,
+        max_tokens = 200,
+        context_overflow = "truncate_oldest",
+        thread_id = "recall-query",
+    )
+
+    assert any(event.get("type") == "context_truncated" for event in events)
+    final = payloads[-1]["messages"]
+    assert final[-1]["role"] == "user" and question not in final[-1]["content"]
+    assert queries and set(queries) == {question}
 
 
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
@@ -5351,6 +5455,35 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     assert len(calls) == 1, [c[0] for c in calls]
 
 
+def test_gguf_textual_fallback_keeps_two_identical_unseeded_studio_generations(monkeypatch):
+    from core.inference import tool_facts
+
+    name = "mcp__unsloth__generate_image"
+    tool_facts.note_mcp_tool(name, {"name": "generate_image"}, studio = True)
+    blocks = '<tool_call>{"name":"%s","arguments":{"prompt":"a cat"}}</tool_call>' % name * 2
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
+    )
+    try:
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "two cats"}],
+                tools = [{"type": "function", "function": {"name": name}}],
+                max_tool_iterations = 1,
+            )
+        )
+    finally:
+        tool_facts.note_mcp_tool(name, {"name": "generate_image"})
+
+    assert calls == [(name, {"prompt": "a cat"})] * 2
+
+
 @pytest.mark.parametrize("deduplicate", [True, False])
 def test_gguf_textual_fallback_keeps_identical_calls_when_deduplication_is_off(
     monkeypatch, deduplicate
@@ -6646,6 +6779,9 @@ def test_repeated_note_on_an_mcp_image_keeps_the_base64_out_of_the_tool_text(mon
     ]
     payloads: list[dict] = []
     backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    # Images are charged in the fit (#14968): with no projector each one costs the ~4.2k
+    # admission ceiling, more than this 4096 window, so price the 6 px screenshot by size.
+    backend._mmproj_projector_type = "qwen3vl_merger"
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: fitted
     )
@@ -7030,7 +7166,7 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
 
 
 def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
-    """Loading deferred MCP tools is not a tool round (#10997)."""
+    """Search preserves the execution budget and rendered prefix while expanding the decoding grammar."""
     from core.inference import tools as tools_mod
 
     ping = {
@@ -7041,7 +7177,7 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
             "parameters": {"type": "object"},
         },
     }
-    monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_tool_spec", lambda name: ping)
     monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
     monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
     streams = [
@@ -7050,7 +7186,12 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
         [_sse({"content": "Pinged."}), _done()],
     ]
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
-    calls = _record_tool_calls(monkeypatch, "ok")
+    calls = _record_tool_calls(
+        monkeypatch,
+        lambda name: "Loaded 1 MCP tool.\n  schema: " + json.dumps(ping)
+        if name == "mcp_tool_search"
+        else "ok",
+    )
 
     _run_tool_loop(
         backend,
@@ -7060,7 +7201,9 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
     )
 
     assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
-    assert "mcp__srv1__ping" in [t["function"]["name"] for t in payloads[1].get("tools", [])]
+    assert payloads[1]["tools"] == payloads[0]["tools"] + [ping]
+    assert payloads[1]["chat_template_kwargs"]["tools"] == payloads[0]["tools"]
+    assert payloads[2]["tools"] == payloads[0]["tools"]
 
 
 def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):
@@ -7288,3 +7431,20 @@ def test_appended_notice_keeps_an_image_part_an_image():
         {"type": "text", "text": "\n\nStop."},
     ]
     assert _with_appended_text("Over the cap.", "\n\nStop.") == "Over the cap.\n\nStop."
+
+
+def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
+    """The tool said to ask the user and the model asked; that reply is the answer."""
+    streams = [
+        [_tool_call_sse("web_search", {"query": "music"}, "call_first"), _done()],
+        [_sse({"content": "Load the music model and I will make the song."}), _done()],
+        [_sse({"content": "unreachable"}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "Error: [needs_user_load kind=audio page=Audio] Not loaded.")
+    messages = [{"role": "user", "content": "Make a song."}]
+    events = _run_tool_loop(
+        backend, messages, [_WEB_SEARCH_TOOL], max_tool_iterations = 3, nudge_tool_calls = True
+    )
+    content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
+    assert len(payloads) == 2 and "I will make the song" in content

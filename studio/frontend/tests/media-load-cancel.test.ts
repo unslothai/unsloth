@@ -192,7 +192,7 @@ for (const [page, path] of PAGES) {
     );
     assert.match(poll, /const seq = cancelSeq\.current;/);
     assert.match(poll, /if \(seq !== cancelSeq\.current\) return;/);
-    assert.match(poll, /const loaded = await get(Diffusion|Video)Status\(\);\s*\n\s*if \(seq !== cancelSeq\.current\) \{/);
+    assert.match(poll, /const loaded = (ownDiffusionStatus\(await getDiffusionStatus\(\)\)|await getVideoStatus\(\));\s*\n\s*if \(seq !== cancelSeq\.current\) \{/);
   });
 
   test(`the ${page} cancel counter is bumped by every teardown`, () => {

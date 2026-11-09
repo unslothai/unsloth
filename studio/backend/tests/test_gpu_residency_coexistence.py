@@ -266,7 +266,7 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
             gr.can_load_alongside(arb.VIDEO, None), (False, {"reason": "estimate_unavailable"})
         )
         self.assertEqual(gr.can_load_alongside(arb.VIDEO, {})[1]["reason"], "estimate_unavailable")
-        for device in (DeviceType.MLX, DeviceType.CPU, DeviceType.XPU):
+        for device in (DeviceType.CPU, DeviceType.XPU):
             self.assertEqual(
                 self._check(need, device = device), (False, {"reason": "non_accelerator"})
             )
@@ -363,6 +363,90 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
             side_effect = AssertionError("planner"),
         ):
             self.assertTrue(self._check(_need({0: 1000}, kind = "video"))[0])
+
+    def _metal(self, need, wired, available, *chat_growth):
+        with (
+            _cuda(DeviceType.MLX),
+            patch.object(gr, "_mlx_chat_unallocated_mib", return_value = sum(chat_growth)),
+            patch(
+                "core.inference.llama_cpp._apple_wired_headroom_bytes",
+                return_value = wired and wired * MIB,
+            ),
+            patch("psutil.virtual_memory", return_value = SimpleNamespace(available = available * MIB)),
+        ):
+            return gr.can_load_alongside(arb.VIDEO, need)
+
+    def test_metal_is_one_pool_at_the_smaller_reading_less_idle_headroom(self):
+        self._resident(arb.DIFFUSION, {0}, _need({0: 9000}, weights = 6000, headroom = 3000))
+        free = 12288 - 3000
+        for w, a in ((20480, 12288), (12288, 20480)):
+            self.assertEqual(self._metal(_need({0: 1}, kind = "image"), w, a)[1]["free_mib"][0], free)
+        self.assertTrue(self._metal(_need({0: free - gr.FIT_MARGIN_MIB}), 20480, 12288)[0])
+        self.assertFalse(self._metal(_need({0: free - gr.FIT_MARGIN_MIB + 1}), 20480, 12288)[0])
+        self.assertEqual(self._metal(_need({0: 1}), None, 12288)[1], {"reason": "probe_error"})
+        self.assertEqual(self._metal(_need({0: 1}), w, a, 2500)[1]["free_mib"], {0: free - 2500})
+        credited = gr.ChatNeed({0: 8192}, credit_mib = 12288)
+        self.assertTrue(self._metal(credited, 6144, 6144, 4096)[0])
+        self.assertFalse(self._metal(gr.ChatNeed({0: 8192}), 6144, 6144, 4096)[0])
+
+    def test_mlx_chat_growth_adds_a_kv_cache_per_row_less_what_each_worker_grew(self):
+        from core.inference import llama_cpp, model_slots, orchestrator
+
+        def orch(growth, rows, pid):
+            entry = {"is_mlx": True, "mlx_growth": growth} if growth else {"is_mlx": growth is None}
+            proc = SimpleNamespace(pid = pid)
+            return SimpleNamespace(models = {"m": entry}, effective_parallel_slots = rows, _proc = proc)
+
+        def total(grown, primary, *kept):
+            slots = [SimpleNamespace(orchestrator = o) for o in kept]
+            with (
+                patch.object(orchestrator, "_inference_backend", primary),
+                patch.object(model_slots, "resident", lambda: slots),
+                patch.object(gr, "mlx_worker_footprint_mib", lambda o: grown.get(o._proc.pid)),
+            ):
+                return gr._mlx_chat_unallocated_mib()
+
+        g = {"mib": 512, "row_mib": 100, "footprint_mib": 2000}
+        self.assertEqual(total({}, orch(g, 4, 7), orch({**g, "mib": 256}, 1, 8)), 1068)
+        self.assertEqual(total({7: 2300}, orch(g, 4, 7), orch(False, 1, 9)), 512)
+        self.assertEqual(total({7: 1900}, orch(g, 4, 7)), 812)
+        self.assertEqual(total({7: 9000}, orch(g, 4, 7)), 0)
+        self.assertEqual(total({}, orch({**g, "slots": 4}, 1, 7)), 812)
+        with patch.object(llama_cpp.LlamaCppBackend, "_darwin_rusage", return_value = (1, 3 * MIB)):
+            self.assertEqual(gr.mlx_worker_footprint_mib(orch(g, 1, 7)), 3)
+        with patch.object(model_slots, "resident", side_effect = RuntimeError):
+            self.assertIsNone(gr._mlx_chat_unallocated_mib())
+        self.assertIsNone(total({}, orch(g, 1, 7), orch(None, 1, 8)))
+
+    def test_a_replaced_mlx_model_credits_its_worker_and_reserved_growth(self):
+        g = {"mib": 512, "row_mib": 100, "footprint_mib": 2000}
+
+        def orch(entry, rows = 2):
+            return SimpleNamespace(
+                models = {"m": entry}, effective_parallel_slots = rows, _proc = SimpleNamespace(pid = 7)
+            )
+
+        with patch.object(gr, "mlx_worker_footprint_mib", lambda o: 2100):
+            self.assertEqual(
+                gr.mlx_replaced_credit_mib(orch({"is_mlx": True, "mlx_growth": g})), 2100 + 512
+            )
+            self.assertEqual(gr.mlx_replaced_credit_mib(orch({"is_mlx": True})), 2100)
+            self.assertEqual(gr.mlx_replaced_credit_mib(orch({"is_mlx": False})), 0)
+
+    def test_more_parallel_rows_beside_media_outgrow_the_admitted_price(self):
+        o = SimpleNamespace(
+            models = {"m": {"is_mlx": True}}, active_model_name = "m", effective_parallel_slots = 2
+        )
+        with (
+            patch.object(gr, "_on_metal", return_value = True),
+            patch.object(gr, "media_held_mib", return_value = {0: 9000}),
+        ):
+            self.assertTrue(gr.mlx_slots_outgrow_price(o, 4))
+            self.assertFalse(gr.mlx_slots_outgrow_price(o, 2))
+            with patch.object(gr, "media_held_mib", return_value = {}):
+                self.assertFalse(gr.mlx_slots_outgrow_price(o, 4))
+        with patch.object(gr, "_on_metal", return_value = False):
+            self.assertFalse(gr.mlx_slots_outgrow_price(o, 4))
 
 
 class TestPipelineNeed(_GpuCacheResetMixin, unittest.TestCase):
@@ -731,3 +815,54 @@ def test_single_file_image_need_reads_fp8_from_the_header(tmp_path, monkeypatch)
     save_file({"blocks.0.weight": torch.zeros(1024, 2048, dtype = torch.bfloat16)}, str(dense))
     # Both files are 4 MiB on disk: only the one that stores fp8 widens on load.
     assert need(plain) > need(dense)
+
+
+def test_an_mlx_routed_image_load_is_priced_from_its_quantization_plan(monkeypatch):
+    import types
+
+    import core.inference.diffusion_engine_router as router
+    import core.inference.diffusion_families as dfam
+    import core.inference.gpu_residency as gr
+    import core.inference.mlx_diffusion_backend as mdb
+    from core.inference.sd_cpp_engine import ENGINE_MLX
+
+    picks = []
+    monkeypatch.setattr(
+        dfam, "detect_family_for_pick", lambda *a, **k: types.SimpleNamespace(name = "z")
+    )
+    monkeypatch.setattr(dfam, "resolve_base_repo", lambda f, b: b)
+    monkeypatch.setattr(
+        router, "predict_engine", lambda *a, **k: picks.append(k["engine"]) or ENGINE_MLX
+    )
+    monkeypatch.setattr(gr, "_cached_pick", lambda repo, name: "/m.gguf")
+    fetched = []
+    monkeypatch.setattr(
+        mdb, "fetch_base_snapshot", lambda base, *a, **k: fetched.append(base) or "/base"
+    )
+    monkeypatch.setattr(
+        mdb,
+        "resolve_variant_base",
+        lambda repo, f, tok, name, *, fallback, local_files_only: "org/variant",
+    )
+    monkeypatch.setattr(
+        mdb, "get_mlx_diffusion_backend", lambda: types.SimpleNamespace(_rt = lambda: None)
+    )
+    monkeypatch.setattr(mdb, "decode_headroom_bytes", lambda rt: 3 * MIB + 1)
+    plan = types.SimpleNamespace(source = "plan", planned_bytes = 4099 * MIB + 1)
+    monkeypatch.setattr(mdb, "plan_for_load", lambda *a, **k: plan)
+    request = types.SimpleNamespace(
+        model_path = "org/z",
+        gguf_filename = "z.gguf",
+        text_encoder_file = None,
+        vae_file = None,
+        model_kind = "gguf",
+        family_override = None,
+        base_repo = "org/base",
+        engine = "auto",
+    )
+    assert gr._image_need(request, 0) == (4096, 4)
+    assert picks == ["auto"] and fetched == ["org/base"]
+    request.base_repo = None
+    assert gr._image_need(request, 0) == (4096, 4) and fetched[-1] == "org/variant"
+    plan.source = "ram_rule"
+    assert gr._image_need(request, 0) is None

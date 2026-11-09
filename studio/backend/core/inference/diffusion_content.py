@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a single-file diffusion checkpoint IS (DiT of which family / text encoder / VAE / LoRA /
-ControlNet), from the safetensors or GGUF header only: no torch, no weight bytes, cached per
-(path, size, mtime). ComfyUI and diffusers layouts, bare or under a container prefix.
-
-Same-architecture variants (FLUX.1 dev / Krea / Kontext, Qwen-Image / 2512 / Edit / Edit-2509,
-klein distilled / base, Z-Image base / Turbo, HiDream full / dev / fast, LTX-2 / 2.3,
-HunyuanVideo-1.5 480p / 720p, Wan A14B high / low noise, Wan2.1-T2V-14B vs an A14B expert) have identical keys: the
-file name decides.
-"""
+"""Checkpoint parts from the header alone (no torch, no weight bytes); same-arch variants share
+keys, so the file name decides"""
 
 from __future__ import annotations
 
@@ -200,6 +193,8 @@ _DIT_PREFIXES = (
     "model.model.",
     "model.",
     "transformer.",
+    # Anima (Cosmos-Predict2 reference checkpoints).
+    "net.",
     "",
 )
 
@@ -269,6 +264,19 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             return _dit("flux.2-dev", "a FLUX.2 [dev] diffusion transformer", layout)
         return _dit("flux.2-klein", "a FLUX.2 [klein] diffusion transformer", layout)
 
+    if "distilled_guidance_layer" in tops and (
+        {"double_blocks", "single_blocks"} <= tops
+        or {"transformer_blocks", "single_transformer_blocks"} <= tops
+    ):
+        layout = "diffusers" if "transformer_blocks" in tops else "comfy"
+        if any(t.startswith("nerf") for t in tops):
+            return _dit(
+                None,
+                "a Chroma1-Radiance (pixel-space) diffusion transformer (not supported)",
+                layout,
+            )
+        return _dit("chroma", "a Chroma diffusion transformer", layout)
+
     if "double_blocks" in tops and "single_blocks" in tops and "vector_in" in tops:
         in_ch = _dim(s, "img_in.weight", 1)
         if in_ch not in (None, 64):
@@ -306,6 +314,18 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             "a Lumina-Image-2.0 diffusion transformer",
             "diffusers" if "time_caption_embed" in tops else "comfy",
         )
+
+    if {
+        "layers",
+        "text_embedder",
+        "shared_block_modulation",
+        "video_embedder",
+        "video_head_modulation",
+    } <= tops:
+        return _dit("moss-image", "a MOSS-Image diffusion transformer", "comfy")
+
+    if {"blocks", "llm_adapter", "x_embedder", "t_embedder", "final_layer"} <= tops:
+        return _dit("anima", "an Anima diffusion transformer", "comfy")
 
     if {"txtfusion", "tmlp", "first"} <= tops:
         return _dit("krea-2", "a Krea-2 diffusion transformer", "comfy")

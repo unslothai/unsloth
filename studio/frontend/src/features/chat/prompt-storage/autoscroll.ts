@@ -4,7 +4,6 @@
 export const AUTOSCROLL_EDGE = 48;
 export const AUTOSCROLL_MAX_STEP = 14;
 
-/** Per-frame scroll step near a pane edge: negative up, positive down, 0 holds. */
 export function autoscrollDelta(
   pointerY: number,
   paneTop: number,
@@ -32,7 +31,7 @@ export interface VerticalSpan {
   bottom: number;
 }
 
-/** Pane rect clipped by ancestors and viewport (nested scrollers report full height); null if hidden. */
+/** Clipped by ancestors and viewport (nested scrollers report full height); null if hidden. */
 export function clipSpan(
   span: VerticalSpan,
   clips: readonly VerticalSpan[],

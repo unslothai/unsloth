@@ -12,11 +12,12 @@ import { type Locale, formatRelativeTime, useLocale, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Copy01Icon,
-  Delete02Icon,
+  Refresh01Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ApiKey } from "../api/api-keys";
 
@@ -65,61 +66,83 @@ export function expiresText(
   return formatRelativeTime(locale, Math.ceil(diff / 86400000), "day");
 }
 
+export const TOKEN_TABLE =
+  "grid grid-cols-[minmax(0,1fr)_auto_auto_auto_auto_auto] gap-x-6 max-sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] max-sm:gap-x-4";
+const TOKEN_ROW = "col-span-full grid grid-cols-subgrid items-center px-3";
+const TOKEN_CELL =
+  "whitespace-nowrap text-ui-12 text-muted-foreground first-letter:uppercase";
+
+export function ApiKeyTableHeader() {
+  const t = useT();
+  return (
+    <div
+      className={cn(
+        TOKEN_ROW,
+        "pt-3 pb-1.5 text-ui-11 font-medium text-muted-foreground",
+      )}
+      aria-hidden="true"
+    >
+      <span className="pl-4.5">{t("settings.apiKeys.columnName")}</span>
+      <span className="max-sm:hidden">{t("settings.apiKeys.columnToken")}</span>
+      <span className="max-sm:hidden">
+        {t("settings.apiKeys.columnCreated")}
+      </span>
+      <span>{t("settings.apiKeys.columnLastUsed")}</span>
+      <span>{t("settings.apiKeys.columnExpires")}</span>
+      <span className="w-7 max-sm:w-9" />
+    </div>
+  );
+}
+
 export function ApiKeyRow({
   apiKey,
   onRevoke,
+  onRegenerate,
 }: {
   apiKey: ApiKey;
   onRevoke: (key: ApiKey) => void;
+  onRegenerate: (key: ApiKey) => void;
 }) {
   const t = useT();
   const locale = useLocale();
-  // The ellipsis is display only; a copied prefix must not carry it.
   const prefix = `sk-unsloth-${apiKey.key_prefix}`;
   const expired = isExpired(apiKey.expires_at);
   return (
-    <div className="group flex items-center gap-3 border-b border-border/60 px-1 py-3 last:border-b-0 transition-colors hover:bg-accent/40">
-      <span
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          expired ? "bg-muted-foreground/40" : "bg-emerald-500",
-        )}
-        aria-hidden="true"
-      />
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex min-w-0 items-center justify-between gap-3">
-          <span
-            className="truncate text-sm font-medium text-foreground"
-            title={apiKey.name}
-          >
-            {apiKey.name}
-          </span>
-          <code className="shrink-0 font-mono text-ui-11 text-muted-foreground">
-            {prefix}…
-          </code>
-        </div>
-        <div className="flex flex-wrap gap-x-1.5 text-ui-11 text-muted-foreground">
-          <span>
-            {t("settings.apiKeys.created", {
-              value: relative(apiKey.created_at, t, locale),
-            })}
-          </span>
-          <span>·</span>
-          <span>
-            {t("settings.apiKeys.used", {
-              value: relative(apiKey.last_used_at, t, locale),
-            })}
-          </span>
-          <span>·</span>
-          <span>
-            {expired
-              ? t("settings.apiKeys.expiredStatus")
-              : t("settings.apiKeys.expires", {
-                  value: expiresText(apiKey.expires_at, t, locale),
-                })}
-          </span>
-        </div>
+    <div
+      className={cn(
+        TOKEN_ROW,
+        "group rounded-lg py-2.5 transition-colors hover:bg-muted dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            expired ? "bg-muted-foreground/40" : "bg-emerald-500",
+          )}
+          aria-hidden="true"
+        />
+        <span
+          className="truncate text-sm font-medium text-foreground"
+          title={apiKey.name}
+        >
+          {apiKey.name}
+        </span>
       </div>
+      <code className="font-mono text-ui-11 text-muted-foreground max-sm:hidden">
+        {prefix}…
+      </code>
+      <span className={cn(TOKEN_CELL, "max-sm:hidden")}>
+        {relative(apiKey.created_at, t, locale)}
+      </span>
+      <span className={TOKEN_CELL}>
+        {relative(apiKey.last_used_at, t, locale)}
+      </span>
+      <span className={cn(TOKEN_CELL, expired && "text-destructive")}>
+        {expired
+          ? t("settings.apiKeys.expiredStatus")
+          : expiresText(apiKey.expires_at, t, locale)}
+      </span>
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <Button
@@ -144,11 +167,15 @@ export function ApiKeyRow({
             <HugeiconsIcon icon={Copy01Icon} className="size-3.5 mr-2" />
             {t("settings.apiKeys.copyPrefix")}
           </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onRegenerate(apiKey)}>
+            <HugeiconsIcon icon={Refresh01Icon} className="size-3.5 mr-2" />
+            {t("settings.apiKeys.regenerateToken")}
+          </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => onRevoke(apiKey)}
             className="text-destructive focus:text-destructive"
           >
-            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-2" />
+            <HugeiconsIcon icon={TrashIcon} className="size-3.5 mr-2" />
             {t("settings.apiKeys.revokeToken")}
           </DropdownMenuItem>
         </DropdownMenuContent>

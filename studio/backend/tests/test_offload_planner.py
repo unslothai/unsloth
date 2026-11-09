@@ -927,7 +927,9 @@ def test_the_layout_reader_totals_every_tensor_from_a_real_gguf(tmp_path):
     layout = layout_from_gguf(str(path))
     assert layout.complete
     assert layout.tensor_bytes == 4 * (16 + 1024 + 4096 + 256 + 64)
-    assert layout.token_embd_bytes == 4 * (1024 + 4096)
+    assert layout.token_embd_bytes == 4 * 1024
+    assert layout.per_layer_embd_bytes == 4 * 4096
+    assert layout.other_resident_bytes == 4 * (16 + 1024)
 
 
 @pytest.mark.parametrize("endianess", ["LITTLE", "BIG"])

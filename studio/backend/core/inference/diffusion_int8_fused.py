@@ -1,31 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused int8 activation path between two torchao int8 GEMMs of a DiT feed-forward: one Triton kernel
-reads the int32 ``_int_mm`` output, applies dequant + GELU(tanh) / SwiGLU and writes int8 + the fp32 row scale.
-
-NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding kept, ATen's GELU(tanh) formula op for op (equal
-on every bf16 input), fp contraction off so
-``y * w_scale + bias`` rounds twice, row scale ``bf16(amax / 127.5)`` clamped at fp32 eps, quantizer multiplies by
-the correctly rounded reciprocal). The compiled stock path is NOT eager-exact (Inductor keeps fp32 chains).
-Activation-scale contract follows the incoming scale's dtype: fp32 on torchao >= 0.18; bf16 on <= 0.17, where
-``int32 * bf16`` rounds twice (int32 -> fp32 -> bf16) and ``1 / s`` and ``x * (1 / s)`` round to bf16.
-
-Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
-
-ConvRot (Z-Image int8 default): w1 and w3 rotate the same input, so the SwiGLU's fused in-projection is a ConvRotLinear
-(one rotation + one activation quant for both halves). A rotated w2 needs its input rotated BEFORE the quant, which the
-kernel's fused quant cannot do, so that MLP computes the bf16 SiLU product with the stock epilogue ops and hands it to
-w2's own (rotating) forward. Same ops on the same values as the three stock rotated Linears.
-
-``int8_linear`` (also used by Z-Image's fused attention) runs a plain or rotated Int8Tensor Linear as torchao's act
-quant + ``_int_mm`` + epilogue without torchao 0.17's always-on zero-point pass, and the act quant itself as one probed
-Triton kernel (``int8_act_quant_rows``, bit-identical to torchao 0.17 and 0.18): Inductor's codegen of the same per-row
-quant ran 2-3x slower on B200 (Z-Image shapes, M 4224: K 3840 24-32 -> 11 us, K 10240 53-70 -> 32 us).
-A rotated input (ConvRot) is rotated and quantized by one kernel (``_rotated_act_quant``: ``rotq_h16`` of
-``diffusion_convrot_quant``) on an unlisted-arch card it was armed for, else rotation GEMM + act quant.
-Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0`` (all of the above).
-"""
+"""Fused int8 FFN activation kernel, bit-identical to eager; only a plain dynamic symmetric per-row
+Int8Tensor on CUDA with Triton 3.2 or newer takes it, else stock path;
+UNSLOTH_DIFFUSION_INT8_FUSED=0 disables."""
 
 from __future__ import annotations
 
@@ -38,6 +16,7 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
+MLP_FAST_ACT_QUANT_ENV = "UNSLOTH_DIFFUSION_INT8_MLP_FAST_ACT_QUANT"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs more than 16 rows; torchao's own safe_int_mm handles the rest, so small M keeps the stock path.
 _MIN_ROWS = 17
@@ -58,6 +37,8 @@ _RQ_HANDLE: Any = None
 _RQ_DEVICES: frozenset = frozenset()
 # UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
 _LINEAR_OFF = False
+# MLP_FAST_ACT_QUANT_ENV at the last install: a global, so traced forwards never read os.environ
+_MLP_FAST_ACTQ = True
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
 _INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
@@ -129,15 +110,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         b_ptr,
         offs,
         mask,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVICT: tl.constexpr,
-        FINAL_ROUND: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVICT: tl.constexpr,  # load eviction policy
+        FINAL_ROUND: tl.constexpr,  # round to bf16 at the end
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
     ):
-        # torchao Int8Tensor linear epilogue: (int32 * x_scale).to(bf16) * w_scale (+ bias), then .to(bf16).
-        # FINAL_ROUND=False leaves the last rounding to the caller (it commutes with a row max).
+        # Epilogue as torchao: (int32 * x_scale) to bf16, * w_scale, + bias, then bf16; FINAL_ROUND=False defers the last round (it commutes with row max).
         c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT)
         if FP32_SCALE:
             c = c.to(tl.float32)
@@ -184,14 +164,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         p_sb,
         p_ss,
         p_sh,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        HAS_PREFIX: tl.constexpr,
-        HEAD_DIM: tl.constexpr,
-        CHUNK: tl.constexpr,
-        CHUNK_A: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        HAS_PREFIX: tl.constexpr,  # fused prefix (attn output) columns
+        HEAD_DIM: tl.constexpr,  # hd of the prefix
+        CHUNK: tl.constexpr,  # columns per loop step
+        CHUNK_A: tl.constexpr,  # prefix columns per loop step
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
@@ -324,11 +304,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         v0,
         offs,
         m,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVICT: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVICT: tl.constexpr,  # load eviction policy
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
     ):
         g = _pre(
             crow + g0,
@@ -374,15 +354,13 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         V0,
         stride_c,
         stride_q,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        CHUNK: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        CHUNK: tl.constexpr,  # columns per loop step
     ):
-        # c row = the fused GEMM output; the gate half starts at column G0, the value half at V0 (both N wide).
-        # Two int32 rows per output row make recomputing in pass 2 ALU-bound, so pass 1 parks the bf16 product in a
-        # scratch row (still in L2 when pass 2 reads it back).
+        # Pass 1 parks the bf16 product in a scratch row: recomputing two int32 rows is ALU-bound.
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
         base = tl.arange(0, CHUNK)
@@ -438,13 +416,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         K,
         stride_x,
         stride_q,
-        BLOCK: tl.constexpr,
-        ONE_PASS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        BLOCK: tl.constexpr,  # block size along the row
+        ONE_PASS: tl.constexpr,  # row fits one block
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
-        # torchao Int8Tensor.from_hp(x, PerRow()), symmetric: s = bf16(max(bf16(amax / 127.5), fp32 eps)); torchao
-        # <= 0.17 keeps s in bf16 and rounds 1 / s and x * (1 / s) to bf16, >= 0.18 stores s as fp32 and keeps both
-        # in fp32 (FP32_SCALE). q = clamp(rint(x * (1 / s)), -128, 127).
+        # Matches torchao from_hp PerRow: torchao <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps them fp32; q = clamp(rint, -128, 127).
         row = tl.program_id(0).to(tl.int64)
         offs = tl.arange(0, BLOCK)
         xrow = x_ptr + row * stride_x
@@ -482,7 +458,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 tl.store(qrow + k + offs, p.to(tl.int8), mask = m)
 
     @triton.jit
-    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
+    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):  # block size along the row
         offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         m = offs < n
         y = tl.load(x_ptr + offs, mask = m, other = 0.0).to(tl.float32)
@@ -496,11 +472,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         b_ptr,
         o_ptr,
         N,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        CHUNK: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        CHUNK: tl.constexpr,  # columns per loop step
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
@@ -678,8 +654,7 @@ def _op() -> Any:
     if custom_op is None:  # torch < 2.4
         return None
     try:
-        # Explicit schema: this module's annotations are strings (``from __future__ import annotations``) and torch is
-        # imported lazily, so schema inference from them would not resolve.
+        # Explicit schema: string annotations + lazy torch import break schema inference.
         @custom_op(
             qualname,
             mutates_args = (),
@@ -850,6 +825,13 @@ def _fast_act_quant(x2d: Any, weight: Any) -> tuple:
     ):
         q, s = _ACTQ_HANDLE(x2d)
         return q, s.reshape(-1, 1)
+    return _act_quant(x2d, weight)
+
+
+def _mlp_act_quant(x2d: Any, weight: Any) -> tuple:
+    """``_fast_act_quant`` for ``_plain_int8_weight`` weights, torchao's quant under the kill switch."""
+    if _MLP_FAST_ACTQ:
+        return _fast_act_quant(x2d, weight)
     return _act_quant(x2d, weight)
 
 
@@ -1126,7 +1108,7 @@ def _ff_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any
         or hidden_states.dtype != torch.bfloat16
     ):
         return type(self).forward(self, hidden_states, *args, **kwargs)
-    xq, xs = _act_quant(x2d, proj.weight)
+    xq, xs = _mlp_act_quant(x2d, proj.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), proj.weight)
     q, s = _OP_HANDLE.gelu(c, xs.reshape(-1), proj.weight.scale.flatten(), proj.bias, None)
     y = _linear_from_q(q, s, down.weight, down.bias, hidden_states.dtype)
@@ -1162,7 +1144,7 @@ def _flux_single_forward(
     residual = hidden_states
     norm_hidden_states, gate = self.norm(hidden_states, emb = temb)
     x2d = norm_hidden_states.reshape(rows, -1)
-    xq, xs = _act_quant(x2d, self.proj_mlp.weight)
+    xq, xs = _mlp_act_quant(x2d, self.proj_mlp.weight)
     c = _int_mm(xq.reshape(rows, -1), self.proj_mlp.weight)
     joint_attention_kwargs = joint_attention_kwargs or {}
     attn_output = self.attn(
@@ -1231,8 +1213,7 @@ def _split_spec(module: Any) -> Optional[tuple]:
     return None
 
 
-# SwiGLU kernel is bit-exact vs eager but moved FLUX.2-klein / Qwen-Image-2.1 compiled renders further from eager bf16
-# (LPIPS) than the stock path: Z-Image only until understood.
+# Off: bit-exact, but moved FLUX.2 / Qwen-Image compiled renders further from eager (LPIPS).
 _SWIGLU_ALL_LAYOUTS = False
 
 
@@ -1270,13 +1251,7 @@ def _torchao_epilogue(c: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> An
 
 
 def int8_linear(module: Any, x: Any) -> Any:
-    """``module(x)`` for a plain ``nn.Linear`` or ``ConvRotLinear`` holding a plain per-row ``Int8Tensor``: the module's
-    own input rotation, torchao's act quant, ``_int_mm`` and torchao's epilogue, minus one term. torchao 0.17 applies
-    the ASYMMETRIC zero-point correction whenever the activation carries a zero point, which its symmetric quant always
-    does (zeros): a row sum of the int8 weight and a full-output ``- 0`` on every call (~4 ms per Z-Image 1024px step
-    on B200). 0.18 skips it for symmetric activations, as this does; the values are the same (``y - 0 == y``).
-    Anything else (LoRA wrappers, legacy tensors, small M, CPU, a Linear running diffusion_int8_gemm's fused GEMM) is
-    ``module(x)``."""
+    """Skips the torchao 0.17 zero-point correction (a no-op for symmetric int8 activations); LoRA, legacy, small-M, CPU and other cases stay module(x)."""
     from torch import nn
 
     from .diffusion_convrot import is_rotated_linear
@@ -1408,7 +1383,7 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     if in_group:
         xq, xs = _rotated_act_quant(x2d, in_group, fused_in.weight)
     else:
-        xq, xs = _act_quant(x2d, fused_in.weight)
+        xq, xs = _mlp_act_quant(x2d, fused_in.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
     if down_group:
         ws = fused_in.weight.scale.flatten()
@@ -1592,8 +1567,7 @@ def run_on_first_call(module: Any, key: str, fn: Any) -> None:
         try:
             import torch
 
-            # Studio renders under inference_mode, where detaching / viewing a torchao weight subclass raises
-            # "Cannot set version_counter for inference tensor" and the fused SwiGLU / QKV silently stayed off.
+            # Under inference_mode, detaching torchao weight subclasses raises and fusion silently stays off.
             with torch.inference_mode(False), torch.no_grad():
                 fn(mod)
         except Exception:  # noqa: BLE001 - an optimisation: the stock path stays
@@ -1617,7 +1591,13 @@ def install(
     offload_active: bool = False,
 ) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
-    global _ACTQ_HANDLE, _ACTQ_DEVICES, _RQ_DEVICES, _LINEAR_OFF
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _RQ_DEVICES, _LINEAR_OFF, _MLP_FAST_ACTQ
+    _MLP_FAST_ACTQ = (os.environ.get(MLP_FAST_ACT_QUANT_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
     if int8_fused_disabled():
         # process-global: a previous load's probe must not outlive the kill switch
         _ACTQ_HANDLE = None
@@ -1781,8 +1761,7 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             bound = types.MethodType(fn, module)
             slot = _hooked_forward_slot(module)
             if slot is not None:
-                # A step cache (FBCache / MagCache) engaged before the speed layer: its hook owns the instance forward,
-                # so the swap goes under it. Overwriting the wrapper would drop the skip logic and the tail residuals.
+                # A step cache hook owns the instance forward: swap under it so its skip logic survives.
                 ref, attr = slot
                 stock_inner = _drop_compiled_inner(module)
                 module.__dict__[_MARK] = (

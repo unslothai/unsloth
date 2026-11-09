@@ -352,8 +352,7 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
-        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
-        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        # This goes to stdout (CI logs, notebooks): mask set tokens, keep unset ones null.
         for name in ("hf_token", "wandb_token"):
             if data["logging"].get(name) is not None:
                 data["logging"][name] = "[redacted]"
@@ -395,6 +394,7 @@ def train(
         hf_token = hf_token,
         is_dataset_image = is_dataset_image,
         is_dataset_audio = is_dataset_audio,
+        trust_remote_code = cfg.training.trust_remote_code,
         use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)

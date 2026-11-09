@@ -214,6 +214,11 @@ def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
 
 
 def test_non_streaming_cancel_after_respawn_retry_is_not_a_transport_error(monkeypatch):
+    # Keep the retry-start deadline independent of the settings database lookup.
+    monkeypatch.setattr(
+        inf_mod, "_llama_non_streaming_generation_timeout", lambda: httpx.Timeout(600)
+    )
+
     class CancelAfterRespawnClient:
         def __init__(self):
             self.urls = []

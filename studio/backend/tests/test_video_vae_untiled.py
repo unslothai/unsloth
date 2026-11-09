@@ -200,3 +200,176 @@ def test_free_bytes_does_not_count_graph_held_cache(monkeypatch):
     monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda device, total: 0)
     monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
     assert U._free_bytes(torch.device("cuda", 0)) == 1100 * 2**20
+
+
+def test_free_bytes_on_a_cpu_host_reads_usable_host_ram(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda device = None: pytest.fail("no CUDA read for a CPU decode")
+    )
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 40 * 1024)
+    assert U._free_bytes(torch.device("cpu")) == 40 * 2**30
+    assert U._free_bytes("cpu") == 40 * 2**30
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: None)
+    assert U._free_bytes(torch.device("cpu")) is None
+
+
+def test_cpu_decode_untiled_only_when_host_ram_fits(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    z = torch.zeros(1, 48, 2, 32, 56)  # Wan2.2 896x512, 5 frames
+    need = U.untiled_decode_bytes(WAN, tuple(z.shape), itemsize = 4)
+    gate_mib = int((need * U._MARGIN + U._MARGIN_BYTES) / 2**20)
+    vae = FakeVAE(dtype = torch.float32)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: gate_mib + 1)
+    assert vae.decode(z) == ("untiled",)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: gate_mib - 1)
+    assert vae.decode(z) == ("tiled",)
+    assert vae.use_tiling is True
+
+
+def test_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch):
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    err = RuntimeError(
+        "[enforce fail at alloc_cpu.cpp:121] DefaultCPUAllocator: not enough memory: you tried to allocate 9663676416 bytes."
+    )
+    vae = FakeVAE(error = err)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True]
+    assert vae.use_tiling is True
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:127] err == 0. DefaultCPUAllocator: can't allocate memory: you tried to "
+            "allocate 9663676416 bytes. Error code 12 (Cannot allocate memory)"
+        ),
+        RuntimeError("decode failed"),
+    ],
+    ids = ["posix_enomem", "wrapped"],
+)
+def test_posix_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch, err):
+    if str(err) == "decode failed":
+        err.__cause__ = RuntimeError(
+            "DefaultCPUAllocator: can't allocate memory: you tried to allocate 1 bytes."
+        )
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = FakeVAE(error = err)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True]
+    assert vae.use_tiling is True
+
+
+class _RefusingVAE(FakeVAE):
+    def decode(
+        self,
+        z,
+        return_dict = False,
+    ):
+        self.calls.append(self.use_tiling)
+        if not self.use_tiling:
+            torch.empty(
+                2**60, dtype = torch.uint8
+            )  # past any address space: the real allocator refuses
+        return ("tiled",)
+
+
+def test_real_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch):
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = _RefusingVAE()
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True]
+
+
+def test_unrelated_runtime_error_still_raises(monkeypatch):
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = FakeVAE(error = RuntimeError("shape mismatch"))
+    U.install_untiled_decode(_pipe(vae), WAN)
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        vae.decode(Z)
+
+
+class CpuOffload:
+    def __init__(
+        self,
+        prev_model,
+        vae,
+        fail = False,
+    ):
+        self.prev_module_hook = types.SimpleNamespace(model = prev_model)
+        self.vae = vae
+        self.fail = fail
+        self.calls = 0
+
+    def pre_forward(self, module, *args, **kwargs):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("hook")
+        self.prev_module_hook.model.to_empty(device = "cpu")
+        return args, kwargs
+
+
+class HookedVAE(FakeVAE):
+    def parameters(self):
+        return self.decoder.parameters()
+
+    def decode(
+        self,
+        z,
+        return_dict = False,
+    ):
+        self._hf_hook.pre_forward(self)
+        return super().decode(z, return_dict = return_dict)
+
+
+def _offloaded_pipe(fail = False):
+    denoiser = torch.nn.Linear(4, 4, device = "meta")  # "on the card": any non-host device
+    vae = HookedVAE()
+    vae._hf_hook = CpuOffload(denoiser, vae, fail = fail)
+    need = U.untiled_decode_bytes(WAN, tuple(Z.shape))
+    big = int(need * U._MARGIN + U._MARGIN_BYTES) + 2**30
+
+    def free(device):
+        resident = next(denoiser.parameters()).device.type != "cpu"
+        return big - 8 * 2**30 if resident else big
+
+    return vae, denoiser, free
+
+
+def test_fit_check_reads_free_memory_after_the_denoiser_offload(monkeypatch):
+    vae, denoiser, free = _offloaded_pipe()
+    monkeypatch.setattr(U, "_free_bytes", free)
+    assert U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("untiled",)
+    assert next(denoiser.parameters()).device.type == "cpu"
+    # once here, then the decode's own hook call (which finds everything in place)
+    assert vae._hf_hook.calls == 2
+    assert vae.calls == [False]
+
+
+def test_fit_check_offload_kill_switch_reads_before_the_hook(monkeypatch):
+    monkeypatch.setenv(U.FREE_AFTER_OFFLOAD_ENV, "0")
+    vae, _denoiser, free = _offloaded_pipe()
+    monkeypatch.setattr(U, "_free_bytes", free)
+    assert U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae._hf_hook.calls == 1
+
+
+def test_fit_check_skips_the_hook_once_offloaded_and_survives_a_failing_hook(monkeypatch):
+    vae, denoiser, free = _offloaded_pipe()
+    denoiser.to_empty(device = "cpu")
+    vae.decoder = vae.decoder.to("meta")  # the VAE already on the card
+    assert U.run_offload_hook_first(vae) is False
+    assert vae._hf_hook.calls == 0
+    failing, _d, free = _offloaded_pipe(fail = True)
+    assert U.run_offload_hook_first(failing) is False
+    plain = FakeVAE()
+    assert U.run_offload_hook_first(plain) is False

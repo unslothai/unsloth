@@ -3,6 +3,8 @@
 
 """Prompt storage API routes backed by studio.db."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -20,21 +22,24 @@ from storage.studio_db import (
 
 router = APIRouter()
 
+# sqlite INTEGER is signed 64-bit: a wider value raises OverflowError (a 500) where it is bound.
+SqliteInt = Annotated[int, Field(ge = -(2**63), le = 2**63 - 1)]
+
 
 class PromptEntry(BaseModel):
     id: str = Field(max_length = 128)
     name: str = Field(max_length = 500)
     text: str = Field(max_length = 100_000)
-    createdAt: int
-    updatedAt: int
+    createdAt: SqliteInt
+    updatedAt: SqliteInt
 
 
 class PromptList(BaseModel):
     id: str = Field(max_length = 128)
     name: str = Field(max_length = 500)
     items: list[str] = Field(max_length = 10_000)
-    createdAt: int
-    updatedAt: int
+    createdAt: SqliteInt
+    updatedAt: SqliteInt
 
 
 class BulkEntriesRequest(BaseModel):

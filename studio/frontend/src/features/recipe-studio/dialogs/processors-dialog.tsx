@@ -75,7 +75,7 @@ export function ProcessorsDialog({
           <DialogTitle>Processors</DialogTitle>
         </VisuallyHidden.Root>
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3 corner-squircle rounded-lg border border-border/60 px-3 py-2">
+          <div className="flex items-start justify-between gap-3 corner-squircle rounded-lg border border-border/60 px-3 py-2">
             <div>
               <p className="text-sm font-semibold">Schema transform</p>
               <p className="text-xs text-muted-foreground">
@@ -83,6 +83,7 @@ export function ProcessorsDialog({
               </p>
             </div>
             <Switch
+              className="mt-[var(--ui-title-cap-inset)]"
               checked={Boolean(schemaProcessor)}
               onCheckedChange={setSchemaEnabled}
             />

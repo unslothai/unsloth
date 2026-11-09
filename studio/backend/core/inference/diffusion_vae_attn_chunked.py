@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm and Apple MPS, where no fused SDPA kernel takes head dim 384 / 512.
-
-AOTriton caps gfx11 at head dim 256, so SDPA falls back to the math kernel and materialises the full fp32 score
-matrix (16 GiB for a 2048x2048 FLUX.1 decode). Unmasked query rows are independent, so chunking them is exact.
-``UNSLOTH_VAE_ATTN_CHUNKED=0`` disables it; ``UNSLOTH_VAE_ATTN_CHUNK_MB`` sets the per-chunk fp32 score budget.
-"""
+"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact."""
 
 from __future__ import annotations
 

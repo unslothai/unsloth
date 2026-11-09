@@ -314,6 +314,69 @@ def test_xml_healed_to_tool_calls_non_streaming(monkeypatch):
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
 
 
+_CUT_XML = "<tool_call><function=lookup><parameter=q>line1\nli"
+_LENGTH_STATS = {"finish_reason": "length"}
+
+
+def test_call_cut_at_length_stays_text_non_streaming(monkeypatch):
+    backend = _ScriptedBackend(_fixed(_CALL_XML + _CUT_XML), stats = _LENGTH_STATS)
+    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    choice = _json_body(_call(payload, monkeypatch, backend))["choices"][0]
+    assert choice["finish_reason"] == "length"
+    (call,) = choice["message"]["tool_calls"]
+    assert json.loads(call["function"]["arguments"]) == {"q": "cats"}
+    assert choice["message"]["content"] == _CUT_XML
+
+
+def test_call_cut_at_length_stays_text_streaming(monkeypatch):
+    backend = _ScriptedBackend(_fixed(_CALL_XML + _CUT_XML), stats = _LENGTH_STATS)
+    payload = _request(tools = [LOOKUP_TOOL], stream = True)
+    objs = _sse_objects(_collect_sse(_call(payload, monkeypatch, backend)))
+    choices = [o["choices"][0] for o in objs if o.get("choices")]
+    deltas = [c.get("delta") or {} for c in choices]
+    (call,) = [tc for d in deltas for tc in d.get("tool_calls") or []]
+    assert json.loads(call["function"]["arguments"]) == {"q": "cats"}
+    assert "".join(d.get("content") or "" for d in deltas) == _CUT_XML
+    assert [c["finish_reason"] for c in choices if c.get("finish_reason")] == ["length"]
+
+
+def test_nudge_retry_cut_at_length_keeps_the_cut(monkeypatch):
+    replies = iter(['<tool_call>{"name": "lookup"', _CALL_XML + _CUT_XML])
+    backend = _ScriptedBackend(
+        lambda messages, tools: [next(replies)], stats = [{"finish_reason": "stop"}, _LENGTH_STATS]
+    )
+    payload = _request(tools = [LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
+    choice = _json_body(_call(payload, monkeypatch, backend))["choices"][0]
+    assert len(backend.calls) == 2
+    assert choice["finish_reason"] == "length"
+    (call,) = choice["message"]["tool_calls"]
+    assert json.loads(call["function"]["arguments"]) == {"q": "cats"}
+    assert choice["message"]["content"] == _CUT_XML
+
+
+@pytest.mark.parametrize("content", [None, ""])
+def test_call_only_turn_reaches_the_local_template_with_content(monkeypatch, content):
+    backend = _ScriptedBackend(_fixed("done"))
+    call = {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+    }
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        stream = False,
+        messages = [
+            ChatMessage(role = "user", content = "hi"),
+            ChatMessage(role = "assistant", content = content, tool_calls = [call]),
+            ChatMessage(role = "tool", content = "r", tool_call_id = "c1"),
+        ],
+    )
+    _call(payload, monkeypatch, backend)
+    (turn,) = [m for m in backend.calls[0]["messages"] if m["role"] == "assistant"]
+    assert turn["content"] == ""
+    assert turn["tool_calls"][0]["function"]["arguments"] == {"q": "x"}
+
+
 def test_undeclared_call_stays_text(monkeypatch):
     xml = '<tool_call>{"name": "other", "arguments": {}}</tool_call>'
     backend = _ScriptedBackend(_fixed(xml))
@@ -634,6 +697,30 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
         if o["choices"] and o["choices"][0].get("finish_reason")
     ]
     assert finishes == ["tool_calls"]
+
+
+_MINIMAX_CALL = (
+    '<minimax:tool_call>\n<invoke name="lookup">\n<parameter name="q">cats</parameter>\n'
+    "</invoke>\n</minimax:tool_call>"
+)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_the_models_own_call_format_is_healed(monkeypatch, stream):
+    backend = _ScriptedBackend(_fixed("Looking.\n", f"Looking.\n{_MINIMAX_CALL}"))
+    backend.models["sf-model"]["chat_template_info"]["template"] = "{{ '<minimax:tool_call>' }}"
+    response = _call(_request(tools = [LOOKUP_TOOL], stream = stream), monkeypatch, backend)
+    if stream:
+        objs = _sse_objects(_collect_sse(response))
+        deltas = [(o.get("choices") or [{}])[0].get("delta") or {} for o in objs]
+        calls = [tc["function"] for d in deltas for tc in d.get("tool_calls") or []]
+        text = "".join(d.get("content") or "" for d in deltas)
+    else:
+        message = _json_body(response)["choices"][0]["message"]
+        calls = [tc["function"] for tc in message["tool_calls"]]
+        text = message["content"]
+    assert [(c["name"], json.loads(c["arguments"])) for c in calls] == [("lookup", {"q": "cats"})]
+    assert text.strip() == "Looking."
 
 
 def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkeypatch):
@@ -1769,6 +1856,22 @@ def test_a_compacted_mlx_thread_keeps_archive_search_with_tools_off(
     assert probed[0] is bool(offered)
 
 
+@pytest.mark.parametrize("engine", ["sglang", "vllm"])
+def test_a_compacted_managed_engine_thread_answers_without_the_local_tool_loop(monkeypatch, engine):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda thread_id: True)
+    monkeypatch.setattr(inf, "_thread_has_checkpoint", lambda thread_id, messages = None: True)
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["engine"] = engine
+    _install(monkeypatch, backend)
+    fields = {"thread_id": "saved", "context_overflow": "truncate_oldest"}
+    _serve(monkeypatch, stream = False, enable_tools = False, context_policy = "checkpoint", **fields)
+
+    assert backend.calls[0]["tools"] is None
+    assert [fit["recall_reachable"] for fit in backend.fits] == [False]
+
+
 @pytest.mark.parametrize("asked", [{"enable_tools": True}, {"mcp_enabled": True}])
 def test_tool_choice_none_keeps_a_compacted_mlx_thread_tool_free(monkeypatch, asked):
     import routes.inference as inf
@@ -2252,7 +2355,7 @@ def test_video_turn_with_tools_enabled_keeps_the_client_tool_catalog(monkeypatch
     body = _json_body(_call(payload, monkeypatch, backend))
 
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
-    assert backend.calls[0]["video"] == clip
+    assert backend.calls[0]["videos"] == [clip]
     assert body["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "lookup"
 
 
@@ -2283,7 +2386,7 @@ def test_a_nudge_retry_keeps_the_video_on_the_question_turn(monkeypatch):
 
     assert len(backend.calls) == 2, "the nudge retry did not run"
     retry = backend.calls[1]["messages"]
-    assert backend.calls[1]["video"] == clip
+    assert backend.calls[1]["videos"] == [clip]
     question = next(m for m in retry if m["role"] == "user")
     assert question["content"][0] == {"type": "video"}
     assert retry[-1]["role"] == "user" and isinstance(retry[-1]["content"], str)

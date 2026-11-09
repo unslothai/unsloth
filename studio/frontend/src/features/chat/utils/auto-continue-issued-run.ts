@@ -3,10 +3,8 @@
 
 import type { AutoContinueIssuedRun } from "./continuation";
 
-/** `startRun` is DECLARED `void` but returns the roundtrip's promise, so it arrives untyped and
- *  the shape is checked rather than assumed. Not thenable means no signal, so the hold is renewed
- *  as any unarmed hold is, never released early. A rejection settles it too: it says the run is
- *  not coming, not whether the lease may be given back. */
+/** `startRun` is typed void but returns a promise, so the shape is checked. Non-thenable never
+ *  releases early; a rejection settles it too. */
 export function issuedRunFrom(
   started: unknown,
 ): AutoContinueIssuedRun | undefined {

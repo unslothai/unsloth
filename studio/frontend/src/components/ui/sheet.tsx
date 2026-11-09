@@ -8,17 +8,15 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DialogPortalContainerContext } from "@/components/ui/dialog";
+import { MODAL_SURFACE, useMergedRefs, useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-// Windows/Linux custom titlebar paints over the viewport at z-70, so a fixed
-// sheet must start below it. DesktopChromeVarsEffect mirrors the height onto
-// <html> since sheets portal to document.body; unset in browser/macOS (0px).
+// The desktop titlebar paints at z-70, so a fixed sheet starts below it; 0px in browser/macOS.
 const VIEWPORT_TOP_EDGE =
   "data-[side=left]:top-[var(--studio-custom-titlebar-height,0px)] data-[side=right]:top-[var(--studio-custom-titlebar-height,0px)] data-[side=top]:top-[var(--studio-custom-titlebar-height,0px)]";
 
-// A contained sheet follows its container's top edge; no chrome sits over it.
 const CONTAINED_TOP_EDGE =
   "data-[side=left]:top-0 data-[side=right]:top-0 data-[side=top]:top-0";
 
@@ -62,12 +60,15 @@ function SheetPortal({
 function SheetOverlay({
   className,
   position = "fixed",
+  ref,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Overlay> & {
   position?: "fixed" | "absolute";
 }) {
+  const surfaceRef = useSurfaceRef(MODAL_SURFACE, ref);
   return (
     <SheetPrimitive.Overlay
+      ref={surfaceRef}
       data-slot="sheet-overlay"
       data-viewport-backdrop={position === "fixed" ? true : undefined}
       className={cn(
@@ -90,6 +91,7 @@ function SheetContent({
   overlayClassName,
   overlayPosition,
   onInteractOutside,
+  ref,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
@@ -100,6 +102,8 @@ function SheetContent({
   overlayPosition?: "fixed" | "absolute";
 }) {
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
+  // A caller's ref (the mobile sidebar registers through one) reaches the element too.
+  const contentRef = useMergedRefs(setContentEl, ref);
   return (
     <SheetPortal container={container ?? undefined}>
       <SheetOverlay
@@ -107,7 +111,7 @@ function SheetContent({
         position={overlayPosition ?? position}
       />
       <SheetPrimitive.Content
-        ref={setContentEl}
+        ref={contentRef}
         data-slot="sheet-content"
         data-side={side}
         className={cn(

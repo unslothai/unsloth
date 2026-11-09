@@ -2,13 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  CodeXmlIcon,
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
-  Image02Icon,
+  ImageIcon,
   Pdf01Icon,
   Presentation01Icon,
-  SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -118,7 +118,7 @@ export function modelLabelKey(item: LibraryItem): ModelLabelKey | null {
     : "library.modelKind.model";
 }
 
-/** The extension the file itself has. A rename changes only the name shown, never what it is. */
+/** A rename changes only the name shown, never the file's type. */
 function ownExtension(item: Pick<LibraryItem, "name" | "fileName">): string {
   return fileExtension(item.fileName ?? item.name);
 }
@@ -142,7 +142,7 @@ export function fileKind(
   return "document";
 }
 
-/** Raster images only: an svg is served as an opaque download and never rendered inline. */
+/** svg is served as an opaque download and never rendered inline. */
 export function hasImagePreview(item: LibraryItem): boolean {
   return (
     !item.textOnly &&
@@ -166,14 +166,14 @@ export const TYPE_FILTER_KINDS: Record<LibraryTypeFilter, LibraryFileKind[]> = {
 };
 
 export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
-  image: Image02Icon,
-  web: SourceCodeIcon,
+  image: ImageIcon,
+  web: CodeXmlIcon,
   word: Doc01Icon,
   document: FileEmpty02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
   pdf: Pdf01Icon,
-  code: SourceCodeIcon,
+  code: CodeXmlIcon,
   audio: AiSpeechIcon,
   video: FlimSlateIcon,
   model: TestTubeOutlineIcon,

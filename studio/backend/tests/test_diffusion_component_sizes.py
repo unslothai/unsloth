@@ -1761,3 +1761,19 @@ def test_transformers_folders_recognise_only_transformers_stems(tmp_path):
     _component(tmp_path, "vae", 0.1)
     sizes = dcs.local_component_sizes(tmp_path)
     assert sizes.get("text_encoder") is None and "text_encoder" in sizes.unknown
+
+
+def test_a_cosmos3_snapshot_prices_a_known_zero_text_term(tmp_path):
+    fam = _fam("cosmos3-edge")
+    entry = json.loads(
+        (Path(__file__).parent / "fixtures" / "cosmos3_checkpoints.json").read_text(
+            encoding = "utf-8"
+        )
+    )["nvidia/Cosmos3-Edge@344d602b128d1bbdacb43b08d0a3626f46343e29"]
+    (tmp_path / "model_index.json").write_text(json.dumps(entry["model_index"]), encoding = "utf-8")
+    denoiser_gb, _text_gb, vae_gb = fam.bf16_components_gb
+    _component(tmp_path, "transformer", denoiser_gb)
+    _component(tmp_path, "vae", vae_gb)
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert dcs.video_header_terms(fam, sizes) == pytest.approx((denoiser_gb, 0.0, vae_gb))
+    assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), sizes)[1] is None

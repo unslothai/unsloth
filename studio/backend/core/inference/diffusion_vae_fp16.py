@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""fp16 VAE decode for U-Net (SDXL) pipelines whose VAE sets ``force_upcast``.
-
-The SDXL VAE overflows fp16 in its last decoder stages, so the pipelines upcast the whole VAE to fp32 on fp16 loads.
-Dividing the residual stream after the first upsampler by 2**8 (and the eps of each GroupNorm reading it by 2**16) is an
-identity, since GroupNorm is scale invariant, and keeps every activation in fp16 range. A non-finite decode still reruns
-in fp32 and hands later decodes back to the pipeline's upcast.
-"""
+"""fp16 SDXL VAE decode: residual scaled 2**-8 (GroupNorm is scale invariant); a non-finite decode
+reruns fp32 and later decodes revert to the pipeline upcast"""
 
 from __future__ import annotations
 
@@ -21,10 +16,7 @@ _SCALE_LOG2 = 8
 
 
 def _scale_plan(decoder: Any) -> Optional[tuple]:
-    """(convs, norms) scaling the residual stream after ``up_blocks[0]``'s upsampler; None for other layouts.
-
-    ``(conv, divide_weight)``: unscaled input divides weight + bias, already-scaled input (shortcut, later upsamplers)
-    only bias. ``norms`` read the scaled stream, so their eps shrinks by scale**2."""
+    """Unscaled inputs divide weight and bias, scaled ones only bias; norm eps shrinks by scale squared."""
     import torch
 
     up_blocks = list(getattr(decoder, "up_blocks", None) or ())

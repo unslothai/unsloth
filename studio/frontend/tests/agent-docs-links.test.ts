@@ -21,8 +21,9 @@ test("the API tab hands owners to the Agents tab and gives other accounts the ag
   const src = readSrc("features/settings/components/usage-examples.tsx");
   assert.match(
     src,
-    /\{isOwner \? \([\s\S]*?setAgentsTabAgent\(agent\);\s*useSettingsDialogStore\.getState\(\)\.setActiveTab\("agents"\);[\s\S]*?\) : \([\s\S]*?href=\{agentDetails\.docsUrl\}/,
+    /\{isOwner \? \([\s\S]*?setAgentsTabAgent\(agent\);[\s\S]{0,300}else useSettingsDialogStore\.getState\(\)\.setActiveTab\("agents"\);[\s\S]*?\) : \([\s\S]*?href=\{agentDetails\.docsUrl\}/,
   );
+  assert.match(src, /if \(agentsOnly\) useSettingsDialogStore\.getState\(\)\.openDialog\("agents"\);/);
   const visibility = readSrc("features/settings/settings-tab-visibility.ts");
   assert.match(visibility, /OWNER_ONLY_SETTINGS_TABS[\s\S]*?"agents"/);
   assert.doesNotMatch(src, /const DOC_LINKS/);

@@ -6,6 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type NpuModel,
   type NpuPickerSource,
+  NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
   npuResumeLabel,
@@ -17,7 +18,6 @@ import { toast } from "@/lib/toast";
 import { useState } from "react";
 import { DeleteConfirmDialog } from "./download-card";
 
-/** The Hub's NPU format: Lemonade's FastFlowLM catalog, the same models the chat picker lists. */
 export function NpuCatalogList({
   source,
   query,
@@ -71,6 +71,7 @@ export function NpuCatalogList({
       className="mx-auto flex min-h-0 w-full max-w-[var(--hub-measure)] flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3"
     >
       {body()}
+      <NpuRuntimeVersions catalog={catalog} className="mt-auto px-3 pt-4" />
     </div>
   );
 }

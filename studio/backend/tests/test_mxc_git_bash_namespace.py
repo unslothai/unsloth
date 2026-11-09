@@ -111,7 +111,12 @@ def test_a_missing_builtin_container_is_named(monkeypatch, tmp_path, executable,
 def _count_live_probes(monkeypatch, reason):
     clock = [1000.0]
     calls = []
-    monkeypatch.setattr(mxc_probe.time, "monotonic", lambda: clock[0])
+
+    def leaping_monotonic():
+        clock[0] += 86400.0
+        return clock[0]
+
+    monkeypatch.setattr(mxc_probe.time, "monotonic", leaping_monotonic)
     monkeypatch.setattr(mxc_probe.mxc_runtime, "installation_identity", lambda: "runtime-a")
 
     def live_probe(
@@ -126,28 +131,46 @@ def _count_live_probes(monkeypatch, reason):
     return clock, calls
 
 
-def test_an_incompatible_shell_is_not_probed_again_each_negative_ttl(monkeypatch, tmp_path):
-    clock, calls = _count_live_probes(monkeypatch, mxc_probe.MSYS_NAMESPACE_REASON)
+@pytest.mark.parametrize(
+    "reason", [mxc_probe.MSYS_NAMESPACE_REASON, "the live MXC probe did not complete cleanly"]
+)
+def test_a_failure_is_held_until_invalidated_not_until_a_timer(monkeypatch, tmp_path, reason):
+    _clock, calls = _count_live_probes(monkeypatch, reason)
     bash = str(tmp_path / "bash.exe")
     for _ in range(5):
-        assert mxc_probe.probe(bash, execution_kind = "terminal") == (
-            False,
-            mxc_probe.MSYS_NAMESPACE_REASON,
-        )
-        clock[0] += mxc_probe.NEGATIVE_TTL + 1
+        assert mxc_probe.probe(bash, execution_kind = "terminal") == (False, reason)
     assert len(calls) == 1
-    clock[0] += mxc_probe.INCOMPATIBLE_TTL
+    mxc_probe.invalidate_cache()
     mxc_probe.probe(bash, execution_kind = "terminal")
     assert len(calls) == 2
+    mxc_probe.probe(bash, execution_kind = "terminal", force = True)
+    assert len(calls) == 3
 
 
-def test_a_generic_failure_still_expires_at_the_negative_ttl(monkeypatch, tmp_path):
-    clock, calls = _count_live_probes(monkeypatch, "the live MXC probe did not complete cleanly")
+def test_an_invalidate_during_a_probe_keeps_its_result_out(monkeypatch, tmp_path):
+    import threading
+
+    _clock, calls = _count_live_probes(monkeypatch, "blocked before the fix")
+    started, release = threading.Event(), threading.Event()
+    live = mxc_probe._probe
+
+    def slow(*args, **kwargs):
+        started.set()
+        release.wait(5)
+        return live(*args, **kwargs)
+
+    monkeypatch.setattr(mxc_probe, "_probe", slow)
     bash = str(tmp_path / "bash.exe")
+    worker = threading.Thread(
+        target = mxc_probe.probe, args = (bash,), kwargs = {"execution_kind": "terminal"}
+    )
+    worker.start()
+    assert started.wait(5)
+    mxc_probe.invalidate_cache()
+    release.set()
+    worker.join(5)
     mxc_probe.probe(bash, execution_kind = "terminal")
-    clock[0] += mxc_probe.NEGATIVE_TTL + 1
-    mxc_probe.probe(bash, execution_kind = "terminal")
-    assert len(calls) == 2
+    assert len(calls) == 2, "a verdict from before the invalidate was cached"
 
 
 def test_a_new_runtime_or_opt_in_probes_the_shell_again(monkeypatch, tmp_path):

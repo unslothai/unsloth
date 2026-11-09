@@ -3,9 +3,9 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 
-// Adjustable items in the composer "+" menu. The core items and the "More" overflow itself are
-// always shown and are intentionally NOT represented here.
+// Core items and the "More" overflow are always shown and intentionally not listed here.
 export type PlusMenuItemId =
   | "deepResearch"
   | "chatWithFiles"
@@ -43,6 +43,17 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   compareChat: false,
   exportChat: false,
 };
+
+export function plusMenuAtDefaults(
+  pins: Record<PlusMenuItemId, boolean>,
+  order: readonly PlusMenuItemId[],
+): boolean {
+  return (
+    order.length === PLUS_MENU_ORDER.length &&
+    order.every((id, index) => id === PLUS_MENU_ORDER[index]) &&
+    PLUS_MENU_ORDER.every((id) => pins[id] === DEFAULT_PINS[id])
+  );
+}
 
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
 
@@ -157,3 +168,5 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
     },
   ),
 );
+
+syncAcrossWindows(usePlusMenuPrefsStore);

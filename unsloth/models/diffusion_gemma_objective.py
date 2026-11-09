@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""DiffusionGemma block-diffusion SFT objective, matching the reference fine-tune of the released checkpoint
-(the recipe in TRL's examples/sft_diffusion_gemma/sft_diffusion_gemma.py)."""
+"""DiffusionGemma block-diffusion SFT objective matching TRL's examples/sft_diffusion_gemma recipe."""
 
 import contextlib
 

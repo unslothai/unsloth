@@ -10,17 +10,12 @@ import {
   uploadProjectDocument,
 } from "./rag-api";
 
-// Windows keeps these device names reserved in every directory, with or without
-// an extension: "NUL.txt and NUL.tar.gz are both equivalent to NUL". The
-// ISO-8859-1 superscripts count as digits in COM#/LPT#.
+// Windows reserves these device names with any extension; ISO-8859-1 superscripts count as digits.
 const RESERVED_DEVICE_NAME =
   /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i;
-// Filesystems cap a path component in bytes, not characters, so 80 CJK or emoji
-// code points would overrun the usual 255. Leave room for ".md" too.
+// Filesystems cap components in bytes (usually 255), so CJK or emoji titles need a byte budget.
 const MAX_STEM_BYTES = 180;
 
-/** Trim to a byte budget on a code point boundary, so a cut never leaves the
- * lone half of a surrogate pair behind. */
 function clampToBytes(text: string, maxBytes: number): string {
   const encoder = new TextEncoder();
   if (encoder.encode(text).length <= maxBytes) return text;
@@ -35,17 +30,13 @@ function clampToBytes(text: string, maxBytes: number): string {
   return out;
 }
 
-/** A chat title as the filename its source is listed under. The backend stores
- * the upload under a uuid and re-sanitises this for its own metadata, so this is
- * about what the user reads in the sources panel, not about path safety. */
+/** For display in the sources panel only; the backend stores under a uuid and re-sanitises. */
 export function projectSourceFileName(title: string): string {
   const stem = clampToBytes(
     Array.from(title, (char) => {
       const code = char.codePointAt(0) ?? 0;
-      // Control characters are not filename characters on any host.
       if (code < 0x20 || code === 0x7f) return " ";
-      // Array.from yields whole code points, so a surrogate here is an unpaired
-      // one the title arrived with; it has no encoding to send.
+      // Array.from yields whole code points, so a surrogate here is unpaired.
       if (code >= 0xd800 && code <= 0xdfff) return "";
       return "\\/:*?\"<>|".includes(char) ? "_" : char;
     })
@@ -54,13 +45,11 @@ export function projectSourceFileName(title: string): string {
       .trim(),
     MAX_STEM_BYTES,
   )
-    // Windows drops a trailing period or space, so never send one.
+    // Windows drops a trailing period or space.
     .replace(/[\s.]+$/, "");
-  // The backend collapses everything outside [A-Za-z0-9._-] to "_", so a title with no ASCII word
-  // character at all would be listed as "_.md". A generic name at least reads as one.
+  // The backend collapses non [A-Za-z0-9._-] characters to "_", so use a generic name instead.
   if (!/[A-Za-z0-9]/.test(stem)) return "chat.md";
-  // A device name stays reserved through any extension, and Windows reads it as
-  // the part before the *first* dot, so break the name there.
+  // Windows reads the device name as the part before the first dot.
   const dot = stem.indexOf(".");
   const head = dot === -1 ? stem : stem.slice(0, dot);
   return RESERVED_DEVICE_NAME.test(head)
@@ -68,9 +57,7 @@ export function projectSourceFileName(title: string): string {
     : `${stem}.md`;
 }
 
-// A save has no chip in the sources panel to carry a "failed" state, so poll the
-// ingest far enough to warn when the document will never become searchable. The
-// panel does the same over SSE for the uploads it owns.
+// A save has no chip to show failure, so poll the ingest to warn when indexing fails.
 const INGEST_POLL_MS = 2_000;
 const INGEST_POLL_ATTEMPTS = 150;
 
@@ -85,14 +72,12 @@ async function watchIngestion(
     try {
       job = await getJob(jobId);
     } catch {
-      // The job is unreachable; the panel's own list is the fallback.
       return;
     }
     const terminal = terminalJobStatus(job.status);
     if (!terminal) continue;
     if (terminal === "failed") {
-      // The panel hides failed documents, so without this the source just never
-      // appears after a success toast.
+      // The panel hides failed documents, so the source would silently never appear.
       toast.error(`Couldn't index ${filename}`, {
         description: job.error ?? "Indexing failed",
       });
@@ -102,9 +87,6 @@ async function watchIngestion(
   }
 }
 
-/** Upload one markdown document to a project's sources. Resolves true when the
- * upload was accepted, so a caller saving several can report the count once;
- * failures toast here, because only this layer knows why. */
 export async function saveMarkdownAsProjectSource(
   projectId: string,
   markdown: string,
@@ -113,8 +95,7 @@ export async function saveMarkdownAsProjectSource(
 ): Promise<boolean> {
   const filename = projectSourceFileName(title);
   const file = new File([markdown], filename, { type: "text/markdown" });
-  // Invalidate the sources probe before the upload as well as after it (the announce below): a chat
-  // sent mid-upload must not cache "no sources" for the probe's TTL.
+  // Invalidate before and after the upload: a chat sent mid-upload must not cache "no sources".
   invalidateProjectSources(projectId);
   try {
     const result = await uploadProjectDocument(projectId, file);
@@ -127,8 +108,6 @@ export async function saveMarkdownAsProjectSource(
     });
     return false;
   } finally {
-    // Announce only after the upload: a refetch fired before it would just
-    // re-list the rows the panel already has.
     announceProjectSourcesUpdated(projectId);
   }
 }

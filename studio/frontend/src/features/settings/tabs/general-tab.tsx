@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { resetChatBackground } from "@/features/chat-background";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,6 +12,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
@@ -34,16 +42,21 @@ import {
   type NotificationChannel,
 } from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
-import { LOCALE_STORAGE_KEY, type TranslationKey, useT } from "@/i18n";
+import { LOCALE_STORAGE_KEY, getLocale, translate, type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   SPELLCHECK_STORAGE_KEY,
   setSpellCheck,
   useSpellCheck,
 } from "@/lib/spellcheck";
+import {
+  TIME_FORMAT_STORAGE_KEY,
+  type TimeFormat,
+  setTimeFormat,
+  useTimeFormat,
+} from "@/lib/time-format";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   type HelperPrecacheSettings,
@@ -71,21 +84,21 @@ import {
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
+import { readPending, writePending } from "../lib/client-prefs-pending";
 import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
-import {
-  DesktopUpdateControl,
-  DesktopUpdateNote,
-} from "../components/desktop-update-control";
+import { DesktopUpdateControl } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import {
   DOWNLOAD_DIR_STORAGE_KEY,
   TRANSPORT_MODE_STORAGE_KEY,
 } from "@/features/hub";
+import { DownloadSpeedLimitRow } from "../components/download-speed-limit-row";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
+import { MlWarmupSection } from "../components/ml-warmup-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -95,6 +108,9 @@ import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-sto
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 
 // whisper.cpp rides along with llama.cpp's card, so it has no line of its own.
 const UPDATE_REMINDER_CHANNELS: {
@@ -119,13 +135,14 @@ const UPDATE_REMINDER_CHANNELS: {
 // would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
 // unsloth_auth_must_change_password are excluded).
 const PREFS_KEYS: string[] = [
-  // Appearance
   "theme",
   "palette",
   "unsloth_appearance_customization",
+  "unsloth_window_material",
   INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   SPELLCHECK_STORAGE_KEY,
+  TIME_FORMAT_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
   "sidebar_width",
@@ -134,15 +151,12 @@ const PREFS_KEYS: string[] = [
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
   LIBRARY_CHATS_PREFS_STORAGE_KEY,
-  // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
-  // Rebound chords. Without this a reset leaves the user on shortcuts they asked to throw away, and
-  // a chord bound to something unusable has no escape hatch from this button.
+  // Rebound chords, so a bad binding has an escape hatch.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
-  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
-  // transport changes made elsewhere.
+  // Outranks the install-wide setting, so it must be cleared too.
   TRANSPORT_MODE_STORAGE_KEY,
   DOWNLOAD_DIR_STORAGE_KEY,
   // Chat runtime prefs
@@ -165,29 +179,20 @@ const PREFS_KEYS: string[] = [
   "unsloth_load_settings",
   "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
-  // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
-  // The memory bar's opt-in. Reset All advertises restoring defaults and this feature's default is
-  // off, so leaving the key out left it switched on across a reset that said it had turned
-  // everything back. Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
-  // reason the note above gives: it lives in chat-runtime-store, which is in an import cycle with
-  // this file, so the constant would still be in its temporal dead zone when this module-scope list
-  // is built. A test pins this literal against the store's constant so the two cannot drift apart
-  // silently.
+  // Spelled out, not CHAT_SHOW_MEMORY_BAR_KEY: chat-runtime-store is in an import cycle with this
+  // file. A test pins this literal against the store's constant.
   "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
-  // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
   "unsloth_chat_system_prompts",
   "unsloth_chat_system_prompts_migrated",
-  // Training UI prefs
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
   ...TRAINING_UI_PREFERENCE_KEYS,
-  // Profile personalization
   "unsloth_user_profile",
   "unsloth_profile_activity_chart",
   // Guided tour flags
@@ -203,15 +208,18 @@ const PREFS_KEYS: string[] = [
   ...Object.values(FLOATING_PANEL_POSITION_KEYS),
   // Voice settings
   "unsloth_voice_settings",
-  // Retired keys. The onboarding wizard is gone, but installs that ran it still
-  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  // Retired keys: installs that ran the old onboarding wizard still carry its flag.
   "unsloth_onboarding_done",
 ];
 
-// Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
+// Set by resetAllPrefs so the unmount commit skips writing back the in-memory draft.
 let resetInProgress = false;
 
-function resetAllPrefs() {
+async function resetAllPrefs() {
+  if (!(await resetChatBackground())) {
+    toast.error(translate("chatBackground.storageError", {}, getLocale()));
+    return;
+  }
   resetInProgress = true;
   for (const key of PREFS_KEYS) {
     try {
@@ -220,6 +228,14 @@ function resetAllPrefs() {
       // ignore
     }
   }
+  // Unsent, so the defaults beat the account's saved copy after the reload.
+  writePending({
+    ...readPending(),
+    scale: true,
+    chat: true,
+    timeFormat: true,
+    spellcheck: true,
+  });
   window.location.reload();
 }
 
@@ -235,6 +251,7 @@ export function GeneralTab() {
   const hfTokenIsPersisting = useHfTokenStore((s) => s.isPersisting);
   const showLoadedModels = useShowLoadedModels();
   const spellCheck = useSpellCheck();
+  const timeFormat = useTimeFormat();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -291,7 +308,7 @@ export function GeneralTab() {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
+  // Commit on unmount (dialog close / tab switch), skipped during reset.
   useEffect(() => {
     return () => {
       if (resetInProgress || !tokenEditedRef.current) return;
@@ -357,8 +374,7 @@ export function GeneralTab() {
     setHfToken("");
   };
 
-  // Only show the success tick after the authenticated validation endpoint confirms this token:
-  // a saved token alone may still be malformed, expired, or revoked.
+  // Only after the validation endpoint confirms the token: a saved one may be expired or revoked.
   const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
@@ -453,7 +469,7 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
-      // Toggling sharing changes whether /api/train/runs returns preview_sig, so refresh the grid.
+      // Sharing toggles whether /api/train/runs returns preview_sig.
       emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
@@ -470,7 +486,7 @@ export function GeneralTab() {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
-      // The secret rotated, so any preview_sig the history grid holds is stale.
+      // The secret rotated, so held preview_sig values are stale.
       emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
@@ -528,7 +544,6 @@ export function GeneralTab() {
         {isTauri ? (
           <div data-settings-label={t("settings.about.updates")}>
             <DesktopUpdateControl />
-            <DesktopUpdateNote />
           </div>
         ) : null}
         <DesktopInstallTypeControl />
@@ -573,18 +588,17 @@ export function GeneralTab() {
                 }}
                 onBlur={commitToken}
                 className={cn(
-                  "h-8 w-full font-mono text-xs",
+                  "h-control w-full font-mono text-xs",
                   tokenValidated ? "pr-14" : "pr-8",
                 )}
               />
               {tokenValidated ? (
-                // Decorative: pointer-events-none lets clicks reach the input underneath.
                 <span
                   className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                   role="img"
                   aria-label={t("settings.general.tokenValidated")}
                 >
-                  <Check className="size-4" strokeWidth={2.5} />
+                  <HugeiconsIcon icon={Tick02Icon} className="size-4" strokeWidth={2.5} />
                 </span>
               ) : null}
               <button
@@ -599,9 +613,9 @@ export function GeneralTab() {
                 tabIndex={-1}
               >
                 {showToken ? (
-                  <EyeOff className="size-3.5" />
+                  <HugeiconsIcon icon={ViewOffSlashIcon} className="size-3.5" />
                 ) : (
-                  <Eye className="size-3.5" />
+                  <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
                 )}
               </button>
             </div>
@@ -629,12 +643,40 @@ export function GeneralTab() {
         )}
       </SettingsSection>
 
-      <SettingsSection title={t("settings.appearance.language.title")}>
+      <SettingsSection title={t("settings.general.display.title")}>
         <SettingsRow
           label={t("settings.appearance.language.label")}
           description={t("settings.appearance.language.description")}
         >
           <LanguageSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.display.timeFormat")}
+          description={t("settings.general.display.timeFormatDescription")}
+        >
+          <Select
+            value={timeFormat}
+            onValueChange={(next) => setTimeFormat(next as TimeFormat)}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-48"
+              aria-label={t("settings.general.display.timeFormat")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="system">
+                {t("settings.general.display.timeFormatSystem")}
+              </SelectItem>
+              <SelectItem value="12h">
+                {t("settings.general.display.timeFormat12")}
+              </SelectItem>
+              <SelectItem value="24h">
+                {t("settings.general.display.timeFormat24")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.language.spellCheck")}
@@ -671,7 +713,7 @@ export function GeneralTab() {
             <div
               key={channel}
               data-settings-label={name}
-              className="flex items-center justify-between gap-4 py-1.5"
+              className="flex items-start justify-between gap-4 py-1.5"
             >
               <div className="flex min-w-0 items-baseline gap-2">
                 <span className="text-sm text-foreground">{name}</span>
@@ -690,7 +732,6 @@ export function GeneralTab() {
         </div>
       </SettingsSection>
 
-      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
       {isOwner ? (
         <>
       <SettingsSection
@@ -714,7 +755,6 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
-          destructive={true}
           label={t("settings.general.previewSharing.revokeLabel")}
           description={t("settings.general.previewSharing.revokeDescription")}
         >
@@ -733,6 +773,7 @@ export function GeneralTab() {
 
       <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
         <DownloadTransportRow />
+        <DownloadSpeedLimitRow />
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
@@ -761,7 +802,7 @@ export function GeneralTab() {
                 value={draftUploadLimit}
                 aria-label={t("settings.general.uploads.maxUploadSize")}
                 onChange={(event) => setDraftUploadLimit(event.target.value)}
-                className="h-8 w-24"
+                className="h-control w-24"
               />
               <span className="text-xs font-medium text-muted-foreground">
                 MB
@@ -779,6 +820,8 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+
+      <MlWarmupSection />
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow
@@ -882,10 +925,10 @@ export function GeneralTab() {
       ) : null}
 
       <SettingsSection
+        danger={true}
         title={t("settings.general.resetPreferences.sectionTitle")}
       >
         <SettingsRow
-          destructive={true}
           label={t("settings.general.resetPreferences.label")}
           description={t("settings.general.resetPreferences.description")}
         >

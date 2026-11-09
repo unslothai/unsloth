@@ -27,7 +27,7 @@ const FileMenuContent = lazy(() =>
   import("./link-menu-content").then((module) => ({ default: module.FileMenuContent })),
 );
 
-// Passed through to the trigger, so a menu can sit inside another trigger (a dialog's) that uses asChild.
+// Passed through so a menu can sit inside another asChild trigger (a dialog's).
 type TriggerProps = Omit<ComponentProps<typeof ContextMenuTrigger>, "asChild" | "children">;
 /** Mounted on first right-click (then replayed), so streamed links don't re-render a Radix menu per token. */
 function LazyContextMenu({
@@ -37,7 +37,7 @@ function LazyContextMenu({
 }: { triggerProps: TriggerProps; content: ReactNode; children: ReactElement }) {
   const [live, setLive] = useState(false);
   const triggerRef = useRef<HTMLElement | null>(null);
-  // An outer trigger (a dialog's, through asChild) passes its own ref; keep both.
+  // An outer asChild trigger passes its own ref; keep both.
   const { ref: outerRef, ...restTriggerProps } = triggerProps;
   const setTrigger = useCallback(
     (node: HTMLSpanElement | null) => {
@@ -107,13 +107,19 @@ export type ContextFile = {
   name: string;
   contentType?: string;
   load: () => Promise<Blob>;
-  /** What a click on it does; opening it in the browser otherwise. */
   open?: () => void;
   sandbox?: { sessionId: string; file: string };
 };
 
 export function loadSandboxFile(sessionId: string, file: string): Promise<Blob> {
   return authFetch(sandboxFilePath(sessionId, file)).then((response) => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.blob();
+  });
+}
+
+export function loadBackendFile(path: string): Promise<Blob> {
+  return authFetch(path).then((response) => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.blob();
   });

@@ -26,19 +26,13 @@ _CACHE_TTL_S = 2.0
 _StoredState = tuple[
     Optional[str], Optional[str], Optional[str], Optional[str], bool, Optional[dict]
 ]
-# (override model, resolved model, GGUF repo, backend, download pending, raw record).
-# The raw record is carried so a conditional write compares against exactly what is stored: a reconstruction never
-# matches a record written by a build with one field fewer.
+# The raw record lets a conditional write compare against exactly what is stored.
 _cached: dict[tuple[str, str], tuple[float, _StoredState]] = {}
 _CACHE_MAX = 256
-# Bumped on every write/invalidate. A reader captures it before the DB read and
-# only fills the cache if it is unchanged afterward, so a read that overlapped a
-# save cannot repopulate the cache with the pre-save value for the whole TTL.
+# Bumped per write so a read overlapping a save cannot cache the pre-save value.
 _generation: dict[tuple[str, str], int] = {}
 _lock = threading.Lock()
-# Per-model, process-local: the last (gguf_repo, backend, download_pending, files)
-# seen for each model. The one stored record belongs to whichever model was saved
-# last; see remembered_gguf_repo.
+# Per model, process-local; see remembered_gguf_repo.
 _resolved_gguf_memo: dict[
     tuple[str, str], tuple[Optional[str], Optional[str], bool, Optional[list]]
 ] = {}
@@ -248,8 +242,7 @@ def _get_stored_state(fresh: bool = False) -> _StoredState:
     raw = resolution if isinstance(resolution, dict) else None
     value: _StoredState = (override, resolved_model, repo, backend, download_pending, raw)
     with _lock:
-        # Only cache when no save landed while reading: a pre-save value would mask the new one for the
-        # whole TTL.
+        # Cache only if no save landed mid-read; a pre-save value would mask the new one for the TTL.
         if _generation.get(key, 0) == gen:
             _store_cached(key, value)
     return value

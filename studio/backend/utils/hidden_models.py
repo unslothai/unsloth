@@ -43,9 +43,7 @@ _HIDDEN_STT_REPO_IDS = frozenset(
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
 
-# audio.cpp's umbrella repo: every speech, music and ASR package lives in one of its subfolders, so
-# the cache holds GGUFs the chat index would otherwise offer as a chat model. The Audio page and
-# Voice settings reach them through the audio.cpp catalog instead.
+# audio.cpp umbrella repo: its subfolder GGUFs would show as chat models, so the Audio page and Voice settings reach them through the audio.cpp catalog.
 _HIDDEN_AUDIO_CPP_REPO_IDS_LOWER = frozenset({"audio-cpp/audio.cpp-gguf"})
 
 # Curated Audio-page TTS checkpoints, which stay VISIBLE but must not be chat-loadable: a chat turn on one comes back as synthesized speech. Listed by id because config sniffing cannot catch them (Orpheus/OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries no tokenizer_config for the codec probe.

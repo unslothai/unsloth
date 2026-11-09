@@ -193,7 +193,7 @@ export function buildRecipePayload(
       continue;
     }
     if (config.kind === "seed") {
-      // SeedConfig is global config (seed_config); seed-dataset columns are added by DataDesigner.
+      // seed-dataset columns are added by DataDesigner.
       continue;
     }
     if (config.kind === "markdown_note") {

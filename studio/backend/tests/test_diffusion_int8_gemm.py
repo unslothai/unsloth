@@ -50,7 +50,8 @@ def _clean(monkeypatch):
         ((12, 0), True),
     ],
 )
-def test_arch_gate_auto(cap, on):
+def test_arch_gate_auto(monkeypatch, cap, on):
+    monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: False)  # the pre-3.8 table
     assert (g8.arch_config(cap, "auto") is not None) is on
 
 
@@ -66,6 +67,52 @@ def test_force_enables_unmeasured_sm80_plus_only(monkeypatch):
     assert g8.arch_config((9, 0)) == g8._FALLBACK_CONFIG
     assert g8.arch_config((10, 0)) == g8._FALLBACK_CONFIG
     assert g8.arch_config((7, 5)) is None
+
+
+@pytest.mark.parametrize("newer", [False, True])
+def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer):
+    monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: newer)
+    for cap, cfg in g8._ARCH_CONFIG.items():
+        stock = newer and cap[0] == 8
+        assert g8.arch_config(cap, "auto") == (None if stock else cfg)
+        assert g8.arch_config(cap, "force") == cfg  # forcing still runs the kernel
+        assert not g8.unlisted_arch(cap) and not g8.unlisted_wanted(cap, "auto")
+    for cap in ((8, 6), (8, 7)):  # unlisted sm8x: no probe / latency check either
+        assert g8.unlisted_wanted(cap, "auto") is not newer
+        assert g8.unlisted_wanted(cap, "force")
+    for cap in ((9, 0), (12, 1)):  # no spill there: unchanged
+        assert g8.unlisted_wanted(cap, "auto")
+    assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
+    assert g8._gates((8, 9))[0] is not newer
+
+
+@pytest.mark.parametrize(
+    "version, newer", [("3.7.1", False), ("3.8.0", True), ("3.9.0+git1", True), ("4.0", True)]
+)
+def test_triton_at_least_parses_the_installed_version(monkeypatch, version, newer):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "triton", types.SimpleNamespace(__version__ = version))
+    g8._triton_at_least.cache_clear()
+    try:
+        assert g8._triton_at_least(3, 8) is newer
+    finally:
+        g8._triton_at_least.cache_clear()
+
+
+def test_triton38_runtime_turns_sm80_sm89_stock(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "triton", types.SimpleNamespace(__version__ = "3.8.0"))
+    clear = getattr(getattr(g8, "_triton_at_least", None), "cache_clear", lambda: None)
+    clear()
+    try:
+        assert g8.arch_config((8, 0), "auto") is None
+        assert g8.arch_config((8, 9), "auto") is None
+        assert not g8.unlisted_wanted((8, 6), "auto")
+        assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
+    finally:
+        clear()
 
 
 def test_install_is_a_noop_when_killed(monkeypatch):
@@ -1277,6 +1324,113 @@ def test_swiglu_mlp_without_the_prologue_still_shares_the_gate_value_quant(h16_r
         assert cq.rotquant_call_count() == before + 3
         assert torch.equal(out, ref)
     g8.uninstall(torch.nn.Sequential(ff))
+
+
+def _host_swiglu_ff(monkeypatch):
+    ff = torch.nn.Module()
+    ff.gate_layer, ff.proj, ff.out = (
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+    )
+    ff.activation_fn = torch.nn.SiLU()
+    monkeypatch.setattr(g8, "_swiglu_ff_eligible", lambda m: m is ff)
+    return ff
+
+
+@pytest.mark.parametrize("streamed, patched", [(False, False), (True, True)])
+def test_streamed_install_patches_the_host_swiglu_mlp(monkeypatch, streamed, patched):
+    monkeypatch.delenv(g8.INT8_SWIGLU_STREAMED_ENV, raising = False)
+    ff = _host_swiglu_ff(monkeypatch)
+    assert g8._install_swiglu_ff(torch.nn.Sequential(ff), 0, streamed = streamed) == int(patched)
+    assert bool(ff.__dict__.get(g8._FF_MARK)) is patched
+
+
+def test_streamed_install_keeps_a_swiglu_mlp_on_another_card(monkeypatch):
+    ff = _host_swiglu_ff(monkeypatch)
+    monkeypatch.setattr(g8, "_weight_card", lambda m: 1)
+    assert g8._install_swiglu_ff(torch.nn.Sequential(ff), 0, streamed = True) == 0
+    assert g8._FF_MARK not in ff.__dict__
+
+
+def test_swap_passes_streamed_only_for_the_onload_device_install(monkeypatch):
+    seen = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+    )
+    import core.inference.diffusion_int8_fused as fused
+
+    monkeypatch.setattr(fused, "resident_cuda_device", lambda t: torch.device("cuda", 0))
+    # An NVIDIA host; ROCm torch refuses the explicit-device install (next test).
+    monkeypatch.setattr(g8, "is_rocm_torch", lambda _torch: False)
+    g8._swap(torch.nn.Linear(2, 2), device = "cuda:0")
+    g8._swap(torch.nn.Linear(2, 2))
+    assert seen == [(0, True), (0, False)]
+
+
+def test_rocm_torch_swaps_nothing_for_an_onload_device(monkeypatch):
+    seen = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+    )
+    import core.inference.diffusion_int8_fused as fused
+
+    monkeypatch.setattr(g8, "is_rocm_torch", lambda _torch: True)
+    monkeypatch.setattr(fused, "is_rocm_torch", lambda _torch: True)
+    assert g8._swap(torch.nn.Linear(2, 2), device = "cuda:0") == 0
+    assert fused.resident_cuda_device(torch.nn.Linear(2, 2)) is None
+    assert g8._split_cards(torch.nn.Linear(2, 2)) == ()
+    assert seen == []
+
+
+@needs_cuda
+def test_block_streamed_swiglu_mlp_runs_fused_after_the_onload(h16_rotq, monkeypatch):
+    """Streamed host MLP runs fused, bit-identical to resident; the kill switch keeps it stock."""
+    hooks = pytest.importorskip("diffusers.hooks")
+    if not cq._SWIGLU_DEVICE.get(torch.cuda.current_device()):
+        pytest.skip("SwiGLU prologue probe refused this device")
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV, raising = False)
+
+    class Holder(torch.nn.Module):
+        def __init__(self, ff):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([torch.nn.Sequential(ff)])
+
+        def forward(self, x):
+            return self.blocks[0](x)
+
+    resident = _swiglu_ff(1024, 3072, 2)
+    assert g8.install(torch.nn.Sequential(resident)) == 3 and resident.__dict__.get(g8._FF_MARK)
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = resident(x)
+    for kill, fused in ((None, True), ("0", False)):
+        if kill is None:
+            monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED", raising = False)
+        else:
+            monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED", kill)
+        ff = _swiglu_ff(1024, 3072, 2)
+        holder = Holder(ff).requires_grad_(False).cpu()
+        hooks.apply_group_offloading(
+            holder,
+            onload_device = torch.device("cuda"),
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+        )
+        assert ff.out.weight.device.type == "cpu"
+        assert g8.install(holder, device = "cuda") == 3
+        assert bool(ff.__dict__.get(g8._FF_MARK)) is fused
+        with torch.no_grad():
+            sw = cq.swiglu_call_count()
+            out = holder(x)
+            assert cq.swiglu_call_count() == sw + int(fused)
+        if fused:
+            assert torch.equal(out, ref)
+        assert ff.out.weight.device.type == "cpu"
 
 
 def test_hooked_linear_is_not_shared():

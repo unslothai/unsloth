@@ -235,7 +235,8 @@ test("choosing Auto after a pinned load asks the server to size itself again", (
 });
 
 test("each same-model resolver call hands over the resident pin", () => {
-  assert.equal(RUNTIME.match(/loadedContextPin: (?:live|stateBeforeUnload)\.loadedCustomContextLength,/g)?.length, 3);
+  // One call sizes both /validate and /load; the other decides whether the resident already matches.
+  assert.equal(RUNTIME.match(/loadedContextPin: (?:live|stateBeforeUnload)\.loadedCustomContextLength,/g)?.length, 2);
 });
 
 test("Auto stays Auto across a same-model reload, under every preset source", () => {
@@ -280,7 +281,7 @@ test("Auto stays Auto across a same-model reload, under every preset source", ()
 test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // The pin is captured before performLoad substitutes the resolved context for Auto.
   const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
-  const clamp = RUNTIME.indexOf("loadCustomContextLength = fixedLayerContext(");
+  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(
@@ -288,11 +289,10 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
     "the clamp now runs before the pin is captured, so the app's substituted length " +
       "would be recorded as the user's choice",
   );
-  // /validate sizes the context the load will send, clamp included.
-  assert.match(
-    RUNTIME,
-    /const validateCustomContextLength = resetsPerModelSettings\s*\?\s*null\s*:\s*fixedLayerContext\(loadCustomContextLength, loadGpuLayers\);/,
-  );
+  // /validate sizes the context the load will send, clamp included: it sends the same request.
+  const request = RUNTIME.indexOf("const loadRequest = (): LoadModelRequest =>");
+  assert.ok(clamp < request);
+  assert.match(RUNTIME, /await validateModel\(\{\s*\.\.\.loadRequest\(\),/);
 });
 
 test("the three in-app writers pin what the user asked for, not what they sent", () => {

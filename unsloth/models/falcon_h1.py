@@ -602,8 +602,7 @@ def _FalconH1_fast_forward_inference(
     return FalconH1Model_fast_forward_inference_custom
 
 
-# Separate prepare_inputs_for_generation for Hybrid FalconH1, which has its own cache type
-# FalconHybridMambaAttentionDynamicCache.
+# FalconH1 has its own cache type, FalconHybridMambaAttentionDynamicCache.
 def _fast_prepare_inputs_for_generation(
     self,
     input_ids,
@@ -618,9 +617,7 @@ def _fast_prepare_inputs_for_generation(
     # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
     empty_past_kv = past_key_values is None
 
-    # Slice input_ids through cache_position to keep only unprocessed tokens, except: with
-    # input_embeds input_ids may be missing entries; some generation methods slice input_ids
-    # themselves; and with synced GPUs cache_position may go out of bounds.
+    # Slice input_ids to unprocessed tokens, except with input_embeds or synced-GPU overflow.
     if not empty_past_kv:
         if (
             inputs_embeds is not None  # Exception 1
@@ -701,8 +698,7 @@ class FastFalconH1Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(FalconH1ForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # Static KV cache (4.38.0) made training slower, so the old rotary embeddings are kept.
         import transformers.models.falcon_h1.modeling_falcon_h1
 
         transformers.models.falcon_h1.modeling_falcon_h1.FalconH1RotaryEmbedding = (

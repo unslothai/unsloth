@@ -19,6 +19,10 @@ logger = get_logger(__name__)
 DEFAULT_HELPER_MODEL_REPO = "unsloth/gemma-4-E2B-it-GGUF"
 DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 README_MAX_CHARS = 1500
+NO_ROLE_SPLIT_WARNING = (
+    "This dataset has no separate prompt and response columns to map. If it is plain "
+    "text, set Advanced > Target Format to Raw Text."
+)
 
 
 def _helper_disabled() -> bool:
@@ -224,6 +228,7 @@ def _run_multi_pass_advisor(
         )
         pass1 = _parse_json_response(pass1_raw)
         if not pass1:
+            logger.warning("Hub advisor pass 1 returned no JSON: %.300s", pass1_raw)
             return None
 
         if pass1.get("is_conversational") and not pass1.get("needs_conversion"):
@@ -270,20 +275,32 @@ def _run_multi_pass_advisor(
             512,
         )
         pass2 = _parse_json_response(pass2_raw)
-        if not pass2:
-            return None
-        column_roles = pass2.get("column_roles")
-        if not isinstance(column_roles, dict):
-            return None
-        roles_present = set(column_roles.values())
-        if "user" not in roles_present or "assistant" not in roles_present:
+        column_roles = pass2.get("column_roles") if pass2 else None
+        suggested_mapping = (
+            {
+                col: role
+                for col, role in column_roles.items()
+                if col in columns and role in {"user", "assistant", "system"}
+            }
+            if isinstance(column_roles, dict)
+            else {}
+        )
+        if (
+            "user" not in suggested_mapping.values()
+            or "assistant" not in suggested_mapping.values()
+        ):
+            logger.warning(
+                "Hub advisor gave no user/assistant split: roles=%s notes=%.300s",
+                column_roles,
+                pass2.get("notes") if pass2 else pass2_raw,
+            )
             return None
 
         label_mapping = pass2.get("label_mapping") or None
         system_prompt = ""
         if not pass1.get("is_conversational"):
-            user_cols = [col for col, role in column_roles.items() if role == "user"]
-            assistant_cols = [col for col, role in column_roles.items() if role == "assistant"]
+            user_cols = [col for col, role in suggested_mapping.items() if role == "user"]
+            assistant_cols = [col for col, role in suggested_mapping.items() if role == "assistant"]
             prompt_raw = _generate_with_backend(
                 backend,
                 [
@@ -305,17 +322,6 @@ def _run_multi_pass_advisor(
             cleaned = prompt_raw.strip().strip('"').strip("'").strip()
             if 20 <= len(cleaned) <= 800 and cleaned.lower() not in {"null", "none"}:
                 system_prompt = cleaned
-
-        suggested_mapping = {
-            col: role
-            for col, role in column_roles.items()
-            if col in columns and role in {"user", "assistant", "system"}
-        }
-        if (
-            "user" not in suggested_mapping.values()
-            or "assistant" not in suggested_mapping.values()
-        ):
-            return None
 
         dtype = str(pass1.get("dataset_type") or "other")
         notification_parts = [f"This is a {dtype} dataset."]
@@ -374,23 +380,26 @@ def _heuristic_mapping(columns: list[str]) -> Optional[dict[str, str]]:
         "problem",
         "text",
     )
+    # Metadata columns (id, url, ...) never fill a missing role.
+    content_cols = [
+        col
+        for col, name in lowered.items()
+        if not any(term == name or name.endswith(f"_{term}") for term in metadata_terms)
+    ]
     mapping: dict[str, str] = {}
-    for col, name in lowered.items():
-        if any(term == name or name.endswith(f"_{term}") for term in metadata_terms):
-            continue
+    for col in content_cols:
+        name = lowered[col]
         if any(term in name for term in assistant_terms):
             mapping[col] = "assistant"
         elif any(term in name for term in user_terms):
             mapping[col] = "user"
 
     if "assistant" not in mapping.values():
-        candidates = [col for col in columns if col not in mapping]
+        candidates = [col for col in content_cols if col not in mapping] or content_cols
         if candidates:
             mapping[candidates[-1]] = "assistant"
-        elif columns:
-            mapping[columns[-1]] = "assistant"
     if "user" not in mapping.values():
-        for col in columns:
+        for col in content_cols:
             if mapping.get(col) != "assistant":
                 mapping[col] = "user"
                 break
@@ -407,6 +416,9 @@ def llm_conversion_advisor(
     model_name: Optional[str] = None,
     model_type: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
+    if len(column_names) < 2:
+        return {"success": False, "warning": NO_ROLE_SPLIT_WARNING}
+
     dataset_card = None
     dataset_metadata = None
     if dataset_name and "/" in dataset_name:
@@ -432,8 +444,8 @@ def llm_conversion_advisor(
             "dataset_type": None,
             "is_conversational": None,
             "warning": (
-                "The helper model was unavailable, so Hub used column-name heuristics. "
+                "The helper model gave no usable mapping, so Hub used column-name heuristics. "
                 "Review the suggested mapping before training."
             ),
         }
-    return None
+    return {"success": False, "warning": NO_ROLE_SPLIT_WARNING}

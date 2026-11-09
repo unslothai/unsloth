@@ -99,12 +99,10 @@ def _zoo_cpu_backend(name):
 
 @functools.cache
 def get_device_type():
-    # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
-    # get_device_count. Matches unsloth/__init__.py and unsloth_zoo.device_type.
+    # MLX first: torch is never imported there. Matches unsloth/__init__.py and unsloth_zoo.device_type.
     if _IS_MLX:
         return "mlx"
-    # Test-only CPU fallback: report "cuda" so every DEVICE_TYPE == "cuda" branch behaves identically.
-    # Read once per process (function is cached).
+    # Test-only CPU fallback: report "cuda" so all cuda branches behave identically.
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return "cuda"
     if _zoo_cpu_backend("cpu_backend_forced"):
@@ -167,18 +165,13 @@ def get_device_count():
 
 DEVICE_COUNT: int = get_device_count()
 
-# 4-bit quantization requires a block size of 64: Instinct (MI) has a warp size of 64 against 32
-# elsewhere. Since bitsandbytes 0.49.0 pre-quantized 64-blockwise models work on Radeon (Navi)
-# but not Instinct (bitsandbytes-foundation/bitsandbytes#1748); since 0.49.2 blocksize=64 4-bit
-# is supported on CDNA (MI Instinct / gfx9xx) too (#1856).
+# 4-bit needs blocksize 64; Instinct warp size is 64. bnb 0.49.2+ supports blocksize 64 on CDNA too.
 
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
-# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader reads before it
-# picks a 4bit checkpoint. A guarded import, not find_spec, since importable is not usable: from
-# 0.46 a dead native library still resolves every ctypes handle to a closure that raises only when
-# called, so 4bit would die mid-run rather than fall back here.
+# Unusable bnb on any backend, not just hip: clear the flags the loader reads before it picks 4bit.
+# Guarded import, not find_spec: a dead bnb 0.46+ native library only raises when called.
 try:
     import bitsandbytes as _bnb_probe
 except Exception:
@@ -625,9 +618,7 @@ def get_device_stats() -> tuple[str, str, float]:
         name = gpu_stats.name + ". " if gpu_stats.name else "Intel XPU Device. "
         snippet = f"Intel Toolkit: {torch.version.xpu}."
     elif DEVICE_TYPE == "npu":
-        # Named for the vendor, like the arms either side of it: torch.npu and torch_npu are
-        # Ascend's, so an unnamed one is an Ascend NPU the driver declined to name, not some
-        # generic NPU. #10686 added the tests that say so and the code that did not.
+        # torch.npu / torch_npu are Ascend's, so an unnamed device is an Ascend NPU.
         name = gpu_stats.name + ". " if gpu_stats.name else "Ascend NPU Device. "
         # Report the toolkit like the cuda/xpu arms, not the name already in `name`.
         try:

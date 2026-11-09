@@ -9,12 +9,7 @@ on:
       - "studio/frontend/tests/rag-*"
       - "tests/studio/rag_upload*"
       - ".github/workflows/rag-upload-compatibility.yml"
-      # tests/studio/rag_upload_ci.py also runs test_conversation_archive.py, whose
-      # collection loads studio/backend/tests/conftest.py (which execs
-      # tests/_shared/compile_cache_isolation.py and imports loggers), and runs every
-      # project-attachment*.test.ts and project-source*.test.ts with node --test; those
-      # import the helpers kit and store stubs and three chat modules outside
-      # features/rag. The apt step shells out to retry-with-apt-lock.sh.
+      # rag_upload_ci.py also runs these tests and their conftest/helper imports.
       - 'studio/backend/tests/test_conversation_archive.py'
       - 'studio/backend/tests/conftest.py'
       - 'tests/_shared/compile_cache_isolation.py'
@@ -47,7 +42,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: "3.12"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1

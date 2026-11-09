@@ -33,17 +33,14 @@ import type {
 import { extractDeltaText } from "./parse-assistant-content";
 import { attachmentsSample } from "./pasted-text";
 
-/** Store the whole first line and let the sidebar clip it with CSS, so a wider one shows more.
- *  Matches the rename input's maxLength: UTF-16 units, ellipsis included. */
+/** Matches the rename input's maxLength: UTF-16 units, ellipsis included. */
 export const FALLBACK_TITLE_MAX = 120;
 
-/** Older titles were stored pre-cut at 48 chars with a literal "...". Kept to find and rewrite those rows. */
+/** Legacy pre-cut length, kept to find and rewrite those rows. */
 export const LEGACY_FALLBACK_TITLE_MAX = 48;
 const LEGACY_FALLBACK_SUFFIX = "...";
 
-/** Drop unpaired surrogates: they render as nothing, and one reaching the backend fails its
- *  SQLite bind and 500s the title write. Iteration yields a valid pair whole, so a length-1
- *  unit in the range is a lone surrogate. */
+/** Lone surrogates fail the backend SQLite bind and 500 the title write. */
 function dropLoneSurrogates(text: string): string {
   let out = "";
   for (const character of text) {
@@ -56,12 +53,9 @@ function dropLoneSurrogates(text: string): string {
 
 function firstLineOf(text: string): string {
   const firstLine = (text || "").split(/\r?\n/, 1)[0] ?? "";
-  // Drop surrogates first, or removing one can leave a double or trailing space.
   return dropLoneSurrogates(firstLine).replace(/\s+/g, " ").trim();
 }
 
-/** Cut to at most `maxUnits` UTF-16 units without splitting an astral character: a lone surrogate
- *  parses fine and then fails the backend's SQLite bind. */
 function cutToUnits(text: string, maxUnits: number): string {
   let out = "";
   for (const character of text) {
@@ -75,11 +69,9 @@ export function fallbackTitleFromUserText(userText: string): string {
   const cleaned = firstLineOf(userText);
   if (!cleaned) return "New Chat";
   if (cleaned.length <= FALLBACK_TITLE_MAX) return cleaned;
-  // The ellipsis takes one of the budget, so the title still fits the input.
   return cutToUnits(cleaned, FALLBACK_TITLE_MAX - 1).trimEnd() + "…";
 }
 
-/** Pre-filter on the title alone: only these are worth fetching messages for. */
 export function couldBeLegacyClippedTitle(title: string | undefined): boolean {
   return (
     typeof title === "string" &&
@@ -88,7 +80,6 @@ export function couldBeLegacyClippedTitle(title: string | undefined): boolean {
   );
 }
 
-/** True when `title` is exactly the old 48-character cut of `userText`. */
 export function isLegacyClippedTitle(
   title: string | undefined,
   userText: string,
@@ -119,21 +110,17 @@ function textOf(message: MessageRecord | undefined): string {
 
 export interface LegacyTitleRepair {
   threadId: string;
-  /** The clipped title the rewrite is based on, guarding the write. */
   previousTitle: string;
-  /** The message the title came from, guarded too: deleting it must not leave its text expanded into the title. */
   openingMessageId: string;
   title: string;
 }
 
 export interface LegacyRepairPage {
   candidates: ThreadRecord[];
-  /** What this page skipped. The next page reads it, so a row this page failed on is not redrawn by the same drain. */
   rest: ThreadRecord[];
   hasMore: boolean;
 }
 
-/** One page of rows to look at, skipping the ones already tried. */
 export function selectLegacyRepairPage(
   threads: ThreadRecord[],
   attempted: ReadonlySet<string>,
@@ -152,7 +139,6 @@ export function selectLegacyRepairPage(
   };
 }
 
-/** Threads the backend holds no messages for. */
 export function threadsMissingMessages(
   ids: readonly string[],
   messagesByThreadId: ReadonlyMap<string, MessageRecord[]>,
@@ -160,9 +146,7 @@ export function threadsMissingMessages(
   return ids.filter((id) => (messagesByThreadId.get(id) ?? []).length === 0);
 }
 
-/** Of those, the ones still worth retrying: no record of their import finishing, so their
- *  messages may yet land. One the ledger knows is simply empty, and retrying it would re-read it
- *  on every refresh for the session, since its title stays clipped. */
+/** Skip threads the ledger knows are empty, or they re-read on every refresh. */
 export function threadsAwaitingImport(
   ids: readonly string[],
   messagesByThreadId: ReadonlyMap<string, MessageRecord[]>,
@@ -173,8 +157,7 @@ export function threadsAwaitingImport(
   );
 }
 
-/** Rows to rewrite. A title must be the exact old cut of its own first message, so a rename
- *  ending in "..." is left alone. */
+/** Titles must be the exact old cut, so a user rename ending in "..." is left alone. */
 export function planLegacyTitleRepairs(
   threads: ThreadRecord[],
   messagesByThreadId: Map<string, MessageRecord[]>,
@@ -207,9 +190,8 @@ export function planLegacyTitleRepairs(
   return repairs;
 }
 
-// Routing lives here, not in the adapter, so node --test can load it (the provider is JSX).
+// Lives here, not in the adapter, so node --test can load it (the provider is JSX).
 
-/** The backend dispatches on provider_id / provider_type, never parsing the external:: model id. */
 export interface ExternalRoutingFields {
   provider_id: string;
   provider_type: string;
@@ -218,6 +200,7 @@ export interface ExternalRoutingFields {
   provider_api_type: "chat_completions" | "responses";
   provider_reasoning_config?: CustomReasoningConfig;
   encrypted_api_key?: string;
+  extra_headers?: Record<string, string>;
 }
 
 export type ExternalRoutingUnavailableReason =
@@ -228,7 +211,6 @@ export type ExternalRoutingUnavailableReason =
 export interface ResolvedExternalConnection {
   provider: ExternalProviderConfig;
   modelId: string;
-  /** Browser-held key, or "" when the backend holds one or none is needed. */
   apiKey: string;
 }
 
@@ -294,12 +276,14 @@ export async function buildExternalRoutingFields(
             apiKey,
             options.forceRefreshPublicKey ?? false,
           ),
+          ...(provider.extraHeaders && Object.keys(provider.extraHeaders).length
+            ? { extra_headers: provider.extraHeaders }
+            : {}),
         }
       : {}),
   };
 }
 
-/** A deep research run's config is evidence only once it completed. */
 export function answeringCheckpoint(custom: unknown): string {
   const meta = (custom ?? {}) as {
     responseDetails?: { modelId?: unknown };
@@ -325,7 +309,7 @@ export function answeringCheckpoint(custom: unknown): string {
   return parseExternalModelId(model) === null ? model : "";
 }
 
-/** Follows the connection that answered, not the live selection, so the excerpt never reaches an unused connection; local models follow the selection so an evicted one is not reloaded. */
+/** Follows the answering connection so the excerpt never reaches an unused one. */
 export function titleCheckpoint(
   answeredWith: string,
   activeCheckpoint: string,
@@ -353,7 +337,7 @@ function titleReasoningCaps(connection: ResolvedExternalConnection) {
   });
 }
 
-/** Responses route: either field becomes reasoning.effort (400 on non-reasoning models), sent verbatim, so omit or clamp. */
+/** Responses route: either field becomes reasoning.effort (400 on non-reasoning models); omit/clamp. */
 function titleReasoningFields(
   connection: ResolvedExternalConnection,
 ): TitleReasoningFields {
@@ -372,7 +356,7 @@ function titleReasoningFields(
   };
 }
 
-/** Reasoning that cannot be turned off counts toward the cap (Gemini 2.5 Pro forces 128), so it gets headroom. */
+/** Forced reasoning counts toward the cap (Gemini 2.5 Pro forces 128), so add headroom. */
 function titleMaxTokens(connection: ResolvedExternalConnection): number {
   const floor = getExternalMinOutputTokens(connection.provider.providerType);
   const caps = titleReasoningCaps(connection);
@@ -381,10 +365,10 @@ function titleMaxTokens(connection: ResolvedExternalConnection): number {
 }
 
 const TITLE_SYSTEM_PROMPT =
-  "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
+  "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, do not echo input. Write the title in the same language as the conversation. Output title only.";
 
 const TITLE_REFRESH_SYSTEM_PROMPT =
-  "Write 1 concise chat title for what this conversation is about now. The excerpt holds its latest messages, oldest first; weight the newest most. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
+  "Write 1 concise chat title for what this conversation is about now. The excerpt holds its latest messages, oldest first; weight the newest most. Rules: 2-6 words, no quotes, no punctuation, do not echo input. Write the title in the same language as the conversation. Output title only.";
 
 // About 250 tokens however long the chat: the last 2-3 turns, Open WebUI's {{MESSAGES:END:2}} window.
 const REFRESH_MESSAGE_CHARS = 300;
@@ -548,7 +532,6 @@ export async function buildTitleRequest(
   };
 }
 
-/** Truncated answers are discarded: hitting the token cap means it wrote something else. */
 export async function titleFromStream(
   chunks: AsyncIterable<OpenAIChatChunk>,
 ): Promise<string | null> {
@@ -562,7 +545,6 @@ export async function titleFromStream(
   }
 
   if (finishReason === "length") return null;
-  // A model that cannot turn reasoning off streams its summary as a closed think block first.
   const visible = content.replace(/<think>[\s\S]*?<\/think>/gi, "");
   if (!visible || /<\/?think>/i.test(visible)) return null;
   return normalizeTitle(visible);
@@ -571,7 +553,8 @@ export async function titleFromStream(
 export function normalizeTitle(raw: string): string | null {
   let title = raw.split(/\r?\n/, 1)[0] ?? "";
   title = title.replace(/^\s*title\s*:\s*/i, "");
-  title = title.replace(/[^\x20-\x7E]+/g, " ");
+  // U+200C (ZWNJ) is part of Persian spelling.
+  title = title.replace(/[^\x20-\x7E\p{L}\p{M}\p{N}‌]+/gu, " ");
   title = title.replace(/["'`]+/g, "");
 
   // Echo fail-safe: reject leading role labels before punctuation strips the ":".
@@ -584,6 +567,6 @@ export function normalizeTitle(raw: string): string | null {
 
   const words = title.split(" ").filter(Boolean).slice(0, 6);
   const joined = words.join(" ").trim();
-  if (!joined) return null;
-  return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
+  const clipped = joined.length > 60 ? cutToUnits(joined, 60).trimEnd() : joined;
+  return /[^\p{M}\u200C\s]/u.test(clipped) ? clipped : null;
 }

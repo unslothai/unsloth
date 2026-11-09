@@ -759,6 +759,35 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
     assert any("text_encoder" in reason for reason in refined.reasons)
 
 
+def test_refine_with_headroom_streams_a_component_that_fits_only_without_activations(monkeypatch):
+    """Video: a GGUF DiT under the budget by itself but not with the forward's headroom beside it (LTX-2.5 Q4_K_M at a
+    16 GiB budget OOMed in its first forward under whole-module offload) streams; the bare check keeps the plan."""
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(16384),
+        estimates = {
+            "safe_device_budget_mib": 15000,
+            "runtime_headroom_mib": 3000,
+            "base_overhead_mib": 500,
+        },
+    )
+    transformer = Module(13300)
+    pipe = types.SimpleNamespace(
+        transformer = transformer, components = {"transformer": transformer, "connectors": Module(6000)}
+    )
+    assert refine_memory_plan_for_components(pipe, plan) is plan
+    refined = refine_memory_plan_for_components(pipe, plan, headroom_mib = 3500)
+    assert refined.offload_policy == OFFLOAD_STREAMING
+    assert any("runtime headroom" in reason for reason in refined.reasons)
+    small = Module(9000)
+    roomy = types.SimpleNamespace(transformer = small, components = {"transformer": small})
+    assert refine_memory_plan_for_components(roomy, plan, headroom_mib = 3500) is plan
+
+
 def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkeypatch):
     from core.inference.diffusion_memory import largest_streamable_companion_mib
 
@@ -1254,6 +1283,27 @@ def _unified_plan(
     )
 
 
+def test_mps_plan_is_tight_past_the_resident_margin_only():
+    from core.inference.diffusion_memory import mps_plan_tight
+
+    budget = _unified_plan(model_dense_mib = 1000).estimates["safe_device_budget_mib"]
+    # resident_required = weights + the 3072 runtime headroom + the 2048 base overhead
+    at_margin = int(budget * 0.85) - 3072 - 2048
+    assert not mps_plan_tight(_unified_plan(model_dense_mib = at_margin))
+    assert mps_plan_tight(_unified_plan(model_dense_mib = at_margin + 1))
+    # far past their budgets, but only MPS changes: discrete VRAM, an integrated GPU and the CPU keep their rules
+    for kind, device in (
+        ("discrete_vram", "cuda"),
+        ("unified_memory", "cuda"),
+        ("system_memory", "cpu"),
+    ):
+        other = _unified_plan(model_dense_mib = 4 * budget, kind = kind, device = device)
+        assert other.estimates["resident_required_mib"] > other.estimates["safe_device_budget_mib"]
+        assert not mps_plan_tight(other), (kind, device)
+    assert not mps_plan_tight(_unified_plan(model_dense_mib = at_margin + 1, free_mib = None))
+    assert not mps_plan_tight(None)
+
+
 def test_unified_oversize_refuses_and_names_family_and_both_numbers():
     from core.inference.diffusion_memory import unified_memory_shortfall_message
 
@@ -1387,6 +1437,8 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
         "wan2.1-t2v-14b": {16, 24, 32, 64},
         "hunyuanvideo-1.5": {16, 24, 32},
         "hunyuanvideo-1.5-720p": {16, 24, 32},
+        "cosmos3-nano": {16, 24, 32},
+        "cosmos3-edge": set(),
     }
     assert {f.name for f in _FAMILIES} == set(
         expected_refusals
@@ -3060,4 +3112,33 @@ def test_both_offload_tiers_fall_back_to_the_no_copy_back_top_group():
     for fn in (mem._apply_group_offload, mem._apply_streaming_offload):
         src = ast.unparse(ast.parse(inspect.getsource(fn).lstrip()))
         assert "_skip_top_level_copy_back(module, logger)" in src, fn.__name__
-        assert "not _pin_top_level_group(module, logger, pinned_mib)" in src, fn.__name__
+        assert (
+            "not _pin_top_level_group(module, logger, pinned_mib, device=onload)" in src
+        ), fn.__name__
+
+
+def test_refine_headroom_applies_to_the_denoiser_not_a_larger_text_encoder(monkeypatch):
+    """The denoise headroom prices only denoisers: a text encoder larger than the DiT runs in its own phase, so a
+    whole-module plan where each fits its phase stays whole-module."""
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(16384),
+        estimates = {"safe_device_budget_mib": 14000},
+    )
+    transformer = Module(6000)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {"transformer": transformer, "text_encoder": Module(10000), "vae": Module(1000)},
+    )
+    assert refine_memory_plan_for_components(pipe, plan, headroom_mib = 6144) is plan
+    big = Module(9000)
+    tight = types.SimpleNamespace(
+        transformer = big, components = {"transformer": big, "text_encoder": Module(10000)}
+    )
+    refined = refine_memory_plan_for_components(tight, plan, headroom_mib = 6144)
+    assert refined.offload_policy == OFFLOAD_STREAMING
+    assert "loaded transformer is 9000 MiB (+6144 MiB runtime headroom)" in refined.reasons[-1]
