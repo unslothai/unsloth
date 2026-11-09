@@ -1395,8 +1395,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const listedPairRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (anyRunning && listedPairRef.current === pairId) return;
     if (listedPairRef.current !== pairId) setPairSaved(undefined);
+    if (anyRunning && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
     setThreadsSettled(false);
@@ -1728,8 +1728,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
     if (listedPairRef.current !== pairId) setPairSaved(undefined);
+    if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
     setThreadsSettled(false);
