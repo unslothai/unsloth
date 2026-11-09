@@ -513,3 +513,62 @@ def test_step_lookups_run_alongside_the_web_search(notes_server, monkeypatch):
     assert [(s["kind"], s["filename"]) for s in completed["documentSources"]] == [
         ("mcp", "Project Notes · search_notes"),
     ]
+
+
+def test_side_lookups_are_told_to_stop_when_the_web_search_fails(notes_server, monkeypatch):
+    import threading
+
+    from core import research_runs as worker
+    from routes.research_runs import CreateResearchRun, _sanitize_config
+
+    config = _sanitize_config(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+            mcpSources = [{"serverId": "notes", "tool": "search_notes"}],
+        ),
+        {"modelId": "local-model"},
+    )
+    research_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = None,
+        config = config,
+        created_at = 10,
+    )
+    plan = research_db.set_plan("run-1", PLAN)
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        decision = {"action": "search", "title": "Launch", "query": "zephyr beta launch"}
+        return json.dumps(decision), "", "stop", None
+
+    mcp_started = threading.Event()
+    mcp_stopped = threading.Event()
+
+    def fake_tool(
+        name,
+        arguments,
+        *args,
+        cancel_event = None,
+        **kwargs,
+    ):
+        if name == "web_search":
+            mcp_started.wait(5)
+            raise RuntimeError("search backend crashed")
+        mcp_started.set()
+        if cancel_event.wait(5):
+            mcp_stopped.set()
+        return "Error: cancelled"
+
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    monkeypatch.setattr(worker, "execute_mcp_tool", fake_tool)
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    assert research_db.get_run("run-1")["status"] == "failed"
+    assert mcp_stopped.wait(5)

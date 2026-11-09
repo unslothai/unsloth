@@ -2180,7 +2180,9 @@ class ResearchSupervisor:
                 await heartbeat
             except asyncio.CancelledError:
                 pass
+            # The run is over: stop any lookup still running for it (a step's side lookups outlive a failed web search).
             self._cancel_events.pop(account_key(run["id"]), None)
+            cancel_event.set()
             self._lost_leases.discard(account_key(run["id"]))
             self._report_drafts.pop(account_key(run["id"]), None)
 
