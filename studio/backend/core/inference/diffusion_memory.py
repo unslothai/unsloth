@@ -7550,6 +7550,21 @@ PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
 TOP_GROUP_HOST_ATTR = "_unsloth_top_host"
 
 
+TOP_GROUP_GGUF_ENV = "UNSLOTH_DIFFUSION_TOP_GROUP_GGUF"
+
+
+def _top_group_tensor_ok(t: Any) -> bool:
+    """Plain tensors, and GGUF packed weights (``GGUFParameter``: bytes + a quant type on the Parameter, which a
+    ``.data`` re-point keeps, as the block groups' stream path does). Any other subclass keeps diffusers' path.
+    ``UNSLOTH_DIFFUSION_TOP_GROUP_GGUF=0``: GGUF top-level weights copy back on every offload again."""
+    import torch
+
+    if type(t) in (torch.Tensor, torch.nn.Parameter):
+        return True
+    gguf = _gguf_parameter_class()
+    return gguf is not None and type(t) is gguf and not _env_off(TOP_GROUP_GGUF_ENV)
+
+
 def _pin_top_level_group(
     module: Any,
     logger: Any = None,
@@ -7597,7 +7612,7 @@ def _pin_top_level_group(
         is_torchao = getattr(go, "_is_torchao_tensor", None)
         if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
             return False
-        if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
+        if any(not _top_group_tensor_ok(t) for t in tensors):
             return False
         # the user's "pin nothing" override wins, as on every other streamed path
         if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in (
@@ -7700,7 +7715,7 @@ def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
         is_torchao = getattr(go, "_is_torchao_tensor", None)
         if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
             return False
-        if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
+        if any(not _top_group_tensor_ok(t) for t in tensors):
             return False
         host = {t: (t.data if t.data.device.type == "cpu" else t.data.cpu()) for t in tensors}
         device = group.onload_device
