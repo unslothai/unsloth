@@ -1900,3 +1900,63 @@ def test_document_extraction_threads_are_bounded(monkeypatch, tmp_path):
         seed_route._document_extraction_limiter
     ]
     assert seed_route._document_extraction_limiter.total_tokens == 2
+
+
+def test_concurrent_native_drops_to_one_block_stay_within_its_budget(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    dropped = tmp_path / "notes.txt"
+    dropped.write_bytes(b"some extractable text " * 3)
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES", 100)
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.native_path_leases",
+        SimpleNamespace(
+            NativePathLeaseError = RuntimeError,
+            verify_native_path_lease = lambda *a, **k: SimpleNamespace(canonical_path = dropped),
+        ),
+    )
+
+    async def both():
+        return await asyncio.gather(
+            *(
+                seed_route.upload_unstructured_file(None, "block", native_path_lease = "lease")
+                for _ in range(2)
+            ),
+            return_exceptions = True,
+        )
+
+    results = asyncio.run(both())
+    refused = [r for r in results if isinstance(r, HTTPException)]
+    assert len(refused) == 1 and refused[0].status_code == 413
+    raw = [n for n in _block_files(seed_route) if n.endswith(".txt") and ".extracted" not in n]
+    assert len(raw) == 1
+
+
+def test_a_cancelled_raw_write_leaves_no_file(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    started = threading.Event()
+    real_write = Path.write_bytes
+
+    def slow_write(self, data):
+        started.set()
+        time.sleep(0.3)
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", slow_write)
+
+    async def cancel_mid_write():
+        task = asyncio.ensure_future(
+            seed_route.upload_unstructured_file(_FakeUpload("notes.txt", b"text to keep"), "block")
+        )
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_mid_write())
+    time.sleep(0.4)
+    assert _block_files(seed_route) == []

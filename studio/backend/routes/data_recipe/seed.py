@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
@@ -18,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from anyio import CapacityLimiter, to_process, to_thread
+from anyio import CapacityLimiter, Lock as _AnyioLock, to_process, to_thread
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 from auth.authentication import allow_ambient_hf_token
@@ -1205,6 +1207,20 @@ async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
     return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
 
 
+# One upload per block between its budget check and its raw write: the scan, read and write await threads.
+_BLOCK_UPLOAD_LOCKS: dict[str, _AnyioLock] = {}
+
+
+async def _write_bytes_to_completion(path: Path, content: bytes) -> None:
+    """A threaded write that, if cancelled, still waits for the thread so cleanup cannot race it."""
+    write = asyncio.ensure_future(to_thread.run_sync(path.write_bytes, content))
+    try:
+        await asyncio.shield(write)
+    except BaseException:
+        await asyncio.wait([write])
+        raise
+
+
 def _get_block_total_size(block_dir: Path) -> int:
     """Sum raw upload sizes for the whole block from server-owned files."""
     if not block_dir.exists():
@@ -1283,15 +1299,7 @@ def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
     return grant.canonical_path.name, content
 
 
-@router.post("/seed/upload-unstructured-file")
-async def upload_unstructured_file(
-    file: UploadFile | None = FastAPIFile(None),
-    block_id: str = Form(...),
-    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
-) -> UnstructuredFileUploadResponse:
-    _validate_safe_id(block_id, "block_id")
-
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+async def _store_unstructured_raw(file, block_dir: Path, native_path_lease):
     # Reads 0 for a block with no dir yet, without creating it, so an upload about to be refused leaves no directory behind.
     budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - await to_thread.run_sync(
         _get_block_total_size, block_dir
@@ -1329,8 +1337,29 @@ async def upload_unstructured_file(
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
-    # Not cancellable: the write finishes before a cancel lands, so the cleanup below sees the file.
-    await to_thread.run_sync(raw_path.write_bytes, content)
+    try:
+        await _write_bytes_to_completion(raw_path, content)
+    except BaseException:
+        raw_path.unlink(missing_ok = True)
+        raise
+    return original_filename, content, raw_path, file_id
+
+
+@router.post("/seed/upload-unstructured-file")
+async def upload_unstructured_file(
+    file: UploadFile | None = FastAPIFile(None),
+    block_id: str = Form(...),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+) -> UnstructuredFileUploadResponse:
+    _validate_safe_id(block_id, "block_id")
+
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    async with _BLOCK_UPLOAD_LOCKS.setdefault(block_id, _AnyioLock()):
+        original_filename, content, raw_path, file_id = await _store_unstructured_raw(
+            file, block_dir, native_path_lease
+        )
+    ext = Path(original_filename).suffix.lower()
+    size_bytes = len(content)
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:
