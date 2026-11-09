@@ -496,3 +496,28 @@ def table(result: dict, verdicts: list[dict]) -> list[str]:
                 )
             lines.append(f"    {engine:<13}{mode:<10}{name:<18}" + "   ".join(parts))
     return lines
+
+
+def main() -> int:
+    """Frontend CI's WebKit job: the leg alone, on the long-thread production build."""
+    if os.environ.get("LONG_THREAD_WEBKIT", "0") != "1":
+        print("WebKit leg: off (set LONG_THREAD_WEBKIT=1)")
+        return 0
+    repo = Path(__file__).resolve().parents[2]
+    dist = Path(
+        os.environ.get("LONG_THREAD_DIST", repo / ".playwright-cli" / "long-thread-production")
+    )
+    if not (dist / "index.html").exists():
+        print(f"FAIL: no app build at {dist / 'index.html'} for the WebKit leg")
+        return 1
+    lines, fails, _ = run(dist)
+    for line in lines:
+        print(line)
+    for f in fails:
+        print(f"FAIL: {f}")
+    print("WebKit leg: " + (f"{len(fails)} failure(s)" if fails else "PASS"))
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
