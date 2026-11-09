@@ -354,8 +354,8 @@ _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 _WHITESPACE_RUN = re.compile(r"\s+")
 # browsers collapse only ASCII whitespace, so text indented with &nbsp; or &emsp; keeps its indent
 _COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
-_SPACE_RUN = re.compile(r"[^\S\n]+")
-_KEPT_SPACE = re.compile(r"[^\S \t\n\r\f\v]")
+# a whole space run holding a kept Unicode space; the lookbehind starts it at the run's first char
+_KEPT_SPACE_RUN = re.compile(r"(?<![^\S\n])[ \t\r\f\v]*[^\S \t\n\r\f\v][^\S\n]*")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -964,6 +964,8 @@ class _MarkdownRenderer(HTMLParser):
             if frame is not None and self._site_links is not None
             else text
         )
+        if frame is not None:
+            measured = _fold_kept_spaces(measured)
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(measured.strip())
@@ -2374,9 +2376,7 @@ def _render_main_document(
 def _fold_kept_spaces(text: str) -> str:
     """Scoring view of *text*: a space run holding U+00A0 or another kept Unicode space is layout
     padding, so it counts as one space, while pure ASCII runs (code indentation) stay as rendered."""
-    if text.isascii() or not _KEPT_SPACE.search(text):
-        return text
-    return _SPACE_RUN.sub(lambda m: m.group() if m.group().isascii() else " ", text)
+    return text if text.isascii() else _KEPT_SPACE_RUN.sub(" ", text)
 
 
 def _visible_chars(text: str) -> int:

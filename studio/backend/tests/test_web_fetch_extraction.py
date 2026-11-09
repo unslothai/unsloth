@@ -1624,6 +1624,29 @@ def test_no_break_space_padding_does_not_make_a_stub_the_main_content(nbsp):
     assert body.strip() in html_to_markdown(html, main_content = True)
 
 
+def test_no_break_space_padding_in_a_stripped_header_does_not_outrank_a_longer_article():
+    links = "".join(f'<a href="/s{i}">Section {i}</a> ' for i in range(20))
+    body = "Actual article body. " * 48
+    html = (
+        f'<article><header>{links}<span>Menu{"&nbsp;" * 200}x</span></header>'
+        f"<p>{'Teaser prose. ' * 40}</p></article><article><p>{body}</p></article>"
+    )
+    assert body.strip() in html_to_markdown(html, main_content = True)
+
+
+def test_no_break_space_padding_does_not_make_a_byline_header_navigation():
+    title = (
+        "Practical techniques for building reliable Python applications "
+        "and deploying them with confidence in production"
+    )
+    html = (
+        f'<article><header><a href="/read?token={"x" * 650}">{title}</a>'
+        f'<p>by{"&nbsp;" * 20}Ann</p></header>'
+        f'<p>{"This is the main article body. " * 30}</p></article>'
+    )
+    assert title in html_to_markdown(html, main_content = True)
+
+
 def test_no_break_space_padding_does_not_outrank_a_longer_article():
     teaser = "Teaser " + "&nbsp;" * 3000 + " ".join(["teaser words"] * 20)
     body = "Body prose that the page is about. " * 60
