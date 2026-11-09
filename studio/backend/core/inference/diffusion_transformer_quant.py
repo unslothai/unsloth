@@ -2080,8 +2080,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
 
 
 def linear_compute_dtype(module: Any) -> Any:
-    """The dtype ``module`` computes in: a manual-cast Linear's ``_unsloth_compute_dtype`` (bf16 weights stored,
-    float32 compute on fp16-only GPUs), else its weight dtype."""
+    """Manual-cast ``_unsloth_compute_dtype`` if set, else the weight dtype."""
     import torch
 
     cast = getattr(module, "_unsloth_compute_dtype", None)
@@ -2095,8 +2094,7 @@ FP16_CARD_QUANT_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP16_CARD_QUANT_STORAGE"
 
 
 def fp16_card_quant_storage_enabled() -> bool:
-    """An explicit native quant on an fp16-only card reads the bf16 checkpoint as stored (manual cast) instead of
-    widening the whole transformer to float32 first; ``UNSLOTH_DIFFUSION_FP16_CARD_QUANT_STORAGE=0`` widens again."""
+    """fp16-card native quant reads bf16 as stored instead of widening to float32; env ``=0`` widens."""
     raw = (_os.environ.get(FP16_CARD_QUANT_STORAGE_ENV) or "").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
@@ -2110,8 +2108,7 @@ def make_filter_fn(
     require_dtype: Any = None,
 ):
     """A non-bf16 Linear aborts the whole quantise pass; an unaligned one crashes the first matmul later.
-    ``require_dtype``: keep only Linears computing in that dtype (the fp16-card int8 path's compute dtype; a
-    manual-cast Linear counts by its compute dtype, not its stored bf16 weight)."""
+    ``require_dtype``: keep only Linears computing in that dtype (by compute dtype, not stored bf16 weight)."""
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:

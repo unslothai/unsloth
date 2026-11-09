@@ -9698,8 +9698,7 @@ class DiffusionBackend:
                                             transformer = pipe_kwargs.get("transformer"),
                                             family_name = fam.name,
                                             storage_dtype = flux3_storage_dtype(target, dtype),
-                                            # A transformer quant rebuilds the dense Linears it reads; the
-                                            # fp16-only card's native build reads them as stored (bf16, manual cast).
+                                            # fp16-card native build reads Linears as stored (bf16, manual cast).
                                             transformer_storage = (
                                                 transformer_quant_pinned is None
                                                 and native_scheme is None

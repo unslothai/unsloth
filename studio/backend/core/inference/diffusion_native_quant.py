@@ -496,7 +496,6 @@ def native_linear_class():
             self.in_features = int(linear.in_features)
             self.out_features = int(linear.out_features)
             self.scheme = scheme
-            # A manual-cast Linear stores bf16 and computes in its ``_unsloth_compute_dtype`` (float32 on fp16-only GPUs).
             cast = getattr(linear, "_unsloth_compute_dtype", None)
             self.compute_dtype = cast if isinstance(cast, torch.dtype) else linear.weight.dtype
             self.act_int8 = bool(act_int8) and scheme == NATIVE_INT8
@@ -566,7 +565,6 @@ def native_linear_class():
                 and bias.dtype != self.compute_dtype
                 and isinstance(cast, torch.dtype)
             ):
-                # a manual-cast source keeps a bf16 bias and upcasts it per call; hold it at the compute dtype
                 bias = nn.Parameter(bias.detach().to(self.compute_dtype), requires_grad = False)
             self.bias = bias
             # Registered here, in eager, so a compiled forward only reads the handle (see _row_major_op).

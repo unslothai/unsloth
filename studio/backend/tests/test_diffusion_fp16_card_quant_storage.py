@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An explicit native quant on an fp16-only card (T4) quantises FLUX.3's bf16 Linears as stored (manual cast, float32
-compute) instead of widening the whole transformer to float32 first: same codes, same output, half the host copy."""
+"""fp16-card native quant of bf16 Linears as stored matches the float32-widened build."""
 
 from __future__ import annotations
 
@@ -109,7 +108,6 @@ def test_manual_cast_source_builds_the_same_layers_as_the_widened_load(turing, s
             assert b[name].bias.dtype == torch.float32 and torch.equal(
                 a[name].bias, b[name].bias
             ), name
-    # what stays dense is still bf16 as stored (manual cast), not a float32 copy
     dense = [m for m in stored.modules() if type(m).__name__ == "ManualCastLinear"]
     assert dense and all(m.weight.dtype == torch.bfloat16 for m in dense)
     with torch.no_grad():
