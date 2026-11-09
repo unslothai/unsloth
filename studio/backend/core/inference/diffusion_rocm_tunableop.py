@@ -2,13 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """ROCm GEMM selection for diffusion denoisers on the measured RDNA APUs (gfx1151): hipBLASLt's default pick at DiT
-shapes runs well below the card's best solution, so torch's TunableOp benchmarks the hipBLASLt / rocBLAS candidates
-once per GEMM shape and keeps the fastest. Tuning runs only inside the denoiser's forward (its shapes repeat every
-step and every render at one resolution) and only on a call shaped like the previous one, so a render's first call
-and a prefix-cache prefill (one per prompt, its length set by the prompt) never tune; a bounded per-shape budget;
-text encoder / VAE GEMMs only look up what is already tuned. Results persist under the compile cache, keyed on arch + torch + HIP, and torch rejects a
-file whose library versions differ (it re-tunes). Speed tiers only; UNSLOTH_DIFFUSION_ROCM_TUNABLEOP=0 keeps the
-default pick."""
+shapes runs 20-38% below the card's best solution. torch's TunableOp can use a table of the fastest solution per GEMM
+shape, but building it costs 17-215 s per shape (budget-independent: candidate enumeration dominates), so by default
+Studio only READS a table measured on AMD CI for the default resolutions of each family (``rocm_gemm_tables/``),
+and only when its library validators (torch, HIP, hipBLASLt, rocBLAS, arch) equal this process's: no tuning, no first
+render cost, shapes outside the table keep the default pick. ``UNSLOTH_DIFFUSION_ROCM_TUNABLEOP=tune`` also tunes new
+shapes inside the denoiser on steady calls (a render's first call and a prefix-cache prefill never tune), persisted
+under the compile cache; ``=0`` keeps the default pick everywhere."""
 
 from __future__ import annotations
 
@@ -29,11 +29,54 @@ MAX_TUNING_ITERS = 20
 _HOOK_ATTR = "_unsloth_tunableop_hooks"
 
 _LOCK = threading.Lock()
-_STATE: dict = {"active": False, "depth": 0, "written": 0, "file": None, "last_key": None}
+_STATE: dict = {
+    "active": False,
+    "depth": 0,
+    "written": 0,
+    "file": None,
+    "last_key": None,
+    "tune": False,
+}
+
+
+_TABLE_DIR = Path(__file__).resolve().parent / "rocm_gemm_tables"
+
+
+def _env() -> str:
+    return (os.environ.get(TUNABLEOP_ENV) or "").strip().lower()
 
 
 def disabled() -> bool:
-    return (os.environ.get(TUNABLEOP_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+    return _env() in ("0", "off", "false", "no")
+
+
+def tuning_requested() -> bool:
+    """Online tuning of shapes the shipped table lacks: opt-in (its first render pays 17-215 s per new shape)."""
+    return _env() == "tune"
+
+
+def _validators(text: str) -> dict:
+    out = {}
+    for line in text.splitlines():
+        parts = line.strip().split(",", 2)
+        if len(parts) == 3 and parts[0] == "Validator":
+            out[parts[1]] = parts[2]
+    return out
+
+
+def shipped_tables(arch: str, validators: dict) -> list:
+    """The shipped tables for ``arch`` whose every validator equals this process's (solution indices are only
+    meaningful for the exact hipBLASLt / rocBLAS build that measured them)."""
+    out = []
+    want = {str(k): str(v) for k, v in validators.items()}
+    for path in sorted(_TABLE_DIR.glob(f"{arch}_*.csv")):
+        try:
+            have = _validators(path.read_text(encoding = "utf-8"))
+        except OSError:
+            continue
+        if have and have == want:
+            out.append(path)
+    return out
 
 
 def _user_owns_tunableop() -> bool:
@@ -136,7 +179,7 @@ def _pre(_module: Any, args: Any, kwargs: Any) -> None:
             return
         _STATE["depth"] += 1
         if _STATE["depth"] == 1:
-            steady = key == _STATE.get("last_key")
+            steady = key == _STATE.get("last_key") and bool(_STATE.get("tune"))
             _STATE["last_key"] = key
             _STATE["tuning"] = steady
             if steady:
@@ -161,35 +204,66 @@ def _activate(arch: str, logger: Any = None) -> bool:
     with _LOCK:
         if _STATE["active"]:
             return True
+        tune = tuning_requested()
         path = results_file(arch)
         try:
             path.parent.mkdir(parents = True, exist_ok = True)
         except OSError:
+            if tune:
+                return False
+        tunable.tuning_enable(False)
+        tunable.enable(True)
+        _prime(torch)
+        try:
+            validators = dict(tunable.get_validators() or ())
+        except Exception:  # noqa: BLE001
+            validators = {}
+        tables = shipped_tables(arch, validators)
+        cached = path.exists() and _validators(_read(path)) == {
+            str(k): str(v) for k, v in validators.items()
+        }
+        if not tune and not tables and not cached:
+            tunable.enable(False)  # nothing to look up: no per-GEMM lookup cost either
             return False
         tunable.set_filename(str(path), insert_device_ordinal = False)
         tunable.set_max_tuning_duration(MAX_TUNING_MS)
         tunable.set_max_tuning_iterations(MAX_TUNING_ITERS)
-        tunable.tuning_enable(False)
-        tunable.enable(True)
-        if path.exists():
+        for src in ([path] if cached else []) + tables:
             try:
-                tunable.read_file(str(path))
-            except Exception:  # noqa: BLE001 - a stale / foreign file: torch re-tunes
+                tunable.read_file(str(src))
+            except Exception:  # noqa: BLE001 - a stale / foreign file: the default pick
                 pass
         try:
             _STATE["written"] = len(tunable.get_results() or ())
         except Exception:  # noqa: BLE001
             _STATE["written"] = 0
-        _STATE.update(active = True, depth = 0, file = str(path), last_key = None)
+        _STATE.update(active = True, depth = 0, file = str(path), last_key = None, tune = tune)
     if logger is not None:
         logger.info(
-            "diffusion.rocm_tunableop: %s GEMMs pick the fastest hipBLASLt / rocBLAS solution per shape "
-            "(tuned inside the denoiser, %d known), results %s",
+            "diffusion.rocm_tunableop: %s GEMMs use the measured fastest solution for %d shapes (%s)%s",
             arch,
             _STATE["written"],
-            path,
+            ", ".join(p.name for p in tables) or "local cache",
+            f"; tuning new denoiser shapes into {path}" if tune else "",
         )
     return True
+
+
+def _prime(torch: Any) -> None:
+    """torch registers the hipBLASLt / rocBLAS / HIP validators when its first tunable GEMM is built, so run one tiny
+    GEMM (an untabled shape: the default pick) before comparing them with a table's."""
+    try:
+        a = torch.ones(8, 8, dtype = torch.bfloat16, device = "cuda")
+        (a @ a).sum().item()
+    except Exception:  # noqa: BLE001 - validators then stay partial and no table matches
+        pass
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding = "utf-8")
+    except OSError:
+        return ""
 
 
 def _denoisers(pipe: Any) -> list:
@@ -212,6 +286,8 @@ def install_for_pipe(
     dits = _denoisers(pipe)
     if not dits or not _activate(why, logger):
         return False
+    if not _STATE.get("tune"):
+        return True  # table lookups only: nothing to scope
     for dit in dits:
         if dit.__dict__.get(_HOOK_ATTR):
             continue

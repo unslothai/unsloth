@@ -88,12 +88,14 @@ def fake(monkeypatch, tmp_path):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(rt, "_arch", lambda device = None: "gfx1151")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
-    monkeypatch.delenv(rt.TUNABLEOP_ENV, raising = False)
+    monkeypatch.setenv(rt.TUNABLEOP_ENV, "tune")
+    monkeypatch.setattr(rt, "_TABLE_DIR", tmp_path / "tables")
+    monkeypatch.setattr(rt, "_prime", lambda _torch: None)
     for k in [k for k in __import__("os").environ if k.startswith("PYTORCH_TUNABLEOP_")]:
         monkeypatch.delenv(k)
-    rt._STATE.update(active = False, depth = 0, written = 0, file = None)
+    rt._STATE.update(active = False, depth = 0, written = 0, file = None, tune = False)
     yield f
-    rt._STATE.update(active = False, depth = 0, written = 0, file = None)
+    rt._STATE.update(active = False, depth = 0, written = 0, file = None, tune = False)
 
 
 def _pipe(fake):
@@ -208,3 +210,46 @@ def test_prefill_and_new_prompt_shapes_do_not_tune(fake):
         pipe.transformer(lat, encoder_hidden_states = torch.zeros(1, text, 4), kv_cache_mode = "cached")
         pipe.transformer(lat, encoder_hidden_states = torch.zeros(1, text, 4), kv_cache_mode = "cached")
     assert pipe.transformer.seen == [False, False, True, False, False, True]
+
+
+def _table(tmp_path, validators):
+    d = tmp_path / "tables"
+    d.mkdir(exist_ok = True)
+    p = d / "gfx1151_test.csv"
+    lines = [f"Validator,{k},{v}" for k, v in validators]
+    lines.append(
+        "GemmTunableOp_BFloat16_TN,tn_4096_4096_4096_ld_4096_4096_4096,Gemm_Hipblaslt_547,3.8"
+    )
+    p.write_text("\n".join(lines) + "\n", encoding = "utf-8")
+    return p
+
+
+def test_default_reads_a_matching_table_and_never_tunes(fake, monkeypatch, tmp_path):
+    monkeypatch.delenv(rt.TUNABLEOP_ENV)
+    table = _table(tmp_path, fake.get_validators())
+    pipe = _pipe(fake)
+    assert rt.install_for_pipe(pipe)
+    assert fake.enabled and ("read", str(table)) in fake.calls
+    assert not pipe.transformer._forward_pre_hooks  # nothing to scope: lookups only
+    for _ in range(3):
+        pipe.transformer(torch.randn(2, 4))
+    assert pipe.transformer.seen == [False, False, False]
+    assert ("tuning", True) not in fake.calls
+
+
+@pytest.mark.parametrize("case", ["no_table", "other_build"])
+def test_default_without_a_matching_table_leaves_tunableop_off(fake, monkeypatch, tmp_path, case):
+    monkeypatch.delenv(rt.TUNABLEOP_ENV)
+    if case == "other_build":
+        _table(tmp_path, (("PT_VERSION", "2.12.0"), ("GCN_ARCH_NAME", "gfx1151")))
+    pipe = _pipe(fake)
+    assert not rt.install_for_pipe(pipe)
+    assert not fake.enabled and fake.calls[-1] == ("enable", False)
+    assert not any(c[0] == "read" for c in fake.calls)
+    assert not rt.is_active()
+
+
+def test_table_with_a_missing_validator_does_not_match(fake, tmp_path):
+    _table(tmp_path, (("PT_VERSION", "2.11.0"),))
+    assert rt.shipped_tables("gfx1151", dict(fake.get_validators())) == []
+    assert rt.shipped_tables("gfx1100", dict(fake.get_validators())) == []
