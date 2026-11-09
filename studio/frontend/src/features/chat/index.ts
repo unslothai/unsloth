@@ -72,7 +72,6 @@ export { forgetAgentsMd } from "./utils/agents-md";
 export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
   ChatComposerFocusableContext,
-  NewChatDraftIdContext,
   pythonToolRunsInStudio,
   useChatActive,
   useInComparePane,
@@ -530,8 +529,11 @@ export {
 } from "./utils/export-chat-history";
 export {
   adoptLegacyDraft,
+  flushComposerDraft,
   latestDraft,
   latestPasteDraft,
+  NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,

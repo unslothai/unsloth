@@ -99,7 +99,10 @@ import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
 import {
   composerDraftKey,
+  flushComposerDraft,
   latestDraft,
+  NEW_COMPARE_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   writeComposerDraft,
@@ -617,6 +620,7 @@ async function waitForBackendLoadToSettle(): Promise<void> {
 
 export function SharedComposer({
   draftId,
+  pairSaved,
   handlesRef,
   model1,
   model2,
@@ -628,6 +632,7 @@ export function SharedComposer({
   requireStableCheckpoint = false,
 }: {
   draftId: string;
+  pairSaved?: boolean;
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
@@ -652,7 +657,9 @@ export function SharedComposer({
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
   const syncDraft = shareDraft && !incognito;
-  const draftKey = composerDraftKey(draftId, shareDraft);
+  const [sentPairId, setSentPairId] = useState<string | null>(null);
+  const unsentPair = pairSaved === false && sentPairId !== draftId;
+  const draftKey = composerDraftKey(unsentPair ? NEW_COMPARE_DRAFT_ID : draftId, shareDraft);
   const draftScope = incognito ? null : draftKey;
   const [text, setText] = useState(() =>
     incognito ? "" : latestDraft(draftKey),
@@ -662,11 +669,22 @@ export function SharedComposer({
   const remoteDraftRef = useRef<string | null>(null);
   const unsavedDraftRef = useRef<{ key: string; text: string } | null>(null);
   const draftScopeBeforeRef = useRef(draftScope);
+  const draftOwnerBeforeRef = useRef({ draftId, shareDraft, draftKey });
   useEffect(() => {
     if (draftScopeBeforeRef.current !== draftScope) {
       draftScopeBeforeRef.current = draftScope;
-      remoteDraftRef.current = incognito ? "" : latestDraft(draftKey);
-      setText(remoteDraftRef.current);
+      const before = draftOwnerBeforeRef.current;
+      draftOwnerBeforeRef.current = { draftId, shareDraft, draftKey };
+      let next = incognito ? "" : latestDraft(draftKey);
+      if (!incognito && before.draftId === draftId && before.shareDraft === shareDraft && text) {
+        // Same pair, slot decided by its history: what was typed while it loaded wins.
+        writeComposerDraft(before.draftKey, "");
+        writeComposerDraft(draftKey, text);
+        stageComposerDraft(draftKey, text);
+        next = text;
+      }
+      remoteDraftRef.current = next;
+      setText(next);
       return;
     }
     if (incognito || text === remoteDraftRef.current) return;
@@ -679,17 +697,17 @@ export function SharedComposer({
       return;
     }
     unsavedDraftRef.current = { key: draftKey, text };
+    stageComposerDraft(draftKey, text);
     const timer = setTimeout(() => {
       writeComposerDraft(draftKey, text);
       unsavedDraftRef.current = null;
     }, 300);
     return () => clearTimeout(timer);
   }, [text, draftScope, draftKey, incognito, shareDraft, draftSource]);
-  // Leaving Compare or changing its draft scope inside the debounce still saves what was typed.
   useEffect(
     () => () => {
       if (unsavedDraftRef.current !== null) {
-        writeComposerDraft(unsavedDraftRef.current.key, unsavedDraftRef.current.text);
+        flushComposerDraft(unsavedDraftRef.current.key, unsavedDraftRef.current.text);
         unsavedDraftRef.current = null;
       }
     },
@@ -1550,6 +1568,11 @@ export function SharedComposer({
       });
     };
     const clearSubmittedDraft = () => {
+      if (unsentPair) {
+        unsavedDraftRef.current = null;
+        if (!shareDraft) writeComposerDraft(draftKey, "");
+        setSentPairId(draftId);
+      }
       setCurrentText("");
       setIsWritingExpanded(false);
       setPendingImages([]);

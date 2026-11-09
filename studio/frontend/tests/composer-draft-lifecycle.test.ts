@@ -8,7 +8,10 @@ import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 import * as guards from "../src/features/chat/utils/composer-send-guard.ts";
 
 const source = readSrc("components/assistant-ui/thread.tsx");
-const start = source.indexOf("  // A fresh New chat gets");
+const start = source.lastIndexOf(
+  "  const incognito =",
+  source.indexOf("  const draftThreadId ="),
+);
 const end = source.indexOf("  // react-textarea-autosize re-measures", start);
 assert.ok(start >= 0 && end > start);
 const code = ts.transpileModule(
@@ -147,6 +150,7 @@ async function harness() {
   );
   let actions: { send: () => void };
   async function update(changes: Partial<Props> = {}) {
+    if (changes.share && !props.share) drafts.adoptCurrentDraft();
     Object.assign(props, changes);
     for (let pass = 0; pass < 30; pass++) {
       dirty = false;
@@ -218,7 +222,9 @@ for (const flushed of [false, true]) {
     assert.equal(h.props.text, "follow-up");
     assert.equal(h.props.attachments[0]?.file.paste, "follow-up paste");
     assert.equal(
-      h.drafts.latestDraft(h.drafts.composerDraftKey("nonce-1")),
+      h.drafts.latestDraft(
+        h.drafts.composerDraftKey(h.drafts.NEW_CHAT_DRAFT_ID),
+      ),
       "",
     );
   });
@@ -265,19 +271,19 @@ test("navigation before the runtime switch does not promote the outgoing New cha
   assert.equal(h.props.text, "existing draft");
   assert.equal(h.props.attachments.length, 0);
   assert.equal(
-    h.drafts.latestDraft(h.drafts.composerDraftKey("local-new")),
+    h.drafts.latestDraft(h.drafts.composerDraftKey(h.drafts.NEW_CHAT_DRAFT_ID)),
     "unsent new chat",
   );
 });
 
-test("a fresh nonce with a reused unsaved runtime still starts empty", async (t) => {
+test("unsaved New chat navigation retains the common new-chat slot", async (t) => {
   const h = await harness();
   t.after(h.close);
   await h.type("old new chat");
   await h.paste("old paste");
   await h.update({ nonce: "nonce-2" });
-  assert.equal(h.props.text, "");
-  assert.equal(h.props.attachments.length, 0);
+  assert.equal(h.props.text, "old new chat");
+  assert.equal(h.props.attachments[0]?.file.paste, "old paste");
 });
 
 test("a temporary chat never promotes its draft into a saved chat", async (t) => {
@@ -299,4 +305,37 @@ test("updating navigation metadata for the same saved chat preserves pending edi
   await h.type("newer follow-up");
   await h.update({ nonce: undefined });
   assert.equal(h.props.text, "newer follow-up");
+});
+
+test("temporary text and pastes survive sharing rehydration from another window", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.update({ incognito: true });
+  await h.type("temporary draft");
+  await h.paste("temporary paste");
+  await h.update({ share: true });
+  assert.equal(h.props.text, "temporary draft");
+  assert.equal(h.props.attachments[0]?.file.paste, "temporary paste");
+  await h.update({ share: false });
+  assert.equal(h.props.text, "temporary draft");
+  assert.equal(h.props.attachments[0]?.file.paste, "temporary paste");
+});
+
+test("sharing after first save adopts the promoted text-only draft", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.type("follow-up");
+  await h.update({ threadId: "saved", remoteId: "saved" });
+  await h.update({ share: true });
+  assert.equal(h.props.text, "follow-up");
+  assert.equal(h.drafts.latestDraft(h.drafts.composerDraftKey("saved")), "");
+});
+
+test("switching temporary conversations still clears the old temporary draft", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.update({ incognito: true });
+  await h.type("temporary draft");
+  await h.update({ runtimeId: "another-temporary-thread" });
+  assert.equal(h.props.text, "");
 });

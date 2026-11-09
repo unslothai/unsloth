@@ -17,7 +17,11 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import { clearBranchHead } from "../utils/branch-head";
-import { clearComposerDraft } from "../utils/composer-draft";
+import {
+  clearComposerDraft,
+  closeComposerDraft,
+  reopenComposerDraft,
+} from "../utils/composer-draft";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
 import {
@@ -328,7 +332,8 @@ export async function deleteChatItems(
   }
 
   // clear composer drafts so deleted threads leave no orphan keys.
-  for (const id of threadIds) clearComposerDraft(id);
+  const draftIds = [...threadIds, ...items.filter((i) => i.type !== "single").map((i) => i.id)];
+  for (const id of draftIds) closeComposerDraft(id);
 
   // Quiet until the delete lands: a failed one restores the chats, browser tabs and all.
   markChatThreadsDeleted(threadIds, { quiet: true });
@@ -348,10 +353,12 @@ export async function deleteChatItems(
     // retain the head until deletion succeeds so a restored chat reopens on the same branch.
     for (const id of threadIds) clearBranchHead(id);
     useBookmarkedTurnsStore.getState().forgetThreads(threadIds);
+    for (const id of draftIds) clearComposerDraft(id);
     // offer recovery for sandbox files that outlive a deleted chat and lose their sidebar entry.
     offerToDeleteKeptSandboxes(kept);
   } catch (error) {
     removeChatThreadTombstones(threadIds);
+    for (const id of draftIds) reopenComposerDraft(id);
     notifyChatHistoryUpdated();
     throw error;
   }

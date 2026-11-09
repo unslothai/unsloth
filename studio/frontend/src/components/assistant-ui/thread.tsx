@@ -142,7 +142,6 @@ import {
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
   ChatComposerFocusableContext,
-  NewChatDraftIdContext,
   useChatActive,
   useChatAudioUpload,
   useInComparePane,
@@ -349,8 +348,10 @@ import {
   shouldAbortPendingQueueForSettingsChange,
   resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
-  adoptLegacyDraft,
+  flushComposerDraft,
   latestDraft,
+  NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   latestPasteDraft,
   publishDraft,
   subscribeDraft,
@@ -365,7 +366,6 @@ import {
   type PromptQueueStopEventDetail,
   dictationFailed,
   dictationProducedTranscript,
-  readComposerDraft,
   type PromptQueueUIEntry,
   type PromptQueueUIItem,
   type PromptQueueUIItemStatus,
@@ -4048,18 +4048,14 @@ const Composer: FC<{
   const canQueueAttachmentPrompt =
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
-  // A fresh New chat gets its navigation nonce: the runtime can reuse an unsaved thread.
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
-  const shareDraftBeforeRef = useRef(shareDraft);
-  const newChatDraftId = useContext(NewChatDraftIdContext);
-  const draftThreadId = referenceThreadId ?? newChatDraftId ?? threadListItemId;
+  const draftThreadId = referenceThreadId ?? NEW_CHAT_DRAFT_ID;
   const restoredDraftScopeRef = useRef<string | undefined>(undefined);
   const previousDraftIdentityRef = useRef({
     referenceThreadId,
     draftThreadId,
     threadListItemId,
-    newChatDraftId,
     incognito,
   });
   const draftKey = composerDraftKey(draftThreadId, shareDraft);
@@ -4079,8 +4075,7 @@ const Composer: FC<{
   const restoringPasteScopeRef = useRef<string | null | undefined>(undefined);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDraftRef = useRef<{ key: string; text: string } | null>(null);
-  // The key flips before the runtime swaps threads, so until the restored text is on screen
-  // the composer still shows the previous chat's text and saving it would file it under this key.
+  // The key flips before the runtime swaps threads: until the restore shows, the text is the last chat's.
   const awaitingRestoreRef = useRef<{ scope: string; stale: string; text: string } | null>(null);
   useEffect(() => {
     const previous = previousDraftIdentityRef.current;
@@ -4088,12 +4083,14 @@ const Composer: FC<{
       referenceThreadId,
       draftThreadId,
       threadListItemId,
-      newChatDraftId,
       incognito,
     };
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
-    if (restoredDraftScopeRef.current === draftScope) return;
+    if (
+      restoredDraftScopeRef.current === draftScope &&
+      previous.threadListItemId === threadListItemId
+    ) return;
     restoredDraftScopeRef.current = draftScope;
     // First persistence names the same conversation; navigation must still restore its own draft.
     if (
@@ -4104,12 +4101,13 @@ const Composer: FC<{
       referenceThreadId !== null &&
       aui.threadListItem().getState().remoteId === referenceThreadId &&
       previous.threadListItemId === threadListItemId &&
-      previous.newChatDraftId === newChatDraftId &&
       previous.draftThreadId !== draftThreadId
     ) {
       const previousKey = composerDraftKey(previous.draftThreadId);
       const previousPasteKey = composerPasteDraftKey(previous.draftThreadId);
-      writeComposerDraft(draftKey, latestDraft(previousKey));
+      const text = latestDraft(previousKey);
+      writeComposerDraft(draftKey, text);
+      stageComposerDraft(draftKey, text);
       writePasteDraft(pasteDraftKey, latestPasteDraft(previousPasteKey));
       writeComposerDraft(previousKey, "");
       writePasteDraft(previousPasteKey, []);
@@ -4120,13 +4118,7 @@ const Composer: FC<{
       return;
     }
     remoteDraftRef.current = null;
-    // Copy a per-chat draft only when sharing is explicitly enabled, never on later navigation.
-    // Otherwise an old per-chat copy could resurrect a prompt already sent from the shared slot.
-    const enableSharing = shareDraft && !shareDraftBeforeRef.current;
-    shareDraftBeforeRef.current = shareDraft;
-    const draft = enableSharing && adoptLegacyDraft(draftThreadId)
-      ? (readComposerDraft(draftKey) ?? "")
-      : latestDraft(draftKey);
+    const draft = latestDraft(draftKey);
     // A save that raced the send still holds the sent text, so restoring it
     // would undo the clear. Clear rather than return early, which would leave
     // the previous thread's text on screen under this one.
@@ -4151,7 +4143,6 @@ const Composer: FC<{
     referenceThreadId,
     draftThreadId,
     threadListItemId,
-    newChatDraftId,
     incognito,
     aui,
   ]);
@@ -4233,8 +4224,7 @@ const Composer: FC<{
       if (draftScopeRef.current === draftScope) {
         restoredPasteScopeRef.current = draftScope;
       } else {
-        // An attachment adapter can finish after navigation and reinsert its file. Remove only
-        // this abandoned restore's files, leaving the destination chat's own pastes intact.
+        // An adapter finishing after navigation reinserts its file; drop only this restore's files.
         for (const attachment of composer.getState().attachments) {
           const file = (attachment as { file?: File }).file;
           if (file && restoredFiles.includes(file)) {
@@ -4279,7 +4269,10 @@ const Composer: FC<{
     if (composerText === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
     if (shareDraft) publishDraft(composerText, draftSource);
-    if (!shareDraft) pendingDraftRef.current = { key: draftKey, text: composerText };
+    if (!shareDraft) {
+      pendingDraftRef.current = { key: draftKey, text: composerText };
+      stageComposerDraft(draftKey, composerText);
+    }
     const t = setTimeout(() => {
       writeComposerDraft(draftKey, composerText);
       pendingDraftRef.current = null;
@@ -4287,12 +4280,10 @@ const Composer: FC<{
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
   }, [composerText, draftScope, draftKey, draftSource, shareDraft, aui]);
-  // Flush only on navigation/unmount, keeping normal typing debounced. Shared drafts already
-  // publish immediately; flushing them could overwrite a newer remote edit.
   useEffect(() => () => {
     const pending = pendingDraftRef.current;
     if (pending && !sentTextGuardBlocksDraft(justSentRef.current, pending.text, pending.key)) {
-      writeComposerDraft(pending.key, pending.text);
+      flushComposerDraft(pending.key, pending.text);
     }
     pendingDraftRef.current = null;
   }, [draftScope]);

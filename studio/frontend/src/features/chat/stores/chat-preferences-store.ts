@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { adoptCurrentDraft } from "../utils/composer-draft.ts";
 import { persist } from "zustand/middleware";
 import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 import {
@@ -216,3 +217,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
 );
 
 syncAcrossWindows(useChatPreferencesStore);
+// Here, not in the setter: another window's switch arrives as a rehydrate, which skips setters.
+useChatPreferencesStore.subscribe((state, prev) => {
+  if (state.shareComposerDraft && !prev.shareComposerDraft) adoptCurrentDraft();
+});
