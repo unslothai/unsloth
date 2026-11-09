@@ -2735,14 +2735,18 @@ def _delete_scope_without_vec(
     try:
         conn = rag_db.get_metadata_connection()
         documents = conn.execute(*_scope_select(scope, created_before)).fetchall()
-        for row in documents:
+        ids = [row["id"] for row in documents]
+        # chunk_id is unindexed in fts5: one scan per batch of documents, not one per document.
+        for start in range(0, len(ids), rag_db._DOC_ID_BATCH):
+            batch = ids[start : start + rag_db._DOC_ID_BATCH]
+            marks = ",".join("?" * len(batch))
             conn.execute(
                 "DELETE FROM chunks_fts WHERE chunk_id IN "
-                "(SELECT id FROM chunks WHERE document_id=?)",
-                (row["id"],),
+                f"(SELECT id FROM chunks WHERE document_id IN ({marks}))",
+                batch,
             )
-            conn.execute("DELETE FROM chunks WHERE document_id=?", (row["id"],))
-            conn.execute("DELETE FROM documents WHERE id=?", (row["id"],))
+            conn.execute(f"DELETE FROM chunks WHERE document_id IN ({marks})", batch)
+            conn.execute(f"DELETE FROM documents WHERE id IN ({marks})", batch)
         conn.commit()
         removed = [row["stored_path"] for row in documents]
     except Exception:
@@ -2863,9 +2867,9 @@ def _delete_scope(
         except Exception:
             # No vec0 here. Delete what can be deleted rather than nothing at all.
             return _delete_scope_without_vec(scope, thread_id, created_before = created_before)
-        for row in conn.execute(*_scope_select(scope, created_before)).fetchall():
-            store.delete_document(conn, row["id"])
-            removed.append(row["stored_path"])
+        documents = conn.execute(*_scope_select(scope, created_before)).fetchall()
+        store.delete_documents(conn, [row["id"] for row in documents])
+        removed = [row["stored_path"] for row in documents]
     except Exception:
         logger.warning("conversation_archive.delete_failed thread_id=%s", thread_id, exc_info = True)
     finally:
