@@ -112,6 +112,10 @@ DECODE_MIB_PER_LATENT_BY_CLASS = {
     "AutoencoderKLFlux2": (0.17, 0.09),
 }
 DECODE_MIB_PER_LATENT_BY_RATIO = {8: (0.27, 0.18), 16: (1.7, 0.43), 32: (1.3, 1.3)}
+# The row-strip decode (diffusion_vae_strips): 16-bit peak = slope MiB per latent + four strip buffers (its strips are
+# bounded, so the peak no longer scales like the fused one). Bounds every measured tile side 48 to 256 (L4, A100,
+# T4; real weights). Tiles whose largest pass fits in one strip keep the fused decode and its figure.
+DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048}
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
 FREE_FRACTION = 0.75
@@ -312,6 +316,49 @@ def _fused(vae: Any) -> bool:
     )
 
 
+def _strips(vae: Any) -> bool:
+    """The fused decode runs in row strips (diffusion_vae_strips)."""
+    if not _fused(vae) or type(vae).__name__ not in DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS:
+        return False
+    try:
+        from .diffusion_vae_strips import engaged
+        return engaged(vae)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def strips_decode_mib(vae: Any, z: Any, height: int, width: int) -> Optional[float]:
+    """16-bit peak MiB of the strip decode of a (height, width) latent tile, or None when that decode would not take
+    the strip path (not engaged, fp32, or a tile small enough that its largest pass fits in one strip)."""
+    try:
+        if not _strips(vae) or next(vae.decoder.parameters()).element_size() != 2:
+            return None
+        from .diffusion_vae_strips import largest_pass_elems, strip_elems
+
+        strip = strip_elems(z.device)
+        if largest_pass_elems(vae.decoder, height, width) < 2 * strip:
+            return None
+        slope = DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__]
+        return slope * int(height) * int(width) + 4 * strip * 2 / 2**20
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _strips_tile_area(vae: Any, z: Any, budget_mib: float) -> Optional[int]:
+    """Largest square-ish tile area the strip decode fits in ``budget_mib``, else None."""
+    try:
+        if not _strips(vae) or next(vae.decoder.parameters()).element_size() != 2:
+            return None
+        from .diffusion_vae_strips import strip_elems
+
+        const = 4 * strip_elems(z.device) * 2 / 2**20
+        area = int((budget_mib - const) / DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__])
+        side = int(area**0.5)
+        return area if area > 0 and strips_decode_mib(vae, z, side, side) is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def decode_platform_cap(vae: Any, z: Any) -> Optional[int]:
     """The decode tile area (latents) a platform pins regardless of free memory, else None."""
     # CUDA-calibrated coefficients under-predict Qwen-Image-2.1 decode on ROCm (40x40, 64x32 and 96x56 OOM at
@@ -348,7 +395,9 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         per_latent = (
             decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__) * scale
         )
-        return max(0, int(FREE_FRACTION * mib / per_latent))
+        area = max(0, int(FREE_FRACTION * mib / per_latent))
+        strips = _strips_tile_area(vae, z, FREE_FRACTION * mib)
+        return max(area, strips) if strips is not None else area
     except Exception:  # noqa: BLE001 - unknown budget: the 32-latent tiles the planner budgeted
         return None
 
