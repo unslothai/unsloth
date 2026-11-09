@@ -896,6 +896,40 @@ def test_the_exact_resident_shortcut_never_answers_for_a_gguf(
         assert [p.gguf_filename for _o, p in loads] == [f"flux1-dev-{preferred}.gguf"]
 
 
+@pytest.mark.parametrize("publishes_filename", [False, True])
+def test_a_recipe_names_the_loaded_gguf_build_so_the_switch_keeps_it(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch, publishes_filename
+):
+    import sys
+
+    from routes.data_recipe import jobs as recipe_jobs
+
+    repo = tmp_path / "flux-gguf"
+    repo.mkdir()
+    (repo / "model_index.json").write_text("{}")
+    for quant in ("Q4_K_M", "Q8_0"):
+        (repo / f"flux1-dev-{quant}.gguf").write_bytes(b"")
+    catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
+    # Not the preferred quant, which a bare repo id would name.
+    backend.repo_id = "city96/FLUX.1-dev-gguf"
+    backend.gguf_variant = "Q8_0"
+    backend.model_kind = "gguf"
+    if publishes_filename:
+        status = backend.status
+        monkeypatch.setattr(
+            backend, "status", lambda: {**status(), "gguf_filename": "flux1-dev-Q8_0.gguf"}
+        )
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.diffusion_engine_router",
+        types.SimpleNamespace(get_active_diffusion_engine = lambda: backend),
+    )
+
+    _switch(recipe_jobs._loaded_local_image_model())
+
+    assert loads == []
+
+
 def test_a_bare_single_file_directory_is_planned_as_the_load_reads_it(
     catalog, tmp_path, monkeypatch
 ):
