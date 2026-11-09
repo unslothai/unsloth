@@ -192,3 +192,38 @@ def test_packed_block_holders_are_read_from_the_denoisers():
         types.SimpleNamespace(transformer = types.SimpleNamespace())
     )
     assert not dm._pipe_denoisers_hold_packed_blocks(types.SimpleNamespace())
+
+
+def test_request_sizing_reads_the_packed_block_seed_the_placement_reserved():
+    import types
+
+    from core.inference import diffusion_memory as dm
+
+    # the reserve diffusion.py records for a streamed packed-block placement (static_seed False, streamed, packed)
+    reserve = (
+        2304,
+        "flux.3-klein",
+        "default",
+        5038,
+        None,
+        None,
+        None,
+        None,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+    )
+    pipe = types.SimpleNamespace(_unsloth_measured_reserve = reserve)
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
+    bigger = dm.measured_request_extra_mib(pipe, width = 2048, height = 2048)
+    assert (
+        bigger
+        == dm.measured_image_runtime_mib(
+            "flux.3-klein", "default", width = 2048, height = 2048, packed_block = True, streamed = True
+        )
+        - 2304
+    )
+    assert bigger > 0

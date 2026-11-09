@@ -4741,6 +4741,7 @@ def _refine_plan_from_loaded_weights(
             measured_static_seed = static_seed,
             measured_dense_bf16 = dense_bf16,
             measured_small_host_int8 = small_host_int8,
+            measured_packed_block = packed_block,
             measured_learned_cfg_off = bool(cfg_off_only and learned),
             # tier / phase seed measured on text-to-image: unpriced references size flat (measured_request_extra_mib)
             measured_omits_references = bool(
@@ -5898,6 +5899,7 @@ def measured_request_extra_mib(
     sized["dense_bf16"] = bool(len(reserve) > 10 and reserve[10])
     sized["small_host_int8"] = bool(len(reserve) > 11 and reserve[11])
     sized["streamed"] = bool(len(reserve) > 12 and reserve[12])
+    sized["packed_block"] = bool(len(reserve) > 13 and reserve[13])
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
