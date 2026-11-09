@@ -1314,7 +1314,6 @@ async def _store_unstructured_raw(file, block_dir: Path, native_path_lease):
     # Tauri drops arrive as a signed path; isinstance since an unfilled Form param is truthy.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
-        # Off the event loop: a drop can be hundreds of MB.
         original_filename, content = await to_thread.run_sync(_read_native_drop, lease, budget)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
