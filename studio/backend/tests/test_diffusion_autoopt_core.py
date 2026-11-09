@@ -212,6 +212,7 @@ def test_builtin_specs_cover_every_former_install_site():
     assert {s.name for s in ap.specs(group = ap.GROUP_FUSED_DIT)} == {
         "flux2_rope",
         "flux3_rope",
+        "flux3_fp16_attn",
         "rocm_fused",
         "qwenimage_real_rope",
         "zimage_fused",
