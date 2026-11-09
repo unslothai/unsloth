@@ -5444,12 +5444,30 @@ def defer_resident_restore(pipe: Any, restore: Optional[Callable[[], None]]) -> 
 _DEFER_TOLERANCE_MIB = 256
 
 
+def _unused_room_mib(pipe: Any) -> int:
+    """MiB of the placement's resident rooms its whole groups left unused (free memory a request may count on)."""
+    room = placed = 0
+    for module in (getattr(pipe, "components", {}) or {}).values():
+        if not getattr(module, "_unsloth_resident_room", None):
+            continue
+        room += int(module._unsloth_resident_room)
+        placed += sum(
+            int(getattr(g, "_unsloth_resident_bytes", 0) or 0)
+            for g in (_offload_groups(module) or ())
+        )
+    return max(0, room - (placed >> 20))
+
+
 def take_deferred_restore(pipe: Any, extra_mib: int) -> tuple[Optional[Callable[[], None]], int]:
-    """At a request's guard: ``(restore to carry on, MiB the request must still release)``. A request releasing about
-    as much as the held restore streamed out (or more) keeps those groups streamed and releases only the rest; any
-    other request (one the placement was sized for, or a much smaller release) pins them back first."""
-    held = getattr(pipe, DEFERRED_RESTORE_ATTR, None)
+    """At a request's guard: ``(restore to carry on, MiB the request must still release)``. For a placement sized from
+    the denoise phase the request's MiB (priced against its room) first counts the room its whole groups left unused.
+    A request releasing about as much as a held restore streamed out (or more) keeps those groups streamed and
+    releases only the rest; any other request (one the placement was sized for, or a much smaller release) pins them
+    back first."""
     extra = int(extra_mib or 0)
+    if extra > 0 and _phase_placement(pipe):
+        extra = max(0, extra - _unused_room_mib(pipe))
+    held = getattr(pipe, DEFERRED_RESTORE_ATTR, None)
     if held is None:
         return None, extra
     try:

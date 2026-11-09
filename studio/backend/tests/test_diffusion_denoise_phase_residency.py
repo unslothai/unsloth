@@ -383,3 +383,23 @@ def test_whole_render_placements_restore_at_once(store, monkeypatch, phase, env)
     pipe = _deferring_pipe(phase)
     assert not dm.defer_resident_restore(pipe, _held([], "x", 4631))
     assert dm.take_deferred_restore(pipe, 4631) == (None, 4631)
+
+
+def test_a_request_counts_the_room_whole_groups_left_unused(store, monkeypatch):
+    """The L4 8 GiB edit: room 4718 MiB, 24 groups kept 4631 MiB. Priced at 4550 MiB against the room, the request
+    needs 4463 MiB of groups streamed out, which leaves the top-level group resident (as the whole-render placement
+    did), not 4550, which reached into it."""
+    mib = 1024 * 1024
+    groups = [types.SimpleNamespace(_unsloth_resident_bytes = 131 * mib)] + [
+        types.SimpleNamespace(_unsloth_resident_bytes = 4500 * mib // 23) for _ in range(23)
+    ]
+    dit = types.SimpleNamespace(_unsloth_resident_room = 4718)
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: groups if m is dit else [])
+    pipe = _reserved_pipe(768)
+    pipe.components = {"transformer": dit}
+    assert dm._unused_room_mib(pipe) == 4718 - (131 + 4499)
+    assert dm.take_deferred_restore(pipe, 4550) == (None, 4550 - 88)
+    # the whole-render placement prices as before
+    pipe = _reserved_pipe(None)
+    pipe.components = {"transformer": dit}
+    assert dm.take_deferred_restore(pipe, 4550) == (None, 4550)
