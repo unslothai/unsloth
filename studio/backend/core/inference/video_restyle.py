@@ -557,6 +557,23 @@ class RestyleRunner:
             server = self._detach_locked()
             self._update(active = False, **fields)
         self._stop(server)
+        self._release_video_claim()
+
+    def _release_video_claim(self) -> None:
+        # The handoff registered VIDEO; once the server is gone nothing holds it unless a Create
+        # model (or a newer restyle) has taken it since.
+        if self._server_factory is not None:
+            return
+        try:
+            from core.inference import gpu_arbiter
+            from core.inference.video import get_video_backend
+
+            video = get_video_backend()
+            if self.holds_gpu() or video.loading_repo_ids() or video.status().get("loaded"):
+                return
+            gpu_arbiter.release(gpu_arbiter.VIDEO)
+        except Exception as exc:  # noqa: BLE001 -- the job's outcome is already recorded
+            logger.warning("restyle: could not release the VIDEO claim: %s", exc)
 
     def unload(self) -> None:
         with self._lock:

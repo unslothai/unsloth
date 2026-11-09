@@ -1217,3 +1217,18 @@ def test_a_running_restyle_counts_as_inference_activity(weights, monkeypatch):
     assert not vr.generation_in_flight()
     runner.start(prompt = "x", frames = _frames(5))
     assert vr.generation_in_flight() and main._media_generation_active()
+
+
+@pytest.mark.parametrize("create_loaded", [False, True])
+def test_finishing_releases_the_video_claim_unless_create_holds_it(
+    weights, monkeypatch, create_loaded
+):
+    import core.inference.gpu_arbiter as arb
+    import core.inference.video as video_module
+
+    released = []
+    monkeypatch.setattr(arb, "release", lambda owner: released.append(owner))
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Video(loaded = create_loaded))
+    runner = vr.RestyleRunner()
+    runner._finish(phase = "done")
+    assert released == ([] if create_loaded else [arb.VIDEO])
