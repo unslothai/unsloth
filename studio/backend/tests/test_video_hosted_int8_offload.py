@@ -336,6 +336,54 @@ def test_a_weight_only_native_build_or_stubbed_torchao_is_refused(hosted, monkey
     assert _load(hosted, "transformer") is None
 
 
+needs_v1_classes = pytest.mark.skipif(
+    li.legacy_int8_classes_missing(),
+    reason = "needs torchao <= 0.17 (the v1 int8 classes)",
+)
+
+
+@needs_v1_classes
+def test_a_real_torchao_v1_pickle_reads_natively(tmp_path):
+    """torchao <= 0.17 unpickles the hosted file as real v1 tensors: the same codes and scales come out."""
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    dense = dense_expert(0)
+    dense.save_config(str(tmp_path / "base" / "transformer"))
+    quantised = dense_expert(0)
+    keep = tq.make_filter_fn(
+        tq.DEFAULT_MIN_LINEAR_FEATURES,
+        exclude_name_tokens = tq.exclude_tokens_for_scheme("int8", FAMILY),
+    )
+    quantize_(quantised, Int8DynamicActivationInt8WeightConfig(version = 1), filter_fn = keep)
+    state = {k: v for k, v in quantised.state_dict().items()}
+    meta = {
+        "scheme": "int8",
+        "base_model_id": BASE,
+        "family": FAMILY,
+        "min_features": tq.DEFAULT_MIN_LINEAR_FEATURES,
+        "component": "transformer",
+    }
+    path = tmp_path / "transformer.pt"
+    torch.save({"format": pq.PREQUANT_FORMAT, "metadata": meta, "state_dict": state}, str(path))
+    model = NH.load_native_from_hosted(
+        str(path),
+        diffusers.WanTransformer3DModel,
+        str(tmp_path / "base"),
+        spec = _spec(),
+        family = FAMILY,
+        component = "transformer",
+        base = BASE,
+    )
+    assert model is not None
+    layers = {n: m for n, m in model.named_modules() if is_native_linear(m)}
+    assert layers
+    for fqn, layer in layers.items():
+        impl = state[fqn + ".weight"].original_weight_tensor.tensor_impl
+        assert layer.rot_group == 0 and layer.act_int8
+        assert torch.equal(layer.weight_q, impl.int_data)
+        assert torch.equal(layer.weight_scale.view(torch.float32), impl.scale.float().reshape(-1))
+
+
 def test_an_unreadable_pickle_never_raises(tmp_path):
     bad = tmp_path / "x.pt"
     bad.write_bytes(b"not a checkpoint")
