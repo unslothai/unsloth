@@ -294,7 +294,7 @@ def test_softcapped_fallback_keeps_the_softcap(monkeypatch, path):
     elif path == "dense_mask":
         mask = dense = visible[:, None, None, :]
     else:
-        mask, dense = None, torch.ones(q_len, kv_len, dtype = torch.bool).tril(kv_len - q_len)
+        mask, dense = None, torch.ones(q_len, kv_len, dtype = torch.bool).tril()
     out, _ = FD._attention(module, q, k, v, mask, scaling = 0.25, softcap = 5.0)
     rep = lambda x: x.repeat_interleave(heads // kv_heads, dim = 1)
     scores = torch.tanh((q @ rep(k).transpose(2, 3)) * 0.25 / 5.0) * 5.0

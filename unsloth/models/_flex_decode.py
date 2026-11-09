@@ -418,8 +418,8 @@ def _dense_attention(module, query, key, value, attention_mask, dropout, scaling
         and L > 1
         and kwargs.get("is_causal", getattr(module, "is_causal", True))
     ):
-        # An elided causal mask (SDPA's is_causal would cover it): query i sees keys up to S - L + i.
-        attention_mask = torch.ones(L, S, dtype = torch.bool, device = query.device).tril(S - L)
+        # An elided causal mask: the upper-left causal mask SDPA's is_causal would apply (query i sees keys 0..i).
+        attention_mask = torch.ones(L, S, dtype = torch.bool, device = query.device).tril()
     if attention_mask is not None:
         mask = attention_mask[..., : key.shape[-2]]
         if mask.dtype == torch.bool:
