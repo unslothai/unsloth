@@ -343,7 +343,7 @@ def _remediation(deps, trigger: str, studio_missing) -> str:
 
 @pytest.mark.parametrize(
     "trigger, distribution",
-    [("jwt", "pyjwt"), ("docx", "python-docx"), ("fitz", "pymupdf")],
+    [("jwt", "pyjwt"), ("docx", "python-docx")],
 )
 def test_a_missing_studio_package_is_named_by_its_distribution(deps, trigger, distribution):
     """`pip install jwt` installs a different JWT library and repairs nothing."""

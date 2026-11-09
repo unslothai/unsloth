@@ -18,12 +18,12 @@ STUDIO_TXT = REPO_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
 CORE_RUNTIME_PACKAGES = ("structlog", "click")
 
 
-def _load_pyproject() -> dict:
+def _load_pyproject(path = PYPROJECT) -> dict:
     if sys.version_info >= (3, 11):
         import tomllib
     else:
         tomllib = pytest.importorskip("tomli")
-    return tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))
+    return tomllib.loads(path.read_text(encoding = "utf-8"))
 
 
 def _requirement_lines(path: pathlib.Path) -> list[str]:
@@ -78,6 +78,33 @@ def test_huggingface_extra_contains_no_diffusers_vcs_reference():
         "PyPI rejects VCS direct references in uploaded Requires-Dist metadata; "
         "keep temporary Diffusers commit pins in Unsloth installer requirement files."
     )
+
+
+def test_pdf_extra_matches_optional_requirements_and_leaves_defaults():
+    from packaging.requirements import Requirement
+
+    project = _load_pyproject()["project"]
+    pdf_requirements = _requirement_lines(STUDIO_TXT.with_name("pdf.txt"))
+    assert _specs(project["optional-dependencies"]["pdf"]) == _specs(pdf_requirements)
+    assert {Requirement(entry).name for entry in pdf_requirements} == {
+        "pymupdf",
+        "pymupdf4llm",
+        "tabulate",
+    }
+    declarations = project["dependencies"] + project["optional-dependencies"]["studio"]
+    for path in [
+        STUDIO_TXT,
+        STUDIO_TXT.with_name("no-torch-runtime.txt"),
+        STUDIO_TXT.parent / "single-env/data-designer-deps.txt",
+    ]:
+        declarations += _requirement_lines(path)
+    plugin = (
+        PYPROJECT.parent / "studio/backend/plugins/data-designer-unstructured-seed/pyproject.toml"
+    )
+    declarations += _load_pyproject(plugin)["project"]["dependencies"]
+    assert not {"pymupdf", "pymupdf4llm"} & {
+        Requirement(entry).name.lower() for entry in declarations
+    }
 
 
 def test_studio_extra_matches_requirements_file():

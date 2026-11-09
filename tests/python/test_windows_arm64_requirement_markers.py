@@ -21,6 +21,7 @@ REQ_FILES = [
     REPO_ROOT / "studio/backend/requirements/no-torch-runtime.txt",
     REPO_ROOT / "studio/backend/requirements/single-env/constraints.txt",
     REPO_ROOT / "studio/backend/requirements/studio.txt",
+    REPO_ROOT / "studio/backend/requirements/pdf.txt",
 ]
 
 PLATFORMS = [
@@ -176,15 +177,17 @@ def test_no_row_is_dead_on_arrival(label, reqs):
 # studio.txt and pyproject[studio] mirror each other, so a global check would hide a lost row.
 WOA_ROWS_BY_SOURCE = {
     "extras.txt": {"av": "split", "scikit-learn": "split"},
-    "no-torch-runtime.txt": {"pymupdf": "split", "hf-transfer": "dropped", "sqlite-vec": "dropped"},
+    "no-torch-runtime.txt": {"hf-transfer": "dropped", "sqlite-vec": "dropped"},
     "constraints.txt": {
         "av": "split",
         "cryptography": "split",
         "pandas": "split",
         "pyarrow": "split",
     },
-    "studio.txt": {"cryptography": "split", "pandas": "split", "pymupdf": "split"},
-    "pyproject[studio]": {"cryptography": "split", "pandas": "split", "pymupdf": "split"},
+    "studio.txt": {"cryptography": "split", "pandas": "split"},
+    "pyproject[studio]": {"cryptography": "split", "pandas": "split"},
+    "pdf.txt": {"pymupdf": "split"},
+    "pyproject[pdf]": {"pymupdf": "split"},
     "pyproject[triton]": {"triton-windows": "split"},
     "pyproject[huggingfacenotorch]": {"hf-transfer": "dropped"},
     "pyproject[windows]": {"xformers": "dropped"},

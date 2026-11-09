@@ -21,5 +21,3 @@ sqlfluff<4,>=3.2.0
 tiktoken<1,>=0.8.0
 # Local seed plugin deps (plugins installed with --no-deps)
 requests>=2.31
-pymupdf>=1.24.0
-pymupdf4llm>=0.0.17

@@ -57,6 +57,8 @@ from torch_config_guard import install_monkeypatch_fix  # noqa: E402
 
 install_monkeypatch_fix()
 
+# Ordinary unit tests must not download PDF wheels; installer tests opt in explicitly.
+os.environ.setdefault("UNSLOTH_PDF_AUTO_INSTALL", "0")
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")

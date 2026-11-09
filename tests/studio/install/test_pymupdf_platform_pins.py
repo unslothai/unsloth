@@ -26,7 +26,7 @@ PLATFORMS = {
 
 
 def _requirement_files():
-    for name in ("studio.txt", "no-torch-runtime.txt"):
+    for name in ("pdf.txt",):
         path = REQ_ROOT / name
         lines = path.read_text(encoding = "utf-8").splitlines()
         yield (
@@ -38,7 +38,7 @@ def _requirement_files():
             ],
         )
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))["project"]
-    yield "pyproject.toml [studio]", list(project["optional-dependencies"]["studio"])
+    yield "pyproject.toml [pdf]", list(project["optional-dependencies"]["pdf"])
 
 
 def _pymupdf_for(lines, environment):

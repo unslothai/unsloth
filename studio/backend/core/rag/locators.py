@@ -6,6 +6,8 @@ ligatures); missing PyMuPDF, short anchor or no unique match yields no regions, 
 
 from __future__ import annotations
 
+from utils.optional_pdf import load_pdf_module
+
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -194,7 +196,7 @@ def pdf_regions_for_chunks(pdf_path: Path, pages: list, chunks: list) -> list[li
     if pdf_path.suffix.lower() != ".pdf":
         return [[] for _ in chunks]
     try:
-        import pymupdf
+        pymupdf = load_pdf_module("pymupdf")
         doc = pymupdf.open(str(pdf_path))
     except Exception:
         return [[] for _ in chunks]

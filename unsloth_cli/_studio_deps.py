@@ -682,7 +682,6 @@ def _missing_studio_packages() -> List[str]:
 _IMPORT_TO_DISTRIBUTION = {
     "jwt": "pyjwt",
     "docx": "python-docx",
-    "fitz": "pymupdf",
 }
 
 

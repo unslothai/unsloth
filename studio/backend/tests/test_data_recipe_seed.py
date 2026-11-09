@@ -187,6 +187,26 @@ def test_unstructured_upload_names_missing_extractor_dependency(
     assert _block_files(seed_route) == []
 
 
+@pytest.mark.parametrize("filename", ["paper.pdf", "book.mobi", "book.fb2"])
+def test_optional_pdf_failure_keeps_install_guidance_and_cleans_upload(
+    monkeypatch, tmp_path, filename
+):
+    from utils.optional_pdf import PDFDependencyUnavailable, INSTALL_COMMAND
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    message = f"PDF support could not be downloaded. Install it with: {INSTALL_COMMAND}"
+    monkeypatch.setattr(
+        seed_route, "_extract_text_from_file", _raise(PDFDependencyUnavailable(message))
+    )
+
+    result = _run_upload(seed_route, filename, b"document bytes")
+
+    assert result.status == "error"
+    assert result.error == message
+    assert _block_files(seed_route) == []
+    assert set(result.model_dump()) == {"file_id", "filename", "size_bytes", "status", "error"}
+
+
 def test_unstructured_upload_keeps_txt_path_working(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
 

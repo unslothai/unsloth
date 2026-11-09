@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from utils.optional_pdf import load_pdf_module
+
 import logging
 import os
 
@@ -34,7 +36,7 @@ def ocr_pages(path: str, page_numbers) -> dict[int, str]:
     """OCRs only the requested pages via PyMuPDF's Tesseract, which must already have its language data."""
     if not page_numbers:
         return {}
-    import pymupdf
+    pymupdf = load_pdf_module("pymupdf")
 
     out: dict[int, str] = {}
     with pymupdf.open(path) as doc:
