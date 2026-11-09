@@ -176,10 +176,36 @@ def test_failed_combined_reads_fall_back_and_are_never_cached(counters, monkeypa
         assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
         assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
         assert hw._rocm_windows_perf_counter_gpu_util_pct() is None
-    # Each read retried the combined call, then ran its own: nothing failed was served twice.
+    # One combined attempt, then every read ran its own: nothing failed was served, and the failing
+    # host pays one spawn over base (3) instead of doubling it.
+    assert len(_combined(counters.calls)) == 1
+    assert len(counters.calls) == 4
+    assert hw._rocm_win_counter_cache["display"][3] == {}
+    counters.clock.now += hw._ROCM_WIN_COUNTER_EMPTY_RETRY_S - 1
+    with gpu_query.display_reads(max_stale = 0):
+        assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
+    assert len(_combined(counters.calls)) == 1
+    # The empty reading still expires, and a GPU memory event drops it too.
+    counters.clock.now += 1
+    with gpu_query.display_reads(max_stale = 0):
+        assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
+        gpu_memory_events.invalidate_gpu_memory("model loaded")
+        assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
     assert len(_combined(counters.calls)) == 3
-    assert len(counters.calls) == 6
-    assert hw._rocm_win_counter_cache == {}
+
+
+def test_a_hung_combined_call_is_not_retried_by_every_read(counters, monkeypatch):
+    def hung(argv, **kwargs):
+        counters.calls.append(argv[-1])
+        counters.clock.now += 5.0
+        raise hw.subprocess.TimeoutExpired(argv, 5)
+
+    monkeypatch.setattr(hw.subprocess, "run", hung)
+    with gpu_query.display_reads(max_stale = 0):
+        assert _read_all() == (None, None, None, None)
+    # Base ran 4 own calls (20 s); one combined attempt rides on top (25 s), not one per read (40 s).
+    assert len(_combined(counters.calls)) == 1
+    assert len(counters.calls) == 5
 
 
 def test_a_counter_missing_from_the_combined_reading_reads_its_own(counters):

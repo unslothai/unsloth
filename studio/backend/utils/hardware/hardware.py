@@ -3626,6 +3626,8 @@ _rocm_win_counter_cache: dict[str, tuple[float, int, float, dict[tuple[str, str]
 # Slow spawns (about 2 s each on a Strix Halo box) space display reads out, like /api/system's probe spacing in main.py.
 _ROCM_WIN_COUNTER_SPACING = 4.0
 _ROCM_WIN_COUNTER_MAX_AGE_S = 10.0
+# A combined call that answered nothing (localized counter names, a missing counter set, a hung PowerShell) is retried this often; meanwhile each counter runs its own call, exactly as before the combined read.
+_ROCM_WIN_COUNTER_EMPTY_RETRY_S = 60.0
 # The three counters display polls read, tagged so one Get-Counter call can serve each parser only its own lines, in the format its own call prints.
 _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
     ("vram", "Dedicated Usage"): (
@@ -3674,7 +3676,7 @@ def _rocm_windows_split_combined(stdout: str) -> dict[tuple[str, str], str]:
 
 
 def _rocm_windows_counter_stdout(key: tuple[str, str], ps: str) -> Optional[str]:
-    """stdout of the ``Get-Counter`` call ``ps`` (about 2 s each on real hardware), or None on failure. Placement and fit always run ``ps`` itself. Display reads instead share ONE Get-Counter over all three display counters, reused for max(display TTL, 4x the spawn that produced it) so the reading outlives its own probe, dropped on a GPU memory event; a counter missing from that reading, or a failed one, falls back to ``ps``. Failures are never cached."""
+    """stdout of the ``Get-Counter`` call ``ps`` (about 2 s each on real hardware), or None on failure. Placement and fit always run ``ps`` itself. Display reads instead share ONE Get-Counter over all three display counters, reused for max(display TTL, 4x the spawn that produced it) so the reading outlives its own probe, dropped on a GPU memory event; a counter missing from that reading, or a failed one, falls back to ``ps``. A failed combined read is remembered only as an empty reading, so no failure is ever served: it only stops every read retrying the combined call before falling back, for _ROCM_WIN_COUNTER_EMPTY_RETRY_S."""
     try:
         from utils import gpu_memory_events
         from utils.hardware import gpu_query
@@ -3694,24 +3696,29 @@ def _rocm_windows_counter_stdout(key: tuple[str, str], ps: str) -> Optional[str]
                     or cached[1] != generation
                     or (
                         time.monotonic() - cached[0]
-                        >= min(
-                            _ROCM_WIN_COUNTER_MAX_AGE_S,
-                            max(ttl, _ROCM_WIN_COUNTER_SPACING * cached[2]),
+                        >= (
+                            min(
+                                _ROCM_WIN_COUNTER_MAX_AGE_S,
+                                max(ttl, _ROCM_WIN_COUNTER_SPACING * cached[2]),
+                            )
+                            if cached[3]
+                            else _ROCM_WIN_COUNTER_EMPTY_RETRY_S
                         )
                     )
                 ):
                     _rocm_win_counter_cache.pop("display", None)
                     started = time.monotonic()
-                    combined = _rocm_windows_counter_stdout_uncached(
-                        _rocm_windows_combined_counter_ps()
-                    )
+                    try:
+                        combined = _rocm_windows_counter_stdout_uncached(
+                            _rocm_windows_combined_counter_ps()
+                        )
+                    except Exception:
+                        combined = None
                     done = time.monotonic()
                     readings = _rocm_windows_split_combined(combined) if combined else {}
-                    if readings:
-                        cached = (done, generation, done - started, readings)
-                        _rocm_win_counter_cache["display"] = cached
-                    else:
-                        cached = None
+                    # An empty reading is kept too, so a host whose combined call never answers does not pay it on top of every counter's own call.
+                    cached = (done, generation, done - started, readings)
+                    _rocm_win_counter_cache["display"] = cached
                 if cached is not None:
                     stdout = cached[3].get(key)
         except Exception:
