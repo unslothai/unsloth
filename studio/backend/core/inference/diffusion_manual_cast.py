@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Linear / Embedding weights stay at stored half dtype and upcast exactly per call. UNSLOTH_STUDIO_MANUAL_CAST=0
-disables."""
+disables. LoRA adapters PEFT injects on a manual-cast layer are kept at its compute dtype, not the stored dtype, and are
+never folded into the half weights; UNSLOTH_STUDIO_MANUAL_CAST_LORA=0 restores the stored-dtype adapters."""
 
 from __future__ import annotations
 
@@ -11,12 +12,79 @@ from typing import Any, Optional
 
 MANUAL_CAST_ENV = "UNSLOTH_STUDIO_MANUAL_CAST"
 MANUAL_CAST_ATTR = "_unsloth_manual_cast"
+MANUAL_CAST_LORA_ENV = "UNSLOTH_STUDIO_MANUAL_CAST_LORA"
+_PEFT_PATCHED = "_unsloth_manual_cast_lora"
 
 _CLASSES: dict[str, Any] = {}
 
 
 def manual_cast_disabled() -> bool:
     return (os.environ.get(MANUAL_CAST_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def manual_cast_lora_disabled() -> bool:
+    return (os.environ.get(MANUAL_CAST_LORA_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def lora_compute_dtype(base: Any) -> Any:
+    """Compute dtype of a manual-cast base layer whose stored weight is narrower, else None."""
+    if not _CLASSES or type(base) not in (_CLASSES["linear"], _CLASSES["embedding"]):
+        return None
+    dtype = getattr(base, "_unsloth_compute_dtype", None)
+    weight = getattr(base, "weight", None)
+    if dtype is None or weight is None or weight.dtype == dtype or manual_cast_lora_disabled():
+        return None
+    return dtype
+
+
+def _patch_peft_adapter_dtype() -> None:
+    """PEFT moves each injected adapter to its base layer's weight dtype (bf16 here), so the adapter GEMMs would run in
+    bf16 on the fp16-only cards manual cast exists for, and fp32 LoRA files would round on load. On a manual-cast base
+    the adapter goes to the compute dtype instead; every other layer keeps PEFT's own placement."""
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer
+    except Exception:  # noqa: BLE001 -- no PEFT, no adapters to place
+        return
+    original = BaseTunerLayer.__dict__.get("_move_adapter_to_device_of_base_layer")
+    if original is None or getattr(original, _PEFT_PATCHED, False):
+        return
+    import torch
+
+    def _move_adapter_to_device_of_base_layer(
+        self,
+        adapter_name,
+        device = None,
+    ):
+        base = self.get_base_layer()
+        dtype = lora_compute_dtype(base)
+        if dtype is None:
+            return original(self, adapter_name, device)
+        if device is None:
+            device = base.weight.device
+        meta = torch.device("meta")
+        for name in (*self.adapter_layer_names, *self.other_param_names):
+            layer = getattr(self, name, None)
+            if not hasattr(layer, "keys") or adapter_name not in layer.keys():
+                continue
+            item = layer[adapter_name]
+            if not isinstance(item, (torch.nn.Module, torch.Tensor)):
+                continue
+            tensors = item.parameters() if isinstance(item, torch.nn.Module) else (item,)
+            if any(t.device == meta for t in tensors):
+                continue
+            if isinstance(item, torch.nn.Module) or item.is_floating_point():
+                layer[adapter_name] = item.to(device, dtype = dtype)
+            else:
+                layer[adapter_name] = item.to(device)
+
+    setattr(_move_adapter_to_device_of_base_layer, _PEFT_PATCHED, True)
+    _move_adapter_to_device_of_base_layer.__wrapped__ = original
+    BaseTunerLayer._move_adapter_to_device_of_base_layer = _move_adapter_to_device_of_base_layer
 
 
 def _classes() -> tuple[Any, Any]:
@@ -74,6 +142,7 @@ def apply_manual_cast_(module: Any, compute_dtype: Any) -> int:
     import torch
 
     linear_cls, embedding_cls = _classes()
+    _patch_peft_adapter_dtype()
     half = (torch.bfloat16, torch.float16)
     keep = _keep_fp32_patterns(module)
     first_owner = _first_float_owner(module, keep)
