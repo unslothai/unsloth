@@ -156,12 +156,13 @@ def _cuda_triton() -> bool:
 def test_strip_decode_matches_fused_cuda(monkeypatch, dtype):
     import copy
 
-    monkeypatch.setattr(S, "STRIP_ELEMS", 1 << 13)
+    monkeypatch.setattr(S, "STRIP_ELEMS", 1 << 10)
     src = _vae(CONFIGS[0]).to("cuda", dtype)
     fused, strips = copy.deepcopy(src), copy.deepcopy(src)
     monkeypatch.setenv(S.STRIPS_ENV, "0")
     F.install(fused)
     monkeypatch.delenv(S.STRIPS_ENV)
+    monkeypatch.setenv(S.STRIPS_ENV, "1")  # every decode, whatever the card
     F.install(strips)
     assert S.engaged(strips) and not S.engaged(fused)
     z = torch.randn(1, 8, 9, 13, device = "cuda", dtype = dtype)
@@ -195,3 +196,27 @@ def test_planner_prices_the_strip_decode_only_when_it_runs(monkeypatch):
     del vae._unsloth_vae_fused_failed
     vae.to(torch.float32)  # fp32 keeps the fused pricing
     assert vt.strips_decode_mib(vae, z, 256, 256) is None
+
+
+def test_auto_policy_by_card_and_free_vram(monkeypatch):
+    monkeypatch.delenv(S.STRIPS_ENV, raising = False)
+    S._card_always.cache_clear()
+    caps = {0: (8, 9), 1: (8, 0), 2: (7, 5), 3: (9, 0)}
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i: caps[i])
+    on = [S.always_on(torch.device("cuda", i)) for i in range(4)]
+    S._card_always.cache_clear()
+    assert on == [True, False, True, False]
+    monkeypatch.setenv(S.STRIPS_ENV, "1")
+    assert S.always_on(torch.device("cuda", 1))
+    S._card_always.cache_clear()
+
+    from core.inference import diffusion_vae_tiling as vt
+
+    vae = _vae(CONFIGS[0])
+    z = torch.zeros(1, 8, 128, 128)
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (100.0, 1.0))
+    assert S.fused_would_not_fit(vae, z)  # 0.09 * 128 * 128 MiB > 75 MiB
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1e6, 1.0))
+    assert not S.fused_would_not_fit(vae, z)
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: None)  # off CUDA
+    assert not S.fused_would_not_fit(vae, z)

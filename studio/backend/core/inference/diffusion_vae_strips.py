@@ -10,7 +10,11 @@ full size. The decoder owns its residual stream: equal-channel blocks add into t
 halves the channels writes its output into the front half of its input's storage, and the blocks of a level share
 one hidden buffer that cuDNN writes strip by strip without a copy. Upsample and the final norm/conv run in strips.
 Same math as the fused decode (fp32 statistics, one rounding per residual sum); convs see different strip shapes.
-NVIDIA CUDA only (``diffusion_vae_fused.runtime_ok``); eager only. Kill switch ``UNSLOTH_FLUX_VAE_STRIPS=0``.
+NVIDIA CUDA only (``diffusion_vae_fused.runtime_ok``); eager only.
+
+Every decode on cards where it was measured no slower (T4 sm75, L4 sm89); elsewhere (A100 measured 4% slower) only a
+decode the fused path would not fit in the free VRAM, where the alternative is more tiles. ``UNSLOTH_FLUX_VAE_STRIPS``:
+``0`` off, ``1`` every decode on any NVIDIA card.
 """
 
 from __future__ import annotations
@@ -46,6 +50,42 @@ def strip_elems(device: Any) -> int:
 
 def strips_disabled() -> bool:
     return os.environ.get(STRIPS_ENV, "").strip().lower() in fused._FALSE
+
+
+def strips_forced() -> bool:
+    return os.environ.get(STRIPS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# (major, minor) compute capabilities where every strip decode measured within A/A noise of the fused one or faster.
+ALWAYS_CAPS = frozenset({(7, 5), (8, 9)})
+
+
+@lru_cache(maxsize = 16)
+def _card_always(index: int) -> bool:
+    return tuple(fused._torch().cuda.get_device_capability(index)) in ALWAYS_CAPS
+
+
+def always_on(device: Any) -> bool:
+    """Every decode on this card takes the strip path (else only the ones the fused decode would not fit)."""
+    if strips_forced():
+        return True
+    torch = fused._torch()
+    return _card_always(device.index if device.index is not None else torch.cuda.current_device())
+
+
+def fused_would_not_fit(vae: Any, z: Any) -> bool:
+    """The tile planner's own rule: the fused decode of ``z`` needs more than its share of the free VRAM."""
+    try:
+        from .diffusion_vae_tiling import FREE_FRACTION, _free_mib, _geometry, decode_mib_per_latent
+
+        free = _free_mib(vae, z)
+        if free is None:
+            return False
+        mib, scale = free
+        per_latent = decode_mib_per_latent(_geometry(vae)[0], True, type(vae).__name__) * scale
+        return per_latent * int(z.shape[-2]) * int(z.shape[-1]) > FREE_FRACTION * mib
+    except Exception:  # noqa: BLE001
+        return False
 
 
 @lru_cache(maxsize = 1)
@@ -477,6 +517,7 @@ def install(vae: Any, logger: Any = None) -> bool:
             or strips_disabled()
             or not _call_ok(decoder, sample)
             or not worth_strips(decoder, sample)
+            or not (always_on(sample.device) or fused_would_not_fit(vae, sample))
         ):
             return prev(sample, latent_embeds, *args, **kwargs)
         try:
