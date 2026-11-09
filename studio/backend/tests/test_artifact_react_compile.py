@@ -121,8 +121,7 @@ def test_a_tsx_syntax_error_still_reports_the_tsx_diagnostic():
 
 @real_compiler
 def test_a_long_import_name_cannot_amplify_the_output():
-    # Linking spells the imported name at every use of its alias: 11 KB of this source
-    # printed 12 MB, and 130 KB printed 480 MB through a 2.3 GB Node process.
+    # Linking spells an imported name at every alias use, so 11 KB of source printed 12 MB.
     source = (
         f'import {{ {"X" * 8000} as a }} from "react";\n'
         + "a;" * 1500
@@ -156,8 +155,7 @@ def test_an_oversized_compile_is_an_error_not_a_failure():
 
 @real_compiler
 def test_a_missing_oxc_transform_reads_as_unavailable(monkeypatch, tmp_path):
-    # The script resolves oxc-transform next to itself, so a copy outside the tool
-    # directory exercises the guarded import, not the Python pre-check.
+    # A copy outside the tool dir finds no oxc-transform, so the guarded import is tested.
     script = tmp_path / "compile-react.mjs"
     shutil.copy(rp._SCRIPT, script)
     monkeypatch.setattr(rp, "_SCRIPT", script)

@@ -1859,6 +1859,13 @@ export const cs = {
         sttQuantDescription:
           "Vyberte nebo vyhledejte model STT, který se má spouštět místně, a potom jeho kvantizaci.",
         sttDeviceLabel: "Načíst do",
+        sttContextLabel: "Kontext hlasu",
+        sttContextAuto: "Automaticky (doporučeno)",
+        sttContextAutoDescription:
+          "Přizpůsobí se každé nahrávce a pro delší zvuk použije více paměti. Starší běhová prostředí mohou ke snížení paměti potřebovat pevnou velikost. Platí pro Qwen3-ASR v sekcích Hlas a Přepis.",
+        sttContextFixedDescription:
+          "Menší limity používají méně paměti. Nahrávky, které se nevejdou, potřebují vyšší limit nebo Automaticky. Platí pro Qwen3-ASR v sekcích Hlas a Přepis.",
+        sttContextTokens: "tokeny: {count}",
         sttDeviceAuto: "GPU, pokud je k dispozici",
         sttDeviceCpu: "RAM procesoru",
         sttDeviceAutoDescription:
@@ -3453,12 +3460,10 @@ export const cs = {
       exportingAction: "Exportování...",
       exportConversations: "Exportovat Nedávné a Projekty",
       exportConversationsDescription:
-        "Stáhnout Nedávné, nebo Nedávné spolu s chaty projektů, jako Training JSONL, CSV, ShareGPT JSONL nebo Markdown, sloučené nebo po jednotlivých chatech. Message JSONL je k dispozici po jednotlivých chatech.",
+        "Stáhnout Nedávné, nebo Nedávné spolu s chaty projektů, jako Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML nebo PDF, sloučené nebo po jednotlivých chatech. Message JSONL je k dispozici po jednotlivých chatech.",
       exportConversationsAction: "Exportovat",
       exportScopeRecents: "Nedávné",
       exportScopeAll: "Nedávné + Projekty",
-      exportCombinedSuffix: "(sloučené)",
-      exportPerChatSuffix: "(po chatech)",
       importChats: "Importovat chaty",
       importChatsDescription:
         "Importovat soubory JSON, JSONL, NDJSON, CSV nebo Markdown do Nedávných.",

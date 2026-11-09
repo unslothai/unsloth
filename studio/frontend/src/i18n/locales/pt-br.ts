@@ -1688,6 +1688,13 @@ export const ptBR = {
         sttQuantDescription:
           "Escolha ou busque um modelo STT para executar localmente e depois sua quantização.",
         sttDeviceLabel: "Carregar em",
+        sttContextLabel: "Contexto de voz",
+        sttContextAuto: "Auto (recomendado)",
+        sttContextAutoDescription:
+          "Adapta-se a cada gravação, usando mais memória para áudios mais longos. Ambientes de execução antigos podem precisar de um tamanho fixo para reduzir o uso de memória. Aplica-se ao Qwen3-ASR em Voz e Transcrever.",
+        sttContextFixedDescription:
+          "Limites menores usam menos memória. Gravações que ultrapassam o limite precisam de um limite maior ou do modo Auto. Aplica-se ao Qwen3-ASR em Voz e Transcrever.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU quando disponível",
         sttDeviceCpu: "RAM da CPU",
         sttDeviceAutoDescription:
@@ -3189,12 +3196,10 @@ export const ptBR = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recentes e Projetos",
       exportConversationsDescription:
-        "Baixe os chats de Recentes ou de Recentes e Projetos como Training JSONL, CSV, JSONL do ShareGPT ou Markdown, em um arquivo combinado ou em arquivos separados por chat. Message JSONL está disponível apenas por chat.",
+        "Baixe os chats de Recentes ou de Recentes e Projetos como Training JSONL, CSV, JSONL do ShareGPT, Markdown, HTML ou PDF, em um arquivo combinado ou em arquivos separados por chat. Message JSONL está disponível apenas por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recentes",
       exportScopeAll: "Recentes + Projetos",
-      exportCombinedSuffix: "(combinado)",
-      exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
         "Importe arquivos JSON, JSONL, NDJSON, CSV ou Markdown para Recentes.",

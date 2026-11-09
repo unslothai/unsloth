@@ -1688,6 +1688,13 @@ export const ru = {
         sttQuantDescription:
           "Выберите или найдите модель STT для локального запуска, затем её квантизацию.",
         sttDeviceLabel: "Загружать в",
+        sttContextLabel: "Голосовой контекст",
+        sttContextAuto: "Авто (рекомендуется)",
+        sttContextAutoDescription:
+          "Подбирает размер для каждой записи: чем длиннее аудио, тем больше памяти требуется. В старых версиях среды выполнения для снижения расхода памяти может потребоваться фиксированный размер. Применяется к Qwen3-ASR в разделах «Голос» и «Транскрибировать».",
+        sttContextFixedDescription:
+          "Чем меньше лимит, тем меньше расход памяти. Для записей, которые не укладываются в лимит, увеличьте его или выберите «Авто». Применяется к Qwen3-ASR в разделах «Голос» и «Транскрибировать».",
+        sttContextTokens: "Токенов: {count}",
         sttDeviceAuto: "GPU, если доступен",
         sttDeviceCpu: "ОЗУ процессора",
         sttDeviceAutoDescription:
@@ -3187,12 +3194,10 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL или Markdown, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML или PDF, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
-      exportCombinedSuffix: "(объединённо)",
-      exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
         "Импортируйте файлы JSON, JSONL, NDJSON, CSV или Markdown в Недавние.",

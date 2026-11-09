@@ -1870,6 +1870,13 @@ export const pl = {
         sttQuantDescription:
           "Wybierz lub wyszukaj model STT do uruchomienia lokalnie, a następnie jego kwantyzację.",
         sttDeviceLabel: "Wczytaj do",
+        sttContextLabel: "Kontekst głosu",
+        sttContextAuto: "Automatycznie (zalecane)",
+        sttContextAutoDescription:
+          "Dopasowuje się do każdego nagrania, używając więcej pamięci przy dłuższym dźwięku. Starsze środowiska uruchomieniowe mogą wymagać stałego rozmiaru, aby ograniczyć użycie pamięci. Dotyczy Qwen3-ASR w sekcjach Głos i Transkrypcja.",
+        sttContextFixedDescription:
+          "Mniejsze limity zużywają mniej pamięci. Nagrania, które się nie mieszczą, wymagają wyższego limitu lub trybu Automatycznie. Dotyczy Qwen3-ASR w sekcjach Głos i Transkrypcja.",
+        sttContextTokens: "tokeny: {count}",
         sttDeviceAuto: "GPU, gdy jest dostępny",
         sttDeviceCpu: "RAM procesora CPU",
         sttDeviceAutoDescription:
@@ -3477,12 +3484,10 @@ export const pl = {
       exportingAction: "Eksportowanie...",
       exportConversations: "Eksportuj Ostatnie i Projekty",
       exportConversationsDescription:
-        "Pobierz Ostatnie lub Ostatnie wraz z czatami projektów jako Training JSONL, CSV, ShareGPT JSONL lub Markdown, łącznie lub osobno dla każdego czatu. Message JSONL jest dostępny dla każdego czatu osobno.",
+        "Pobierz Ostatnie lub Ostatnie wraz z czatami projektów jako Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML lub PDF, łącznie lub osobno dla każdego czatu. Message JSONL jest dostępny dla każdego czatu osobno.",
       exportConversationsAction: "Eksportuj",
       exportScopeRecents: "Ostatnie",
       exportScopeAll: "Ostatnie + Projekty",
-      exportCombinedSuffix: "(łącznie)",
-      exportPerChatSuffix: "(każdy czat osobno)",
       importChats: "Importuj czaty",
       importChatsDescription:
         "Importuj pliki JSON, JSONL, NDJSON, CSV lub Markdown do sekcji Ostatnie.",

@@ -11,10 +11,7 @@ export type NavRowState = {
   pendingTooltip?: string;
 };
 
-/**
- * A pending row stays enabled and spins rather than guessing a gray-out. Both render sites go
- * through here so they cannot drift.
- */
+/** A pending row stays enabled and spins rather than guessing a gray-out; both sites share it. */
 export function resolveNavRowState(row: NavRowState): {
   disabled?: boolean;
   tooltip?: string;

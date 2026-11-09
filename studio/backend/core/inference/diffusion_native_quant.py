@@ -10,6 +10,7 @@ import contextlib
 import contextvars
 import os
 import re
+import threading
 import time
 from functools import lru_cache
 from typing import Any, Callable, Optional
@@ -106,9 +107,7 @@ def mps_int8pack_forced() -> bool:
 
 
 def mps_int8pack_selected(dtype: Any, layer: Any = None) -> bool:
-    """Whether ``dtype`` forwards of ``layer`` may take the Metal kernel: the env override, else the verdict its
-    transformer's probe stamped on it (no probe yet = dequantise, which is deterministic). Without ``layer``: whether
-    any probe this process chose the kernel for ``dtype``."""
+    """Metal int8pack use: env override, else the layer's probe verdict; with no probe, dequantise."""
     if mps_int8pack_disabled():
         return False
     if mps_int8pack_forced():
@@ -268,6 +267,11 @@ def _row_major_op() -> Any:
 def int8_fused_disabled() -> bool:
     import os
     return os.environ.get(NATIVE_INT8_FUSED_ENV, "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _own_rotation(h: Any, dtype: Any) -> Any:
+    """Per-layer copy: at float32 ``h.to(dtype)`` aliases the cached tensor, so group offload moved one shared buffer."""
+    return h.to(dtype, copy = True)
 
 
 def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any) -> Any:
@@ -466,6 +470,22 @@ def fused_w8a8_state() -> dict:
     }
 
 
+# Per-thread fp32 widen buffer: a fresh one per call costs ~4x the widen in page faults.
+_CPU_WIDEN = threading.local()
+
+
+def _cpu_widen_scratch(numel: int) -> Any:
+    import torch
+
+    buf = getattr(_CPU_WIDEN, "buf", None)
+    if buf is None or buf.numel() < numel:
+        _CPU_WIDEN.buf = None
+        # Not an inference tensor: those are read-only outside inference_mode.
+        with torch.inference_mode(False):
+            buf = _CPU_WIDEN.buf = torch.empty(numel, dtype = torch.float32)
+    return buf[:numel]
+
+
 @lru_cache(maxsize = 1)
 def native_linear_class():
     """``NativeWeightOnlyLinear``, defined on first use so this module imports torch-free."""
@@ -496,7 +516,8 @@ def native_linear_class():
             self.in_features = int(linear.in_features)
             self.out_features = int(linear.out_features)
             self.scheme = scheme
-            self.compute_dtype = linear.weight.dtype
+            cast = getattr(linear, "_unsloth_compute_dtype", None)
+            self.compute_dtype = cast if isinstance(cast, torch.dtype) else linear.weight.dtype
             self.act_int8 = bool(act_int8) and scheme == NATIVE_INT8
             self.rot_group = (
                 int(rot_group)
@@ -529,7 +550,9 @@ def native_linear_class():
                     h = build_convrot_hadamard(
                         self.rot_group, device = codes.device, dtype = torch.float32
                     )
-                    self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
+                    self.register_buffer(
+                        "rot_h", _own_rotation(h, self.compute_dtype), persistent = False
+                    )
             else:
                 weight = linear.weight.detach()
                 with torch.no_grad():
@@ -544,7 +567,9 @@ def native_linear_class():
                         w = (w.reshape(self.out_features, -1, g) @ h.T).reshape(
                             self.out_features, -1
                         )
-                        self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
+                        self.register_buffer(
+                            "rot_h", _own_rotation(h, self.compute_dtype), persistent = False
+                        )
                     scale = w.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / _QMAX[scheme]
                     if scheme == NATIVE_INT8 and scale_dtype is not None:
                         scale = snap_scale_up(scale, scale_dtype)
@@ -558,7 +583,14 @@ def native_linear_class():
             self.register_buffer(
                 "weight_scale", scale.squeeze(1).to(torch.float32).contiguous().view(torch.int32)
             )
-            self.bias = linear.bias
+            bias = linear.bias
+            if (
+                bias is not None
+                and bias.dtype != self.compute_dtype
+                and isinstance(cast, torch.dtype)
+            ):
+                bias = nn.Parameter(bias.detach().to(self.compute_dtype), requires_grad = False)
+            self.bias = bias
             # Registered here, in eager, so a compiled forward only reads the handle (see _row_major_op).
             self._row_major = _row_major_op() if self.act_int8 and not self.rot_group else None
             self._int8pack_scales: dict = {}
@@ -594,6 +626,21 @@ def native_linear_class():
             else:
                 wide = self.weight_q.view(getattr(torch, self.fp8_format)).to(torch.float32)
             return (wide * scale[:, None]).to(dtype)
+
+        def _forward_weight(self, x: Any) -> Any:
+            # Not under autograd: a graph would save the buffer the next layer overwrites.
+            if (
+                self.scheme == NATIVE_INT8
+                and x.dtype is torch.float32
+                and x.device.type == "cpu"
+                and self.weight_q.device.type == "cpu"
+                and not torch.compiler.is_compiling()
+                and not (torch.is_grad_enabled() and x.requires_grad)
+            ):
+                out = _cpu_widen_scratch(self.weight_q.numel()).view(self.weight_q.shape)
+                out.copy_(self.weight_q)
+                return out.mul_(self.weight_scale.view(torch.float32)[:, None])
+            return self._stored_weight(x.dtype)
 
         def _rotate(self, x: Any) -> Any:
             g = self.rot_group
@@ -796,7 +843,7 @@ def native_linear_class():
                 and self._int_mm_ok(x.numel() // max(1, self.in_features))
             ):
                 return self._forward_int_mm(x)
-            return F.linear(x, self._stored_weight(x.dtype), self.bias)
+            return F.linear(x, self._forward_weight(x), self.bias)
 
         def extra_repr(self) -> str:
             return (

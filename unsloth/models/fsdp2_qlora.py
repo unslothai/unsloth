@@ -518,9 +518,8 @@ def patch_fsdp2_params4bit():
                 getattr(self, "_unsloth_param_module", None),
             )
             if unsharded is not None and not getattr(unsharded, _GATHERED_MARK, False):
-                # unsloth-zoo's 4-bit MoE paths cache NF4 pointer tables by weight address; FSDP2
-                # frees and re-allocates this storage around every forward and backward, so they
-                # re-key it per call instead (zoo moe_ready_epoch.FSDP2_GATHERED).
+                # FSDP2 reallocates NF4 storage each pass, so zoo's address-keyed tables are
+                # re-keyed per call.
                 try:
                     setattr(unsharded, _GATHERED_MARK, True)
                 except Exception:

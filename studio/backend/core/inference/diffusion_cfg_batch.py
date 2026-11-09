@@ -16,6 +16,8 @@ from typing import Any, Optional
 
 CFG_BATCH_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH"
 COMPILED_RESIDENT_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED"
+# 0: any graph a paired call compiles turns pairing off for the load, the first render included
+CFG_PAIR_COMPILE_WARMUP_ENV = "UNSLOTH_DIFFUSION_CFG_PAIR_COMPILE_WARMUP"
 
 # The CFG policy of every denoiser class Studio loads (test_diffusion_cfg_batch_policy pins it to diffusion_families
 # and video_families): exactly one of the three tables below.
@@ -86,6 +88,12 @@ _PLAIN_STEPS = 2
 _RESIDENT_MAX_PAIR_S = 0.25
 _MISS_LIMIT = 3
 _OFF_TRANSIENT = "transient"
+
+
+def cfg_pair_compile_warmup() -> bool:
+    """A paired call may compile lazily during the first render of its request shape and cache mode."""
+    raw = (os.environ.get(CFG_PAIR_COMPILE_WARMUP_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no", "disable", "disabled")
 
 
 def cfg_batch_mode() -> str:
@@ -571,6 +579,8 @@ class CfgBatchRouter:
         self.render_checked = False
         self.offloaded = False
         self.pending_disable: Optional[str] = None
+        # _pair_key (request shape, cache mode, compiled) -> the render its paired calls may compile in
+        self.pair_warm: dict = {}
         self.pair_t0: Optional[float] = None
         self.renders = 0  # completed renders: a doubled-batch compile is warm-up only in a shape's trial render
         self.render_compiled: Optional[str] = None
@@ -1166,10 +1176,31 @@ class CfgBatchRouter:
             self.disable(f"the paired call failed ({type(exc).__name__}: {exc})")
             return None
         if _graph_count() != graphs:
-            self.pending_disable = "the paired call compiled a new graph"
+            if not cfg_pair_compile_warmup():
+                self.pending_disable = "the paired call compiled a new graph"
+            elif (
+                self.pair_warm.setdefault(self._pair_key(shape, second), self.renders)
+                != self.renders
+            ):
+                # lazy compilation is the warm-up of a shape's first paired render; a graph after it is churn
+                self.pending_disable = "the paired call compiled a graph after its warm-up render"
+        else:
+            self.pair_warm.setdefault(self._pair_key(shape, second), self.renders)
         self.kept = {"out": other, "snapshots": snapshots, "latent": latent}
         self.stats["paired_steps"] += 1
         return mine
+
+    def _pair_key(self, shape: _Shape, second: tuple) -> tuple:
+        """Request shape, second-branch shapes, cache mode and compiled flag: each combination compiles its own graphs."""
+        mg = _mg()
+        branch_cache = getattr(self.paired, "branch_cache", None)
+        mode = None if branch_cache is None else second[1].get(branch_cache[2])
+        return (
+            shape.key,
+            tuple(tuple(t.shape) for t in mg._iter_tensors(second)),
+            mode if isinstance(mode, (str, type(None))) else repr(mode),
+            self.render_compiled,
+        )
 
     def _take(self, args: tuple, kwargs: dict, shape: _Shape) -> Any:
         kept, self.kept = self.kept, None

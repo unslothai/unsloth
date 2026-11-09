@@ -1855,6 +1855,13 @@ export const id = {
         sttQuantDescription:
           "Pilih atau cari model STT untuk dijalankan secara lokal, lalu kuantisasinya.",
         sttDeviceLabel: "Muat ke",
+        sttContextLabel: "Konteks suara",
+        sttContextAuto: "Otomatis (disarankan)",
+        sttContextAutoDescription:
+          "Menyesuaikan dengan setiap rekaman, dengan lebih banyak memori untuk audio yang lebih panjang. Runtime lama mungkin memerlukan ukuran tetap untuk mengurangi memori. Berlaku untuk Qwen3-ASR di Suara dan Transkripsikan.",
+        sttContextFixedDescription:
+          "Batas yang lebih kecil menggunakan lebih sedikit memori. Rekaman yang tidak muat memerlukan batas lebih tinggi atau Otomatis. Berlaku untuk Qwen3-ASR di Suara dan Transkripsikan.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "GPU jika tersedia",
         sttDeviceCpu: "RAM CPU",
         sttDeviceAutoDescription: "Gunakan GPU jika ada, dan CPU jika tidak.",
@@ -3439,12 +3446,10 @@ export const id = {
       exportingAction: "Mengekspor...",
       exportConversations: "Ekspor Terbaru dan Proyek",
       exportConversationsDescription:
-        "Unduh Terbaru atau Terbaru beserta chat proyek sebagai Training JSONL, CSV, ShareGPT JSONL, atau Markdown, digabung atau per chat. Message JSONL tersedia per chat.",
+        "Unduh Terbaru atau Terbaru beserta chat proyek sebagai Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML, atau PDF, digabung atau per chat. Message JSONL tersedia per chat.",
       exportConversationsAction: "Ekspor",
       exportScopeRecents: "Terbaru",
       exportScopeAll: "Terbaru + Proyek",
-      exportCombinedSuffix: "(digabung)",
-      exportPerChatSuffix: "(setiap chat)",
       importChats: "Impor chat",
       importChatsDescription:
         "Impor file JSON, JSONL, NDJSON, CSV, atau Markdown ke Terbaru.",

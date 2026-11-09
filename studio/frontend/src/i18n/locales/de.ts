@@ -1690,6 +1690,13 @@ export const de = {
         sttQuantDescription:
           "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung, dann seine Quantisierung.",
         sttDeviceLabel: "Laden in",
+        sttContextLabel: "Sprachkontext",
+        sttContextAuto: "Auto (empfohlen)",
+        sttContextAutoDescription:
+          "Passt sich jeder Aufnahme an und verwendet mehr Speicher für längere Audiodateien. Bei älteren Laufzeitumgebungen kann eine feste Größe nötig sein, um den Speicherverbrauch zu senken. Gilt für Qwen3-ASR unter „Sprachfunktionen“ und „Transkribieren“.",
+        sttContextFixedDescription:
+          "Kleinere Grenzen benötigen weniger Speicher. Für Aufnahmen, die nicht hineinpassen, ist eine höhere Grenze oder Auto nötig. Gilt für Qwen3-ASR unter „Sprachfunktionen“ und „Transkribieren“.",
+        sttContextTokens: "{count} Token",
         sttDeviceAuto: "GPU, wenn verfügbar",
         sttDeviceCpu: "CPU-RAM",
         sttDeviceAutoDescription:
@@ -3216,12 +3223,10 @@ export const de = {
       exportingAction: "Wird exportiert...",
       exportConversations: "„Zuletzt verwendet“ und Projekte exportieren",
       exportConversationsDescription:
-        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Training JSONL, CSV, ShareGPT JSONL oder Markdown herunter, kombiniert oder einzeln pro Chat. Message JSONL ist nur einzeln pro Chat verfügbar.",
+        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML oder PDF herunter, kombiniert oder einzeln pro Chat. Message JSONL ist nur einzeln pro Chat verfügbar.",
       exportConversationsAction: "Exportieren",
       exportScopeRecents: "Zuletzt verwendet",
       exportScopeAll: "Zuletzt verwendet + Projekte",
-      exportCombinedSuffix: "(kombiniert)",
-      exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
         "JSON-, JSONL-, NDJSON-, CSV- oder Markdown-Dateien in Zuletzt importieren.",

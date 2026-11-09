@@ -1684,6 +1684,13 @@ export const ar = {
         sttQuantDescription:
           "اختر نموذج STT أو ابحث عنه لتشغيله محليًا، ثم اختر التكميم.",
         sttDeviceLabel: "التحميل إلى",
+        sttContextLabel: "سياق الصوت",
+        sttContextAuto: "تلقائي (موصى به)",
+        sttContextAutoDescription:
+          "يضبط حجم السياق حسب كل تسجيل، ويستخدم ذاكرة أكثر للتسجيلات الأطول. قد تحتاج بيئات التشغيل القديمة إلى حجم ثابت لتقليل استخدام الذاكرة. ينطبق على Qwen3-ASR في «الصوت» و«تفريغ نصي».",
+        sttContextFixedDescription:
+          "تستهلك الحدود الأصغر ذاكرة أقل. تحتاج التسجيلات التي تتجاوز الحد إلى حد أعلى أو الوضع التلقائي. ينطبق على Qwen3-ASR في «الصوت» و«تفريغ نصي».",
+        sttContextTokens: "{count} توكن",
         sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
         sttDeviceCpu: "ذاكرة المعالج",
         sttDeviceAutoDescription:
@@ -3174,12 +3181,10 @@ export const ar = {
       exportingAction: "جارٍ التصدير...",
       exportConversations: "تصدير العناصر الأخيرة والمشاريع",
       exportConversationsDescription:
-        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة Training JSONL أو CSV أو ShareGPT JSONL أو Markdown، في ملف مجمّع أو في ملف لكل محادثة. يتوفر Message JSONL لكل محادثة فقط.",
+        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة Training JSONL أو CSV أو ShareGPT JSONL أو Markdown أو HTML أو PDF، في ملف مجمّع أو في ملف لكل محادثة. يتوفر Message JSONL لكل محادثة فقط.",
       exportConversationsAction: "تصدير",
       exportScopeRecents: "العناصر الأخيرة",
       exportScopeAll: "العناصر الأخيرة + المشاريع",
-      exportCombinedSuffix: "(مجمّعة)",
-      exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
         "استيراد ملفات JSON أو JSONL أو NDJSON أو CSV أو Markdown إلى الأخيرة.",

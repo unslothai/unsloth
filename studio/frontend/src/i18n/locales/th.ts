@@ -1771,6 +1771,13 @@ export const th = {
         sttQuantDescription:
           "เลือกหรือค้นหาโมเดล STT เพื่อรันภายในเครื่อง แล้วเลือกการควอนไทซ์",
         sttDeviceLabel: "โหลดลงใน",
+        sttContextLabel: "บริบทเสียง",
+        sttContextAuto: "อัตโนมัติ (แนะนำ)",
+        sttContextAutoDescription:
+          "ปรับตามการบันทึกแต่ละครั้ง โดยใช้หน่วยความจำมากขึ้นสำหรับเสียงที่ยาวขึ้น รันไทม์รุ่นเก่าอาจต้องใช้ขนาดคงที่เพื่อลดการใช้หน่วยความจำ ใช้กับ Qwen3-ASR ในเสียงพูดและถอดเสียง",
+        sttContextFixedDescription:
+          "ขีดจำกัดที่เล็กลงจะใช้หน่วยความจำน้อยลง การบันทึกที่ใส่ไม่พอต้องใช้ขีดจำกัดที่สูงขึ้นหรืออัตโนมัติ ใช้กับ Qwen3-ASR ในเสียงพูดและถอดเสียง",
+        sttContextTokens: "{count} โทเค็น",
         sttDeviceAuto: "GPU เมื่อพร้อมใช้งาน",
         sttDeviceCpu: "RAM ของ CPU",
         sttDeviceAutoDescription: "ใช้ GPU เมื่อมี หากไม่มีให้ใช้ CPU",
@@ -3295,12 +3302,10 @@ export const th = {
       exportingAction: "กำลังส่งออก...",
       exportConversations: "ส่งออกรายการล่าสุดและโปรเจกต์",
       exportConversationsDescription:
-        "ดาวน์โหลดรายการล่าสุด หรือรายการล่าสุดพร้อมแชทในโปรเจกต์ เป็น Training JSONL, CSV, ShareGPT JSONL หรือ Markdown แบบรวมไฟล์เดียวหรือแยกตามแชท ส่วน Message JSONL ใช้ได้เฉพาะแบบแยกตามแชท",
+        "ดาวน์โหลดรายการล่าสุด หรือรายการล่าสุดพร้อมแชทในโปรเจกต์ เป็น Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML หรือ PDF แบบรวมไฟล์เดียวหรือแยกตามแชท ส่วน Message JSONL ใช้ได้เฉพาะแบบแยกตามแชท",
       exportConversationsAction: "ส่งออก",
       exportScopeRecents: "รายการล่าสุด",
       exportScopeAll: "รายการล่าสุด + โปรเจกต์",
-      exportCombinedSuffix: "(รวม)",
-      exportPerChatSuffix: "(แยกตามแชท)",
       importChats: "นำเข้าแชท",
       importChatsDescription:
         "นำเข้าไฟล์ JSON, JSONL, NDJSON, CSV หรือ Markdown ไปยังรายการล่าสุด",

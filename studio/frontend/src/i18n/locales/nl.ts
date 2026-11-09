@@ -1876,6 +1876,13 @@ export const nl = {
         sttQuantDescription:
           "Kies of zoek een STT-model om lokaal uit te voeren en kies daarna de kwantisatie.",
         sttDeviceLabel: "Laden in",
+        sttContextLabel: "Spraakcontext",
+        sttContextAuto: "Automatisch (aanbevolen)",
+        sttContextAutoDescription:
+          "Past zich aan elke opname aan en gebruikt meer geheugen voor langere audio. Oudere runtimes hebben mogelijk een vaste grootte nodig om geheugen te besparen. Geldt voor Qwen3-ASR in Spraak en Transcriberen.",
+        sttContextFixedDescription:
+          "Kleinere limieten gebruiken minder geheugen. Opnamen die niet passen hebben een hogere limiet of Automatisch nodig. Geldt voor Qwen3-ASR in Spraak en Transcriberen.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU indien beschikbaar",
         sttDeviceCpu: "CPU-RAM",
         sttDeviceAutoDescription:
@@ -3479,12 +3486,10 @@ export const nl = {
       exportingAction: "Exporteren...",
       exportConversations: "Recent en Projecten exporteren",
       exportConversationsDescription:
-        "Download Recent, of Recent plus projectchats, als Training JSONL, CSV, ShareGPT JSONL of Markdown, gecombineerd of per chat. Message JSONL is per chat beschikbaar.",
+        "Download Recent, of Recent plus projectchats, als Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML of PDF, gecombineerd of per chat. Message JSONL is per chat beschikbaar.",
       exportConversationsAction: "Exporteren",
       exportScopeRecents: "Recent",
       exportScopeAll: "Recent + Projecten",
-      exportCombinedSuffix: "(gecombineerd)",
-      exportPerChatSuffix: "(per chat)",
       importChats: "Chats importeren",
       importChatsDescription:
         "JSON-, JSONL-, NDJSON-, CSV- of Markdown-bestanden importeren in Recent.",

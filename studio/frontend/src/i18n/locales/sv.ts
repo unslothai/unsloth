@@ -1791,6 +1791,13 @@ export const sv = {
         sttQuantDescription:
           "Välj eller sök efter en STT-modell som ska köras lokalt och sedan dess kvantisering.",
         sttDeviceLabel: "Läs in i",
+        sttContextLabel: "Röstkontext",
+        sttContextAuto: "Auto (rekommenderas)",
+        sttContextAutoDescription:
+          "Anpassas till varje inspelning och använder mer minne för längre ljud. Äldre körmiljöer kan behöva en fast storlek för att minska minnesanvändningen. Gäller Qwen3-ASR i Röst och Transkribera.",
+        sttContextFixedDescription:
+          "Lägre gränser använder mindre minne. Inspelningar som inte ryms behöver en högre gräns eller Auto. Gäller Qwen3-ASR i Röst och Transkribera.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "GPU när tillgänglig",
         sttDeviceCpu: "CPU-RAM",
         sttDeviceAutoDescription: "Använd GPU:n om det finns en, annars CPU:n.",
@@ -3344,12 +3351,10 @@ export const sv = {
       exportingAction: "Exporterar ...",
       exportConversations: "Exportera Senaste och Projekt",
       exportConversationsDescription:
-        "Hämta Senaste eller Senaste plus projektchattar som tränings-JSONL, CSV, ShareGPT JSONL eller Markdown, sammanslaget eller per chatt. Meddelande-JSONL är tillgängligt per chatt.",
+        "Hämta Senaste eller Senaste plus projektchattar som tränings-JSONL, CSV, ShareGPT JSONL, Markdown, HTML eller PDF, sammanslaget eller per chatt. Meddelande-JSONL är tillgängligt per chatt.",
       exportConversationsAction: "Exportera",
       exportScopeRecents: "Senaste",
       exportScopeAll: "Senaste + Projekt",
-      exportCombinedSuffix: "(sammanslagen)",
-      exportPerChatSuffix: "(per chatt)",
       importChats: "Importera chattar",
       importChatsDescription:
         "Importera JSON-, JSONL-, NDJSON-, CSV- eller Markdown-filer till Senaste.",

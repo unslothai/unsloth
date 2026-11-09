@@ -1860,6 +1860,13 @@ export const vi = {
         sttQuantDescription:
           "Chọn hoặc tìm kiếm một mô hình STT để chạy cục bộ, sau đó chọn mức lượng tử hóa.",
         sttDeviceLabel: "Nạp vào",
+        sttContextLabel: "Ngữ cảnh giọng nói",
+        sttContextAuto: "Tự động (khuyên dùng)",
+        sttContextAutoDescription:
+          "Tự điều chỉnh theo từng bản ghi, dùng nhiều bộ nhớ hơn cho âm thanh dài hơn. Các runtime cũ có thể cần kích thước cố định để giảm bộ nhớ. Áp dụng cho Qwen3-ASR trong Giọng nói và Chép lời.",
+        sttContextFixedDescription:
+          "Giới hạn nhỏ hơn dùng ít bộ nhớ hơn. Bản ghi không vừa cần giới hạn cao hơn hoặc Tự động. Áp dụng cho Qwen3-ASR trong Giọng nói và Chép lời.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "GPU khi có sẵn",
         sttDeviceCpu: "RAM của CPU",
         sttDeviceAutoDescription: "Dùng GPU nếu có, nếu không thì dùng CPU.",
@@ -3435,12 +3442,10 @@ export const vi = {
       exportingAction: "Đang xuất...",
       exportConversations: "Xuất Gần đây và Dự án",
       exportConversationsDescription:
-        "Tải xuống Gần đây, hoặc Gần đây cùng cuộc trò chuyện trong dự án, dưới dạng Training JSONL, CSV, ShareGPT JSONL hoặc Markdown, gộp chung hoặc theo từng cuộc trò chuyện. Message JSONL chỉ có theo từng cuộc trò chuyện.",
+        "Tải xuống Gần đây, hoặc Gần đây cùng cuộc trò chuyện trong dự án, dưới dạng Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML hoặc PDF, gộp chung hoặc theo từng cuộc trò chuyện. Message JSONL chỉ có theo từng cuộc trò chuyện.",
       exportConversationsAction: "Xuất",
       exportScopeRecents: "Gần đây",
       exportScopeAll: "Gần đây + Dự án",
-      exportCombinedSuffix: "(gộp chung)",
-      exportPerChatSuffix: "(theo từng cuộc trò chuyện)",
       importChats: "Nhập cuộc trò chuyện",
       importChatsDescription:
         "Nhập tệp JSON, JSONL, NDJSON, CSV hoặc Markdown vào Gần đây.",

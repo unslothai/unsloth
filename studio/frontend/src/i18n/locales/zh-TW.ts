@@ -1763,6 +1763,13 @@ export const zhTW = {
         sttQuantDescription:
           "選擇或搜尋要在本機執行的 STT 模型，再選擇其量化版本。",
         sttDeviceLabel: "載入至",
+        sttContextLabel: "語音上下文",
+        sttContextAuto: "自動（建議）",
+        sttContextAutoDescription:
+          "依每段錄音調整，較長的音訊會使用較多記憶體。較舊的執行環境可能需要固定大小以減少記憶體用量。適用於「語音」與「轉錄」中的 Qwen3-ASR。",
+        sttContextFixedDescription:
+          "較小的上限使用較少記憶體。無法容納的錄音需要較高的上限或自動。適用於「語音」與「轉錄」中的 Qwen3-ASR。",
+        sttContextTokens: "{count} 個 token",
         sttDeviceAuto: "有 GPU 時使用 GPU",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription: "有 GPU 時使用 GPU，否則使用 CPU。",
@@ -3277,12 +3284,10 @@ export const zhTW = {
       exportingAction: "匯出中...",
       exportConversations: "匯出最近項目和專案",
       exportConversationsDescription:
-        "將最近項目，或最近項目加上專案聊天，下載為 Training JSONL、CSV、ShareGPT JSONL 或 Markdown，可合併為一個檔案或每個聊天各一個檔案。Message JSONL 僅提供每個聊天各一個檔案。",
+        "將最近項目，或最近項目加上專案聊天，下載為 Training JSONL、CSV、ShareGPT JSONL、Markdown、HTML 或 PDF，可合併為一個檔案或每個聊天各一個檔案。Message JSONL 僅提供每個聊天各一個檔案。",
       exportConversationsAction: "匯出",
       exportScopeRecents: "最近項目",
       exportScopeAll: "最近項目 + 專案",
-      exportCombinedSuffix: "（合併）",
-      exportPerChatSuffix: "（每個聊天）",
       importChats: "匯入聊天",
       importChatsDescription:
         "將 JSON、JSONL、NDJSON、CSV 或 Markdown 檔案匯入「最近項目」。",

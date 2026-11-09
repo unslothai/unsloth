@@ -1850,6 +1850,13 @@ export const tr = {
         sttQuantDescription:
           "Yerel olarak çalıştırılacak bir STT modeli seçin veya arayın, ardından nicelemesini seçin.",
         sttDeviceLabel: "Yükleneceği yer",
+        sttContextLabel: "Ses bağlamı",
+        sttContextAuto: "Otomatik (önerilen)",
+        sttContextAutoDescription:
+          "Her kayda uyum sağlar, daha uzun seslerde daha fazla bellek kullanır. Eski çalışma ortamları belleği azaltmak için sabit bir boyut gerektirebilir. Ses ve Yazıya dök bölümlerindeki Qwen3-ASR için geçerlidir.",
+        sttContextFixedDescription:
+          "Daha küçük sınırlar daha az bellek kullanır. Sığmayan kayıtlar daha yüksek bir sınır veya Otomatik gerektirir. Ses ve Yazıya dök bölümlerindeki Qwen3-ASR için geçerlidir.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "Varsa GPU",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription: "Varsa GPU'yu, yoksa CPU'yu kullanın.",
@@ -3437,12 +3444,10 @@ export const tr = {
       exportingAction: "Dışa aktarılıyor...",
       exportConversations: "Son Kullanılanları ve Projeleri dışa aktar",
       exportConversationsDescription:
-        "Son Kullanılanları veya Son Kullanılanlar ile proje sohbetlerini Training JSONL, CSV, ShareGPT JSONL ya da Markdown olarak, birleşik veya sohbet başına indirin. Message JSONL sohbet başına kullanılabilir.",
+        "Son Kullanılanları veya Son Kullanılanlar ile proje sohbetlerini Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML ya da PDF olarak, birleşik veya sohbet başına indirin. Message JSONL sohbet başına kullanılabilir.",
       exportConversationsAction: "Dışa aktar",
       exportScopeRecents: "Son Kullanılanlar",
       exportScopeAll: "Son Kullanılanlar + Projeler",
-      exportCombinedSuffix: "(birleşik)",
-      exportPerChatSuffix: "(sohbet başına)",
       importChats: "Sohbetleri içe aktar",
       importChatsDescription:
         "JSON, JSONL, NDJSON, CSV veya Markdown dosyalarını Son Kullanılanlar'a aktarın.",

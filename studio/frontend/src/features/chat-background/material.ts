@@ -28,6 +28,8 @@ import {
   sanitizeStrength,
   sanitizeStrengths,
 } from "./model";
+import { startGlassMotion } from "./glass-motion";
+import { softwareCompositing } from "./software-compositing";
 import { useChatWelcomeShown } from "./welcome";
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
@@ -242,6 +244,18 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
       "data-glass-cpu",
       WEBKIT_GTK && material !== "solid" && material !== "transparent" && here,
     );
+  }, [material, here]);
+  useEffect(() => {
+    // Only where compositing is in software, which recomputes every blur on every frame; with a GPU glass
+    // keeps its blur while things move. WebKitGTK already has no live blur outside the sidebar (data-glass-cpu).
+    const on =
+      !WEBKIT_GTK &&
+      material !== "solid" &&
+      material !== "transparent" &&
+      here &&
+      softwareCompositing();
+    document.documentElement.toggleAttribute("data-glass-motion", on);
+    return on ? startGlassMotion().stop : undefined;
   }, [material, here]);
   useEffect(() => {
     const root = document.documentElement;

@@ -1844,6 +1844,13 @@ export const fa = {
         sttQuantDescription:
           "یک مدل STT را برای اجرای محلی انتخاب یا جستجو کنید، سپس کوانتیزه‌سازی آن را.",
         sttDeviceLabel: "بارگذاری در",
+        sttContextLabel: "زمینهٔ صدا",
+        sttContextAuto: "خودکار (پیشنهادی)",
+        sttContextAutoDescription:
+          "با هر ضبط تنظیم می‌شود و برای صدای طولانی‌تر حافظهٔ بیشتری مصرف می‌کند. محیط‌های اجرای قدیمی‌تر ممکن است برای کاهش حافظه به اندازهٔ ثابت نیاز داشته باشند. برای Qwen3-ASR در صدا و رونویسی اعمال می‌شود.",
+        sttContextFixedDescription:
+          "محدودیت‌های کوچک‌تر حافظهٔ کمتری مصرف می‌کنند. ضبط‌هایی که جا نمی‌شوند به محدودیت بالاتر یا خودکار نیاز دارند. برای Qwen3-ASR در صدا و رونویسی اعمال می‌شود.",
+        sttContextTokens: "{count} توکن",
         sttDeviceAuto: "GPU در صورت وجود",
         sttDeviceCpu: "RAM پردازنده (CPU)",
         sttDeviceAutoDescription:
@@ -3422,12 +3429,10 @@ export const fa = {
       exportingAction: "در حال خروجی گرفتن...",
       exportConversations: "خروجی گرفتن از «اخیر» و «پروژه‌ها»",
       exportConversationsDescription:
-        "«اخیر» یا «اخیر» به‌همراه گفتگوهای پروژه را به‌صورت Training JSONL، CSV، ShareGPT JSONL یا Markdown، ترکیبی یا جداگانه برای هر گفتگو دانلود کنید. Message JSONL فقط به‌صورت جداگانه برای هر گفتگو در دسترس است.",
+        "«اخیر» یا «اخیر» به‌همراه گفتگوهای پروژه را به‌صورت Training JSONL، CSV، ShareGPT JSONL، Markdown، HTML یا PDF، ترکیبی یا جداگانه برای هر گفتگو دانلود کنید. Message JSONL فقط به‌صورت جداگانه برای هر گفتگو در دسترس است.",
       exportConversationsAction: "خروجی گرفتن",
       exportScopeRecents: "اخیر",
       exportScopeAll: "اخیر + پروژه‌ها",
-      exportCombinedSuffix: "(ترکیبی)",
-      exportPerChatSuffix: "(برای هر گفتگو)",
       importChats: "وارد کردن گفتگوها",
       importChatsDescription:
         "فایل‌های JSON، JSONL، NDJSON، CSV یا Markdown را به «اخیر» وارد کنید.",

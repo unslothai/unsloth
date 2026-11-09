@@ -1685,6 +1685,13 @@ export const ko = {
         sttQuantDescription:
           "로컬에서 실행할 STT 모델을 선택하거나 검색한 다음 양자화를 고르세요.",
         sttDeviceLabel: "로드 위치",
+        sttContextLabel: "음성 컨텍스트",
+        sttContextAuto: "자동 (권장)",
+        sttContextAutoDescription:
+          "녹음마다 컨텍스트 크기를 맞추며, 오디오가 길수록 더 많은 메모리를 사용합니다. 이전 런타임에서는 메모리 사용량을 줄이려면 고정 크기를 지정해야 할 수 있습니다. ‘음성’과 ‘받아쓰기’에서 사용하는 Qwen3-ASR에 적용됩니다.",
+        sttContextFixedDescription:
+          "한도가 작을수록 메모리를 적게 사용합니다. 한도를 초과하는 녹음은 한도를 높이거나 ‘자동’을 선택해야 합니다. ‘음성’과 ‘받아쓰기’에서 사용하는 Qwen3-ASR에 적용됩니다.",
+        sttContextTokens: "{count} 토큰",
         sttDeviceAuto: "GPU(사용 가능할 때)",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:
@@ -3168,12 +3175,10 @@ export const ko = {
       exportingAction: "내보내는 중...",
       exportConversations: "최근 항목 및 프로젝트 내보내기",
       exportConversationsDescription:
-        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Training JSONL, CSV, ShareGPT JSONL 또는 Markdown으로, 통합하거나 채팅별로 다운로드합니다. Message JSONL은 채팅별로만 사용할 수 있습니다.",
+        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML 또는 PDF로, 통합하거나 채팅별로 다운로드합니다. Message JSONL은 채팅별로만 사용할 수 있습니다.",
       exportConversationsAction: "내보내기",
       exportScopeRecents: "최근 항목",
       exportScopeAll: "최근 항목 + 프로젝트",
-      exportCombinedSuffix: "(통합)",
-      exportPerChatSuffix: "(채팅별)",
       importChats: "채팅 가져오기",
       importChatsDescription:
         "JSON, JSONL, NDJSON, CSV 또는 Markdown 파일을 최근 항목으로 가져옵니다.",

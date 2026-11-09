@@ -579,8 +579,7 @@ def test_a_probe_run_invents_no_ab_table_where_there_was_none(studio, monkeypatc
 
 
 def test_a_probe_run_invents_no_summary_where_there_was_none(studio, monkeypatch, tmp_path):
-    """The control. The refusal replaces a stale report; it does not create a report-shaped file
-    in a directory whose reader was never given one to misread."""
+    """The refusal replaces a stale report and must not invent a report where none existed."""
 
     script = tmp_path / "paint_counter.js"
     script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")

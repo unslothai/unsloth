@@ -194,6 +194,27 @@ def is_cancel_requested(folder_id: str | None) -> bool:
         return account_key(folder_id) in _folder_cancels
 
 
+def _local_chat_busy() -> bool:
+    from state import active_generations
+
+    # Cloud-provider chats use no local compute; embedding requests are indexing's own kind of work.
+    return any(
+        entry["kind"] != "embeddings"
+        for entry in active_generations.snapshot(include_external = False)
+    )
+
+
+def wait_while_chat_busy() -> None:
+    """Hold a linked-folder ingest thread while a local generation runs; stop and unlink end the wait."""
+    folder_id = getattr(_worker_state, "folder_id", None)
+    if folder_id is None or not config.FOLDER_YIELD_TO_CHAT:
+        return
+    stop_event = getattr(_worker_state, "stop_event", _stop)
+    while _local_chat_busy():
+        if account_is_retired() or is_cancel_requested(folder_id) or stop_event.wait(0.5):
+            return
+
+
 def _folder_lock(folder_id: str) -> threading.RLock:
     with _named_locks_lock:
         return _folder_locks.setdefault(account_key(folder_id), threading.RLock())
@@ -1559,6 +1580,7 @@ def _ingest_folder_document(
     ingestion_job = None
     with rag_db.reuse_connections():
         try:
+            wait_while_chat_busy()
             _check_running()
             document_id, ingestion_job = ingestion.start_ingestion(
                 folder["scope"],
@@ -2129,8 +2151,7 @@ def reconcile_folder(job_id: str) -> None:
     """Reconcile and persist a terminal folder state for every unexpected failure."""
     claimed = _claim_job(job_id)
     if claimed is None:
-        # Drop an already-activated claim here, or the heartbeat renews it for the process lifetime and an
-        # unlink waits on a job that will never run.
+        # Release the claim here or the heartbeat renews it forever and unlink waits on it.
         job_leases.release(job_leases.FOLDER_SYNC, job_id)
         return
     _, folder_id = claimed
@@ -2268,8 +2289,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 try:
                     job = _next_account_job()
                 except Exception:
-                    # Writer-lock contention must not retire the only worker; the initialization and periodic paths
-                    # retry.
+                    # Lock contention must not retire the only worker; the other paths retry.
                     logger.warning("linked-folder queue selection failed", exc_info = True)
                     stop_event.wait(1.0)
                     continue
