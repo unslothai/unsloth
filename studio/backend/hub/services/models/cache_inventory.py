@@ -7,6 +7,7 @@ from __future__ import annotations
 
 
 import json
+import os
 import asyncio
 import contextvars
 import functools
@@ -1137,6 +1138,64 @@ def _ships_custom_code(snapshot: Path) -> bool:
         return True
 
 
+# Snapshot READMEs are immutable blobs and yaml.safe_load is pure Python (ms per card), so the
+# listing keeps the fields it reads per stat key. A file within the settle window is not kept: a
+# coarse filesystem clock can give a rewrite identical timestamps (same rule as #16320).
+_CARD_FIELDS: "OrderedDict[str, tuple[tuple, tuple]]" = OrderedDict()
+_CARD_FIELDS_MAX = 4096
+_CARD_FIELDS_SETTLE_NS = 2_000_000_000
+_CARD_FIELDS_LOCK = threading.Lock()
+
+
+def _stat_key(path: Path) -> Optional[tuple]:
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _clean_card_fields(card: dict) -> tuple:
+    fields = []
+    for name in ("pipeline_tag", "library_name"):
+        value = card.get(name)
+        if isinstance(value, str) and value.strip():
+            fields.append((name, value.strip()))
+    tags = card.get("tags")
+    if isinstance(tags, list):
+        clean_tags = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
+        if clean_tags:
+            fields.append(("tags", tuple(clean_tags)))
+    return tuple(fields)
+
+
+def _model_card_fields(path: Path) -> dict:
+    key = _stat_key(path)
+    cache_id = str(path)
+    if key is not None:
+        with _CARD_FIELDS_LOCK:
+            entry = _CARD_FIELDS.get(cache_id)
+            if entry is not None and entry[0] == key:
+                _CARD_FIELDS.move_to_end(cache_id)
+                return _fields_dict(entry[1])
+    fields = _clean_card_fields(_read_model_card_frontmatter(path))
+    if (
+        key is not None
+        and time.time_ns() - max(key[3], key[4]) > _CARD_FIELDS_SETTLE_NS
+        and _stat_key(path) == key
+    ):
+        with _CARD_FIELDS_LOCK:
+            _CARD_FIELDS[cache_id] = (key, fields)
+            _CARD_FIELDS.move_to_end(cache_id)
+            while len(_CARD_FIELDS) > _CARD_FIELDS_MAX:
+                _CARD_FIELDS.popitem(last = False)
+    return _fields_dict(fields)
+
+
+def _fields_dict(fields: tuple) -> dict:
+    return {name: list(value) if name == "tags" else value for name, value in fields}
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
@@ -1184,18 +1243,7 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     if isinstance(quant_method, str) and quant_method.strip():
         result["quant_method"] = quant_method.strip()
 
-    card = _read_model_card_frontmatter(snapshot / "README.md")
-    pipeline_tag = card.get("pipeline_tag")
-    if isinstance(pipeline_tag, str) and pipeline_tag.strip():
-        result["pipeline_tag"] = pipeline_tag.strip()
-    library_name = card.get("library_name")
-    if isinstance(library_name, str) and library_name.strip():
-        result["library_name"] = library_name.strip()
-    tags = card.get("tags")
-    if isinstance(tags, list):
-        clean_tags = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
-        if clean_tags:
-            result["tags"] = clean_tags
+    result.update(_model_card_fields(snapshot / "README.md"))
     return result
 
 

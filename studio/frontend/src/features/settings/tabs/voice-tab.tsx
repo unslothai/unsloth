@@ -148,10 +148,8 @@ function sttModelSource(model: SttModel): string {
 }
 
 /**
- * Model picker for local transcription. Lists the curated models and every
- * other ASR model the Transcribe page offers, and searches Hugging Face for
- * other Whisper repos (safetensors via Transformers). The trigger is a plain
- * button so the selection never renders inside a text input.
+ * Lists curated and other ASR models and searches Hugging Face for Whisper repos (safetensors via
+ * Transformers); a plain button trigger keeps the value out of text inputs.
  */
 function SttModelPicker({
   value,

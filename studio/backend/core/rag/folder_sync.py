@@ -194,6 +194,27 @@ def is_cancel_requested(folder_id: str | None) -> bool:
         return account_key(folder_id) in _folder_cancels
 
 
+def _local_chat_busy() -> bool:
+    from state import active_generations
+
+    # Cloud-provider chats use no local compute; embedding requests are indexing's own kind of work.
+    return any(
+        entry["kind"] != "embeddings"
+        for entry in active_generations.snapshot(include_external = False)
+    )
+
+
+def wait_while_chat_busy() -> None:
+    """Hold a linked-folder ingest thread while a local generation runs; stop and unlink end the wait."""
+    folder_id = getattr(_worker_state, "folder_id", None)
+    if folder_id is None or not config.FOLDER_YIELD_TO_CHAT:
+        return
+    stop_event = getattr(_worker_state, "stop_event", _stop)
+    while _local_chat_busy():
+        if account_is_retired() or is_cancel_requested(folder_id) or stop_event.wait(0.5):
+            return
+
+
 def _folder_lock(folder_id: str) -> threading.RLock:
     with _named_locks_lock:
         return _folder_locks.setdefault(account_key(folder_id), threading.RLock())
@@ -1559,6 +1580,7 @@ def _ingest_folder_document(
     ingestion_job = None
     with rag_db.reuse_connections():
         try:
+            wait_while_chat_busy()
             _check_running()
             document_id, ingestion_job = ingestion.start_ingestion(
                 folder["scope"],

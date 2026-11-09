@@ -77,12 +77,9 @@ test("movePinned ignores unknown keys and self-moves", () => {
 });
 
 test("movePinned keeps keys not shown in the current view in relative order", () => {
-  // The pinned list is one global order shared by the hub's On Device list and
-  // the model selector's Pinned section, and the hub only ever shows the repo
-  // keys. A quant pin the hub cannot show ("hidden") therefore has to survive a
-  // hub reorder. It keeps its position relative to every pin the drag did not
-  // touch, which is not the same as keeping its index: one key moving past it
-  // necessarily shifts it by one slot.
+  // The pinned list is one global order shared by the hub and the model selector; the hub shows
+  // only repo keys, so a hidden quant pin must survive a reorder by keeping its position relative
+  // to untouched pins, not its index.
   setPinned(["m1", "hidden", "m2", "m3"]);
   usePinnedModelsStore.getState().movePinned("m3", "m1");
   assert.deepEqual(usePinnedModelsStore.getState().pinned, [

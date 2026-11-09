@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import contextlib
 import contextvars
 import os
 import re
@@ -56,6 +57,28 @@ class LoadIdentity:
 def load_identity(repo_id, base_repo, family) -> LoadIdentity:
     """``LoadIdentity`` for one load. None and "" describe the same absent field."""
     return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
+
+
+# The image queue pins the checkpoint file too: another quant of the same repo is the same LoadIdentity.
+_pinned_checkpoint: contextvars.ContextVar = contextvars.ContextVar(
+    "pinned_checkpoint", default = None
+)
+
+
+@contextlib.contextmanager
+def pin_checkpoint(filename):
+    token = _pinned_checkpoint.set((filename,))
+    try:
+        yield
+    finally:
+        _pinned_checkpoint.reset(token)
+
+
+def require_pinned_checkpoint(loaded_id: LoadIdentity, loaded_filename) -> None:
+    """Called by each engine beside its expected_load check, under the same lock."""
+    pin = _pinned_checkpoint.get()
+    if pin is not None and pin[0] != loaded_filename:
+        raise DiffusionModelReplacedError(loaded_id, loaded_id)
 
 
 class DiffusionModelReplacedError(RuntimeError):
@@ -299,6 +322,21 @@ _QWENIMAGE_MOD_WEIGHT_ONLY = ("img_mod", "txt_mod")
 # pre-floor plain fp8 at LPIPS 0.712 with SSIM 0.016 and mean luma 0. Keeping the deny cost real speed: it pinned qwen
 # to int8 at 1.10x bf16 when compiled fp8 measures 1.21x.
 _QWENIMAGE_SCHEME_DENY = frozenset({"mxfp8", "nvfp4"})
+# rdna_auto_w8a8: gfx1151, ROCm 7.13, 1024^2, both arms compiled, LPIPS vs compiled bf16. Wan failed the 0.10 LPIPS bar.
+_QWENIMAGE21_RDNA_AUTO_W8A8 = "compiled int8 W8A8 measured 83.3 vs 95.1 s/image against compiled bf16 on gfx1151 (25 steps), LPIPS 0.020"
+_QWENIMAGE_RDNA_AUTO_W8A8 = (
+    "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
+    "LPIPS 0.014"
+)
+# FLUX.3 renders black in float16, so fp16-only cards run it in float32; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
+_FLUX3_FP16_INCOMPATIBLE = (
+    os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16") or ""
+).strip().lower() not in (
+    "1",
+    "on",
+    "true",
+    "yes",
+)
 # FLUX.3 Klein transformer-quant keep-list, every scheme (FamilyProfile.quant_exclude_tokens).
 _FLUX3_QUANT_KEEP = (
     "modulation",
@@ -402,6 +440,33 @@ _MOSS_IMAGE_CONVROT_SUFFIXES = (
     "proj.ffn_down",
 )
 
+# All 101 int8 Linear widths are 256-divisible.
+_FLUX2_KLEIN_CONVROT_SUFFIXES = (
+    "context_embedder",
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "attn.add_q_proj",
+    "attn.add_k_proj",
+    "attn.add_v_proj",
+    "attn.to_add_out",
+    "ff.linear_in",
+    "ff.linear_out",
+    "ff_context.linear_in",
+    "ff_context.linear_out",
+    "attn.to_qkv_mlp_proj",
+    "attn.to_out",
+)
+_FLUX3_CONVROT_SUFFIXES = (
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "ff.linear_in",
+    "ff.linear_out",
+)
+
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
@@ -478,6 +543,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            # LPIPS vs fp16 (4B, T4 W8A8, 16 renders): plain 0.103 -> ConvRot 0.037; A100 0.092 -> 0.034.
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _FLUX2_KLEIN_CONVROT_SUFFIXES,
+                filename = "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+                repo = "unsloth/FLUX.2-klein-4B-FP8",
+                default_on = True,
+                hosted_plain = True,
+            ),
             preview_factors = "flux2",
             auto_static_skip = (
                 (
@@ -564,9 +638,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.3-klein-base",
         comfy_shift_node = "flux",
+        fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            int8_convrot = ConvRotSpec(group = 256, suffixes = _FLUX3_CONVROT_SUFFIXES, default_on = True),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -621,9 +697,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.3-klein",
         comfy_shift_node = "flux",
+        fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _FLUX3_CONVROT_SUFFIXES,
+                filename = "flux-3-image-klein-INT8-ConvRot.safetensors",
+                repo = "unsloth/flux-3-image-klein-FP8",
+                default_on = True,
+                hosted_plain = True,
+            ),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -880,6 +965,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
             preview_factors = "qwen_image",
             auto_static_skip = (("qwen/qwen-image", (("default", 2), ("max", 3), ("steps", 20))),),
+            rdna_auto_w8a8 = _QWENIMAGE_RDNA_AUTO_W8A8,
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
@@ -940,6 +1026,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # the 20B MMDiT exclusion list does not apply; excluding txt_in scores LPIPS 0.064 vs
             # 0.103, a quality lever, not a crash guard.
             int8_exclude_tokens = ("txt_in",),
+            rdna_auto_w8a8 = _QWENIMAGE21_RDNA_AUTO_W8A8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = (
@@ -2342,7 +2429,7 @@ _DIFFUSERS_DROPPED_PY39 = "0.37.0"
 _DIFFUSERS_DROPPED_PY310 = "0.42.0"
 _MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
-# First diffusers release exporting each class; every probed class must be listed, since an unlisted one reads as available.
+# Minimum diffusers per class, enforced even when the class is present; an unlisted class reads as available.
 _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     # MiniMax-H3 is judged by its transformer, first available in diffusers 0.40.0.
     "MiniMaxH3Transformer3DModel": "0.40.0",
@@ -2888,13 +2975,10 @@ def assert_pipeline_class_available(
             f"missing and install it."
         )
 
-    if present:
+    installed = getattr(diffusers, "__version__", None)
+    if present and not _present_class_below_floor(pipeline_class, installed):
         return
-    raise ValueError(
-        _too_old_message(
-            pipeline_class, family_name, str(getattr(diffusers, "__version__", "unknown"))
-        )
-    )
+    raise ValueError(_too_old_message(pipeline_class, family_name, str(installed or "unknown")))
 
 
 def _module_namespace_is_unreadable(module: Any) -> bool:
@@ -2933,6 +3017,20 @@ def _installed_at_least(installed: str, minimum: str) -> bool:
         return True
 
 
+def _present_class_below_floor(pipeline_class: str, installed: Any) -> bool:
+    """Probe-file classes and unreleased floors stay presence-judged: main builds report an older release."""
+    minimum = _PIPELINE_MIN_DIFFUSERS.get(pipeline_class)
+    if (
+        minimum is None
+        or minimum in _UNRELEASED_MIN_DIFFUSERS
+        or pipeline_class in _PIPELINE_PROBE_FILES
+        or not isinstance(installed, str)
+        or not installed.strip()
+    ):
+        return False
+    return not _installed_at_least(installed.strip(), minimum)
+
+
 def family_probe_class(fam: Any) -> str:
     """ModularPipeline is generic and predates families, so probe the transformer class; listing and both training gates must share it."""
     name = str(getattr(fam, "pipeline_class", "") or "")
@@ -2966,9 +3064,12 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
             return True
         if not _module_namespace_is_unreadable(module):
             try:
-                return hasattr(module, name)
+                if not hasattr(module, name):
+                    return False
+                installed = getattr(module, "__version__", None)
             except Exception:  # noqa: BLE001 -- a probe failure must not hide a model
                 return True
+            return not _present_class_below_floor(name, installed)
     minimum, _needs_py310 = pipeline_class_requirement(name)
     if minimum is None:
         return True

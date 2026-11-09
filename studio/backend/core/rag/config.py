@@ -90,6 +90,8 @@ FOLDER_MAX_TEXT_BYTES = int(os.environ.get("RAG_FOLDER_MAX_TEXT_BYTES", str(20 *
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
 # Linked-folder documents ingested concurrently, clamped to 1..4.
 FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
+# Linked-folder indexing waits while a local chat generates, else it starves decode (#16992).
+FOLDER_YIELD_TO_CHAT = os.environ.get("RAG_FOLDER_YIELD_TO_CHAT", "1") != "0"
 # Small linked-folder files in flight, clamped to workers..64; past the workers they only wait to embed.
 FOLDER_INGEST_IN_FLIGHT = int(os.environ.get("RAG_FOLDER_INGEST_IN_FLIGHT", "16"))
 FOLDER_INGEST_BATCH_FILE_BYTES = int(

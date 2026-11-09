@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/use-chat-model-runtime";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
 import { LLAMA_BACKEND_LABELS } from "@/features/settings/lib/llama-backend-labels";
 import {
   llamaUpdateOffered,

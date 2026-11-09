@@ -80,7 +80,7 @@ from models.inference import (
     VideoUnloadResponse,
 )
 from utils.account_context import current_account_id, is_owner_context
-from utils.api_errors import openai_error_body
+from utils.api_errors import openai_error_body, problem_headers
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
 
 logger = get_logger(__name__)
@@ -158,6 +158,7 @@ async def video_download_plan(
     from routes.inference import (
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
+        _route_nvfp4_request,
     )
 
     _refuse_disabled_nvfp4_request(request)
@@ -173,6 +174,7 @@ async def video_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, _ = await _route_nvfp4_request(request, "video")
     from core.inference.diffusion import split_local_checkpoint_path
     from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.video import (
@@ -307,8 +309,10 @@ async def load_video_model_gated(
     route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
     from routes.inference import (
+        _nvfp4_route_kwarg,
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
+        _route_nvfp4_request,
     )
 
     _refuse_disabled_nvfp4_request(request)
@@ -325,6 +329,9 @@ async def load_video_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, nvfp4_route = await _route_nvfp4_request(
+        request, "video", user_initiated = user_initiated
+    )
     # Tested at entry (begin_load returns early) and written at launch (validation may 400 first).
     from routes.inference import (
         _note_load_fetched_with_a_request_token,
@@ -460,6 +467,7 @@ async def load_video_model_gated(
                 # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
                 allow_oversized_load = request.allow_oversized_load,
+                **_nvfp4_route_kwarg(backend.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("video", backend, request.load_token, prior)
             return started
@@ -819,11 +827,13 @@ async def generate_video(
             msg = str(exc)
             if msg == VIDEO_MODEL_CHANGED_MSG and attempt == 0:
                 continue
-            if msg in (
-                VIDEO_NOT_LOADED_MSG,
-                VIDEO_GENERATION_BUSY_MSG,
-                VIDEO_MODEL_CHANGED_MSG,
-            ):
+            if msg == VIDEO_NOT_LOADED_MSG:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = msg,
+                    headers = problem_headers("not_loaded", kind = "video"),
+                )
+            if msg in (VIDEO_GENERATION_BUSY_MSG, VIDEO_MODEL_CHANGED_MSG):
                 raise HTTPException(status_code = 409, detail = msg)
             logger.error("video.generate_failed: %s", exc, exc_info = True)
             raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
@@ -2279,7 +2289,7 @@ async def _start_openai_video(
         maybe_auto_switch_media_model,
         resident_answers_media_request,
     )
-    from core.inference.video import get_video_backend
+    from core.inference.video import get_video_backend, video_failure_detail
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_MODEL_CHANGED_MSG,
@@ -2350,7 +2360,11 @@ async def _start_openai_video(
         else:
             status = await asyncio.to_thread(backend.status)
         if not status.get("loaded"):
-            raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+            raise HTTPException(
+                status_code = 503,
+                detail = _NO_VIDEO_MODEL_MSG,
+                headers = problem_headers("not_loaded", kind = "video"),
+            )
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
         defaults = status.get("defaults") or {}
@@ -2399,7 +2413,11 @@ async def _start_openai_video(
         except RuntimeError as exc:
             msg = str(exc)
             if msg == VIDEO_NOT_LOADED_MSG:
-                raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+                raise HTTPException(
+                    status_code = 503,
+                    detail = _NO_VIDEO_MODEL_MSG,
+                    headers = problem_headers("not_loaded", kind = "video"),
+                )
             if msg == VIDEO_GENERATION_BUSY_MSG:
                 raise _openai_video_error(409, msg)
             if msg == VIDEO_MODEL_CHANGED_MSG:
@@ -2407,7 +2425,7 @@ async def _start_openai_video(
                     continue
                 raise _openai_video_error(409, msg, code = "model_changed", param = "model")
             logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
-            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+            raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
         break
 
     _note_generation_account()

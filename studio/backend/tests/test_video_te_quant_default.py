@@ -12,6 +12,12 @@ import types
 import pytest
 import torch
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
+
 import core.inference.diffusion_te_prequant as tpq
 from core.inference.video import video_te_quant_request
 from core.inference.video_families import _FAMILIES, detect_video_family
@@ -339,6 +345,7 @@ def _converter():
     return module
 
 
+@needs_torchao
 def test_the_converter_can_store_a_tied_embedding_once(tmp_path, monkeypatch):
     """--drop-tied-copies writes UMT5's shared/embed_tokens pair once, the round trip still verifies, and the fp8
     loader fills the alias back from the model's own tie."""
@@ -563,12 +570,13 @@ def test_wan_int8_budget_covers_the_measured_file():
 
 def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LTX25_TE_INT8", raising = False)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda *a, **k: False)
     fam = types.SimpleNamespace(name = "ltx-2.5", bf16_components_gb = (40.0, 23.9))
     hosted = tpq.te_prequant_budget_scale(
         fam, te_quant_mode = "int8", target = None, base = "Lightricks/LTX-2.5-Diffusers"
     )
     assert hosted < 1.0
-    # Unset keeps the bf16 encoder (int8 is opt-in), so its budget is the dense one.
+    # Unset takes the hosted file only when it is confirmed; unconfirmed it loads bf16, so the budget is the dense one.
     assert (
         tpq.te_prequant_budget_scale(
             fam, te_quant_mode = None, target = None, base = "Lightricks/LTX-2.5-Diffusers"
@@ -590,6 +598,7 @@ def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies(monkeypa
     )
 
 
+@needs_torchao
 def test_drop_tied_copies_keeps_a_tied_lm_head(tmp_path):
     import core.inference.prequant_safetensors as ps
 

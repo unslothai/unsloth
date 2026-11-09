@@ -98,6 +98,38 @@ def test_family_records():
     assert base.uses_negative_prompt is True
 
 
+def test_fp16_only_cards_promote_flux3_to_fp32():
+    import torch
+
+    from core.inference.diffusion import _resolve_diffusion_compute_dtype
+    for fam in (detect_family(DISTILLED), detect_family(BASE)):
+        assert fam.fp16_incompatible is True and fam.fp16_guard is None
+        assert _resolve_diffusion_compute_dtype(fam, torch.float16) is torch.float32
+        assert _resolve_diffusion_compute_dtype(fam, torch.bfloat16) is torch.bfloat16
+        assert _resolve_diffusion_compute_dtype(fam, torch.float32) is torch.float32
+
+
+@pytest.mark.parametrize(
+    "value, promoted", [("1", False), ("true", False), ("0", True), ("", True)]
+)
+def test_flux3_fp16_kill_switch(value, promoted):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "UNSLOTH_STUDIO_FLUX3_FP16": value, "PYTHONPATH": str(backend)}
+    code = (
+        "from core.inference.diffusion_families import detect_family as d;"
+        f"print(d({DISTILLED!r}).fp16_incompatible, d({BASE!r}).fp16_incompatible)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], cwd = backend, env = env, capture_output = True, text = True
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.split()[-2:] == [str(promoted)] * 2
+
+
 def test_modular_index_class_names_identify_the_family(tmp_path):
     assert (
         detect_family_by_pipeline_class("Flux3DistilledModularPipeline").name
@@ -653,13 +685,16 @@ def test_prequant_repos_point_each_variant_at_its_own_fp8_repo():
 
 @pytest.mark.parametrize("variant", ["distilled", "base"])
 @pytest.mark.parametrize("scheme, stem", [("int8", "INT8"), ("fp8", "FP8")])
-def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, variant):
+def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, variant, monkeypatch):
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
 
     name, base, model = {
         "distilled": (FLUX3_KLEIN_FAMILY_NAME, DISTILLED, "flux-3-image-klein"),
         "base": (FLUX3_KLEIN_BASE_FAMILY_NAME, BASE, "flux-3-image-klein-base"),
     }[variant]
+    if variant == "distilled" and scheme == "int8":
+        # The hosted distilled int8 file is unrotated: read only with the ConvRot kill switch.
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_CONVROT", "0")
     source = resolve_prequant_source(_family(name), scheme, base_repo = base)
     assert source.kind == "repo" and source.location == f"unsloth/{model}-FP8"
     names = candidate_filenames_of(source)

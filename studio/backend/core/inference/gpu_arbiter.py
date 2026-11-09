@@ -71,7 +71,7 @@ class MultiModelAlwaysRefusal(RuntimeError):
 
     def as_http_exception(self, path: Optional[str] = None):
         from fastapi import HTTPException
-        from utils.api_errors import error_body_for_path
+        from utils.api_errors import error_body_for_path, problem_headers
 
         message = str(self)
         detail = (
@@ -79,9 +79,11 @@ class MultiModelAlwaysRefusal(RuntimeError):
             if path and path.startswith("/v1/")
             else message
         )
-        return HTTPException(
-            status_code = 409, detail = detail, headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
-        )
+        headers = {
+            **MULTI_MODEL_REFUSAL_HEADERS,
+            **problem_headers("multi_model_always", kind = self.kind),
+        }
+        return HTTPException(status_code = 409, detail = detail, headers = headers)
 
 
 def always_refusal_message(
