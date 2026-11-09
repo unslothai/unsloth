@@ -7606,15 +7606,24 @@ html[data-glass="liquid-3d"][data-glass-menus][data-glass-motion].dark :is([data
 
 /* WebKitGTK only (data-glass-cpu, set by WindowMaterialMount): it runs every backdrop-filter again on
    each composite, on the CPU, so a caret blink, a scrolled line or a menu frame re-blurred every glass
-   surface on screen and glass typing, scrolling and menus cost far more than solid. There only the
-   sidebar keeps its live blur (one static surface over the wallpaper costs little); the rest carry a
-   denser fill, and dialogs and menus an opaque one, so nothing behind them ghosts through. Blurs a
-   component sets itself (Tailwind backdrop-* classes) are not Glass's and stay as they are with Glass off. */
-html[data-glass][data-glass-cpu] *:not([data-slot="sidebar-inner"], [class*="backdrop-"]),
+   surface on screen and glass typing, scrolling and menus cost far more than solid. No Glass surface keeps
+   a live blur there, the sidebar included (its blur alone was most of a Glass scroll frame on a long chat):
+   the panes carry a denser fill, and dialogs and menus an opaque one, so nothing behind them ghosts through.
+   Blurs a component sets itself (Tailwind backdrop-* classes) are not Glass's and stay as they are with Glass off. */
+html[data-glass][data-glass-cpu] *:not([class*="backdrop-"]),
 html[data-glass][data-glass-cpu] *:not([data-windows-glass-frame], [class*="backdrop-"])::before,
 html[data-glass][data-glass-cpu] *:not([class*="backdrop-"])::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+/* Frosted's grain is an SVG feTurbulence tile that WebKitGTK renders again on every paint of the surface
+   (the composer repaints with each scrolled frame): about as much as the rest of a frame. Plain there. */
+html[data-glass="frosted"][data-glass-cpu] :is([data-slot="sidebar-inner"], .unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+  background-image: none !important;
+}
+/* The sidebar without its blur: the fill reaches the 96% cap, so the wallpaper does not show through sharp. */
+html[data-glass][data-glass-cpu] [data-slot="sidebar-inner"] {
+  --glass-pane-floor: 110%;
 }
 html[data-glass][data-glass-cpu] {
   --glass-composer-floor: 110%;
