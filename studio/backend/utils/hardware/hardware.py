@@ -3621,36 +3621,104 @@ def _engine_instance_luid(instance_name: str) -> Optional[int]:
 
 
 _rocm_win_counter_lock = threading.Lock()
-_rocm_win_counter_cache: dict[tuple[str, str], tuple[float, int, str]] = {}
+# (completed_at, gpu_memory_events generation, spawn seconds, {key: stdout}) of the last combined display reading.
+_rocm_win_counter_cache: dict[str, tuple[float, int, float, dict[tuple[str, str], str]]] = {}
+# Slow spawns (about 2 s each on a Strix Halo box) space display reads out, like /api/system's probe spacing in main.py.
+_ROCM_WIN_COUNTER_SPACING = 4.0
+_ROCM_WIN_COUNTER_MAX_AGE_S = 10.0
+# The three counters display polls read, tagged so one Get-Counter call can serve each parser only its own lines, in the format its own call prints.
+_ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("vram", "Dedicated Usage"): (
+        "D",
+        "\\GPU Adapter Memory(*)\\Dedicated Usage",
+        "[int64]$_.CookedValue",
+    ),
+    ("vram", "Shared Usage"): (
+        "S",
+        "\\GPU Adapter Memory(*)\\Shared Usage",
+        "[int64]$_.CookedValue",
+    ),
+    ("util", "3D"): (
+        "U",
+        "\\GPU Engine(*engtype_3D*)\\Utilization Percentage",
+        "$_.CookedValue",
+    ),
+}
+
+
+def _rocm_windows_combined_counter_ps() -> str:
+    paths = ",".join(f"'{path}'" for _, path, _ in _ROCM_WIN_DISPLAY_COUNTERS.values())
+    branches = "else".join(
+        f"if($p.EndsWith('{path[path.rindex(chr(92)):].lower()}'))"
+        f"{{'{tag}|{{0}}|{{1}}' -f $_.InstanceName,{value}}}"
+        for tag, path, value in _ROCM_WIN_DISPLAY_COUNTERS.values()
+    )
+    return (
+        f"$s=(Get-Counter -Counter {paths} -ErrorAction SilentlyContinue).CounterSamples;"
+        f"if($s){{$s|ForEach-Object{{$p=$_.Path.ToLower();{branches}}}}}"
+        "else{'__NONE__'}"
+    )
+
+
+def _rocm_windows_split_combined(stdout: str) -> dict[tuple[str, str], str]:
+    by_tag: dict[str, list[str]] = {}
+    for line in stdout.splitlines():
+        tag, sep, rest = line.strip().partition("|")
+        if sep:
+            by_tag.setdefault(tag, []).append(rest)
+    return {
+        key: "\n".join(by_tag[tag]) + "\n"
+        for key, (tag, _, _) in _ROCM_WIN_DISPLAY_COUNTERS.items()
+        if by_tag.get(tag)
+    }
 
 
 def _rocm_windows_counter_stdout(key: tuple[str, str], ps: str) -> Optional[str]:
-    """stdout of one ``Get-Counter`` PowerShell call (~1.3 s each), or None on failure. Display reads reuse a reading under gpu_query's display TTL, the same gate as amd-smi; placement and fit read fresh. Failures are never cached."""
+    """stdout of the ``Get-Counter`` call ``ps`` (about 2 s each on real hardware), or None on failure. Placement and fit always run ``ps`` itself. Display reads instead share ONE Get-Counter over all three display counters, reused for max(display TTL, 4x the spawn that produced it) so the reading outlives its own probe, dropped on a GPU memory event; a counter missing from that reading, or a failed one, falls back to ``ps``. Failures are never cached."""
     try:
         from utils import gpu_memory_events
         from utils.hardware import gpu_query
 
-        use_cache = gpu_query.display_cache_allowed()
+        use_cache = gpu_query.display_cache_allowed() and key in _ROCM_WIN_DISPLAY_COUNTERS
         ttl = gpu_query.ttl_for(gpu_query.DISPLAY)
     except Exception:
         use_cache = False
-    if not use_cache:
-        return _rocm_windows_counter_stdout_uncached(ps)
-    with _rocm_win_counter_lock:
-        cached = _rocm_win_counter_cache.get(key)
-        if (
-            cached is not None
-            and time.monotonic() - cached[0] < ttl
-            and cached[1] == gpu_memory_events.generation()
-        ):
-            return cached[2]
-        generation = gpu_memory_events.generation()
-        stdout = _rocm_windows_counter_stdout_uncached(ps)
-        if stdout is None:
-            _rocm_win_counter_cache.pop(key, None)
-        else:
-            _rocm_win_counter_cache[key] = (time.monotonic(), generation, stdout)
-        return stdout
+    if use_cache and ttl > 0:
+        stdout = None
+        try:
+            with _rocm_win_counter_lock:
+                cached = _rocm_win_counter_cache.get("display")
+                generation = gpu_memory_events.generation()
+                if (
+                    cached is None
+                    or cached[1] != generation
+                    or (
+                        time.monotonic() - cached[0]
+                        >= min(
+                            _ROCM_WIN_COUNTER_MAX_AGE_S,
+                            max(ttl, _ROCM_WIN_COUNTER_SPACING * cached[2]),
+                        )
+                    )
+                ):
+                    _rocm_win_counter_cache.pop("display", None)
+                    started = time.monotonic()
+                    combined = _rocm_windows_counter_stdout_uncached(
+                        _rocm_windows_combined_counter_ps()
+                    )
+                    done = time.monotonic()
+                    readings = _rocm_windows_split_combined(combined) if combined else {}
+                    if readings:
+                        cached = (done, generation, done - started, readings)
+                        _rocm_win_counter_cache["display"] = cached
+                    else:
+                        cached = None
+                if cached is not None:
+                    stdout = cached[3].get(key)
+        except Exception:
+            stdout = None
+        if stdout is not None:
+            return stdout
+    return _rocm_windows_counter_stdout_uncached(ps)
 
 
 def _rocm_windows_counter_stdout_uncached(ps: str) -> Optional[str]:
