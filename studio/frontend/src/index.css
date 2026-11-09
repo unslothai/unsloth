@@ -7505,7 +7505,7 @@ html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sideb
 /* Glass in motion, only with software compositing (data-glass-motion on <html>, set once by WindowMaterialMount
    when the page has no GPU WebGL renderer; with a GPU nothing here applies and glass looks and moves as before).
    data-glass-moving is set by glass-motion.ts on each surface while something opens, closes or
-   scrolls: every frame drawn then would compute every backdrop-filter on screen again, so for those frames the
+   scrolls, and through a burst of keys or presses: every frame drawn then would compute every backdrop-filter on screen again, so for those frames the
    moving surface and the standing glass (sidebar, composer) take a near-opaque fill of their own colour instead,
    and the blur returns in one frame (data-glass-settling) once nothing has moved for 200 ms. A Radix surface
    closing (data-state="closed") is in motion until it unmounts. Keyed on the surface, never on <html>, so the flag

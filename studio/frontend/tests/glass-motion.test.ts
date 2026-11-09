@@ -192,6 +192,28 @@ test("a scroll inside a dialog pauses it with the standing glass; typing in a fi
   ctl.stop();
 });
 
+test("keys, presses and edits pause the standing glass and the surface they land in through the burst", () => {
+  const { doc, ctl, sidebar, frame, composer, float } = page();
+  const field = new FakeElement(["field"]);
+  composer.append(field);
+  for (const type of motion.INTERACTION_EVENTS) {
+    doc.fire(type, field);
+    assert.deepEqual(moving(sidebar, frame, composer), [true, true, true], type);
+    assert.ok(!float.hasAttribute(ATTR), "glass the event did not land in and that does not stand stays blurred");
+    tick(motion.SETTLE_MS - 1);
+  }
+  assert.ok(sidebar.hasAttribute(ATTR), "each key extends the hold, so a burst of typing stays on the fill");
+  tick(1);
+  assert.deepEqual(moving(sidebar, frame, composer), [false, false, false], "the blur returns once the keys stop");
+  const button = new FakeElement();
+  const dialog = new FakeElement(["surface"]).append(button);
+  doc.body.append(dialog);
+  doc.fire("pointerdown", button);
+  assert.deepEqual(moving(dialog, sidebar, composer), [true, true, true], "a press in a dialog pauses the dialog too");
+  doc.fire("keydown", doc);
+  ctl.stop();
+});
+
 test("a menu mounting is paused from its first frame with the standing glass; a tooltip only pauses itself", () => {
   const { ctl, sidebar, composer } = page();
   const [mo] = observed;
@@ -253,7 +275,7 @@ test("the standing glass is found again once it leaves the page", () => {
 
 test("stop() removes every listener, the observer and every flag, and is safe to call twice", () => {
   const { doc, ctl, sidebar } = page();
-  assert.equal(doc.count(), 4);
+  assert.equal(doc.count(), 4 + motion.INTERACTION_EVENTS.length);
   const a = new FakeElement(["surface"]);
   const c = new FakeElement(["surface"]);
   ctl.hold(a as unknown as Element, 10_000);

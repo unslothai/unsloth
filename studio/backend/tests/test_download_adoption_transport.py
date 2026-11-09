@@ -39,9 +39,8 @@ def test_a_job_claimed_without_metadata_reports_nothing():
 
 
 def test_a_fresh_start_reports_the_transport_the_backend_resolved(monkeypatch):
-    """An explicit Xet request is downgraded where hf_xet is unavailable, and a
-    client that assumed its request stood shows Cancel for a resumable HTTP
-    transfer."""
+    """An explicit Xet request is downgraded to HTTP where hf_xet is missing, so the client must see
+    the resolved transport or it shows Cancel."""
     from hub.services import download_lifecycle
 
     monkeypatch.setattr(
@@ -67,8 +66,7 @@ def test_an_available_xet_request_is_left_alone(monkeypatch):
 
 
 def test_a_fallback_run_publishes_the_marker_that_decides_its_stop_control():
-    """The Xet-to-HTTP retry reclaims as HTTP but keeps the Xet cancel marker,
-    so stopping it is a restart even though the worker is on HTTP."""
+    """Xet-to-HTTP retries keep the Xet marker, so stopping one restarts rather than cancels."""
     from hub.services.download_lifecycle import active_download_refs
 
     registry = DownloadRegistry()
@@ -100,8 +98,7 @@ def test_an_ordinary_run_publishes_no_cancel_marker():
 
 
 def test_an_adopted_fallback_run_reports_its_marker_to_the_new_client():
-    """The start response is the only source for that adoption path, so it has
-    to carry the marker as well as the live transport."""
+    """Adoption reads only the start response, so it must carry the marker and transport."""
     registry = DownloadRegistry()
     key = "unsloth/Qwen3-4B-GGUF"
     registry.claim(

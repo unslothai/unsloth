@@ -1661,6 +1661,13 @@ export const ko = {
         audioUploadCancel: "전사 취소",
         audioUploadTranscribing: "오디오 전사 중…",
         sectionTitle: "받아쓰기",
+        micTargetLabel: "마이크 버튼",
+        micTargetAsr: "ASR로 받아쓰기",
+        micTargetModel: "모델에 오디오 보내기",
+        micTargetAsrDescription: "마이크 버튼이 말한 내용을 메시지 상자에 입력합니다.",
+        micTargetModelDescription: "오디오 입력을 지원하는 모델이 로드되어 있으면 마이크가 클립을 녹음해 메시지에 첨부합니다. 다른 모델은 계속 받아쓰기를 사용합니다.",
+        micTargetModelUnavailable: "음성을 보내려면 오디오 입력을 지원하는 모델(예: LFM3-Omni)을 로드하세요.",
+        micRecordForModel: "모델용 오디오 녹음",
         engineLabel: "받아쓰기 엔진",
         engineBrowser: "브라우저",
         engineBrowserDescription:
@@ -1685,6 +1692,13 @@ export const ko = {
         sttQuantDescription:
           "로컬에서 실행할 STT 모델을 선택하거나 검색한 다음 양자화를 고르세요.",
         sttDeviceLabel: "로드 위치",
+        sttContextLabel: "음성 컨텍스트",
+        sttContextAuto: "자동 (권장)",
+        sttContextAutoDescription:
+          "녹음마다 컨텍스트 크기를 맞추며, 오디오가 길수록 더 많은 메모리를 사용합니다. 이전 런타임에서는 메모리 사용량을 줄이려면 고정 크기를 지정해야 할 수 있습니다. ‘음성’과 ‘받아쓰기’에서 사용하는 Qwen3-ASR에 적용됩니다.",
+        sttContextFixedDescription:
+          "한도가 작을수록 메모리를 적게 사용합니다. 한도를 초과하는 녹음은 한도를 높이거나 ‘자동’을 선택해야 합니다. ‘음성’과 ‘받아쓰기’에서 사용하는 Qwen3-ASR에 적용됩니다.",
+        sttContextTokens: "{count} 토큰",
         sttDeviceAuto: "GPU(사용 가능할 때)",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:

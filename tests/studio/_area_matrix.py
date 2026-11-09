@@ -72,12 +72,15 @@ RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
 # the window, so the sidebar's blur costs on any repaint: small areas up to 7.8x on GitHub runners.
 # glass-motion.ts swaps the blur for a plain fill while anything moves, so scrolling Settings reads
 # 1.4-4.5x (main 7.8-14.0x) and the thread 1.8-4.9x (main 4.6-8.3x); 7x leaves runner margin.
+# It also pauses through bursts of keys and presses: typing reads 1.3-1.7x locally (main 3.1-3.6x,
+# runners 4.1-4.9x before it); a message click 1.3-2.3x (main 2.9-3.7x) but noisy, so it keeps 10x.
 # LONG_THREAD_AREAS_KNOWN="" holds main to the plain limits.
 _GLASS_MODES = ("frosted", "blurred", "liquid", GLASS)
 KNOWN_DEFAULT = ",".join(
     [f"{m}:*=10" for m in _GLASS_MODES]
     + [f"{m}:thread_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:settings_scroll=7" for m in _GLASS_MODES]
+    + [f"{m}:type=6" for m in _GLASS_MODES]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 

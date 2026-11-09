@@ -39,8 +39,7 @@ WAN_TI2V_5B = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 
 @pytest.mark.parametrize("fam", _FAMILIES, ids = lambda f: f.name)
 def test_every_declared_preset_is_accepted(fam):
-    """Whatever the interface can offer, the API must take: the resolution select
-    is built from exactly this tuple, so a rejection here is a dead UI control."""
+    """Every declared preset must be accepted, since a rejected one is a dead UI control."""
     for width, height in fam.resolution_presets:
         validate_video_request_shape(
             fam, width = width, height = height, num_frames = fam.default_num_frames
@@ -49,8 +48,7 @@ def test_every_declared_preset_is_accepted(fam):
 
 @pytest.mark.parametrize("fam", _FAMILIES, ids = lambda f: f.name)
 def test_256x256_is_rejected_and_the_message_names_the_real_presets(fam):
-    """The QA report's case. 256 divides both 16 and 32, so the snap left it alone;
-    no family lists it, so every family must now refuse it by name."""
+    """Snap leaves 256x256 alone, but no family lists it, so every family must refuse it."""
     with pytest.raises(ValueError) as excinfo:
         validate_video_request_shape(fam, width = 256, height = 256)
     message = str(excinfo.value)
@@ -76,9 +74,7 @@ def test_off_lattice_frame_count_is_rejected_with_the_straddling_counts():
 
 
 def test_the_refusal_never_suggests_a_count_past_the_request_ceiling():
-    """Near the top of the range the upper straddling point falls outside the request
-    model's own `le`, so naming it sends the user into a second, differently-shaped 422.
-    On LTX-2's step-8 lattice the whole band 1018-1024 is affected (1017 + 8 = 1025)."""
+    """Never suggest a frame count past the request ceiling: the model's le bound would 422 it again."""
     with pytest.raises(ValueError) as excinfo:
         validate_video_request_shape(LTX2, num_frames = 1024)
     message = str(excinfo.value)
@@ -109,9 +105,7 @@ def test_wan_lattice_is_step_4_not_step_8():
 
 
 def test_the_lattice_reads_frame_offset_not_a_hardcoded_one():
-    """MiniMax-H3's lattice is 17k + 5, not 17k + 1. A gate written against k*step+1
-    refuses every count H3's own duration select offers, its default of 124 included,
-    so the offset has to come from the family the way snap_num_frames reads it."""
+    """MiniMax-H3's frame lattice is 17k + 5, not 17k + 1, so the offset must come from the family."""
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert (h3.frame_step, h3.frame_offset) == (17, 5)
     for count in (124, 243, 345):
@@ -160,8 +154,7 @@ def test_omitted_fields_are_always_valid():
 
 
 def test_a_half_specified_size_resolves_against_the_default_preset():
-    """generate() fills a missing side from presets[0], so the check must judge the
-    same pair it will actually denoise."""
+    """generate() fills a missing side from presets[0], so the check must judge that same pair."""
     validate_video_request_shape(LTX2, width = 768)
     validate_video_request_shape(LTX2, height = 512)
     # 1216 alone resolves to 1216x512: off the presets but on /32 and inside the area band.
@@ -218,16 +211,14 @@ def test_the_status_payload_reports_the_custom_size_bounds():
 
 
 def test_presets_spelled_as_lists_still_match():
-    """The status payload hands presets out as lists; a round-trip back in must not
-    silently stop matching and start 422-ing every supported size."""
+    """Status presets come back as lists; the list form must still match, or every size 422s."""
     fam = replace(LTX2, resolution_presets = tuple([w, h] for w, h in LTX2.resolution_presets))
     for width, height in LTX2.resolution_presets:
         validate_video_request_shape(fam, width = width, height = height)
 
 
 def test_a_family_with_no_presets_is_left_to_the_snap():
-    """Backwards compatibility for an unusual/custom family: nothing to enforce
-    against, so the old silent snap stays in charge rather than a blanket 422."""
+    """No presets means nothing to enforce, so the old silent snap stays in charge, not a 422."""
     fam = replace(LTX2, resolution_presets = ())
     validate_video_request_shape(fam, width = 256, height = 256)
     with pytest.raises(ValueError):
@@ -331,8 +322,7 @@ def _payload(**overrides) -> dict:
 
 
 def _wait_terminal(client, timeout = 5.0) -> dict:
-    """Generation is asynchronous (the POST only starts the job), so the outcome is
-    only observable by polling generate-progress."""
+    """Generation is async, so the outcome is only observable by polling generate-progress."""
     deadline = time.monotonic() + timeout
     progress: dict = {}
     while time.monotonic() < deadline:
@@ -344,8 +334,7 @@ def _wait_terminal(client, timeout = 5.0) -> dict:
 
 
 def test_generate_rejects_256x256_with_422_naming_the_presets(client, backend):
-    """The QA report end to end: the request is in range and parses, but the loaded
-    model cannot render it, so it is refused instead of silently denoised."""
+    """A valid-looking 256x256 the loaded model cannot render is refused, not silently denoised."""
     backend.load_as(LTX2)
     resp = client.post("/api/inference/video/generate", json = _payload(width = 256, height = 256))
     assert resp.status_code == 422, resp.text
@@ -394,8 +383,7 @@ def test_generate_rejects_an_off_lattice_frame_count_with_422(client, backend):
 
 
 def test_generate_with_nothing_loaded_still_reports_not_loaded_not_a_shape_error(client):
-    """The gate must not preempt the 409: with no model there is no family whose
-    rules could be applied, so the request falls through exactly as before."""
+    """With no model loaded there is no family to judge, so the request still gets the 409."""
     resp = client.post("/api/inference/video/generate", json = _payload(width = 256, height = 256))
     assert resp.status_code == 409
     assert resp.json()["detail"] == VIDEO_NOT_LOADED_MSG
@@ -412,9 +400,7 @@ def test_generate_for_a_family_without_presets_still_snaps(client, backend):
 
 
 def test_a_family_without_presets_still_enforces_its_frame_lattice(client, backend):
-    """The preset escape hatch covers the SIZE only. frame_step is declared whether or
-    not a family lists presets, so an off-lattice count is still a 422 here -- pinned at
-    the route because the size and frame branches take different paths through the gate."""
+    """Presets only waive size; frame_step is enforced even with no presets, so off-lattice counts 422."""
     backend.load_as(replace(LTX2, resolution_presets = ()))
     resp = client.post("/api/inference/video/generate", json = _payload(num_frames = 100))
     assert resp.status_code == 422, resp.text
@@ -436,8 +422,7 @@ def test_generate_omitting_the_shape_uses_the_family_defaults(client, backend):
 
 
 def test_the_coarse_pydantic_bounds_still_reject_out_of_range_sizes(client, backend):
-    """The outer guard is unchanged: family-agnostic nonsense is still a 422 from the
-    request model, before any family is consulted."""
+    """The coarse request-model bounds still 422 before any family is consulted."""
     backend.load_as(LTX2)
     for body in (_payload(width = 16), _payload(height = 4096), _payload(num_frames = 0)):
         assert client.post("/api/inference/video/generate", json = body).status_code == 422
@@ -467,9 +452,7 @@ def test_the_shape_is_judged_under_the_lock_that_reserves_the_state(backend, mon
 
 
 def test_a_family_swap_cannot_slip_between_the_check_and_the_job(backend):
-    """The consequence, end to end rather than by construction. 768x512 is a real LTX-2 preset
-    and is smaller than Wan TI2V's trained frames, so whichever family is resident when the lock
-    is taken decides the outcome -- and the job that runs afterwards is the one that was judged."""
+    """The family resident at lock time decides, so the job that runs is the one that was judged."""
     backend.load_as(LTX2)
     backend.begin_generate(prompt = "a cat", width = 768, height = 512)  # accepted for LTX-2
     backend.cancel_generate()
@@ -504,9 +487,7 @@ def test_a_half_specified_canvas_stays_valid_without_a_keyframe(axes):
 
 @pytest.mark.parametrize("axes", [{"width": 768}, {"height": 512}])
 def test_a_half_specified_canvas_is_refused_with_a_keyframe(axes):
-    """The rule still has to hold where it means something: with a keyframe present
-    _resolve_keyframes matches the SOURCE aspect whenever either axis is missing, so the axis
-    the caller did send would be silently discarded. Refuse rather than draw another recipe."""
+    """With a keyframe, a half-given canvas makes _resolve_keyframes drop the sent axis; refuse it."""
     import pydantic
     from models.inference import VideoGenerateRequest
 
@@ -544,8 +525,7 @@ def test_an_on_lattice_count_outside_the_family_range_is_refused(count):
 
 @pytest.mark.parametrize("count", [124, 141, 345])
 def test_in_range_lattice_counts_still_pass(count):
-    """The endpoints and one interior point stay valid, so the range check did not narrow the
-    family to less than it actually offers."""
+    """Endpoints and an interior count stay valid; the range check does not narrow the family."""
     from core.inference.video_families import detect_video_family, validate_video_request_shape
 
     fam = detect_video_family("", override = "minimax-h3")

@@ -28,8 +28,7 @@ const handleToastPointerDownCapture = (
   event.stopPropagation();
 };
 
-// Sonner has no line count: tag toasts whose text runs past one line, so CSS can
-// centre a one-line toast's icon and top-align a longer one's.
+// Sonner has no line count, so multi-line toasts are tagged for CSS to place their icon.
 function markMultilineToasts(scope: HTMLElement): () => void {
   const sized = new ResizeObserver((entries) => {
     for (const { target } of entries) {
@@ -132,9 +131,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
             "--normal-border": "transparent",
             // Just above the compact-box tier; at --radius-xl a two-line toast reads as a capsule.
             "--border-radius": "calc(var(--radius-lg) + 2px)",
-            // Pin the close button inside the toast's top-right corner.
-            // Sonner defaults to the left/outside edge, so keep the horizontal
-            // override here and the top offset in index.css.
+            // Sonner defaults the close button to the outer edge; the horizontal override stays
+            // here.
             "--toast-close-button-start": "auto",
             "--toast-close-button-end": "12px",
             "--toast-close-button-transform": "none",

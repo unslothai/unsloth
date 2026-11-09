@@ -537,8 +537,7 @@ def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
     # unscheduled families run int8 as layerwise fp8 (no torchao), so gate on the effective mode
     assert effective_te_quant(TE_QUANT_INT8, "z-image-turbo") == TE_QUANT_FP8
     assert effective_te_quant(TE_QUANT_INT8, None) == TE_QUANT_FP8
-    # A family hosting an int8 ConvRot file loads it as plain tensors (fp8 behind it), so the gate asks about fp8 even
-    # where a keep-bf16 schedule exists.
+    # Int8 ConvRot loads as plain fp8 tensors, so gate on fp8 even where keep-bf16 exists.
     assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_FP8
     assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_FP8
     # Every other mode is its own effective mode, and absent stays absent.
@@ -621,17 +620,14 @@ def test_unset_and_auto_are_the_only_spellings_that_invite_a_family_default():
 
 
 def test_an_unset_request_takes_the_family_scheme_and_is_marked_as_not_asked_for():
-    """The whole point: a family that hosts a pre-cast encoder answers an unset request with
-    it. ``auto_selected`` is the second half, and it is load-bearing rather than cosmetic --
-    it is what stops the loader refusing when the scheme does not engage."""
+    """Unset takes the hosted encoder; auto_selected stops loader refusals when the scheme won't engage."""
     assert resolve_te_quant_request(None, "fp8") == ("fp8", True)
     assert resolve_te_quant_request("auto", "fp8") == ("fp8", True)
     assert resolve_te_quant_request("", "fp8") == ("fp8", True)
 
 
 def test_an_opt_out_still_pins_the_released_bf16_encoder():
-    """ "none"/"off" has to survive the new default, or the bf16 reference configuration
-    becomes unreachable and no comparison against it can be run."""
+    """none/off must still opt out after the new default, or the bf16 reference is unreachable."""
     for opt_out in ("none", "off", " OFF "):
         assert resolve_te_quant_request(opt_out, "fp8") == (None, False)
 
