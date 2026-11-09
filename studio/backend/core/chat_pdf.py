@@ -10,7 +10,10 @@ import json
 import sys
 from datetime import datetime, timezone
 
+from utils.optional_pdf import PDFDependencyUnavailable, load_pdf_module
+
 TOO_LONG_EXIT_CODE = 3
+MISSING_PDF_SUPPORT_EXIT_CODE = 4
 MAX_EXPORT_PAGES = 5000
 _PAGE_MARGIN_PT = 54
 
@@ -44,7 +47,8 @@ class ChatPdfTooLong(Exception):
 
 def render_chat_pdf(title: str, body_html: str) -> bytes:
     """No archive is passed to the Story, so markup can only embed data: images, never local files or URLs."""
-    import pymupdf
+    # Installs PyMuPDF on first use; the server's import path does not reach this child.
+    pymupdf = load_pdf_module("pymupdf")
 
     heading = html.escape(" ".join(title.split()) or "Conversation")
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -84,6 +88,9 @@ def main() -> int:
     except ChatPdfTooLong as error:
         print(error, file = sys.stderr)
         return TOO_LONG_EXIT_CODE
+    except PDFDependencyUnavailable as error:
+        print(error, file = sys.stderr)
+        return MISSING_PDF_SUPPORT_EXIT_CODE
     sys.stdout.buffer.write(pdf)
     sys.stdout.buffer.flush()
     return 0

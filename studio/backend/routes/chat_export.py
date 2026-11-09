@@ -13,7 +13,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from core.chat_pdf import TOO_LONG_EXIT_CODE
+from core.chat_pdf import MISSING_PDF_SUPPORT_EXIT_CODE, TOO_LONG_EXIT_CODE
 from loggers import get_logger
 from utils.utils import log_and_http_error
 
@@ -29,6 +29,10 @@ _render_slots = threading.BoundedSemaphore(2)
 
 
 class ChatPdfTooLong(Exception):
+    pass
+
+
+class ChatPdfSupportMissing(Exception):
     pass
 
 
@@ -50,6 +54,9 @@ def render_chat_pdf_in_child(title: str, body_html: str) -> bytes:
         )
     if result.returncode == TOO_LONG_EXIT_CODE:
         raise ChatPdfTooLong(result.stderr.decode("utf-8", "replace").strip())
+    if result.returncode == MISSING_PDF_SUPPORT_EXIT_CODE:
+        lines = result.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise ChatPdfSupportMissing(lines[-1] if lines else "PDF support is not installed")
     if result.returncode != 0 or not result.stdout.startswith(b"%PDF"):
         tail = result.stderr.decode("utf-8", "replace").strip()[-2000:]
         raise RuntimeError(f"PDF renderer exited with {result.returncode}: {tail}")
@@ -66,6 +73,9 @@ async def export_chat_pdf(
         raise log_and_http_error(
             error, 413, "This export is too long for one PDF.", log = logger
         ) from error
+    except ChatPdfSupportMissing as error:
+        # The child's message is our own installation guidance, never installer output.
+        raise log_and_http_error(error, 503, str(error), log = logger) from error
     except Exception as error:
         raise log_and_http_error(error, 500, "Could not render the PDF.", log = logger) from error
     return Response(content = content, media_type = "application/pdf")

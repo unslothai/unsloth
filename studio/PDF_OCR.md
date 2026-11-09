@@ -13,6 +13,13 @@ Tesseract OCR without requiring a loaded chat model.
 Recipe PDF extraction runs in separate worker processes so OCR does not block
 other requests.
 
+## PDF support
+
+PDF and MuPDF e-book reading uses PyMuPDF, which Unsloth Studio installs into its own
+environment the first time it is needed. Hosts without internet access, or with
+UNSLOTH_PDF_AUTO_INSTALL=0, should install it ahead of time with
+`python -m pip install "unsloth[pdf]"` in the Unsloth environment.
+
 ## Local OCR setup
 
 PyMuPDF includes the OCR integration. Install Tesseract language data on the machine

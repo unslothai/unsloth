@@ -113,6 +113,7 @@ from utils.account_context import (
 )
 from utils.current_date_prompt_settings import strip_current_date_update_note
 from utils.host_policy import _literal_ip_address
+from utils.optional_pdf import PDFDependencyUnavailable, ensure_pdf_support
 from core.inference.providers import _metadata_host as _provider_metadata_host
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference import tool_facts
@@ -15918,10 +15919,14 @@ def _fetch_url_raw(
             try:
                 queued_at = time.monotonic()
                 with _WEB_PDF_LOCK:
-                    # Time queued behind another read's PDF is not spent on this read.
+                    # Time queued behind another read's PDF, or spent installing PDF support on
+                    # first use, is not spent on this read.
+                    ensure_pdf_support()
                     if deadline is not None:
                         deadline += time.monotonic() - queued_at
                     pdf_text = _extract_pdf_text(raw_bytes)
+            except PDFDependencyUnavailable as exc:
+                return f"(PDF content could not be read as text: {exc})", "", content_type
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type
@@ -22273,6 +22278,27 @@ def _timed_out_result(
     return result
 
 
+_PDF_PARSER_MODULES = frozenset({"fitz", "pymupdf", "pymupdf4llm"})
+
+
+def _imports_pdf_parser(code: str) -> bool:
+    """Whether the code imports PyMuPDF, which attachment notes suggest via fitz.open(path)."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            names = [node.module]
+        else:
+            continue
+        if any(name.partition(".")[0] in _PDF_PARSER_MODULES for name in names):
+            return True
+    return False
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -22313,6 +22339,13 @@ def _python_exec(
             "Execution error: could not harden the Unsloth process against "
             "/proc environment reads; refusing bypass execution."
         )
+
+    # PDF support installs on first use here, outside the sandbox, which cannot write this environment.
+    if _imports_pdf_parser(code):
+        try:
+            ensure_pdf_support()
+        except PDFDependencyUnavailable as exc:
+            return _truncate(f"Execution error: {exc}")
 
     tmp_path = None
     _scratch_name = None
