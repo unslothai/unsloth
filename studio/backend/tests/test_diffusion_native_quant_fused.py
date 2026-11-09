@@ -487,8 +487,16 @@ def test_factory_creates_every_state_key_before_the_first_trace(monkeypatch):
     not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two CUDA / HIP devices"
 )
 def test_each_real_card_runs_the_compiled_linear_bit_identical_to_eager(monkeypatch):
-    _require_the_compiled_linear()
+    # A mixed ROCm host (RDNA + CDNA) runs the compiled linear on the RDNA card and stays eager on the other, so
+    # each card is judged on its own arch; CUDA never refuses a card by arch.
+    from core.inference.rocm_bf16 import is_rocm_torch
+
     torch._dynamo.reset()
+    ready = {i: nq._fused_w8a8(torch.device("cuda", i)) is not None for i in (0, 1)}
+    if not any(ready.values()):
+        pytest.skip(f"compiled linear off on both cards: {nq.fused_w8a8_state()['devices']}")
+    if not is_rocm_torch(torch):
+        assert all(ready.values()), nq.fused_w8a8_state()
     with torch.no_grad():
         for i in (1, 0):
             dev = torch.device("cuda", i)
@@ -501,9 +509,12 @@ def test_each_real_card_runs_the_compiled_linear_bit_identical_to_eager(monkeypa
             monkeypatch.delenv(nq.NATIVE_INT8_FUSED_ENV)
             calls = nq.fused_w8a8_state()["calls"]
             got = layer(x)
-            assert nq.fused_w8a8_state()["calls"] == calls + 1
+            assert nq.fused_w8a8_state()["calls"] == calls + int(ready[i])
             assert got.device == dev and torch.equal(got, ref)
-    assert nq.fused_w8a8_state()["devices"] == {"cuda:0": None, "cuda:1": None}
+    devices = nq.fused_w8a8_state()["devices"]
+    assert {k: why is None for k, why in devices.items()} == {
+        f"cuda:{i}": ok for i, ok in ready.items()
+    }
 
 
 def test_a_cpu_input_on_a_rocm_torch_is_not_judged_by_a_card_arch(monkeypatch):
