@@ -5394,6 +5394,75 @@ def release_resident_groups(
         return restore if released else None
 
 
+# A placement sized from the denoise phase keeps more blocks resident, so an oversized request (an edit with its
+# reference, a larger canvas) streams more of them out; pinning them back after every such request only for the next
+# one to stream them out again is a host-to-device round trip per render. The restore waits for a request that needs
+# the blocks instead (``take_deferred_restore``).
+DEFERRED_RESTORE_ATTR = "_unsloth_deferred_resident_restore"
+
+
+def _phase_placement(pipe: Any) -> bool:
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None) or ()
+    return bool(
+        len(reserve) > MEASURED_RESERVE_DENOISE_PHASE_INDEX
+        and reserve[MEASURED_RESERVE_DENOISE_PHASE_INDEX]
+        and denoise_phase_residency_enabled()
+    )
+
+
+def _resident_room_mib(pipe: Any) -> int:
+    """MiB the placement keeps resident when nothing is streamed out: the rooms its groups were pinned within."""
+    total = 0
+    for module in (getattr(pipe, "components", {}) or {}).values():
+        room = getattr(module, "_unsloth_resident_room", None)
+        if room:
+            total += int(room)
+    return total
+
+
+def chained_restore(first: Callable[[], None], second: Callable[[], None]) -> Callable[[], None]:
+    """Run ``first`` then ``second`` (``second`` even when ``first`` raises)."""
+
+    def restore() -> None:
+        try:
+            first()
+        finally:
+            second()
+
+    return restore
+
+
+def defer_resident_restore(pipe: Any, restore: Optional[Callable[[], None]]) -> bool:
+    """Hold ``restore`` (an oversized request's ``release_resident_groups``) on ``pipe`` instead of running it, for a
+    placement sized from the denoise phase. True when held; False: the caller restores now."""
+    if restore is None or not _phase_placement(pipe):
+        return False
+    try:
+        held = getattr(pipe, DEFERRED_RESTORE_ATTR, None)
+        setattr(
+            pipe, DEFERRED_RESTORE_ATTR, restore if held is None else chained_restore(held, restore)
+        )
+    except Exception:  # noqa: BLE001 - unheld: restore now
+        return False
+    return True
+
+
+def take_deferred_restore(pipe: Any, extra_mib: int) -> Optional[Callable[[], None]]:
+    """At a request's guard: pin a held restore back unless this request streams every resident group anyway
+    (``extra_mib`` at least the placement's room). Returns the restore the request carries on (None when it ran)."""
+    held = getattr(pipe, DEFERRED_RESTORE_ATTR, None)
+    if held is None:
+        return None
+    try:
+        setattr(pipe, DEFERRED_RESTORE_ATTR, None)
+    except Exception:  # noqa: BLE001
+        pass
+    if int(extra_mib or 0) > 0 and int(extra_mib) >= _resident_room_mib(pipe):
+        return held
+    held()
+    return None
+
+
 DECODE_LEND_ATTR = "_unsloth_decode_lend"
 # Kept free beside the decode's learned peak x margin when deciding whether lent encoder groups must stream again.
 _DECODE_SLACK_MIB = 256

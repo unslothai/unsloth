@@ -320,3 +320,51 @@ def test_the_flat_fallback_is_priced_against_the_denoise_reserve(store):
     )
     assert old == max(0, flat - 2304)
     assert new == max(0, flat - 768) > old
+
+
+def _deferring_pipe(phase, room = 4421):
+    pipe = _reserved_pipe(phase)
+    pipe.components = {"transformer": types.SimpleNamespace(_unsloth_resident_room = room)}
+    return pipe
+
+
+def test_an_oversized_request_holds_its_restore_until_a_request_needs_the_blocks(store):
+    calls = []
+    pipe = _deferring_pipe(768)
+    assert dm.defer_resident_restore(pipe, lambda: calls.append("first"))
+    assert calls == []
+    # another edit that streams every resident group carries the held restore on, re-pinning nothing
+    carried = dm.take_deferred_restore(pipe, 10956)
+    assert carried is not None and calls == []
+    assert getattr(pipe, dm.DEFERRED_RESTORE_ATTR) is None
+    assert dm.defer_resident_restore(pipe, carried)
+    # a text-to-image request the placement was sized for pins them back before it runs
+    assert dm.take_deferred_restore(pipe, 0) is None
+    assert calls == ["first"]
+    assert dm.take_deferred_restore(pipe, 0) is None and calls == ["first"]
+
+
+def test_a_partial_release_pins_the_held_groups_back_first(store):
+    calls = []
+    pipe = _deferring_pipe(768)
+    dm.defer_resident_restore(pipe, lambda: calls.append("held"))
+    assert dm.take_deferred_restore(pipe, 1000) is None
+    assert calls == ["held"]
+
+
+def test_held_restores_chain_and_both_run(store):
+    calls = []
+    pipe = _deferring_pipe(768)
+    dm.defer_resident_restore(pipe, lambda: calls.append("a"))
+    dm.defer_resident_restore(pipe, lambda: calls.append("b"))
+    dm.take_deferred_restore(pipe, 0)
+    assert calls == ["a", "b"]
+
+
+@pytest.mark.parametrize("phase, env", [(None, None), (768, "0")])
+def test_whole_render_placements_restore_at_once(store, monkeypatch, phase, env):
+    if env is not None:
+        monkeypatch.setenv(dm.DENOISE_PHASE_RESIDENCY_ENV, env)
+    pipe = _deferring_pipe(phase)
+    assert not dm.defer_resident_restore(pipe, lambda: None)
+    assert dm.take_deferred_restore(pipe, 10956) is None
