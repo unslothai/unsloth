@@ -858,3 +858,22 @@ def test_gpu_acquire_is_refused_while_a_restyle_runs(weights, monkeypatch):
         arb.acquire_for(arb.DIFFUSION)
     assert evicted == []
     assert arb.RestyleRunningError().as_http_exception().status_code == 409
+
+
+def test_a_reserved_runner_refuses_other_loads_but_not_its_own_handoff(weights, monkeypatch):
+    import core.inference.gpu_arbiter as arb
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    server = runner._ensure_server(vr.model_files())
+    runner.reserve()
+    monkeypatch.setattr(vr, "runner", runner)
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_release_idle_video_servers", lambda reason: None)
+    with pytest.raises(arb.RestyleRunningError):
+        arb.acquire_for(arb.CHAT)
+    token = arb.restyle_handoff.set(True)
+    try:
+        arb.acquire_for(arb.VIDEO)
+    finally:
+        arb.restyle_handoff.reset(token)
+    assert runner._server is server

@@ -532,6 +532,11 @@ class RestyleRunner:
         if server is not None:
             server.stop()
 
+    def holds_gpu(self) -> bool:
+        """A job runs, or a request is reserved to start one on the resident server."""
+        with self._lock:
+            return bool(self._state.get("active")) or self._reservation is not None
+
     def unload_if_idle(self) -> bool:
         """Detach the server under the same lock ``start`` claims, so a restyle can't begin in between.
         A reservation counts as busy: that request is about to reuse the server."""

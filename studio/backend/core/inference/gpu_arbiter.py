@@ -275,9 +275,13 @@ def _release_idle_video_servers(reason: str) -> None:
         logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)
 
 
+# Set by the restyle route around its own acquire, which a reserved runner must not refuse.
+restyle_handoff: ContextVar[bool] = ContextVar("restyle_handoff", default = False)
+
+
 def _refuse_beside_a_running_restyle() -> None:
     module = sys.modules.get("core.inference.video_restyle")
-    if module is not None and module.runner.progress().get("active"):
+    if module is not None and not restyle_handoff.get() and module.runner.holds_gpu():
         raise RestyleRunningError()
 
 

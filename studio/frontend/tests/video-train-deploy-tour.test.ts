@@ -26,11 +26,11 @@ test("the tour attaches to the first visible target, not a hidden page's", () =>
   assert.doesNotMatch(src, /document\.querySelector\(sel\)/);
 });
 
-test("Video re-reads its model status when returning from Train to Create", () => {
+test("Video re-reads its model status when returning from Train or Restyle to Create", () => {
   const src = readSrc("features/video/video-page.tsx");
   assert.match(
     src,
-    /if \(pageMode === "train"\) \{\s*leftForTrain\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftForTrain\.current\) return;\s*leftForTrain\.current = false;\s*void refreshStatus\(\);\s*\}, \[active, pageMode, refreshStatus\]\);/,
+    /if \(pageMode !== "create"\) \{\s*leftCreate\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftCreate\.current\) return;\s*leftCreate\.current = false;\s*void refreshStatus\(\);\s*\}, \[active, pageMode, refreshStatus\]\);/,
   );
 });
 

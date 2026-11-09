@@ -133,10 +133,13 @@ def _take_the_gpu() -> None:
                 detail = "Unload the Create video model first: Keep multiple models loaded is set to Always.",
             )
         video.unload()
+    handoff = gpu_arbiter.restyle_handoff.set(True)
     try:
         gpu_arbiter.acquire_for_request(gpu_arbiter.VIDEO, policy = mode)
     except gpu_arbiter.MultiModelAlwaysRefusal as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    finally:
+        gpu_arbiter.restyle_handoff.reset(handoff)
 
 
 async def _start_reserved(request: Request, reservation: str):

@@ -2417,16 +2417,16 @@ function VideoGenerator({
     setQuant(null);
   }, [refreshStatus, dropResidentState]);
 
-  // Starting a training run unloads the video model, so re-read it on the way back to Create. Status only:
-  // dropResidentState would cancel the poll of a load still running from before the switch.
-  const leftForTrain = useRef(false);
+  // Starting a training run or a restyle unloads the video model, so re-read it on the way back to Create.
+  // Status only: dropResidentState would cancel the poll of a load still running from before the switch.
+  const leftCreate = useRef(false);
   useEffect(() => {
-    if (pageMode === "train") {
-      leftForTrain.current = true;
+    if (pageMode !== "create") {
+      leftCreate.current = true;
       return;
     }
-    if (!active || !leftForTrain.current) return;
-    leftForTrain.current = false;
+    if (!active || !leftCreate.current) return;
+    leftCreate.current = false;
     void refreshStatus();
   }, [active, pageMode, refreshStatus]);
 
