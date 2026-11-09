@@ -1161,6 +1161,10 @@ def capture_refusal(module: Any) -> Optional[str]:
         for group in _offload_groups(module):
             if getattr(group, "offload_to_disk_path", None):
                 return "a group streams from disk"
+            if getattr(group, "_unsloth_pinned_top", False) and getattr(
+                group, "_unsloth_top_gguf", False
+            ):
+                return "a GGUF top-level group onloads from its pinned copy (streamed graphs unmeasured there)"
             if getattr(group, "_unsloth_resident", False) or getattr(
                 group, "_unsloth_pinned_top", False
             ):

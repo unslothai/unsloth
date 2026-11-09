@@ -7834,6 +7834,19 @@ PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
 TOP_GROUP_HOST_ATTR = "_unsloth_top_host"
 
 
+TOP_GROUP_GGUF_ENV = "UNSLOTH_DIFFUSION_TOP_GROUP_GGUF"
+
+
+def _top_group_tensor_ok(t: Any) -> bool:
+    """Plain tensors and GGUFParameter (a ``.data`` re-point keeps its quant type); other subclasses keep diffusers' path."""
+    import torch
+
+    if type(t) in (torch.Tensor, torch.nn.Parameter):
+        return True
+    gguf = _gguf_parameter_class()
+    return gguf is not None and type(t) is gguf and not _env_off(TOP_GROUP_GGUF_ENV)
+
+
 def _pin_top_level_group(
     module: Any,
     logger: Any = None,
@@ -7881,7 +7894,7 @@ def _pin_top_level_group(
         is_torchao = getattr(go, "_is_torchao_tensor", None)
         if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
             return False
-        if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
+        if any(not _top_group_tensor_ok(t) for t in tensors):
             return False
         # the user's "pin nothing" override wins, as on every other streamed path
         if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in (
@@ -7928,6 +7941,9 @@ def _pin_top_level_group(
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_pinned_top = True
+        # capture_refusal keeps streamed CUDA graphs off for GGUF: their pool starved a 6 GiB T4 decode
+        gguf = _gguf_parameter_class()
+        group._unsloth_top_gguf = gguf is not None and any(type(t) is gguf for t in tensors)
         setattr(group, TOP_GROUP_HOST_ATTR, host)
         if pinned_mib is not None:
             pinned_mib[0] = already + need_mib
@@ -7984,7 +8000,7 @@ def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
         is_torchao = getattr(go, "_is_torchao_tensor", None)
         if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
             return False
-        if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
+        if any(not _top_group_tensor_ok(t) for t in tensors):
             return False
         host = {t: (t.data if t.data.device.type == "cpu" else t.data.cpu()) for t in tensors}
         device = group.onload_device
