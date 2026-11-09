@@ -5385,7 +5385,7 @@ def release_resident_groups(
                 (int(need_mib) * 1024 * 1024 - max(left, 0)) >> 20,
                 reason,
             )
-
+        restore.released_mib = (int(need_mib) * 1024 * 1024 - left) >> 20  # take_deferred_restore
         return restore
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
         if logger is not None:
@@ -5410,16 +5410,6 @@ def _phase_placement(pipe: Any) -> bool:
     )
 
 
-def _resident_room_mib(pipe: Any) -> int:
-    """MiB the placement keeps resident when nothing is streamed out: the rooms its groups were pinned within."""
-    total = 0
-    for module in (getattr(pipe, "components", {}) or {}).values():
-        room = getattr(module, "_unsloth_resident_room", None)
-        if room:
-            total += int(room)
-    return total
-
-
 def chained_restore(first: Callable[[], None], second: Callable[[], None]) -> Callable[[], None]:
     """Run ``first`` then ``second`` (``second`` even when ``first`` raises)."""
 
@@ -5429,6 +5419,9 @@ def chained_restore(first: Callable[[], None], second: Callable[[], None]) -> Ca
         finally:
             second()
 
+    restore.released_mib = int(getattr(first, "released_mib", 0) or 0) + int(
+        getattr(second, "released_mib", 0) or 0
+    )
     return restore
 
 
@@ -5447,20 +5440,27 @@ def defer_resident_restore(pipe: Any, restore: Optional[Callable[[], None]]) -> 
     return True
 
 
-def take_deferred_restore(pipe: Any, extra_mib: int) -> Optional[Callable[[], None]]:
-    """At a request's guard: pin a held restore back unless this request streams every resident group anyway
-    (``extra_mib`` at least the placement's room). Returns the restore the request carries on (None when it ran)."""
+# A held restore carries on while the next request's own release is at least this close to what it streamed out.
+_DEFER_TOLERANCE_MIB = 256
+
+
+def take_deferred_restore(pipe: Any, extra_mib: int) -> tuple[Optional[Callable[[], None]], int]:
+    """At a request's guard: ``(restore to carry on, MiB the request must still release)``. A request releasing about
+    as much as the held restore streamed out (or more) keeps those groups streamed and releases only the rest; any
+    other request (one the placement was sized for, or a much smaller release) pins them back first."""
     held = getattr(pipe, DEFERRED_RESTORE_ATTR, None)
+    extra = int(extra_mib or 0)
     if held is None:
-        return None
+        return None, extra
     try:
         setattr(pipe, DEFERRED_RESTORE_ATTR, None)
     except Exception:  # noqa: BLE001
         pass
-    if int(extra_mib or 0) > 0 and int(extra_mib) >= _resident_room_mib(pipe):
-        return held
+    streamed = int(getattr(held, "released_mib", 0) or 0)
+    if extra > 0 and extra + _DEFER_TOLERANCE_MIB >= streamed:
+        return held, max(0, extra - streamed)
     held()
-    return None
+    return None, extra
 
 
 DECODE_LEND_ATTR = "_unsloth_decode_lend"

@@ -14944,7 +14944,7 @@ class DiffusionBackend:
                         guard_release_mib = extra_mib
                         guard_capture_gen = cuda_graph.capture_generation(_peak_device_index(state))
                     # groups an earlier oversized request streamed out stay out when this one streams them all too
-                    carried_restore = take_deferred_restore(state.pipe, extra_mib)
+                    carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (

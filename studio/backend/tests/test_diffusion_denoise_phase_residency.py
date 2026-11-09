@@ -322,41 +322,56 @@ def test_the_flat_fallback_is_priced_against_the_denoise_reserve(store):
     assert new == max(0, flat - 768) > old
 
 
-def _deferring_pipe(phase, room = 4421):
-    pipe = _reserved_pipe(phase)
-    pipe.components = {"transformer": types.SimpleNamespace(_unsloth_resident_room = room)}
-    return pipe
+def _deferring_pipe(phase):
+    return _reserved_pipe(phase)
+
+
+def _held(calls, name, released_mib):
+    def restore():
+        calls.append(name)
+
+    restore.released_mib = released_mib
+    return restore
 
 
 def test_an_oversized_request_holds_its_restore_until_a_request_needs_the_blocks(store):
     calls = []
     pipe = _deferring_pipe(768)
-    assert dm.defer_resident_restore(pipe, lambda: calls.append("first"))
+    assert dm.defer_resident_restore(pipe, _held(calls, "edit", 4631))
     assert calls == []
-    # another edit that streams every resident group carries the held restore on, re-pinning nothing
-    carried = dm.take_deferred_restore(pipe, 10956)
-    assert carried is not None and calls == []
+    # the next edit releases about as much: the groups stay streamed, nothing re-pinned or released
+    carried, extra = dm.take_deferred_restore(pipe, 4550)
+    assert carried is not None and extra == 0 and calls == []
     assert getattr(pipe, dm.DEFERRED_RESTORE_ATTR) is None
     assert dm.defer_resident_restore(pipe, carried)
     # a text-to-image request the placement was sized for pins them back before it runs
-    assert dm.take_deferred_restore(pipe, 0) is None
-    assert calls == ["first"]
-    assert dm.take_deferred_restore(pipe, 0) is None and calls == ["first"]
+    carried, extra = dm.take_deferred_restore(pipe, 0)
+    assert carried is None and extra == 0 and calls == ["edit"]
+    assert dm.take_deferred_restore(pipe, 0) == (None, 0) and calls == ["edit"]
 
 
-def test_a_partial_release_pins_the_held_groups_back_first(store):
+def test_a_larger_release_carries_the_held_groups_and_releases_the_rest(store):
     calls = []
     pipe = _deferring_pipe(768)
-    dm.defer_resident_restore(pipe, lambda: calls.append("held"))
-    assert dm.take_deferred_restore(pipe, 1000) is None
+    dm.defer_resident_restore(pipe, _held(calls, "held", 3000))
+    carried, extra = dm.take_deferred_restore(pipe, 4000)
+    assert carried is not None and extra == 1000 and calls == []
+
+
+def test_a_much_smaller_release_pins_the_held_groups_back_first(store):
+    calls = []
+    pipe = _deferring_pipe(768)
+    dm.defer_resident_restore(pipe, _held(calls, "held", 4631))
+    assert dm.take_deferred_restore(pipe, 1000) == (None, 1000)
     assert calls == ["held"]
 
 
 def test_held_restores_chain_and_both_run(store):
     calls = []
     pipe = _deferring_pipe(768)
-    dm.defer_resident_restore(pipe, lambda: calls.append("a"))
-    dm.defer_resident_restore(pipe, lambda: calls.append("b"))
+    dm.defer_resident_restore(pipe, _held(calls, "a", 1000))
+    dm.defer_resident_restore(pipe, _held(calls, "b", 2000))
+    assert getattr(pipe, dm.DEFERRED_RESTORE_ATTR).released_mib == 3000
     dm.take_deferred_restore(pipe, 0)
     assert calls == ["a", "b"]
 
@@ -366,5 +381,5 @@ def test_whole_render_placements_restore_at_once(store, monkeypatch, phase, env)
     if env is not None:
         monkeypatch.setenv(dm.DENOISE_PHASE_RESIDENCY_ENV, env)
     pipe = _deferring_pipe(phase)
-    assert not dm.defer_resident_restore(pipe, lambda: None)
-    assert dm.take_deferred_restore(pipe, 10956) is None
+    assert not dm.defer_resident_restore(pipe, _held([], "x", 4631))
+    assert dm.take_deferred_restore(pipe, 4631) == (None, 4631)
