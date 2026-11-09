@@ -18,6 +18,7 @@ import triton.language as tl
 import torch
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE_TORCH
 from typing import Tuple
+from torch.fx.experimental.symbolic_shapes import is_concrete_int as _is_concrete_int
 from .utils import long_indexing, next_power_of_2, torch_gpu_device, torch_device_stream
 from .rms_layernorm import (
     _BF16_TRACEABLE,
@@ -93,27 +94,28 @@ def _rope_heads_tile(
     tl.store(out_ptr + half_head_dim * out_dim_stride, out1, mask = mask)
 
 
-def _rope_embedding_QK(
+@triton.jit
+def _rope_qk_program(
     Q,
     Q_out,
     K,
     K_out,
     q_batch_stride,
-    q_seq_stride: tl.constexpr,  # 4096 n_heads * head_dim (6144 fused QKV, 128 contiguous)
+    q_seq_stride,
     q_head_stride,
-    q_dim_stride: tl.constexpr,  # 1
+    q_dim_stride,
     qo_batch_stride,
-    qo_seq_stride: tl.constexpr,  # 4096 or 128
+    qo_seq_stride,
     qo_head_stride,
-    qo_dim_stride: tl.constexpr,  # 1
+    qo_dim_stride,
     k_batch_stride,
-    k_seq_stride: tl.constexpr,  # 1024 n_kv_heads * head_dim
+    k_seq_stride,
     k_head_stride,
-    k_dim_stride: tl.constexpr,  # 1
+    k_dim_stride,
     ko_batch_stride,
-    ko_seq_stride: tl.constexpr,  # 1024 or 128
+    ko_seq_stride,
     ko_head_stride,
-    ko_dim_stride: tl.constexpr,  # 1
+    ko_dim_stride,
     cos,
     cos_row_stride,  # runtime: a SymInt in compiled graphs
     sin,
@@ -222,9 +224,192 @@ def _rope_embedding_QK(
         )
 
 
+def _rope_embedding_QK(
+    Q,
+    Q_out,
+    K,
+    K_out,
+    q_batch_stride,
+    q_seq_stride: tl.constexpr,  # 4096 n_heads * head_dim (6144 fused QKV, 128 contiguous)
+    q_head_stride,
+    q_dim_stride: tl.constexpr,  # 1
+    qo_batch_stride,
+    qo_seq_stride: tl.constexpr,  # 4096 or 128
+    qo_head_stride,
+    qo_dim_stride: tl.constexpr,  # 1
+    k_batch_stride,
+    k_seq_stride: tl.constexpr,  # 1024 n_kv_heads * head_dim
+    k_head_stride,
+    k_dim_stride: tl.constexpr,  # 1
+    ko_batch_stride,
+    ko_seq_stride: tl.constexpr,  # 1024 or 128
+    ko_head_stride,
+    ko_dim_stride: tl.constexpr,  # 1
+    cos,
+    cos_row_stride,  # runtime: a SymInt in compiled graphs
+    sin,
+    sin_row_stride,
+    rope_embedding_indices,
+    seqlen,  # runtime, not specialized: varies per call
+    n_heads_Q: tl.constexpr,  # 32
+    n_heads_K: tl.constexpr,  # 8 (0 without K)
+    n_groups_Q: tl.constexpr,  # 1
+    half_head_dim: tl.constexpr,  # hd // 2
+    BACKWARD_PASS: tl.constexpr,  # backward (negated sin)
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    CAST_TO_SIN: tl.constexpr,  # compute in sin dtype (fp32 gemma)
+    HEADS_Q: tl.constexpr,  # query heads per program
+    HEADS_K: tl.constexpr,  # key heads per program
+    BLOCK_SIZE: tl.constexpr,  # hd // 2 next pow2
+    EVICT_INDICES: tl.constexpr,  # evict-first hint on position ids
+):
+    """Layout strides as constexprs: the fixed per-model values of the projection layouts."""
+    _rope_qk_program(
+        Q,
+        Q_out,
+        K,
+        K_out,
+        q_batch_stride,
+        q_seq_stride,
+        q_head_stride,
+        q_dim_stride,
+        qo_batch_stride,
+        qo_seq_stride,
+        qo_head_stride,
+        qo_dim_stride,
+        k_batch_stride,
+        k_seq_stride,
+        k_head_stride,
+        k_dim_stride,
+        ko_batch_stride,
+        ko_seq_stride,
+        ko_head_stride,
+        ko_dim_stride,
+        cos,
+        cos_row_stride,
+        sin,
+        sin_row_stride,
+        rope_embedding_indices,
+        seqlen,
+        n_heads_Q,
+        n_heads_K,
+        n_groups_Q,
+        half_head_dim,
+        BACKWARD_PASS,
+        HAS_ROPE_INDICES,
+        LONG_INDEXING,
+        CAST_TO_SIN,
+        HEADS_Q,
+        HEADS_K,
+        BLOCK_SIZE,
+        EVICT_INDICES,
+    )
+
+
+def _rope_embedding_QK_strided(
+    Q,
+    Q_out,
+    K,
+    K_out,
+    q_batch_stride,
+    q_seq_stride,  # runtime
+    q_head_stride,
+    q_dim_stride,  # runtime
+    qo_batch_stride,
+    qo_seq_stride,  # runtime
+    qo_head_stride,
+    qo_dim_stride,  # runtime
+    k_batch_stride,
+    k_seq_stride,  # runtime
+    k_head_stride,
+    k_dim_stride,  # runtime
+    ko_batch_stride,
+    ko_seq_stride,  # runtime
+    ko_head_stride,
+    ko_dim_stride,  # runtime
+    cos,
+    cos_row_stride,  # runtime: a SymInt in compiled graphs
+    sin,
+    sin_row_stride,
+    rope_embedding_indices,
+    seqlen,  # runtime, not specialized: varies per call
+    n_heads_Q: tl.constexpr,  # 32
+    n_heads_K: tl.constexpr,  # 8 (0 without K)
+    n_groups_Q: tl.constexpr,  # 1
+    half_head_dim: tl.constexpr,  # hd // 2
+    BACKWARD_PASS: tl.constexpr,  # backward (negated sin)
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    CAST_TO_SIN: tl.constexpr,  # compute in sin dtype (fp32 gemma)
+    HEADS_Q: tl.constexpr,  # query heads per program
+    HEADS_K: tl.constexpr,  # key heads per program
+    BLOCK_SIZE: tl.constexpr,  # hd // 2 next pow2
+    EVICT_INDICES: tl.constexpr,  # evict-first hint on position ids
+):
+    """The same rotation with runtime layout strides, for a layout whose seq or dim stride
+    depends on the sequence length (a compiled backward can hand dK over as [b, h, d, s]):
+    as constexprs those would specialize, so every new length recompiled the graph."""
+    _rope_qk_program(
+        Q,
+        Q_out,
+        K,
+        K_out,
+        q_batch_stride,
+        q_seq_stride,
+        q_head_stride,
+        q_dim_stride,
+        qo_batch_stride,
+        qo_seq_stride,
+        qo_head_stride,
+        qo_dim_stride,
+        k_batch_stride,
+        k_seq_stride,
+        k_head_stride,
+        k_dim_stride,
+        ko_batch_stride,
+        ko_seq_stride,
+        ko_head_stride,
+        ko_dim_stride,
+        cos,
+        cos_row_stride,
+        sin,
+        sin_row_stride,
+        rope_embedding_indices,
+        seqlen,
+        n_heads_Q,
+        n_heads_K,
+        n_groups_Q,
+        half_head_dim,
+        BACKWARD_PASS,
+        HAS_ROPE_INDICES,
+        LONG_INDEXING,
+        CAST_TO_SIN,
+        HEADS_Q,
+        HEADS_K,
+        BLOCK_SIZE,
+        EVICT_INDICES,
+    )
+
+
+_LAYOUT_STRIDES = (
+    "q_seq_stride",
+    "q_dim_stride",
+    "qo_seq_stride",
+    "qo_dim_stride",
+    "k_seq_stride",
+    "k_dim_stride",
+    "ko_seq_stride",
+    "ko_dim_stride",
+)
+
+
 # No triton.heuristics wrapper: the launcher passes real bools, and the wrapper's per-call cost
 # showed up at small (decode / short-sequence) shapes.
 _rope_embedding_QK = triton.jit(_rope_embedding_QK, do_not_specialize = ("seqlen",))
+_rope_embedding_QK_strided = triton.jit(
+    _rope_embedding_QK_strided, do_not_specialize = ("seqlen",) + _LAYOUT_STRIDES
+)
 
 # Elements of one half-head tile a program rotates: several heads per program instead of one
 # program per (row, head) with half its lanes masked off.
@@ -255,6 +440,20 @@ def _heads_per_program(n_heads, block_size):
     return max(1, min(next_power_of_2(n_heads), ROPE_TILE_ELEMENTS // block_size))
 
 
+def _fixed_layout(X):
+    # The constexpr kernel bakes in the seq and dim strides. Traced, a stride that is a symbolic
+    # expression (dK of a compiled backward can arrive as [b, h, d, s], dim stride = seq_len) would
+    # be specialized into a guard, so every new sequence length recompiled the whole graph; eager, a
+    # seq-major dim stride would build a new Triton binary per length.
+    seq_stride, dim_stride = X.stride(2), X.stride(3)
+    if not (_is_concrete_int(seq_stride) and _is_concrete_int(dim_stride)):
+        return False
+    # Dense, the dim stride grows with seq_len only when the seq dim is the inner one.
+    if dim_stride <= seq_stride or seq_stride == 0:
+        return True
+    return X.shape[2] <= 1 or X.shape[3] <= 1
+
+
 def _rope_launch(Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, cast_to_sin, wrap):
     # Q, K, Q_out, K_out: [batch, n_heads, seq_len, head_dim] at any strides (K may be None).
     # Q_out may be Q itself (in place).
@@ -275,7 +474,12 @@ def _rope_launch(Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, 
     if rope_ptr is None:
         rope_ptr = cos  # never read without HAS_ROPE_INDICES
     tensors = (Q, Q_out, K, K_out, cos, sin)
-    wrap(_rope_embedding_QK)[(batch * seq_len, n_groups_Q + n_groups_K)](
+    kernel = (
+        _rope_embedding_QK
+        if all(_fixed_layout(X) for X in (Q, Q_out, K, K_out))
+        else _rope_embedding_QK_strided
+    )
+    wrap(kernel)[(batch * seq_len, n_groups_Q + n_groups_K)](
         Q,
         Q_out,
         K,
