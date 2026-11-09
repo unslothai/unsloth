@@ -439,6 +439,8 @@ export async function fetchGalleryVideoExport(
 
 export interface VideoRestyleProgress {
   active: boolean;
+  // A start of this account's is still being admitted.
+  pending?: boolean;
   id?: string;
   phase: string | null;
   // Latent frames done out of total; Cosmos3 makes one per 4 output frames.

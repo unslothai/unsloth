@@ -92,7 +92,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   // Bumped whenever the shown clips are cleared, so an older download cannot repopulate them.
   const clipsFor = useRef(0);
 
-  const running = progress?.active === true;
+  const running = progress?.active === true || progress?.pending === true;
   if (!running && cancelling) setCancelling(false);
   const unavailable = status !== null && !status.available;
 

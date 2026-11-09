@@ -285,7 +285,7 @@ def test_route_rejects_mixed_upload(weights, monkeypatch):
 def test_runner_hides_another_accounts_job(weights):
     runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
     job = runner.start(prompt = "x", frames = _frames(5), owner = "alice")
-    assert runner.progress("bob") == {"active": True, "phase": None}
+    assert runner.progress("bob") == {"active": True, "phase": None, "pending": False}
     assert not runner.cancel("bob")
     assert runner.progress("alice")["id"] == job["id"]
     assert runner.cancel("alice")
@@ -418,7 +418,7 @@ def test_progress_waits_for_start_to_swap_owner_and_state(weights):
     assert reader.is_alive() and out == []
     runner._lock.release()
     reader.join(5)
-    assert out == [{"active": False, "phase": None}]
+    assert out == [{"active": False, "phase": None, "pending": False}]
 
 
 def test_reservation_refuses_a_second_upload_until_released(weights):
@@ -1155,3 +1155,10 @@ def test_the_shielded_start_releases_the_reservation_itself(weights, monkeypatch
             prompt = "x", frames = _frames(5), seed = 1, owner = "alice", reservation = token
         )
     assert not runner.holds_gpu()
+
+
+def test_progress_reports_a_pending_start_to_its_account(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    runner.reserve("alice")
+    assert runner.progress("alice")["pending"] is True
+    assert runner.progress("bob")["pending"] is False

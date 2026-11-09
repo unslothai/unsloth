@@ -429,9 +429,13 @@ class RestyleRunner:
         # Under the lock ``start`` swaps owner and state in, so a new owner never sees the old job.
         with self._lock:
             state = self._state
+            # A start still handing over the GPU: its own account keeps polling through it.
+            pending = self._reservation is not None and (
+                owner is None or self._reservation_owner == owner
+            )
             if owner is not None and not self.owned_by(owner):
-                return {"active": bool(state.get("active")), "phase": None}
-            return dict(state)
+                return {"active": bool(state.get("active")), "phase": None, "pending": pending}
+            return {**state, "pending": pending}
 
     def reserve(self, owner: Optional[str] = None) -> str:
         with self._lock:
