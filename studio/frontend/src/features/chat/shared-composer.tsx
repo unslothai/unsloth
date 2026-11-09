@@ -683,9 +683,9 @@ export function SharedComposer({
         // Same pair, slot decided by its history: what was typed while it loaded wins.
         writeComposerDraft(before.draftKey, "");
         writeComposerDraft(draftKey, text);
-        stageComposerDraft(draftKey, text);
         next = text;
       }
+      if (!incognito && !shareDraft) stageComposerDraft(draftKey, next);
       remoteDraftRef.current = next;
       setText(next);
       return;
