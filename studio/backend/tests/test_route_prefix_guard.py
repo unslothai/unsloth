@@ -119,9 +119,8 @@ def test_the_studio_app_guards_most_of_its_route_table(studio_app):
 
 
 def test_a_late_route_no_longer_runs_every_earlier_regex(studio_app, monkeypatch):
-    """/api/liveness is polled by the desktop app and sits behind ~800 routes. Before the guard every request
-    ran ~1600 route matches (an included router matches each candidate twice); with it, only entries whose
-    prefix fits the path are tried."""
+    """/api/liveness is polled by the desktop app behind ~800 routes; without the prefix guard each
+    request ran ~1600 matches, now only prefix-fitting entries are tried."""
     import fastapi.routing as fastapi_routing
     import starlette.routing as starlette_routing
 
