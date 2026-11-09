@@ -88,6 +88,8 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   };
   const players = useRef<Record<string, HTMLVideoElement | null>>({});
   const loadedFor = useRef<string | null>(null);
+  // The newest job progress named; a clip chosen after it marks that job's result as discarded.
+  const lastJob = useRef<string | null>(null);
   const previewFor = useRef(0);
   // Bumped whenever the shown clips are cleared, so an older download cannot repopulate them.
   const clipsFor = useRef(0);
@@ -101,6 +103,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     const ticket = clipsFor.current;
     try {
       const next = await fetchVideoRestyleProgress();
+      if (next.id) lastJob.current = next.id;
       setProgress(next);
       if (next.phase === "error") {
         setError(next.error ?? "Restyle failed.");
@@ -151,6 +154,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     // The last result belongs to the previous clip; don't show it beside a new one.
     setOutcomeStale(true);
     clipsFor.current += 1;
+    loadedFor.current = lastJob.current;
     setInputClip(null);
     setControlClip(null);
     setOutputClip(null);
@@ -352,7 +356,12 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             disabled={cancelling}
             onClick={() => {
               setCancelling(true);
-              void cancelVideoRestyle().catch(() => setCancelling(false));
+              // A pending start cannot be cancelled yet (cancelled: false): keep Cancel usable.
+              void cancelVideoRestyle()
+                .then((r) => {
+                  if (!r.cancelled) setCancelling(false);
+                })
+                .catch(() => setCancelling(false));
             }}
           >
             <Spinner className="mr-2 size-4" />
