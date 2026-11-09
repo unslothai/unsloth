@@ -64,7 +64,7 @@ class Denoiser(nn.Module):
         self.fake = fake
         self.seen = []
 
-    def forward(self, x):
+    def forward(self, x, **_kw):
         self.seen.append(self.fake.tuning)
         self.fake.results[f"shape{len(self.fake.results)}"] = 1.0  # a shape tuned inside the call
         return self.lin(x)
@@ -106,14 +106,17 @@ def test_tunes_only_inside_the_denoiser_and_persists(fake, tmp_path):
     assert fake.enabled and not fake.tuning
     assert fake.filename.startswith(str(tmp_path / "tunableop"))
     assert ("duration", rt.MAX_TUNING_MS) in fake.calls
-    pipe.transformer(torch.randn(2, 4))
-    assert pipe.transformer.seen == [True]
+    x = torch.randn(2, 4)
+    pipe.transformer(x)  # a render's first call: lookups only
+    assert pipe.transformer.seen == [False]
+    pipe.transformer(x)  # the next step, same shapes: tunes
+    assert pipe.transformer.seen == [False, True]
     assert not fake.tuning  # back off for the text encoder / VAE
     from pathlib import Path
 
     text = Path(fake.filename).read_text(encoding = "utf-8").splitlines()
     assert text[0] == "Validator,PT_VERSION,2.11.0"
-    assert text[-1] == "GemmTunableOp_BFloat16_TN,shape0,Gemm_Hipblaslt_1,1.0"
+    assert text[-1] == "GemmTunableOp_BFloat16_TN,shape1,Gemm_Hipblaslt_1,1.0"
     mtime = Path(fake.filename).stat().st_mtime_ns
     pipe.transformer.forward = lambda x: pipe.transformer.lin(x)  # nothing new tuned: no rewrite
     pipe.transformer(torch.randn(2, 4))
@@ -123,10 +126,12 @@ def test_tunes_only_inside_the_denoiser_and_persists(fake, tmp_path):
 def test_nested_calls_keep_tuning_on_until_the_outer_returns(fake):
     pipe = _pipe(fake)
     rt.install_for_pipe(pipe)
-    rt._pre(None, ())
+    rt._pre(None, (torch.zeros(1, 4),), {})
+    rt._post(None, (), {}, None)
+    rt._pre(None, (torch.zeros(1, 4),), {})  # steady: tuning on
     pipe.transformer(torch.randn(1, 4))
     assert fake.tuning  # the outer call is still running
-    rt._post(None, (), None)
+    rt._post(None, (), {}, None)
     assert not fake.tuning
 
 
@@ -138,8 +143,9 @@ def test_exception_in_the_forward_turns_tuning_off(fake):
         raise RuntimeError("x")
 
     pipe.transformer.forward = boom
-    with pytest.raises(RuntimeError):
-        pipe.transformer(torch.randn(1, 4))
+    for _ in range(2):  # the second call is steady, so tuning is on when it raises
+        with pytest.raises(RuntimeError):
+            pipe.transformer(torch.randn(1, 4))
     assert not fake.tuning and rt._STATE["depth"] == 0
 
 
@@ -189,3 +195,16 @@ def test_speed_layer_installs_on_rocm_tiers_and_removes_on_off(monkeypatch):
     cuda = types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = torch.bfloat16)
     ds.apply_speed_optims(pipe, cuda, is_gguf = False, family = None, speed_mode = "off")
     assert seen == ["uninstall"]  # never on NVIDIA
+
+
+def test_prefill_and_new_prompt_shapes_do_not_tune(fake):
+    pipe = _pipe(fake)
+    rt.install_for_pipe(pipe)
+    lat = torch.randn(1, 4)
+    for text in (5, 9):  # two prompts of different lengths
+        pipe.transformer(
+            lat, encoder_hidden_states = torch.zeros(1, text, 4), kv_cache_mode = "extract"
+        )
+        pipe.transformer(lat, encoder_hidden_states = torch.zeros(1, text, 4), kv_cache_mode = "cached")
+        pipe.transformer(lat, encoder_hidden_states = torch.zeros(1, text, 4), kv_cache_mode = "cached")
+    assert pipe.transformer.seen == [False, False, True, False, False, True]
