@@ -14,6 +14,9 @@ const start = source.lastIndexOf(
 );
 const end = source.indexOf("  // react-textarea-autosize re-measures", start);
 assert.ok(start >= 0 && end > start);
+const inputStart = source.indexOf("      const composer = aui.composer();", source.indexOf("  const setComposerText = useCallback("));
+const inputEnd = source.indexOf("    },", inputStart);
+assert.ok(inputStart >= 0 && inputEnd > inputStart);
 const code = ts.transpileModule(
   `return function render(props) {
   const referenceThreadId = props.threadId;
@@ -28,7 +31,7 @@ const code = ts.transpileModule(
   const justSentRef = useRef(null), draftKeyRef = useRef(null), imeSessionOpenRef = useRef(false);
   const setIsWritingExpanded = () => {};
   ${source.slice(start, end)}
-  return {send() { armJustSent(props.text); clearStoredDraft(); aui.composer().setText(''); }};
+  return {send() { armJustSent(props.text); clearStoredDraft(); aui.composer().setText(''); }, input(value) { const nativeEvent = undefined; ${source.slice(inputStart, inputEnd)} }};
 }`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
@@ -95,6 +98,10 @@ async function harness() {
   const deps = {
     ...drafts,
     ...guards,
+    isTextReplacement: () => false,
+    isDeliberateWrite: () => false,
+    isCompositionWrite: () => false,
+    flushResourcesSync: (fn: () => void) => fn(),
     INCOGNITO_DRAFT_SCOPE: "\0incognito",
     pastedTextOf: (file?: Attachment["file"]) => file?.paste,
     createPastedTextFile: (paste: string) => ({ paste }),
@@ -148,7 +155,7 @@ async function harness() {
   const render = new Function(...Object.keys(deps), code)(
     ...Object.values(deps),
   );
-  let actions: { send: () => void };
+  let actions: { send: () => void; input: (value: string) => boolean };
   async function update(changes: Partial<Props> = {}) {
     if (changes.share && !props.share) drafts.adoptCurrentDraft();
     Object.assign(props, changes);
@@ -182,6 +189,11 @@ async function harness() {
     async send() {
       actions.send();
       await update({ attachments: [] });
+    },
+    async delayedInput(value: string) {
+      const accepted = actions.input(value);
+      await update();
+      return accepted;
     },
     flush() {
       for (const fn of [...timers.values()]) fn();
@@ -424,4 +436,19 @@ test("a fresh runtime restores pastes from the same common New chat slot", async
   });
   assert.equal(h.props.text, "unfinished");
   assert.equal(h.props.attachments[0]?.file.paste, "unsaved paste");
+});
+
+test("first persistence keeps the guard against a delayed submitted-text write", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.type("submitted prompt");
+  await h.send();
+  await h.update({ threadId: "saved", remoteId: "saved" });
+  assert.equal(await h.delayedInput("submitted prompt"), false);
+  h.flush();
+  assert.equal(h.props.text, "");
+  assert.equal(h.drafts.latestDraft(h.drafts.composerDraftKey("saved")), "");
+  await h.update({ threadId: "other", runtimeId: "other", remoteId: "other" });
+  assert.equal(await h.delayedInput("submitted prompt"), true);
+  assert.equal(h.props.text, "submitted prompt");
 });

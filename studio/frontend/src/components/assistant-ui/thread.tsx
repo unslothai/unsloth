@@ -4103,6 +4103,9 @@ const Composer: FC<{
     ) {
       const previousKey = composerDraftKey(previous.draftThreadId);
       const previousPasteKey = composerPasteDraftKey(previous.draftThreadId);
+      if (justSentRef.current?.draftKey === previousKey) {
+        justSentRef.current = { ...justSentRef.current, draftKey };
+      }
       const text = latestDraft(previousKey);
       writeComposerDraft(draftKey, text);
       stageComposerDraft(draftKey, text);
