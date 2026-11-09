@@ -33,8 +33,8 @@ def _m():
     return sd_cpp_multigpu
 
 
-# An idle Kaggle T4: 14,900 MiB free, less the 1 GiB reserve.
-T4_LIMIT = 13_876
+# An idle Kaggle T4: 14,900 MiB free, less the 1.5 GiB reserve.
+T4_LIMIT = 13_364
 
 
 @pytest.fixture(autouse = True)
@@ -397,3 +397,21 @@ def test_a_two_card_load_cuts_the_model_across_both_cards_on_a_capable_build(mon
     assert status["multi_gpu"]["chosen"] == "layer_split"
     assert status["offload_policy"] == "none" and status["cpu_offload"] is False
     assert b._state.physical_gpu_id is None and b._state.placed_ordinal == 0
+
+
+def test_a_model_sd_cpp_would_stream_on_one_card_is_cut_across_both(monkeypatch, tmp_path):
+    # 2x T4 under Automatic: nvidia-smi shows 15,360 MiB free, the sd-server's CUDA context leaves 14,806 and auto-fit
+    # budgets 14,294, 1 MiB short of the 12,247 MiB model plus its 2 GiB reserve: priced as one card, it streams.
+    monkeypatch.setattr(bk, "_layer_split_supported", lambda binary: True)
+    monkeypatch.setattr("utils.hardware.get_parent_visible_gpu_ids", lambda: [0, 1])
+    b, servers = _server_load(
+        monkeypatch,
+        tmp_path,
+        gpu_ordinals = [0, 1],
+        limits = {0: (15_360, 15_360), 1: (15_360, 15_360)},
+    )
+    assert (
+        _backend_arg(servers[-1].started.get("offload"))
+        == "diffusion=CUDA0&CUDA1,te=CUDA1,vae=CUDA1"
+    )
+    assert b.status()["multi_gpu"]["chosen"] == "layer_split"

@@ -15,6 +15,9 @@ from typing import Any, Callable, Optional, Sequence
 DENOISE_HEADROOM_MIB = 2048
 ENCODER_HEADROOM_MIB = 1024
 VAE_DECODE_HEADROOM_MIB = 1536
+# Held back from nvidia-smi's free MiB: the child's own CUDA context (about 550 MiB on a T4) plus the 512 MiB sd.cpp's
+# auto-fit keeps back, so a model priced as fitting one card is also kept resident there by sd.cpp.
+CARD_RESERVE_MIB = 1536
 
 
 @dataclasses.dataclass(frozen = True)
@@ -147,14 +150,14 @@ TEXT_ENCODER_FIELDS: tuple[str, ...] = ("clip_l", "clip_g", "t5xxl", "llm", "llm
 
 
 def card_limit_mib(ordinal: int) -> Optional[int]:
-    """Free MiB minus max(1 GiB, VRAM Budget reserve), via nvidia-smi (no CUDA context here). None when unreadable."""
+    """Free MiB minus max(CARD_RESERVE_MIB, VRAM Budget reserve), via nvidia-smi (no CUDA context here). None when unreadable."""
     from .diffusion_device import smi_free_total_mib
     from .diffusion_memory import _user_budget_reserve_mib
 
     free, total = smi_free_total_mib(int(ordinal))
     if free is None:
         return None
-    reserve = max(1024, int(_user_budget_reserve_mib(total or free) or 0))
+    reserve = max(CARD_RESERVE_MIB, int(_user_budget_reserve_mib(total or free) or 0))
     return max(0, int(free) - reserve)
 
 
