@@ -103,9 +103,9 @@ def _newest_leaf(head_id: str, ordered: list[dict], parents: dict[str, Optional[
 
 
 def _model_parts(message: dict) -> list:
-    """Content and attachments minus mcpToolOnly parts, as modelVisibleMessage (mcp-image.ts)."""
-    content = _with_attachments(message) or []
-    return [p for p in content if not (isinstance(p, dict) and p.get("mcpToolOnly") is True)]
+    """Parts minus mcpToolOnly ones (modelVisibleMessage); only user rows keep attachments."""
+    parts = _with_attachments(message) if message.get("role") == "user" else message.get("content")
+    return [p for p in parts or [] if not (isinstance(p, dict) and p.get("mcpToolOnly") is True)]
 
 
 def _append_text(current: str, addition: str, joined: bool) -> str:

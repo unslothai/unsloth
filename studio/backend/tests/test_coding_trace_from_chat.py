@@ -177,7 +177,7 @@ def test_rows_from_a_service_need_no_database():
     messages = [
         _row("u1", "user", _text("Run it") + [{"type": "image", "image": "x"}], None, 1),
         _row("a1", "assistant", parts, "u1", 2),
-        _row("s1", "tool", _text("stray"), "a1", 3),
+        _row("s1", "tool", _text("stray"), "a1", 3, attachments = [{"content": _text("file")}]),
     ]
 
     trace = chat_to_trace(thread, messages)
