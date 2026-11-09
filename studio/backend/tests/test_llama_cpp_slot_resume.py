@@ -591,9 +591,6 @@ def test_save_skipped_when_estimate_unavailable_and_low_disk(monkeypatch, tmp_pa
     assert backend.save_slots_for_resume() is None
 
 
-# ── a reload that only changed the context length restores the saved slots (#9037) ──────────
-
-
 def _ctx_backend(
     tmp_path,
     *,
@@ -640,11 +637,8 @@ def test_an_identical_launch_fits(tmp_path):
 def test_a_launch_that_only_raised_the_context_fits_when_the_slots_hold_the_tokens(tmp_path):
     saved = _manifest_from(_ctx_backend(tmp_path, n_ctx = 8192), n_saved = 8000)
     assert _ctx_backend(tmp_path, n_ctx = 32768).slot_resume_fits(saved) is True
-    # The same tokens no longer fit once the larger context is split four ways.
     assert _ctx_backend(tmp_path, n_ctx = 32768, n_slots = 4).slot_resume_fits(saved) is False
-    # Nor into a smaller context than the saved prompt.
     assert _ctx_backend(tmp_path, n_ctx = 4096).slot_resume_fits(saved) is False
-    # A unified cache offers every slot the whole context.
     assert (
         _ctx_backend(tmp_path, n_ctx = 8192, n_slots = 4, unified = True).slot_resume_fits(saved) is False
     ), "unified is a fingerprint field of its own; only the context may differ"
@@ -675,18 +669,15 @@ def test_a_malformed_or_empty_manifest_never_fits(tmp_path):
 
 
 def test_the_fingerprint_still_tracks_the_context_for_the_strict_comparison(tmp_path):
-    """The relaxation lives in slot_resume_fits; the fingerprint itself is unchanged, so the
-    load-time identity snapshot and every double comparing it whole behave as before."""
     launch = _ctx_backend(tmp_path, n_ctx = 8192)._slot_launch_fingerprint()
     assert launch != _ctx_backend(tmp_path, n_ctx = 32768)._slot_launch_fingerprint()
-    assert launch == tuple(launch)  # a plain tuple with the same values compares equal
+    assert launch == tuple(launch)
 
 
 def test_keep_warm_restores_a_stash_onto_a_launch_with_a_larger_context(monkeypatch, tmp_path):
-    """The whole chain a reload runs: the unload stash, then note_model_loaded on the new launch."""
     from core.inference import llama_keepwarm as kw
 
-    # Both backends first: _resume_backend rewrites model.gguf, and the stat is part of the stash.
+    # _resume_backend rewrites model.gguf, so build both before stashing.
     unloaded, reloaded = _ctx_backend(tmp_path, n_ctx = 8192), _ctx_backend(tmp_path, n_ctx = 32768)
     saved = _manifest_from(unloaded, n_saved = 8000)
     for entry in saved["slots"]:

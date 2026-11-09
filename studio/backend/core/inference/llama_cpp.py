@@ -2806,10 +2806,7 @@ if _SLOT_SAVE_HTTP_TIMEOUT <= 0:
 
 
 class _SlotLaunchFingerprint(NamedTuple):
-    """What a saved slot state's validity depends on besides the GGUF itself.
-
-    Compared whole, except by ``LlamaCppBackend.slot_resume_fits``, which lets the two context
-    fields differ."""
+    """Compared whole, except by ``slot_resume_fits``, which lets the context fields differ."""
 
     extra_args: tuple
     sidecars: tuple
@@ -35523,9 +35520,6 @@ class LlamaCppBackend:
         )
 
     def _slot_context_capacity(self) -> Optional[int]:
-        """Tokens one slot of this launch holds. llama-server splits the context across its
-        slots unless the cache is unified; it also caps a slot at the model's training context,
-        and enforces that itself on a restore."""
         try:
             n_ctx = int(self._effective_context_length or self._requested_n_ctx or 0)
         except (TypeError, ValueError):
@@ -35537,14 +35531,7 @@ class LlamaCppBackend:
         return n_ctx // max(1, int(self.effective_parallel_slots or 1))
 
     def slot_resume_fits(self, manifest: dict) -> bool:
-        """Whether the slot state ``manifest`` describes can be restored onto this launch.
-
-        The fingerprint pins what changes the KV cache's numerics or layout. Its two context
-        fields are the one thing allowed to differ: a state saved under one context length is
-        valid under any other, as long as every slot still holds its saved tokens. That is the
-        reload that only raised the Context Length (#9037), which used to prefill the whole chat
-        again. llama-server refuses a prompt longer than its slot anyway; checking the capacity
-        here only saves the round trip."""
+        """Only the context fields may differ: saved KV stays valid if every slot still fits (#9037)."""
         saved = manifest.get("launch")
         current = self._slot_launch_fingerprint()
         if not isinstance(saved, (tuple, list)) or len(saved) != len(current):

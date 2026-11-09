@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A /load that replaces the resident llama-server saves its slot KV first (#9037).
-
-Slot KV was saved only by the idle unload, a media swap and the /unload route. The reload a
-Context Length change makes goes through /load, whose teardown is inside ``load_model``, so a
-100k-token chat was prefilled again after every settings change. Pinned on the source like the
-other ordering guards in this suite: the save has to sit after the point of no return (a load
-that is still refusable must not write chat KV to disk) and before the teardown.
-"""
+"""A /load replacing llama-server saves slot KV after the point of no return, before teardown (#9037)."""
 
 from __future__ import annotations
 
@@ -34,13 +27,11 @@ def test_both_teardowns_in_the_load_route_save_the_slot_kv_first():
 
     gguf = body.index(_SAVE)
     standard = body.index(_SAVE, gguf + 1)
-    # GGUF branch: after the last rejection and the preview handoff, before any teardown.
     assert body.rindex("_set_preview_resident(None)", 0, gguf) > body.rindex(
         "_raise_if_scoped_load_cancelled()", 0, gguf
     )
     assert gguf < body.index("unsloth_backend.unload_model", gguf)
     assert gguf < body.index("await _run_gguf_load_attempt(", gguf)
-    # Standard branch: after the preview handoff, before llama-server is torn down.
     assert body.rindex("_set_preview_resident(None)", 0, standard) > gguf
     assert standard < body.index(
         "await _unload_llama_before_standard_load(llama_backend)", standard
@@ -56,7 +47,6 @@ def test_the_unload_route_keeps_its_own_save():
 
 
 def test_each_save_is_awaited_under_its_guard():
-    """AST, not text: the guard has to be the ``if`` that encloses the await."""
     tree = ast.parse(_ROUTES.read_text(encoding = "utf-8"))
     impl = next(
         node

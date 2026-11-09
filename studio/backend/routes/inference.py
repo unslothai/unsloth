@@ -19827,10 +19827,7 @@ async def _load_model_impl(
             # every rejection and drain has completed. the load now owns the slot for studio.
             _set_preview_resident(None)
 
-            # The resident llama-server is about to be replaced (an identical load returned from
-            # _reuse_loaded_gguf above). Save its slot KV first, as /unload does, so a reload that
-            # only changed a launch setting restores a long chat instead of prefilling it again
-            # (#9037). Keyed by GGUF, so a switch to another model and back restores too.
+            # Save slot KV before replacing llama-server, as /unload does (#9037).
             if replacing and llama_backend.is_loaded:
                 from core.inference.chat_swap_kv import save_chat_kv_before_unload
                 await save_chat_kv_before_unload()
@@ -20002,8 +19999,7 @@ async def _load_model_impl(
             )
         # every rejection and drain has completed. the load now owns the slot for studio.
         _set_preview_resident(None)
-        # The teardown below ends the resident llama-server: save its slot KV first, as /unload
-        # does, so loading that GGUF again restores the chat (#9037).
+        # Save slot KV before teardown, as /unload does (#9037).
         if replacing and llama_backend.is_loaded:
             from core.inference.chat_swap_kv import save_chat_kv_before_unload
             await save_chat_kv_before_unload()
