@@ -460,3 +460,19 @@ def test_an_unpinned_hub_id_is_checked_against_the_hubs_current_main(hub, tmp_pa
     _hub_records(monkeypatch, {"transformer/diffusion_pytorch_model.bin": _sha(b"t")}, calls)
     assert ds.pipeline_safetensors_kwargs("o/pipe", cache_dir = cache) == {"use_safetensors": False}
     assert calls[-1][1] is None
+
+
+def test_a_main_answer_is_refreshed_but_a_commit_answer_is_kept(hub, monkeypatch):
+    import core.inference.cached_weight_sha as cws
+
+    hub.put("Model-INT8.pt", PT_BYTES)
+    clock = [1000.0]
+    monkeypatch.setattr(cws.time, "monotonic", lambda: clock[0])
+    cws.hub_sha256s(REPO, ["Model-INT8.pt"])
+    cws.hub_sha256s(REPO, ["Model-INT8.pt"], revision = "c" * 40)
+    assert len(hub.info_calls) == 2
+    clock[0] += cws._MUTABLE_TTL_S + 1
+    cws.hub_sha256s(REPO, ["Model-INT8.pt"], revision = "c" * 40)
+    assert len(hub.info_calls) == 2
+    cws.hub_sha256s(REPO, ["Model-INT8.pt"])
+    assert len(hub.info_calls) == 3

@@ -392,3 +392,13 @@ def test_a_pinned_revision_is_judged_on_its_own_snapshot(tmp_path):
     assert ds.component_safetensors_kwargs("o/pipe", "transformer", cache_dir = str(cache)) == {
         "use_safetensors": True
     }
+
+
+def test_an_orphan_shard_without_its_index_is_not_safetensors_weights(tmp_path):
+    folder = tmp_path / "transformer"
+    folder.mkdir()
+    (folder / "diffusion_pytorch_model.bin").write_bytes(b"x")
+    (folder / "diffusion_pytorch_model-00001-of-00002.safetensors").write_bytes(b"x")
+    assert ds.component_weight_state(folder) is False
+    (folder / "diffusion_pytorch_model.safetensors.index.json").write_text("{}")
+    assert ds.component_weight_state(folder) is True

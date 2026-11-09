@@ -21,8 +21,10 @@ from typing import Iterable, Optional
 
 ENV_DISABLE = "UNSLOTH_REUSE_CACHED_PICKLE_WEIGHTS"
 _CHUNK = 8 * 1024 * 1024
-# An unanswered Hub lookup is retried after this many seconds; an answer is kept for the process.
+# An unanswered Hub lookup is retried after this many seconds; an answer for a moving revision (``main``, a branch)
+# after _MUTABLE_TTL_S; an answer for a commit id is kept for the process.
 _MISS_TTL_S = 60.0
+_MUTABLE_TTL_S = 300.0
 _FILE_NAME = "weight_sha256.json"
 _MAX_ENTRIES = 512
 
@@ -57,12 +59,21 @@ def hub_sha256s(
     if not repo_id or not names or _offline():
         return {}
     now = time.monotonic()
+    pinned = (
+        bool(revision)
+        and len(str(revision)) == 40
+        and all(c in "0123456789abcdef" for c in str(revision))
+    )
     out: dict = {}
     wanted: list = []
     with _lock:
         for name in names:
             hit = _hub.get((repo_id, revision, name))
-            if hit is None or (hit[0] is None and now - hit[1] > _MISS_TTL_S):
+            if (
+                hit is None
+                or (hit[0] is None and now - hit[1] > _MISS_TTL_S)
+                or (not pinned and now - hit[1] > _MUTABLE_TTL_S)
+            ):
                 wanted.append(name)
             elif hit[0]:
                 out[name] = hit[0]

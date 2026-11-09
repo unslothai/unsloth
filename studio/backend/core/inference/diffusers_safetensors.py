@@ -142,7 +142,10 @@ def component_weight_state(folder: Any) -> Optional[bool]:
     ]
     if not weights:
         return None
-    if any(_is_model_safetensors(n) for n in weights):
+    # A lone shard without its index is not loadable (an interrupted download): only a whole file or an index counts.
+    if any(
+        _is_model_safetensors(n) and not re.search(r"-\d+-of-\d+\.safetensors$", n) for n in weights
+    ):
         return True
     return False if any(not n.endswith(".index.json") for n in weights) else None
 
