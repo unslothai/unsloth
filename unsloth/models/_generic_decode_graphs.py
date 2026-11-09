@@ -415,7 +415,10 @@ def _linear_states(layer):
     out = []
     for name in ("conv_states", "recurrent_states"):
         states = getattr(layer, name, None)
-        if isinstance(states, dict):
+        if isinstance(states, torch.Tensor):
+            # transformers before 5.17: one tensor per kind.
+            out.append(states)
+        elif isinstance(states, dict):
             out.extend(states[i] for i in sorted(states) if isinstance(states[i], torch.Tensor))
         elif isinstance(states, (list, tuple)):
             out.extend(t for t in states if isinstance(t, torch.Tensor))
@@ -1052,8 +1055,16 @@ def _linear_reason(layer):
     if getattr(layer, "record_past", False):
         return "linear layer recording its past"
     flags = getattr(layer, "has_previous_state", None)
+    # A dict per state index (5.17+) or one bool (earlier 5.x, with is_*_initialized flags).
+    if isinstance(flags, dict):
+        ready = bool(flags) and all(flags.values())
+    else:
+        ready = flags is True and all(
+            getattr(layer, name, True)
+            for name in ("is_conv_states_initialized", "is_recurrent_states_initialized")
+        )
     states = _linear_states(layer)
-    if not isinstance(flags, dict) or not flags or not all(flags.values()) or not states:
+    if not ready or not states:
         return "uninitialized layer"
     for t in states:
         if t.device.type != _BACKEND.device_type:

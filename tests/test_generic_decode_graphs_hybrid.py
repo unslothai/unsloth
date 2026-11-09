@@ -28,6 +28,10 @@ from transformers import cache_utils  # noqa: E402
 
 if getattr(cache_utils, "LinearAttentionLayer", None) is None:
     pytest.skip("transformers without LinearAttentionLayer", allow_module_level = True)
+if not getattr(qwen3_5.modeling_qwen3_5.Qwen3_5ForCausalLM, "_can_compile_fullgraph", False):
+    # Before 5.17 Qwen3.5 is stateful without a fullgraph-compilable forward: generate() keeps a dynamic cache, so
+    # the static hybrid cache these tests decode over is never built (and transformers' own static path fails).
+    pytest.skip("transformers without static-cache Qwen3.5 generate", allow_module_level = True)
 
 
 # On a CUDA host, zoo's Triton Gated DeltaNet kernels (and vendored fla) are dispatched for these CPU tensors and
@@ -332,3 +336,25 @@ def test_real_capture_matches_eager_hybrid(which, monkeypatch):
                 assert torch.allclose(x.float(), y.float(), atol = 5e-2, rtol = 0), s
             else:
                 assert torch.equal(x, y), s
+
+
+def test_linear_layer_layouts():
+    # Both LinearAttentionLayer layouts: a dict per state index with a dict of flags (5.17+), and one tensor per
+    # kind with one bool and is_*_initialized flags (earlier 5.x).
+    states = (torch.zeros(1, 2, 3), torch.zeros(1, 2, 4, 4))
+    new = types.SimpleNamespace(
+        conv_states = {0: states[0]}, recurrent_states = {0: states[1]}, has_previous_state = {0: True}
+    )
+    old = types.SimpleNamespace(
+        conv_states = states[0],
+        recurrent_states = states[1],
+        has_previous_state = True,
+        is_conv_states_initialized = True,
+        is_recurrent_states_initialized = True,
+    )
+    for layer in (new, old):
+        assert GG._linear_states(layer) == list(states)
+    old.has_previous_state = False
+    assert GG._linear_reason(old) == "uninitialized layer"
+    new.has_previous_state = {0: False}
+    assert GG._linear_reason(new) == "uninitialized layer"
