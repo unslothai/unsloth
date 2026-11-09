@@ -1858,7 +1858,7 @@ function Install-UnslothStudio {
         return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
-    # Always a uv-managed CPython: --python > UNSLOTH_PYTHON > the existing environment's minor > 3.13.
+    # Request a specific CPython: --python > UNSLOTH_PYTHON > the existing environment's minor > 3.13.
     $PythonExplicitRequest = if ($null -ne $PythonRequestArg) { $PythonRequestArg.Trim() } elseif ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON.Trim() } else { "" }
     if (($null -ne $PythonRequestArg -or $PythonExplicitRequest) -and $PythonExplicitRequest -notmatch '^3\.1[1-3](\.\d+)?$') {
         Write-StudioLine "[ERROR] Unsupported Python request '$PythonExplicitRequest': use 3.11, 3.12 or 3.13 (optionally with a patch, e.g. 3.13.9)." -ForegroundColor Red
@@ -6222,7 +6222,7 @@ exit 0
         }
     }
     $PythonRequestLabel = if ($PythonPatchRequest) { $PythonPatchRequest } else { $PythonVersion }
-    step "python" "uv will provide Python $PythonRequestLabel ($PythonArch); a Python already on this machine is not used"
+    step "python" "requesting managed Python $PythonRequestLabel ($PythonArch)"
     $DetectedPython = $null
 
     $DiagPythonVersion = $PythonVersion
@@ -6620,6 +6620,151 @@ exit 0
         $env:UV_HTTP_TIMEOUT = "180"
     }
 
+    # Capture native stderr without PowerShell 5.1 turning it into a terminating error.
+    # A blocked uv child reports an OS code in stderr; a blocked executable throws a
+    # Win32Exception instead. Neither may be inferred from a stale LASTEXITCODE.
+    function Invoke-PythonSelectionProbe {
+        param([string]$Executable, [string[]]$Arguments)
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        $global:LASTEXITCODE = 0
+        $output = @()
+        $blocked = $false
+        $failed = $false
+        try {
+            $output = @(& $Executable @Arguments 2>&1)
+            $code = $global:LASTEXITCODE
+        } catch {
+            $output += $_
+            $code = 1
+            $failed = $true
+        }
+        foreach ($item in $output) {
+            if ($item -is [System.Management.Automation.ErrorRecord]) {
+                if (Test-ApplicationControlBlock $item) { $blocked = $true }
+                if ($item.FullyQualifiedErrorId -notlike 'NativeCommandError*') { $failed = $true }
+            }
+        }
+        $diagnostic = ($output | ForEach-Object { "$_" }) -join "`n"
+        $ok = ($code -eq 0 -and -not $failed -and -not $blocked)
+        if (-not $ok -and $diagnostic -match '(?i)\b(?:os error|WinError)\s+(?:4551|1260)\b') {
+            $blocked = $true
+        }
+        return @{ Success = $ok; Blocked = $blocked; Output = $output; Diagnostic = $diagnostic }
+    }
+
+    # Official CPython NuGet distributions: https://docs.python.org/3.13/using/windows.html#the-nuget-org-packages
+    # These keep PSF's signatures on the runtime and venv launchers. Pin the complete
+    # archive, not just python.exe: stdlib extensions and Python source ship together.
+    function Get-SignedPythonPackage {
+        param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
+        $version = '3.13.17'
+        if ($Minor -ne '3.13' -or ($Patch -and $Patch -ne $version) -or $PythonSkip -contains $version) { return $null }
+        $packages = @{
+            x86_64 = @{ Name = 'python'; Sha256 = 'dce409744b088f94c6e37ba41f8100c384c27e029e843237364c602d30d475e5' }
+            arm64 = @{ Name = 'pythonarm64'; Sha256 = 'aaa8c60c0adffde214ebd13e19bd79289aedb6452b4883eb08a59592c008456b' }
+        }
+        if (-not $packages.ContainsKey($Arch)) { return $null }
+        $package = $packages[$Arch]
+        return @{
+            Version = $version; Minor = $Minor; Arch = $Arch; Sha256 = $package.Sha256
+            Url = "https://api.nuget.org/v3-flatcontainer/$($package.Name)/$version/$($package.Name).$version.nupkg"
+        }
+    }
+
+    function Test-SignedPythonRuntime {
+        param([string]$Root, $Package)
+        $digits = $Package.Minor.Replace('.', '')
+        foreach ($required in @('python.exe', 'pythonw.exe', 'python3.dll', "python$digits.dll",
+                               'Lib\venv\scripts\nt\venvlauncher.exe', 'Lib\venv\scripts\nt\venvwlauncher.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $Root $required) -PathType Leaf)) { return $null }
+        }
+        # The six distlib executables are pip's launcher *templates*, not runtime
+        # components. Unsloth uses uv for packages and CPython's signed venv launchers.
+        # Do not exempt any other native binary, including other site-packages content.
+        foreach ($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction Stop |
+                           Where-Object { $_.Extension -in @('.exe', '.dll', '.pyd') })) {
+            $relative = $file.FullName.Substring($Root.TrimEnd('\', '/').Length + 1)
+            if ($relative -match '^Lib\\site-packages\\pip\\_vendor\\distlib\\[tw](32|64|64-arm)\.exe$') { continue }
+            $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName -ErrorAction Stop
+            if ($sig.Status -ne 'Valid') {
+                substep "Signed Python validation failed: $relative ($($sig.Status))." "Yellow"
+                return $null
+            }
+            if ($relative -eq 'python.exe' -and
+                $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -ne 'Python Software Foundation') {
+                return $null
+            }
+        }
+        $exe = Join-Path $Root 'python.exe'
+        $probe = Invoke-PythonSelectionProbe -Executable $exe -Arguments @('-I', '-S', '-c',
+            "import sys, sysconfig, ssl, sqlite3, ctypes, venv; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))))")
+        if (-not $probe.Success) {
+            substep "Signed Python could not start: $(Redact-InstallOutput $probe.Diagnostic)" "Yellow"
+            return $null
+        }
+        $wantTag = if ($Package.Arch -eq 'arm64') { 'win-arm64' } else { 'win-amd64' }
+        if ($probe.Diagnostic.Trim() -ne "$($Package.Version) $wantTag 0") { return $null }
+        return @{ Version = $Package.Minor; Full = $Package.Version; Path = $exe; Arch = $Package.Arch; Source = 'signed-managed' }
+    }
+
+    function Resolve-SignedManagedPython {
+        param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
+        $package = Get-SignedPythonPackage -Minor $Minor -Patch $Patch -Arch $Arch
+        if (-not $package) {
+            substep "No pinned signed Python build matches the requested version and architecture." "Yellow"
+            return $null
+        }
+        # App-owned and versioned: never install globally, discover a system Python,
+        # overwrite uv's store, or replace a runtime an existing environment depends on.
+        $parent = [System.IO.Path]::GetFullPath((Join-Path $StudioHome 'python-signed'))
+        $destination = Join-Path $parent "cpython-$($package.Version)-$Arch-$($package.Sha256.Substring(0, 12))"
+        $work = $null
+        try {
+            if (Test-Path -LiteralPath $destination) {
+                $cached = Test-SignedPythonRuntime -Root $destination -Package $package
+                if (-not $cached) { substep "The cached signed Python could not be validated; leaving it unchanged." "Yellow" }
+                return $cached
+            }
+            if ((Test-UvEnvFlag 'UV_OFFLINE') -or $env:UV_PYTHON_DOWNLOADS -eq 'never') {
+                substep "Signed Python is not cached and Python downloads are disabled." "Yellow"
+                return $null
+            }
+            [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+            $work = Join-Path $parent ('.stage-' + [guid]::NewGuid().ToString('N'))
+            [System.IO.Directory]::CreateDirectory($work) | Out-Null
+            # .zip extension is needed by Expand-Archive in Windows PowerShell 5.1.
+            $archive = Join-Path $work 'python.zip'
+            substep "Windows blocked uv's Python; downloading signed Python $($package.Version) ($Arch) for Unsloth." "Yellow"
+            Invoke-WebRequest -UseBasicParsing -Uri $package.Url -OutFile $archive -TimeoutSec 180 -ErrorAction Stop
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $package.Sha256) {
+                throw 'The signed Python package failed checksum verification.'
+            }
+            $unpacked = Join-Path $work 'unpacked'
+            Expand-Archive -LiteralPath $archive -DestinationPath $unpacked -ErrorAction Stop
+            $staged = Join-Path $unpacked 'tools'
+            if (-not (Test-SignedPythonRuntime -Root $staged -Package $package)) {
+                throw 'The signed Python package failed runtime validation.'
+            }
+            # Both paths are beneath the same private parent; no overwrite of a live runtime.
+            [System.IO.Directory]::Move($staged, $destination)
+            return (Test-SignedPythonRuntime -Root $destination -Package $package)
+        } catch {
+            substep "Could not prepare signed Python: $(Redact-InstallOutput $_.Exception.Message)" "Yellow"
+            return $null
+        } finally {
+            if ($work -and (Test-Path -LiteralPath $work)) {
+                # Remove only this invocation's staging directory, never a runtime or
+                # a reparse point supplied in place of the staging tree.
+                $full = [System.IO.Path]::GetFullPath($work)
+                if ($full.StartsWith($parent.TrimEnd('\') + '\.stage-', [StringComparison]::OrdinalIgnoreCase) -and
+                    -not ((Get-Item -LiteralPath $work -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
     # --no-bin / --no-registry leave PATH and the py launcher alone; --system skips an active venv;
     # --managed-python never returns an interpreter uv did not install.
     function Resolve-UvManagedPython {
@@ -6640,16 +6785,22 @@ exit 0
                 & $script:UvExe python install --no-bin --no-registry $key
             }
             # Asked even when the install failed: a runtime installed earlier serves an offline machine.
-            $exe = ""
-            try {
-                $exe = (& $script:UvExe python find --system --managed-python $key 2>$null | Select-Object -First 1)
-            } catch {}
-            $exe = "$exe".Trim()
+            $find = Invoke-PythonSelectionProbe -Executable $script:UvExe -Arguments @('python', 'find', '--system', '--managed-python', $key)
+            if ($find.Blocked) { $script:PythonPolicyBlocked = $true }
+            if (-not $find.Success) {
+                if ($find.Diagnostic) { Write-StudioLine "        Python discovery failed: $(Redact-InstallOutput $find.Diagnostic)" -ForegroundColor Yellow }
+                continue
+            }
+            $exe = "$($find.Output | Select-Object -Last 1)".Trim()
             if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
-            $facts = ""
-            try {
-                $facts = (& $exe -S -I -c "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))))" 2>$null | Select-Object -First 1)
-            } catch {}
+            $probe = Invoke-PythonSelectionProbe -Executable $exe -Arguments @('-S', '-I', '-c',
+                "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))))")
+            if ($probe.Blocked) { $script:PythonPolicyBlocked = $true }
+            if (-not $probe.Success) {
+                if ($probe.Diagnostic) { Write-StudioLine "        Python probe failed: $(Redact-InstallOutput $probe.Diagnostic)" -ForegroundColor Yellow }
+                return $null
+            }
+            $facts = $probe.Diagnostic
             $parts = @("$facts".Trim() -split '\s+')
             if ($parts.Count -ne 3) { return $null }
             $full = $parts[0]
@@ -6671,7 +6822,7 @@ exit 0
     function Test-LegacyVenvReusable {
         param([Parameter(Mandatory = $true)][string]$VenvDir, $Python, [bool]$Exact = $false)
         $cfg = Join-Path $VenvDir "pyvenv.cfg"
-        if (-not $Python -or -not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $false }
+        if (-not $Python -or $Python.Source -eq 'signed-managed' -or -not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $false }
         $venvHome = $null
         $venvVersion = $null
         # uv writes pyvenv.cfg as UTF-8 without a BOM; Windows PowerShell 5.1 would read it as ANSI.
@@ -6704,24 +6855,43 @@ exit 0
     if ($script:StudioKeepsTools -and [string]::IsNullOrWhiteSpace($env:UV_PYTHON_INSTALL_DIR)) {
         $env:UV_PYTHON_INSTALL_DIR = Join-Path $StudioHome "python"
     }
+    $script:PythonPolicyBlocked = $false
     $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+    if (-not $DetectedPython -and $script:PythonPolicyBlocked) {
+        $DetectedPython = Resolve-SignedManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+    }
     if (-not $DetectedPython -and $PythonArch -eq "arm64" -and -not (Test-Arm64PythonOptOut)) {
         substep "could not get a native ARM64 Python; falling back to the x64 stack." "Yellow"
         $script:WoaNativeCudaTorch = $false
         $script:WoaTorchIndexUrl = $null
         $PythonArch = "x86_64"
         $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+        if (-not $DetectedPython -and $script:PythonPolicyBlocked) {
+            $DetectedPython = Resolve-SignedManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+        }
     }
     if (-not $DetectedPython) {
+        if ($script:PythonPolicyBlocked) {
+            Write-StudioLine "[ERROR] Windows Application Control blocked the Python runtime needed by Unsloth." -ForegroundColor Red
+            Write-StudioLine "        A signed managed runtime could not be prepared for Python $PythonRequestLabel ($PythonArch)." -ForegroundColor Yellow
+            Write-StudioLine "        Keep your security settings enabled. See the signed Python details above and share Copy Diagnostics with Unsloth support." -ForegroundColor Yellow
+            Write-StudioLine "        Your existing environment was not changed." -ForegroundColor Yellow
+            return (Exit-InstallFailure "Windows Application Control blocked Python $PythonRequestLabel ($PythonArch); no compatible signed Python was found")
+        }
         $_uvArchKey = if ($PythonArch -eq "arm64") { "aarch64" } else { "x86_64" }
         Write-StudioLine "[ERROR] uv could not provide Python $PythonRequestLabel ($PythonArch)." -ForegroundColor Red
-        Write-StudioLine "        Unsloth Studio always runs on its own uv-managed Python, never one already installed." -ForegroundColor Yellow
+        Write-StudioLine "        Unsloth uses its own managed Python; a system Python installation is not used." -ForegroundColor Yellow
         Write-StudioLine "        Offline, or downloads blocked: point UV_PYTHON_INSTALL_MIRROR at a python-build-standalone" -ForegroundColor Yellow
         Write-StudioLine "        mirror, or run 'uv python install cpython-$PythonRequestLabel-windows-$_uvArchKey-none' once while online," -ForegroundColor Yellow
         Write-StudioLine "        then re-run this installer. Your existing environment was not changed." -ForegroundColor Yellow
         return (Exit-InstallFailure "uv could not provide Python $PythonRequestLabel ($PythonArch)")
     }
-    step "python" "using uv-managed Python $($DetectedPython.Full) ($($DetectedPython.Arch))"
+    if ($DetectedPython.Source -eq 'signed-managed') {
+        step "python" "using signed managed Python $($DetectedPython.Full) ($($DetectedPython.Arch))"
+        substep "Unsloth owns this signed Python runtime; Windows security settings are unchanged." "Yellow"
+    } else {
+        step "python" "using uv-managed Python $($DetectedPython.Full) ($($DetectedPython.Arch))"
+    }
 
     # ── Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. ──
     Write-TauriLog "STEP" "Creating virtual environment"
@@ -7457,7 +7627,12 @@ exit 0
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
+        if ($DetectedPython.Source -eq 'signed-managed') {
+            # CPython copies its signed venv launchers; uv creates a new unsigned trampoline.
+            $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $DetectedPython.Path -I -m venv --without-pip $VenvDir }
+        } else {
+            $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
+        }
         if ($venvExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)

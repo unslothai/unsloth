@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""install.ps1 always builds the Studio environment on a uv-managed CPython, never on a Python
-already installed on the machine (a system 3.12 used to win over uv's 3.13 and close the
-cu130 torch 2.13 route)."""
+"""Windows prefers uv-managed CPython and preserves the requested version and architecture.
+A system 3.12 must never silently replace a requested 3.13 (the cu130 torch route).
+"""
 
 from __future__ import annotations
 
@@ -107,6 +107,10 @@ function Invoke-InstallCommand {{
 }}
 $PythonSkip = @({skip_list})
 $script:UvExe = $env:FAKE_UV_EXE
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) }}
+{_function("Test-ApplicationControlBlock")}
+{_function("Invoke-PythonSelectionProbe")}
+function Redact-InstallOutput {{ param($Text) $Text }}
 {_function("Resolve-UvManagedPython")}
 $r = Resolve-UvManagedPython -Minor "3.13" -Patch "{patch}" -Arch "{arch}"
 if ($r) {{ $r | ConvertTo-Json -Compress }} else {{ 'null' }}
@@ -226,7 +230,7 @@ def test_an_explicit_patch_is_exact(shell, tmp_path):
 REQUEST = _between(
     "    $argList = $args\n", "    # Env-var equivalent for web installs"
 ) + _between(
-    "    # Always a uv-managed CPython:",
+    "    # Request a specific CPython:",
     "    # An elevated run writes",
 )
 
@@ -312,6 +316,7 @@ function Write-TauriLog {{ param($a, $b) }}
 function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) }}
 function step {{ param($a, $b, $c) }}
 function substep {{ param($a, $b) }}
+function step {{ param($a, $b) }}
 function Remove-IndexUrlCredentials {{ param($u) return $u }}
 function Get-HostMachineArch {{ return "{host}" }}
 function Initialize-WoaNativeCudaTorch {{
@@ -377,7 +382,7 @@ def test_the_choice(shell, tmp_path, kwargs, expected):
 
 RESOLVE_SITE = _between(
     "    $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion",
-    '    step "python" "using uv-managed Python',
+    "    # ── Create the venv;",
 )
 
 
@@ -391,6 +396,7 @@ def _site(
 $ErrorActionPreference = "Stop"
 function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) }}
 function substep {{ param($a, $b) }}
+function step {{ param($a, $b) }}
 function Exit-InstallFailure {{ param([string]$Message) return "EXIT" }}
 function Resolve-UvManagedPython {{
     param([string]$Minor, [string]$Patch, [string]$Arch)
@@ -487,7 +493,7 @@ def test_pyvenv_cfg_is_read_as_utf8():
         assert "Get-Content -LiteralPath $cfg -Encoding UTF8" in _function(name), name
 
 
-def test_no_path_reaches_a_python_already_on_the_machine():
+def test_no_unrestricted_system_python_fallback_and_resolution_precedes_rollback():
     for gone in (
         "Find-CompatiblePython",
         "Install-PythonFromPythonOrg",
@@ -503,3 +509,339 @@ def test_no_path_reaches_a_python_already_on_the_machine():
     venv = SOURCE.index("& $script:UvExe venv $VenvDir --python")
     # Resolved before the existing environment is moved aside, so a failure leaves it intact.
     assert uv_ready < resolve < rollback < venv
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "code, message, blocked",
+    [
+        (1, "uv trampoline failed: uncategorized error (os error 4551)", True),
+        (1, "[WinError 1260] blocked", True),
+        (1, "network timeout 4551", False),
+        (1, "os error 45510", False),
+        (1, "[WinError 577] invalid image", False),
+        (0, "os error 4551", False),
+    ],
+)
+def test_native_stderr_retains_policy_evidence(shell, code, message, blocked):
+    script = f"""
+$ErrorActionPreference = 'Stop'
+{_function('Test-ApplicationControlBlock')}
+{_function('Invoke-PythonSelectionProbe')}
+$r = Invoke-PythonSelectionProbe -Executable $env:PROBE_PYTHON -Arguments @('-c',
+    "import sys; print('{message}', file=sys.stderr); sys.exit({code})")
+@{{ Blocked = $r.Blocked; Success = $r.Success; Diagnostic = $r.Diagnostic; EAP = "$ErrorActionPreference" }} | ConvertTo-Json -Compress
+"""
+    r = json.loads(_pwsh(shell, script, {"PROBE_PYTHON": sys.executable}))
+    assert r["Blocked"] is blocked
+    assert r["Success"] is (code == 0)
+    assert message in r["Diagnostic"]
+    assert r["EAP"] == "Stop"
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("code, blocked", [(4551, True), (1260, True), (5, False), (577, False)])
+def test_spawn_exception_does_not_use_stale_exit_code(shell, tmp_path, code, blocked):
+    child = tmp_path / "blocked.ps1"
+    child.write_text(f"throw [System.ComponentModel.Win32Exception]::new({code})", encoding = "utf-8")
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$LASTEXITCODE = 0
+{_function('Test-ApplicationControlBlock')}
+{_function('Invoke-PythonSelectionProbe')}
+$r = Invoke-PythonSelectionProbe -Executable $env:PROBE_CHILD
+@{{ Blocked = $r.Blocked; Success = $r.Success }} | ConvertTo-Json -Compress
+"""
+    r = json.loads(_pwsh(shell, script, {"PROBE_CHILD": str(child)}))
+    assert r == {"Blocked": blocked, "Success": False}
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "managed, blocked, signed, expected, calls",
+    [
+        (True, False, True, "managed", 0),
+        (False, False, True, "failed", 0),  # offline is not a reason to change interpreter source
+        (False, True, True, "signed-managed", 1),
+        (False, True, False, "failed", 1),
+    ],
+)
+def test_installer_fallback_is_gated_by_policy_evidence(
+    shell, managed, blocked, signed, expected, calls
+):
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$script:Calls = 0
+$script:Messages = @()
+function Write-StudioLine {{ param($Message, $ForegroundColor) $script:Messages += $Message }}
+function substep {{ param($Message, $Color) }}
+function step {{ param($Name, $Message) }}
+function Exit-InstallFailure {{ param($Message) return @{{ Source = 'failed' }} }}
+function Resolve-UvManagedPython {{
+    param($Minor, $Patch, $Arch)
+    $script:PythonPolicyBlocked = ${str(blocked).lower()}
+    if (${str(managed).lower()}) {{ return @{{ Full = '3.13.17'; Arch = $Arch; Source = 'managed' }} }}
+}}
+function Resolve-SignedManagedPython {{
+    param($Minor, $Patch, $Arch)
+    $script:Calls++
+    if (${str(signed).lower()}) {{ return @{{ Full = '3.13.17'; Arch = $Arch; Source = 'signed-managed' }} }}
+}}
+function Run {{
+    $PythonVersion = '3.13'; $PythonPatchRequest = ''; $PythonRequestLabel = '3.13'; $PythonArch = 'x86_64'
+{RESOLVE_SITE}
+    return $DetectedPython
+}}
+$r = Run
+@{{ Source = $r.Source; Calls = $script:Calls; Messages = $script:Messages -join "`n" }} | ConvertTo-Json -Compress
+"""
+    r = json.loads(_pwsh(shell, script, {}))
+    assert r["Source"] == expected
+    assert r["Calls"] == calls
+    if blocked and not signed:
+        assert "Application Control blocked" in r["Messages"]
+        assert "mirror" not in r["Messages"]
+        assert "existing environment was not changed" in r["Messages"]
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "minor, patch, arch, expected",
+    [
+        ("3.13", "", "x86_64", "python"),
+        ("3.13", "3.13.17", "arm64", "pythonarm64"),
+        ("3.13", "3.13.16", "x86_64", None),
+        ("3.12", "", "x86_64", None),
+        ("3.13", "", "x86", None),
+    ],
+)
+def test_signed_package_never_changes_requested_version_or_arch(
+    shell, minor, patch, arch, expected
+):
+    script = f"""
+$PythonSkip = @('3.13.8')
+{_function('Get-SignedPythonPackage')}
+$r = Get-SignedPythonPackage -Minor '{minor}' -Patch '{patch}' -Arch '{arch}'
+if ($r) {{ $r | ConvertTo-Json -Compress }} else {{ 'null' }}
+"""
+    r = json.loads(_pwsh(shell, script, {}))
+    if expected is None:
+        assert r is None
+    else:
+        assert r["Version"] == "3.13.17" and r["Arch"] == arch
+        assert (
+            r["Url"]
+            == f"https://api.nuget.org/v3-flatcontainer/{expected}/3.13.17/{expected}.3.13.17.nupkg"
+        )
+        assert re.fullmatch("[0-9a-f]{64}", r["Sha256"])
+
+
+@needs_pwsh
+@pytest.mark.skipif(os.name != "nt", reason = "Windows runtime tree")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "bad_file, facts, success, expected, probed",
+    [
+        ("", "3.13.17 win-amd64 0", True, True, True),
+        ("python.exe", "3.13.17 win-amd64 0", True, False, False),
+        ("DLLs/_ssl.pyd", "3.13.17 win-amd64 0", True, False, False),
+        ("Lib/venv/scripts/nt/venvlauncher.exe", "3.13.17 win-amd64 0", True, False, False),
+        ("Lib/site-packages/unexpected.exe", "3.13.17 win-amd64 0", True, False, False),
+        ("", "3.12.10 win-amd64 0", True, False, True),
+        ("", "3.13.17 win-arm64 0", True, False, True),
+        ("", "3.13.17 win-amd64 1", True, False, True),
+        ("", "policy refused a runtime DLL", False, False, True),
+    ],
+)
+def test_signed_runtime_checks_libraries_and_launchers_before_execution(
+    shell, tmp_path, bad_file, facts, success, expected, probed
+):
+    files = [
+        "python.exe",
+        "pythonw.exe",
+        "python3.dll",
+        "python313.dll",
+        "Lib/venv/scripts/nt/venvlauncher.exe",
+        "Lib/venv/scripts/nt/venvwlauncher.exe",
+        "DLLs/_ssl.pyd",
+        "Lib/site-packages/pip/_vendor/distlib/t64.exe",
+    ]
+    if bad_file and bad_file not in files:
+        files.append(bad_file)
+    for name in files:
+        f = tmp_path / name
+        f.parent.mkdir(parents = True, exist_ok = True)
+        f.touch()
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$script:Probed = $false
+function substep {{ param($Message, $Color) }}
+function Redact-InstallOutput {{ param($Text) $Text }}
+function Get-AuthenticodeSignature {{
+    param($LiteralPath, $ErrorAction)
+    $cert = [pscustomobject]@{{}}
+    $cert | Add-Member ScriptMethod GetNameInfo {{ param($type, $issuer) 'Python Software Foundation' }}
+    $status = if ($LiteralPath -eq $env:BAD_FILE -or $LiteralPath.EndsWith('distlib\\t64.exe')) {{ 'NotSigned' }} else {{ 'Valid' }}
+    [pscustomobject]@{{ Status = $status; SignerCertificate = $cert }}
+}}
+function Invoke-PythonSelectionProbe {{
+    param($Executable, $Arguments)
+    $script:Probed = $true
+    @{{ Success = ${str(success).lower()}; Diagnostic = '{facts}' }}
+}}
+{_function('Test-SignedPythonRuntime')}
+$r = Test-SignedPythonRuntime -Root $env:RUNTIME -Package @{{ Version='3.13.17'; Minor='3.13'; Arch='x86_64' }}
+@{{ Accepted = [bool]$r; Probed = $script:Probed }} | ConvertTo-Json -Compress
+"""
+    r = json.loads(
+        _pwsh(
+            shell,
+            script,
+            {"RUNTIME": str(tmp_path), "BAD_FILE": str(tmp_path / bad_file) if bad_file else ""},
+        )
+    )
+    assert r == {"Accepted": expected, "Probed": probed}
+
+
+@needs_pwsh
+@pytest.mark.skipif(os.name != "nt", reason = "Windows runtime tree")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "failure", ["checksum", "offline", "downloads-never", "signature", "download"]
+)
+def test_signed_runtime_failure_preserves_existing_environment(shell, tmp_path, failure):
+    home = tmp_path / "home"
+    old = home / "unsloth_studio" / "keep.txt"
+    old.parent.mkdir(parents = True)
+    old.write_text("previous environment")
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$StudioHome = $env:TEST_HOME
+$script:Downloads = 0; $script:Extracts = 0
+function substep {{ param($Message, $Color) }}
+function Redact-InstallOutput {{ param($Text) $Text }}
+function Get-SignedPythonPackage {{ param($Minor,$Patch,$Arch) @{{ Version='3.13.17'; Minor='3.13'; Arch='x86_64'; Sha256=('0'*64); Url='https://example.invalid/python.nupkg' }} }}
+function Invoke-WebRequest {{
+    param($UseBasicParsing, $Uri, $OutFile, $TimeoutSec, $ErrorAction)
+    $script:Downloads++
+    if ('{failure}' -eq 'download') {{ throw 'network unavailable' }}
+    [IO.File]::WriteAllText($OutFile, 'wrong archive')
+}}
+function Get-FileHash {{ param($LiteralPath,$Algorithm) @{{ Hash = $(if ('{failure}' -eq 'checksum') {{ 'wrong' }} else {{ '0'*64 }}) }} }}
+function Expand-Archive {{
+    param($LiteralPath,$DestinationPath,$ErrorAction)
+    $script:Extracts++
+    [IO.Directory]::CreateDirectory((Join-Path $DestinationPath 'tools')) | Out-Null
+}}
+function Test-SignedPythonRuntime {{ param($Root,$Package) return $null }}
+{_function('Test-UvEnvFlag')}
+{_function('Resolve-SignedManagedPython')}
+$r = Resolve-SignedManagedPython -Minor '3.13'
+@{{ Accepted=[bool]$r; Downloads=$script:Downloads; Extracts=$script:Extracts; Stages=@(Get-ChildItem (Join-Path $StudioHome 'python-signed') -Filter '.stage-*' -ErrorAction SilentlyContinue).Count }} | ConvertTo-Json -Compress
+"""
+    # Switch parameters need their native declaration in the network double.
+    script = script.replace("param($UseBasicParsing,", "param([switch]$UseBasicParsing,")
+    r = json.loads(
+        _pwsh(
+            shell,
+            script,
+            {
+                "TEST_HOME": str(home),
+                "UV_OFFLINE": "1" if failure == "offline" else "",
+                "UV_PYTHON_DOWNLOADS": "never" if failure == "downloads-never" else "",
+            },
+        )
+    )
+    assert not r["Accepted"] and r["Stages"] == 0
+    assert r["Downloads"] == (0 if failure in ("offline", "downloads-never") else 1)
+    assert r["Extracts"] == (1 if failure == "signature" else 0)
+    assert old.read_text() == "previous environment"
+
+
+@needs_pwsh
+@pytest.mark.skipif(
+    os.name != "nt" or not os.environ.get("UNSLOTH_TEST_PSF_PACKAGE"),
+    reason = "requires verified official Python package",
+)
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_policy_block_installs_private_signed_runtime_and_reuses_it_offline(shell, tmp_path):
+    # Only transport and the original policy refusal are simulated. The archive hash,
+    # signatures, native imports, install, cache reuse, and venv creation are real.
+    uv = tmp_path / "blocked-uv.cmd"
+    uv.write_text(
+        "@echo uv trampoline failed to spawn Python child process: os error 4551 1>&2\n@exit /b 1\n",
+        encoding = "utf-8",
+    )
+    create_venv = _between(
+        "    if (-not (Test-Path -LiteralPath $VenvPython)) {",
+        "    # Mark the managed venv before probing",
+    )
+    helpers = "\n".join(
+        _function(name)
+        for name in (
+            "Test-ApplicationControlBlock",
+            "Invoke-PythonSelectionProbe",
+            "Redact-InstallOutput",
+            "Resolve-UvManagedPython",
+            "Get-SignedPythonPackage",
+            "Test-SignedPythonRuntime",
+            "Resolve-SignedManagedPython",
+            "Test-UvEnvFlag",
+            "Test-LegacyVenvReusable",
+        )
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$PythonSkip = @('3.13.8'); $StudioHome = $env:TEST_HOME
+$script:UvExe = $env:BLOCKED_UV; $script:Downloads=0
+function Write-StudioLine {{ param($Message,$ForegroundColor) }}
+function substep {{ param($Name,$Message) }}
+function step {{ param($Name,$Message) }}
+function Exit-InstallFailure {{ param($Message) throw $Message }}
+function Invoke-InstallCommand {{
+    param([ScriptBlock]$Command,[string]$Label)
+    $ErrorActionPreference='Continue'
+    & $Command 2>&1 | Out-Null
+    return [int]$global:LASTEXITCODE
+}}
+function Invoke-WebRequest {{
+    param([switch]$UseBasicParsing,$Uri,$OutFile,$TimeoutSec,$ErrorAction)
+    $script:Downloads++
+    if ($Uri -ne 'https://api.nuget.org/v3-flatcontainer/python/3.13.17/python.3.13.17.nupkg') {{ throw 'Wrong package URL' }}
+    Copy-Item -LiteralPath $env:UNSLOTH_TEST_PSF_PACKAGE -Destination $OutFile
+}}
+{helpers}
+$PythonVersion='3.13'; $PythonPatchRequest=''; $PythonRequestLabel='3.13'; $PythonArch='x86_64'
+{RESOLVE_SITE}
+if ($DetectedPython.Source -ne 'signed-managed') {{ throw 'Signed managed runtime was not selected' }}
+$env:UV_OFFLINE='1'
+$again = Resolve-SignedManagedPython -Minor '3.13'
+if ($again.Path -ne $DetectedPython.Path) {{ throw 'Cached runtime not reused offline' }}
+$VenvDir=Join-Path $StudioHome 'unsloth_studio'
+$VenvPython=Join-Path $VenvDir 'Scripts\\python.exe'
+{create_venv}
+$signature=Get-AuthenticodeSignature -LiteralPath $VenvPython
+$facts=& $VenvPython -I -c "import sys,ssl,sqlite3,ctypes; print(sys.version.split()[0], int(sys.prefix != sys.base_prefix))"
+if ($LASTEXITCODE -ne 0) {{ throw 'venv launch failed' }}
+@{{ Status="$($signature.Status)"; Facts="$facts"; Path=$DetectedPython.Path; Downloads=$script:Downloads; Stages=@(Get-ChildItem (Join-Path $StudioHome 'python-signed') -Filter '.stage-*').Count; Legacy=(Test-LegacyVenvReusable -VenvDir $VenvDir -Python $DetectedPython) }} | ConvertTo-Json -Compress
+"""
+    home = tmp_path / "Unsloth home with spaces"
+    r = json.loads(
+        _pwsh(
+            shell,
+            script,
+            {
+                "TEST_HOME": str(home),
+                "BLOCKED_UV": str(uv),
+                "UV_OFFLINE": "",
+                "UV_PYTHON_DOWNLOADS": "",
+            },
+        )
+    )
+    assert r["Status"] == "Valid" and r["Facts"] == "3.13.17 1"
+    assert Path(r["Path"]).is_relative_to(home / "python-signed")
+    assert r["Downloads"] == 1 and r["Stages"] == 0 and not r["Legacy"]
