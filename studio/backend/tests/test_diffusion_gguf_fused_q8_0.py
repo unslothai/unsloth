@@ -142,6 +142,9 @@ def test_patched_q8_0_linear_skips_the_unfused_dequant_and_matches_stock(monkeyp
 
 
 def test_other_quant_types_take_the_stock_forward(monkeypatch):
+    monkeypatch.setenv(
+        "UNSLOTH_DIFFUSION_GGUF_FUSED_CAST", "0"
+    )  # their own fusion: test_diffusion_gguf_fused_cast
     rng = np.random.default_rng(4)
     block = gguf.GGML_QUANT_SIZES[Q4_K][1]
     raw = rng.integers(0, 256, size = (16, 256 // 256 * block), dtype = np.uint8)
@@ -191,6 +194,11 @@ def test_fused_q8_0_uninstall_and_kill_switch(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_GGUF_FUSED_Q8_0", "0")
     assert gc.install_compiled_dequant() is True
     assert gc.is_fused_q8_0_installed() is False
+    assert gc.is_fused_cast_installed() is True  # the other types still fuse their cast
+    gc.uninstall_all()
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_GGUF_FUSED_CAST", "0")
+    assert gc.install_compiled_dequant() is True
+    assert gc.is_fused_q8_0_installed() is False and gc.is_fused_cast_installed() is False
     assert gguf_utils.GGUFLinear.forward_native is stock
 
 

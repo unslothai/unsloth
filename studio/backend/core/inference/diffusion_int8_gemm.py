@@ -733,8 +733,8 @@ def unlisted_config(index: int) -> Optional[tuple]:
             if index not in _UNLISTED_PROBE:
                 _UNLISTED_PROBE[index] = _probe(index, _FALLBACK_CONFIG)
             if _UNLISTED_PROBE[index]:
-                key = (index, mode)
                 tile = _FALLBACK_CONFIG if mode == "force" else _unlisted_tile(index)
+                key = (index, mode, tile)
                 if key not in _UNLISTED_OK:
                     ok = True
                     if mode != "force":
@@ -837,6 +837,10 @@ def _race_cache_store(key: Optional[str], tile: tuple) -> None:
 def _unlisted_tile(index: int) -> tuple:
     """Once per device: fastest probe-passing tile vs the fallback (ties keep the fallback), persisted per card and
     toolchain. Any failure, or UNSLOTH_DIFFUSION_INT8_GEMM_RACE=0, keeps the fallback."""
+    if (
+        not race_enabled()
+    ):  # read per load, ahead of the kept winner, so the switch acts between loads
+        return _FALLBACK_CONFIG
     if index not in _UNLISTED_TILE:
         best = _FALLBACK_CONFIG
         try:
@@ -996,8 +1000,8 @@ def _act_quant_v1(x2d: Any) -> tuple:
 
 
 def _act_quant_v2(x2d: Any, weight: Any) -> tuple:
-    from .diffusion_int8_fused import _act_quant
-    return _act_quant(x2d, weight)
+    from .diffusion_int8_fused import _mlp_act_quant
+    return _mlp_act_quant(x2d, weight)
 
 
 @lru_cache(maxsize = 4)

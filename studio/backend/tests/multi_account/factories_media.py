@@ -343,6 +343,25 @@ def seed_model(account) -> dict[str, str]:
     return {"model_id": MODEL_ID}
 
 
+@seeder("media-queue-job")
+def seed_queue_job(account) -> dict[str, str]:
+    """A waiting image job, placed straight in the queue so no worker renders it."""
+    import uuid
+
+    from core.inference.image_queue import ImageJob
+    from models.inference import DiffusionGenerateRequest
+    from routes import inference
+
+    job = ImageJob(
+        id = uuid.uuid4().hex[:12],
+        account_id = account.account_id,
+        account = account,
+        request = DiffusionGenerateRequest(prompt = SENTINEL),
+    )
+    inference._get_image_queue()._jobs.append(job)
+    return {"job_id": job.id}
+
+
 _LINK_IS_THE_CREDENTIAL = (
     "the signed link is the credential rather than the bearer, so every holder of it is served "
     "while the minting account is active"
@@ -368,6 +387,12 @@ FACTORIES = {
         "media-image", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/images/gallery/{image_id}": Factory("media-image"),
+    "routes.inference:POST:/images/queue/{job_id}/cancel": Factory(
+        "media-queue-job", fragment = "cancelled"
+    ),
+    "routes.inference:POST:/images/queue/{job_id}/move": Factory(
+        "media-queue-job", body = {"index": 0}, fragment = SENTINEL
+    ),
     "routes.inference:POST:/images/gallery/{image_id}/move": Factory(
         "media-image", {"after_id": None}, fragment = SENTINEL
     ),

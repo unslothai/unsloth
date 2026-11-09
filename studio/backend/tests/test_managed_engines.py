@@ -2910,3 +2910,223 @@ def test_vllm_drafter_retry_respects_an_external_stop(isolated, monkeypatch):
         engine.start("model", 4096, [0], dict(os.environ))
     engine.stop()
     assert len(launches) == 1
+
+
+@pytest.fixture
+def kernel_host(monkeypatch):
+    rows = [["580.82.07", "8.0"]]
+    monkeypatch.setattr(install.sys, "platform", "linux")
+    monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(install, "_driver_rows", lambda gpu_id, wait = True: rows)
+    monkeypatch.delenv("UNSLOTH_ENGINE_FLASHINFER_KERNELS", raising = False)
+    return rows
+
+
+def test_every_vllm_lock_has_its_flashinfer_kernel_wheel(kernel_host, monkeypatch):
+    table = json.loads(install._FLASHINFER_KERNELS.read_text(encoding = "utf-8"))
+    for engine, entry in install.PROFILES.items():
+        for release in entry["releases"]:
+            monkeypatch.setattr(install, "_release", lambda engine, release = release: release)
+            version = install._pins(engine)["flashinfer-python"][0]
+            wheel = install.flashinfer_kernel_wheel(engine)
+            if engine != "vllm":
+                assert wheel is None, release["lock"]
+                continue
+            assert wheel == table[f"{version}+cu130"]["x86_64"], release["lock"]
+            assert f"/flashinfer_jit_cache-{version}+cu130-" in wheel["url"]
+            assert wheel["url"].endswith("_x86_64.whl")
+            assert len(wheel["sha256"]) == 64 and wheel["size"] > 0
+
+
+@pytest.mark.parametrize(
+    "capability, runs",
+    [
+        ("8.0", True),
+        ("8.6", True),
+        ("8.9", True),
+        ("9.0", True),
+        ("10.0", True),
+        ("10.3", True),
+        ("12.0", True),
+        ("12.1", True),
+        ("7.5", False),
+        ("9.1", False),
+        ("10.1", False),
+        ("11.0", False),
+        ("13.0", False),
+    ],
+)
+def test_flashinfer_kernels_only_for_gpus_they_were_built_for(capability, runs):
+    arches = ["8.0", "8.9", "9.0a", "10.0a", "10.3a", "12.0f"]
+    assert install._kernels_run_on(arches, capability) is runs
+
+
+def test_flashinfer_kernels_skip_hosts_they_cannot_serve(kernel_host, monkeypatch):
+    assert install.flashinfer_kernel_wheel("vllm") is not None
+    kernel_host.append(["580.82.07", "7.5"])
+    assert install.flashinfer_kernel_wheel("vllm") is None
+    kernel_host[:] = [["580.82.07", "12.0"], ["580.82.07", "9.0"]]
+    assert install.flashinfer_kernel_wheel("vllm") is not None
+    for unreadable in (None, [], [["580.82.07"]], [["580", "n/a"]], install._PENDING):
+        monkeypatch.setattr(install, "_driver_rows", lambda gpu_id, wait = True, r = unreadable: r)
+        assert install.flashinfer_kernel_wheel("vllm") is None
+
+
+def test_flashinfer_kernels_only_for_linux_cuda_and_honour_the_switch(kernel_host, monkeypatch):
+    for value in ("0", "false", "off"):
+        monkeypatch.setenv("UNSLOTH_ENGINE_FLASHINFER_KERNELS", value)
+        assert install.flashinfer_kernel_wheel("vllm") is None
+    monkeypatch.setenv("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "1")
+    assert install.flashinfer_kernel_wheel("vllm") is not None
+    monkeypatch.setattr(install.platform, "machine", lambda: "aarch64")
+    assert install.flashinfer_kernel_wheel("vllm") is None
+    monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(install.sys, "platform", "win32")
+    assert install.flashinfer_kernel_wheel("vllm") is None
+    monkeypatch.setattr(install.sys, "platform", "linux")
+    monkeypatch.setattr(install, "gpu_platform", lambda: "rocm")
+    assert install.flashinfer_kernel_wheel("vllm") is None
+    monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
+    monkeypatch.setattr(
+        install, "_FLASHINFER_KERNELS", Path("/nonexistent/flashinfer-kernels.json")
+    )
+    assert install.flashinfer_kernel_wheel("vllm") is None
+
+
+@_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_install_adds_the_flashinfer_kernel_wheel_before_the_checks(
+    isolated, kernel_host, monkeypatch, engine
+):
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+    calls = []
+
+    def run(engine, argv, cancel):
+        calls.append(argv)
+        if "-r" in argv:
+            calls.append(Path(argv[argv.index("-r") + 1]).read_text())
+        fake_venv(engine, argv, cancel)
+
+    monkeypatch.setattr(install, "_run", run)
+    install._install(engine, threading.Event())
+    assert install.status(engine)["job"]["state"] == "success"
+    wheel = install.flashinfer_kernel_wheel(engine)
+    pip = [i for i, argv in enumerate(calls) if isinstance(argv, list) and "-r" in argv]
+    if engine == "sglang":
+        assert wheel is None and pip == []
+        assert "flashinfer_kernels" not in install.installed(engine)
+        return
+    assert len(pip) == 1
+    argv = calls[pip[0]]
+    assert argv[:3] == ["/uv", "pip", "install"]
+    assert {"--no-deps", "--require-hashes"} <= set(argv)
+    assert calls[pip[0] + 1] == (
+        f"flashinfer-jit-cache @ {wheel['url']} --hash=sha256:{wheel['sha256']}\n"
+    )
+    sync = next(i for i, a in enumerate(calls) if isinstance(a, list) and "sync" in a)
+    check = next(i for i, a in enumerate(calls) if isinstance(a, list) and install._CHECK in a)
+    assert sync < pip[0] < check
+    assert any(
+        isinstance(a, list) and "import flashinfer_jit_cache, flashinfer" in a for a in calls
+    )
+    assert install.installed(engine)["flashinfer_kernels"] is True
+
+
+@_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize("failing", ["download", "import"])
+def test_failed_flashinfer_kernels_keep_the_jit_engine(isolated, kernel_host, monkeypatch, failing):
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+    calls = []
+
+    def run(engine, argv, cancel):
+        calls.append(argv)
+        if failing == "download" and "-r" in argv:
+            raise RuntimeError("Engine installation failed. github.com unreachable")
+        if failing == "import" and "import flashinfer_jit_cache, flashinfer" in argv:
+            raise RuntimeError("Engine installation failed. version mismatch")
+        fake_venv(engine, argv, cancel)
+
+    monkeypatch.setattr(install, "_run", run)
+    install._install("vllm", threading.Event())
+    assert install.status("vllm")["job"]["state"] == "success"
+    assert "flashinfer_kernels" not in install.installed("vllm")
+    assert any(a[:3] == ["/uv", "pip", "uninstall"] and "flashinfer-jit-cache" in a for a in calls)
+    assert any(install._CHECK in a for a in calls)
+
+
+@_LOCAL_ENGINE_HOST
+def test_a_kernel_wheel_that_cannot_be_removed_keeps_the_active_environment(
+    isolated, kernel_host, monkeypatch
+):
+    marker = active(isolated)
+    before = marker.read_bytes()
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+
+    def run(engine, argv, cancel):
+        if "import flashinfer_jit_cache, flashinfer" in argv or argv[:3] == [
+            "/uv",
+            "pip",
+            "uninstall",
+        ]:
+            raise RuntimeError("Engine installation failed.")
+        fake_venv(engine, argv, cancel)
+
+    monkeypatch.setattr(install, "_run", run)
+    install._install("vllm", threading.Event())
+    assert install.status("vllm")["job"]["state"] == "error"
+    assert marker.read_bytes() == before
+    assert [p.name for p in marker.parent.iterdir() if p.is_dir()] == ["env-prior"]
+
+
+def test_no_gpu_probe_without_a_kernel_wheel(kernel_host, monkeypatch):
+    probes = []
+    monkeypatch.setattr(install, "_driver_rows", lambda gpu_id, wait = True: probes.append(gpu_id))
+    monkeypatch.setattr(install.platform, "machine", lambda: "aarch64")
+    assert install.flashinfer_kernel_wheel("vllm") is None
+    assert install.flashinfer_kernel_wheel("sglang") is None
+    assert probes == []
+
+
+@_LOCAL_ENGINE_HOST
+def test_cancel_during_flashinfer_kernels_cancels_the_install(isolated, kernel_host, monkeypatch):
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+    cancel = threading.Event()
+
+    def run(engine, argv, event):
+        if "-r" in argv:
+            event.set()
+            raise RuntimeError("Installation cancelled.")
+        fake_venv(engine, argv, event)
+
+    monkeypatch.setattr(install, "_run", run)
+    install._install("vllm", cancel)
+    assert install.status("vllm")["job"]["state"] == "cancelled"
+    assert install.installed("vllm") is None
+
+
+@_LOCAL_ENGINE_HOST
+def test_switched_off_flashinfer_kernels_install_as_before(isolated, kernel_host, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "0")
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+    calls = []
+
+    def run(engine, argv, cancel):
+        calls.append(argv)
+        fake_venv(engine, argv, cancel)
+
+    monkeypatch.setattr(install, "_run", run)
+    install._install("vllm", threading.Event())
+    assert install.status("vllm")["job"]["state"] == "success"
+    assert not any("-r" in argv or "flashinfer-jit-cache" in argv for argv in calls)
+    assert "flashinfer_kernels" not in install.installed("vllm")
+
+
+@_LOCAL_ENGINE_HOST
+def test_download_size_counts_the_flashinfer_kernel_wheel(isolated, kernel_host, monkeypatch):
+    with_kernels = install.download_bytes("vllm")
+    monkeypatch.setenv("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "0")
+    version = install._pins("vllm")["flashinfer-python"][0]
+    table = json.loads(install._FLASHINFER_KERNELS.read_text(encoding = "utf-8"))
+    assert (
+        with_kernels - install.download_bytes("vllm") == table[f"{version}+cu130"]["x86_64"]["size"]
+    )

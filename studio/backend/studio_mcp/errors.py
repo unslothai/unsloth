@@ -13,6 +13,7 @@ import httpx
 from fastmcp.exceptions import ToolError
 
 from hub.utils.host_paths import redact_paths_in_text
+from studio_mcp import problems
 from studio_mcp.forward import parse_json
 
 # Route errors sometimes tell a browser client which route to call next ("Call POST /inference/load
@@ -38,40 +39,11 @@ _DEFERRED_ERROR_KEY = "_deferred_error"
 REFUSAL_HEADER = "x-unsloth-refusal"
 MEMORY_REFUSAL = "memory-estimate"
 MULTI_MODEL_REFUSAL = "multi-model-always"
-# Copy the Keep multiple models loaded refusal uses when no header or code came with it.
-MULTI_MODEL_MARKERS = ("is set to Always", "is set to keep loaded")
 
 _TAG_CODE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _TAG_VALUE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
-UNLOAD_KINDS = {"chat": "llm", "audio": "audio", "image": "image", "video": "video"}
-MULTI_MODEL_HINT = "Call unload_model(kind='{kind}') to free the GPU; retrying won't help."
-MULTI_MODEL_HINT_ANY = (
-    "Call unload_model(kind=…) for the model it names to free the GPU; retrying won't help."
-)
-ACTIVE_GENERATIONS_HINT = (
-    "Wait for the running chats to finish, or cancel a chat you started with"
-    " cancel(kind='chat', id=<its cancel_id>)."
-)
 MEMORY_HINT = "Pass allow_oversized=true to try anyway."
-# Guidance for a route's own error code, used in place of the tool's status hint.
-CODE_HINTS: dict[str, str] = {}
-
-_UNLOAD_KIND = re.compile(r"would unload the (\w+) model")
-_NOT_LOADED = re.compile(r"^No (?:(diffusion|image|video|GGUF) )?model (?:is )?loaded")
-# The kind a "No <word> model loaded" names outright, whatever route said it.
-_NOT_LOADED_WORDS = {"diffusion": "image", "image": "image", "video": "video", "GGUF": "chat"}
-# The kind a bare "No model loaded" is about, by the route that said it. First match wins.
-_NOT_LOADED_PATHS = (
-    ("/v1/audio/transcriptions", "stt"),
-    ("/api/inference/audio/stt/", "stt"),
-    ("/v1/audio/", "audio"),
-    ("/api/inference/audio/", "audio"),
-    ("/v1/images/", "image"),
-    ("/api/inference/images/", "image"),
-    ("/v1/videos", "video"),
-    ("/api/inference/video/", "video"),
-)
 
 # llama-server's startup output, as core/inference/llama_cpp.py _with_startup_diagnostics frames it.
 _LLAMA_OUTPUT = "\n\nllama-server output:\n"
@@ -177,22 +149,14 @@ def _refusal(headers: Mapping[str, str]) -> str:
     return str(headers.get(REFUSAL_HEADER) or "").strip().lower()
 
 
-def _not_loaded_kind(message: str, path: str) -> Optional[str]:
-    match = _NOT_LOADED.match(message.strip())
-    if match is None:
-        return None
-    if match.group(1):
-        return _NOT_LOADED_WORDS[match.group(1)]
-    return next((kind for prefix, kind in _NOT_LOADED_PATHS if path.startswith(prefix)), "chat")
-
-
 def _describe(
     status: int,
     body: Any,
     headers: Mapping[str, str],
-    path: str = "",
+    tools: Optional[frozenset[str]] = None,
 ) -> tuple[Optional[str], str, Optional[str]]:
-    """(tag, message, own hint). An own hint replaces the tool's status hint."""
+    """(tag, message, own hint). An own hint replaces the tool's status hint. ``tools`` are the
+    caller's, so a hint names only tools it has; None reads them from the current caller."""
     # Scrubbed before the hints go on: the redactor drops everything after a path it finds.
     retry_after = headers.get("retry-after")
     busy = _gpu_busy(body)
@@ -230,37 +194,37 @@ def _describe(
     message = _brief(message)
     scrubbed = _scrub(message)
     suffix = f"{scrubbed} (HTTP {status})"
-
-    if (
-        _refusal(headers) == MULTI_MODEL_REFUSAL
-        or code == "multi_model_always"
-        or (status == 409 and any(marker in message for marker in MULTI_MODEL_MARKERS))
+    problem = problems.from_headers(headers)
+    if problem is None and (
+        _refusal(headers) == MULTI_MODEL_REFUSAL or code == "multi_model_always"
     ):
-        # Retrying cannot help: the setting keeps the other model loaded until it is unloaded.
         found = detail.get("kind") if isinstance(detail, dict) else None
-        if not isinstance(found, str):
-            match = _UNLOAD_KIND.search(message)
-            found = match.group(1) if match else None
-        kind = UNLOAD_KINDS.get(found or "")
-        if kind is None:
-            return _tag("multi_model_always"), suffix, MULTI_MODEL_HINT_ANY
-        return _tag("multi_model_always", kind = found), suffix, MULTI_MODEL_HINT.format(kind = kind)
-
-    if isinstance(detail, dict) and "active_generations" in (detail.get("error"), code):
-        # The route's thread_ids are browser conversation ids; an agent can only cancel its own chats.
-        tag = _tag("active_generations", running = detail.get("running"))
-        return tag, suffix, ACTIVE_GENERATIONS_HINT
-
-    if status == 400 and _refusal(headers) == MEMORY_REFUSAL:
+        problem = problems.Problem(
+            "multi_model_always", {"kind": found} if isinstance(found, str) else {}
+        )
+    if (
+        problem is None
+        and isinstance(detail, dict)
+        and "active_generations" in (detail.get("error"), code)
+    ):
+        # The route's thread_ids are browser conversation ids; an agent cancels only its own chats.
+        problem = problems.Problem("active_generations", {"running": detail.get("running")})
+    if problem is None and status == 400 and _refusal(headers) == MEMORY_REFUSAL:
         return _tag("memory_estimate"), f"{scrubbed} {MEMORY_HINT}", None
-
-    tag = _tag(code)
-    if tag is None:
-        kind = _not_loaded_kind(message, path)
-        tag = _tag("not_loaded", kind = kind) if kind else None
-    if status == 503 and retry_after:
+    if problem is None:
+        if status == 503 and retry_after:
+            suffix += f" Retry after {retry_after} s."
+        return _tag(code), suffix, None
+    # Retrying a multi_model_always refusal cannot help, so it never gets the 503 retry line.
+    if status == 503 and retry_after and problem.code != "multi_model_always":
         suffix += f" Retry after {retry_after} s."
-    return tag, suffix, CODE_HINTS.get(code) if isinstance(code, str) else None
+    fields = (
+        {"running": problem.fields.get("running")}
+        if problem.code == "active_generations"
+        else problem.tag_fields()
+    )
+    hint = problems.hint(problem, problems.caller_tools() if tools is None else tools)
+    return _tag(problem.code, **fields), suffix, hint
 
 
 def _body(resp: httpx.Response) -> Any:
@@ -270,16 +234,8 @@ def _body(resp: httpx.Response) -> Any:
         return resp.text.strip()
 
 
-def _request_path(resp: httpx.Response) -> str:
-    # A Response built by hand (tests) has no request, and .request raises then.
-    try:
-        return resp.request.url.path
-    except RuntimeError:
-        return ""
-
-
-def raise_for_payload(payload: Any, *, path: str = "") -> Any:
-    """Raise for an error carried inside a successful response; return the payload otherwise. ``path`` is the route that answered, for the tag's kind."""
+def raise_for_payload(payload: Any) -> Any:
+    """Raise for an error carried inside a successful response; return the payload otherwise."""
     if isinstance(payload, dict):
         deferred = payload.get(_DEFERRED_ERROR_KEY)
         if deferred is not None:
@@ -291,9 +247,7 @@ def raise_for_payload(payload: Any, *, path: str = "") -> Any:
             sent = deferred.get("headers")
             sent = sent if isinstance(sent, dict) else {}
             headers = {str(key).lower(): str(value) for key, value in sent.items()}
-            tag, message, hint = _describe(
-                status, {"detail": deferred.get("detail")}, headers, path
-            )
+            tag, message, hint = _describe(status, {"detail": deferred.get("detail")}, headers)
             raise tool_error(message, hint, tag = tag)
         if payload.get("type") == "error":
             nested = payload.get("error")
@@ -318,9 +272,8 @@ def raise_for_route(
     hints: Optional[Mapping[int, str]] = None,
 ) -> Any:
     """Raise a ToolError when the forwarded call failed; otherwise return its parsed JSON (or ``payload`` when the caller already parsed it, e.g. the last NDJSON line). ``hints`` maps a status to what the agent should do about it; an answer with its own guidance (gpu_busy, Keep multiple models loaded, running chats) keeps that instead."""
-    path = _request_path(resp)
     if resp.status_code >= 400:
-        tag, message, own = _describe(resp.status_code, _body(resp), resp.headers, path)
+        tag, message, own = _describe(resp.status_code, _body(resp), resp.headers)
         hint = own if own is not None else (hints or {}).get(resp.status_code)
         raise tool_error(message, hint or None, tag = tag)
     if payload is None:
@@ -328,31 +281,16 @@ def raise_for_route(
             payload = parse_json(resp.content) if resp.content.strip() else None
         except (ValueError, UnicodeDecodeError):
             return None
-    return raise_for_payload(payload, path = path)
+    return raise_for_payload(payload)
 
 
 # Audio failures carry a code (detail.code on /api, error.code on /v1); each gets what to do next.
-_UPDATE_AUDIO_RUNTIME = (
-    "Update the audio runtime (`unsloth studio update`), then load the model again."
-)
-AUDIO_HINTS = {
-    "out_of_memory": "Load the audio model again with device='cpu'{variants}.",
-    "gpu_unavailable": "Load the audio model again with device='cpu'.",
-    "runtime_missing": _UPDATE_AUDIO_RUNTIME,
-    "family_unknown_to_runtime": _UPDATE_AUDIO_RUNTIME,
-    "espeak_missing": _UPDATE_AUDIO_RUNTIME,
-    "runtime_stopped": "Retry once; if it fails again, run studio_status and load_model the audio "
-    "model again.",
-    "file_incomplete": "Download the model again, or load another variant.",
-}
-
-
 def _audio_failure(body: Any) -> Optional[dict]:
     if not isinstance(body, dict):
         return None
     for holder in (body.get("detail"), body.get("error")):
         if isinstance(holder, dict) and isinstance(holder.get("code"), str):
-            return holder if holder["code"] in AUDIO_HINTS else None
+            return holder if holder["code"] in problems.AUDIO_CODES else None
     return None
 
 
@@ -362,7 +300,7 @@ def audio_code(body: Any) -> Optional[str]:
     return failure["code"] if failure is not None else None
 
 
-def audio_hint(body: Any) -> Optional[str]:
+def audio_hint(body: Any, tools: Optional[frozenset[str]] = None) -> Optional[str]:
     failure = _audio_failure(body)
     if failure is None:
         return None
@@ -371,10 +309,8 @@ def audio_hint(body: Any) -> Optional[str]:
         name = row.get("variant") if isinstance(row, dict) else row
         if isinstance(name, str) and name:
             names.append(name)
-    variants = (
-        f", or a smaller variant with load_model(variant=...): {', '.join(names)}" if names else ""
-    )
-    return AUDIO_HINTS[failure["code"]].format(variants = variants)
+    tools = problems.caller_tools() if tools is None else tools
+    return problems.audio_hint(failure["code"], names, tools)
 
 
 def raise_for_audio(resp: httpx.Response, *, hints: Optional[Mapping[int, str]] = None) -> Any:

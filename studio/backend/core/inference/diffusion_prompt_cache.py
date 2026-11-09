@@ -27,6 +27,8 @@ _PER_TEXT_METHODS = {
     "ZImage": "_encode_prompt",
 }
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
+# "0": H3 calls with vision inputs bypass the cache.
+_ENV_H3_VISION = "UNSLOTH_H3_VISION_PROMPT_CACHE"
 
 
 def enabled() -> bool:
@@ -210,9 +212,186 @@ def _encoder_identity(pipe: Any) -> list:
     return ident
 
 
-def _lora_state(pipe: Any) -> Any:
+# "0": every attached LoRA keys the text embeddings, including adapters only the denoiser carries.
+_ENV_SCOPED_LORA_KEY = "UNSLOTH_DIFFUSION_TE_SCOPED_LORA_KEY"
+_DENOISER_ATTRS = (
+    "transformer",
+    "transformer_2",
+    "transformer_3",
+    "unconditional_transformer",
+    "unet",
+    "prior",
+    "decoder",
+)
+# Reading these off a denoiser runs none of its layers.
+_INERT_MODULE_ATTRS = frozenset({"dtype", "device", "config"})
+_MAX_FOLLOWED_METHODS = 64
+
+
+def _scoped_lora_key() -> bool:
+    return (os.environ.get(_ENV_SCOPED_LORA_KEY) or "").strip().lower() not in _FALSE_TOKENS
+
+
+def _inert_base_property(cls: Any, attr: str, prop: Any) -> bool:
+    """``prop`` is ``DiffusionPipeline``'s own (``_execution_device``, ``device``, ``dtype``): no layer runs."""
     try:
-        return _plain(tuple(getattr(pipe, "_unsloth_loras", ()) or ()))
+        from diffusers import DiffusionPipeline
+    except Exception:  # noqa: BLE001 - no base to compare against: follow the getter instead
+        return False
+    return cls is not DiffusionPipeline and prop is inspect.getattr_static(
+        DiffusionPipeline, attr, None
+    )
+
+
+def _encode_skips_denoisers(
+    cls: Any,
+    name: str,
+    instance: Any = None,
+) -> bool:
+    """True only when ``cls.<name>`` and the ``self`` methods / properties it reads provably run no denoiser."""
+    import ast
+    import textwrap
+
+    own = getattr(instance, "__dict__", None) or {}
+    seen: set = set()
+    todo = [name]
+    while todo:
+        method = todo.pop()
+        if method in seen:
+            continue
+        seen.add(method)
+        if len(seen) > _MAX_FOLLOWED_METHODS:
+            return False
+        if method in own:
+            return False
+        func = inspect.getattr_static(cls, method, None)
+        if func is None:
+            continue
+        if isinstance(func, property):
+            if _inert_base_property(cls, method, func):
+                continue
+            func = func.fget
+            if func is None:
+                return False
+        elif isinstance(func, (staticmethod, classmethod)):
+            func = func.__func__
+        if not inspect.isfunction(inspect.unwrap(func)):
+            return False  # a descriptor or callable object whose reads this walk cannot see
+        try:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(func))))
+        except (OSError, TypeError, SyntaxError, ValueError):
+            return False
+        fn = tree.body[0] if tree.body else None
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args:
+            return False
+        me = fn.args.args[0].arg
+        parents = {id(c): n for n in ast.walk(fn) for c in ast.iter_child_nodes(n)}
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Name) and node.id == "super":
+                return False
+            if isinstance(node, ast.Call):
+                callee = node.func.id if isinstance(node.func, ast.Name) else None
+                if callee in ("isinstance", "issubclass", "type", "id"):
+                    continue
+                if (
+                    callee in ("getattr", "hasattr", "vars", "setattr", "delattr")
+                    and node.args
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == me
+                ):
+                    return False
+                if any(
+                    isinstance(arg, ast.Name) and arg.id == me
+                    for arg in [*node.args, *(k.value for k in node.keywords)]
+                ):
+                    return False  # self handed to a helper: what it reads is unknown
+            if not (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == me
+            ):
+                continue
+            if node.attr in _DENOISER_ATTRS:
+                parent = parents.get(id(node))
+                if not (
+                    isinstance(parent, ast.Attribute)
+                    and parent.value is node
+                    and parent.attr in _INERT_MODULE_ATTRS
+                ):
+                    return False
+            elif node.attr in own:
+                if _bound_code(own[node.attr]):
+                    return False
+            elif _followable(inspect.getattr_static(cls, node.attr, None)):
+                todo.append(node.attr)
+    return True
+
+
+def _bound_code(value: Any) -> bool:
+    import functools
+    import types
+    return isinstance(value, (types.FunctionType, types.MethodType, functools.partial))
+
+
+def _followable(value: Any) -> bool:
+    return value is not None and (callable(value) or hasattr(type(value), "__get__"))
+
+
+def _adapter_components(owner: Any) -> Optional[dict]:
+    """Adapter name -> the components it patches, or None when the owner cannot say."""
+    out: dict = {}
+    try:
+        listed = (
+            owner.get_list_adapters() if callable(getattr(owner, "get_list_adapters", None)) else {}
+        )
+        for component, names in (listed or {}).items():
+            for n in names or ():
+                out.setdefault(n, set()).add(str(component))
+    except Exception:  # noqa: BLE001 - unclassifiable
+        return None
+    try:
+        from .diffusion_lora_files import KRON_ATTR
+
+        roots = {}
+        for attr in (*_DENOISER_ATTRS, *_TEXT_ENCODER_ATTRS):
+            module = getattr(owner, attr, None)
+            if module is not None:
+                roots[id(module)] = attr
+        for n, adapters in (owner.__dict__.get(KRON_ATTR, {}) or {}).items():
+            for adapter in adapters:
+                out.setdefault(n, set()).add(roots.get(id(getattr(adapter, "root", None)), "?"))
+        from .diffusion_lora_quant_merge import _MERGED_ATTR
+
+        merged = getattr(owner, _MERGED_ATTR, None)
+        if merged:
+            # merge() refuses unless every merged layer sits inside the denoisers
+            for n in merged.get("weights", {}) or {}:
+                out.setdefault(n, set()).add("transformer")
+    except Exception:  # noqa: BLE001 - unclassifiable
+        return None
+    return out
+
+
+def _lora_state(pipe: Any, skips_denoisers: bool = False) -> Any:
+    try:
+        loras = tuple(getattr(pipe, "_unsloth_loras", ()) or ())
+    except TypeError:
+        return None
+    if skips_denoisers and loras and _scoped_lora_key():
+        components = _adapter_components(pipe)
+        if components is not None:
+            loras = tuple(
+                entry
+                for entry in loras
+                if not (
+                    isinstance(entry, (tuple, list))
+                    and entry
+                    and components.get(entry[0])
+                    and components[entry[0]] <= set(_DENOISER_ATTRS)
+                )
+            )
+    try:
+        return _plain(loras)
     except TypeError:
         return None
 
@@ -308,6 +487,10 @@ def _wrap_encode_prompt(
         signature = inspect.signature(encode)
     except (TypeError, ValueError):
         return False
+    try:
+        skips_denoisers = _encode_skips_denoisers(type(pipe), name, pipe)
+    except Exception:  # noqa: BLE001 - unprovable: the full LoRA key
+        skips_denoisers = False
 
     def cached_encode_prompt(*args: Any, **kwargs: Any) -> Any:
         key = None
@@ -320,7 +503,7 @@ def _wrap_encode_prompt(
             payload = {
                 "load": load_fp,
                 "encoders": _encoder_identity(pipe),
-                "loras": _lora_state(lora_owner),
+                "loras": _lora_state(lora_owner, skips_denoisers),
                 "args": keyed,
             }
             if name != "encode_prompt":
@@ -397,6 +580,24 @@ def _modular_text_encoder(pipe: Any) -> Any:
         return None
 
 
+def _vision_fingerprint(vision: Any) -> list:
+    """Host-side content key of H3 vision tensors; TypeError (= bypass) for device tensors or unknown values."""
+    if (os.environ.get(_ENV_H3_VISION) or "").strip().lower() in _FALSE_TOKENS:
+        raise TypeError("vision inputs")
+    if not isinstance(vision, dict):
+        raise TypeError(type(vision).__name__)
+    torch = _torch()
+    out = []
+    for name in sorted(vision):
+        t = vision[name]
+        if not isinstance(t, torch.Tensor) or t.device.type != "cpu" or t.is_sparse:
+            raise TypeError(f"vision input {name}")
+        flat = t.detach().contiguous().reshape(-1)
+        digest = hashlib.sha256(memoryview(flat.view(torch.uint8).numpy())).hexdigest()
+        out.append([str(name), str(t.dtype), list(t.shape), digest])
+    return out
+
+
 def _make_h3_shim(original: Any, logger: Any) -> Any:
     try:
         signature = inspect.signature(original)
@@ -419,17 +620,17 @@ def _make_h3_shim(original: Any, logger: Any) -> Any:
         cache, load_fp = registered
         key = None
         try:
-            if arguments.get("vision_inputs"):
-                raise TypeError("vision inputs")
-            key = _hash(
-                {
-                    "load": load_fp,
-                    "encoder": [type(text_encoder).__name__, id(text_encoder)],
-                    "token_ids": _plain(list(arguments.get("token_ids") or ())),
-                    "layer": _plain(arguments.get("text_encoder_layer")),
-                    "dtype": _plain(arguments.get("dtype")),
-                }
-            )
+            payload = {
+                "load": load_fp,
+                "encoder": [type(text_encoder).__name__, id(text_encoder)],
+                "token_ids": _plain(list(arguments.get("token_ids") or ())),
+                "layer": _plain(arguments.get("text_encoder_layer")),
+                "dtype": _plain(arguments.get("dtype")),
+            }
+            vision = arguments.get("vision_inputs")
+            if vision:
+                payload["vision"] = _vision_fingerprint(vision)
+            key = _hash(payload)
             hit = cache.get(key, arguments.get("device"))
         except TypeError:
             cache.stats["bypassed"] += 1

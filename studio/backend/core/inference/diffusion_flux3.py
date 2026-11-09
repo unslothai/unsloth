@@ -582,6 +582,118 @@ class _Flux3KleinPipelineMixin:
         return _hooks()
 
 
+def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
+    """bf16 when a CUDA load computes FLUX.3 in float32: keep bf16 weights and upcast per op instead of doubling
+    the load (about 40 GB for klein). None otherwise."""
+    from .diffusion_manual_cast import manual_cast_disabled
+
+    if manual_cast_disabled() or getattr(target, "device", None) != "cuda":
+        return None
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - no torch, no load
+        return None
+    return torch.bfloat16 if dtype is torch.float32 else None
+
+
+def _component_files(
+    repo_id: str, subfolder: str, hf_token: Optional[str], local_files_only: bool
+) -> list[Path]:
+    """Safetensors files from_pretrained reads for ``subfolder``; empty when unresolvable."""
+    from .diffusion_small_host import _weight_files
+
+    root = Path(str(repo_id)).expanduser()
+    if root.is_dir():
+        sub = root / subfolder
+        return _weight_files(sub) if sub.is_dir() else []
+    from huggingface_hub import hf_hub_download
+
+    kwargs: dict[str, Any] = {
+        "token": hf_token or None,
+        "local_files_only": local_files_only,
+        "cache_dir": _live_cache_dir(),
+    }
+    stem = "model" if subfolder.startswith("text_encoder") else "diffusion_pytorch_model"
+    try:
+        index = Path(
+            hf_hub_download(repo_id, f"{subfolder}/{stem}.safetensors.index.json", **kwargs)
+        )
+        shards = sorted(
+            set(json.loads(index.read_text(encoding = "utf-8")).get("weight_map", {}).values())
+        )
+        return [Path(hf_hub_download(repo_id, f"{subfolder}/{s}", **kwargs)) for s in shards]
+    except Exception:  # noqa: BLE001 - unsharded, or unreachable: try the single file
+        pass
+    try:
+        return [Path(hf_hub_download(repo_id, f"{subfolder}/{stem}.safetensors", **kwargs))]
+    except Exception:  # noqa: BLE001 - no claim: the caller keeps the widened load
+        return []
+
+
+def _stored_as(
+    repo_id: str,
+    subfolder: str,
+    storage_dtype: Any,
+    hf_token: Optional[str],
+    local_files_only: bool,
+) -> bool:
+    """True when every float tensor of ``subfolder`` is stored as ``storage_dtype`` (lossless load)."""
+    from .diffusion_small_host import _safetensors_bytes_by_dtype
+
+    want = str(storage_dtype).replace("torch.", "")
+    files = _component_files(repo_id, subfolder, hf_token, local_files_only)
+    if not files:
+        return False
+    seen = False
+    for f in files:
+        sizes = _safetensors_bytes_by_dtype(f)
+        if not sizes:
+            return False
+        for dtype in sizes:
+            if dtype in ("i64", "i32", "i16", "i8", "u8", "bool"):
+                continue
+            if dtype != want:
+                return False
+            seen = True
+    return seen
+
+
+def _manual_cast_load(
+    loader: Callable[[Any], Any],
+    *,
+    name: str,
+    repo_id: str,
+    dtype: Any,
+    storage_dtype: Any,
+    hf_token: Optional[str],
+    local_files_only: bool,
+) -> Any:
+    """Load at ``storage_dtype`` with per-op upcast to ``dtype`` if stored exactly so; else the widened load."""
+    if storage_dtype is None or not _stored_as(
+        repo_id, name, storage_dtype, hf_token, local_files_only
+    ):
+        if storage_dtype is not None:
+            logger.info(
+                "diffusion.flux3: %s loads widened to %s (its stored weights are not all %s)",
+                name,
+                dtype,
+                storage_dtype,
+            )
+        return loader(dtype)
+    from .diffusion_manual_cast import apply_manual_cast_
+
+    module = loader(storage_dtype)
+    kept = apply_manual_cast_(module, dtype)
+    logger.info(
+        "diffusion.flux3: %s keeps %.2f GiB of %s weights as stored and computes in %s (manual cast)",
+        name,
+        kept / (1 << 30),
+        str(storage_dtype).replace("torch.", ""),
+        str(dtype).replace("torch.", ""),
+    )
+    return module
+
+
 def _pin_compute_dtype(transformer: Any, dtype: Any) -> None:
     """Make ``transformer.dtype`` answer the compute dtype for a GGUF denoiser.
 
@@ -615,8 +727,13 @@ def load_flux3_pipeline(
     local_files_only: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
     family_name: Optional[str] = None,
+    storage_dtype: Any = None,
+    transformer_storage: bool = True,
 ) -> Any:
     """A ready ``Flux3KleinPipeline`` for ``repo_id`` (on CPU; the caller places it).
+
+    ``storage_dtype`` (``flux3_storage_dtype``): the text encoder, and the transformer unless ``transformer_storage``
+    is False (a transformer quant will rebuild its Linears), load at that dtype and upcast per op to ``dtype``.
 
     ``family_name`` (the family the load resolved) must agree with the block graph the checkpoint runs: a base
     pipeline loaded as the distilled family would run CFG while Studio suppresses its negative prompt, and the
@@ -643,14 +760,30 @@ def load_flux3_pipeline(
     tokenizer = AutoProcessor.from_pretrained(repo_id, subfolder = "text_encoder", **common)
     check_cancelled()
     if text_encoder is None:
-        text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
-            repo_id, subfolder = "text_encoder", dtype = dtype, **common
+        text_encoder = _manual_cast_load(
+            lambda load_dtype: Qwen3VLForConditionalGeneration.from_pretrained(
+                repo_id, subfolder = "text_encoder", dtype = load_dtype, **common
+            ),
+            name = "text_encoder",
+            repo_id = repo_id,
+            dtype = dtype,
+            storage_dtype = storage_dtype,
+            hf_token = token,
+            local_files_only = local_files_only,
         )
         text_encoder.eval()
         check_cancelled()
     if transformer is None:
-        transformer = diffusers.Flux3Transformer2DModel.from_pretrained(
-            repo_id, subfolder = "transformer", torch_dtype = dtype, **common
+        transformer = _manual_cast_load(
+            lambda load_dtype: diffusers.Flux3Transformer2DModel.from_pretrained(
+                repo_id, subfolder = "transformer", torch_dtype = load_dtype, **common
+            ),
+            name = "transformer",
+            repo_id = repo_id,
+            dtype = dtype,
+            storage_dtype = storage_dtype if transformer_storage else None,
+            hf_token = token,
+            local_files_only = local_files_only,
         )
         check_cancelled()
     vae = diffusers.AutoencoderKLFlux2.from_pretrained(
@@ -662,9 +795,8 @@ def load_flux3_pipeline(
     reason = flux3_family_blocks_mismatch(family_name, blocks, repo_id)
     if reason is not None:
         raise ValueError(reason)
-    if blocks == FLUX3_BASE_BLOCKS:
-        # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
-        cond_blocks.prepare(transformer)
+    # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
+    cond_blocks.prepare(transformer)
     # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
     scheduler = flux3_blocks(blocks).init_pipeline().scheduler
     return flux3_pipeline_class()(

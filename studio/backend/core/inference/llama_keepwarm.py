@@ -384,6 +384,16 @@ _current_response_scope: contextvars.ContextVar = contextvars.ContextVar(
 )
 
 
+def current_request_counted() -> bool:
+    """Whether the request this context serves is in the in-flight count (an external-provider chat drops out)."""
+    scope = _current_response_scope.get()
+    return (
+        isinstance(scope, dict)
+        and bool(scope.get(_TRACKED_SCOPE_KEY))
+        and not scope.get(_UNTRACKED_SCOPE_KEY)
+    )
+
+
 def set_current_response_scope(scope) -> None:
     _current_response_scope.set(scope if isinstance(scope, dict) else None)
 

@@ -44,6 +44,22 @@ ANTHROPIC_TYPE_BY_STATUS = {
 }
 
 
+# A machine-readable code for an agent-actionable failure, as ``code k=v ...``. A header, so the
+# body (and the detail text the frontend shows) stays exactly as it was.
+PROBLEM_HEADER = "X-Unsloth-Problem"
+_PROBLEM_TOKEN = re.compile(r"^[A-Za-z0-9_.:/-]{1,200}$")
+
+
+def problem_headers(code: str, **fields) -> dict:
+    """``{PROBLEM_HEADER: "code k=v"}``; a field that is unset or not a plain token is left out."""
+    pairs = [
+        f"{key}={value}"
+        for key, value in fields.items()
+        if value is not None and _PROBLEM_TOKEN.match(str(value))
+    ]
+    return {PROBLEM_HEADER: " ".join([code, *pairs])}
+
+
 def openai_error_body(
     message,
     *,

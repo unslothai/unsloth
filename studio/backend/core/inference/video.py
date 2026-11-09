@@ -61,6 +61,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
+from .diffusion_init_buffers import install_single_file_fp32_buffers
 from .diffusion_component_sizes import video_family_has_no_text_encoder
 from . import hub_reachability
 from .diffusion_comfy_quant import (
@@ -532,11 +533,14 @@ def _video_comfy_backends(
     resident only; else fp8 storage under offload or a tight MPS plan). ``priced_offload``: the plan was sized with the
     offloaded backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the
     planned DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
-    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
+    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything. nvfp4 / mxfp8 layers take the image
+    path's native runtimes where their flag, device and family allow; without one, fp8 storage keeps them packed."""
     if not keep:
         return {
             "int8_backend": None,
             "fp8_backend": None,
+            "nvfp4_backend": None,
+            "mxfp8_backend": None,
             "fp8_storage": False,
             "fp8_widen_chosen": False,
         }
@@ -547,9 +551,21 @@ def _video_comfy_backends(
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
+        **_video_block_backends(target, name),
         "fp8_storage": storage,
         "fp8_widen_chosen": not storage
         and _video_fp8_storage(fam, target, store_pays, widened_mib = widened_mib, widen_chosen = True),
+    }
+
+
+def _video_block_backends(target: Any, family: Optional[str]) -> dict:
+    """``comfy_block_backend`` per block format (None = no native runtime here)."""
+    from .diffusion_comfy_block import MXFP8, NVFP4, comfy_block_backend
+
+    dtype = getattr(target, "dtype", None)
+    return {
+        f"{fmt}_backend": comfy_block_backend(fmt, target, family, dtype = dtype)[0]
+        for fmt in (NVFP4, MXFP8)
     }
 
 
@@ -583,10 +599,11 @@ def _video_fp8_storage(
     widen_chosen: bool = False,
 ) -> bool:
     """``fp8_storage_wanted`` for a video DiT, with the host RAM the load would widen into when ``widened_mib`` is
-    known. H3 is excluded: its pin / stream / residency path is built on torchao weights. ``widen_chosen``: answer
-    ``fp8_widen_chosen`` instead (the rule had the choice and widened)."""
+    known. H3 stores fp8 only where no fp8 runtime runs (``h3_comfy_backends``): widened it would be the 40 GB
+    bfloat16 model. ``widen_chosen``: answer ``fp8_widen_chosen`` instead (the rule had the choice and widened)."""
     if getattr(fam, "name", None) == "minimax-h3":
-        return False
+        from .video_minimax_h3_native_quant import h3_fp8_storage
+        return False if widen_chosen else h3_fp8_storage(target)
     available = None
     if widened_mib is not None and not offload:
         from .diffusion_small_host import host_ram_mib
@@ -613,10 +630,13 @@ def _video_comfy_resident_mib(
     keep_int8 = keep_fp8 = fp8_stored = False
     exclude: tuple = ()
     filters: dict = {}
+    keep_block: dict = {}
     if keep:
         try:
             from .diffusion_transformer_quant import (
                 DEFAULT_MIN_LINEAR_FEATURES,
+                TQ_MXFP8,
+                TQ_NVFP4,
                 divisible_for_scheme,
                 exclude_tokens_for_scheme,
             )
@@ -624,6 +644,10 @@ def _video_comfy_resident_mib(
             filters = {
                 "min_features": DEFAULT_MIN_LINEAR_FEATURES,
                 "fp8_divisible": divisible_for_scheme(TQ_FP8),
+                "block_divisible": {
+                    "nvfp4": divisible_for_scheme(TQ_NVFP4),
+                    "mxfp8": divisible_for_scheme(TQ_MXFP8),
+                },
             }
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
@@ -631,12 +655,19 @@ def _video_comfy_resident_mib(
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
         fp8_stored = _video_fp8_storage(fam, target, offload)
+        blocks = _video_block_backends(target, name)
+        keep_block = {
+            "keep_nvfp4": blocks["nvfp4_backend"] is not None,
+            "keep_mxfp8": blocks["mxfp8_backend"] is not None,
+        }
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
         fp8_stored = fp8_stored,
+        **keep_block,
+        target = target,
         keep_key = keep_key,
         exclude_tokens = exclude,
         key_map = _video_comfy_key_map(fam),
@@ -783,6 +814,15 @@ def _ltx23_prequant_serves_on_card(
         return True
 
 
+def _h3_hosted_fp8_native(fam: Any, target: Any, scheme: Optional[str]) -> bool:
+    """An explicit fp8 H3 denoiser on a card without torchao's fp8 GEMM: the hosted codes run stored (1 byte)."""
+    if getattr(fam, "name", None) != "minimax-h3" or scheme != TQ_FP8:
+        return False
+    from .video_minimax_h3_native_quant import h3_hosted_fp8_native
+
+    return h3_hosted_fp8_native(target)
+
+
 def _assert_video_precision_for_target(
     fam: Any,
     target: Any,
@@ -852,16 +892,13 @@ def _assert_video_precision_for_target(
                 f"'{normalize_memory_mode(memory_mode)}' memory places the DiT under CPU "
                 "offload, and torchao quantised tensors cannot be moved by the offload hooks"
             )
-        elif (
-            select_transformer_quant_scheme(
-                target,
-                pinned,
-                family = getattr(fam, "name", None),
-                # Pre-eviction: an OOM in the smoke probe is the resident model, not the scheme.
-                unproven_ok = True,
-            )
-            is None
-        ):
+        elif select_transformer_quant_scheme(
+            target,
+            pinned,
+            family = getattr(fam, "name", None),
+            # Pre-eviction: an OOM in the smoke probe is the resident model, not the scheme.
+            unproven_ok = True,
+        ) is None and not _h3_hosted_fp8_native(fam, target, pinned):
             # None means a deny-listed family, unusable torchao, or no GPU kernels; each needs a different fix.
             reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         if reason is not None:
@@ -8930,6 +8967,7 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
         )
+        install_single_file_fp32_buffers(logger)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native
 
@@ -9829,6 +9867,8 @@ class VideoBackend:
                 "local_files_only": local_files_only,
             }
             if kind == "gguf":
+                from .diffusion_gguf_lowbit import install_lowbit_iq
+                install_lowbit_iq(logger)
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
@@ -11374,24 +11414,21 @@ class VideoBackend:
         if comfy_scan is not None:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
 
-            # torchao only: H3's pin / stream / residency path is built on torchao weights, like the hosted ones.
+            from .video_minimax_h3_native_quant import h3_comfy_backends
+
+            # torchao where it runs, else the torchao-free twin (fp8 stored at 1 byte where no fp8 GEMM runs).
             dense_pin = _h3_precision_pinned_dense(transformer_quant_requested)
-            h3_int8 = h3_fp8 = None
+            h3_backends = {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
             if not dense_pin:
-                h3_int8 = (
-                    "torchao"
-                    if comfy_int8_backend(umem_target, fam.name, base) == "torchao"
-                    else None
-                )
-                h3_fp8 = (
-                    "torchao"
-                    if comfy_fp8_backend(umem_target, fam.name, base) == "torchao"
-                    else None
-                )
+                h3_backends = h3_comfy_backends(umem_target, base)
             if (
                 comfy_scheme is not None
                 and not dense_pin
-                and (h3_int8 if comfy_scheme == TQ_INT8 else h3_fp8) is None
+                and not (
+                    h3_backends["int8_backend"]
+                    if comfy_scheme == TQ_INT8
+                    else h3_backends["fp8_backend"] or h3_backends["fp8_storage"]
+                )
             ):
                 raise RuntimeError(
                     f"{Path(comfy_checkpoint).name} needs Unsloth's {comfy_scheme} runtime, which this "
@@ -11408,14 +11445,17 @@ class VideoBackend:
                 hf_token = hf_token,
                 cache_dir = hub_cache_dir(),
                 local_files_only = local_files_only,
-                int8_backend = h3_int8,
-                fp8_backend = h3_fp8,
                 target = umem_target,
                 logger = logger,
+                **h3_backends,
             )
             comfy_info = getattr(transformer, "_unsloth_comfy_quant", None) or {}
             engaged = (
-                TQ_INT8 if comfy_info.get("int8") else TQ_FP8 if comfy_info.get("fp8") else None
+                TQ_INT8
+                if comfy_info.get("int8")
+                else TQ_FP8
+                if comfy_info.get("fp8") or comfy_info.get("fp8_stored")
+                else None
             )
             if engaged is None and comfy_scheme is not None and not dense_pin:
                 del transformer
@@ -11431,6 +11471,7 @@ class VideoBackend:
             transformer_quant_reason = (
                 f"ComfyUI-quantized denoiser ({Path(comfy_checkpoint).name}): "
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept, "
+                f"{comfy_info.get('fp8_stored', 0)} fp8 stored, "
                 f"{comfy_info.get('dequantized', 0)} dequantized"
                 if engaged is not None
                 else f"ComfyUI denoiser ({Path(comfy_checkpoint).name}) at bfloat16"
@@ -11485,6 +11526,9 @@ class VideoBackend:
                         + "; loaded the released bfloat16 denoiser instead"
                     )
                 else:
+                    if _h3_hosted_fp8_native(fam, umem_target, scheme):
+                        from .video_minimax_h3_native_quant import h3_hosted_fp8_to_native
+                        h3_hosted_fp8_to_native(transformer, logger = logger)
                     # Must seed before load_components, which skips set attributes (avoids the 66.3 GB fetch).
                     pipe.update_components(**{denoiser_component: transformer})
                     transformer_quant_engaged = scheme
@@ -12102,6 +12146,11 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        try:
+            from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
+            install_h3_chunked_reference_encode(logger)
+        except Exception as exc:  # noqa: BLE001 -- memory only, never fail a load
+            logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
         # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
         # its fallback; the audio VAE is untouched.
         try:
@@ -12277,7 +12326,16 @@ class VideoBackend:
         autoopt.finalize(h3_audit, speed_optims, resolved)
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
+        from .video_minimax_h3_te import install_h3_te_read_capture
 
+        try:
+            install_h3_te_read_capture(
+                pipe.text_encoder,
+                layer = getattr(pipe, "text_encoder_layer", 50),
+                logger = logger,
+            )
+        except Exception:  # noqa: BLE001 - a lazy component that is not loaded
+            pass
         diffusion_prompt_cache.install(
             pipe,
             identity = {
@@ -12499,6 +12557,10 @@ class VideoBackend:
                 "input_reference cannot be combined with explicit conditioning inputs."
             )
         cancel = threading.Event()
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        # A chat tools call that is stopped cancels this job too.
+        bind_generation_cancel(cancel)
         job_token = object()  # this reservation's identity; only its own worker may finalise it
         while True:
             with self._lock:

@@ -499,6 +499,40 @@ if _TRACEABLE:
         _rope_embedding_op_backward, setup_context = _rope_setup_context
     )
 
+    @torch.library.triton_op("unsloth::rope_embedding_rows_qk", mutates_args = ())
+    def _rope_embedding_rows_qk_op(
+        Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, backward: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # unsloth::rope_embedding on Q and K in one launch (same kernel and flags: bitwise equal).
+        Q_out = torch.empty(Q.shape, dtype = Q.dtype, device = Q.device)
+        K_out = torch.empty(K.shape, dtype = K.dtype, device = K.device)
+        _rope_launch(
+            Q.transpose(1, 2),
+            Q_out.transpose(1, 2),
+            K.transpose(1, 2),
+            K_out.transpose(1, 2),
+            cos,
+            sin,
+            None,
+            False,
+            backward,
+            True,
+            _traced_kernel,
+        )
+        return Q_out, K_out
+
+    def _rope_rows_qk_setup_context(ctx, inputs, output):
+        ctx.save_for_backward(inputs[2], inputs[3])
+
+    def _rope_embedding_rows_qk_op_backward(ctx, dQ, dK):
+        cos, sin = ctx.saved_tensors
+        dQ, dK = torch.ops.unsloth.rope_embedding_rows_qk(dQ, dK, cos, sin, True)
+        return dQ, dK, None, None, None
+
+    _rope_embedding_rows_qk_op.register_autograd(
+        _rope_embedding_rows_qk_op_backward, setup_context = _rope_rows_qk_setup_context
+    )
+
     @torch.library.triton_op("unsloth::rope_embedding_qk", mutates_args = ())
     def _rope_embedding_qk_op(
         Q: torch.Tensor,
@@ -638,6 +672,11 @@ def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
 
 _fast_rope_embedding_untraced = torch.compiler.disable(_fast_rope_embedding_eager)
 
+# UNSLOTH_COMPILED_ROPE_QK_ONE_LAUNCH=0: compiled RoPE launches once per tensor instead of once for Q and K.
+COMPILED_ROPE_QK_ONE_LAUNCH = os.environ.get(
+    "UNSLOTH_COMPILED_ROPE_QK_ONE_LAUNCH", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+
 
 # Decode RoPE in one launch instead of ~12 per layer per token; UNSLOTH_DECODE_FUSED_ROPE=0 disables it.
 DECODE_FUSED_ROPE = os.environ.get("UNSLOTH_DECODE_FUSED_ROPE", "1").strip().lower() not in (
@@ -708,6 +747,18 @@ def fast_rope_embedding(
             rope_embedding_indices.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
         )
         return torch.ops.unsloth.rope_embedding_qk(Q, K, cos, sin, rope_ptr, False)
+    if (
+        COMPILED_ROPE_QK_ONE_LAUNCH
+        and K.dtype == Q.dtype
+        and K.device == Q.device
+        and K.shape[0] == Q.shape[0]
+        and K.shape[2] == Q.shape[2]
+        and K.shape[3] == Q.shape[3]
+    ):
+        Q_out, K_out = torch.ops.unsloth.rope_embedding_rows_qk(
+            Q.transpose(1, 2), K.transpose(1, 2), cos, sin, False
+        )
+        return Q_out.transpose(1, 2), K_out.transpose(1, 2)
     Q_out = torch.ops.unsloth.rope_embedding(Q.transpose(1, 2), cos, sin, False).transpose(1, 2)
     K_out = torch.ops.unsloth.rope_embedding(K.transpose(1, 2), cos, sin, False).transpose(1, 2)
     return Q_out, K_out

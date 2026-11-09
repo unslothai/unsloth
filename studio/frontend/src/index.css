@@ -6160,6 +6160,12 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		max(0px, calc(100% - var(--native-hole-x) - var(--native-hole-w))) var(--native-hole-h) !important;
 }
 
+/* Floating window: cut in the node's own box (native-view.ts). */
+[data-native-hole][data-native-hole-local] {
+	background-attachment: scroll !important;
+	background-origin: border-box !important;
+}
+
 /* A backdrop-filter would paint over the hole. */
 [data-native-hole] {
 	-webkit-backdrop-filter: none !important;
@@ -6468,8 +6474,9 @@ html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-back
   display: none;
 }
 
-/* Clear only route canvases; cards, menus and reading surfaces retain their fills. */
-[data-wallpaper-workspace][data-wallpaper-ready][data-wallpaper-ready] :is(.hub-page, .hub-page .hub-canvas, [data-wallpaper-page-canvas]) { background: transparent; }
+/* Clear only route canvases; cards, menus and reading surfaces retain their fills. The model page's
+   Back to Hub bar is clear until content scrolls under it, or it reads as a strip over the image. */
+[data-wallpaper-workspace][data-wallpaper-ready][data-wallpaper-ready] :is(.hub-page, .hub-page .hub-canvas, [data-wallpaper-page-canvas], .hub-page .hub-detail-bar:not([data-scrolled])) { background: transparent; }
 
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-outline-off][data-wallpaper-outline-off][data-wallpaper-outline-off] .unsloth-composer-surface,
 .wallpaper-preview[data-wallpaper-preview-outline-off][data-wallpaper-preview-outline-off] .wallpaper-preview-composer { --composer-shadow: none; }
@@ -7249,7 +7256,7 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   backdrop-filter: blur(16px);
 }
 /* At rest nothing scrolls under these, so their frost read as a strip. */
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header]) {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header], .hub-detail-bar:not([data-scrolled])) {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
@@ -7458,7 +7465,7 @@ html[data-glass-clear] #root [class*="text-background"] {
   --color-background: var(--glass-page-bg);
 }
 /* At rest nothing scrolls under these headers, so their fill only doubled the page wash into a strip. */
-html[data-glass-clear] #root :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header]) {
+html[data-glass-clear] #root :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header], .hub-detail-bar:not([data-scrolled])) {
   background-color: transparent;
 }
 /* Sticky labels repaint the sidebar colour, which would double it up. */

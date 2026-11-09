@@ -10,7 +10,6 @@ import base64
 import binascii
 import time
 import uuid
-from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Optional
 
 from fastmcp import Context
@@ -19,6 +18,7 @@ from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from studio_mcp import loading
+from studio_mcp.audio_runs import _CANCELLED, _RUNS, _Run, _forget_old_cancels
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_audio, raise_for_route
 from studio_mcp.forward import forward, ndjson_last
@@ -43,8 +43,6 @@ from studio_mcp.outputs import (
 from studio_mcp.progress import with_heartbeat
 from studio_mcp.tools import WRITES, opt_text, present, route_json, strings, try_json
 
-LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='tts') first."
-NOT_LOADED = "No model loaded"
 # 16-bit samples; channels are not reported, so mono is assumed and a stereo clip may still be fetched and then linked.
 _WAV_BYTES_PER_SAMPLE = 2
 
@@ -65,20 +63,62 @@ async def _clip_contents(
     return [resource_link(clip.download_url or clip.url, f"{clip.id}.wav", "audio/wav")]
 
 
+# Workflows a model must list to serve; any other speech model can try the rest, as the route routes them.
+_DEDICATED = frozenset({"music", "separate", "transcribe"})
+
+
+def _serves(status: dict, workflow: str) -> bool:
+    workflows = strings(status.get("audio_workflows"))
+    if workflow == "music":
+        return bool(status.get("audio_music")) or "music" in workflows
+    if workflow in _DEDICATED:
+        return workflow in workflows
+    by_workflow = status.get("audio_options_by_workflow")
+    if status.get("audio_options") or (isinstance(by_workflow, dict) and by_workflow.get(workflow)):
+        return True
+    return bool(status.get("is_audio")) and any(w not in _DEDICATED for w in workflows or ["speak"])
+
+
+def _names(status: dict, model: str) -> bool:
+    return model.split(":", 1)[0].lower() in {
+        str(status.get(key) or "").lower() for key in ("model_identifier", "active_model")
+    }
+
+
+async def _audio_status(caller: Caller, workflow: str, model: Optional[str]) -> Optional[dict]:
+    """Status of the loaded model that will run ``workflow``: the named one, else the one the route
+    picks (the primary, or the one model for it kept beside the chat model). None when unknown,
+    such as a named model that is not loaded yet."""
+    if model:
+        status = await try_json(caller, "/api/inference/status", params = {"model": model})
+        return status if isinstance(status, dict) and _names(status, model) else None
+    status = await try_json(caller, "/api/inference/status")
+    if not isinstance(status, dict) or _serves(status, workflow):
+        return status
+    serving = strings(status.get("serving"))
+    checkpoints = strings(status.get("serving_checkpoints"))
+    found = []
+    for index, name in enumerate(serving):
+        routing_id = checkpoints[index] if index < len(checkpoints) else name
+        if not routing_id or name == status.get("active_model"):
+            continue
+        kept = await try_json(caller, "/api/inference/status", params = {"model": routing_id})
+        if isinstance(kept, dict) and kept.get("active_model") != status.get("active_model"):
+            if _serves(kept, workflow):
+                found.append(kept)
+    return found[0] if len(found) == 1 else None
+
+
 async def _checked_options(
     caller: Caller,
     workflow: str,
     options: dict[str, Any],
     model: Optional[str] = None,
 ) -> dict[str, Any]:
-    """``options`` with each enum value spelled as the loaded model lists it; the route drops a value it does not list, so that is refused here instead."""
-    status = await try_json(caller, "/api/inference/status")
-    if not isinstance(status, dict):
-        return options
-    if model and model.split(":", 1)[0].lower() not in {
-        str(status.get(key) or "").lower() for key in ("model_identifier", "active_model")
-    }:
-        # Another model will run it, so the loaded model's choices say nothing about these.
+    """``options`` with each enum value spelled as the running model lists it; the route drops a value it does not list, so that is refused here instead."""
+    status = await _audio_status(caller, workflow, model)
+    if status is None:
+        # Not loaded yet, or not ours to guess: its choices are unknown here.
         return options
     by_workflow = status.get("audio_options_by_workflow")
     schema = (by_workflow.get(workflow) if isinstance(by_workflow, dict) else None) or status.get(
@@ -103,48 +143,15 @@ async def _checked_options(
     return checked
 
 
-@dataclass
-class _Run:
-    cancelled: bool = False
-    in_flight: bool = False
-
-
-# generate_audio runs by (account, cancel_id), and ids cancelled lately; the route keeps an early
-# cancel as long, so a reused id would be stopped on arrival.
-_RUNS: dict[tuple[str, str], _Run] = {}
-_CANCELLED: dict[tuple[str, str], float] = {}
-CANCEL_MEMORY_S = 30.0
-
-
-def _forget_old_cancels() -> None:
-    cutoff = time.monotonic() - CANCEL_MEMORY_S
-    for key in [key for key, at in _CANCELLED.items() if at < cutoff]:
-        del _CANCELLED[key]
-
-
-def stop_run(account: str, cancel_id: str) -> Optional[bool]:
-    """Mark run ``cancel_id`` cancelled: None when no generate_audio run here has that id, True when it stops between takes, False when a take is running and the route must stop it."""
-    _forget_old_cancels()
-    _CANCELLED[(account, cancel_id)] = time.monotonic()
-    run = _RUNS.get((account, cancel_id))
-    if run is None:
-        return None
-    run.cancelled = True
-    return not run.in_flight
-
-
 async def _post_run(caller: Caller, body: dict[str, Any]) -> Any:
     response = await forward(caller, "POST", "/v1/audio/run", json_body = body)
-    named = response.status_code == 400 and NOT_LOADED in response.text
-    return raise_for_audio(response, hints = {400: LOAD_AUDIO_HINT} if named else None)
+    return raise_for_audio(response)
 
 
 async def _takes_how(caller: Caller, body: dict[str, Any]) -> Optional[str]:
-    """How the loaded music model makes variations of this mode: "batch", "sequential" or None."""
-    status = await try_json(caller, "/api/inference/status")
-    if not isinstance(status, dict):
-        return None
-    if body.get("model") and body["model"] != status.get("model_identifier"):
+    """How the running music model makes variations of this mode: "batch", "sequential" or None."""
+    status = await _audio_status(caller, "music", body.get("model"))
+    if status is None:
         return None
     music = status.get("audio_music")
     modes = music.get("modes") if isinstance(music, dict) else None
@@ -266,8 +273,8 @@ async def generate_audio(
             min_length = 8,
             max_length = 64,
             pattern = r"^[A-Za-z0-9_-]+$",
-            description = "Your id for this run, so cancel(kind='audio', id=...) can stop it from "
-            "another call; made when omitted and returned as cancel_id.",
+            description = "Your id for this run<<cancel: , so cancel(kind='audio', id=...) can stop it from "
+            "another call>>; made when omitted and returned as cancel_id.",
         ),
     ] = None,
     edit: Optional[dict[str, Any]] = None,
