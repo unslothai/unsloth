@@ -3639,7 +3639,8 @@ _DIT_BATCH_SPLIT_KWARGS = {
 # on dim 0 or unbatched (ids / position ids / padding masks whose leading size is never the batch), every list is
 # per-render (Qwen-Image's equal img_shapes). LTX-2 and HiDream-style pipelines batch cond + uncond into ONE call, which
 # the split cuts back into the two branches. LTX-2 returns (video, audio): both halves are joined.
-# Left out: HiDream (its llama states are layers x batch, batched on dim 1), MOSS-Image (positional inputs), FLUX.3 /
+# Left out: HiDream (its llama states are layers x batch, batched on dim 1), MOSS-Image (positional inputs), Anima
+# (Studio's wrapper renders one image per call, so no batch reaches the denoiser), FLUX.3 /
 # Qwen-Image 2.1 (a per-branch prefix KV cache object), and an attention_kwargs that is not empty.
 _DIT_BATCH_SPLIT_KWARGS_ALL = {
     "LTX2VideoTransformer3DModel": frozenset(
@@ -3715,10 +3716,6 @@ _DIT_BATCH_SPLIT_KWARGS_ALL = {
             "attention_kwargs",
             "return_dict",
         }
-    ),
-    # Anima
-    "CosmosTransformer3DModel": frozenset(
-        {"hidden_states", "timestep", "encoder_hidden_states", "padding_mask", "return_dict"}
     ),
 }
 BATCH_SPLIT_ENV = "UNSLOTH_DIFFUSION_BATCH_SPLIT"

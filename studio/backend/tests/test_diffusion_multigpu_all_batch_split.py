@@ -217,29 +217,6 @@ def _krea2():
     return m, _distilled_step(state, kw, lambda i: torch.full((B,), 1 - i / 4))
 
 
-def _cosmos():
-    m = _need("CosmosTransformer3DModel")(
-        in_channels = 4,
-        out_channels = 4,
-        num_attention_heads = 2,
-        attention_head_dim = 24,
-        num_layers = 2,
-        text_embed_dim = 16,
-        adaln_lora_dim = 8,
-        max_size = (4, 16, 16),
-        encoder_hidden_states_channels = 16,
-        crossattn_proj_in_channels = 16,
-    )
-    g = torch.Generator().manual_seed(6)
-    state = {"x": torch.randn(B, 4, 1, 4, 4, generator = g)}
-    kw = dict(
-        encoder_hidden_states = torch.randn(B, 5, 16, generator = g),
-        padding_mask = torch.zeros(1, 1, 4, 4),  # Anima's: leading size 1, shared by both halves
-        return_dict = False,
-    )
-    return m, _distilled_step(state, kw, lambda i: torch.full((B,), 1 - i / 4))
-
-
 def _distilled_step(state, kw, timestep):
     """A guidance-free render at batch B: one call per step."""
 
@@ -257,7 +234,6 @@ CASES = {
     "QwenImageTransformer2DModel": _qwen,
     "HunyuanImageTransformer2DModel": _hunyuan,
     "Krea2Transformer2DModel": _krea2,
-    "CosmosTransformer3DModel": _cosmos,
 }
 STEPS = 4
 
