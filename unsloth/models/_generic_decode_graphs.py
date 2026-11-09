@@ -395,8 +395,7 @@ _FULL_LAYERS, _SLIDING_LAYERS = _static_layer_types()
 
 
 def _linear_layer_types():
-    # Exact types: transformers 5.x hybrid models (Qwen3.5 / Qwen3.6 Gated DeltaNet) keep fixed-shape conv and
-    # recurrent states, written in place. LinearAttentionAndFullAttentionLayer (a dynamic KV part) is not one.
+    # Exact types: LinearAttentionAndFullAttentionLayer has a dynamic KV part.
     try:
         from transformers import cache_utils
     except Exception:
@@ -410,13 +409,11 @@ _LINEAR_LAYERS = _linear_layer_types()
 
 
 def _linear_states(layer):
-    """A linear-attention cache layer's state tensors (conv, then recurrent, by state index): fixed shapes,
-    updated in place by every decode step, so a replay addresses them like KV rows."""
+    """Fixed-shape conv + recurrent states, updated in place, so a replay addresses them like KV rows."""
     out = []
     for name in ("conv_states", "recurrent_states"):
         states = getattr(layer, name, None)
         if isinstance(states, torch.Tensor):
-            # transformers before 5.17: one tensor per kind.
             out.append(states)
         elif isinstance(states, dict):
             out.extend(states[i] for i in sorted(states) if isinstance(states[i], torch.Tensor))
@@ -426,7 +423,6 @@ def _linear_states(layer):
 
 
 def _attention_layers(cache):
-    """The cache layers that hold KV rows (a hybrid model's linear-attention layers have none)."""
     return [layer for layer in cache.layers if type(layer) not in _LINEAR_LAYERS]
 
 
@@ -1050,12 +1046,11 @@ def _cache_reason(cache):
 
 
 def _linear_reason(layer):
-    # A one-token step takes the in-place decode branch only once the prefill set every state (has_previous_state)
-    # and while the layer is not recording its past (speculative decoding keeps growing conv states).
+    # A layer recording its past (speculative decoding) grows conv states: not graphable.
     if getattr(layer, "record_past", False):
         return "linear layer recording its past"
     flags = getattr(layer, "has_previous_state", None)
-    # A dict per state index (5.17+) or one bool (earlier 5.x, with is_*_initialized flags).
+    # Dict per state index (5.17+), else one bool plus is_*_initialized flags.
     if isinstance(flags, dict):
         ready = bool(flags) and all(flags.values())
     else:
@@ -1240,8 +1235,7 @@ def _snapshot(cache, rows = True):
             elif isinstance(value, torch.Tensor) and value.numel() == 1:
                 device.append((value, value.clone(), False))
         if rows and type(layer) in _LINEAR_LAYERS:
-            # A step advances the conv window and the recurrent state in place: a replay that is undone (validation)
-            # must put them back, or the eager step after it would advance them a second time.
+            # Restore conv + recurrent states too, or the eager step after an undone replay advances them twice.
             for t in _linear_states(layer):
                 device.append((t, t.clone(), False))
             continue

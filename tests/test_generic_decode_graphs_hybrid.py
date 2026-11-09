@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Decode CUDA graphs for hybrid linear-attention models (Qwen3.5 / Qwen3.6 Gated DeltaNet + full attention), on the
-host through the stand-in backend of test_generic_decode_graphs: their StaticCache mixes LinearAttentionLayer
-(conv and recurrent states advanced in place every step) with StaticLayer. Tiny random models keep the real layer
-pattern (three linear-attention layers per full-attention layer), GQA ratios and conv kernel."""
+"""Decode CUDA graphs for hybrid linear-attention models (Qwen3.5 / Qwen3.6), on the host stand-in backend."""
 
 import os
 import sys
@@ -29,13 +26,11 @@ from transformers import cache_utils  # noqa: E402
 if getattr(cache_utils, "LinearAttentionLayer", None) is None:
     pytest.skip("transformers without LinearAttentionLayer", allow_module_level = True)
 if not getattr(qwen3_5.modeling_qwen3_5.Qwen3_5ForCausalLM, "_can_compile_fullgraph", False):
-    # Before 5.17 Qwen3.5 is stateful without a fullgraph-compilable forward: generate() keeps a dynamic cache, so
-    # the static hybrid cache these tests decode over is never built (and transformers' own static path fails).
+    # Before 5.17 generate() never builds the static hybrid cache these tests decode over.
     pytest.skip("transformers without static-cache Qwen3.5 generate", allow_module_level = True)
 
 
-# On a CUDA host, zoo's Triton Gated DeltaNet kernels (and vendored fla) are dispatched for these CPU tensors and
-# cannot read them: the host stand-in tests run where no GPU is visible; the real capture is the gpu test below.
+# On a CUDA host the Triton GDN kernels get dispatched for these CPU tensors and fail.
 host_only = pytest.mark.skipif(
     torch.cuda.is_available(), reason = "CPU stand-in: Triton GDN kernels on a CUDA host"
 )
@@ -60,7 +55,6 @@ def _tiny(moe):
         from transformers import Qwen3_5MoeForCausalLM
         from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeTextConfig
 
-        # Qwen3.6-35B-A3B: 16 query / 2 KV heads (8:1), routed + shared experts.
         config = Qwen3_5MoeTextConfig(
             num_attention_heads = 8,
             num_key_value_heads = 1,
@@ -75,7 +69,6 @@ def _tiny(moe):
         from transformers import Qwen3_5ForCausalLM
         from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
-        # Qwen3.5-4B: 16 query / 4 KV heads (4:1).
         config = Qwen3_5TextConfig(
             num_attention_heads = 4, num_key_value_heads = 1, intermediate_size = 64, **common
         )
@@ -113,7 +106,6 @@ def _ids(
     g = torch.Generator().manual_seed(seed)
     ids = torch.randint(3, 1000, (bsz, length), generator = g)
     mask = torch.ones_like(ids)
-    # Left padding, a different amount per row (ragged prompts).
     for row, pad in enumerate(pads):
         ids[row, :pad] = 0
         mask[row, :pad] = 0
@@ -132,7 +124,7 @@ def _generate(
     new,
     trace = None,
 ):
-    """Greedy static-cache generate; `trace` collects every linear-attention state after every decode step."""
+    """`trace` collects every linear-attention state after every decode step."""
     handle = None
     if trace is not None:
 
@@ -175,11 +167,8 @@ def test_hybrid_decode_replays_with_eager_tokens_and_states(host, request, which
     graphed = _generate(model, ids, mask, True, new, graph_trace)
     assert torch.equal(eager, graphed)
     s = GG.stats(model)
-    # Step 1 = prefill, step 2 eager warm-up + capture, step 3 validated replay, then replays: no step refused.
     assert s["captures"] == 1 and s["validations"] == 1 and s["replays"] == new - 2, s
     assert s["refusals"] == {}, s
-    # Every conv / recurrent state equals eager after every step: a validated replay is undone before its eager
-    # step, so nothing advances twice.
     assert len(eager_trace) == len(graph_trace) == new
     for step, (a, b) in enumerate(zip(eager_trace, graph_trace)):
         assert len(a) == len(b) > 0
@@ -189,8 +178,7 @@ def test_hybrid_decode_replays_with_eager_tokens_and_states(host, request, which
 
 @host_only
 def test_state_comparison_catches_a_double_advance(host, dense, monkeypatch):
-    # The check above is not vacuous: a snapshot that skips the linear states lets the validation replay advance
-    # them, and the eager step advances them again.
+    # Not vacuous: a snapshot skipping linear states advances them twice.
     real = GG._snapshot
 
     def without_linear(cache, rows = True):
@@ -226,10 +214,6 @@ def test_linear_layer_checks(host, dense):
     linear[0].record_past = False
     linear[0].has_previous_state[0] = False
     assert GG._cache_reason(cache) == "uninitialized layer"
-
-
-# Through FastModel's generate (unsloth_base_fast_generate): it picks the StaticCache for these models
-# (_can_compile_fullgraph), plans graphs and keeps the graph + cache for the next call.
 
 
 class _DefaultHost(_Host):
@@ -296,8 +280,6 @@ def test_fast_generate_graphs_hybrid_and_kept_cache_resets_state(default_host, m
     assert s1["captures"] == 1 and s1["replays"] >= 13 and not s1["refusals"], s1
     kept = GG.kept_cache(model)
     assert kept is not None and _linear_layers(kept)
-    # The next call reuses the kept cache and graph: its linear states start from zero again (a stale recurrent
-    # state would change every token of a different prompt).
     assert torch.equal(_gen(model, other_ids, other_mask), eager_other)
     s2 = GG.stats(model)
     assert s2["captures"] == 1 and s2["replays"] - s1["replays"] == 15, (s1, s2)
@@ -308,8 +290,6 @@ def test_fast_generate_graphs_hybrid_and_kept_cache_resets_state(default_host, m
 @pytest.mark.skipif(not has_real_cuda() or torch.version.hip is not None, reason = "NVIDIA CUDA")
 @pytest.mark.parametrize("which", [False, True])
 def test_real_capture_matches_eager_hybrid(which, monkeypatch):
-    # The real CUDA capture of a Gated DeltaNet + full-attention step: the GDN decode kernels (zoo's Triton conv
-    # update, fla's recurrent rule) are recorded, and every replay matches eager tokens and states.
     monkeypatch.setattr(G, "ENABLED", True)
     model = (
         _tiny(which)
@@ -325,22 +305,18 @@ def test_real_capture_matches_eager_hybrid(which, monkeypatch):
     s = GG.stats(model)
     assert torch.equal(eager, graphed), s
     assert s["captures"] == 1 and s["replays"] == 46 and not s["refusals"], s
-    # The first replay matched its own eager step bitwise.
     assert s["check"]["mismatches"] == 0, s
     for a, b in zip(eager_trace, graph_trace):
         for x, y in zip(a, b):
             if which:
-                # A graph-planned call routes the MoE through unsloth_zoo's routed kernels (grouped_mm copies its
-                # offsets to the host, which a capture refuses below sm80), the plain eager call through grouped_mm:
-                # the same math in another summation order.
+                # Graph path uses zoo's routed MoE kernels, eager uses grouped_mm: different summation order.
                 assert torch.allclose(x.float(), y.float(), atol = 5e-2, rtol = 0), s
             else:
                 assert torch.equal(x, y), s
 
 
 def test_linear_layer_layouts():
-    # Both LinearAttentionLayer layouts: a dict per state index with a dict of flags (5.17+), and one tensor per
-    # kind with one bool and is_*_initialized flags (earlier 5.x).
+    # LinearAttentionLayer layouts: dict per state index (5.17+), else one tensor per kind + one bool.
     states = (torch.zeros(1, 2, 3), torch.zeros(1, 2, 4, 4))
     new = types.SimpleNamespace(
         conv_states = {0: states[0]}, recurrent_states = {0: states[1]}, has_previous_state = {0: True}
