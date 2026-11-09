@@ -23,8 +23,7 @@ import utils.mlx_repair as mr  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _isolated(monkeypatch):
-    """Same reset as test_mlx_repair.py: the attempt latch is process-global, and a worker
-    that outlives its test runs the real repair against the next one."""
+    """Attempt latch is process-global; a worker outliving its test would run the real repair next."""
     monkeypatch.setattr(mr, "_attempted", False)
     monkeypatch.setattr(mr, "_environment_mutated", False)
     monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising = False)
@@ -137,8 +136,7 @@ def test_a_corrupt_manifest_does_not_disable_the_repair(monkeypatch, tmp_path):
 
 
 def _hardware(monkeypatch, *, blames_mlx: bool):
-    """start_mlx_autorepair_if_needed imports utils.hardware.hardware inside the function, so
-    patch the module rather than a name on mlx_repair."""
+    """start_mlx_autorepair_if_needed imports utils.hardware.hardware inside; patch the module."""
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(hw, "verdict_blames_the_mlx_stack", lambda: blames_mlx)

@@ -486,6 +486,13 @@ from .diffusion_comfy_quant import (
     refuse_comfy_quant,
 )
 from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
+from .diffusers_safetensors import (
+    component_safetensors_kwargs,
+    component_weight_state,
+    is_never_read_pickle,
+    pipeline_pickle_files,
+    pipeline_safetensors_kwargs,
+)
 from .diffusion_prequant import (
     PrequantIntoError,
     PrequantSource,
@@ -515,6 +522,7 @@ from .diffusion_auto_policy import (
     resolve_dense_quant_candidate,
 )
 from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+from .diffusion_nvfp4_route import with_route_scope
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
@@ -532,7 +540,8 @@ from .diffusion_transformer_quant import (
     explain_unusable_scheme,
     family_denies_scheme,
     fp16_card_int8_host,
-    fp16_card_int8_scheme,
+    fp16_card_native_host,
+    fp16_card_native_scheme,
     fp16_card_quant_storage_enabled,
     mark_source_precision,
     nvfp4_gated_base,
@@ -4520,8 +4529,11 @@ class DiffusionBackend:
             ):
                 if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
-            elif model_kind == "pipeline" and pinned == TQ_INT8 and fp16_card_int8_host(target):
-                if fp16_card_int8_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
+            elif model_kind == "pipeline" and fp16_card_native_host(target, pinned):
+                if (
+                    fp16_card_native_scheme(target, pinned, family = getattr(fam, "name", None))
+                    is None
+                ):
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
             elif (
                 model_kind == "pipeline"
@@ -5513,11 +5525,44 @@ class DiffusionBackend:
         vae_file: Optional[str] = None,
         allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
+        nvfp4_route: Any = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         with self._load_cancel_lock:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
+        from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
+
+        if nvfp4_route is ROUTE_UNCHANGED:
+            nvfp4_route = None
+        elif nvfp4_route is None:
+            nvfp4_route = plan_nvfp4_route(
+                media = "image",
+                model_path = repo_id,
+                gguf_filename = gguf_filename,
+                model_kind = model_kind,
+                base_repo = base_repo,
+                family_override = family_override,
+                transformer_quant = transformer_quant,
+                text_encoder_quant = text_encoder_quant,
+                transformer_prequant_path = transformer_prequant_path,
+                gpu_ordinal = gpu_ordinal,
+                gpu_ids = gpu_ids,
+                component_files = bool(text_encoder_files or vae_file),
+            )
+            if nvfp4_route is not None:
+                updates = nvfp4_route.updates
+                repo_id = updates.get("model_path", repo_id)
+                display_repo_id = updates.get("display_repo_id", display_repo_id)
+                gguf_filename = updates.get("gguf_filename", gguf_filename)
+                model_kind = updates.get("model_kind", model_kind)
+                base_repo = updates.get("base_repo", base_repo)
+                family_override = updates.get("family_override", family_override)
+                transformer_quant = updates.get("transformer_quant", transformer_quant)
+                text_encoder_quant = updates.get("text_encoder_quant", text_encoder_quant)
+                transformer_prequant_path = updates.get(
+                    "transformer_prequant_path", transformer_prequant_path
+                )
         # The probes this load adds read the Hub directly; they keep a managed account's False (anonymous) sentinel.
         hub_token = normalize_token(hf_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -5630,11 +5675,14 @@ class DiffusionBackend:
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
                 _hub_token = hub_token,
+                _nvfp4_route = nvfp4_route,
             ),
             daemon = True,
         ).start()
         return self.status()
 
+    # Outermost, so the resolved record reports the NVFP4 ask it replaced.
+    @with_route_scope
     @scoped_allow_oversized_load
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
@@ -6920,7 +6968,12 @@ class DiffusionBackend:
                 )
                 # Under the repo it describes: a mirror's commit says nothing about a cached upstream snapshot.
                 _record_revision(revisions_out, listing_repo, info)
-                return [s for s in info.siblings if not _listing_extra(listing_repo, s.rfilename)]
+                skipped = set(pipeline_pickle_files(s.rfilename for s in info.siblings))
+                return [
+                    s
+                    for s in info.siblings
+                    if not _listing_extra(listing_repo, s.rfilename) and s.rfilename not in skipped
+                ]
 
             listing_repo = prefer_ungated_mirror(base_repo, hf_token)
             base_siblings = _base_listing(listing_repo)
@@ -8662,7 +8715,7 @@ class DiffusionBackend:
                         TQ_INT8 if rdna_auto_w8a8 is not None else transformer_quant_pinned,
                         family = getattr(fam, "name", None),
                     )
-                    or fp16_card_int8_scheme(
+                    or fp16_card_native_scheme(
                         target, transformer_quant_pinned, family = getattr(fam, "name", None)
                     )
                     if kind == "pipeline"
@@ -9871,7 +9924,14 @@ class DiffusionBackend:
                                     try:
                                         with _converted_shards_pread(dtype, small_host):
                                             pipe = pipeline_cls.from_pretrained(
-                                                _base_local_dir or fetch_base, **pipe_kwargs
+                                                _base_local_dir or fetch_base,
+                                                **pipe_kwargs,
+                                                **pipeline_safetensors_kwargs(
+                                                    _base_local_dir or fetch_base,
+                                                    passed = pipe_kwargs,
+                                                    cache_dir = pipe_kwargs.get("cache_dir"),
+                                                    pipeline_cls = pipeline_cls,
+                                                ),
                                             )
                                     finally:
                                         self._stop_load_prefetch()
@@ -10237,7 +10297,14 @@ class DiffusionBackend:
                                     )
                                 with _converted_shards_pread(dtype, small_host):
                                     pipe = pipeline_cls.from_pretrained(
-                                        _base_local_dir or fetch_base, **pipe_kwargs
+                                        _base_local_dir or fetch_base,
+                                        **pipe_kwargs,
+                                        **pipeline_safetensors_kwargs(
+                                            _base_local_dir or fetch_base,
+                                            passed = pipe_kwargs,
+                                            cache_dir = pipe_kwargs.get("cache_dir"),
+                                            pipeline_cls = pipeline_cls,
+                                        ),
                                     )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
@@ -11916,6 +11983,13 @@ class DiffusionBackend:
             cache_dir = hub_cache_dir(),
             # Dense bf16 transformer is the largest fetch on this path, so API-initiated loads are refused here.
             local_files_only = local_files_only,
+            **component_safetensors_kwargs(
+                fetch_base,
+                "transformer",
+                cache_dir = hub_cache_dir(),
+                model_cls = transformer_cls,
+                local_files_only = local_files_only,
+            ),
         )
         check_cancelled()
         pipe = self._assemble_pipe(
@@ -12403,7 +12477,16 @@ class DiffusionBackend:
             )
         )
         with _converted_shards_pread(dtype, None):
-            pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
+            pipe = pipeline_cls.from_pretrained(
+                base_local_dir or base,
+                **pipe_kwargs,
+                **pipeline_safetensors_kwargs(
+                    base_local_dir or base,
+                    passed = pipe_kwargs,
+                    cache_dir = pipe_kwargs.get("cache_dir"),
+                    pipeline_cls = pipeline_cls,
+                ),
+            )
         check_cancelled()
         pipe.to(device)
         return pipe
@@ -13585,7 +13668,7 @@ class DiffusionBackend:
             cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
             # Force safetensors for untrusted remote repos; if the Hub scan failed open, pickles still load.
             cn_from_pretrained_kwargs: dict[str, Any] = {"cache_dir": hub_cache_dir()}
-            if remote_cn:
+            if remote_cn or component_weight_state(resolved_cn.path) is True:
                 cn_from_pretrained_kwargs["use_safetensors"] = True
             cn_model = getattr(diffusers, model_cls_name).from_pretrained(
                 resolved_cn.path,
@@ -14910,6 +14993,7 @@ class DiffusionBackend:
                 guard_release_mib, guard_capture_gen = 0, None
                 guard_batch = 1
                 guard_condition_pixels = 0
+                guard_reference_pixels = 0
 
                 try:
                     # Forward dims, not sliders: conditioned workflows size from the input image; same derivation as the compile-cache registration below.
@@ -14942,6 +15026,11 @@ class DiffusionBackend:
                             )
                         )
                     )
+                    # unweighted reference pixels: a measured placement prices them from their token count
+                    if ref_resolution is not None and not layer_count:
+                        guard_reference_pixels = int(
+                            (1 + len(ref_extra)) * ref_resolution * ref_resolution
+                        )
                     if layer_count:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
                         guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
@@ -14959,6 +15048,9 @@ class DiffusionBackend:
                         and not is_flux3_family(fam)
                     )
                     _follow_live_graph_mode(state)
+                    guard_quadratic = _quadratic_attention(
+                        guard_target, getattr(state, "attention_backend", None), pipe
+                    )
                     guard_cfg, extra_mib = split_aware_request_extra(
                         state.pipe,
                         guard_cfg,
@@ -14972,6 +15064,8 @@ class DiffusionBackend:
                             cfg = cfg,
                             unpriced_references = guard_unpriced_refs,
                             workflow = _peak_workflow(fam, workflow),
+                            reference_pixels = guard_reference_pixels,
+                            quadratic_attention = guard_quadratic,
                             tier_peak_mib = _tier_request_peak(
                                 state,
                                 width = guard_width,
@@ -15017,9 +15111,7 @@ class DiffusionBackend:
                         condition_pixels = guard_condition_pixels,
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
                         vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
-                        quadratic_attention = _quadratic_attention(
-                            guard_target, getattr(state, "attention_backend", None), pipe
-                        ),
+                        quadratic_attention = guard_quadratic,
                         allow_oversized = allow_oversized,
                         calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
                         controlnet = workflow == "controlnet" and control_pil is not None,
@@ -16335,6 +16427,8 @@ def _base_file_downloaded(
         # from_single_file(config=repo, subfolder="transformer") always fetches this config. Video keeps
         # the same exception in video.py's snapshot filter.
         return True
+    if is_never_read_pickle(rfilename):
+        return False
     if rfilename.startswith("transformer/"):
         return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
@@ -16382,7 +16476,9 @@ def _pipeline_file_downloaded(rfilename: str) -> bool:
     name = lower.rsplit("/", 1)[1]
     if name.startswith(("openvino_", "flax_")):
         return False
-    if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5", ".ckpt")):
+    if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5")) or is_never_read_pickle(
+        name
+    ):
         return False
     if ".fp16." in name or ".bf16." in name or ".non_ema." in name:
         return False

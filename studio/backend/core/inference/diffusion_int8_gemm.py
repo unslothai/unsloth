@@ -33,6 +33,9 @@ _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_mm_dequant"
 _REC = "_unsloth_i8_gemm"
 _MARK = "_unsloth_i8_gemm_prev"
+# The bound ``_linear_forward`` the swap installed: a traced forward checks the instance ``forward`` by identity with
+# it (dynamo resolves ``forward.__func__ is _linear_forward`` to False, so the shared paths never engaged compiled).
+_FWD = "_unsloth_i8_gemm_fwd"
 # on a SwiGLU MLP whose down projection takes its codes from the gate / value halves
 _FF_MARK = "_unsloth_i8_gemm_swiglu_prev"
 _SWIGLU_FF_CLASSES = ("QwenImage21SwiGLUFeedForward",)
@@ -556,10 +559,9 @@ def _tma_probe(index: int, capability: tuple) -> Optional[tuple]:
 
 
 def device_config(index: int) -> Optional[tuple]:
-    """Probe once per device: arch gate, Triton, op registration, then a launch that must match the eager torchao
-    epilogue bit for bit (bf16 and fp32 activation scales, bias, ragged M / N / K). None keeps the stock path. Each
-    per-shape tile is probed the same way; one that fails leaves its shapes on the default tile. Unlisted archs:
-    ``unlisted_config``, re-read per call so its switch acts between loads."""
+    """Probed once per device (arch gate, Triton, op registration, bit-exact match with the eager
+    torchao epilogue); None keeps the stock path, a failing per-shape tile falls back to the
+    default, and unlisted archs re-read unlisted_config per call."""
     if index in _UNLISTED_CARDS:
         return unlisted_config(index)
     if index in _DEVICE_CFG:
@@ -1111,7 +1113,11 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
     rec = d.get(_REC)
     if rec is None or _MARK not in d or "_diffusers_hook" in d or "_hf_hook" in d:
         return None
-    if getattr(d.get("forward"), "__func__", None) is not _linear_forward:
+    fwd = d.get("forward")
+    if torch.compiler.is_compiling():
+        if fwd is None or fwd is not d.get(_FWD):
+            return None
+    elif getattr(fwd, "__func__", None) is not _linear_forward:
         return None
     if d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
         return None
@@ -1188,6 +1194,50 @@ def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
     else:
         y = stock_gemm(xq, wq, xs, ws, down.bias)
     return y.reshape(*gate.shape[:-1], y.shape[-1])
+
+
+def producer_linear(down: Any, prefix: Any, gate: Any, value: Any) -> Optional[Any]:
+    """``down(cat([prefix.flatten(-2), silu(gate) * value], -1))`` (no prefix: ``down(silu(gate) * value)``) with the
+    product, concat, rotation and act quant in one kernel reading the producers' buffers, else None (caller: stock).
+    ``gate`` / ``value``: ``[..., F]`` halves of one projection output; ``prefix``: the attention output
+    ``[B, S, H, D]`` as the attention backend returned it."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    lead = gate.shape[:-1]
+    f = gate.shape[-1]
+    width = f if prefix is None else f + prefix.shape[-2] * prefix.shape[-1]
+    if (
+        not rotq
+        or group != 256
+        or gate.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or gate.shape != value.shape
+        or width != down.in_features
+        or gate.numel() < _MIN_ROWS * f
+    ):
+        return None
+    if prefix is not None and (prefix.dim() != 4 or prefix.shape[:2] != lead):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_producer_act_quant
+
+    q = convrot_producer_act_quant(
+        prefix, gate.reshape(-1, f), value.reshape(-1, f), group, kind == "v2"
+    )
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*lead, y.shape[-1])
 
 
 def _plain_silu(act: Any) -> bool:
@@ -1544,6 +1594,7 @@ def _swap_on(
             )
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
+            module.__dict__[_FWD] = module.forward
             count += 1
         ff = (
             _install_swiglu_ff(
@@ -1657,6 +1708,7 @@ def uninstall(transformer: Any = None) -> None:
             if prev is None:
                 continue
             module.__dict__.pop(_REC, None)
+            module.__dict__.pop(_FWD, None)
             if prev is _NO_PREV:
                 module.__dict__.pop("forward", None)
             else:

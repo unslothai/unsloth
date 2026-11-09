@@ -979,3 +979,160 @@ def test_a_property_running_no_denoiser_still_reuses_the_embeddings(monkeypatch)
     pipe = _CleanPropertyPipe({"transformer": ["style"]})
     prompt_cache.install(pipe)
     assert _strength_sweep(pipe) == [1.0, 1.0] and pipe.calls == 1
+
+
+class Qwen3VLFakeEncoder(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(2, 2)
+        self.seen_use_cache = []
+
+    def forward(
+        self,
+        x,
+        use_cache = True,
+    ):
+        self.seen_use_cache.append(use_cache)
+        return self.proj(x)
+
+
+class _Qwen21LikePipe(_AdapterPipe):
+    def __init__(self, listed = None):
+        super().__init__(listed)
+        self.text_encoder = Qwen3VLFakeEncoder()
+
+    def _get_qwen_prompt_embeds(self, prompt):
+        return self.text_encoder(torch.full((1, 2), float(len(prompt))))
+
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+    ):
+        self.calls += 1
+        return (self._get_qwen_prompt_embeds(prompt).detach(),)
+
+
+def test_qwen21_no_kv_wrapper_installed_first_keeps_the_scoped_key(monkeypatch):
+    # #17118 installs the no-K/V wrapper on the instance before the prompt cache: still denoiser-free
+    from core.inference.diffusion_qwenimage21_te import skip_text_encoder_kv_cache
+
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_QWEN21_TE_NO_KV", raising = False)
+    pipe = _Qwen21LikePipe({"transformer": ["style"]})
+    assert skip_text_encoder_kv_cache(pipe)
+    assert "_get_qwen_prompt_embeds" in pipe.__dict__
+    assert prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
+    prompt_cache.install(pipe)
+    calls = _sweep(pipe, *((("style", "/x/style.safetensors", w),) for w in (0.25, 0.5, 0.75)))
+    assert calls == 1 and pipe.text_encoder.seen_use_cache == [False]
+
+
+def test_an_unmarked_wrapper_of_the_same_helper_keeps_the_full_key(monkeypatch):
+    import functools
+
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _Qwen21LikePipe({"transformer": ["style"]})
+    original = pipe._get_qwen_prompt_embeds
+
+    @functools.wraps(original)
+    def _get_qwen_prompt_embeds(prompt):
+        return original(prompt) + pipe.transformer.weight.sum()
+
+    pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
+    assert not prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
+
+
+def test_a_marked_wrapper_around_a_foreign_callable_keeps_the_full_key(monkeypatch):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _Qwen21LikePipe({"transformer": ["style"]})
+
+    def _get_qwen_prompt_embeds(prompt):
+        return pipe.transformer(torch.ones(1, 2))
+
+    _get_qwen_prompt_embeds.__wrapped__ = lambda prompt: None
+    setattr(_get_qwen_prompt_embeds, prompt_cache.TRANSPARENT_WRAPPER_ATTR, True)
+    pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
+    assert not prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
+
+
+class _CallableHelper:
+    def __init__(self, pipe):
+        self.pipe = pipe
+
+    def __call__(self):
+        return self.pipe.transformer.weight.detach().clone()
+
+
+class _CallableHelperPipe(_AdapterPipe):
+    def __init__(self, listed = None):
+        super().__init__(listed)
+        self.helper = _CallableHelper(self)
+
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+    ):
+        self.calls += 1
+        return (self.helper(),)
+
+
+class _WrapsDenoiser(torch.nn.Module):
+    def __init__(self, inner):
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, x):
+        return self.inner(x)
+
+
+class _ModuleHelperPipe(_AdapterPipe):
+    def __init__(self, listed = None):
+        super().__init__(listed)
+        self.helper = _WrapsDenoiser(self.transformer)
+
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+    ):
+        self.calls += 1
+        return (self.helper(torch.ones(1, 2)).detach(),)
+
+
+@pytest.mark.parametrize("cls", [_CallableHelperPipe, _ModuleHelperPipe])
+def test_a_callable_instance_helper_reading_the_denoiser_keeps_the_full_key(monkeypatch, cls):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = cls({"transformer": ["style"]})
+    assert not prompt_cache._encode_skips_denoisers(cls, "encode_prompt", pipe)
+    prompt_cache.install(pipe)
+    out = _strength_sweep(pipe)
+    assert out[0] != out[1] and pipe.calls == 2
+
+
+def test_the_text_encoder_module_is_not_an_opaque_helper(monkeypatch):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _Qwen21LikePipe({"transformer": ["style"]})
+    assert prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
+
+
+def test_this_module_is_the_tree_under_test():
+    import pathlib
+    here = pathlib.Path(__file__).resolve().parents[1]
+    assert pathlib.Path(prompt_cache.__file__).resolve().is_relative_to(here)
+
+
+def test_the_real_qwen21_pipeline_keeps_the_scoped_key_after_the_no_kv_wrapper(monkeypatch):
+    diffusers = pytest.importorskip("diffusers")
+    cls = getattr(diffusers, "QwenImage21Pipeline", None)
+    if cls is None:
+        pytest.skip("this diffusers has no QwenImage21Pipeline")
+    from core.inference.diffusion_qwenimage21_te import skip_text_encoder_kv_cache
+
+    monkeypatch.delenv("UNSLOTH_QWEN21_TE_NO_KV", raising = False)
+    pipe = cls.__new__(cls)
+    pipe.__dict__["text_encoder"] = Qwen3VLFakeEncoder()
+    assert prompt_cache._encode_skips_denoisers(cls, "encode_prompt", pipe)
+    assert skip_text_encoder_kv_cache(pipe) and "_get_qwen_prompt_embeds" in pipe.__dict__
+    assert prompt_cache._encode_skips_denoisers(cls, "encode_prompt", pipe)

@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Every thread row has carried modelId since long before this notice, and each send now
-// moves it to the model that send ran on, so a chat knows the model it last used. What was
-// missing was offering it back. The rules below are the ones that keep the offer from becoming a
-// nuisance: it never loads anything on its own, it stays quiet whenever it could not be
-// honoured, and a model still loaded alongside is switched to without asking.
+// Each send moves a thread's modelId to the model it ran on; the offer never loads a model on its
+// own, stays quiet when it cannot be honoured, and switches without asking to one still loaded
+// alongside.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -222,9 +220,8 @@ test("the automatic switch runs once per chat open", () => {
   // Any loaded slot counts, Keep models loaded on or off: the switch only ever adopts it.
   assert.match(body, /createdModel && !resident\s*\?\s*chatModelLoadedTarget/);
   assert.doesNotMatch(body, /keepModelsLoaded/);
-  // A cross-tab revision carries no thread, so the saved model is read again rather than kept stale.
-  // Only the plain cross-tab Event re-reads (streamed chunks are CustomEvents), and a slower read
-  // never lands over a newer answer.
+  // A cross-tab revision carries no thread, so the saved model is re-read; only plain Events
+  // re-read (streamed chunks are CustomEvents), and a slower read never lands over a newer one.
   assert.match(notice, /if \(event instanceof CustomEvent\) return;\s*reader\.invalidate\(\);\s*const generation = \+\+readGeneration;/);
   assert.match(notice, /if \(updatedThread\.id === threadId\) readGeneration \+= 1;/);
   assert.match(

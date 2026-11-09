@@ -80,8 +80,7 @@ def test_public_backend_selector_outranks_the_legacy_flag(primary, legacy, expec
 
 
 def test_the_api_offers_exactly_the_requestable_backends():
-    """The route's Literal is what FastAPI validates and documents, so a backend
-    added to the installer must reach the picker rather than 422 on the way in."""
+    """The Literal is what FastAPI validates, so every installer backend must be in it or 422."""
     from typing import get_args
 
     from routes.llama import LlamaBackendRequest

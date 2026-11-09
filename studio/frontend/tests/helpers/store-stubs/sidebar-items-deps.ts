@@ -77,6 +77,8 @@ export function isExpectedBackgroundChatStorageError(): boolean {
   return false;
 }
 export function clearComposerDraft(): void {}
+export function closeComposerDraft(): void {}
+export function reopenComposerDraft(): void {}
 export async function offerToDeleteKeptSandboxes(): Promise<void> {}
 export async function stopChatThread(): Promise<void> {}
 export function markChatThreadsDeleted(): void {}
