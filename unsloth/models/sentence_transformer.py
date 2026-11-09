@@ -3704,8 +3704,7 @@ class _SentenceTransformersFinder(importlib.abc.MetaPathFinder):
         return None
 
 
-# sentence_transformers imports its whole package (trainers, evaluators, sklearn / scipy pieces) and only
-# embedding fine-tuning uses it, so patch it when it is first imported instead of importing it here.
+# sentence_transformers is heavy and only embedding fine-tuning needs it: patch on first import.
 if "sentence_transformers" in sys.modules:
     _apply_sentence_transformers_patches()
 elif not any(isinstance(f, _SentenceTransformersFinder) for f in sys.meta_path):
