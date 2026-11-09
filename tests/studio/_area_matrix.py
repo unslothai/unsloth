@@ -616,8 +616,14 @@ PROBE = (
     """() => {
   const OVER = '%s';
   const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 1 && r.height > 1; };
-  window.__gateOverlays = () => [...document.querySelectorAll(OVER)].filter(vis).length;
-  window.__gateVisible = (sel) => [...document.querySelectorAll(sel)].some(vis);
+  // Polled every frame inside the measured window, so never a document-wide query: that would cost the
+  // gate's own CPU in proportion to the chat. Message bodies (nearly all of a long chat) are skipped; no
+  // overlay or waited-for control renders inside one (portals sit under <body>).
+  const skip = { acceptNode: (e) => (e.hasAttribute('data-role') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) };
+  const outside = (sel) => { const out = []; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, skip);
+    for (let e = w.nextNode(); e; e = w.nextNode()) if (e.matches(sel)) out.push(e); return out; };
+  window.__gateOverlays = () => outside(OVER).filter(vis).length;
+  window.__gateVisible = (sel) => outside(sel).some(vis);
   window.__gateFrames = (n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
   window.__gateFocusins = [];
   document.addEventListener('focusin', (e) => window.__gateFocusins.push(e.target), true);
@@ -685,7 +691,9 @@ TABS = """async (timeoutMs) => {
   return {count: tabs.length, missing, failed};
 }"""
 FIND = """(spec) => {
-  document.querySelectorAll('[data-gate-target]').forEach((e) => e.removeAttribute('data-gate-target'));
+  // The target is kept by reference: a document-wide lookup would cost in proportion to the chat.
+  if (window.__gateTarget) window.__gateTarget.removeAttribute('data-gate-target');
+  window.__gateTarget = null;
   const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   let el = null;
   if (spec.startsWith('js|')) el = (0, eval)(spec.slice(3));
@@ -697,13 +705,13 @@ FIND = """(spec) => {
   if (!el) return false;
   // Instant: the thread viewport is scroll-smooth, so a plain scrollIntoView animates and returns while the
   // target is still moving; a trusted pointer action then lands wherever the target has got to.
-  el.setAttribute('data-gate-target', ''); el.scrollIntoView({block: 'nearest', behavior: 'instant'});
+  el.setAttribute('data-gate-target', ''); window.__gateTarget = el; el.scrollIntoView({block: 'nearest', behavior: 'instant'});
   return true;
 }"""
 # The target must hold still and be hit at its centre: the floating composer can cover a row scrolled in from
 # below. Only an occluded target is re-centred, so a clear one adds no scroll to the measured window.
 STEADY = """async () => {
-  const el = document.querySelector('[data-gate-target]');
+  const el = window.__gateTarget;
   if (!el) return false;
   const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
   const still = async () => {
@@ -721,7 +729,7 @@ STEADY = """async () => {
   return hit();
 }"""
 CLICK = """(right) => {
-  const el = document.querySelector('[data-gate-target]'); const r = el.getBoundingClientRect();
+  const el = window.__gateTarget; const r = el.getBoundingClientRect();
   const at = {bubbles: true, cancelable: true, composed: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2,
               button: right ? 2 : 0, buttons: right ? 2 : 1, pointerType: 'mouse', isPrimary: true, view: window};
   el.dispatchEvent(new PointerEvent('pointerdown', at)); el.dispatchEvent(new MouseEvent('mousedown', at));
@@ -829,6 +837,11 @@ class Page:
     def close(self) -> None:
         self.ctx.close()
 
+    def target(self):
+        # A handle, not a locator: Playwright's selector engine walks the whole document (for shadow
+        # roots) on every resolve, inside the measured window, at a cost that grows with the chat.
+        return self.page.evaluate_handle("() => window.__gateTarget").as_element()
+
     def chord(self, arg) -> str:
         if isinstance(arg, dict):
             return arg["mac" if self.mac else "other"]
@@ -873,12 +886,12 @@ class Page:
             self.last_error = "target never held still and clear of overlays under its centre"
             return False
         if kind == "hover":
-            page.locator("[data-gate-target]").first.hover(timeout = 3_000, force = True)
+            self.target().hover(timeout = 3_000, force = True)
             self.hovered = True
             return True
         if kind == "pclick":
             # A trusted click (mouse move, press, native focus), for areas whose cost is the focus change.
-            page.locator("[data-gate-target]").first.click(timeout = 3_000, force = True)
+            self.target().click(timeout = 3_000, force = True)
             self.hovered = True
             return True
         # Clicks are dispatched in the page: the pointer stays parked, so no tooltip or :hover state
