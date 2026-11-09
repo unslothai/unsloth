@@ -5,6 +5,8 @@
 
 import base64
 import io
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -76,10 +78,56 @@ def test_only_data_images_embed(tmp_path):
 
 
 def test_page_cap_returns_413(monkeypatch):
-    monkeypatch.setattr(chat_export, "MAX_EXPORT_PAGES", 1)
+    import core.chat_pdf as chat_pdf
+
+    monkeypatch.setattr(chat_pdf, "MAX_EXPORT_PAGES", 1)
     body = "".join(f"<p>line {index}</p>" for index in range(400))
+    with pytest.raises(chat_pdf.ChatPdfTooLong):
+        chat_pdf.render_chat_pdf("x", body)
+
+    def too_long(*_args):
+        raise chat_export.ChatPdfTooLong("export exceeds 1 pages")
+
+    monkeypatch.setattr(chat_export, "render_chat_pdf_in_child", too_long)
     response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
     assert response.status_code == 413
+
+
+def test_renders_in_a_child_process_never_in_the_server(monkeypatch):
+    """PyMuPDF is not thread safe: the route must hand the work to a child, and survive its crash."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(chat_export))
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    imported |= {
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert not {"pymupdf", "fitz"} & imported
+
+    with ThreadPoolExecutor(4) as pool:
+        responses = list(
+            pool.map(
+                lambda index: _client().post(
+                    "/api/chat-export/pdf",
+                    json = {"title": f"t{index}", "html": f"<p>chat {index}</p>"},
+                ),
+                range(4),
+            )
+        )
+    assert [response.status_code for response in responses] == [200] * 4
+    assert all(f"chat {index}" in _text(r.content) for index, r in enumerate(responses))
+
+    monkeypatch.setattr(
+        chat_export.sys, "executable", str(Path(__file__).with_name("no-such-python"))
+    )
+    response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": "<p>x</p>"})
+    assert response.status_code == 500
 
 
 def test_requires_authentication():
