@@ -58,9 +58,8 @@ LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_LENGTH_RATIO", "2.0"))
 # Counts below this many elements / layout objects at LONG turns never fail the length check.
 COUNT_FLOOR = int(os.environ.get("LONG_THREAD_AREAS_COUNT_FLOOR", "3000"))
 MAX_RATIO = float(os.environ.get("LONG_THREAD_AREAS_MAX_RATIO", "4.0"))
-# Areas judged on CPU with chat length too, not only on elements and layout objects: a streamed reply
-# restyles only its own message, so its counts stay flat while per-token work over the whole thread
-# grows. Main reads 1.4-2.1x (40 -> 200 turns) for `stream`; 3x fails a cost that scales with the chat.
+# Also judged on CPU growth with chat length: a streamed reply restyles only its own message, so its
+# element / layout counts stay flat while per-token work over the thread grows.
 CPU_LENGTH = {"stream": float(os.environ.get("LONG_THREAD_AREAS_STREAM_LENGTH_RATIO", "3.0"))}
 # CPU ms a mode must add on top of the ratio before it fails.
 CPU_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_CPU_FLOOR_MS", "150"))
@@ -148,8 +147,7 @@ def known_limits(text: str) -> dict[tuple[str, str], float]:
 #                 | ("settle",) wait only | ("streamed", text) a streamed reply ended with text
 #   setup / teardown run outside the measured window; covers: trigger keys (see trigger_key) it measures.
 # "last|css": inside the last assistant message; "js|expr": an expression returning the element.
-# The streamed reply: fixed frames at a fixed cadence (no network: an init script answers the
-# completions request from the page), so every run renders the same tokens on the same clock.
+# Fixed frames at a fixed cadence, answered in-page, so every run renders the same tokens on the same clock.
 STREAM_PROMPT = "Explain the scheduler buffer in detail."
 # The model the stub reports resident (/api/inference/status); its chip is the model picker trigger.
 STUB_MODEL = "unsloth/Qwen3-4B"
@@ -204,8 +202,7 @@ def stream_frames() -> list[dict]:
 
 
 STREAM_TIMEOUT_MS = 30_000
-# Cheap until the shim has sent its last frame (it is polled inside the measured window), then one
-# check that the last assistant message shows the end text and the run has ended.
+# Polled inside the measured window: no DOM walk until the shim has sent its last frame.
 STREAMED = """(end) => {
   if (!window.__gateStreamDone) return false;
   const all = document.querySelectorAll('[data-role="assistant"]');
@@ -309,7 +306,6 @@ AREAS: dict[str, dict] = {
         "ready": ("overlay",),
         "close": ("key", "Escape"),
         "gone": ("overlay_gone",),
-        # The chip reads the resident model's name (the stub reports STUB_MODEL).
         "covers": ["popover-trigger:Select model", f"popover-trigger:{STUB_MODEL.split('/')[-1]}"],
     },
     "composer_menu": {
@@ -465,9 +461,7 @@ AREAS: dict[str, dict] = {
         "gone": ("gone", '[data-slot="hover-card-content"]'),
         "covers": ["hover-card-trigger:*"],
     },
-    # A reply streamed into the chat: the composer holds a fixed message (setup, outside the window),
-    # Enter sends it and the window ends when the last frame of STREAM has rendered. Last on purpose:
-    # it adds a turn to the thread.
+    # Last on purpose: it adds a turn to the thread.
     "stream": {
         "setup": ("compose", STREAM_PROMPT),
         "open": ("key", "Enter"),
@@ -676,7 +670,6 @@ class Api:
             "/api/hub/hidden-models": {"hidden": []},
             "/api/settings/pinned-models": {"pinned": []},
             "/api/health": {"status": "ok"},
-            # A resident model, so the composer can send (the reply comes from STREAM_SHIM).
             "/api/inference/status": {
                 "active_model": STUB_MODEL,
                 "model_identifier": STUB_MODEL,
@@ -1009,8 +1002,7 @@ class Page:
                     timeout = 3_000,
                 )
             elif kind == "streamed":
-                # The last frame rendered in the last assistant message and the run has ended: the
-                # stream really drew (a reply that never arrives is NOT_RUN, which fails on default).
+                # A reply that never draws is NOT_RUN, which fails on the default page.
                 self.page.wait_for_function(
                     STREAMED, arg = pred[1], timeout = STREAM_TIMEOUT_MS, polling = 50
                 )
