@@ -385,3 +385,41 @@ def test_a_compiled_block_traces_the_eager_forward_without_graph_breaks(name):
     out = torch.compile(lin, backend = counter, fullgraph = True)(x)
     assert counter.frame_count == 1
     assert torch.equal(out, lin(x))
+
+
+def test_install_order_with_the_compiled_forward_does_not_matter():
+    stock = gguf_utils.GGUFLinear.forward_native
+    assert ex._stock_forward(gguf_utils.GGUFLinear) is stock
+    # compiled forward first: its wrapper stays, diffusers' own forward is what the exact path falls back to
+    assert gc.install_compiled_dequant()
+    wrapper = gguf_utils.GGUFLinear.forward_native
+    assert ex.install_exact_dequant() == TYPES
+    assert gguf_utils.GGUFLinear.forward_native is wrapper
+    assert ex.stock_forward() is stock
+    gc.uninstall_all()
+    assert gguf_utils.GGUFLinear.forward_native is stock
+    # exact first, compiled on top, then out-of-order teardown: still back to diffusers' forward
+    ex.install_exact_dequant()
+    assert gguf_utils.GGUFLinear.forward_native is ex._exact_forward
+    assert gc.install_compiled_dequant()
+    ex.uninstall_exact_dequant()
+    gc.uninstall_all()
+    ex.uninstall_exact_dequant()
+    assert gguf_utils.GGUFLinear.forward_native is stock
+
+
+@needs_fused
+def test_fused_cast_switch_off_runs_the_compiled_stock_dequant_once_rounded(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_GGUF_FUSED_CAST", "0")
+    ex.install_exact_dequant()
+    assert gc.install_compiled_dequant()
+    calls = []
+    monkeypatch.setattr(ex, "dequantize_cast", lambda *a, **k: calls.append(1))
+    qtype = T.Q4_K
+    bs, sz = gguf.GGML_QUANT_SIZES[qtype]
+    lin = _linear(qtype, 6, 512, torch.bfloat16)
+    raw = lin.weight.as_tensor()
+    x = torch.randn(3, 512).to(torch.bfloat16)
+    dense = ex._FUNCTIONS["Q4_K"](raw.reshape(-1, sz), bs, sz).reshape(6, 512).to(torch.bfloat16)
+    assert torch.equal(lin(x), torch.nn.functional.linear(x, dense))
+    assert calls == []

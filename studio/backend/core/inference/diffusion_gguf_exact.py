@@ -310,7 +310,7 @@ for _fn in EXACT_FUNCTIONS:
     setattr(_fn, _TAG, True)
 del _fn
 _replaced: dict = {}
-# "forward" is kept after uninstall: a later patch may hold _exact_forward as its fallback
+# "forward" (diffusers' own forward_native) is kept after uninstall: a later patch may hold _exact_forward as its fallback
 _STATE: dict = {}
 
 
@@ -362,8 +362,35 @@ def dequantize_cast(
     return blocks_fn(blocks, block_size, type_size, dtype).reshape(*raw.shape[:-1], -1)
 
 
+def _stock_forward(linear_cls: Any) -> Any:
+    """diffusers' own ``GGUFLinear.forward_native`` under any wrappers (``__wrapped__``, unsloth_zoo's stash), told
+    apart by its code's file: ``functools.wraps`` copies ``__module__`` onto a wrapper."""
+    import sys
+
+    home = getattr(sys.modules.get(linear_cls.__module__), "__file__", None)
+    seen = []
+    stash = getattr(linear_cls, "_original_utils_GGUFLinear_forward_native", None)
+    for fn in (linear_cls.__dict__.get("forward_native"), stash):
+        while callable(fn) and fn not in seen:
+            seen.append(fn)
+            if (
+                home is not None
+                and getattr(getattr(fn, "__code__", None), "co_filename", None) == home
+            ):
+                return fn
+            fn = getattr(fn, "__wrapped__", None)
+    return None
+
+
+def set_compiled_dequant(on: bool) -> None:
+    """diffusion_gguf_compile: whether ``dequantize_gguf_tensor`` is compiled (then the stock forward runs it)."""
+    _STATE["compiled_dequant"] = bool(on)
+
+
 def _exact_forward(self: Any, inputs: Any) -> Any:
-    """GGUFLinear.forward_native dequantising straight to the compute dtype; other types take the replaced forward."""
+    """GGUFLinear.forward_native dequantising straight to the compute dtype. Other types, and every type while the
+    compiled ``dequantize_gguf_tensor`` is installed without its fused forward (torch < 2.7, switched off), take
+    diffusers' forward: fp32 out, one ``.to``."""
     weight = self.weight
     dtype = self.compute_dtype
     quant_type = getattr(weight, "quant_type", None)
@@ -371,6 +398,7 @@ def _exact_forward(self: Any, inputs: Any) -> Any:
         dtype is None
         or quant_type is None
         or weight.dim() != 2
+        or _STATE.get("compiled_dequant")
         or exact_function(quant_type) is None
         or not row_aligned(weight, quant_type)
     ):
@@ -380,6 +408,10 @@ def _exact_forward(self: Any, inputs: Any) -> Any:
     dense = dequantize_cast(weight.as_tensor(), quant_type, dtype)
     bias = self.bias.to(dtype) if self.bias is not None else None
     return torch.nn.functional.linear(inputs, dense, bias)
+
+
+def stock_forward() -> Any:
+    return _STATE.get("forward")
 
 
 def install_exact_dequant(logger: Any = None) -> list:
@@ -405,12 +437,11 @@ def install_exact_dequant(logger: Any = None) -> list:
         table[qtype] = fn
         replaced.append(name)
     linear_cls = getattr(gguf_utils, "GGUFLinear", None)
-    forward = getattr(linear_cls, "forward_native", None)
-    if callable(forward) and forward is not _exact_forward:
-        _STATE.setdefault("forward", forward)
-        # before diffusion_gguf_compile patches it, so its fallback is this one
-        if linear_cls.__dict__.get("forward_native") is _STATE["forward"]:
-            _STATE["patched_cls"] = linear_cls
+    stock = _stock_forward(linear_cls) if linear_cls is not None else None
+    if stock is not None:
+        _STATE.setdefault("forward", stock)
+        # only over diffusers' own forward: a diffusion_gguf_compile wrapper already handles these types
+        if linear_cls.__dict__.get("forward_native") is stock:
             linear_cls.forward_native = _exact_forward
     if replaced and logger is not None:
         logger.info("diffusion.gguf: llama.cpp-exact fp32 dequant for %s", ", ".join(replaced))
@@ -425,6 +456,10 @@ def uninstall_exact_dequant() -> None:
             if table.get(qtype) in _EXACT:
                 table[qtype] = original
     _replaced.clear()
-    linear_cls = _STATE.pop("patched_cls", None)
+    try:
+        from diffusers.quantizers.gguf import utils as gguf_utils
+    except Exception:  # noqa: BLE001
+        return
+    linear_cls = getattr(gguf_utils, "GGUFLinear", None)
     if linear_cls is not None and linear_cls.__dict__.get("forward_native") is _exact_forward:
         linear_cls.forward_native = _STATE["forward"]

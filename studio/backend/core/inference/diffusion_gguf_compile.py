@@ -139,6 +139,9 @@ def install_compiled_dequant(logger: Any = None) -> bool:
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             _compile_error = None
+            from . import diffusion_gguf_exact  # noqa: PLC0415
+
+            diffusion_gguf_exact.set_compiled_dequant(True)
             _install_fused_q8_0(gguf_utils, logger)
             return True
         return False
@@ -218,7 +221,8 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
                 if not (q8_0 if quant_type == _Q8_0 else fused_cast) or not gguf_exact.row_aligned(
                     weight, quant_type
                 ):
-                    return stock_forward(self, inputs)
+                    # diffusers' forward: the compiled dequant (fp32 out) and one cast
+                    return (gguf_exact.stock_forward() or stock_forward)(self, inputs)
                 dense = gguf_exact.dequantize_cast(
                     weight.as_tensor(), quant_type, dtype, exact_fns[exact_fn]
                 )
@@ -270,6 +274,9 @@ def uninstall_compiled_dequant() -> None:
     if gguf_utils is not None:
         revert_patch(gguf_utils, _DEQUANT_ATTR)
     _compiled_dequant_installed = False
+    from . import diffusion_gguf_exact  # noqa: PLC0415
+
+    diffusion_gguf_exact.set_compiled_dequant(False)
 
 
 def uninstall_all() -> None:
