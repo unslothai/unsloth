@@ -32,7 +32,10 @@ export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
   requestPromptQueueStop();
   // Snapshot first: a chat another client creates and pins mid-clear survives it.
   const pinnedBefore = usePinnedChatsStore.getState().pinnedIds;
-  const threadsBefore = await listStoredChatThreads({ includeArchived: true });
+  // Only finds Compare pairs; an unreachable backend must not stop the clear.
+  const threadsBefore = await listStoredChatThreads({
+    includeArchived: true,
+  }).catch(() => []);
   const result = await clearStoredChats(options);
   const deleted = new Set(result.deletedThreadIds);
   for (const id of deleted) clearComposerDraft(id);

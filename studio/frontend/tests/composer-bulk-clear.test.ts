@@ -11,6 +11,7 @@ async function setup(
   failedThreadIds: string[] = [],
   reject = false,
   createDuringClear = false,
+  listFails = false,
 ) {
   installLocalStorageFake();
   const drafts = await import(
@@ -52,7 +53,10 @@ async function setup(
         chatHistoryClearBoundary: { advance() {} },
       },
       "./chat-history-storage": {
-        listStoredChatThreads: async () => rows,
+        listStoredChatThreads: async () => {
+          if (listFails) throw new Error("backend unreachable");
+          return rows;
+        },
         countStoredChats: async () => rows.length,
         clearStoredChats: async () => {
           if (createDuringClear) seed("created-during-clear");
@@ -132,4 +136,11 @@ test("a rejected bulk deletion preserves drafts", async () => {
   await assert.rejects(h.clearAllChats(), /clear failed/);
   h.assertDraft("single", true);
   h.assertDraft("pair", true);
+});
+
+test("an unreachable chat listing still clears the deleted chats' drafts", async () => {
+  const h = await setup(["single"], [], false, false, true);
+  h.seed("single");
+  await h.clearAllChats();
+  h.assertDraft("single", false);
 });
