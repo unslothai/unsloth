@@ -7643,6 +7643,9 @@ html[data-glass][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$
 /* Windows Transparent (data-glass-clear): its menus and dialogs blur too, and the Glass fill variables are not set
    there, so the paused surface takes the theme's own solid colours and stays readable over sharp content. */
 html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface):is([data-glass-moving], [data-slot$="-content"][data-state="closed"]) {
+  /* Glow dropdowns and browser menus paint through layered !important rules that read these variables. */
+  --dropdown-lift-surface: color-mix(in srgb, var(--glass-page-popover) 96%, transparent);
+  --browser-menu-surface: color-mix(in srgb, var(--glass-page-popover) 96%, transparent);
   background-color: color-mix(in srgb, var(--glass-page-popover) 96%, transparent) !important;
 }
 html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface)[data-glass-moving] .sticky {
