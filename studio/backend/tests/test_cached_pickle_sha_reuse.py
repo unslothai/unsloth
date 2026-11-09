@@ -332,6 +332,7 @@ def test_a_snapshot_of_verified_bins_loads_them_instead_of_downloading_safetenso
         calls,
     )
     assert ds.pipeline_safetensors_kwargs(str(root)) == {"use_safetensors": False}
+    # A snapshot folder is read as is: checked against its own commit.
     assert calls and calls[0][0] == "o/pipe" and calls[0][1] == "c" * 40
     assert ds.component_safetensors_kwargs(str(root), "transformer") == {"use_safetensors": False}
 
@@ -436,3 +437,26 @@ def test_the_dense_encoder_fetch_skips_safetensors_for_a_verified_cached_bin(
     patterns = tp._dense_component_pickles("o/pipe", ["text_encoder"], None, None)
     assert "text_encoder/pytorch_model.bin" in patterns
     assert "text_encoder/model.safetensors" not in patterns
+
+
+def test_an_unpinned_hub_id_is_checked_against_the_hubs_current_main(hub, tmp_path, monkeypatch):
+    from core.inference import diffusers_safetensors as ds
+
+    root = _snapshot(tmp_path, {"transformer": {"diffusion_pytorch_model.bin": b"t"}})
+    (root.parents[1] / "refs").mkdir()
+    (root.parents[1] / "refs" / "main").write_text("c" * 40)
+    import huggingface_hub.file_download as fd
+    import core.inference.cached_weight_sha as cws
+
+    cache = str(tmp_path / "hub")
+    calls = []
+    # The Hub's current main no longer lists the .bin (it moved to safetensors only): no reuse.
+    _hub_records(monkeypatch, {}, calls)
+    real = fd.try_to_load_from_cache
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", real)
+    assert ds.pipeline_safetensors_kwargs("o/pipe", cache_dir = cache) == {}
+    assert calls and calls[-1][1] is None  # current main, not the cached commit
+    cws._hub.clear()  # the unanswered lookup above is otherwise remembered for a minute
+    _hub_records(monkeypatch, {"transformer/diffusion_pytorch_model.bin": _sha(b"t")}, calls)
+    assert ds.pipeline_safetensors_kwargs("o/pipe", cache_dir = cache) == {"use_safetensors": False}
+    assert calls[-1][1] is None

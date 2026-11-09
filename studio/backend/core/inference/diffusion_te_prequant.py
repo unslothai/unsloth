@@ -1617,7 +1617,9 @@ def _dense_component_pickles(
             repo_id, "model_index.json", cache_dir = cache_dir, revision = revision
         )
         if isinstance(hit, str):
-            reused = verified_bin_components(os.path.dirname(hit), components, token = hf_token)
+            reused = verified_bin_components(
+                os.path.dirname(hit), components, token = hf_token, revision = revision
+            )
     except Exception:  # noqa: BLE001 - unverified: safetensors stays first
         reused = set()
     wanted = tuple(f"{c}/" for c in components)

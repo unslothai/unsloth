@@ -83,11 +83,13 @@ def verified_bin_components(
     *,
     token: Optional[str] = None,
     offline: bool = False,
+    revision: Optional[str] = None,
 ) -> set:
     """The ``components`` of the cached snapshot ``root`` whose weights are on disk only as ``.bin`` (no
-    ``.safetensors`` weight cached) and every such ``.bin`` hashes to the sha256 the Hub records for it at the
-    snapshot's commit. Empty for a folder that is not a Hub cache snapshot or on any doubt. ``offline`` (nothing can
-    be downloaded, so the alternative to the cached ``.bin`` is a failed load) accepts the cached ``.bin`` unhashed."""
+        ``.safetensors`` weight cached) and every such ``.bin`` hashes to the sha256 the Hub records for it at the
+        revision the load will read (``revision``, or the Hub's current ``main`` when the load is unpinned, never the
+    cached snapshot's possibly stale commit). Empty for a folder that is not a Hub cache snapshot or on any doubt. ``offline`` (nothing can
+        be downloaded, so the alternative to the cached ``.bin`` is a failed load) accepts the cached ``.bin`` unhashed."""
     try:
         from .cached_weight_sha import cached_copy_matches_hub, hub_sha256s, reuse_enabled
 
@@ -96,7 +98,7 @@ def verified_bin_components(
         ident = _snapshot_identity(Path(str(root)))
         if ident is None:
             return set()
-        repo_id, commit = ident
+        repo_id, _commit = ident
         offline = offline or _hub_offline()
         wanted: dict = {}
         for component in components:
@@ -111,7 +113,7 @@ def verified_bin_components(
         if offline:
             return set(wanted)
         shas = hub_sha256s(
-            repo_id, [n for names in wanted.values() for n in names], revision = commit, token = token
+            repo_id, [n for names in wanted.values() for n in names], revision = revision, token = token
         )
         return {
             component
@@ -119,7 +121,7 @@ def verified_bin_components(
             if all(
                 n in shas
                 and cached_copy_matches_hub(
-                    repo_id, n, str(Path(str(root)) / n), revision = commit, expected = shas[n]
+                    repo_id, n, str(Path(str(root)) / n), revision = revision, expected = shas[n]
                 )
                 for n in names
             )
@@ -265,9 +267,12 @@ def pipeline_safetensors_kwargs(
             return {}
         if os.path.isdir(os.path.expanduser(text)):
             root: Optional[Path] = Path(text).expanduser()
+            # A snapshot folder is read as is: its own commit is the revision the load reads.
+            revision = (_snapshot_identity(root) or (None, None))[1]
         else:
             root = None
-            # The snapshot the load reads: a pinned ``revision`` among the load's kwargs, else the cached main.
+            # The snapshot the load reads: a pinned ``revision`` among the load's kwargs, else the cached main (whose
+            # .bin files are then checked against the Hub's current main, what an unpinned load resolves to).
             revision = passed.get("revision") if isinstance(passed, dict) else None
             for manifest in _MANIFESTS:
                 root = _cached_snapshot_dir(text, manifest, cache_dir, revision)
@@ -289,7 +294,7 @@ def pipeline_safetensors_kwargs(
             token = passed.get("token") if isinstance(passed, dict) else None
             offline = bool(passed.get("local_files_only")) if isinstance(passed, dict) else False
             if needed and verified_bin_components(
-                root, needed, token = token, offline = offline
+                root, needed, token = token, offline = offline, revision = revision
             ) == set(needed):
                 return {"use_safetensors": False}
     except Exception:  # noqa: BLE001 - unknown keeps the library default
@@ -317,13 +322,14 @@ def component_safetensors_kwargs(
             return {}
         if os.path.isdir(os.path.expanduser(text)):
             folder: Optional[Path] = Path(text).expanduser() / subfolder
+            revision = (_snapshot_identity(folder.parent) or (None, revision))[1]
         else:
             snap = _cached_snapshot_dir(text, f"{subfolder}/config.json", cache_dir, revision)
             folder = snap / subfolder if snap is not None else None
         if folder is not None and component_weight_state(folder) is True:
             return {"use_safetensors": True}
         if folder is not None and verified_bin_components(
-            folder.parent, [subfolder], offline = local_files_only
+            folder.parent, [subfolder], offline = local_files_only, revision = revision
         ):
             return {"use_safetensors": False}
     except Exception:  # noqa: BLE001
