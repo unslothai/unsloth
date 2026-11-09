@@ -4287,6 +4287,7 @@ def _discrete_linux_host(monkeypatch):
         "LLAMA_ARG_CPU_MOE",
         "UNSLOTH_MOE_CACHE",
         "UNSLOTH_MOE_SPILL_UBATCH",
+        "UNSLOTH_MOE_SPILL_SLOTS",
     ):
         monkeypatch.delenv(name, raising = False)
 
