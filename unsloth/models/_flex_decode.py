@@ -399,6 +399,41 @@ def _default_stance():
     return None
 
 
+def _dense_attention(module, query, key, value, attention_mask, dropout, scaling, softcap, kwargs):
+    """The dense fallback of a step flex decode does not serve: transformers' SDPA, or, with an attention logit
+    softcap (which SDPA would silently drop), the eager softcapped attention the model computes itself."""
+    if softcap is None:
+        from transformers.integrations.sdpa_attention import sdpa_attention_forward
+        return sdpa_attention_forward(
+            module, query, key, value, attention_mask, dropout = dropout, scaling = scaling, **kwargs
+        )
+    groups = query.shape[1] // key.shape[1]
+    key = key.repeat_interleave(groups, dim = 1)
+    value = value.repeat_interleave(groups, dim = 1)
+    scores = torch.matmul(query, key.transpose(2, 3)) * scaling
+    scores = torch.tanh(scores / softcap) * softcap
+    L, S = query.shape[-2], key.shape[-2]
+    if (
+        attention_mask is None
+        and L > 1
+        and kwargs.get("is_causal", getattr(module, "is_causal", True))
+    ):
+        # An elided causal mask (SDPA's is_causal would cover it): query i sees keys up to S - L + i.
+        attention_mask = torch.ones(L, S, dtype = torch.bool, device = query.device).tril(S - L)
+    if attention_mask is not None:
+        mask = attention_mask[..., : key.shape[-2]]
+        if mask.dtype == torch.bool:
+            scores = scores.masked_fill(~mask, float("-inf"))
+        else:
+            scores = scores + mask
+    upcast = torch.float32 if scores.dtype in (torch.float16, torch.bfloat16) else scores.dtype
+    probs = torch.softmax(scores, dim = -1, dtype = upcast).to(query.dtype)
+    probs = torch.nn.functional.dropout(
+        probs, p = dropout, training = getattr(module, "training", False)
+    )
+    return torch.matmul(probs, value).transpose(1, 2).contiguous(), None
+
+
 def _attention(
     module,
     query,
@@ -427,13 +462,8 @@ def _attention(
         _count(module, reason)
         if isinstance(attention_mask, BlockMask):
             raise RuntimeError(f"Unsloth: flex decode got a BlockMask it cannot run ({reason}).")
-        from transformers.integrations.sdpa_attention import sdpa_attention_forward
-
-        extra = dict(kwargs)
-        if softcap is not None:
-            extra["softcap"] = softcap
-        return sdpa_attention_forward(
-            module, query, key, value, attention_mask, dropout = dropout, scaling = scaling, **extra
+        return _dense_attention(
+            module, query, key, value, attention_mask, dropout, scaling, softcap, kwargs
         )
     if scaling is None:
         scaling = getattr(module, "scaling", None)
@@ -454,15 +484,8 @@ def _attention(
         if FlexDecodeUnavailable is None or not isinstance(error, FlexDecodeUnavailable):
             raise
         _count(module, "flex_decoding unavailable for this shape")
-        from transformers.integrations.sdpa_attention import sdpa_attention_forward
-
         dense = dense_decode_mask(attention_mask, key.shape[-2], query.device)
-        extra = dict(kwargs)
-        if softcap is not None:
-            extra["softcap"] = softcap
-        return sdpa_attention_forward(
-            module, query, key, value, dense, dropout = dropout, scaling = scaling, **extra
-        )
+        return _dense_attention(module, query, key, value, dense, dropout, scaling, softcap, kwargs)
     _count(module, None)
     # flex returns [B, H, Q, D]; transformers attention functions return [B, Q, H, D].
     if out.dim() == 4 and out.shape[1] == query.shape[1] and out.shape[2] == query.shape[2]:

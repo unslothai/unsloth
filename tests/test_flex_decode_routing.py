@@ -263,3 +263,41 @@ def test_other_flex_decode_errors_propagate(monkeypatch):
     k = v = torch.randn(1, 2, 16, 8)
     with pytest.raises(ValueError, match = "bad shapes"):
         FD._attention(torch.nn.Module(), q, k, v, mask)
+
+
+@pytest.mark.parametrize("path", ["dense_mask", "unavailable", "elided_causal"])
+def test_softcapped_fallback_keeps_the_softcap(monkeypatch, path):
+    # A step that falls back from flex decode (an unsupported shape's dense mask, or a shape zoo cannot compile) must
+    # keep the model's attention logit softcap: SDPA drops it silently. Reference: eager softcapped attention.
+    torch.manual_seed(0)
+    heads, kv_heads, dim, kv_len = 4, 2, 16, 12
+    q_len = 3 if path == "elided_causal" else 1
+    q = torch.randn(2, heads, q_len, dim, dtype = torch.float64) * 4
+    k = torch.randn(2, kv_heads, kv_len, dim, dtype = torch.float64) * 4
+    v = torch.randn(2, kv_heads, kv_len, dim, dtype = torch.float64)
+    visible = torch.ones(2, kv_len, dtype = torch.bool)
+    visible[1, :4] = False
+    module = torch.nn.Module()
+    module.is_causal = True
+    if path == "unavailable":
+        decode = pytest.importorskip("unsloth_zoo.flex_attention.decode")
+        if FD.FlexDecodeUnavailable is None:
+            pytest.skip("unsloth_zoo without FlexDecodeUnavailable")
+
+        def unavailable(*args, **kwargs):
+            raise decode.FlexDecodeUnavailable("no tile fits")
+
+        monkeypatch.setattr(FD, "flex_decode_attention", unavailable)
+        pad = visible.long()
+        mask = decode.decode_block_mask(2, kv_len, torch.tensor(kv_len - 1), attention_mask = pad)
+        dense = visible[:, None, None, :]
+    elif path == "dense_mask":
+        mask = dense = visible[:, None, None, :]
+    else:
+        mask, dense = None, torch.ones(q_len, kv_len, dtype = torch.bool).tril(kv_len - q_len)
+    out, _ = FD._attention(module, q, k, v, mask, scaling = 0.25, softcap = 5.0)
+    rep = lambda x: x.repeat_interleave(heads // kv_heads, dim = 1)
+    scores = torch.tanh((q @ rep(k).transpose(2, 3)) * 0.25 / 5.0) * 5.0
+    scores = scores.masked_fill(~dense, float("-inf"))
+    ref = (torch.softmax(scores, -1) @ rep(v)).transpose(1, 2)
+    torch.testing.assert_close(out, ref, rtol = 0, atol = 1e-12)
