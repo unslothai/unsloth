@@ -48410,14 +48410,14 @@ async def _route_nvfp4_request(
     its caller tracks the model by the path it asked for."""
     from core.inference.diffusion_nvfp4_route import route_load_request
 
-    # Runs before the training interlock: while training owns the GPU the cards are read without a CUDA context.
-    training = await asyncio.to_thread(_training_is_active)
+    # Runs before the training interlock: while training owns the GPU the cards are read without a CUDA context (asked
+    # only when torch would be the one to read them).
     routed, route = await asyncio.to_thread(
         route_load_request,
         request,
         media = media,
         replace_checkpoint = user_initiated,
-        allow_cuda_init = not training,
+        allow_cuda_init = lambda: not _training_is_active(),
     )
     if (
         route is not None

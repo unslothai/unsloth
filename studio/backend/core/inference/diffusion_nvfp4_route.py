@@ -97,7 +97,7 @@ class _CudaInitRefused(RuntimeError):
     """Reading the cards would initialise CUDA in this process, which the caller does not allow right now."""
 
 
-def _probe_device_profile(allow_cuda_init: bool = True) -> DeviceProfile:
+def _probe_device_profile(allow_cuda_init: Any = True) -> DeviceProfile:
     """Raises when the device cannot be read, so a transient failure is never cached."""
     try:
         import torch
@@ -113,8 +113,11 @@ def _probe_device_profile(allow_cuda_init: bool = True) -> DeviceProfile:
         if caps:
             return DeviceProfile(NVIDIA, caps)
     if torch.cuda.is_available():
-        if not allow_cuda_init and not torch.cuda.is_initialized():
-            raise _CudaInitRefused()
+        if not torch.cuda.is_initialized():
+            # Asked only here, where torch is the one left to answer (callable: the training check is not free).
+            allowed = allow_cuda_init() if callable(allow_cuda_init) else allow_cuda_init
+            if not allowed:
+                raise _CudaInitRefused()
         caps = tuple(
             tuple(int(v) for v in torch.cuda.get_device_capability(index))
             for index in range(torch.cuda.device_count())
@@ -129,7 +132,7 @@ def _probe_device_profile(allow_cuda_init: bool = True) -> DeviceProfile:
     return DeviceProfile(CPU)
 
 
-def device_profile(*, allow_cuda_init: bool = True) -> DeviceProfile:
+def device_profile(*, allow_cuda_init: Any = True) -> DeviceProfile:
     """Read once per process (a box's capabilities do not change while it runs); ``unknown`` when unreadable, or when
     only torch could answer and ``allow_cuda_init`` is False (training owns the GPU: no context may be taken here)."""
     if _PROFILE:
@@ -512,7 +515,7 @@ def plan_nvfp4_route(
     gpu_ids: Optional[Iterable[int]] = None,
     component_files: bool = False,
     replace_checkpoint: bool = True,
-    allow_cuda_init: bool = True,
+    allow_cuda_init: Any = True,
     profile: Optional[DeviceProfile] = None,
     log: bool = True,
 ) -> Optional[Nvfp4Route]:
@@ -691,7 +694,7 @@ def route_load_request(
     media: str = "image",
     gpu_ordinal: Optional[int] = None,
     replace_checkpoint: bool = True,
-    allow_cuda_init: bool = True,
+    allow_cuda_init: Any = True,
 ) -> tuple:
     """``(request, route)``: a pydantic load request with the reroute applied (a copy), or the same object and None."""
     route = plan_nvfp4_route(

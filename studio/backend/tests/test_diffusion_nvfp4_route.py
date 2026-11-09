@@ -362,7 +362,7 @@ def test_the_route_reads_the_cards_without_cuda_while_training(monkeypatch):
     monkeypatch.setattr(image_routes, "_training_is_active", lambda: True)
     pick = DiffusionLoadRequest(model_path = "Tongyi-MAI/Z-Image-Turbo", transformer_quant = "nvfp4")
     asyncio.run(image_routes._route_nvfp4_request(pick, "image"))
-    assert seen["allow_cuda_init"] is False
+    assert seen["allow_cuda_init"]() is False
 
 
 def test_the_device_is_read_once(monkeypatch):
