@@ -313,11 +313,11 @@ test("a script-driven animation holds its surface through the running controller
 
 // --- wiring and CSS contract -----------------------------------------------------------------------
 
-test("glass motion runs only with software compositing, where glass blurs: never solid, Transparent, out of scope or WebKitGTK", () => {
+test("glass motion runs only with software compositing, where glass blurs: never solid, out of scope or WebKitGTK, and Transparent only on Windows Desktop", () => {
   assert.match(MATERIAL, /import \{ startGlassMotion \} from "\.\/glass-motion";/);
   assert.match(
     MATERIAL,
-    /const on =\s*!WEBKIT_GTK &&\s*material !== "solid" &&\s*material !== "transparent" &&\s*here &&\s*softwareCompositing\(\);\s*document\.documentElement\.toggleAttribute\("data-glass-motion", on\);\s*return on \? startGlassMotion\(\)\.stop : undefined;\s*\}, \[material, here\]\);/,
+    /const clearBlur =\s*material === "transparent" &&\s*root\.classList\.contains\("tauri"\) &&\s*root\.classList\.contains\("client-windows"\);\s*const on =\s*!WEBKIT_GTK &&\s*material !== "solid" &&\s*\(material !== "transparent" \|\| clearBlur\) &&\s*here &&\s*softwareCompositing\(\);\s*document\.documentElement\.toggleAttribute\("data-glass-motion", on\);\s*return on \? startGlassMotion\(\)\.stop : undefined;\s*\}, \[material, here\]\);/,
   );
 });
 
@@ -333,7 +333,7 @@ test("the motion flag is keyed on the surface, never on html or body, and never 
     for (const sel of rule.selectors) {
       assert.doesNotMatch(sel, /html\[[^\]]*data-glass-moving|body\[[^\]]*data-glass-moving/, sel);
       assert.doesNotMatch(sel, /:has\(/, `${sel}: a :has() here would re-match on every DOM change`);
-      assert.match(sel, /^html(\.dark)?\[data-glass/, `${sel}: only with Glass on`);
+      assert.match(sel, /^html(\.dark)?(\[data-glass|:is\(\[data-glass\],\[data-glass-clear\]\)|\.tauri\.client-windows\[data-glass-clear\])/, `${sel}: only with Glass on (or Windows Transparent, which blurs)`);
       assert.match(sel, /^html[^ ]*\[data-glass-motion\]/, `${sel}: only with software compositing; with a GPU nothing changes`);
     }
     assert.equal(rule.parent?.type, "root", `${rule.selector}: unlayered, outside @layer and @media`);
@@ -350,20 +350,20 @@ test("the motion flag is keyed on the surface, never on html or body, and never 
 });
 
 test("a moving or closing surface loses its blur at once and takes a near-opaque fill", () => {
-  const pause = movingRules.find((r) => r.selectors.includes("html[data-glass][data-glass-motion] [data-glass-moving]"));
+  const pause = movingRules.find((r) => r.selectors.includes("html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving]"));
   assert.ok(pause);
   for (const sel of [
-    "html[data-glass][data-glass-motion] [data-glass-moving]::before",
-    "html[data-glass][data-glass-motion] [data-glass-moving] .sticky",
-    'html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"]',
-    'html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"]::before',
+    "html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving]::before",
+    "html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving] .sticky",
+    'html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"]',
+    'html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"]::before',
   ]) assert.ok(pause.selectors.includes(sel), sel);
   const decl = (prop: string) => pause.nodes.find((n) => n.type === "decl" && n.prop === prop) as postcss.Declaration;
   assert.equal(decl("backdrop-filter").value, "none");
   assert.ok(decl("backdrop-filter").important);
   assert.ok(decl("-webkit-backdrop-filter").important);
   const still = movingRules.find(
-    (r) => r.selector === 'html[data-glass][data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"])',
+    (r) => r.selector === 'html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"])',
   );
   assert.ok(still, "Radix content pauses, settles and closes with its transitions off");
   assert.ok(
@@ -383,7 +383,7 @@ test("a moving or closing surface loses its blur at once and takes a near-opaque
 });
 
 test("no later important blur can win the cascade back from a moving surface", () => {
-  const at = CSS.indexOf("html[data-glass][data-glass-motion] [data-glass-moving],");
+  const at = CSS.indexOf("html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving],");
   assert.ok(at > 0);
   const tail = CSS.slice(at);
   assert.doesNotMatch(tail, /backdrop-filter:\s*blur[^;]*!important/);

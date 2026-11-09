@@ -434,7 +434,8 @@ function RootLayout() {
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   const isChatRoute = pathname === "/chat";
-  const windowsWallpaperPage = !isChatRoute && usesWindowsTitlebar();
+  const windowsTitlebar = usesWindowsTitlebar();
+  const windowsWallpaperPage = !isChatRoute && windowsTitlebar;
   const { pinned, setPinned, togglePinned } = useSidebarPin();
   const navigate = useNavigate();
 
