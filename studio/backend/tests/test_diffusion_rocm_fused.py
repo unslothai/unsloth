@@ -581,7 +581,6 @@ def test_a_failed_adaln_launch_disables_the_fused_path_for_the_load(monkeypatch)
     ],
 )
 def test_compiled_adaln_never_recompiles_per_call(fake_kernels, monkeypatch, cls_name, call):
-    # FLUX.1's regionally compiled blocks (fullgraph=True) hit the recompile limit when the census ran under Dynamo.
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     assert rf.install_adaln(torch.bfloat16, "cuda") == 3
     torch.manual_seed(0)
