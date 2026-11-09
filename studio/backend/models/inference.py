@@ -2574,7 +2574,7 @@ class VideoUrl(BaseModel):
 
 
 class VideoContentPart(BaseModel):
-    """Video content part; served only through llama-server's ``input_video``."""
+    """Video content part for llama-server or a custom OpenAI-compatible connection."""
 
     type: Literal["video_url"]
     video_url: VideoUrl

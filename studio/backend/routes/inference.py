@@ -27580,7 +27580,8 @@ def _llama_passthrough_audio(raw: bytes) -> Optional[tuple[str, float]]:
 
 
 _VIDEO_INPUT_REFUSAL = (
-    "Video input is only supported on a local GGUF or MLX model with video support."
+    "Video input is only supported on a local GGUF or MLX model with video support, "
+    "or a custom OpenAI-compatible connection."
 )
 _VIDEO_NEEDS_FFMPEG_DETAIL = (
     "This model takes video, but ffmpeg and ffprobe were not found in llama-server's search path. "
@@ -27898,6 +27899,32 @@ async def _shrink_video_parts(messages: list[dict], llama_backend) -> None:
             if rejection is not None:
                 continue
             part["video_url"] = {"url": await _shrink_clip_for_llama(clip, llama_backend)}
+
+
+_VIDEO_URL_PROVIDER_TYPES = frozenset({"custom", "vllm", "llama_cpp", "ollama"})
+
+
+async def _external_video_url(clip: str) -> str:
+    bare = _video_b64_rejection(clip)[0]
+    shrunk = await _shrink_clip_for_llama(bare, None)
+    if shrunk != bare:
+        return f"data:video/x-matroska;base64,{shrunk}"
+    return clip if clip[:5].lower() == "data:" else f"data:video/mp4;base64,{bare}"
+
+
+async def _forward_external_video(messages: list[dict], legacy_clip: Optional[str]) -> None:
+    if legacy_clip:
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    content = msg["content"] = [{"type": "text", "text": content or ""}]
+                content.append({"type": "video_url", "video_url": {"url": legacy_clip}})
+                break
+    for msg in messages:
+        for part in msg.get("content") if isinstance(msg.get("content"), list) else []:
+            if isinstance(part, dict) and part.get("type") == "video_url":
+                part["video_url"] = {"url": await _external_video_url(part["video_url"]["url"])}
 
 
 def _translate_video_parts(messages: list[dict]) -> None:
@@ -28560,6 +28587,10 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif part.type == "video_url":
+                        parts.append(
+                            {"type": "video_url", "video_url": {"url": part.video_url.url}}
+                        )
                     elif (
                         responses_native_parts
                         and msg.role == "assistant"
@@ -29035,6 +29066,14 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
     _refuse_decision_connection(provider_type, api_type)
+    if _request_has_video(payload):
+        if provider_type not in _VIDEO_URL_PROVIDER_TYPES or (
+            provider_type == "custom" and api_type == "responses"
+        ):
+            raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
+        rejection = _request_video_rejection(payload)
+        if rejection is not None:
+            raise HTTPException(status_code = rejection[0], detail = rejection[1])
     if provider_type == "custom":
         try:
             validate_provider_reasoning_contract(provider_type, api_type, reasoning_config)
@@ -29592,6 +29631,8 @@ async def _proxy_to_external_provider(
         model = model,
         preserve_thinking = payload.preserve_thinking,
     )
+    if _request_has_video(payload):
+        await _forward_external_video(chat_messages, payload.video_base64)
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -31324,9 +31365,6 @@ async def produce_openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        # Refuse video here: the proxy cannot place a clip, and video_url is refused as the legacy field is.
-        if _request_has_video(payload):
-            raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
         # _build_external_messages has no input_audio case; refuse rather than drop it.
         if _messages_have_input_audio(payload.messages):
             raise HTTPException(
