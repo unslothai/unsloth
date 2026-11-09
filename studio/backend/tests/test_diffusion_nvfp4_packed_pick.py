@@ -173,6 +173,15 @@ def test_a_packed_block_denoiser_has_a_measured_streaming_headroom(monkeypatch):
         )
         > whole
     )
+    # an fp32 pipeline (FLUX.3 on an fp16-only card) was not measured: learned peak / flat fallback only
+    assert (
+        dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True, compute_bytes = 4)
+        is None
+    )
+    assert (
+        dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True, compute_bytes = 2)
+        == whole
+    )
     # unmeasured family, a dense / torchao denoiser, or the switch off: no packed seed
     assert dm.measured_image_runtime_mib("qwen-image-2.1-turbo", "off", packed_block = True) is None
     assert dm.measured_image_runtime_mib("flux.3-klein", "default", static_seed = False) is None

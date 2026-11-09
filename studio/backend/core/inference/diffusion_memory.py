@@ -3616,7 +3616,7 @@ def measured_image_runtime_mib(
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``packed_block``: the denoiser is kept as packed nvfp4 / mxfp8 blocks; seeds from
-    ``_MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB`` (whole render only).
+    ``_MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB`` (whole render only, 2-byte compute only: it was measured in bf16).
     ``streamed``: use ``_MEASURED_STREAMED_IMAGE_PEAK_MIB`` (window excluded) where present.
     ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
@@ -3647,7 +3647,13 @@ def measured_image_runtime_mib(
         seed = _small_host_int8_seed_mib(
             family, speed_mode, int(dense_transformer_mib), max(2, int(compute_bytes or 2))
         )
-    elif packed_block and phase is None and not _env_off(PACKED_BLOCK_RESIDENCY_ENV):
+    elif (
+        packed_block
+        and phase is None
+        # measured in bf16: an fp32 pipeline (FLUX.3 on an fp16-only card) doubles activations and widened weights
+        and int(compute_bytes or 2) <= 2
+        and not _env_off(PACKED_BLOCK_RESIDENCY_ENV)
+    ):
         seed = _MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if streamed:
             seed = _MEASURED_PACKED_BLOCK_STREAMED_PEAK_MIB.get(str(family or "").lower(), seed)
