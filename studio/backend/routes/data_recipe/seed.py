@@ -1289,12 +1289,15 @@ async def upload_unstructured_file(
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     # Reads 0 for a block with no dir yet, without creating it, so an upload about to be refused leaves no directory behind.
-    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
+    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - await to_thread.run_sync(
+        _get_block_total_size, block_dir
+    )
 
     # Tauri drops arrive as a signed path; isinstance since an unfilled Form param is truthy.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
-        original_filename, content = _read_native_drop(lease, budget)
+        # Off the event loop: a drop can be hundreds of MB.
+        original_filename, content = await to_thread.run_sync(_read_native_drop, lease, budget)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
         # Before the read: a rejected 500 MB upload must not be pulled into memory first.
@@ -1322,12 +1325,14 @@ async def upload_unstructured_file(
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
-    raw_path.write_bytes(content)
+    # Not cancellable: the write finishes before a cancel lands, so the cleanup below sees the file.
+    await to_thread.run_sync(raw_path.write_bytes, content)
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:
         extracted_text = await _extract_text_from_file_async(raw_path, ext)
-        if not extracted_text or not extracted_text.strip():
+        # isspace() == (not strip()) on a non-empty str, without copying a 500 MB text on the event loop.
+        if not extracted_text or extracted_text.isspace():
             raw_path.unlink(missing_ok = True)
             return UnstructuredFileUploadResponse(
                 file_id = file_id,
@@ -1336,7 +1341,9 @@ async def upload_unstructured_file(
                 status = "error",
                 error = "No extractable text found in file",
             )
-        extracted_path.write_text(extracted_text, encoding = "utf-8")
+        await to_thread.run_sync(
+            functools.partial(extracted_path.write_text, extracted_text, encoding = "utf-8")
+        )
     except ImportError as e:
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
