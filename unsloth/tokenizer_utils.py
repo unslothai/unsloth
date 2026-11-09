@@ -12,6 +12,7 @@
 from transformers import AutoTokenizer
 from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
+from transformers import __version__ as transformers_version
 import re
 import os
 import json
@@ -757,9 +758,7 @@ llama_template = (
 )
 
 
-def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-    if not hasattr(slow_tokenizer, "all_special_tokens"):
-        return True
+def _same_tokenization_special_tokens(slow_tokenizer):
     dir_names = dir(slow_tokenizer)
     special_tokens = list(
         filter(
@@ -774,7 +773,21 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     all_special_tokens = list(set(special_tokens + slow_tokenizer.all_special_tokens))
 
     replacement_char = b"\xc3\xaf\xc2\xbf\xc2\xbd".decode("utf-8")
-    all_special_tokens = [x for x in all_special_tokens if x != replacement_char]
+    return [x for x in all_special_tokens if x != replacement_char]
+
+
+def _same_tokenization_text(all_special_tokens):
+    return (
+        "\n".join(all_special_tokens)
+        + "A quick brown fox jumps over the lazy dog!!\n\nHi</s>\n\n"
+        + "".join(all_special_tokens)
+    )
+
+
+def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
+    if not hasattr(slow_tokenizer, "all_special_tokens"):
+        return True
+    all_special_tokens = _same_tokenization_special_tokens(slow_tokenizer)
 
     check_chat_template1 = True
     check_chat_template2 = True
@@ -820,11 +833,7 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     check_chat_template = check_chat_template1 and check_chat_template2 and check_chat_template3
 
     try:
-        string = (
-            "\n".join(all_special_tokens)
-            + "A quick brown fox jumps over the lazy dog!!\n\nHi</s>\n\n"
-            + "".join(all_special_tokens)
-        )
+        string = _same_tokenization_text(all_special_tokens)
         check_special_tokens = slow_tokenizer(string).input_ids == fast_tokenizer(string).input_ids
 
         return check_chat_template and check_special_tokens
@@ -1022,6 +1031,46 @@ def fix_sentencepiece_gguf(saved_location):
     return
 
 
+def _sync_add_special_tokens(fast_tokenizer, slow_tokenizer):
+    # On v5 the setters also rebuild the post_processor, so they run even when the values match.
+    if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
+        fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
+    if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
+        fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
+
+
+# transformers 5 drops use_fast and never reads from_slow, so the "slow" load rebuilds the fast
+# tokenizer from the same files with only legacy = False added. These classes never read legacy.
+_TRANSFORMERS_V5 = int(transformers_version.split(".")[0]) >= 5
+_V5_LEGACY_FREE_TOKENIZERS = frozenset(
+    ("TokenizersBackend", "Qwen2Tokenizer", "GemmaTokenizer", "GPT2Tokenizer", "CohereTokenizer")
+)
+
+
+def _slow_load_copies_fast(fast_tokenizer):
+    cls = type(fast_tokenizer)
+    if not _TRANSFORMERS_V5 or not cls.__module__.startswith("transformers."):
+        return False
+    if cls.__name__ in _V5_LEGACY_FREE_TOKENIZERS:
+        return True
+    # LlamaTokenizer builds its pre-tokenizer from legacy, so the copy only matches at legacy = False.
+    return cls.__name__ == "LlamaTokenizer" and getattr(fast_tokenizer, "legacy", None) is False
+
+
+def _same_tokenization_as_own_copy(fast_tokenizer):
+    # assert_same_tokenization(copy, fast) after the add_bos / add_eos sync, the copy being fast as loaded.
+    try:
+        string = _same_tokenization_text(_same_tokenization_special_tokens(fast_tokenizer))
+        before = fast_tokenizer(string).input_ids
+    except Exception:
+        return False
+    _sync_add_special_tokens(fast_tokenizer, fast_tokenizer)
+    try:
+        return fast_tokenizer(string).input_ids == before
+    except Exception:
+        return False
+
+
 def _load_correct_tokenizer(
     tokenizer_name,
     model_max_length = None,
@@ -1065,6 +1114,20 @@ def _load_correct_tokenizer(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
         )
 
+    fast_tokenizer = None
+    if _TRANSFORMERS_V5:
+        fast_tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+        )
+        _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
+        # A slow load would only rebuild this tokenizer and compare it with itself, so skip it.
+        if _slow_load_copies_fast(fast_tokenizer) and _same_tokenization_as_own_copy(
+            fast_tokenizer
+        ):
+            return _apply_post_load_tokenizer_fixes(
+                fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+            )
+
     # Try the slow tokenizer first and fall back to fast only, mainly to solve Deepseek models with no tokenizer.model file.
     slow_tokenizer = None
     try:
@@ -1083,19 +1146,19 @@ def _load_correct_tokenizer(
     if type(slow_tokenizer) is bool:
         slow_tokenizer = None
 
-    fast_tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
-    )
+    load_fast = fast_tokenizer is None
+    if load_fast:
+        fast_tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+        )
     # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
     if slow_tokenizer is not None:
         _repair_tokenizer_backend_from_json(slow_tokenizer, **_repair_kwargs)
-    _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
+    if load_fast:
+        _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
 
     if slow_tokenizer is not None:
-        if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
-            fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
-        if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
-            fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
+        _sync_add_special_tokens(fast_tokenizer, slow_tokenizer)
 
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             return _apply_post_load_tokenizer_fixes(
