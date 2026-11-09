@@ -2470,6 +2470,18 @@ def _holds_fp8_stored(module: Any) -> bool:
         return False
 
 
+def _pipe_denoisers_hold_packed_blocks(pipe: Any) -> bool:
+    """Whether a denoiser of ``pipe`` keeps nvfp4 / mxfp8 Linears packed (``diffusion_packed_block``)."""
+    try:
+        from .diffusion_packed_block import packed_block_layers
+        return any(
+            packed_block_layers(getattr(pipe, name, None)) > 0
+            for name in ("transformer", "transformer_2", "unconditional_transformer")
+        )
+    except Exception:  # noqa: BLE001 - unreadable: no packed-block placement
+        return False
+
+
 def _pipe_denoisers_hold_packed(pipe: Any) -> bool:
     """GGUF / int8 / fp8-stored weights dequantize a whole Linear per forward: unmeasured by the dense eager table."""
     try:
@@ -3448,6 +3460,20 @@ _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image": 2560,
 }
 MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
+# A denoiser kept as packed nvfp4 / mxfp8 blocks (diffusion_packed_block: fixed-size codes, one transient widened
+# weight per Linear call): worst allocated CUDA MiB above its resident weights, one 1024x1024 image, encoder + every
+# step + VAE decode, eager and compiled alike. FLUX.3 Klein from BFL's NVFP4 file, L4: 2530 MiB resident (12.06 GiB
+# allocated over 9.59 GiB of weights); streamed at a 6 GiB cap, 1807 MiB (2669 MiB allocated with the 702 MiB prefetch
+# window and the 160 MiB VAE resident). Packed weights do not grow per call the way a dense eager table assumes, so a
+# streamed load of one keeps whole groups resident like a torchao denoiser.
+_MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB: dict[str, int] = {
+    "flux.3-klein": 2560,
+}
+_MEASURED_PACKED_BLOCK_STREAMED_PEAK_MIB: dict[str, int] = {
+    "flux.3-klein": 1856,
+}
+# "0": a packed-block denoiser places from a learned peak only and streams every group, as before.
+PACKED_BLOCK_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_PACKED_BLOCK_RESIDENCY"
 # "0": Qwen-Image t2i streams with the borrowed Edit figure again.
 QWEN_IMAGE_STREAMED_SEED_ENV = "UNSLOTH_DIFFUSION_QWEN_IMAGE_STREAMED_SEED"
 _QWEN_IMAGE_BORROWED_STREAMED_MIB = 3824
@@ -3586,8 +3612,11 @@ def measured_image_runtime_mib(
     dense_bf16: bool = False,
     small_host_int8: bool = False,
     streamed: bool = False,
+    packed_block: bool = False,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
+    ``packed_block``: the denoiser is kept as packed nvfp4 / mxfp8 blocks; seeds from
+    ``_MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB`` (whole render only).
     ``streamed``: use ``_MEASURED_STREAMED_IMAGE_PEAK_MIB`` (window excluded) where present.
     ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
@@ -3618,6 +3647,10 @@ def measured_image_runtime_mib(
         seed = _small_host_int8_seed_mib(
             family, speed_mode, int(dense_transformer_mib), max(2, int(compute_bytes or 2))
         )
+    elif packed_block and phase is None and not _env_off(PACKED_BLOCK_RESIDENCY_ENV):
+        seed = _MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB.get(str(family or "").lower())
+        if streamed:
+            seed = _MEASURED_PACKED_BLOCK_STREAMED_PEAK_MIB.get(str(family or "").lower(), seed)
     elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if streamed and phase is None and not _env_off(MEASURED_ACTIVATION_STREAMED_ENV):
@@ -4663,6 +4696,12 @@ def _refine_plan_from_loaded_weights(
         small_host_int8 = bool(
             packed and not fp8_stored and compute_bytes is not None and pipe_small_host_int8(pipe)
         )
+        # packed nvfp4 / mxfp8 blocks: fixed-size codes, so the torchao-style partial residency applies
+        packed_block = bool(
+            dense_mib is not None
+            and not _env_off(PACKED_BLOCK_RESIDENCY_ENV)
+            and _pipe_denoisers_hold_packed_blocks(pipe)
+        )
         quant = learned_peak_label(pipe, attention, model, vae, te, cache, graphs)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
@@ -4680,6 +4719,7 @@ def _refine_plan_from_loaded_weights(
             static_seed = static_seed,
             dense_bf16 = dense_bf16,
             small_host_int8 = small_host_int8,
+            packed_block = packed_block,
         )
         if headroom is None:
             return plan
@@ -4758,8 +4798,8 @@ def _refine_plan_from_loaded_weights(
             dit_room = min(max(room, 0), dit)
             if (
                 dit_room < dit
-                # torchao denoisers only: the slack was measured on the int8 route, not the dense eager table
-                and dense_mib is None
+                # torchao / packed-block denoisers only: the slack was measured on those routes, not the dense eager table
+                and (dense_mib is None or packed_block)
                 and (policy == OFFLOAD_STREAMING or stream_te)
                 and _resident_dit_fits(memory, dit, headroom, other)
             ):
@@ -4767,12 +4807,14 @@ def _refine_plan_from_loaded_weights(
                 encode_room = int(dit_room)
                 dit_room, room, whole_dit = dit, dit, True
             elif (
-                dit_room < dit and dense_mib is None and (policy == OFFLOAD_STREAMING or stream_te)
+                dit_room < dit
+                and (dense_mib is None or packed_block)
+                and (policy == OFFLOAD_STREAMING or stream_te)
             ):
                 # partial: the encode keeps the flat room (install_encode_release)
                 window = _stream_window_mib(pipe)
                 streamed_headroom = headroom
-                if static_seed and not small_host_int8:
+                if (static_seed and not small_host_int8) or packed_block:
                     streamed_headroom = min(
                         headroom,
                         measured_image_runtime_mib(
@@ -4783,6 +4825,7 @@ def _refine_plan_from_loaded_weights(
                             phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
                             static_seed = static_seed,
                             streamed = True,
+                            packed_block = packed_block,
                         )
                         or headroom,
                     )

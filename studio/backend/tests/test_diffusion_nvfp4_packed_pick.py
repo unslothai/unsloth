@@ -154,3 +154,41 @@ def test_backend_entry_points_rewrite_a_direct_call(monkeypatch, entry):
     assert seen["gguf_filename"] == FILE
     assert seen["family_override"] == "flux.3-klein"
     assert seen["model_kind"] == "single_file"
+
+
+def test_a_packed_block_denoiser_has_a_measured_streaming_headroom(monkeypatch):
+    from core.inference import diffusion_memory as dm
+
+    whole = dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True)
+    streamed = dm.measured_image_runtime_mib(
+        "flux.3-klein", "default", packed_block = True, streamed = True
+    )
+    assert whole == 3072 and streamed == 2304  # seed x 1.15, rounded up to 256 MiB
+    assert streamed < whole
+    # deferred / eager tiers alike (the seed was measured on both), larger renders scale it
+    assert dm.measured_image_runtime_mib("flux.3-klein", "deferred", packed_block = True) == whole
+    assert (
+        dm.measured_image_runtime_mib(
+            "flux.3-klein", "default", packed_block = True, width = 2048, height = 1024
+        )
+        > whole
+    )
+    # unmeasured family, a dense / torchao denoiser, or the switch off: no packed seed
+    assert dm.measured_image_runtime_mib("qwen-image-2.1-turbo", "off", packed_block = True) is None
+    assert dm.measured_image_runtime_mib("flux.3-klein", "default", static_seed = False) is None
+    monkeypatch.setenv(dm.PACKED_BLOCK_RESIDENCY_ENV, "0")
+    assert dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True) is None
+
+
+def test_packed_block_holders_are_read_from_the_denoisers():
+    import types
+
+    from core.inference import diffusion_memory as dm
+    from core.inference.diffusion_packed_block import PACKED_BLOCK_ATTR
+
+    held = types.SimpleNamespace(**{PACKED_BLOCK_ATTR: 198})
+    assert dm._pipe_denoisers_hold_packed_blocks(types.SimpleNamespace(transformer = held))
+    assert not dm._pipe_denoisers_hold_packed_blocks(
+        types.SimpleNamespace(transformer = types.SimpleNamespace())
+    )
+    assert not dm._pipe_denoisers_hold_packed_blocks(types.SimpleNamespace())
