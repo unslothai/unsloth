@@ -265,6 +265,22 @@ def capacity(cache):
     return max(caps) if caps else None
 
 
+def short_layers(cache, max_cache_len):
+    """Whether a kept growable cache has a non-growable layer (sliding / chunked) too short for a call that may reach
+    `max_cache_len`. transformers allocates such a layer at min(window, the creating call's limit): one whose length
+    reaches that limit may have been cut by it, so a longer call would roll it before the window is full."""
+    limit = max((int(layer.max_cache_len) for layer in _members(cache)), default = None)
+    if limit is None:
+        return False
+    for layer in getattr(cache, "layers", None) or ():
+        if GrowableLayer is not None and type(layer) is GrowableLayer:
+            continue
+        length = getattr(layer, "max_cache_len", None)
+        if type(length) is int and limit <= length < int(max_cache_len):
+            return True
+    return False
+
+
 def raise_limit(cache, max_cache_len):
     """A kept growable cache reused by a longer call: its layers may grow up to the new limit."""
     for layer in _members(cache):

@@ -840,7 +840,11 @@ def _kept_compatible(state, batch_size, max_cache_len, offloading):
         return False
     if KV.is_growable(kept):
         length = KV.capacity(kept)
-        fits = length is not None and length <= _KEEP_MAX_RATIO * max(int(max_cache_len), 1)
+        fits = (
+            length is not None
+            and length <= _KEEP_MAX_RATIO * max(int(max_cache_len), 1)
+            and not KV.short_layers(kept, max_cache_len)
+        )
     else:
         length = _kept_len(state)
         fits = length is not None and max_cache_len <= length <= _KEEP_MAX_RATIO * max(
@@ -872,8 +876,15 @@ def _reserve_step(cache, input_ids, bound):
     written = KV.written(cache)
     if q is None and written == 0:
         q = total
-    if written == 0 and isinstance(embeds, torch.Tensor) and embeds.dim() >= 3 and total == 0:
-        total = q = embeds.shape[1]
+    if written == 0:
+        # generate() started from inputs_embeds alone keeps an input_ids holding only the generated tokens: the
+        # prompt length is remembered from the prefill and added on every later step of this call.
+        offset = 0
+        if isinstance(embeds, torch.Tensor) and embeds.dim() >= 3 and total == 0:
+            total = q = offset = embeds.shape[1]
+        cache.__dict__["_unsloth_prompt_offset"] = offset
+    else:
+        total += cache.__dict__.get("_unsloth_prompt_offset", 0)
     if total <= 0 or q is None or q > total:
         # Unknown step shape: grow for one more token past the host counter (the eager fallback).
         KV.reserve(cache, max(total, written + 1))
@@ -956,7 +967,13 @@ class reuse_kept_cache:
         # call's limit first (it grows to it); a new one is made growable.
         model = self.model
         kept = model.__dict__.get("_cache")
-        if KV.is_growable(kept) and type(max_cache_len) is int:
+        if (
+            KV.is_growable(kept)
+            and type(max_cache_len) is int
+            and not KV.short_layers(kept, max_cache_len)
+        ):
+            # A kept cache whose sliding layers are too short keeps its old limit: transformers then sees it as
+            # too short and builds a new cache.
             KV.raise_limit(kept, max_cache_len)
         cache = self.get_cache(cache_implementation, batch_size, max_cache_len, *args, **kwargs)
         if cache is not kept and not getattr(model.config, "is_encoder_decoder", False):

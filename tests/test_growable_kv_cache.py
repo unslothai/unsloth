@@ -360,3 +360,47 @@ def test_stale_host_counter_and_a_wrapped_prepare(host, llama, monkeypatch):
     assert KV.capacity(cache) == 45, KV.capacity(cache)
     # The other wrapper is back in place after each call.
     assert llama.__dict__.get("prepare_inputs_for_generation") is wrapper
+
+
+def _gen_embeds(model, new, length):
+    ids, mask = _ids(1, length = length)
+    with torch.inference_mode():
+        embeds = model.get_input_embeddings()(ids)
+        return model.generate(
+            inputs_embeds = embeds,
+            attention_mask = mask,
+            max_new_tokens = new,
+            min_new_tokens = new,
+            do_sample = False,
+            pad_token_id = 0,
+        )
+
+
+def test_inputs_embeds_prompt_that_fills_its_bucket(host, llama, monkeypatch):
+    # generate() from inputs_embeds alone keeps input_ids of the generated tokens only: the prompt (16 = the first
+    # bucket) must still count, or the first decode step writes past the bucket.
+    monkeypatch.delenv("UNSLOTH_GROWABLE_KV", raising = False)
+    static = _gen_embeds(llama, 10, 16)
+    GG.release(llama)
+    llama.__dict__.pop(GG._ATTR, None)
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "1")
+    grown = _gen_embeds(llama, 10, 16)
+    assert torch.equal(static, grown)
+    assert KV.capacity(GG.kept_cache(llama)) == 25
+
+
+def test_kept_cache_with_short_sliding_layers_is_not_reused(host, monkeypatch):
+    # A short first call sizes the sliding layers at min(window, its limit) = 15 < window 32: a longer call must not
+    # reuse them (they would roll at 15), whatever the growable full-attention layers can hold.
+    model = _load(GEMMA3, sliding_window = 32, layer_types = ["sliding_attention", "full_attention"])
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "1")
+    _gen(model, new = 10)
+    short = GG.kept_cache(model)
+    assert short is not None
+    assert KV.short_layers(short, 45) and not KV.short_layers(short, 15)
+    grown = _gen(model, new = 40)
+    assert GG.kept_cache(model) is not short
+    monkeypatch.delenv("UNSLOTH_GROWABLE_KV")
+    GG.release(model)
+    model.__dict__.pop(GG._ATTR, None)
+    assert torch.equal(grown, _gen(model, new = 40))
