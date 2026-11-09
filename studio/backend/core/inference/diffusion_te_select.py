@@ -3,11 +3,8 @@
 
 """Prompt encodes that read a few hidden states keep only those (UNSLOTH_DIFFUSION_TE_SELECT_HIDDEN=0 disables).
 
-``output_hidden_states=True`` keeps every decoder layer's output alive for the whole encoder call although FLUX.3
-reads eight and Qwen-Image-2.1 one. Inside ``selected_hidden_states`` the encoder runs with
-``output_hidden_states=False`` and forward hooks record only the requested layers; its output's ``hidden_states``
-then answers exactly those indices with the same tensors. Any other index raises ``SelectionError`` so the caller
-re-runs stock."""
+The encoder runs with ``output_hidden_states=False`` and hooks record only the requested layers; reading any other
+index raises ``SelectionError`` so the caller re-runs stock."""
 
 from __future__ import annotations
 
