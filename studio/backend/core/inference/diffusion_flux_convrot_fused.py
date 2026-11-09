@@ -136,7 +136,6 @@ def _has(fn: Any, key: str) -> bool:
     return fn is not None and body_has(fn, *_NEEDLES[key])
 
 
-# ---------------------------------------------------------------------------------------------- per-call gates
 def _rotated(lin: Any) -> bool:
     """``lin`` is a swapped rotated int8 Linear whose act quant the fused rotation covers."""
     rec = _gemm._swapped_rec(lin)
@@ -153,8 +152,7 @@ def _plain_swiglu(act: Any, cls_name: str) -> bool:
     )
 
 
-# Class name -> the diffusers class whose body the replacements mirror (fingerprinted at install). The traced gates
-# compare classes, never functions: dynamo resolves function identity (``f.__func__ is g``) to False.
+# Traced gates compare classes, never functions: dynamo resolves ``f.__func__ is g`` to False.
 _CLS: dict = {}
 
 
@@ -176,7 +174,6 @@ def _ff_tail(ff: Any, h: Any) -> Any:
     return y
 
 
-# ---------------------------------------------------------------------------------------------- replacements
 def _make_ff_forward(stock: Any, act_cls: str) -> Any:
     def forward(self, x):
         if not _ff_ready(self, act_cls):
@@ -420,7 +417,6 @@ def _make_f3_single_forward(stock: Any, mod: Any) -> Any:
     return forward
 
 
-# ---------------------------------------------------------------------------------------------- install
 def _patch(owner: Any, attr: str, key: str, make: Any) -> bool:
     """Swap ``owner.attr`` for ``make(stock)`` when the stock body carries ``_NEEDLES[key]``; idempotent."""
     current = getattr(owner, attr, None)

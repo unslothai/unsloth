@@ -1017,9 +1017,7 @@ def _h16_launch(
     return q, s
 
 
-# rotq_h16x launch shape per (major, minor), from the Colab sweep (CUDA-graph replays, FLUX.2 / FLUX.3 klein shapes):
-# warps for the [attention | SwiGLU] row and for a SwiGLU row; the [attention | SwiGLU] row in one padded one-pass tile
-# up to this many groups (A100: 557 vs 601 us two-pass at 4608 x 12288; L4 and SwiGLU rows were slower padded).
+# Per-(major, minor) warps and padded one-pass cap from a Colab sweep (A100: 557 vs 601 us two-pass at 4608 x 12288).
 _H16X_WARPS = {(8, 0): (8, 4), (8, 9): (4, 4)}
 _H16X_PAD_CAT = {(8, 0): 64}
 
@@ -1470,10 +1468,8 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
     return cfg
 
 
-# Probe verdicts persisted per card and toolchain: the probes cost ~50 s per process on an L4 even with a warm Triton
-# cache. Keyed by diffusion_probe_cache's fingerprint (torch / CUDA / driver / Triton / torchao / card UUID / the
-# UNSLOTH_DIFFUSION_* switches) plus this file and diffusion_convrot.py; any mismatch is a miss and probes again.
-# UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off. Only a passing device is stored (a failed probe may be transient).
+# Probes cost ~50 s per process on an L4, so passing verdicts persist per card + toolchain fingerprint (+ this file and
+# diffusion_convrot.py); failures are never stored (may be transient). UNSLOTH_DIFFUSION_PROBE_CACHE=0 disables.
 _VERDICT_FILE = "diffusion_convrot_probe.json"
 _VERDICT_SOURCES = ("diffusion_convrot_quant.py", "diffusion_convrot.py")
 _VERDICT_MAX = 32
@@ -1719,8 +1715,7 @@ def _swiglu_probe(index: int) -> bool:
         return False
 
 
-# (M, prefix (B, heads, head dim) or None, SwiGLU width): one-pass, unrolled and looped two-pass rows, an attention
-# prefix stored head-major (SDPA's transposed output, batch 2) and FLUX.2 klein's single-block row (3072 + 9216).
+# (M, prefix (B, heads, head dim) or None, SwiGLU width)
 _PRODUCER_PROBE_SHAPES = (
     (65, None, 256 * 4),
     (130, None, 256 * 36),
