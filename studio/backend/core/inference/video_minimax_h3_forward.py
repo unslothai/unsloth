@@ -7,6 +7,9 @@
   inference tensor has no version counter, so an in-place edit inside a render is not seen
   (``UNSLOTH_H3_REFINER_CACHE=0`` disables).
 * the packed sequence filled in place with ``index_copy_`` (``UNSLOTH_H3_INPLACE_PACK=0`` disables).
+
+Traced inside a whole-forward ``torch.compile`` it runs the stock forward (the per-block regional compile Studio uses
+leaves this outer forward eager, so both still apply there).
 """
 
 from __future__ import annotations
@@ -56,6 +59,12 @@ def _forward_sha(cls: type) -> Optional[str]:
         sha = None
     _SHA_CACHE[cls] = sha
     return sha
+
+
+def _compiling() -> bool:
+    import torch
+    is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    return bool(is_compiling is not None and is_compiling())
 
 
 def _stats(module: Any) -> dict:
@@ -215,9 +224,15 @@ def _forward(
 ) -> Any:
     import torch
 
-    use_cache = self.__dict__.get(_SCOPE_ATTR) is not None and refiner_cache_enabled()
     extra = {}
-    if torch.is_grad_enabled() or not (use_cache or inplace_pack_enabled()):
+    if _compiling():
+        # traced as part of a whole-forward torch.compile: the host-side cache key (is_inference, data_ptr) and the
+        # stats counters are not traceable (graph breaks, a guard per counter value), so run the stock forward
+        fn = type(self).forward
+    elif torch.is_grad_enabled() or not (
+        (self.__dict__.get(_SCOPE_ATTR) is not None and refiner_cache_enabled())
+        or inplace_pack_enabled()
+    ):
         _stats(self)["stock"] += 1
         fn = type(self).forward
     else:
