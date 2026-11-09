@@ -530,8 +530,11 @@ export {
 } from "./utils/export-chat-history";
 export {
   adoptLegacyDraft,
+  flushComposerDraft,
   latestDraft,
   latestPasteDraft,
+  NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,

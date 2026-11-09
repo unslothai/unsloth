@@ -665,6 +665,8 @@ export const ko = {
     keepsRunning: "닫아도 설정은 멈추지 않습니다. 결과는 설정 > 보안에 표시됩니다.",
   },
   composerSettings: {
+    shareDraft: "채팅 간에 초안 공유",
+    shareDraftDescription: "채팅과 비교에서 하나의 초안을 사용합니다. 기본적으로 꺼져 있으며 각 채팅은 자체 초안을 유지합니다.",
     title: "메시지 입력",
     plainText: "일반 텍스트 입력",
     plainTextDescription: "코드, Markdown, 링크를 원문 그대로 표시합니다. 끄면 서식 미리보기를 표시합니다.",

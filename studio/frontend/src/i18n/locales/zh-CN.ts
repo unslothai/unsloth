@@ -665,6 +665,8 @@ export const zhCN = {
     keepsRunning: "关闭不会停止设置。结果会显示在 设置 > 安全 中。",
   },
   composerSettings: {
+    shareDraft: "在聊天之间共享草稿",
+    shareDraftDescription: "在聊天和对比中使用同一份草稿。默认关闭；每个聊天保留各自的草稿。",
     title: "消息输入",
     plainText: "纯文本输入",
     plainTextDescription: "将代码、Markdown 和链接保留为原始文本。关闭后显示格式化预览。",

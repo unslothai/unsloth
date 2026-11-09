@@ -662,6 +662,8 @@ export const it = {
     keepsRunning: "Chiudere non interrompe la configurazione. Il risultato compare in Impostazioni > Sicurezza.",
   },
   composerSettings: {
+    shareDraft: "Condividi le bozze tra chat",
+    shareDraftDescription: "Usa una sola bozza per chat e confronti. Disattivato per impostazione predefinita; ogni chat mantiene la propria bozza.",
     title: "Composizione dei messaggi",
     plainText: "Composizione in testo semplice",
     plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
