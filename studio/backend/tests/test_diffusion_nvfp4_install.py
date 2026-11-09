@@ -1681,3 +1681,41 @@ def test_the_verify_child_runs_the_shipped_snippet():
     import ast
     ast.parse(inst._VERIFY_CODE)
     assert inst._VERIFY_CODE.rstrip().endswith("'unknown')))")
+
+
+def _two_arch_host(monkeypatch, caps):
+    torch = sys.modules["torch"]
+    torch.cuda = types.SimpleNamespace(device_count = lambda: len(caps))
+    monkeypatch.setattr(
+        ops,
+        "_device_capability",
+        lambda device = None: caps[device if isinstance(device, int) else 0],
+    )
+
+
+def test_a_mixed_arch_host_installs_every_visible_nvfp4_provider(env, monkeypatch):
+    # A later load on the other card finds flashinfer importable and never installs again, so both go in now.
+    _two_arch_host(monkeypatch, [(10, 0), (8, 0), (12, 0)])
+    ok, reason = _ensure(env)
+    assert ok, reason
+    jit = next(c for c in env.installs() if any(a.startswith("flashinfer-jit-cache") for a in c))
+    assert [a for a in jit if a.startswith("flashinfer-")] == [
+        f"{PROVIDER}=={V}+cu130",
+        f"flashinfer-jit-cache-sm120f=={V}+cu130",
+        f"flashinfer-jit-cache=={V}+cu130",
+    ]
+
+
+def test_a_mixed_arch_install_missing_one_provider_rolls_back(env, monkeypatch):
+    _two_arch_host(monkeypatch, [(12, 0), (10, 0)])
+    real_run = env.run
+
+    def one_provider(cmd, **kwargs):
+        res = real_run(cmd, **kwargs)
+        if "-c" in cmd and "import flashinfer" in str(cmd[-1]) and res.returncode == 0:
+            res.stdout = f"providers=flashinfer-jit-cache-sm120f\n{V}"
+        return res
+
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(1, run = one_provider)
+    assert not ok and f"did not load the {PROVIDER} prebuilt kernels" in reason
+    assert "flashinfer-jit-cache-sm120f" not in env.dists and PROVIDER not in env.dists
