@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// view_image's picture is its whole output, so it stays on screen under the default "Collapsed".
 import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "@typescript/typescript6";

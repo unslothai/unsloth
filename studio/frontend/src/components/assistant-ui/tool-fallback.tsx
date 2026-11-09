@@ -519,7 +519,6 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         ? plainBrowserResult(result)
         : (widget?.text ?? result);
 
-  // view_image's picture is its whole output, so like created files it stays out of the collapsed pane.
   const picture =
     !isCancelled && toolName === "view_image" && isMcpImageResult(shown) ? shown : null;
 
