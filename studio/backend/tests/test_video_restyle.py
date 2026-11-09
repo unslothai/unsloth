@@ -724,3 +724,33 @@ def test_route_refuses_a_restyle_beside_training(weights, monkeypatch):
     res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
     assert res.status_code == 409 and "training" in res.json()["detail"]
     assert not runner.progress().get("active")
+
+
+def test_a_concat_playlist_upload_cannot_read_local_files(tmp_path, monkeypatch):
+    (tmp_path / "secret.mp4").write_bytes(_clip(30, 10))
+    monkeypatch.chdir(tmp_path)
+    playlist = b"ffconcat version 1.0\nfile 'secret.mp4'\n"
+    with pytest.raises(vr.RestyleError):
+        vr.frames_from_video(playlist)
+    assert vr.video_seconds(playlist) is None
+
+
+def test_route_maps_a_diffusion_training_admission_refusal_to_409(weights, monkeypatch):
+    import contextlib
+
+    from core.training.diffusion_training_service import TrainingActiveError
+    from routes import inference
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    client = _route_client(monkeypatch, runner)
+    monkeypatch.setattr(vr, "frames_from_video", lambda data: _frames(5))
+
+    @contextlib.contextmanager
+    def refused():
+        raise TrainingActiveError("A diffusion training run holds the GPU.")
+        yield
+
+    monkeypatch.setattr(inference, "_diffusion_training_admission", refused)
+    files = [("video", ("a.mp4", b"x", "video/mp4"))]
+    res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
+    assert res.status_code == 409 and not runner.progress().get("active")

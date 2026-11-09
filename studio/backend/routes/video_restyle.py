@@ -96,11 +96,16 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
 def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
     # Same interlock as a video load: refuse beside training, and hold the training admission while
     # the runner turns active so a training start in between sees it and refuses.
+    from core.training.diffusion_training_service import TrainingActiveError
     from routes.inference import _diffusion_training_admission
     from routes.video import _guard_video_load_against_training
-    with _diffusion_training_admission():
-        _guard_video_load_against_training()
-        return video_restyle.runner.start(**kwargs)
+
+    try:
+        with _diffusion_training_admission():
+            _guard_video_load_against_training()
+            return video_restyle.runner.start(**kwargs)
+    except TrainingActiveError as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
 
 
 async def _start_reserved(request: Request, reservation: str):

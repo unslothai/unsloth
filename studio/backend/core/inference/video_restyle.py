@@ -42,6 +42,8 @@ _DECODE_RE = re.compile(r"cosmos3: \d+ latent frames in")
 
 _TERMINAL = ("done", "error", "cancelled")
 MEDIA_KINDS = ("input", "control", "output")
+# No protocols: a concat or HLS playlist upload would otherwise open the files it names.
+_NO_PROTOCOLS = {"protocol_whitelist": "none"}
 
 
 class RestyleError(ValueError):
@@ -108,7 +110,7 @@ def frames_from_video(
 
     out: list[Any] = []
     try:
-        with av.open(io.BytesIO(data)) as container:
+        with av.open(io.BytesIO(data), options = _NO_PROTOCOLS) as container:
             if not container.streams.video:
                 raise RestyleError("The file has no video track.")
             stream = container.streams.video[0]
@@ -152,7 +154,7 @@ def frames_from_video(
 def video_seconds(data: bytes) -> Optional[float]:
     import av
     try:
-        with av.open(io.BytesIO(data)) as container:
+        with av.open(io.BytesIO(data), options = _NO_PROTOCOLS) as container:
             if container.duration:
                 return container.duration / 1_000_000
             stream = container.streams.video[0]
