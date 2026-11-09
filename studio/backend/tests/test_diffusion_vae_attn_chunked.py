@@ -297,3 +297,63 @@ def test_speed_layer_installs_on_rocm_and_mps_even_when_off(rocm, monkeypatch):
         speed_mode = S.SPEED_OFF,
     )
     assert not any(getattr(m, C._PATCHED, False) for m in nvidia.modules())
+
+
+_HALF_FLAG = getattr(torch.backends.cuda, "fp16_bf16_reduction_math_sdp_allowed", None)
+
+
+@pytest.mark.skipif(_HALF_FLAG is None, reason = "torch < 2.5 has no fp32 upcast to skip")
+@pytest.mark.parametrize("chunk", [False, True])
+def test_half_math_keeps_dtype_scoped_and_close(rocm, monkeypatch, chunk):
+    monkeypatch.setattr(C, "_half_math_call", lambda q: q.dtype == torch.bfloat16)
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 1024, 512, generator = g).to(torch.bfloat16) for _ in range(3))
+    ref32 = F.scaled_dot_product_attention(q.float(), k.float(), v.float())
+    before = _HALF_FLAG()
+    with _math():
+        upcast = F.scaled_dot_product_attention(q, k, v)
+        torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(True)
+        try:
+            want = F.scaled_dot_product_attention(q, k, v)
+        finally:
+            torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(before)
+        mode = C.chunked_attention_mode(1024 * 1024 * 4 // 4 if chunk else 1 << 40)
+        with mode:
+            out = F.scaled_dot_product_attention(q, k, v)
+    assert _HALF_FLAG() == before
+    assert mode.half == 1 and mode.chunked == int(chunk)
+    if not chunk:
+        assert torch.equal(out, want)
+        assert not torch.equal(out, upcast)  # the half path really ran
+    torch.testing.assert_close(out.float(), ref32, atol = 2e-2, rtol = 2e-2)
+
+
+@pytest.mark.skipif(_HALF_FLAG is None, reason = "torch < 2.5")
+def test_half_math_restores_the_flag_on_error():
+    before = _HALF_FLAG()
+    with pytest.raises(RuntimeError):
+        with C.half_reduction_math():
+            assert _HALF_FLAG() is True
+            raise RuntimeError("boom")
+    assert _HALF_FLAG() == before
+
+
+def test_half_math_gates(monkeypatch):
+    cuda_bf16 = types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "cuda"), dtype = torch.bfloat16
+    )
+    cuda_fp32 = types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "cuda"), dtype = torch.float32
+    )
+    cpu_bf16 = types.SimpleNamespace(device = types.SimpleNamespace(type = "cpu"), dtype = torch.bfloat16)
+    monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
+    assert C._half_math_call(cuda_bf16)
+    assert not C._half_math_call(cuda_fp32)
+    assert not C._half_math_call(cpu_bf16)
+    monkeypatch.setenv(C.VAE_ATTN_HALF_MATH_ENV, "0")
+    assert not C._half_math_call(cuda_bf16)
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION)
+    assert not C._half_math_call(cuda_bf16)
