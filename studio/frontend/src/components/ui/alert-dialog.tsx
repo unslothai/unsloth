@@ -11,6 +11,7 @@ import {
   DropdownGlowContext,
   dialogDropdownGlow,
 } from "@/components/ui/dropdown-glow";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 
 function AlertDialog({
@@ -39,10 +40,13 @@ function AlertDialogPortal({
 
 function AlertDialogOverlay({
   className,
+  ref,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Overlay>) {
+  const surfaceRef = useSurfaceRef(MODAL_SURFACE, ref);
   return (
     <AlertDialogPrimitive.Overlay
+      ref={surfaceRef}
       data-slot="alert-dialog-overlay"
       data-viewport-backdrop={true}
       className={cn(
@@ -60,18 +64,20 @@ function AlertDialogContent({
   size = "default",
   overlayClassName,
   onOverlayClick,
+  ref,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm";
   overlayClassName?: string;
-  /** Alert dialogs ignore outside clicks; set this to cancel on backdrop click. */
   onOverlayClick?: () => void;
 }) {
   const glow = dialogDropdownGlow(className, useContext(DropdownGlowContext));
+  const surfaceRef = useSurfaceRef(MODAL_SURFACE, ref);
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay className={overlayClassName} onClick={onOverlayClick} />
       <AlertDialogPrimitive.Content
+        ref={surfaceRef}
         data-slot="alert-dialog-content"
         data-size={size}
         className={cn(

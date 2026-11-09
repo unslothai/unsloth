@@ -1,18 +1,14 @@
-# Fail if any executable inside a Windows bundle is unsigned. NSIS runs its
-# plugin DLLs from $PLUGINSDIR, so a signed installer proves nothing about them.
+# Fail if any PE inside a Windows bundle is unsigned. NSIS plugin DLLs are not covered by
+# the installer's own signature.
 
 param(
-    # Bundles to unpack; every PE inside is verified.
     [Parameter(Mandatory = $true)][string[]] $Path,
-    # 7-Zip, preinstalled on windows-latest.
     [string] $SevenZip = '7z',
-    # Known-unsigned leaf names to accept. Keep empty where possible.
     [string[]] $Allow = @()
 )
 
 $ErrorActionPreference = 'Continue'
-# .ps1/.psm1 included: install.ps1 ships as a bundle resource and runs on first
-# launch. Authenticode covers scripts, and Smart App Control checks them.
+# Scripts included: install.ps1 runs on first launch and Smart App Control checks it.
 $exeExtensions = @('.exe', '.dll', '.sys', '.ocx', '.cpl', '.scr', '.ps1', '.psm1')
 
 $unsigned = @()
@@ -39,7 +35,7 @@ foreach ($bundle in $Path) {
     $dest = Join-Path $env:RUNNER_TEMP ("sigcheck-" + [System.IO.Path]::GetFileNameWithoutExtension($name))
     Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
     & $SevenZip x -y "-o$dest" $bundle | Out-Null
-    # 7-Zip leaves a partial tree behind on error, so a created dir proves nothing.
+    # 7-Zip leaves a partial tree on error, so a created dir proves nothing.
     if ($LASTEXITCODE -ne 0) {
         Write-Host "::error::7-Zip exited $LASTEXITCODE unpacking $name; contents not verified"
         exit 1
@@ -65,7 +61,6 @@ foreach ($bundle in $Path) {
         } elseif ($Allow -contains $f.Name) {
             Write-Host ("  ALLOWED   {0}  ({1}) - explicitly accepted as unsigned" -f $f.Name, $s.Status)
         } else {
-            # UnknownError = no signature or unbuilt chain; StatusMessage tells which.
             Write-Host ("  UNSIGNED  {0}  ({1})  {2}" -f $f.Name, $s.Status, $s.StatusMessage)
             $unsigned += [pscustomobject]@{ Bundle = $name; File = $f.Name; Status = [string]$s.Status }
         }

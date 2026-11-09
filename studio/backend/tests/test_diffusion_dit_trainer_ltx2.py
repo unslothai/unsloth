@@ -576,7 +576,8 @@ def test_ltx2_preflight_refuses_a_diffusers_without_the_pipeline(monkeypatch):
 def test_a_component_repo_is_refused_as_a_training_base():
     # unsloth/LTX-2-FP8 holds only pre-cast components (no model_index.json): not a training base.
     catalogued = _component_only_repos()
-    assert catalogued["unsloth/ltx-2-fp8"] == ("ltx-2", "text_encoder", "Lightricks/LTX-2")
+    # It also hosts the pre-quantized DiT, which the video registry lists first.
+    assert catalogued["unsloth/ltx-2-fp8"] == ("ltx-2", "transformer", "Lightricks/LTX-2")
     for base, family in (("unsloth/LTX-2-FP8", None), ("unsloth/LTX-2-FP8", "ltx-2")):
         with pytest.raises(ValueError) as exc:
             resolve_trainable_family(base, family)

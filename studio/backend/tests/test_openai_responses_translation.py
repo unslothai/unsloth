@@ -265,6 +265,60 @@ def test_responses_translates_image_parts(monkeypatch):
     assert "max_output_tokens" not in captured["body"]
 
 
+def test_responses_assistant_list_content_is_sent_as_output_text(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_openai_responses(
+            messages = [
+                {"role": "user", "content": "Pick a colour."},
+                {"role": "assistant", "content": [{"type": "text", "text": "Blue."}, image]},
+                {"role": "user", "content": "Check the weather."},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Looking it up."}, image],
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "Sunny"},
+                {"role": "user", "content": "Thanks."},
+            ],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = None,
+            enable_thinking = None,
+            reasoning_effort = None,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    assistant_items = [i for i in captured["body"]["input"] if i.get("role") == "assistant"]
+    assert [i["content"] for i in assistant_items] == [
+        [{"type": "output_text", "text": "Blue."}],
+        [{"type": "output_text", "text": "Looking it up."}],
+    ]
+
+
 def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         events = [
@@ -781,7 +835,10 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
                 "type": "response.output_item.done",
                 "item": {
                     "type": "reasoning",
-                    "summary": [{"type": "summary_text", "text": "plan"}],
+                    "summary": [
+                        {"type": "summary_text", "text": "plan"},
+                        {"type": "summary_text", "text": "act"},
+                    ],
                 },
             },
             {"type": "response.output_text.delta", "delta": "answer"},
@@ -807,7 +864,79 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
         for payload in payloads
         if payload["choices"][0]["delta"]
     )
-    assert "<think>plan</think>answer" in combined
+    assert "<think>plan\n\nact</think>answer" in combined
+
+
+@pytest.mark.parametrize("with_deltas", (True, False))
+def test_responses_streamed_reasoning_summary_shown_once(monkeypatch, with_deltas):
+    def summary_part(index: int, deltas: list[str]) -> list[dict]:
+        base = {"item_id": "rs_1", "output_index": 0, "summary_index": index}
+        return [
+            {
+                "type": "response.reasoning_summary_part.added",
+                **base,
+                "part": {"type": "summary_text", "text": ""},
+            },
+            *(
+                {"type": "response.reasoning_summary_text.delta", **base, "delta": d}
+                for d in (deltas if with_deltas else ())
+            ),
+            {
+                "type": "response.reasoning_summary_text.done",
+                **base,
+                "text": "".join(deltas),
+            },
+            {
+                "type": "response.reasoning_summary_part.done",
+                **base,
+                "part": {"type": "summary_text", "text": "".join(deltas)},
+            },
+        ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        events = [
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {"type": "reasoning", "id": "rs_1", "summary": []},
+            },
+            *summary_part(0, ["Thinking ", "about it."]),
+            *summary_part(1, ["Then ", "answering."]),
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [
+                        {"type": "summary_text", "text": "Thinking about it."},
+                        {"type": "summary_text", "text": "Then answering."},
+                    ],
+                },
+            },
+            {"type": "response.output_text.delta", "delta": "Hello"},
+            {"type": "response.completed", "response": {}},
+        ]
+        return httpx.Response(
+            200,
+            content = _responses_sse(events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    lines = _drive(run())
+    payloads = [
+        json.loads(line[len("data:") :].strip())
+        for line in lines
+        if line.startswith("data:") and line[len("data:") :].strip() not in ("", "[DONE]")
+    ]
+    combined = "".join(
+        payload["choices"][0]["delta"].get("content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"]
+    )
+    assert combined == "<think>Thinking about it.\n\nThen answering.</think>Hello"
 
 
 @pytest.mark.parametrize(

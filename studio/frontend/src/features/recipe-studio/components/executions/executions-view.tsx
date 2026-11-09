@@ -7,7 +7,7 @@ import {
   CheckmarkCircle02Icon,
   Download01Icon,
   Flag02Icon,
-  Share08Icon,
+  Share01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { publishRecipeJob } from "../../api";
@@ -55,7 +55,6 @@ type ExecutionsViewProps = {
 function downloadOutcomeMessage(outcome: DownloadOutcome): string {
   if (outcome === "saved") return "Dataset downloaded";
   if (outcome === "started") return "Dataset download started";
-  // The server no longer has this run, so what was written is whatever this client still holds.
   return "Downloaded the rows still loaded for this run";
 }
 
@@ -122,9 +121,6 @@ export function ExecutionsView({
     [datasetColumnNames, hiddenDatasetColumns],
   );
 
-  // Columns with at least one long-text row get a wider min-width so the text
-  // is readable without clicking. The wrapper scrolls horizontally, so wide
-  // columns just add a scrollbar instead of squeezing the viewport.
   const wideColumns = useMemo(() => {
     const result = new Set<string>();
     if (!selectedExecution) {
@@ -522,7 +518,7 @@ export function ExecutionsView({
                       variant="outline"
                       onClick={() => setPublishDialogOpen(true)}
                     >
-                      <HugeiconsIcon icon={Share08Icon} className="mr-2 size-4" />
+                      <HugeiconsIcon icon={Share01Icon} className="mr-2 size-4" />
                       Publish to Hugging Face
                     </Button>
                   )}

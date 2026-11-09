@@ -1071,8 +1071,8 @@ def test_a_reconciliation_still_strips_a_non_layer_split_mode_env():
     """Reachability anchor for the decline above: if load_model ever stops
     scrubbing the inherited mode, the env form becomes plannable again and this is
     the test that should fail and say so."""
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    compact = "".join(src.split())
+    assert "self._reconcile_split_mode_env(env" in inspect.getsource(LlamaCppBackend.load_model)
+    compact = "".join(inspect.getsource(LlamaCppBackend._reconcile_split_mode_env).split())
     assert 'if_inherited_smand_inherited_sm!="layer":' in compact
     assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
     assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact

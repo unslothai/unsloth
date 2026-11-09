@@ -34,7 +34,6 @@ export function RequiredAssetsDownloadDialog({
   onCancel: () => void;
   modelLabel?: string;
 }) {
-  // Keep one portal/content mounted through the metadata check.
   return (
     <AlertDialog
       open={checking || entries !== null}

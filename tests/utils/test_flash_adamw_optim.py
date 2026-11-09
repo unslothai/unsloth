@@ -597,3 +597,53 @@ def test_adamw_flash_fused_bf16_variance_follows_fp32(monkeypatch, gradient):
     assert var.dtype == torch.float32
     # fp32 rounding differs between the kernel and the torch EMA (about 2e-5 after 2000 steps).
     torch.testing.assert_close(var, ema, rtol = 1e-4, atol = 1e-12)
+
+
+def test_adamw_flash_updates_each_param_on_its_own_device(stub_flashoptim, monkeypatch):
+    """A device_map split model: each CUDA update must run with its parameter's device current."""
+    import contextlib
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    FlashAdamW, _ = stub_flashoptim
+    current = ["cuda:0"]
+    entered = []
+    updated = []
+
+    @contextlib.contextmanager
+    def fake_device(device):
+        entered.append(str(device))
+        previous, current[0] = current[0], str(device)
+        try:
+            yield
+        finally:
+            current[0] = previous
+
+    def record_step_param(
+        self,
+        p,
+        group = None,
+    ):
+        updated.append((labels[id(p)], current[0]))
+
+    monkeypatch.setattr(torch.cuda, "device", fake_device)
+    monkeypatch.setattr(FlashAdamW, "step_param", record_step_param)
+    optimizer_cls = flash_adamw._get_flash_adamw_class()
+    cpu_param = torch.nn.Parameter(torch.zeros(4))
+    optimizer = optimizer_cls([cpu_param])
+    labels = {id(cpu_param): "cpu"}
+
+    # Stand-ins for parameters placed on two GPUs: only device, dtype and is_cuda are read.
+    on_gpu0 = types.SimpleNamespace(
+        device = torch.device("cuda", 0), is_cuda = True, dtype = torch.float32
+    )
+    on_gpu1 = types.SimpleNamespace(
+        device = torch.device("cuda", 1), is_cuda = True, dtype = torch.float32
+    )
+    labels.update({id(on_gpu0): "p0", id(on_gpu1): "p1"})
+    for p in (on_gpu1, on_gpu0, on_gpu1):
+        optimizer.step_param(p, optimizer.param_groups[0])
+    optimizer.step_param(cpu_param, optimizer.param_groups[0])
+
+    assert entered == ["cuda:1", "cuda:0", "cuda:1"]
+    assert updated == [("p1", "cuda:1"), ("p0", "cuda:0"), ("p1", "cuda:1"), ("cpu", "cuda:0")]
+    assert current == ["cuda:0"]

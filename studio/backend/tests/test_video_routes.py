@@ -33,6 +33,14 @@ def _shared_setup_1(client):
     )
 
 
+def _nvfp4_not_rerouted(monkeypatch):
+    """Blackwell host: explicit nvfp4 still reaches the precision gates."""
+    from core.inference import diffusion_nvfp4_route as nvfp4_route
+    monkeypatch.setattr(
+        nvfp4_route, "device_profile", lambda **kw: nvfp4_route.DeviceProfile("nvidia", ((10, 0),))
+    )
+
+
 def _shared_setup_2(monkeypatch):
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
@@ -600,12 +608,12 @@ def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
     monkeypatch.setattr(backend, "generate", _oom)
     progress = _shared_setup_4(client)
     assert progress["error"].startswith("Video generation failed.")
-    assert "ran out of memory" in progress["error"]
+    assert "Out of memory" in progress["error"]
     assert "CUDA" not in progress["error"]
     assert "40.00 GiB" not in progress["error"]
 
 
-def test_generate_unclassified_error_keeps_the_bare_fallback(client, monkeypatch):
+def test_generate_unclassified_error_names_the_cause_without_the_path(client, monkeypatch):
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -614,8 +622,84 @@ def test_generate_unclassified_error_keeps_the_bare_fallback(client, monkeypatch
 
     monkeypatch.setattr(backend, "generate", _odd)
     progress = _shared_setup_4(client)
-    assert progress["error"] == "Video generation failed."
+    assert progress["error"] == (
+        "Video generation failed. RuntimeError: something went sideways in <path>"
+    )
     assert "secret.safetensors" not in progress["error"]
+
+
+def test_generate_pipeline_exception_reaches_the_progress_error(client, monkeypatch):
+    # diffusers 0.40.0 on Cosmos3 Edge: the page showed only "Video generation failed."
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+    cause = (
+        "Input type (CPUBFloat16Type) and weight type (CUDABFloat16Type) should be the same "
+        "or input should be a MKLDNN tensor and weight is a dense tensor"
+    )
+
+    def _mismatch(**kwargs):
+        raise RuntimeError(cause)
+
+    monkeypatch.setattr(backend, "generate", _mismatch)
+    progress = _shared_setup_4(client)
+    assert progress["error"] == (
+        "Video generation failed. RuntimeError: Input type (CPUBFloat16Type) and weight type "
+        "(CUDABFloat16Type) should be the same or input should be..."
+    )
+
+
+def test_generate_failure_reason_is_redacted_and_bounded(client, monkeypatch):
+    import os
+
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+    home = os.path.expanduser("~")
+    token = "hf_" + "A1b2C3d4E5" * 3
+
+    def _leaky(**kwargs):
+        raise OSError(
+            f"cannot read {home}/.cache/huggingface/token with hf_token={token} "
+            f"or {token} from ~/models and C:\\Users\\leo\\w.bin " + "x" * 400 + "\n"
+            '  File "/usr/lib/python3/site-packages/diffusers/pipe.py", line 9, in __call__'
+        )
+
+    monkeypatch.setattr(backend, "generate", _leaky)
+    error = _shared_setup_4(client)["error"]
+    assert error.startswith("Video generation failed. OSError: cannot read <path> with")
+    for leaked in (home, token, "~/models", "Users", "w.bin", "site-packages", "File "):
+        assert leaked not in error
+    assert len(error) <= len("Video generation failed. ") + 120
+    assert error.endswith("...")
+
+
+def test_generate_failure_reason_hides_a_quoted_path_with_spaces(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _missing(**kwargs):
+        raise FileNotFoundError(
+            2, "No such file or directory", "C:\\Users\\Jo Ann\\models\\w.safetensors"
+        )
+
+    monkeypatch.setattr(backend, "generate", _missing)
+    error = _shared_setup_4(client)["error"]
+    assert error == (
+        "Video generation failed. FileNotFoundError: [Errno 2] No such file or directory: '<path>'"
+    )
+
+
+def test_generate_failure_reason_hides_a_double_quoted_path_with_an_apostrophe(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _missing(**kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "/models/O'Brien/w.safetensors")
+
+    monkeypatch.setattr(backend, "generate", _missing)
+    error = _shared_setup_4(client)["error"]
+    assert error == (
+        'Video generation failed. FileNotFoundError: [Errno 2] No such file or directory: "<path>"'
+    )
 
 
 def test_generate_native_crash_points_at_the_log(client, monkeypatch):
@@ -1122,6 +1206,37 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     assert seen["hf_token"] == "hf_secret"
 
 
+def test_video_download_plan_validates_with_the_encoder_precision(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _validate(model_path, **kwargs):
+        seen.update(kwargs)
+        raise ValueError("refused at validation")
+
+    monkeypatch.setattr(backend, "validate_load_request", _validate, raising = False)
+    planned: list = []
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: planned.append(k) or {"entries": []},
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "nvidia/Cosmos3-Edge",
+            "model_kind": "pipeline",
+            "text_encoder_quant": "fp8",
+        },
+    )
+
+    assert seen.get("text_encoder_quant") == "fp8"
+    assert 400 <= resp.status_code < 500, resp.text
+    assert planned == []
+
+
 def test_the_video_plan_refuses_an_impossible_precision_before_anything_is_staged(
     client, monkeypatch
 ):
@@ -1480,6 +1595,7 @@ def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
 
 
 def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     # Stub the host precision gate so the partition refusal is tested on CPU CI too.
     monkeypatch.setattr(
         video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
@@ -1544,6 +1660,7 @@ def test_video_download_plan_refuses_an_unsupported_combination_before_staging(c
 
 
 def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
@@ -1566,6 +1683,7 @@ def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, mo
 
 
 def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
@@ -1941,3 +2059,23 @@ def test_the_unload_answers_are_declared_in_the_schema(token_client):
     named = client.post("/api/inference/video/unload", json = {"expected_load_id": "t2"}).json()
     assert set(named) == set(plain) | {"unloaded", "outcome"}
     assert (named["unloaded"], named["outcome"]) == (True, "unloaded")
+
+
+def test_status_builds_the_backend_off_the_event_loop(client, monkeypatch):
+    import asyncio
+
+    on_loop = []
+    real = video_module.get_video_backend
+
+    def backend():
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real()
+
+    monkeypatch.setattr(video_module, "get_video_backend", backend)
+    body = client.get("/api/inference/video/status").json()
+    assert body["loaded"] is False
+    assert on_loop == [False]

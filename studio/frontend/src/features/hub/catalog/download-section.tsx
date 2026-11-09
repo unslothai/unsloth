@@ -26,7 +26,9 @@ export function DownloadSection({
   isLoadingThisModel,
   gpuGb,
   gpuCount,
+  audioCppCardGb,
   systemRamGb,
+  unifiedLoadBudgetGb,
   cachePath,
   knownBytes,
   onRun,
@@ -54,14 +56,15 @@ export function DownloadSection({
   isLoadingThisModel: boolean;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
   cachePath?: string | null;
   knownBytes?: number | null;
   onRun?: (selection: HubModelRunSelection) => void;
   runPending?: boolean;
   onChange?: () => void;
-  /** False for diffusion / audio / video GGUFs, which do not load through
-   *  llama.cpp and so have nothing the KV estimator can say about them. */
+  /** False for diffusion/audio/video GGUFs, which do not load through llama.cpp. */
   showMemoryBar?: boolean;
   mediaPage?: MediaStudioPage;
   assetRuntime?: AssetRuntime;
@@ -79,7 +82,9 @@ export function DownloadSection({
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
         gpuCount={gpuCount}
+        audioCppCardGb={audioCppCardGb}
         systemRamGb={systemRamGb}
+        unifiedLoadBudgetGb={unifiedLoadBudgetGb}
         cachePath={cachePath}
         isPartial={isPartial}
         onRun={onRun}

@@ -1,25 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pre-quantized SAM 3 / SAM 3.1 detector weights for Mask from text: FP8, INT8 and INT8-ConvRot.
-
-The segmenter is not a diffusion transformer, but its quantization is the diffusion one, imported rather than copied
-so the two cannot drift: the torchao config (``_make_quant_config``: fp8 per-row weight scale with dynamic per-token
-activations, int8 W8A8 dynamic), the Linear filter (``make_filter_fn``: min features, bf16 and alignment rules), the
-ConvRot block-Hadamard rotation and its recorded-fqn contract (``diffusion_convrot``), the safetensors container
-(``prequant_safetensors``, torchao's flatten layout + ``unsloth_format`` / ``unsloth_metadata``) and the
-version-neutral weight fingerprint. What is SAM specific lives here: which Linears are left in bf16, which arms
-``auto`` may pick, the artifact names, and the loader that builds a ``Sam3Model`` around the quantized state dict.
-
-Exclusions come from a per-group sensitivity scan (numbers on the unsloth/sam3.1 model card): one group at a time,
-mask IoU / score / kept-count measured against bf16 over a 53-prompt set. They are baked into every artifact and
-compared at load, like the diffusion families' exclude tokens, so an artifact built under a different rule is refused
-rather than loaded.
-
-Quantized kernels are CUDA only here: on the CPU or Apple's MPS the segmenter runs bf16 / fp32 weights, and a
-quantized file that is the only one downloaded is dequantized for that device (the rotation, when present, stays
-installed, which is exact in floating point).
-"""
+"""SAM 3 pre-quantized FP8/INT8/ConvRot detector weights sharing diffusion quant code; quantized
+kernels CUDA only (CPU/MPS dequantize a lone quantized file); other exclusions refused at load"""
 
 from __future__ import annotations
 

@@ -40,6 +40,8 @@ import {
 } from "./pending-starts";
 import { assetLabel } from "./required-assets";
 import { queuedStagedEntries, useStagedDownloadQueues } from "./staged-download-queue";
+import { isTrainingDownloadVariant } from "./training-downloads";
+import { useTrainingDownloads } from "./use-training-downloads";
 
 type RowSubject = Pick<
   ManagedDownload,
@@ -91,18 +93,15 @@ function canUseDownloadManager(pathname: string): boolean {
   return hasAuthToken() && !mustChangePassword();
 }
 
-/** The repo as a row names it. A package folder of the shared GGUF audio repo is known by its
- *  folder name, as the Hub and the pickers show it; every other id reads as itself. */
 function repoLabel(repoId: string): string {
   return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
 }
 
 function isRequiredAssetJob(job: RowSubject): boolean {
   if (!job.variant?.startsWith("@")) return false;
-  // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
-  // can be a curated single .safetensors and companion repos carry .safetensors too, so the
-  // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
-  // which would otherwise change label mid-download after a restart.
+  // The staging page's checkpoint tag is the only reliable answer, since the extension decides
+  // nothing and companion repos carry .safetensors too; the old guess stays for jobs persisted
+  // before the flag, so labels do not change after a restart.
   const isModelFile =
     job.checkpoint ??
     job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
@@ -114,6 +113,7 @@ const REQUIRED_ASSET_NOTE =
   "Required to run this model. Downloaded once, shared across compatible variants.";
 
 function variantSuffix(job: RowSubject): string {
+  if (isTrainingDownloadVariant(job.variant)) return " · Training model";
   if (job.variant?.startsWith("@")) {
     return ` · ${
       isRequiredAssetJob(job)
@@ -139,6 +139,9 @@ function RowTitle({ job }: { job: RowSubject }) {
 }
 
 function RowDetail({ job }: { job: RowSubject }) {
+  if (isTrainingDownloadVariant(job.variant)) {
+    return <div className="text-ui-10p5 text-muted-foreground">Current files; additional model files may follow.</div>;
+  }
   return job.presentation ? (
     <div className="truncate text-ui-10p5 text-muted-foreground">
       {job.presentation.filename}
@@ -257,7 +260,7 @@ function DownloadRow({
           bytesPerSec={job.bytesPerSec}
           cancelling={job.state === "cancelling"}
           etaSeconds={job.etaSeconds}
-          activity={job.activity}
+          activity={job.activity ?? (isTrainingDownloadVariant(job.variant) ? "Preparing training model files…" : undefined)}
         />
       ) : null}
       {!starting && job.details?.length ? (
@@ -285,6 +288,7 @@ export function DownloadManagerPanel({
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
   useEngines(enabled, true);
+  useTrainingDownloads(enabled);
   useHubDownloadQueue();
   const [collapsed, setCollapsed] = useState(false);
 
@@ -325,10 +329,7 @@ export function DownloadManagerPanel({
   return (
     <div
       className={cn(
-        // Standalone: anchor bottom-right. In a shared stack (positioned=false)
-        // flow as a right-aligned row so overlays stack instead of overlapping.
-        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
-        // stack would squeeze the update card instead of this list.
+        // min-h-0: a flex item's min-height defaults to auto, so the capped stack would squeeze the card.
         "pointer-events-none",
         positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}

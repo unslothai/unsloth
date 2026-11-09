@@ -26,6 +26,7 @@ else:
     os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
 
 import main
+main._startup_ml_warmup_features = frozenset() if %(deferred)s else frozenset({"hardware"})
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

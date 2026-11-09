@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Child-process environment hygiene for the managed ggml servers.
-
-Secret-env scrubbing and the WSL2 ROCm library-dir probe, shared by the STT
-sidecar (and any future launcher of a downloaded binary). Kept in sync with
-install_llama_prebuilt.py's scrub_env / _wsl_system_rocm_lib_dirs; the backend
-cannot import the studio/ installer scripts, so this copy stays importable with
-only the backend root on sys.path.
-"""
+"""Secret-env scrubbing and WSL2 ROCm lib dirs for managed ggml servers; synced with
+install_llama_prebuilt.py; must stay importable with only the backend root on sys.path."""
 
 from __future__ import annotations
 
@@ -82,10 +76,7 @@ def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-# Filesystem pointers a downloaded binary could follow to on-disk credential stores. Dropped, not repointed: the offline
-# inference server needs none.
-# Those pointers are token caches under $HF_HOME, ~/.netrc and XDG config. Mirrors the cred-location list of the tools
-# bypass env (core/inference/tools.py).
+# Credential-store pointers (HF_HOME, ~/.netrc, XDG config) are dropped, not repointed; mirrors the cred list in core/inference/tools.py.
 CRED_LOCATION_ENV_NAMES = frozenset(
     {
         "HF_HOME",

@@ -681,3 +681,64 @@ def test_a_projection_left_dense_is_refused_not_budgeted():
     assert _dense_names(nn.ModuleList([_Layer(False), _Layer(False)])) == []
     assert _dense_names(nn.ModuleList([_Layer(False), _Layer(True)])) == ["1.self_attn.q_proj"]
     assert not isinstance(quantized_cls(8, 8, False, 256), nn.Linear)
+
+
+def _pin_world(monkeypatch, budget_bytes):
+    from core.inference import video_minimax_h3_te as te
+
+    sizes = {}
+    monkeypatch.setattr(te, "_module_payload_bytes", lambda m: sizes[id(m)])
+    monkeypatch.setattr(te, "_host_payload_bytes", lambda m: sizes[id(m)])
+    monkeypatch.setattr(
+        te, "h3_te_pin_allowed", lambda payload = 0, device = None: payload <= budget_bytes
+    )
+    return te, sizes
+
+
+@pytest.mark.parametrize(
+    "budget,te_gb,dit_gb,expected",
+    [
+        (60, 27, 20, None),
+        (40, 27, 20, False),
+        (20, 27, 20, None),
+        (15, 10, 20, False),
+    ],
+)
+def test_conditioner_pin_yields_to_a_streamed_denoiser(
+    monkeypatch, budget, te_gb, dit_gb, expected
+):
+    te, sizes = _pin_world(monkeypatch, budget * 10**9)
+    enc, dit = object(), object()
+    sizes[id(enc)], sizes[id(dit)] = te_gb * 10**9, dit_gb * 10**9
+    assert te.h3_te_pin_yields(enc, dit) is expected
+
+
+def test_conditioner_pin_yield_needs_a_streamed_denoiser_and_has_a_kill_switch(monkeypatch):
+    te, sizes = _pin_world(monkeypatch, 40 * 10**9)
+    enc, dit = object(), object()
+    sizes[id(enc)], sizes[id(dit)] = 27 * 10**9, 20 * 10**9
+    assert te.h3_te_pin_yields(enc, None) is None
+    monkeypatch.setenv(te.H3_TE_PIN_YIELD_ENV, "0")
+    assert te.h3_te_pin_yields(enc, dit) is None
+
+
+def test_h3_placement_sizes_the_stream_before_it_pins_the_conditioner():
+    import inspect
+
+    from core.inference.video import VideoBackend
+
+    src = inspect.getsource(VideoBackend)
+    call = src.index("pin = h3_te_pin_yields(")
+    assert call - src.rindex("_h3_placement_tier(", 0, call) < 1500
+
+
+def test_streamed_denoiser_is_priced_at_its_int8_payload():
+    import torch
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference import video_minimax_h3_te as te
+
+    lin = torch.nn.Linear(256, 512, bias = False).to(torch.bfloat16)
+    quantize_(lin, Int8DynamicActivationInt8WeightConfig())
+    payload = te._host_payload_bytes(lin)
+    assert 512 * 256 <= payload < 512 * 256 * 2

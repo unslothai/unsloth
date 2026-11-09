@@ -4298,11 +4298,17 @@ def _linux_rocm_and_vulkan_bundle():
     )
 
 
-def test_linux_rdna1_plan_installs_the_vulkan_bundle_not_a_source_build(linux_no_rocm_env):
+def test_linux_rdna1_plan_installs_the_vulkan_bundle_not_a_source_build(
+    linux_no_rocm_env, monkeypatch
+):
     bundle = _linux_rocm_and_vulkan_bundle()
     host = _linux_amd("gfx1010")
-    # Unrouted, the ROCm branch finds no bundle and the caller source-builds HIP.
+    # Unrouted, the ROCm branch finds no bundle: with hipcc the caller source-builds HIP,
+    # without it (that build would end CPU-only) the Vulkan bundle is taken.
+    monkeypatch.setattr(ilp, "_hipcc_available", lambda: True)
     assert ilp._linux_published_attempts(host, bundle) == []
+    monkeypatch.setattr(ilp, "_hipcc_available", lambda: False)
+    assert [a.install_kind for a in ilp._linux_published_attempts(host, bundle)] == ["linux-vulkan"]
     routed, *_ = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     kinds = [a.install_kind for a in ilp._linux_published_attempts(routed, bundle)]
     assert kinds == ["linux-vulkan", "linux-cpu"]

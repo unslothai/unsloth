@@ -296,6 +296,42 @@ def test_child_resumes_a_long_clip_after_its_last_complete_segment(
     assert processor.attention_mask.moved_to == ["cuda"]
 
 
+class _DeviceRow:
+    """An accelerator row: each iterated element is its own device-to-host read."""
+
+    def __init__(self, tokens) -> None:
+        self.tokens = list(tokens)
+        self.element_reads = 0
+        self.host_copies = 0
+
+    def __iter__(self):
+        for token in self.tokens:
+            self.element_reads += 1
+            yield token
+
+    def tolist(self):
+        self.host_copies += 1
+        return list(self.tokens)
+
+
+def test_child_copies_timestamped_tokens_to_the_host_once(monkeypatch):
+    head = [_at(0), 11, _at(5.0), _at(5.0), 22]
+    tail = [_at(28.4), _at(28.4), 33]
+    row = _DeviceRow([50258, 50259, 50359] + head + tail + [_EOS])
+    model = _TimestampedModel(row)
+    processor = _RecordingProcessor()
+    _install_fake_transformers(monkeypatch, model = model, processor = processor)
+    pcm = np.zeros(480000, dtype = np.float32).tobytes()
+
+    result = worker_module.transcribe_window(
+        model, processor, pcm, {"num_beams": 5, "return_timestamps": True}
+    )
+
+    assert result == ("decoded", 454400)
+    assert processor.decoded == [head + [_at(28.4)]]
+    assert (row.host_copies, row.element_reads) == (1, 0)
+
+
 def _run_child(
     monkeypatch,
     commands,

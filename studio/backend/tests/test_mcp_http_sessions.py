@@ -870,6 +870,106 @@ def test_a_json_rpc_error_from_the_probe_keeps_the_session(monkeypatch, clients)
     assert clients[0].probes == 1
 
 
+class RestartedServer(RecordingClient):
+    """Answers like a server that no longer knows the Mcp-Session-Id (HTTP 404)."""
+
+    terminated = False
+    gone = (32600, "Session terminated")
+
+    async def list_tools_mcp(self):
+        if self.terminated:
+            self.probes += 1
+            raise _protocol_error(*self.gone)
+        return await super().list_tools_mcp()
+
+    async def call_tool(
+        self,
+        name: str,
+        args: dict,
+        raise_on_error: bool = True,
+    ):
+        if self.terminated:
+            raise _protocol_error(*self.gone)
+        return await super().call_tool(name, args, raise_on_error)
+
+
+@pytest.fixture(
+    params = [
+        (32600, "Session terminated"),  # mcp 1.x client stand-in
+        (-32600, "Session terminated"),  # mcp 2.x client stand-in
+        (-32600, "Session not found"),  # Python SDK server body, relayed by mcp 2.x
+        (-32001, "Session not found"),  # TypeScript SDK server body, relayed by mcp 2.x
+    ]
+)
+def restarted(request, monkeypatch, clients):
+    monkeypatch.setattr(RestartedServer, "gone", request.param)
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: RestartedServer(url, headers, use_oauth),
+    )
+    return clients
+
+
+def test_a_terminated_session_reconnects_and_replays_once(restarted):
+    _call(HTTP_URL, scope = SCOPE)
+    restarted[0].terminated = True
+    assert _call(HTTP_URL, scope = SCOPE) == "call-1"
+    assert len(restarted) == 2
+    assert _settled(restarted[0]) == 1, "the terminated session was kept"
+    assert [s.client for s in mcp_client._mcp_sessions.values()] == [restarted[1]]
+
+
+def test_a_terminated_idle_session_is_replaced_before_dispatch(monkeypatch, restarted):
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
+    _call(HTTP_URL, scope = SCOPE)
+    restarted[0].terminated = True
+    assert _call(HTTP_URL, scope = SCOPE) == "call-1"
+    assert restarted[0].probes == 1 and len(restarted[0].calls) == 1
+    assert len(restarted) == 2
+    assert _settled(restarted[0]) == 1
+
+
+def test_a_terminated_session_is_replayed_only_once(monkeypatch, restarted):
+    _call(HTTP_URL, scope = SCOPE)
+    monkeypatch.setattr(RestartedServer, "terminated", True)
+    out = _call(HTTP_URL, scope = SCOPE)
+    assert RestartedServer.gone[1] in out, out
+    assert len(restarted) == 2, f"reconnected {len(restarted) - 1} times"
+    assert mcp_client._mcp_sessions == {}
+
+
+@pytest.mark.parametrize(
+    "code, message",
+    [(-32602, "Unknown tool: t"), (-32600, "Invalid Request"), (32600, "Session expired soon")],
+)
+def test_other_json_rpc_errors_still_keep_the_session(monkeypatch, clients, code, message):
+    class ProtocolError(RecordingClient):
+        fail = False
+
+        async def call_tool(
+            self,
+            name: str,
+            args: dict,
+            raise_on_error: bool = True,
+        ):
+            if self.fail:
+                self.fail = False
+                raise _protocol_error(code, message)
+            return await super().call_tool(name, args, raise_on_error)
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: ProtocolError(url, headers, use_oauth),
+    )
+    _call(HTTP_URL, scope = SCOPE)
+    clients[0].fail = True
+    assert _call(HTTP_URL, scope = SCOPE).startswith("Error:")
+    assert _call(HTTP_URL, scope = SCOPE) == "call-2"
+    assert len(clients) == 1, "a protocol error discarded the session"
+
+
 def test_the_queue_of_pending_closes_is_bounded(monkeypatch, clients):
     """One worker bounds the cleanup threads but not the queue: a server that
     hangs on shutdown is closed slower than new chats evict, and every session

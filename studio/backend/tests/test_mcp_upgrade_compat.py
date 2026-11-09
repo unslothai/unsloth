@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio's fastmcp>=3.0.2 has no upper bound or lockfile, so these check the installed version."""
+"""Studio's fastmcp>=4.1.5,<5 has no lockfile, so these check the installed version."""
 
 from __future__ import annotations
 
@@ -93,7 +93,20 @@ def test_only_stdio_answers_the_liveness_probe():
 def test_the_installed_fastmcp_meets_the_declared_floor():
     version = importlib.metadata.version("fastmcp")
     major, minor, *_ = (int(part) for part in version.split(".")[:2])
-    assert (major, minor) >= (3, 0), f"fastmcp {version} is below the declared >=3.0.2"
+    assert (major, minor) >= (4, 1), f"fastmcp {version} is below the declared >=4.1.5"
+
+
+def test_the_middleware_hooks_tool_access_overrides_still_exist():
+    """StudioToolAccess hides turned-off tools and prompts through these four hooks."""
+    from fastmcp.exceptions import PromptError
+    from fastmcp.server.middleware import Middleware
+
+    from studio_mcp.tool_access import StudioToolAccess
+
+    for hook in ("on_list_tools", "on_call_tool", "on_list_prompts", "on_get_prompt"):
+        assert callable(getattr(Middleware, hook, None)), hook
+        assert hook in vars(StudioToolAccess), hook
+    assert issubclass(PromptError, Exception)
 
 
 def test_tool_errors_are_still_distinguishable_from_transport_errors():

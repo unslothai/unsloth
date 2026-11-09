@@ -7748,7 +7748,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
             monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: UnusedClient())
             _pin_loaded_backend(monkeypatch)
 
@@ -9306,7 +9305,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: CancellingAsyncClient(),
             )
             monitor_id = _monitor_entry(monitor)
@@ -9554,7 +9553,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
             payload = ChatCompletionRequest(
@@ -9616,7 +9615,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
             monitor_id = _monitor_entry(monitor)
@@ -10030,7 +10029,11 @@ class TestApiMonitorSafetensorsUsage:
             ):
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
-                if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
+                if func in (
+                    inf_mod.get_inference_backend,
+                    inf_mod._loaded_satisfies,
+                    inf_mod._trained_run_dir,
+                ):
                     return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
 

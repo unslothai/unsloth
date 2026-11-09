@@ -100,8 +100,7 @@ def _installer_script() -> Optional[Path]:
     )
 
 
-# Markerless (source-build) installs have no UNSLOTH_PREBUILT_INFO.json, so we
-# ask the installer whether an official prebuilt now exists for this host.
+# Source-build installs lack UNSLOTH_PREBUILT_INFO.json, so ask the installer if a prebuilt exists.
 _resolve_memo: dict = {}
 
 
@@ -957,8 +956,7 @@ def _run_llama_phase(
         raise
     finally:
         mtmd_guard.close()
-        # A kept slot serving a non-GGUF model stays loaded through the update; its llama backend
-        # must not stay refused once the update is done.
+        # A kept non-GGUF slot stays loaded; its llama backend must not stay refused once the update ends.
         for llama in (backend, *marked):
             if llama is not None:
                 try:
@@ -1232,7 +1230,7 @@ def _whisper_phase_plan(
     migration: bool = False,
 ) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or re-pair with the new backend for a switch. A switch that installs nothing leaves llama's ggml where it was, so there is nothing to re-pair and a refused switch stays refused instead of becoming a whisper-only job. The exception is what a failed re-pair leaves behind: llama runs first and records the new backend, so a retryable whisper failure ends with llama on the requested backend and dictation still hardlinked to the old runtime, making a retry ``already_selected`` and stranding the user unless they switch away and back. So allow a repair-only job for that one refusal, and only while the pairing is genuinely stale."""
-    # A migration is switch-shaped but update-behaved, so whisper needs the chained plan: the repair-only branch has no phase for a self-contained install and drops updates.
+    # A migration needs whisper's chained plan; the repair-only branch drops updates.
     if backend_request is None or migration:
         chained = (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inpaint mask settings: AUTOMATIC1111's "Mask blur" and "Inpaint area: Only masked" (diffusers padding_mask_crop).
-
-Unset / 0 / False leave the request exactly as before."""
+"""Inpaint mask blur and only-masked crop (padding_mask_crop); unset, 0 or False is a no-op."""
 
 from __future__ import annotations
 

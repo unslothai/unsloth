@@ -145,26 +145,20 @@ export interface AudioGalleryClip {
   created_at: string;
   pinned?: boolean;
   archived?: boolean;
-  /** The server's unpinned sort key: the drag key, else the file mtime. */
   order_at?: number | null;
   /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
   workflow?: string | null;
   reference_name?: string | null;
-  /** The history clip an edit changed or a conversion started from. */
   source_clip_id?: string | null;
   source_input_id?: string | null;
   voice_id?: string | null;
-  /** Served at /audio/gallery/{id}/source/file. */
   source_saved?: boolean;
   source_name?: string | null;
   target_builtin?: string | null;
   target_clip_id?: string | null;
   target_input_id?: string | null;
-  /** Clips one run made together share it (a separation's stems, music takes); null for one clip. */
   group_id?: string | null;
-  /** A stem's name (vocals, drums, ...) or an edit's run part ("output" or "source"). */
   role?: string | null;
-  /** The run's settings, e.g. a separation's stem list. */
   settings?: Record<string, unknown> | null;
 }
 
@@ -176,7 +170,6 @@ export interface AudioGalleryListResponse {
   next_before_pin?: number | null;
 }
 
-/** Where the next page starts: the last clip's order key, id and pin rank (null if unpinned). */
 export interface AudioGalleryCursor {
   mtime: number;
   id: string;
@@ -229,7 +222,6 @@ export async function setAudioClipFlags(
   return parseJson<AudioGalleryClip>(response);
 }
 
-/** Move one clip to just after `afterId` (null = top). */
 export async function moveAudioClip(
   id: string,
   afterId: string | null,
@@ -245,7 +237,6 @@ export async function moveAudioClip(
   return parseJson<AudioGalleryClip>(response);
 }
 
-/** Copy one clip into a chat project's folder. */
 export async function addAudioClipToProject(
   id: string,
   projectId: string,
@@ -465,8 +456,7 @@ export async function uploadAudioInput(
   return parseAudioJson<AudioInputRecord>(response);
 }
 
-/** Whether an upload is still on the server; anything but a 404 counts as alive.
- * GET, not HEAD: the FastAPI route answers HEAD with 405, which would read as alive. */
+/** Upload alive unless 404. GET, not HEAD: FastAPI answers HEAD with 405. */
 export async function audioInputAlive(inputId: string): Promise<boolean> {
   try {
     const response = await authFetch(
@@ -527,7 +517,6 @@ export interface AudioRunResponse {
     workflow: string;
     seed?: number | null;
   }[];
-  /** One separation's stems share it; null for a single clip. */
   group_id: string | null;
   model: string;
   audio: GeneratedAudio | null;

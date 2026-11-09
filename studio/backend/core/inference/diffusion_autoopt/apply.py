@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Execute the optimization plan: the ONE speed-layer entry for the image and video backends.
-
-``run_speed_layer`` runs the registered patch stages, the family hooks (data, not branches in the backends) and the
-existing ``apply_speed_optims`` primitive for one pipe / view, and records every step into the load's
-:class:`Audit` (engaged / declined + reason / failed + error). Failures inside the primitives are captured from the
-warnings they already log (a logger proxy), so their internals stay untouched. The audit surfaces in status as
-``resolved["speed_mode"]["steps"]``.
-"""
+"""run_speed_layer, the one image/video speed-layer entry: runs patch stages, family hooks and
+apply_speed_optims per pipe or view, recording each step in the load Audit; failures caught from
+logged warnings; audit surfaces in status as resolved[speed_mode][steps]."""
 
 from __future__ import annotations
 
@@ -193,6 +188,7 @@ def install_patches(
     backend: str = "image",
     audit: Optional[Audit] = None,
     logger: Any = None,
+    explicit_off: Optional[bool] = None,
 ) -> dict:
     """Run one load-time patch stage (``load_eager`` / ``load``) for ``pipe``."""
     ctx = patches.PatchContext(
@@ -202,6 +198,7 @@ def install_patches(
         dtype = dtype,
         device = device,
         speed_mode = speed_mode,
+        explicit_off = explicit_off,
         backend = backend,
         logger = logger,
     )

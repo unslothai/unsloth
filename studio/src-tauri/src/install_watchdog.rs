@@ -1,14 +1,9 @@
-//! Keeps a slow install alive, and says what it is waiting on.
-//!
-//! Killing a download wastes every byte: uv restarts an interrupted one from zero
-//! (astral-sh/uv#16934), so the budget marks pathology, not impatience.
-//!
-//! No silence-based stop: the markers miss the uv calls under `studio setup`, whose
-//! output is captured rather than streamed, so quiet there does not mean stuck.
+//! Keeps a slow install alive and says what it is waiting on. uv restarts an interrupted download
+//! from zero (astral-sh/uv#16934), so the budget marks pathology, not impatience. No silence-based
+//! stop: uv output under `studio setup` is captured, so quiet does not mean stuck.
 
 use std::time::{Duration, Instant};
 
-/// Long enough that reaching it means something is wrong rather than slow.
 pub const BACKSTOP_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
 pub const REPORT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -93,7 +88,6 @@ impl ProgressWatch {
         self.note_output(now);
     }
 
-    /// The message to fail with, once the run is long enough to be pathological.
     pub fn expired(&self, now: Instant) -> Option<String> {
         (now.duration_since(self.started) >= self.backstop_timeout).then(|| {
             let budget = human_duration(self.backstop_timeout);
@@ -227,7 +221,6 @@ mod tests {
         let t0 = Instant::now();
         let mut watch = watch(t0);
         watch.note_step("Installing unsloth");
-        // The reporting host needed ~3.7 h for its torch download and was killed at 2 h.
         assert_eq!(watch.expired(t0 + 4 * HOUR), None);
         assert_eq!(watch.expired(t0 + 11 * HOUR + Duration::from_secs(3599)), None);
         let message = watch.expired(t0 + 12 * HOUR).expect("the backstop fires");
@@ -242,7 +235,6 @@ mod tests {
         watch.note_step("Installing PyTorch");
         watch.note_marker(&Marker::Start { package: "torch", size: "2.4GiB" }, t0);
 
-        // Output resets the window, so an install that talks never reports.
         watch.note_output(t0 + Duration::from_secs(299));
         assert_eq!(watch.due_report(t0 + Duration::from_secs(300)), None);
         let first = watch.due_report(t0 + Duration::from_secs(600)).expect("a report is due");
@@ -271,7 +263,6 @@ mod tests {
         assert!(note_progress(&watch, "[TAURI:DL] torch 2.4GiB"));
         assert!(!note_progress(&watch, "[TAURI:STEP] Installing PyTorch"));
         assert!(!note_progress(&watch, "  venv  creating environment"));
-        // A plain line is output: it postpones the report even though it changes no state.
         assert_eq!(watch.lock().unwrap().due_report(Instant::now()), None);
 
         let later = now + Duration::from_secs(600);

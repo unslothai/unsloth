@@ -5,18 +5,12 @@ import { authFetch } from "@/features/auth";
 
 import { sandboxRoutePrefix } from "./sandbox-files";
 
-/** Route that opens a session's sandbox in the OS file manager. */
 export function sandboxRevealPath(sessionId: string): string {
   const { prefix, query } = sandboxRoutePrefix(sessionId);
   return `${prefix}/reveal${query}`;
 }
 
-/**
- * Whether this session's sandbox holds anything, to tell a candidate folder
- * apart from one never written to. A missing sandbox already lists as an empty
- * array, so a non-OK is something else and is thrown: swallowing it would send
- * the caller to its fallback and silently open a different workspace.
- */
+/** A missing sandbox lists as []; a non-OK is thrown so callers never open a different workspace. */
 export async function sandboxHasFiles(sessionId: string): Promise<boolean> {
   const { prefix, query } = sandboxRoutePrefix(sessionId);
   const response = await authFetch(`${prefix}${query}`);
@@ -28,12 +22,7 @@ export async function sandboxHasFiles(sessionId: string): Promise<boolean> {
   return Array.isArray(files) && files.length > 0;
 }
 
-/**
- * Open a chat's sandbox folder in the OS file manager.
- *
- * The backend does the opening, so the folder lands on the user's own desktop
- * only when the backend runs there. Callers gate this on the desktop app.
- */
+/** The backend does the opening, so callers gate this on the desktop app. */
 export async function revealSandbox(sessionId: string): Promise<void> {
   const response = await authFetch(sandboxRevealPath(sessionId), {
     method: "POST",

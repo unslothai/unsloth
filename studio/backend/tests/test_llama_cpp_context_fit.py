@@ -667,6 +667,7 @@ def _install_fake_psutil(
     monkeypatch.setitem(sys.modules, "psutil", fake)
 
 
+@pytest.mark.usefixtures("real_apple_metal_budget")
 class TestAppleUnifiedMemoryBudget:
     def test_zero_off_apple_silicon(self, monkeypatch):
         import platform as _platform

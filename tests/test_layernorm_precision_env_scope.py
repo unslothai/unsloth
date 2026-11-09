@@ -123,7 +123,7 @@ _SEQUENCE = textwrap.dedent(
     """
 )
 
-Q35 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+Q35 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 Q3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 G3 = "hf-internal-testing/tiny-random-Gemma3ForCausalLM"
 LLAMA = "hf-internal-testing/tiny-random-LlamaForCausalLM"

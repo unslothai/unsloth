@@ -433,6 +433,8 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
             {"index": 1, "visible_ordinal": 1, "used_gb": 0.01, "total_gb": 8.0},
         ],
     )
+    # Names come from torch's device list, which on this host would be its real cards; CI has no torch.
+    monkeypatch.setattr(hw, "_torch_get_device_inventory", lambda ids: [])
     overlaid = []
     monkeypatch.setattr(
         hw, "_overlay_system_wide_vram", lambda devices: overlaid.append(len(devices))

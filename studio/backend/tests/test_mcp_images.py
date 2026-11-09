@@ -2395,8 +2395,10 @@ def test_the_gguf_admission_estimate_parses_off_the_loop():
 
     routes_src = inspect.getsource(inference_route)
     assert "reservation, admission_config = _openai_llama_admission_reserve(" not in routes_src
-    assert routes_src.count("await _openai_llama_admission_reserve_async(") >= 4
-    assert routes_src.count("await _reserve_counted_gguf_chat(") == 3
+    assert routes_src.count("await _openai_llama_admission_reserve_async(") >= 1
+    assert routes_src.count("await _reserve_counted_gguf_chat(") == 5
+    passthrough = inspect.getsource(inference_route._reserve_counted_gguf_passthrough)
+    assert "await _reserve_counted_gguf_chat(" in passthrough
     counted = inspect.getsource(inference_route._reserve_counted_gguf_chat)
     assert "await asyncio.to_thread(" in counted
     assert "_count_gguf_admission_prompt" in counted

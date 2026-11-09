@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing.
-
-The MoE's second expert uses the ``task`` slot with NO filename fallback: it would load expert 1 as expert 2.
-"""
+"""Hosted denoisers seed a video pipeline all or nothing; MoE expert 2 uses task slot, never filename."""
 
 from __future__ import annotations
 
@@ -111,7 +108,6 @@ def denoiser_prequant_pipe_kwargs(
     local_files_only: bool = False,
     cache_dir: Optional[str] = None,
     logger: Any = None,
-    native_offload: bool = False,
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16)."""
     try:
@@ -120,7 +116,7 @@ def denoiser_prequant_pipe_kwargs(
         sources = denoiser_prequant_sources(fam, scheme, base_repo, hf_token = hf_token)
         if not sources:
             return {}
-        if target is not None and not native_offload:
+        if target is not None:
             from .diffusion_transformer_quant import dense_transformer_supported
             if not dense_transformer_supported(target):
                 return {}
@@ -142,34 +138,21 @@ def denoiser_prequant_pipe_kwargs(
             return {}
         seeded: dict[str, Any] = {}
         for component, source in sources.items():
-            if native_offload:
-                from .video_hosted_int8_native import load_hosted_int8_native
-                module = load_hosted_int8_native(
-                    transformer_cls,
-                    base_repo,
-                    source,
-                    component = component,
-                    hf_token = hf_token,
-                    cache_dir = cache_dir,
-                    local_files_only = local_files_only,
-                    logger = logger,
-                )
-            else:
-                module = load_prequantized_transformer(
-                    transformer_cls,
-                    base_repo,
-                    source,
-                    device = device,
-                    dtype = dtype,
-                    hf_token = hf_token,
-                    scheme = scheme,
-                    min_features = DEFAULT_MIN_LINEAR_FEATURES,
-                    config_subfolder = component,
-                    component = component,
-                    cache_dir = cache_dir,
-                    local_files_only = local_files_only,
-                    logger = logger,
-                )
+            module = load_prequantized_transformer(
+                transformer_cls,
+                base_repo,
+                source,
+                device = device,
+                dtype = dtype,
+                hf_token = hf_token,
+                scheme = scheme,
+                min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                config_subfolder = component,
+                component = component,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                logger = logger,
+            )
             if module is None:
                 seeded.clear()
                 gc.collect()

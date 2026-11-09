@@ -143,6 +143,7 @@ def test_resolve_prefers_a_family_declared_filename():
     src = resolve_prequant_source(fam, "int8")
     assert src.filename == "Model-INT8-ConvRot-ComfyUI.safetensors"
     assert src.fallback_filenames == (
+        "Model-INT8-ConvRot.safetensors",
         "Model-INT8-ConvRot.pt",
         "Model-INT8-ComfyUI.safetensors",
         "Model-INT8.safetensors",
@@ -640,7 +641,16 @@ def _load(
         monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     else:
         monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
-    path = tmp_path / "ckpt.pt"
+    path = tmp_path / ("ckpt.safetensors" if scheme == "nvfp4" else "ckpt.pt")
+    if scheme == "nvfp4":
+        # nvfp4 is read from safetensors only; the stand-in container returns the fake checkpoint.
+        import core.inference.prequant_safetensors as pst
+        def _st_load(_path, **_kwargs):
+            if load_raises:
+                raise RuntimeError("load failed")
+            return ckpt
+
+        monkeypatch.setattr(pst, "load_prequant_safetensors", _st_load)
     if exists:
         path.write_bytes(b"x")
     source = PrequantSource(kind = "path", location = str(path), filename = None)
@@ -934,7 +944,6 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(
     required = {
         # every TQ_SCHEME the builder can bake, not just the hosted ones
         "torchao.prototype.mx_formats.mx_tensor.MXTensor",
-        "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
         "torchao.dtypes.affine_quantized_tensor.AffineQuantizedTensor",
         "torchao.dtypes.uintx.plain_layout.PlainAQTTensorImpl",
         "torchao.dtypes.utils.PlainLayout",
@@ -950,6 +959,10 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(
         "torch.torch_version.TorchVersion",
     }
     assert required <= listed, sorted(required - listed)
+    # nvfp4 is never unpickled by Studio: its checkpoints load from safetensors only
+    assert not any(
+        "nvfp4" in f"{module}.{name}".lower() for module, name in pq._PREQUANT_SAFE_GLOBALS
+    )
     # nothing outside torch/torchao, so no general-purpose callable is allowed
     assert all(
         module.split(".")[0] in ("torch", "torchao") for module, _ in pq._PREQUANT_SAFE_GLOBALS
@@ -1172,7 +1185,8 @@ def test_support_is_answered_per_scheme(monkeypatch):
 
     assert pq.restricted_prequant_load_supported("fp8") is True
     assert pq.restricted_prequant_load_supported("int8") is False
-    assert pq.restricted_prequant_load_supported("nvfp4") is False
+    # nvfp4 never reads a pickle, whatever the allowlist resolves
+    assert pq.restricted_prequant_load_supported("nvfp4", "x-NVFP4.pt") is False
     assert pq.restricted_prequant_load_supported() is True
     assert pq.restricted_prequant_load_supported("something-else") is True
     fam = _fam(prequant_repos = (("int8", "org/hosted-int8"), ("fp8", "org/hosted-fp8")))
@@ -2258,10 +2272,10 @@ def test_pinning_the_fp8_kernel_leaves_the_4_bit_weights_alone(monkeypatch):
     assert not hasattr(sd["layers.0.attention.to_q.weight"], "kernel_preference")
 
 
-def test_an_nvfp4_install_must_be_able_to_open_the_fp8_weights_too():
-    required = pq._SCHEME_REQUIRED_GLOBALS["nvfp4"]
-    assert pq._SCHEME_REQUIRED_GLOBALS["fp8"] <= required
-    assert "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor" in required
+def test_nvfp4_has_no_pickle_requirements_because_it_is_never_unpickled():
+    assert "nvfp4" not in pq._SCHEME_REQUIRED_GLOBALS
+    # fp8 / int8 keep their pickle requirements unchanged
+    assert {"int8", "fp8", "mxfp8"} <= set(pq._SCHEME_REQUIRED_GLOBALS)
 
 
 def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path):
@@ -2511,7 +2525,7 @@ def _nvfp4_repo_source():
     return PrequantSource(
         kind = "repo",
         location = "unsloth/Z-Image-Turbo-NVFP4",
-        filename = "Z-Image-Turbo-NVFP4.pt",
+        filename = "Z-Image-Turbo-NVFP4.safetensors",
     )
 
 
@@ -2642,7 +2656,7 @@ def test_a_readable_prequant_is_not_marked_unreachable(monkeypatch):
 
     def _listing(repo_id):
         return types.SimpleNamespace(
-            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.safetensors", size = 4096)]
         )
 
     backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
@@ -2658,7 +2672,7 @@ def test_local_only_treats_an_uncached_prequant_as_unreachable(monkeypatch):
 
     def _listing(repo_id):
         return types.SimpleNamespace(
-            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.safetensors", size = 4096)]
         )
 
     backend, tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
@@ -2678,7 +2692,7 @@ def test_a_readable_prequant_still_drops_the_dense_shards(monkeypatch):
 
     def _listing(repo_id):
         return types.SimpleNamespace(
-            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.safetensors", size = 4096)]
         )
 
     backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
@@ -2884,3 +2898,71 @@ def test_task_specific_artifacts_get_no_twin():
     )
     src = resolve_prequant_source(fam, "int8", task = "keyframe")
     assert src.candidate_filenames == ("Model-KF-INT8.safetensors",)
+
+
+def _qwen_int8_ckpt():
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"].update(
+        {
+            "family": "qwen-image",
+            "exclude_name_tokens": list(
+                exclude_tokens_for_scheme("int8", "qwen-image", baked = True)
+            ),
+            "min_features": 512,
+        }
+    )
+    return ckpt
+
+
+def test_load_tops_up_the_dense_text_stream_of_a_baked_artifact(monkeypatch, tmp_path):
+    import core.inference.diffusion_transformer_quant as tq
+
+    seen = []
+    monkeypatch.setattr(
+        tq,
+        "quantize_runtime_leftovers",
+        lambda transformer, scheme, family, baked, **kw: seen.append(
+            (scheme, family, list(baked), kw)
+        )
+        or 0,
+    )
+    ckpt = _qwen_int8_ckpt()
+    t = _load(monkeypatch, tmp_path, ckpt, scheme = "int8")
+    assert t is not None
+    assert len(seen) == 1
+    scheme, family, baked, kw = seen[0]
+    assert (scheme, family) == ("int8", "qwen-image")
+    assert baked == ckpt["metadata"]["exclude_name_tokens"]
+    assert kw["min_features"] == 512 and kw["device"] == "cuda"
+
+
+def test_load_survives_a_failed_top_up(monkeypatch, tmp_path):
+    import core.inference.diffusion_transformer_quant as tq
+
+    def boom(*a, **k):
+        raise RuntimeError("no torchao")
+
+    monkeypatch.setattr(tq, "quantize_runtime_leftovers", boom)
+    assert _load(monkeypatch, tmp_path, _qwen_int8_ckpt(), scheme = "int8") is not None
+
+
+def test_kill_switch_refuses_an_artifact_built_with_the_int8_text_stream(monkeypatch, tmp_path):
+    from core.inference.diffusion_transformer_quant import (
+        INT8_TEXT_STREAM_ENV,
+        exclude_tokens_for_scheme,
+    )
+
+    ckpt = _qwen_int8_ckpt()
+    from core.inference.diffusion_transformer_quant import int8_text_stream_scope
+
+    with int8_text_stream_scope(True):
+        ckpt["metadata"]["exclude_name_tokens"] = list(
+            exclude_tokens_for_scheme("int8", "qwen-image")
+        )
+        assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
+    monkeypatch.setenv(INT8_TEXT_STREAM_ENV, "0")
+    with int8_text_stream_scope(True):
+        assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None

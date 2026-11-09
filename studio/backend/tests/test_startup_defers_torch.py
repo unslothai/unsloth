@@ -266,9 +266,9 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, cap
 _OFFLOAD_REQUIRED = [
     ("main.py", "get_gpu_visibility", "get_backend_visible_gpu_info"),
     ("routes/training.py", "get_hardware_utilization", "get_gpu_utilization"),
-    ("routes/training.py", "start_training", "ensure_hardware_detected"),
+    ("routes/training.py", "_admit_training_request", "ensure_hardware_detected"),
     ("routes/export.py", "_ensure_export_supported", "export_capability"),
-    ("routes/models.py", "list_models", "get_inference_backend"),
+    # list_models only peeks now; test_ml_warmup_idle_runtime.py covers cold first paint.
     # get_status only peeks now; test_async_singleton_access.py guards it.
     ("routes/inference.py", "get_api_monitor", "_monitor_active_model"),
     ("routes/inference.py", "get_api_monitor", "_monitor_context_length"),

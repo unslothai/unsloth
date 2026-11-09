@@ -13,11 +13,11 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   Cancel01Icon,
-  Mic01Icon,
   PlusSignIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { MicIcon } from "@/lib/mic-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -46,7 +46,6 @@ import { VoicePicker } from "./voice-picker";
 import { Waveform } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
 
-/** The gallery clips an input card offers under From history. Provided by the page. */
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
 // False while the persistently mounted Audio page is hidden, so no card keeps the mic.
@@ -171,7 +170,6 @@ export function AudioSourceInput({
   onStatusChange?: (status: AudioSourceStatus) => void;
   renderWaveform?: (preview: AudioSourcePreviewView) => ReactNode;
   maxRecordSeconds?: number;
-  /** The card's copy defaults to a clone reference; other pages pass their own. */
   expiredMessage?: string;
   usesFirstSeconds?: number | null;
   recordHint?: string;
@@ -455,10 +453,11 @@ export function AudioSourceInput({
                     : void source.startRecording()
                 }
               >
-                <HugeiconsIcon
-                  icon={recording ? StopIcon : Mic01Icon}
-                  className="size-4"
-                />
+                {recording ? (
+                  <HugeiconsIcon icon={StopIcon} className="size-4" />
+                ) : (
+                  <MicIcon className="size-4" />
+                )}
                 {recording ? "Stop" : "Record"}
               </Button>
               <output

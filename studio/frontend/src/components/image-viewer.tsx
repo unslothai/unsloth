@@ -30,7 +30,6 @@ import { create } from "zustand";
 export type ViewerImage = {
   key: string;
   title: string;
-  /** File name for Download, with its extension; a function gets the loaded image's type. */
   fileName: string | ((contentType: string) => string);
   load: () => Promise<Blob>;
   /** Shown as is when `load` fails, e.g. a remote image whose host doesn't allow CORS reads. */
@@ -193,7 +192,6 @@ function ViewerBody() {
     if (size && image && zoom?.key !== image.key)
       setZoom({ key: image.key, value: fitZoom(), fit: true });
   });
-  // Fitted, the image follows the viewer's size: a window resize or rotation refits it.
   const fitted = Boolean(zoom?.fit && image && zoom.key === image.key);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refit only when fit mode or the image's size changes
   useEffect(() => {

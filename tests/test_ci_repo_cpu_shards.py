@@ -126,18 +126,41 @@ class TestEveryTestFileLandsInExactlyOneShard:
         )
 
 
+class TestEveryGlobRootMatchesAFile:
+    def test_no_shard_hands_pytest_an_unexpanded_pattern(self):
+        """bash passes a glob that matches nothing through as the literal pattern, and pytest
+        then fails the whole shard on a path that does not exist. A split that moved the last
+        file out of one of its globs would break that shard rather than drop the file."""
+        files = _test_files()
+        empty = [
+            (name, root)
+            for name, (roots, _) in _shards().items()
+            for root in roots
+            if "*" in root and not any(fnmatch.fnmatch(path, root) for path in files)
+        ]
+        assert not empty, f"these shard globs match no test file: {empty}"
+
+    def test_an_empty_glob_is_reported(self):
+        assert not any(
+            fnmatch.fnmatch(path, "tests/test_no_such_prefix_*.py") for path in _test_files()
+        )
+
+
 class TestTheSplitKeepsTheSelectionItInherited:
     def test_the_deselected_hub_tests_stay_deselected(self):
-        """Both hit huggingface_hub for live model existence checks. They live in a shard-3
-        file, so shard 3 is where the deselect has to be."""
-        selection = _selection_text()
+        """Both hit huggingface_hub for live model existence checks. The deselect only acts in
+        the shard that collects their file, so it is checked there, not anywhere in the matrix."""
+        owners = _claiming_shards("tests/test_model_registry.py", _shards())
+        assert len(owners) == 1, f"tests/test_model_registry.py is collected by {owners}"
+        selection = _selection_text(owners[0])
         for test_id in (
             "tests/test_model_registry.py::test_model_registration",
             "tests/test_model_registry.py::test_all_model_registration",
         ):
-            assert (
-                f"--deselect {test_id}" in selection
-            ), f"{test_id} reaches the network and must stay deselected"
+            assert f"--deselect {test_id}" in selection, (
+                f"{test_id} reaches the network and must stay deselected in {owners[0]}, the "
+                "shard that runs its file"
+            )
 
     def test_every_shard_keeps_the_marker_filter(self):
         """`server` needs a studio venv and `e2e` needs the network. The filter is on the
@@ -163,10 +186,11 @@ class TestTheGuardIsNotVacuous:
         assert _claiming_shards("tests/studio/test_two_owners.py", broken) == ["one", "two"]
 
 
-def _selection_text() -> str:
+def _selection_text(shard: str | None = None) -> str:
     return " ".join(
         " ".join(entry["selection"].split())
         for entry in _backend_ci()["jobs"]["repo-cpu-tests"]["strategy"]["matrix"]["include"]
+        if shard is None or entry["shard"] == shard
     )
 
 

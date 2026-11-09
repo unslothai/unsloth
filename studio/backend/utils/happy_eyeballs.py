@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""RFC 8305 Happy Eyeballs for sync connects.
-
-``socket.create_connection`` applies ``timeout`` per resolved address, so a black-holed
-family (VPN without IPv6) costs one timeout per address (python/cpython#88810). httpx's
-sync backend and ``http.client`` call it; ``requests`` does not (urllib3 2.x has its own
-loop). Spawned children must re-activate, like :mod:`utils.native_tls`.
-"""
+"""RFC 8305 for sync connects, since create_connection waits a full timeout per black-holed address;
+spawned children must re-activate, like utils.native_tls"""
 
 from __future__ import annotations
 
@@ -199,8 +194,7 @@ def happy_eyeballs_connection(
         exceptions.append(socket.timeout("timed out"))
     if all_errors and _HAS_EXCEPTION_GROUP:
         raise ExceptionGroup("create_connection failed", exceptions)  # novermin
-    # Like the stdlib, the last address in resolver order decides the error:
-    # hf_tcp_reachable reads ECONNREFUSED as "the endpoint answered".
+    # Like the stdlib, the last address decides the error; hf_tcp_reachable reads ECONNREFUSED as up.
     raise failed.get(infos[-1][4]) or socket.timeout("timed out")
 
 

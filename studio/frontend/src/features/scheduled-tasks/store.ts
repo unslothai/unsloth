@@ -42,7 +42,7 @@ interface ScheduledTasksState {
   create: (input: ScheduledTaskInput) => Promise<ScheduledTask>;
   update: (id: string, patch: ScheduledTaskPatch) => Promise<ScheduledTask>;
   remove: (id: string) => Promise<void>;
-  runNow: (id: string) => Promise<void>;
+  runNow: (id: string, loadModel?: boolean) => Promise<void>;
 }
 
 let refreshGeneration = 0;
@@ -130,9 +130,9 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
       // Its chat survives but the run record went with the task, so the results poll never reports it.
       notifyChatHistoryUpdated();
     },
-    runNow: async (id) => {
+    runNow: async (id, loadModel = false) => {
       await write(
-        () => runScheduledTaskNow(id),
+        () => runScheduledTaskNow(id, loadModel),
         (run) =>
           set((state) => ({
             tasks: state.tasks.map((task) =>

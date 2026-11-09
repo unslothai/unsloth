@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Text generation for text-diffusion LMs: one sampler per DiffusionProfile name, each the family's published
-decoding recipe. Families shipping a sampler in their modeling code (Dream, LLaDA2, Nemotron-Labs-Diffusion,
-DiffusionGemma) are called as is; LLaDA / LLaDA-MoE and SDAR samplers live in separate scripts upstream and are
-re-implemented here."""
+"""Dream, LLaDA2, Nemotron-Labs-Diffusion, DiffusionGemma call samplers; LLaDA/SDAR re-implemented."""
 
 import contextlib
 import math

@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+"""An offloaded Wan2.2-T2V-A14B int8 load reads the hosted torchao W8A8 pickle pair as native Linears through
+main's hosted reader (``diffusion_native_hosted``) instead of fetching and quantising both dense experts."""
+
 from __future__ import annotations
 
 import contextlib
@@ -23,7 +26,9 @@ if str(BACKEND) not in sys.path:
 from core.inference import diffusion_prequant as pq  # noqa: E402
 from core.inference import diffusion_transformer_quant as tq  # noqa: E402
 from core.inference import prequant_legacy_int8 as li  # noqa: E402
-from core.inference import video_hosted_int8_native as hn  # noqa: E402
+from core.inference import diffusion_native_hosted as NH  # noqa: E402
+from core.inference import video as V  # noqa: E402
+from core.inference.diffusion_native_cache import native_spec  # noqa: E402
 from core.inference.diffusion_native_quant import is_native_linear  # noqa: E402
 from core.inference.video_families import detect_video_family  # noqa: E402
 
@@ -203,41 +208,45 @@ def dense_expert(seed: int):
     return diffusers.WanTransformer3DModel(**tiny_config()).to(torch.bfloat16).eval()
 
 
+def _spec():
+    return native_spec("int8", FAMILY, act_int8 = True)
+
+
 @pytest.fixture
-def hosted(tmp_path, monkeypatch):
+def hosted(tmp_path):
     files, written, dense = {}, {}, {}
+    cfg = tmp_path / "base"
     for seed, component in enumerate(COMPONENTS):
         dense[component] = dense_expert(seed)
+        dense[component].save_config(str(cfg / component))
         path = tmp_path / f"{component}.pt"
         written[component] = write_hosted_v1(dense[component], path, component = component)
         files[component] = str(path)
-    config = dict(tiny_config())
-    monkeypatch.setattr(pq, "hosted_prequant_refusal", lambda *a, **k: None)
-    monkeypatch.setattr(
-        pq,
-        "_resolve_checkpoint_path",
-        lambda source, *a, **k: files[getattr(source, "filename", None) or "transformer"],
-    )
-    monkeypatch.setattr(pq, "_load_transformer_config", lambda *a, **k: dict(config))
-    return types.SimpleNamespace(files = files, written = written, dense = dense)
+    return types.SimpleNamespace(files = files, written = written, dense = dense, cfg = str(cfg))
 
 
-def _source(component):
-    return pq.PrequantSource(
-        kind = "repo", location = "unsloth/Wan2.2-T2V-A14B-FP8", filename = component
-    )
-
-
-def _load(component):
-    return hn.load_hosted_int8_native(
-        diffusers.WanTransformer3DModel, BASE, _source(component), component = component
+def _load(
+    hosted,
+    component,
+    *,
+    base = BASE,
+    spec = None,
+):
+    return NH.load_native_from_hosted(
+        hosted.files[component],
+        diffusers.WanTransformer3DModel,
+        hosted.cfg,
+        spec = spec or _spec(),
+        family = FAMILY,
+        component = component,
+        base = base,
     )
 
 
 @needs_decoder
 @pytest.mark.parametrize("component", COMPONENTS)
 def test_hosted_codes_and_scales_are_held_bit_for_bit(hosted, component):
-    model = _load(component)
+    model = _load(hosted, component)
     assert model is not None
     layers = {n: m for n, m in model.named_modules() if is_native_linear(m)}
     assert set(layers) == set(hosted.written[component])
@@ -256,7 +265,7 @@ def test_hosted_codes_and_scales_are_held_bit_for_bit(hosted, component):
 
 @needs_decoder
 def test_the_experts_stay_distinct(hosted):
-    a, b = _load("transformer"), _load("transformer_2")
+    a, b = _load(hosted, "transformer"), _load(hosted, "transformer_2")
     qa = dict(a.named_buffers())["blocks.0.attn1.to_q.weight_q"]
     qb = dict(b.named_buffers())["blocks.0.attn1.to_q.weight_q"]
     assert not torch.equal(qa, qb)
@@ -264,7 +273,7 @@ def test_the_experts_stay_distinct(hosted):
 
 @needs_decoder
 def test_forward_tracks_the_dense_expert(hosted):
-    model = _load("transformer")
+    model = _load(hosted, "transformer")
     g = torch.Generator().manual_seed(7)
     hidden = torch.randn(1, 4, 3, 8, 8, generator = g).to(torch.bfloat16)
     text = torch.randn(1, 6, 64, generator = g).to(torch.bfloat16)
@@ -278,23 +287,28 @@ def test_forward_tracks_the_dense_expert(hosted):
 
 
 @needs_decoder
-def test_a_rotated_checkpoint_is_refused(hosted, tmp_path, monkeypatch):
-    from core.inference import diffusion_convrot
-
-    monkeypatch.setattr(diffusion_convrot, "declares_rotation", lambda meta: True)
-    monkeypatch.setattr(pq, "_validate_checkpoint", lambda *a, **k: True)
-    assert _load("transformer") is None
+def test_a_rotated_pickle_is_refused(hosted):
+    from core.inference.diffusion_convrot import CONVROT_KIND, ROTATION_KEY
+    write_hosted_v1(
+        hosted.dense["transformer"],
+        Path(hosted.files["transformer"]),
+        component = "transformer",
+        metadata = {ROTATION_KEY: CONVROT_KIND},
+    )
+    assert _load(hosted, "transformer") is None
 
 
 @needs_decoder
-def test_a_wrong_base_is_refused(hosted, tmp_path):
+def test_a_wrong_base_or_component_is_refused(hosted):
     path = Path(hosted.files["transformer"])
     write_hosted_v1(hosted.dense["transformer"], path, component = "transformer", base = "someone/else")
-    assert _load("transformer") is None
+    assert _load(hosted, "transformer") is None
+    write_hosted_v1(hosted.dense["transformer"], path, component = "transformer_2")
+    assert _load(hosted, "transformer") is None
 
 
 @needs_decoder
-def test_an_asymmetric_weight_fails_the_load(hosted, tmp_path):
+def test_an_asymmetric_weight_is_refused(hosted):
     path = Path(hosted.files["transformer"])
     n = hosted.dense["transformer"].blocks[0].attn1.to_q.out_features
     write_hosted_v1(
@@ -303,14 +317,37 @@ def test_an_asymmetric_weight_fails_the_load(hosted, tmp_path):
         component = "transformer",
         zero_point = torch.ones(n, dtype = torch.int8),
     )
-    assert _load("transformer") is None
+    assert _load(hosted, "transformer") is None
 
 
-def test_a_local_path_source_is_never_served():
-    src = pq.PrequantSource(kind = "path", location = "/tmp/x.pt", filename = None)
+@needs_decoder
+def test_a_layer_set_other_than_the_native_builds_is_refused(hosted):
+    spec = dict(_spec())
+    spec["exclude_name_tokens"] = sorted(set(spec["exclude_name_tokens"]) | {"ffn"})
+    assert _load(hosted, "transformer", spec = spec) is None
+
+
+@needs_decoder
+def test_a_weight_only_native_build_or_stubbed_torchao_is_refused(hosted, monkeypatch):
+    assert _load(hosted, "transformer", spec = native_spec("int8", FAMILY, act_int8 = False)) is None
+    import core._torchao_stub as stub
+
+    monkeypatch.setattr(stub, "is_stubbed", lambda name: True)
+    assert _load(hosted, "transformer") is None
+
+
+def test_an_unreadable_pickle_never_raises(tmp_path):
+    bad = tmp_path / "x.pt"
+    bad.write_bytes(b"not a checkpoint")
     assert (
-        hn.load_hosted_int8_native(
-            diffusers.WanTransformer3DModel, BASE, src, component = "transformer"
+        NH.load_native_from_hosted(
+            str(bad),
+            diffusers.WanTransformer3DModel,
+            str(tmp_path),
+            spec = _spec(),
+            family = FAMILY,
+            component = "transformer",
+            base = BASE,
         )
         is None
     )
@@ -336,9 +373,9 @@ def _int8_tensor(
 
 @needs_decoder
 def test_weight_parts_read_int8tensor_and_refuse_what_they_cannot_describe():
-    assert hn.int8_weight_parts("w", torch.ones(2, 2)) is None
-    codes, scale, dtype = hn.int8_weight_parts("w", _int8_tensor())
-    assert codes.dtype == torch.int8 and scale.shape == (8,) and dtype == torch.bfloat16
+    assert NH.int8_weight_parts("w", torch.ones(2, 2)) is None
+    codes, scale = NH.int8_weight_parts("w", _int8_tensor())
+    assert codes.dtype == torch.int8 and scale.shape == (8,)
     for extra in (
         {"act_quant_kwargs": None},
         {"act_pre_scale": torch.ones(32)},
@@ -347,146 +384,114 @@ def test_weight_parts_read_int8tensor_and_refuse_what_they_cannot_describe():
         {"block_size": [1, 16]},
     ):
         with pytest.raises(ValueError):
-            hn.int8_weight_parts("w", _int8_tensor(**extra))
+            NH.int8_weight_parts("w", _int8_tensor(**extra))
+
+
+@needs_decoder
+def test_the_loader_reads_both_experts_all_or_nothing(hosted, monkeypatch):
+    from core.inference import video_denoiser_prequant as vdp
+
+    sources = {c: _source(c) for c in COMPONENTS}
+    monkeypatch.setattr(vdp, "denoiser_prequant_sources", lambda *a, **k: dict(sources))
+    monkeypatch.setattr(
+        pq, "_resolve_checkpoint_path", lambda src, *a, **k: hosted.files[src.filename]
+    )
+    out = V._read_native_quant_from_hosted(
+        _family(), _spec(), base = BASE, source = hosted.cfg, config_kwargs = {}
+    )
+    assert set(out) == set(COMPONENTS)
+    assert all(any(is_native_linear(m) for m in mod.modules()) for mod in out.values())
+    Path(hosted.files["transformer_2"]).write_bytes(b"not a checkpoint")
+    assert (
+        V._read_native_quant_from_hosted(
+            _family(), _spec(), base = BASE, source = hosted.cfg, config_kwargs = {}
+        )
+        == {}
+    )
+
+
+def _source(component):
+    return pq.PrequantSource(
+        kind = "repo", location = "unsloth/Wan2.2-T2V-A14B-FP8", filename = component
+    )
 
 
 @pytest.fixture
 def nvidia(monkeypatch):
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
     monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
-    monkeypatch.delenv(hn.HOSTED_INT8_OFFLOAD_ENV, raising = False)
+    monkeypatch.delenv(NH.NATIVE_HOSTED_ENV, raising = False)
     monkeypatch.delenv("UNSLOTH_NATIVE_INT8_ACT", raising = False)
 
 
 CUDA_BF16 = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
 
 
+def test_a14b_opts_in_as_a_pickle_family():
+    fam = _family()
+    assert NH.native_hosted_family(fam) and NH.native_hosted_pickle(fam)
+    ltx = detect_video_family("Lightricks/LTX-2.5-Diffusers", override = "ltx-2.5")
+    assert ltx is not None and NH.native_hosted_family(ltx) and not NH.native_hosted_pickle(ltx)
+    ti2v = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers", override = "wan2.2-ti2v-5b")
+    assert ti2v is not None and not NH.native_hosted_family(ti2v)
+
+
 @pytest.mark.parametrize(
-    "family, scheme, target, env, act, expect",
+    "scheme, target, env, act, expect",
     [
-        (FAMILY, "int8", CUDA_BF16, None, None, True),
-        (FAMILY, "INT8", CUDA_BF16, None, None, True),
-        (FAMILY, "int8", CUDA_BF16, "0", None, False),
-        (FAMILY, "int8", CUDA_BF16, "off", None, False),
-        (FAMILY, "int8", CUDA_BF16, None, "0", False),
-        (FAMILY, "fp8", CUDA_BF16, None, None, False),
-        (FAMILY, "nvfp4", CUDA_BF16, None, None, False),
-        ("wan2.2-ti2v-5b", "int8", CUDA_BF16, None, None, False),
-        (
-            FAMILY,
-            "int8",
-            types.SimpleNamespace(device = "cuda", dtype = torch.float16),
-            None,
-            None,
-            False,
-        ),
-        (
-            FAMILY,
-            "int8",
-            types.SimpleNamespace(device = "mps", dtype = torch.bfloat16),
-            None,
-            None,
-            False,
-        ),
+        ("int8", CUDA_BF16, None, None, "int8"),
+        ("int8", CUDA_BF16, "0", None, None),
+        ("int8", CUDA_BF16, None, "0", None),
+        ("fp8", CUDA_BF16, None, None, None),
+        ("nvfp4", CUDA_BF16, None, None, None),
+        ("int8", types.SimpleNamespace(device = "cuda", dtype = torch.float16), None, None, None),
+        ("int8", types.SimpleNamespace(device = "mps", dtype = torch.bfloat16), None, None, None),
     ],
 )
-def test_eligibility(nvidia, monkeypatch, family, scheme, target, env, act, expect):
+def test_the_hosted_scheme_gate(nvidia, monkeypatch, scheme, target, env, act, expect):
     if env is not None:
-        monkeypatch.setenv(hn.HOSTED_INT8_OFFLOAD_ENV, env)
+        monkeypatch.setenv(NH.NATIVE_HOSTED_ENV, env)
     if act is not None:
         monkeypatch.setenv("UNSLOTH_NATIVE_INT8_ACT", act)
-    fam = detect_video_family(BASE, override = FAMILY)
-    fam = types.SimpleNamespace(
-        name = family, modular_workflow = getattr(fam, "modular_workflow", None)
-    )
-    assert hn.hosted_int8_offload_eligible(fam, scheme, target) is expect
+    assert V._video_native_hosted_scheme(_family(), scheme, target) == expect
 
 
 @pytest.mark.parametrize("rocm, stubbed", [(True, False), (False, True)])
 @pytest.mark.parametrize("act", [None, "1"])
-def test_rocm_and_stubbed_torchao_are_not_eligible(monkeypatch, rocm, stubbed, act):
-    # The real native_quant_host: it accepts these hosts, and UNSLOTH_NATIVE_INT8_ACT=1 makes them W8A8.
+def test_rocm_and_stubbed_torchao_do_not_read_the_pickle(monkeypatch, rocm, stubbed, act):
+    # native_quant_host accepts these hosts (UNSLOTH_NATIVE_INT8_ACT=1 makes them W8A8); the pickle needs torchao.
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: rocm)
     monkeypatch.setattr(tq, "is_stubbed", lambda name: stubbed)
-    monkeypatch.delenv(hn.HOSTED_INT8_OFFLOAD_ENV, raising = False)
+    monkeypatch.delenv(NH.NATIVE_HOSTED_ENV, raising = False)
     if act is None:
         monkeypatch.delenv("UNSLOTH_NATIVE_INT8_ACT", raising = False)
     else:
         monkeypatch.setenv("UNSLOTH_NATIVE_INT8_ACT", act)
     assert tq.native_quant_host(CUDA_BF16)
-    assert not hn.hosted_int8_offload_eligible(_family(), "int8", CUDA_BF16)
+    assert V._video_native_hosted_scheme(_family(), "int8", CUDA_BF16) is None
 
 
-def test_a_full_native_cache_keeps_the_cached_build(nvidia, monkeypatch):
-    from core.inference import diffusion_native_cache as NC
-
-    hits = {"transformer": "/c/a", "transformer_2": "/c/b"}
-    monkeypatch.setattr(NC, "lookup", lambda fam, spec, component, **k: hits.get(component))
-    assert hn.native_cache_covers(_family(), CUDA_BF16, BASE)
-    assert not hn.hosted_int8_offload_ok(_family(), "int8", CUDA_BF16, BASE)
-    hits.pop("transformer_2")
-    assert not hn.native_cache_covers(_family(), CUDA_BF16, BASE)
-    assert hn.hosted_int8_offload_ok(_family(), "int8", CUDA_BF16, BASE)
-
-
-def _planner(monkeypatch, *, offloads: bool, eligible: bool):
-    from core.inference import video as V
-
+@pytest.mark.parametrize(
+    "offloads, expect, hosted", [(True, "declined", ["int8"]), (False, "int8", [])]
+)
+def test_planner_stages_the_hosted_pair_under_offload(
+    nvidia, monkeypatch, offloads, expect, hosted
+):
     target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 0)
     monkeypatch.setattr(V, "resolve_diffusion_device_target", lambda **k: target)
     monkeypatch.setattr(V, "_video_auto_denoiser_scheme", lambda fam, **k: "int8")
     monkeypatch.setattr(V, "_auto_seed_yields_to_resident_bf16", lambda *a: False)
     monkeypatch.setattr(V, "_video_seed_stays_resident", lambda fam, **k: not offloads)
-    monkeypatch.setattr(hn, "hosted_int8_offload_ok", lambda *a: eligible)
     backend = V.VideoBackend.__new__(V.VideoBackend)
     backend._state = None
-    return backend._video_planned_auto_denoiser_scheme(
-        _family(), base = BASE, kind = "pipeline", transformer_quant = "int8", speed_mode = None
-    )
-
-
-@pytest.mark.parametrize(
-    "offloads, eligible, expect",
-    [
-        (True, True, "int8"),
-        (True, False, "__declined__"),
-        (False, True, "int8"),
-        (False, False, "int8"),
-    ],
-)
-def test_planner_routing(monkeypatch, offloads, eligible, expect):
-    from core.inference import video as V
-    got = _planner(monkeypatch, offloads = offloads, eligible = eligible)
-    assert got == (V.DENOISER_SEED_DECLINED if expect == "__declined__" else expect)
-
-
-@needs_decoder
-def test_pipe_kwargs_seed_native_experts_all_or_nothing(hosted, monkeypatch):
-    from core.inference import video_denoiser_prequant as vdp
-
-    sources = {c: _source(c) for c in COMPONENTS}
-    monkeypatch.setattr(vdp, "denoiser_prequant_sources", lambda *a, **k: dict(sources))
-    seeded = vdp.denoiser_prequant_pipe_kwargs(
+    out: list = []
+    got = backend._video_planned_auto_denoiser_scheme(
         _family(),
-        BASE,
-        scheme = "int8",
-        dtype = torch.bfloat16,
-        device = "cuda",
-        target = CUDA_BF16,
-        native_offload = True,
+        base = BASE,
+        kind = "pipeline",
+        transformer_quant = "int8",
+        speed_mode = None,
+        native_hosted = out,
     )
-    assert set(seeded) == set(COMPONENTS)
-    assert all(any(is_native_linear(m) for m in mod.modules()) for mod in seeded.values())
-    Path(hosted.files["transformer_2"]).write_bytes(b"not a checkpoint")
-    assert (
-        vdp.denoiser_prequant_pipe_kwargs(
-            _family(),
-            BASE,
-            scheme = "int8",
-            dtype = torch.bfloat16,
-            device = "cuda",
-            target = CUDA_BF16,
-            native_offload = True,
-        )
-        == {}
-    )
+    assert got == (V.DENOISER_SEED_DECLINED if expect == "declined" else expect)
+    assert out == hosted

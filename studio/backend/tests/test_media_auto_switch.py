@@ -425,6 +425,85 @@ def test_a_video_refusal_carries_a_plain_detail(catalog, enabled, loads):
     assert isinstance(excinfo.value.detail, str)
 
 
+@pytest.mark.parametrize("takes_the_gpu, evicts", [(True, True), (True, False), (False, True)])
+def test_a_chat_tools_key_switches_media_only_when_the_chat_model_stays(
+    flux, enabled, loads, monkeypatch, takes_the_gpu, evicts
+):
+    from dataclasses import replace
+
+    from utils.account_context import OWNER, run_as
+
+    key = replace(OWNER, via_api_key = True, load_policy = "beside_only")
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: takes_the_gpu)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: takes_the_gpu)
+    monkeypatch.setattr(arb, "would_evict", lambda owner, **_kw: evicts)
+    problem, refused = "", takes_the_gpu and evicts
+    try:
+        run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
+    except HTTPException as exc:
+        problem = exc.headers["X-Unsloth-Problem"]
+    assert problem.startswith("needs_user_load kind=image") == refused and len(loads) == 1 - refused
+
+
+@pytest.mark.parametrize(
+    "key_policy, parent_counted, chats, switched",
+    [
+        ("beside_only", True, 1, True),  # the one counted chat is the caller's own
+        ("beside_only", True, 2, False),  # another chat is still busy
+        (
+            "beside_only",
+            False,
+            1,
+            False,
+        ),  # an external-provider parent is not counted: the 1 is someone else
+        ("any", True, 1, False),
+    ],
+)
+def test_a_chat_tools_switch_does_not_wait_on_the_chat_that_called_it(
+    flux, enabled, loads, monkeypatch, key_policy, parent_counted, chats, switched
+):
+    from dataclasses import replace
+
+    from core.inference import load_policy
+    from utils.account_context import OWNER, run_as
+
+    key = replace(OWNER, via_api_key = True, load_policy = key_policy, key_id = 41)
+    if parent_counted:
+        load_policy.note_counted_parent(41)
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.2)
+    monkeypatch.setattr(arb, "would_evict", lambda owner, **_kw: False)
+    monkeypatch.setattr(chat, "other_inference_request_count", lambda **kw: chats)
+    try:
+        run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
+        problem = ""
+    except HTTPException as exc:
+        problem = (exc.headers or {}).get("X-Unsloth-Problem", str(exc.detail))
+    finally:
+        load_policy.forget_counted_parent(41)
+    assert (len(loads) == 1) == switched, problem
+
+
+def test_a_chat_model_that_lands_before_the_gates_still_refuses_a_chat_tools_switch(
+    flux, enabled, loads, monkeypatch, takes_the_gpu
+):
+    from dataclasses import replace
+
+    from utils.account_context import OWNER, run_as
+
+    key = replace(OWNER, via_api_key = True, load_policy = "beside_only")
+    # The precheck sees no chat model; one is resident by the time the media gates are held.
+    checks: list = []
+    monkeypatch.setattr(
+        arb, "would_evict", lambda owner, **_kw: checks.append(owner) or len(checks) > 1
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
+    assert excinfo.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=image")
+    assert loads == [] and len(checks) == 2
+
+
 @pytest.mark.parametrize("resident", ["repo id", "path"])
 def test_a_resident_model_is_not_reloaded(flux, enabled, backend, loads, resident):
     backend.repo_id = "black-forest-labs/FLUX.1-dev" if resident == "repo id" else str(flux)
@@ -2600,6 +2679,40 @@ def test_a_downloaded_retired_flux3_copy_switches_to_the_base_it_copies(
     # Resident as the base: the same request is answered without another load.
     _switch("unsloth/flux-3-image-klein")
     assert len(loads) == 1
+
+
+def test_a_complete_downloaded_retired_flux3_copy_switches_to_itself(
+    catalog, enabled, backend, loads, tmp_path
+):
+    # A copy complete on disk loads from disk (the load route keeps it too): its base's mirror may not be cached, and
+    # offline it could not be fetched, so the switch neither plans nor waits for it.
+    snapshot = tmp_path / "models--unsloth--flux-3-image-klein" / "snapshots" / "abc"
+    for name, data in {
+        "modular_model_index.json": '{"_class_name": "Flux3ModularPipeline"}',
+        "text_encoder/config.json": "{}",
+        "text_encoder/model.safetensors": "x",
+        "text_encoder/processor_config.json": "{}",
+        "text_encoder/tokenizer.json": "{}",
+        "transformer/config.json": "{}",
+        "transformer/diffusion_pytorch_model.safetensors": "x",
+        "vae/config.json": "{}",
+        "vae/diffusion_pytorch_model.safetensors": "x",
+    }.items():
+        (snapshot / name).parent.mkdir(parents = True, exist_ok = True)
+        (snapshot / name).write_text(data)
+    catalog.append(_info("unsloth/flux-3-image-klein", snapshot, task = mas.IMAGE_TASK))
+    planned: list = []
+
+    def _plan(model_path, **kwargs):
+        planned.append(model_path)
+        return {"total_bytes": 5_000}
+
+    backend.download_plan = _plan
+    _switch("unsloth/flux-3-image-klein")
+    assert [(p.model_id, p.model_path) for _owner, p in loads] == [
+        ("unsloth/flux-3-image-klein", str(snapshot))
+    ]
+    assert "black-forest-labs/flux-3-image-klein" not in planned
 
 
 def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(

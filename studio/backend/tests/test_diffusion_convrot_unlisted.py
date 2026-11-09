@@ -35,14 +35,20 @@ def _clean(monkeypatch):
     cq._UNLISTED_DEVICE.clear()
     cq._UNLISTED_TIMING.clear()
     cq._UNLISTED_PROBE.clear()
+    cq._UNLISTED_SWIGLU.clear()
     saved = dict(cq._H16_DEVICE)
+    saved_sw = dict(cq._SWIGLU_DEVICE)
     cq._H16_DEVICE.clear()  # a real-card verdict from an earlier test file must not leak in
+    cq._SWIGLU_DEVICE.clear()
     yield
     cq._UNLISTED_DEVICE.clear()
     cq._UNLISTED_TIMING.clear()
     cq._UNLISTED_PROBE.clear()
+    cq._UNLISTED_SWIGLU.clear()
     cq._H16_DEVICE.clear()
     cq._H16_DEVICE.update(saved)
+    cq._SWIGLU_DEVICE.clear()
+    cq._SWIGLU_DEVICE.update(saved_sw)
 
 
 @pytest.mark.parametrize(
@@ -334,3 +340,52 @@ def test_compiled_no_graph_break_no_recompile_and_cuda_graph(armed):
     graph.replay()
     torch.cuda.synchronize()
     assert torch.equal(out, fn(static))
+
+
+def _swiglu_fakes(
+    monkeypatch,
+    timing,
+    sw = True,
+):
+    _fake_device(monkeypatch, (8, 6))
+    monkeypatch.setattr(cq, "_h16_probe", lambda index: "ieee")
+    monkeypatch.setattr(cq, "_unlisted_latency", lambda index, tf32x3, stock = None: timing)
+    monkeypatch.setattr(cq, "_swiglu_op", lambda: "swiglu")
+    monkeypatch.setattr(cq, "_SWIGLU_HANDLE", None)
+    probes = []
+    monkeypatch.setattr(cq, "_swiglu_probe", lambda index: probes.append(index) or sw)
+    return probes
+
+
+@pytest.mark.parametrize("sw", [True, False])
+def test_unlisted_card_probes_the_swiglu_prologue_once(monkeypatch, sw):
+    probes = _swiglu_fakes(monkeypatch, {"h16": 10.0, "stock": 20.0}, sw = sw)
+    assert cq.unlisted_device_ok(0)
+    assert cq.unlisted_device_ok(0)
+    assert probes == [0]  # once per device
+    assert cq._SWIGLU_DEVICE[0] is sw
+    assert (cq._SWIGLU_HANDLE == "swiglu") is sw
+
+
+def test_swiglu_prologue_needs_the_latency_check(monkeypatch):
+    probes = _swiglu_fakes(monkeypatch, {"h16": 30.0, "stock": 20.0})
+    assert not cq.unlisted_device_ok(0)
+    assert probes == [] and not cq._SWIGLU_DEVICE.get(0)
+
+
+def test_swiglu_kill_switch_skips_the_prologue_probe(monkeypatch):
+    monkeypatch.setenv(cq.INT8_ROTQUANT_SWIGLU_ENV, "0")
+    probes = _swiglu_fakes(monkeypatch, {"h16": 10.0, "stock": 20.0})
+    assert cq.unlisted_device_ok(0)
+    assert probes == [] and cq._SWIGLU_DEVICE[0] is False
+
+
+def test_failed_swiglu_probe_keeps_rotq_h16(monkeypatch):
+    _swiglu_fakes(monkeypatch, {"h16": 10.0, "stock": 20.0})
+
+    def boom(index):
+        raise RuntimeError("compile failed")
+
+    monkeypatch.setattr(cq, "_swiglu_probe", boom)
+    assert cq.unlisted_device_ok(0)
+    assert cq._H16_DEVICE[0] == "ieee" and cq._SWIGLU_DEVICE[0] is False

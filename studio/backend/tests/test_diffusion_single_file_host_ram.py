@@ -328,9 +328,9 @@ def test_fp8_widen_chosen_only_when_the_rule_had_the_choice(monkeypatch):
     mps = type("T", (), {"device": "mps", "dtype": torch.bfloat16})()
     room = dict(widened_mib = _KREA2_WIDENED_MIB, host_available_mib = 29 * _GIB)
     assert cq.fp8_widen_chosen(cuda, **room) is True
-    # no fp8 storage option: LoRA, MPS, offload forces storage, unknown sizes, crowded host (stores instead)
+    # no fp8 storage option: LoRA, offload forces storage, unknown sizes, crowded host (stores instead)
     assert cq.fp8_widen_chosen(cuda, lora = True, **room) is False
-    assert cq.fp8_widen_chosen(mps, **room) is False
+    assert cq.fp8_widen_chosen(mps, **room) is True
     assert cq.fp8_widen_chosen(cuda, offload = True, **room) is False
     assert cq.fp8_widen_chosen(cuda, widened_mib = _KREA2_WIDENED_MIB) is False
     assert (

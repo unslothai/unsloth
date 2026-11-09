@@ -220,3 +220,226 @@ def test_generated_reduction_syncs_before_the_reload(tmp_path):
     patched = run("patched")
     assert patched.returncode == 0, patched.stderr[-3000:]
     assert patched.stdout.strip().splitlines()[-1] == "BARRIER"
+
+
+def _user_pass_class(base_name = "CustomGraphPass"):
+    custom_graph_pass = pytest.importorskip("torch._inductor.custom_graph_pass")
+    base = getattr(custom_graph_pass, base_name, None)
+    if base is None:
+        pytest.skip(f"torch has no {base_name}")
+
+    class UserPass(base):
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, graph, *args, **kwargs):
+            self.calls.append((graph, args, kwargs))
+
+        def uuid(self):
+            return "user-pass-v1"
+
+    return UserPass
+
+
+def _install_with(monkeypatch, existing):
+    from torch._inductor import config as inductor_config
+    from torch._inductor.codegen import triton as triton_codegen
+
+    monkeypatch.setattr(triton_codegen, "TritonKernel", _fake_kernel_class())
+    monkeypatch.setattr(inductor_config, "post_grad_custom_post_pass", existing)
+    fixes = _load_fixes("unsloth_import_fixes_readback_keyed")
+    fixes.fix_inductor_reduction_readback_race()
+    return fixes, inductor_config
+
+
+def test_a_user_custom_graph_pass_keys_the_cache_on_the_barrier_too(monkeypatch):
+    """A pre-set CustomGraphPass must carry the marker in its uuid and still run."""
+    from torch._inductor.custom_graph_pass import CustomGraphPass
+
+    user = _user_pass_class()()
+    fixes, inductor_config = _install_with(monkeypatch, user)
+    keyed = inductor_config.post_grad_custom_post_pass
+    # torch keeps the cache only for CustomGraphPass instances with a truthy uuid.
+    assert isinstance(keyed, CustomGraphPass) and keyed.uuid()
+    assert keyed.uuid() != user.uuid()
+    assert keyed.uuid() == ("unsloth-inductor-readback-barrier-v1", "user-pass-v1")
+    graph = object()
+    keyed(graph)
+    assert user.calls == [(graph, (), {})]
+    # Idempotent: no re-wrap.
+    fixes._key_inductor_caches_on_readback_barrier(inductor_config, CustomGraphPass)
+    assert inductor_config.post_grad_custom_post_pass is keyed
+
+
+def test_an_inference_aware_user_pass_still_gets_is_inference(monkeypatch):
+    user = _user_pass_class("CustomInferenceAwareGraphPass")()  # skips on torch without it
+    from torch._inductor.custom_graph_pass import CustomInferenceAwareGraphPass
+
+    _, inductor_config = _install_with(monkeypatch, user)
+    keyed = inductor_config.post_grad_custom_post_pass
+    # post_grad.py passes is_inference only to CustomInferenceAwareGraphPass instances.
+    assert isinstance(keyed, CustomInferenceAwareGraphPass)
+    keyed("g", is_inference = True)
+    assert user.calls == [("g", (), {"is_inference": True})]
+
+
+def test_a_list_of_user_passes_gets_the_marker_appended(monkeypatch):
+    user = _user_pass_class()()
+    _, inductor_config = _install_with(monkeypatch, [user])
+    passes = inductor_config.post_grad_custom_post_pass
+    assert isinstance(passes, list) and passes[0] is user
+    assert [p.uuid() for p in passes] == ["user-pass-v1", "unsloth-inductor-readback-barrier-v1"]
+
+
+def test_a_raw_callable_user_pass_is_left_alone(monkeypatch):
+    # torch bypasses the FX cache for raw callables; wrapping one would make it cacheable unkeyed.
+    def raw(graph):
+        return None
+
+    _, inductor_config = _install_with(monkeypatch, raw)
+    assert inductor_config.post_grad_custom_post_pass is raw
+
+
+_CACHE_RUNNER = textwrap.dedent(
+    """
+    import importlib.util, json, sys, torch
+    from torch._inductor import config
+    from torch._inductor.custom_graph_pass import CustomGraphPass
+    from torch._dynamo.utils import counters
+
+    class UserPass(CustomGraphPass):
+        def __call__(self, graph):
+            return None
+
+        def uuid(self):
+            return "user-pass-v1"
+
+    config.post_grad_custom_post_pass = UserPass()
+    if sys.argv[1] == "patched":
+        spec = importlib.util.spec_from_file_location("fixes", sys.argv[2])
+        fixes = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixes)
+        fixes._key_inductor_caches_on_readback_barrier(config, CustomGraphPass)
+    torch.compile(lambda x: (x.sin() + 1).sum(-1), backend = "inductor")(torch.randn(4, 8))
+    print(json.dumps(dict(counters["inductor"])))
+    """
+)
+
+
+def test_a_warm_cache_from_before_the_fix_is_not_served_with_a_user_pass(tmp_path):
+    """End to end on CPU (the key, not the kernel): a cache warmed without the fix must miss."""
+    pytest.importorskip("torch._inductor.custom_graph_pass")
+    import json
+
+    runner = tmp_path / "runner.py"
+    runner.write_text(_CACHE_RUNNER)
+    env = {
+        **os.environ,
+        "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "inductor"),
+        "TORCHINDUCTOR_FX_GRAPH_CACHE": "1",
+        "TORCHINDUCTOR_AUTOGRAD_CACHE": "1",
+        "CUDA_VISIBLE_DEVICES": "",
+    }
+
+    def run(arm):
+        out = subprocess.run(
+            [sys.executable, str(runner), arm, _FIXES],
+            env = env,
+            capture_output = True,
+            text = True,
+            timeout = 600,
+        )
+        assert out.returncode == 0, out.stderr[-2000:]
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    warm = run("base")
+    assert warm.get("fxgraph_cache_miss", 0) >= 1
+    assert run("base").get("fxgraph_cache_hit", 0) >= 1  # the key is otherwise stable
+    patched = run("patched")
+    assert patched.get("fxgraph_cache_hit", 0) == 0
+    assert patched.get("fxgraph_cache_miss", 0) >= 1
+
+
+def test_a_wrapped_user_pass_that_later_opts_out_of_caching_still_bypasses(monkeypatch):
+    """torch's contract: uuid() -> None skips the FX cache. The wrapper must forward that."""
+    from torch._inductor.custom_graph_pass import CustomGraphPass
+
+    user = _user_pass_class()()
+    _, inductor_config = _install_with(monkeypatch, user)
+    keyed = inductor_config.post_grad_custom_post_pass
+    assert keyed.uuid() == ("unsloth-inductor-readback-barrier-v1", "user-pass-v1")
+    user.uuid = lambda: None
+    assert isinstance(keyed, CustomGraphPass)
+    assert keyed.uuid() is None
+
+
+_OPT_OUT_RUNNER = textwrap.dedent(
+    """
+    import importlib.util, json, sys, torch
+    from torch._inductor import config
+    from torch._inductor.custom_graph_pass import CustomGraphPass
+    from torch._dynamo.utils import counters
+
+    class TogglingPass(CustomGraphPass):
+        enabled = True
+        offset = 2.0
+
+        def uuid(self):
+            return "initial" if self.enabled else None
+
+        def __call__(self, graph):
+            for node in graph.nodes:
+                if node.op == "call_function" and node.target == torch.ops.aten.add.Tensor:
+                    node.args = (node.args[0], self.offset)
+
+    user = TogglingPass()
+    config.post_grad_custom_post_pass = user
+    if sys.argv[1] == "patched":
+        spec = importlib.util.spec_from_file_location("fixes", sys.argv[2])
+        fixes = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixes)
+        fixes._key_inductor_caches_on_readback_barrier(config, CustomGraphPass)
+    user.enabled = False  # opt out of caching, then change what the pass does
+    results = []
+    for offset in (2.0, 3.0):
+        user.offset = offset
+        torch._dynamo.reset()
+        counters.clear()
+        out = torch.compile(lambda x: x + 1, fullgraph = True)(torch.zeros(4))
+        results.append({"out": out.tolist(), "inductor": dict(counters["inductor"])})
+    print(json.dumps(results))
+    """
+)
+
+
+def test_a_cache_opted_out_user_pass_is_never_served_a_stale_graph(tmp_path):
+    """End to end on CPU: after uuid() -> None, a changed pass must recompile, not hit the cache."""
+    pytest.importorskip("torch._inductor.custom_graph_pass")
+    import json
+
+    runner = tmp_path / "runner.py"
+    runner.write_text(_OPT_OUT_RUNNER)
+
+    def run(arm):
+        env = {
+            **os.environ,
+            "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / f"inductor_{arm}"),
+            "TORCHINDUCTOR_FX_GRAPH_CACHE": "1",
+            "TORCHINDUCTOR_AUTOGRAD_CACHE": "1",
+            "CUDA_VISIBLE_DEVICES": "",
+        }
+        out = subprocess.run(
+            [sys.executable, str(runner), arm, _FIXES],
+            env = env,
+            capture_output = True,
+            text = True,
+            timeout = 600,
+        )
+        assert out.returncode == 0, out.stderr[-2000:]
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    base = run("base")
+    assert [r["out"] for r in base] == [[2.0] * 4, [3.0] * 4]  # the harness can see the change
+    patched = run("patched")
+    assert [r["out"] for r in patched] == [[2.0] * 4, [3.0] * 4]
+    assert all(r["inductor"].get("fxgraph_cache_hit", 0) == 0 for r in patched)

@@ -17,6 +17,7 @@ from core.training.account_jobs import (
 from utils.account_context import account_thread
 import asyncio
 import json
+import os
 import queue
 import threading
 import time
@@ -125,6 +126,78 @@ class Subscription:
         return (f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n").encode("utf-8")
 
 
+_SHARD_ROWS_CACHE: dict[str, tuple[tuple, tuple[tuple[str, int], ...]]] = {}
+_SHARD_ROWS_CACHE_MAX = 8
+_SHARD_ROWS_CACHE_LOCK = threading.Lock()
+# A stamp this close to the read may hide a same-tick write, so it is never trusted.
+_SHARD_ROWS_SETTLE_NS = 2_000_000_000
+
+
+def _stat_key(path: str, settled_before_ns: int) -> tuple | None:
+    st = os.stat(path)
+    if st.st_mtime_ns >= settled_before_ns or st.st_ctime_ns >= settled_before_ns:
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _shard_rows_signature(
+    parquet_dir: Path,
+    file_names,
+    read_started_ns: int | None = None,
+) -> tuple | None:
+    # Stamps must predate the footer read by the settle window, so a mid-read write never
+    # pairs with old counts.
+    if read_started_ns is None:
+        read_started_ns = time.time_ns()
+    settled_before_ns = read_started_ns - _SHARD_ROWS_SETTLE_NS
+    # Cheapest first: a shard landing mid run moves the dir stamps, so most misses stop at one stat.
+    try:
+        dir_key = _stat_key(str(parquet_dir), settled_before_ns)
+        if dir_key is None:
+            return None
+        # Names too: FAT leaves a dir mtime alone on add; DuckDB globs match dot-prefixed names.
+        listed = sorted(
+            entry for entry in os.listdir(parquet_dir) if entry.lower().endswith(".parquet")
+        )
+        if listed != sorted(os.path.basename(name) for name in file_names):
+            return None
+        file_keys = []
+        for name in file_names:
+            key = _stat_key(name, settled_before_ns)
+            if key is None:
+                return None
+            file_keys.append(key)
+    except (OSError, ValueError):
+        return None
+    return (dir_key, tuple(file_keys))
+
+
+def _cached_shard_rows(parquet_dir: Path, key: str) -> list[tuple[str, int]] | None:
+    with _SHARD_ROWS_CACHE_LOCK:
+        entry = _SHARD_ROWS_CACHE.get(key)
+    if entry is None:
+        return None
+    signature, shards = entry
+    if _shard_rows_signature(parquet_dir, [name for name, _ in shards]) != signature:
+        with _SHARD_ROWS_CACHE_LOCK:
+            if _SHARD_ROWS_CACHE.get(key) is entry:
+                del _SHARD_ROWS_CACHE[key]
+        return None
+    return list(shards)
+
+
+def _remember_shard_rows(parquet_dir: Path, key: str, shards, read_started_ns: int) -> None:
+    shards = [(str(name), int(num_rows)) for name, num_rows in shards]
+    signature = _shard_rows_signature(parquet_dir, [name for name, _ in shards], read_started_ns)
+    with _SHARD_ROWS_CACHE_LOCK:
+        _SHARD_ROWS_CACHE.pop(key, None)
+        if signature is None:
+            return
+        while len(_SHARD_ROWS_CACHE) >= _SHARD_ROWS_CACHE_MAX:
+            del _SHARD_ROWS_CACHE[next(iter(_SHARD_ROWS_CACHE))]
+        _SHARD_ROWS_CACHE[key] = (signature, tuple(shards))
+
+
 class JobManager:
     def __init__(self) -> None:
         """Single-job runner (in-mem). Simple on purpose, not a whole platform."""
@@ -217,8 +290,7 @@ class JobManager:
                 )
                 from utils.process_lifetime import adopt_pid, spawn_on_lifetime_thread
 
-                # Linux PDEATHSIG follows the spawning thread. A sync request's pool
-                # thread can retire while this recipe is still generating (#11002).
+                # Linux PDEATHSIG follows the spawning thread, and a sync request's pool thread can retire.
                 spawn_on_lifetime_thread(proc.start)
 
                 adopt_pid(proc.pid)
@@ -363,8 +435,7 @@ class JobManager:
                     return {"error": f"dataset path missing: {parquet_dir}"}
                 return None
             if job_status not in {"completed", "error", "cancelled"}:
-                # DuckDB opens with FILE_SHARE_DELETE; the pyarrow fallback would block the
-                # worker's merge rmtree on Windows.
+                # DuckDB opens with FILE_SHARE_DELETE; pyarrow would block the merge rmtree on Windows.
                 return self._load_dataset_page_with_duckdb(
                     parquet_dir = parquet_dir, limit = limit, offset = offset
                 )
@@ -401,12 +472,15 @@ class JobManager:
         try:
             conn = duckdb.connect(":memory:")
             try:
-                # Row counts from the footers, then scan only the shards the page covers: a full
-                # sort per request grows with the run and the live preview polls page 1.
-                shards = conn.execute(
-                    "SELECT file_name, num_rows FROM parquet_file_metadata(?) ORDER BY file_name",
-                    [parquet_glob],
-                ).fetchall()
+                # Scan only the shards the page covers; the live preview polls page 1.
+                shards = _cached_shard_rows(parquet_dir, parquet_glob)
+                if shards is None:
+                    read_started_ns = time.time_ns()
+                    shards = conn.execute(
+                        "SELECT file_name, num_rows FROM parquet_file_metadata(?) ORDER BY file_name",
+                        [parquet_glob],
+                    ).fetchall()
+                    _remember_shard_rows(parquet_dir, parquet_glob, shards, read_started_ns)
                 total = sum(int(num_rows) for _, num_rows in shards)
                 frames = []
                 skip, remaining = int(offset), int(limit)
@@ -518,7 +592,7 @@ class JobManager:
 
     def _safe_handle_event(self, job: Job, event: dict) -> None:
         """Apply one event, swallowing any handler error so the pump can't die."""
-        # Worker exited: drain + finalize, guarded so an error can't strand the run "active".
+        # Guarded so an error can't strand the run "active".
         try:
             self._handle_event(job, event)
         except Exception:
@@ -635,11 +709,7 @@ class JobManager:
         self._emit(event)
 
     def _retire_workflow_key(self, job: Job) -> None:
-        """Revoke the workflow-scoped sk-unsloth-* key, if one was minted.
-
-        Best-effort: failures are swallowed. The key expires after 24h, so a
-        missed revoke is a latency, not correctness, concern.
-        """
+        """Best-effort: errors are swallowed, since the key expires on its own after 24h."""
         key_id = getattr(job, "internal_api_key_id", None)
         if not key_id:
             return

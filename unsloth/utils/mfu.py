@@ -1,38 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in achieved TFLOPs and MFU logging with LoRA-aware FLOP counts.
-
-Turn on with `UNSLOTH_LOG_MFU=1` before building the trainer, or call `add_mfu_callback(trainer)`.
-Each training log then gains `train_tflops_per_gpu` and `train_hw_tflops_per_gpu` and, when the
-GPU peak is known, `train_mfu` and `train_hfu`. Set `UNSLOTH_PEAK_TFLOPS` to the per GPU dense
-peak to override the table (for example a measured MAMF number).
-
-`train_mfu` excludes the checkpointing recompute (PaLM MFU); `train_hfu` includes it. They were
-one value (HFU) before the split; that value is now `train_hfu` / `train_hw_tflops_per_gpu`.
-
-Model FLOPs per non padding token, summed over every linear layer with n = in * out weights:
-    forward                  2n   every linear, frozen or trainable
-    backward input grads     2n   every linear (gradients flow through frozen weights to LoRA)
-    backward weight grads    2n   only linears whose weight requires grad
-    recompute                2n   every linear except the output head, when checkpointing
-                                  (hardware FLOPs / HFU only)
-Attention adds 4 * layers * heads * head_dim FLOPs per causal (query, key) pair in the forward
-(QK^T and AV), L * (L + 1) / 2 pairs for a sequence of length L (L * L when every attention
-layer is bidirectional), times 3 for forward plus backward (times 4 with checkpointing in the
-hardware count). The
-output head is charged only for the last `logits_to_keep` positions when the forward passes it.
-Only the active copy of a PEFT `modules_to_save` wrapper and the active LoRA adapters are
-counted. Experts held as `nn.Linear` in an `experts` ModuleList count top_k / num_experts of
-their weights; experts stored as 3D tensors (transformers 5), sliding windows, convolutions,
-embedding lookups and the vision / audio towers of multimodal models (only the text decoder and
-head are walked) are not counted, and layers shared across depth (ALBERT) are counted once, so
-those models report a lower bound. Only `layer_types` entries that are softmax attention get the
-pair term. Backward input grads are charged to every linear, so layouts whose lowest trainable
-parameter sits above a frozen block (head-only training, linear probing) are overstated by up to
-2n per frozen linear below it. Encoder-decoder models are not reported. A model split over
-several GPUs with `device_map` reports the average per participating GPU.
-"""
+"""Opt-in UNSLOTH_LOG_MFU=1: LoRA-aware TFLOPs and MFU logging; train_hfu counts checkpoint recompute."""
 
 __all__ = [
     "count_linear_flops_per_token",

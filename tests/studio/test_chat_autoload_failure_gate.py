@@ -48,6 +48,23 @@ def _wait_gate_source() -> str:
     return gate
 
 
+# Inlined, not copied: it builds the llama-server half of the /load payload these scenarios assert on.
+LOAD_REQUEST = _source_path("studio/frontend/src/features/chat/lib/load-request.ts")
+
+
+def _load_request_source() -> str:
+    """The load-request module with its imports dropped; PREAMBLE supplies serverTuningLoadPayload."""
+    source = "\n".join(
+        line
+        for line in LOAD_REQUEST.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith(
+            ("import ", "  type ServerTuningValues,", "  serverTuningLoadPayload,", "} from ")
+        )
+    )
+    assert "export function llamaServerLoadFields(" in source
+    return source
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -110,6 +127,14 @@ export type Scenario = {
   tokenDecision: string | null;
   /** false = the backend platform probe has not landed yet. */
   platformFetched: boolean;
+  /** true = the backend answered but deferred hardware detection. */
+  detectionDeferred: boolean;
+  /** What a detectHardware read measures; unset keeps chatOnly. */
+  detectedChatOnly?: boolean;
+  /** Health reads after the detectHardware read before the verdict lands (a busy host). */
+  detectionReads?: number;
+  /** The detectHardware read never answers; the user stops the send shortly after. */
+  stallHealth?: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -545,6 +570,7 @@ function unreportedWindowMaxTokens(g: boolean, held: number) { return g ? held :
 function resolveManualAutoCtxPin(..._a: any[]) { return null; }
 async function ensureGpuDeviceCache() {}
 function reconcilePersistedGpuIds(ids: any) { return ids; }
+function reconcileTensorSplit(..._a: any[]) { return null; }
 function saveSpeculativeType(_x: any) {}
 function persistGpuMemoryModeOnLoad(..._a: any[]) {}
 function reasoningCapsFromLoad(_x: any) { return {}; }
@@ -580,8 +606,37 @@ const usePlatformStore = {
     // Server-reported unless a scenario says the probe has not landed.
     fetched: SCENARIO.platformFetched !== false,
     isChatOnly: () => SCENARIO.chatOnly === true,
+    detectionDeferred: SCENARIO.detectionDeferred === true,
+    capabilitiesUnknown: () =>
+      SCENARIO.platformFetched === false || SCENARIO.detectionDeferred === true,
   }),
 };
+// A detectHardware read starts detection; it lands after detectionReads more health reads (0 = within
+// that read's own wait). detectedChatOnly is what the host turns out to be.
+let DETECTION_READS_LEFT = -1;
+async function fetchDeviceType(options?: any) {
+  if (options?.detectHardware) {
+    EVENTS.push({ kind: "detectHardware" });
+    if (SCENARIO.stallHealth) {
+      setTimeout(() => (globalThis as any).__stopSend?.(), 50);
+      return new Promise(() => {});
+    }
+    SCENARIO.detectionDeferred = false;
+    DETECTION_READS_LEFT = SCENARIO.detectionReads ?? 0;
+  } else if (DETECTION_READS_LEFT > 0) {
+    EVENTS.push({ kind: "healthRead" });
+    DETECTION_READS_LEFT -= 1;
+  }
+  if (DETECTION_READS_LEFT === 0) {
+    SCENARIO.platformFetched = true;
+    if (SCENARIO.detectedChatOnly !== undefined) SCENARIO.chatOnly = SCENARIO.detectedChatOnly;
+    DETECTION_READS_LEFT = -1;
+  } else if (DETECTION_READS_LEFT > 0) {
+    // Still detecting: the reply is provisional, so the verdict stays unmeasured.
+    SCENARIO.platformFetched = false;
+  }
+  return SCENARIO.platform?.deviceType ?? SCENARIO.deviceType ?? "linux";
+}
 function isMlxId(value: string) {
   return typeof value === "string" && value.toLowerCase().includes("mlx");
 }
@@ -877,7 +932,7 @@ def _build_harness(run_dir: Path):
     # Any mention, not just a call; comments are stripped first.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
-    preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
+    preamble = PREAMBLE + PONYFILLS + _wait_gate_source() + _load_request_source()
     missing = sorted(
         name
         for name in imported
@@ -940,8 +995,15 @@ def _run(
         + textwrap.dedent(
             f"""
         setScenario({scenario_expr});
-        const signal = new AbortController().signal;
-        const result = await {entry};
+        const run = new AbortController();
+        const signal = run.signal;
+        globalThis.__stopSend = () => run.abort(new DOMException("Stopped", "AbortError"));
+        let result;
+        try {{
+          result = await {entry};
+        }} catch (error) {{
+          result = {{ thrown: error?.name ?? String(error) }};
+        }}
         const s = storeState();
         console.log(JSON.stringify({{
           result,
@@ -1674,6 +1736,75 @@ def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
         " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
     )
     assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_deferred_hardware_verdict_does_not_hide_cached_non_gguf_rows():
+    """Deferred detection reports a provisional chat_only, not a measurement: autoload measures it
+    first, and a host that turns out to have a GPU backend still loads the cached non-GGUF repo."""
+    out = _run(
+        "scenario({ chatOnly: true, detectedChatOnly: false, platformFetched: true,"
+        " detectionDeferred: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert [e for e in out["events"] if e["kind"] == "detectHardware"] == [
+        {"kind": "detectHardware"}
+    ]
+    assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_deferred_verdict_on_a_chat_only_host_falls_back_to_the_default_gguf():
+    """Measured chat-only: the cached non-GGUF repo is skipped and the default GGUF loads, as when
+    detection ran at startup, instead of a refused load ending the autoload with an error."""
+    out = _run(
+        "scenario({ chatOnly: true, detectedChatOnly: true, platformFetched: true,"
+        " detectionDeferred: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }],"
+        " load: (p) => p.model_path === 'org/st'"
+        " ? new Error('Chat-only install: this model needs a GPU backend; load a GGUF model.')"
+        " : LOADED(p) })"
+    )
+    assert "org/st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+    assert out["result"]["loaded"] is True
+
+
+def test_a_deferred_verdict_that_outlasts_the_health_wait_is_still_awaited():
+    """On a busy host detection outlasts the health read's own wait: autoload keeps reading until the
+    verdict lands instead of trying the cached non-GGUF repo on the still-unknown one."""
+    out = _run(
+        "scenario({ chatOnly: true, detectedChatOnly: true, detectionReads: 3,"
+        " platformFetched: true, detectionDeferred: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }],"
+        " load: (p) => p.model_path === 'org/st'"
+        " ? new Error('Chat-only install: this model needs a GPU backend; load a GGUF model.')"
+        " : LOADED(p) })"
+    )
+    assert [e["kind"] for e in out["events"] if e["kind"] in ("detectHardware", "healthRead")] == [
+        "detectHardware",
+        "healthRead",
+        "healthRead",
+        "healthRead",
+    ]
+    assert "org/st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_stalled_health_read_does_not_outlive_a_stopped_send():
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true, stallHealth: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert out["result"] == {"thrown": "AbortError"}
+    assert _loaded_paths(out) == []
+
+
+def test_a_deferred_verdict_with_only_gguf_cached_does_not_detect_hardware():
+    """A GGUF-only cache runs anywhere, so autoload keeps the idle path free of the hardware probe."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true,"
+        " ggufRepos: [{ repo_id: 'org/g-GGUF', size_bytes: 1 }] })"
+    )
+    assert [e for e in out["events"] if e["kind"] == "detectHardware"] == []
 
 
 def test_a_cached_adapter_repo_is_never_auto_loaded():

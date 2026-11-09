@@ -253,7 +253,7 @@ def _fake_trainer_class(log):
 @pytest.mark.parametrize("kind", ["dpo_trainer", "grpo_trainer"])
 def test_rl_scopes_keep_generation_unsharded(monkeypatch, kind):
     log = []
-    manager = types.SimpleNamespace(size = 2, backend = "ulysses")
+    manager = types.SimpleNamespace(size = 2, backend = "ulysses", _clear_real_tokens = lambda: None)
     monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
     monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
     monkeypatch.setattr(cp, "_install_accelerator_state", lambda *a: None)
@@ -284,6 +284,55 @@ def test_rl_trainers_refuse_ring(monkeypatch):
     cp.patch_rl_trainer(Trainer, "dpo_trainer")
     with pytest.raises(NotImplementedError, match = "ulysses"):
         Trainer(_args(context_parallel_backend = "ring"))
+
+
+def _accelerate_cp_accelerator(monkeypatch, cp_size):
+    # What `accelerate launch` with parallelism_config_cp_size hands the Accelerator: a ParallelismConfig
+    # built from the environment, read through the real Accelerator.parallelism_config property.
+    from accelerate import Accelerator
+    from accelerate.parallelism_config import ParallelismConfig
+
+    monkeypatch.setenv("ACCELERATE_USE_PARALLELISM_CONFIG", "true")
+    monkeypatch.setenv("PARALLELISM_CONFIG_CP_SIZE", str(cp_size))
+
+    class _Accelerator:
+        parallelism_config = Accelerator.parallelism_config
+
+        def __init__(self):
+            self.state = types.SimpleNamespace(parallelism_config = ParallelismConfig())
+            self.device = torch.device("cpu")
+
+    return _Accelerator()
+
+
+@pytest.mark.parametrize("kind", ["dpo_trainer", "grpo_trainer"])
+@pytest.mark.parametrize("route", ["accelerate config", "parallelism_config"])
+@pytest.mark.parametrize("cp_size", [1, 2])
+@pytest.mark.parametrize("unsloth_size", [1, 2])
+def test_rl_trainers_refuse_transformers_cp(monkeypatch, kind, route, cp_size, unsloth_size):
+    monkeypatch.setattr(cp, "_install_accelerator_state", lambda *a: None)
+    monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
+    monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
+    monkeypatch.setattr(cp, "attach_rl_hooks", lambda *a: None)
+    monkeypatch.setattr(cp, "ContextParallelManager", lambda size, backend: object())
+    accelerator = _accelerate_cp_accelerator(monkeypatch, cp_size)
+    # transformers forwards TrainingArguments.parallelism_config to the Accelerator.
+    args_pc = accelerator.state.parallelism_config if route == "parallelism_config" else None
+
+    class Trainer(_fake_trainer_class([])):
+        def __init__(self, args):
+            super().__init__(args)
+            self.accelerator = accelerator
+            self._generate = lambda prompts: (prompts,)
+
+    cp.patch_rl_trainer(Trainer, kind)
+    args = _args(context_parallel_size = unsloth_size, parallelism_config = args_pc)
+    if cp_size == 1:
+        Trainer(args)
+        return
+    config = "DPOConfig" if kind == "dpo_trainer" else "GRPOConfig"
+    with pytest.raises(NotImplementedError, match = rf"{config}\(context_parallel_size = 2.*{route}"):
+        Trainer(args)
 
 
 def test_rl_trainers_without_cp_are_untouched(monkeypatch):
@@ -537,7 +586,7 @@ def _cp_fake_trainer(
     log,
     installs = None,
 ):
-    manager = types.SimpleNamespace(size = 2, backend = "ulysses")
+    manager = types.SimpleNamespace(size = 2, backend = "ulysses", _clear_real_tokens = lambda: None)
     monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
     monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
     monkeypatch.setattr(
@@ -587,24 +636,27 @@ def test_rl_evaluate_and_predict_refuse_iterable_datasets(monkeypatch, kind):
     assert trainer.predict([1, 2, 3, 4]) == "predicted"
 
 
-def test_trainers_built_before_cp_restore_the_shared_accelerator_state(monkeypatch):
-    # The generated RL trainers bind self.train on the instance in __init__ (rl.py: MethodType(...)):
-    # a trainer built before CP was enabled keeps that plain method, so it must still drop the CP mesh
-    # a later CP trainer installed on the shared AcceleratorState.
+def test_trainers_built_before_cp_keep_the_plain_methods(monkeypatch):
+    # The generated RL trainers bind self.train on the instance in __init__ (rl.py: MethodType(...)), from
+    # the instance's CP train when one is bound, else from the class. A trainer built before CP keeps the
+    # class's own train (no CP wrapper runs for it); the CP trainer installs its state only inside train.
     installs = []
     Trainer = _cp_fake_trainer(monkeypatch, "dpo_trainer", [], installs)
+    plain_train = Trainer.__dict__.get("train")
 
     def bind_train(trainer):
-        trainer.train = types.MethodType(type(trainer).train, trainer)
+        bound = getattr(trainer.__dict__.get("train"), "__func__", None) or type(trainer).train
+        trainer.train = types.MethodType(bound, trainer)
 
     plain = Trainer(_args(context_parallel_size = 1))
     bind_train(plain)
     cp_trainer = Trainer(_args())
     bind_train(cp_trainer)
+    assert Trainer.__dict__.get("train") is plain_train
+    assert plain.train.__func__ is type(plain).train
     installs.clear()
     assert plain.train() == "trained"
-    assert plain in installs, "the pre-CP trainer's bound train() skipped the accelerator restore"
-    installs.clear()
+    assert installs == []
     assert cp_trainer.train() == "trained" and cp_trainer in installs
 
 

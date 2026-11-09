@@ -3,20 +3,18 @@
 
 import { isGgufName } from "./gguf-filename-pick.ts";
 
-/** What the chat picker puts in the URL when a diffusion pick routes to /images or /video. */
 export interface DiffusionRouteSearch {
   model: string;
-  /** An exact repo filename, never a label: the target page uses it verbatim as the gguf filename. */
+  /** An exact repo filename, never a label. */
   quant?: string;
-  /** A quant label (`Q4_K_S`) for a pick that has no filename, e.g. a pinned row. The page resolves it against the listing. */
+  /** A quant label (`Q4_K_S`), resolved against the listing. */
   ggufQuant?: string;
 }
 
 const trimmed = (value: string | null | undefined): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
-/** Search params for a diffusion pick routed out of the chat picker. The label rides its own param because `quant` is
- *  consumed as a filename; forwarding the filename alone left a pinned row as a bare repo id that read as a pipeline. */
+/** The label rides its own param because `quant` is consumed as a filename. */
 export function diffusionRouteSearch(
   model: string,
   meta: { ggufFilename?: string | null; ggufVariant?: string | null },
@@ -27,7 +25,6 @@ export function diffusionRouteSearch(
   return label ? { model, ggufQuant: label } : { model };
 }
 
-/** The exact .gguf a routed pick names, if it names one. */
 export function routedGgufFilename(
   search: Pick<DiffusionRouteSearch, "quant">,
 ): string | null {
@@ -35,8 +32,7 @@ export function routedGgufFilename(
   return quant && isGgufName(quant) ? quant : null;
 }
 
-/** The quant label a routed pick carries. A non-filename in `quant` (hand-built link, older producer) is a label too, so it
- *  joins ggufQuant to be resolved rather than posted verbatim. */
+/** A non-filename in `quant` (hand-built link, older producer) is a label too. */
 export function routedGgufLabel(
   search: Pick<DiffusionRouteSearch, "quant" | "ggufQuant">,
 ): string | null {

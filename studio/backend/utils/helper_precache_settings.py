@@ -30,11 +30,7 @@ def helper_model_disabled_by_env() -> bool:
 
 
 def get_helper_precache_enabled() -> bool:
-    """Read the persisted startup pre-cache preference.
-
-    Missing or unreadable settings default to False so Unsloth startup never
-    performs optional network work unless the user explicitly opted in.
-    """
+    """Missing or unreadable settings default to False, so startup makes no optional network calls."""
     try:
         from storage.studio_db import get_app_setting
         stored = get_app_setting(HELPER_PRECACHE_SETTING_KEY, None)
@@ -57,9 +53,5 @@ def set_helper_precache_enabled(value: Any) -> bool:
 
 
 def should_preload_helper_on_startup() -> bool:
-    """Gate the startup pre-cache thread.
-
-    The persisted setting is opt-in and the existing broad disable env var wins.
-    Explicit AI Assist calls do not use this gate; they remain user-triggered.
-    """
+    """Needs the opt-in setting and no env disable; explicit AI Assist calls bypass this gate."""
     return get_helper_precache_enabled() and not helper_model_disabled_by_env()

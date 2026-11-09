@@ -167,6 +167,8 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
         if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
             delattr(F, n)
 
+    if IF.TORCHAO_DISABLED_FOR_OLD_TORCH:
+        pytest.skip("import unsloth disabled torchao for this torch; there is no torchao to shim")
     # Gate on these two: `any` over the tuple is always true via scaled_dot_product_attention.
     if all(hasattr(F, n) for n in ("ScalingType", "SwizzleType")):
         pytest.skip("this torch already provides ScalingType/SwizzleType")

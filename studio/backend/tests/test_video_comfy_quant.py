@@ -413,6 +413,8 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True)) == {
         "int8_backend": "torchao",
         "fp8_backend": "torchao",
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": False,
         "fp8_widen_chosen": False,
     }
@@ -421,12 +423,16 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False)) == {
         "int8_backend": "native",
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), keep = False) == {
         "int8_backend": None,
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": False,
         "fp8_widen_chosen": False,
     }
@@ -438,6 +444,24 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert (
         vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False))["fp8_storage"] is False
     )
+
+
+@pytest.mark.parametrize("required, store", [(1800, True), (1700, False)])
+def test_mps_video_stores_fp8_only_past_the_resident_margin(monkeypatch, required, store):
+    """MPS never offloads, so a plan past 0.85 of its budget is what makes fp8 storage pay."""
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    monkeypatch.setattr(vid, "comfy_int8_backend", lambda *a, **k: None)
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
+    plan = types.SimpleNamespace(
+        offload_policy = "none",
+        device_memory = types.SimpleNamespace(device = "mps", is_unified = True),
+        estimates = {"resident_required_mib": required, "safe_device_budget_mib": 2000},
+    )
+    mps = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+    assert vid._video_comfy_backends(fam, "b", mps, plan)["fp8_storage"] is store
+    # the shortfall check then sees the stored price, not the widened one
+    assert vid._video_comfy_reprice(plan) is store
 
 
 def test_a_smaller_offloaded_price_replans_and_keeps_the_offloaded_backends(monkeypatch):
@@ -462,6 +486,8 @@ def test_a_smaller_offloaded_price_replans_and_keeps_the_offloaded_backends(monk
     assert kept == {
         "int8_backend": "native",
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }
@@ -730,6 +756,12 @@ def test_offloaded_plan_size_prices_fp8_that_only_runs_resident(monkeypatch, tmp
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2
     monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 3
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV)
+    mps = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
+    # MPS has no fp8 GEMM: resident widens, the re-price stores
+    assert vid._video_comfy_resident_mib(fam, "b", mps, path, scan) == 3
+    assert vid._video_comfy_resident_mib(fam, "b", mps, path, scan, offload = True) == 2
 
 
 def test_dense_h3_maps_its_timestep_mlp_and_keeps_adaln_at_compute_dtype():
@@ -1098,6 +1130,8 @@ def test_a_resident_video_dit_that_fits_only_stored_gets_fp8_storage(tmp_path, m
     assert picked == {
         "int8_backend": None,
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }
