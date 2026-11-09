@@ -144,7 +144,7 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
-        # fp32 never runs fused kernels.
+        # Only fp16 / bf16 answers drive the guard; a read-only probe (a layer-split candidate) never does.
         if (
             not _SDPA_PROBE_READ_ONLY.get()
             and _rocm_guard_allowed()
