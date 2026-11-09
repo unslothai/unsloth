@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat PDF export: real text for every script, no local file or network reads, auth required."""
-
 import base64
 import io
 from concurrent.futures import ThreadPoolExecutor

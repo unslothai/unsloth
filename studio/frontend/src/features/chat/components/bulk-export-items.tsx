@@ -17,7 +17,6 @@ import {
 } from "../prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./export-format-items";
 
-/** `combinedLead` goes first under the Combined heading (the full JSON backup, where offered). */
 export function BulkExportItems({
   onExport,
   combinedLead,

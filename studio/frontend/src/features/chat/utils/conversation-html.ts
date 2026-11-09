@@ -98,7 +98,6 @@ function renderMessages(
     .join("\n");
 }
 
-/** Body fragment shared by the HTML file and the PDF renderer; empty when nothing has content. */
 export function buildConversationHtmlBody(
   conversations: readonly NamedConversationHtml[],
 ): string {
@@ -114,7 +113,6 @@ export function buildConversationHtmlBody(
     .join("\n<hr>\n");
 }
 
-// Shared with the backend PDF renderer, which supports a CSS subset: keep to plain properties.
 export const CONVERSATION_EXPORT_CSS = `
 body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #1f2328; }
 h1 { font-size: 18pt; margin: 0 0 4pt 0; }

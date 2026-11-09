@@ -69,7 +69,6 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
         pages += 1
     writer.close()
 
-    # Title in the document info, so viewers show it instead of "Untitled".
     pdf = pymupdf.open("pdf", buffer.getvalue())
     try:
         pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth Studio"})

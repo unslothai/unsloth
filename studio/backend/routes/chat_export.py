@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Renders a chat export (the HTML body the frontend builds) to PDF; nothing is stored."""
-
 import asyncio
 import json
 import subprocess
@@ -26,7 +24,6 @@ logger = get_logger(__name__)
 MAX_EXPORT_HTML_CHARS = 64 * 1024 * 1024
 RENDER_TIMEOUT_S = 300
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
-# Each render is a child process holding the whole document; cap how many run at once.
 # A thread semaphore, taken in the worker thread: an asyncio one binds to a single event loop.
 _render_slots = threading.BoundedSemaphore(2)
 
@@ -64,7 +61,6 @@ async def export_chat_pdf(
     request: ChatPdfRequest, current_subject: str = Depends(get_current_subject)
 ) -> Response:
     try:
-        # The thread only waits on the child; no PyMuPDF call runs in this process.
         content = await asyncio.to_thread(render_chat_pdf_in_child, request.title, request.html)
     except ChatPdfTooLong as error:
         raise log_and_http_error(

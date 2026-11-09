@@ -3,7 +3,6 @@
 
 import { authFetch } from "@/features/auth";
 
-/** The backend lays the export body out with PyMuPDF, so the PDF has real text and every script's glyphs. */
 export async function renderConversationPdf(
   title: string,
   html: string,
