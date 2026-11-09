@@ -83,7 +83,10 @@ def retire_account_roots(account: AccountContext):
     if video_active:
         get_video_backend().cancel_generate(expected_account = account.account_id)
     image_active = cancel_generation_for_account(account.account_id)
-    if video_active or image_active:
+    from core.inference import video_restyle
+
+    restyle_active = video_restyle.runner.retire(account.account_id)
+    if video_active or image_active or restyle_active:
         raise AccountRetirementError("Media generation is still active; retry deletion")
     # A load the account started before its tombstone is torn down here; one after it is refused.
     from core.inference import video as video_module

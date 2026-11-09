@@ -129,6 +129,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   }, [active]);
 
   const choose = async (next: { video: File | null; frames: File[] }) => {
+    if (running || submitting) return;
     setVideo(next.video);
     setFrames(next.frames);
     setPreview(null);
@@ -245,6 +246,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
                   type="file"
                   accept="video/*"
                   className="hidden"
+                  disabled={busy}
                   onChange={(e) => {
                     void choose({ video: e.target.files?.[0] ?? null, frames: [] });
                     e.target.value = "";
@@ -259,6 +261,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
                   type="file"
                   multiple={true}
                   className="hidden"
+                  disabled={busy}
                   {...({ webkitdirectory: "", directory: "" } as object)}
                   onChange={(e) => {
                     // File-name order, like the backend; it reads at most MAX_FRAMES.

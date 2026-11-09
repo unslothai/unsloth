@@ -89,14 +89,13 @@ def fit_frame(
     image = image.convert("RGB")
     if image.size == (width, height):
         return image
+    # Resample only the centred source box: scaling the whole frame first can allocate far past the output.
     scale = max(width / image.width, height / image.height)
-    resized = image.resize(
-        (max(width, round(image.width * scale)), max(height, round(image.height * scale))),
-        Image.Resampling.BICUBIC,
+    box_w, box_h = width / scale, height / scale
+    left, top = (image.width - box_w) / 2, (image.height - box_h) / 2
+    return image.resize(
+        (width, height), Image.Resampling.BICUBIC, box = (left, top, left + box_w, top + box_h)
     )
-    left = (resized.width - width) // 2
-    top = (resized.height - height) // 2
-    return resized.crop((left, top, left + width, top + height))
 
 
 def frames_from_video(
@@ -447,7 +446,11 @@ class RestyleRunner:
         seed = (
             int(seed) if seed is not None else int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF
         )
+        from state import active_generations
+
         with self._lock:
+            if owner is not None and active_generations.fenced(owner):
+                raise RestyleError("This account is being removed.")
             if self._state.get("active") or self._reservation not in (None, reservation):
                 raise RestyleBusy("A restyle is already running.")
             self._reservation = None
@@ -506,6 +509,14 @@ class RestyleRunner:
             # SdCppServer.start() blocks until the weights load; stop() makes it bail.
             loading.stop()
         return True
+
+    def retire(self, owner: str) -> bool:
+        """Cancel ``owner``'s job for account retirement; True while it still holds the runner."""
+        with self._lock:
+            held = bool(self._state.get("active")) and self.owned_by(owner)
+        if held:
+            self.cancel(owner)
+        return held
 
     def unload(self) -> None:
         with self._lock:

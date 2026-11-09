@@ -672,3 +672,37 @@ def test_diffusion_training_teardown_includes_the_restyle_server(monkeypatch):
     monkeypatch.setattr(training, "_free_restyle_for_training", called)
     with pytest.raises(_Called):
         training._free_gpu_for_diffusion_training()
+
+
+def test_fit_frame_never_resamples_past_the_output(monkeypatch):
+    real = Image.Image.resize
+    sizes = []
+
+    def resize(self, size, *args, **kwargs):
+        sizes.append(tuple(size))
+        assert size[0] * size[1] <= vr.WIDTH * vr.HEIGHT, size
+        return real(self, size, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "resize", resize)
+    out = vr.fit_frame(Image.new("RGB", (1, 20000), (9, 9, 9)))
+    assert out.size == (vr.WIDTH, vr.HEIGHT) and sizes
+
+
+def test_retire_cancels_only_the_owners_job(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    runner.start(prompt = "x", frames = _frames(5), owner = "alice")
+    assert not runner.retire("bob")
+    assert runner.retire("alice") and runner._cancel.is_set()
+
+
+def test_start_refuses_a_fenced_account(weights):
+    from state import active_generations
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    active_generations.fence("alice")
+    try:
+        with pytest.raises(vr.RestyleError):
+            runner.start(prompt = "x", frames = _frames(5), owner = "alice")
+    finally:
+        active_generations.lift_fence("alice")
+    runner.start(prompt = "x", frames = _frames(5), owner = "alice")
