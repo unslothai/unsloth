@@ -712,10 +712,13 @@ def _int8_linear_class():
             return y.reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x):
+            # Eager-only: mutating a global int under Dynamo recompiles every call.
+            count = not torch.compiler.is_compiling()
             if self._int8_act_ok(x):
-                _INT8_ACT_COUNTS["int8_act"] += 1
+                if count:
+                    _INT8_ACT_COUNTS["int8_act"] += 1
                 return self._forward_int8_act(x)
-            if self.act_int8:
+            if self.act_int8 and count:
                 _INT8_ACT_COUNTS["dequant"] += 1
             scale = self.scale
             if scale.dtype == x.dtype:
