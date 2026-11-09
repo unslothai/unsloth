@@ -9158,6 +9158,47 @@ def _allow_te_prequant(monkeypatch, *, injects = True):
     return tpq.TE_PREQUANT_BUDGET_SCALE
 
 
+def _capture_te_quant_lines(monkeypatch):
+    import core.inference.video as video_mod
+
+    lines: list = []
+    real = video_mod.logger
+
+    class _Recorder:
+        def info(self, fmt, *a, **k):
+            message = fmt % a if a else fmt
+            if message.startswith("video.text_encoder_quant:"):
+                lines.append(message)
+            return real.info(fmt, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    monkeypatch.setattr(video_mod, "logger", _Recorder())
+    return lines
+
+
+@pytest.mark.parametrize("injects", [True, False])
+def test_a_failed_te_prefetch_is_logged_by_the_retried_outcome(
+    fake_runtime, monkeypatch, tmp_path, injects
+):
+    _allow_te_prequant(monkeypatch, injects = injects)
+    lines = _capture_te_quant_lines(monkeypatch)
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    VideoBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+        _te_prequant_failed = {"text_encoder": "unsloth/LTX-2-FP8: HTTP 503"},
+    )
+    assert len(lines) == 1
+    if injects:
+        assert "'fp8' selected automatically for ltx-2" in lines[0]
+    else:
+        assert "is not available" in lines[0] and "HTTP 503" in lines[0]
+
+
 def test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
     fake_runtime, monkeypatch, tmp_path
 ):
