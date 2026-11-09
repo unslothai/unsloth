@@ -423,9 +423,13 @@ def _anima_unreachable(pipe: Any, paths: list, names: dict) -> set:
     """Splits whose Anima rename names no registered submodule: ``_lokr_targets`` would raise for each.
     One batched rename; an output collision returns nothing ruled out (every split is then tried)."""
     import torch
-    from diffusers.loaders.lora_conversion_utils import (
-        _convert_non_diffusers_anima_lora_to_diffusers,
-    )
+
+    try:
+        from diffusers.loaders.lora_conversion_utils import (
+            _convert_non_diffusers_anima_lora_to_diffusers,
+        )
+    except ImportError:
+        return set()
 
     keys = ["diffusion_model." + _strip(path) + ".x" for path in paths]
     renamed = list(_convert_non_diffusers_anima_lora_to_diffusers(dict.fromkeys(keys)))
