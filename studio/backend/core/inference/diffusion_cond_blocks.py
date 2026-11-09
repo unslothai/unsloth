@@ -397,10 +397,8 @@ def _flux3_span_single_forward(
     unsloth_cond_mod: Any = None,
     unsloth_cond_span: Any = None,
 ) -> Any:
-    """Stock joint block, op for op. ``unsloth_cond_mod``: the reference span's ``[B, 1, 3D]`` modulation row,
-    ``unsloth_cond_span``: a ``[reference_tokens, 0]`` tensor whose length is the reference span, ``temb_mod``: the
-    image span's ``[B, 1, 3D]`` row. Each span is modulated and gated by its own row, element for element what the
-    per-token rows compute."""
+    """Stock joint block, op for op, with one ``[B, 1, 3D]`` modulation row per span: ``temb_mod`` (image),
+    ``unsloth_cond_mod`` (reference, length = ``unsloth_cond_span``'s ``[reference_tokens, 0]`` shape)."""
     if unsloth_cond_mod is None or unsloth_cond_span is None:
         return _stock_single_forward(self)(
             self,
