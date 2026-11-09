@@ -175,9 +175,7 @@ test("no modal rule keys on an inline style, and lock attributes above a thread 
 });
 
 test("no stylesheet keys a descendant rule on an attribute a modal toggles above the chat", () => {
-  // Each modal open and close sets data-scroll-locked on <body> and aria-hidden / data-aria-hidden on the
-  // app root, both above every message. A rule with one of them before a combinator made WebKit re-match
-  // every element of a long chat on each toggle (body[data-scroll-locked] .hub-modal-pe-guard in hub.css).
+  // These attributes toggle above every message on each modal; keyed before a combinator, WebKit re-matches the chat.
   const root = fileURLToPath(new URL("../src/", import.meta.url));
   const sheets = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".css"));
   assert.ok(sheets.length > 1, "stylesheets found");
@@ -189,7 +187,6 @@ test("no stylesheet keys a descendant rule on an attribute a modal toggles above
       const prelude = block.slice(0, block.lastIndexOf("{") >= 0 ? block.lastIndexOf("{") : 0);
       for (const selector of splitTopLevel(prelude)) {
         for (const attr of toggled) {
-          // The attribute in a compound followed by a top-level combinator: an ancestor of the subject.
           const re = new RegExp(`\\[${attr}(?:[\\]=~|^$*]|\\])`, "g");
           for (let m = re.exec(selector); m; m = re.exec(selector)) {
             if (combinatorAfter(selector, m.index)) offenders.push(`${file}: ${selector.trim()}`);

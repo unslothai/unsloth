@@ -56,8 +56,6 @@ test("the lock's body styles are static, with what react-remove-scroll-bar injec
 });
 
 test("on screen <body> already has the lock's overflow and position, so a lock toggle is a no-op", () => {
-  // Flipping overflow or position on <body> re-laid out the whole page in WebKit on every modal open and
-  // close (about 20-30 ms at 150 turns); preset, the toggle changes nothing. Print keeps document flow.
   const css = readSrc("index.css");
   assert.match(
     css,
