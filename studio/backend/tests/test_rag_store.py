@@ -80,6 +80,13 @@ def test_lexical_finds_words_in_unspaced_cjk_text(rag_conn):
     assert hits("退") == ["zh:0"]
 
 
+def test_focused_query_keeps_a_cjk_identifier_whole(rag_conn):
+    _add_doc(rag_conn, "kb_a", "a", "a.txt", "h1", ["案件123的状态"])
+    _add_doc(rag_conn, "kb_a", "b", "b.txt", "h2", ["案件124的状态"])
+    focused = store.conversation_match_queries("current status of 案件123")[0]
+    assert store.lexical_matching_ids(rag_conn, ["a:0", "b:0"], focused) == {"a:0"}
+
+
 def test_existing_index_is_rebuilt_for_cjk_search(rag_conn):
     from storage import rag_db
 

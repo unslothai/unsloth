@@ -138,7 +138,7 @@ def conversation_match_queries(query: str) -> list[str]:
     permissive = _or_terms(content)
     if not identifiers:
         return [permissive]
-    focused = _or_terms(identifiers)
+    focused = " OR ".join('"' + " ".join(rag_db.fts_text(t).split()) + '"' for t in identifiers)
     return [focused] if focused == permissive else [focused, permissive]
 
 
