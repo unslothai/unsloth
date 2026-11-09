@@ -23,7 +23,8 @@ interface UpdateBannerProps {
   info: UpdateInfo | null;
   dismissed: boolean;
   lastFailure: RetainedUpdateFailure | null;
-  isExternalServer?: boolean;
+  // Set while attached to a server this app did not start, which blocks the update.
+  externalServerPort?: number | null;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
   // Release page for this version, preferred over the generic changelog.
@@ -48,7 +49,7 @@ export function UpdateBanner({
   info,
   dismissed,
   lastFailure,
-  isExternalServer = false,
+  externalServerPort = null,
   updatePolicyMode,
   manualReleaseUrl,
   releasePageUrl = null,
@@ -72,6 +73,7 @@ export function UpdateBanner({
   );
   const show = showFailure || offerOpen;
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
+  const isExternalServer = externalServerPort !== null;
   const installDisabled = isManualLinuxPackage
     ? manualReleaseUrl === null
     : isExternalServer;
@@ -172,7 +174,9 @@ export function UpdateBanner({
                     : isManualLinuxPackage
                       ? t("desktopUpdate.banner.linuxManual")
                       : isExternalServer
-                        ? t("settings.about.update.desktopExternalServer")
+                        ? t("settings.about.update.desktopExternalServer", {
+                            port: externalServerPort,
+                          })
                         : t("desktopUpdate.banner.available")}
                 </p>
               </div>

@@ -1094,6 +1094,35 @@ def test_decode_keeps_a_subclass_adapter(which, bsz, monkeypatch):
     _same(got, want, True)
 
 
+@pytest.mark.parametrize("bsz", [1, 3])
+@pytest.mark.parametrize("fp8", [False, True])
+def test_decode_packed_base_keeps_its_matmul(bsz, fp8):
+    _, block = _model("cpu", torch.float32)
+    proj = block.o_proj
+    calls = []
+
+    class Packed:
+        _unsloth_packed_weight_state = True
+        _unsloth_fp8_dgrad = fp8
+
+        def matmul(
+            self,
+            X,
+            W,
+            out = None,
+        ):
+            calls.append(X.shape)
+            return torch.matmul(X, W.t(), out = out)
+
+    proj.base_layer.weight.quant_state = Packed()
+    X = torch.randn(bsz, 1, H)
+    with torch.inference_mode():
+        expected = proj(X)
+        actual = kernel_utils.fast_linear_forward(proj, X)
+    torch.testing.assert_close(actual, expected)
+    assert calls == [X.shape]
+
+
 @pytest.mark.parametrize("which", ["A", "B"])
 def test_the_traced_no_grad_accumulate_keeps_a_subclass_result(which, monkeypatch):
     # The opaque op returns nothing, so a subclass operand takes the in-place method and keeps its type.

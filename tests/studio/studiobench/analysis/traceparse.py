@@ -44,8 +44,7 @@ class Task:
 
     @property
     def self_dur(self) -> int:
-        """Clamped at zero: a child longer than its parent in a malformed trace would make self time
-        negative."""
+        """Clamped at zero so a malformed trace, child longer than parent, cannot go negative."""
         return max(0, self.dur - sum(c.dur for c in self.children))
 
     def walk(self) -> Iterator["Task"]:
@@ -102,8 +101,7 @@ class Trace:
 
     @classmethod
     def from_json_text(cls, text: str) -> "Trace":
-        """Tracing emits an object with traceEvents; DevTools-saved traces are bare arrays, so both
-        parse."""
+        """Accepts a traceEvents object or a bare array (DevTools-saved traces)."""
         text = text.strip()
         if not text:
             raise CellFailure("trace_empty", "trace stream contained no bytes")

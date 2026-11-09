@@ -51,7 +51,7 @@ def _kernel() -> Any:
     _mul = libdevice.mul_rn
     _add = libdevice.add_rn
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_rows"])
     def _qk_norm_rope_kernel(
         x_ptr,
         w_ptr,
@@ -64,9 +64,9 @@ def _kernel() -> Any:
         stride_h,
         cos_stride,
         eps,
-        D: tl.constexpr,
-        HALF: tl.constexpr,
-        ROWS: tl.constexpr,
+        D: tl.constexpr,  # hd
+        HALF: tl.constexpr,  # rotary dim // 2
+        ROWS: tl.constexpr,  # rows per program
     ):
         pid = tl.program_id(0).to(tl.int64)
         rows = pid * ROWS + tl.arange(0, ROWS).to(tl.int64)

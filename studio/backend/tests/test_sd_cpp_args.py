@@ -62,6 +62,9 @@ def _physical_metal(monkeypatch):
     import core.inference.sd_cpp_args as sd_cpp_args
 
     monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    # Commands are built for a Linux host unless a test sets the platform, so a Mac runner gets the same
+    # commands as Linux (Metal drops direct conv and adds --clip-on-cpu).
+    monkeypatch.setattr("sys.platform", "linux")
     # The real probe is cached and reads sysctl; follow the patched platform.machine() instead.
     import platform
 
@@ -1058,8 +1061,9 @@ def _all_builders(binary, extra_args = None):
 @pytest.mark.parametrize(
     "tag, expected",
     [
-        ("master-982-0518b34-uaba3a1c", True),  # the pinned bundle
-        ("master-982-0518b34-ud331c66", True),  # the previous pin
+        ("master-982-0518b34-uba6ac30", True),  # the pinned bundle
+        ("master-982-0518b34-uaba3a1c", True),  # the previous pin
+        ("master-982-0518b34-ud331c66", True),  # an older pin
         ("master-968-8cd731e-ubdb47d1", True),  # the pin before it
         ("master-951-f89d9b1-uafac7a7", True),  # an older pin
         ("master-907-500ef5f", True),  # the build that merged #2037
@@ -1102,6 +1106,84 @@ def test_mmap_env_override_and_no_duplicate(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP")
     for cmd in _all_builders(new, extra_args = ["--mmap"]):
         assert cmd.count("--mmap") == 1
+
+
+# ── CPU mmap (repack-aware builds) ──────────────────────────────────────────
+
+_REPACK_HELP = "  --mmap  whether to memory-map model (CPU: weights the CPU repacks are still loaded and repacked)\n"
+_OLD_HELP = "  --mmap  whether to memory-map model\n"
+
+
+def _cpu_install(
+    tmp_path,
+    monkeypatch,
+    help_text,
+    accelerator = "cpu",
+):
+    import json
+
+    import core.inference.sd_cpp_backend as backend
+
+    root = tmp_path / f"sd-{accelerator}-{abs(hash(help_text)) % 10**6}"
+    (root / "bin").mkdir(parents = True)
+    binary = root / "bin" / "sd-cli"
+    binary.write_text("")
+    (root / ".unsloth-sd-cpp-install.json").write_text(
+        json.dumps({"tag": "master-982-0518b34-uba6ac30", "accelerator": accelerator})
+    )
+    for fn in (
+        _sd_cpp_args_module._installed_sd_cpp_tag,
+        _sd_cpp_args_module._installed_sd_cpp_accelerator,
+        _sd_cpp_args_module._cpu_mmap_repack_in_help,
+    ):
+        fn.cache_clear()
+    monkeypatch.setattr(backend, "_sd_cpp_probe_output", lambda b, *a, **k: help_text)
+    return str(binary)
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_cpu_mmap_on_repack_aware_cpu_builds_only(monkeypatch, tmp_path, platform):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    monkeypatch.setattr("sys.platform", platform)
+    new = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    for cmd in _all_builders(new):
+        assert cmd.count("--mmap") == 1
+    # The pinned build maps repackable weights and runs them unrepacked: never sent there.
+    old = _cpu_install(tmp_path, monkeypatch, _OLD_HELP)
+    assert all("--mmap" not in cmd for cmd in _all_builders(old))
+    for accel in ("cuda", "vulkan", "rocm"):
+        gpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP, accelerator = accel)
+        assert all("--mmap" not in cmd for cmd in _all_builders(gpu))
+
+
+def test_cpu_mmap_follows_an_explicit_backend(monkeypatch, tmp_path):
+    from core.inference.sd_cpp_args import mmap_flags
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    monkeypatch.setattr("sys.platform", "linux")
+    gpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP, accelerator = "vulkan")
+    assert mmap_flags(gpu, None, ["--backend", "cpu"]) == ["--mmap"]
+    cpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    assert mmap_flags(cpu, None, ["--backend", "diffusion=vulkan0"]) == []
+    assert mmap_flags(cpu, ["--mmap"], None) == []
+    assert mmap_flags(None, None, None) == []
+    # an unreadable / unprobeable binary fails closed
+    assert (
+        _cpu_install(tmp_path, monkeypatch, None)
+        and mmap_flags(str(tmp_path / "missing" / "sd-cli")) == []
+    )
+
+
+def test_cpu_mmap_env_override(monkeypatch, tmp_path):
+    from core.inference.sd_cpp_args import mmap_flags
+
+    monkeypatch.setattr("sys.platform", "linux")
+    new = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "0")
+    assert mmap_flags(new) == []
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "1")
+    old = _cpu_install(tmp_path, monkeypatch, _OLD_HELP)
+    assert mmap_flags(old) == ["--mmap"]
 
 
 @pytest.mark.parametrize(
@@ -1194,22 +1276,14 @@ def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
     assert types_of(None) is None
 
     k_quant = write("te_q4k.gguf", [("w", None, gguf.GGMLQuantizationType.Q4_K)])
-    dense = write("vae_f16.gguf", [("w", x.astype(np.float16), None)])
-    all_types = _sd_cpp_args_module.model_files_quantized_weight_types
+    assert types_of(k_quant) == frozenset({"Q4_K"})
 
-    def route(files):
+    def route(path):
         return _sd_cpp_args_module.quant_cublas_env(
-            [(10, 0)], environ = {}, weight_types = all_types(files)
+            [(10, 0)], environ = {}, weight_types = types_of(path)
         )
 
-    with_k_te = SdCppModelFiles(diffusion_model = q8, llm = k_quant)
-    assert all_types(with_k_te) == frozenset({"Q8_0", "Q4_K"})
-    assert route(with_k_te) == {}
-    assert route(SdCppModelFiles(diffusion_model = q8, t5xxl = k_quant, vae = dense)) == {}
-    q8_only = SdCppModelFiles(
-        diffusion_model = q8, llm = q8, vae = dense, clip_l = str(tmp_path / "c.safetensors")
-    )
-    assert all_types(q8_only) == frozenset({"Q8_0"})
-    assert route(q8_only) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
-    assert all_types(SdCppModelFiles(diffusion_model = q8, llm = str(tmp_path / "x.gguf"))) is None
-    assert all_types(SdCppModelFiles(diffusion_model = str(tmp_path / "m.safetensors"))) is None
+    assert route(q8) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert route(mixed) == {}
+    assert route(k_quant) == {}
+    assert route(str(tmp_path / "missing.gguf")) == {}

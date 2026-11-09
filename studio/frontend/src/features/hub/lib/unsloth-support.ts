@@ -210,7 +210,7 @@ function detectUnsupportedFormatKey(
     if (alias && excludedFormats.has(alias)) return alias;
   }
   if (modelId) {
-    // Mirrors the backend's _looks_like_mlx_repo heuristic.
+    // Mirrors the backend's looks_like_mlx_repo heuristic.
     if (excludedFormats.has("mlx") && modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {

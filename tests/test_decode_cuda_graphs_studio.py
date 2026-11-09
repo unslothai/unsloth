@@ -93,7 +93,7 @@ def test_studio_scope_is_off_on_native_windows(G, monkeypatch):
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "CUDA only")
-def test_studio_generate_graphed_plain_generate_eager():
+def test_studio_generate_graphed_plain_generate_eager(monkeypatch):
     import unsloth  # noqa: F401
     from unsloth import FastLanguageModel
     import unsloth.models._decode_graphs as G
@@ -118,13 +118,16 @@ def test_studio_generate_graphed_plain_generate_eager():
     def replays():
         return G.stats(model).get("replays", 0)
 
+    # Plain generate() graphs by default too (generate_scope); =0 is the eager reference.
+    monkeypatch.setenv("UNSLOTH_DECODE_CUDA_GRAPHS", "0")
     eager = gen()
     assert replays() == 0
+    monkeypatch.delenv("UNSLOTH_DECODE_CUDA_GRAPHS")
     with G.studio_generation():
         graphed = gen()
     assert replays() == 24 - 2 and G.stats(model)["disabled"] is None
     assert torch.equal(eager[0], graphed[0]) and torch.equal(eager[1], graphed[1])
-    assert torch.equal(gen()[1], eager[1]) and replays() == 24 - 2
+    assert torch.equal(gen()[1], eager[1]) and replays() == 2 * (24 - 2)
     G.release_for_training(model)
     assert G.stats(model)["graphs"] == 0
     assert not any("paged_attention" in m.__dict__ for m in model.modules())

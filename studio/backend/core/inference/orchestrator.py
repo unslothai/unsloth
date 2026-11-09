@@ -302,9 +302,7 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
 
 
 def _mlx_runtime_mirror_fields(model_info: dict) -> dict:
-    """MLX runtime state the parent mirrors, omitting what was not reported. Only the MLX backend
-    sends these. Creating the keys for every backend would make the reload comparison see a None
-    the backend never stored, and reload on every identical request."""
+    """Only the MLX backend sends these; a None on other backends would reload every identical request."""
     return {key: model_info[key] for key in _MLX_RUNTIME_MIRROR_FIELDS if key in model_info}
 
 
@@ -407,13 +405,12 @@ def _encoded_images(images, to_base64) -> list:
 
 
 def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
-    """The parent's view of a model the worker holds. Measured or classified in the subprocess and
-    unrecoverable once the model lives there, so a field the worker sends and this does not copy
-    is one the API can never report."""
+    """Parent's view of a worker-held model: a field not copied here can never be reported by the API."""
     return {
         "is_vision": model_info.get("is_vision", False),
         "is_lora": model_info.get("is_lora", False),
         "is_mlx": model_info.get("is_mlx", False),
+        "loaded_auto_map": model_info.get("loaded_auto_map"),
         "display_name": model_info.get("display_name", model_name),
         "is_audio": model_info.get("is_audio", False),
         "audio_type": model_info.get("audio_type"),
@@ -432,6 +429,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_family": model_info.get("audio_family"),
         "audio_options": model_info.get("audio_options"),
         "gguf_variant": model_info.get("gguf_variant"),
+        "precision_folder": model_info.get("precision_folder"),
         "audio_workflows": model_info.get("audio_workflows"),
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
@@ -448,6 +446,15 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_device_fallback": model_info.get("audio_device_fallback"),
         "audio_request_inputs": model_info.get("audio_request_inputs"),
         "max_image_side": model_info.get("max_image_side"),
+    }
+
+
+def _load_settings(sub_config: dict) -> dict:
+    """What decides the weights and runtime a worker holds; the rest changes with each request."""
+    return {
+        key: value
+        for key, value in sub_config.items()
+        if key not in ("max_seq_length", "gpu_selection", "disable_xet")
     }
 
 
@@ -760,8 +767,7 @@ class InferenceOrchestrator:
             logger.debug("Could not tell the worker to let go of its batch", exc_info = True)
 
     def is_worker_alive(self) -> bool:
-        """True while the inference subprocess is running, even with no model active (a failed load
-        can leave a live worker holding sidecar modules)."""
+        """True while the worker runs, even with no model (a failed load can leave sidecars)."""
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
             return managed.alive()
@@ -840,9 +846,8 @@ class InferenceOrchestrator:
                 self._worker_reserved_for = None
 
     def _shutdown_before_respawn(self) -> None:
-        """Tear the current worker down before a retry spawns its replacement. A worker that
-        survives terminate/kill keeps its handle (see the model-switch guard in load_model), and a
-        second worker must not be spawned over it."""
+        """Tear down before a retry respawns: a worker that survives terminate/kill is never spawned
+        over."""
         if self._shutdown_subprocess(timeout = 5) is False:
             raise RuntimeError(
                 "The inference worker did not exit and still holds GPU memory; "
@@ -2257,8 +2262,9 @@ class InferenceOrchestrator:
         engine_options = None,
         n_parallel: Optional[int] = None,
     ) -> bool:
-        """Load a model for inference. Always spawns a fresh subprocess per load for a clean
-        interpreter (no stale unsloth patches, torch.compile caches, or getsource failures)."""
+        """Load a model for inference. Spawns a fresh subprocess per load for a clean interpreter
+        (no stale unsloth patches, torch.compile caches, or getsource failures); only a smaller
+        context on the MLX load already held is applied in place."""
         if engine != "auto":
             return self._load_managed_engine(
                 engine,
@@ -2378,7 +2384,15 @@ class InferenceOrchestrator:
                     "retry when it completes."
                 )
 
-            # Always spawn fresh: unsloth patches torch internals, breaking getsource on reuse.
+            if self._narrow_context_in_place(
+                sub_config, model_name, parallel_slots, load_cancel_event
+            ):
+                self.loading_models.discard(model_name)
+                if on_prior_worker_released is not None:
+                    on_prior_worker_released()
+                return True
+
+            # Otherwise spawn fresh: unsloth patches torch internals, breaking getsource on reuse.
             had_worker_handle = self._proc is not None
             worker_shutdown_at = 0.0
             before_kill_free_mib = None
@@ -2417,7 +2431,10 @@ class InferenceOrchestrator:
                     required_gb = gpu_selection.get("required_gb")
                     if required_gb is not None:
                         expected_free_gb = {int(resolved_gpu_ids[0]): float(required_gb)}
-                settled = self._wait_for_worker_vram_settle(
+                # An MLX worker first reads memory seconds after its imports, past the old worker's reclaim.
+                settled = (
+                    expected_free_gb is None and sub_config["device_backend"] == "mlx"
+                ) or self._wait_for_worker_vram_settle(
                     worker_shutdown_at or time.monotonic(),
                     expected_free_gb = expected_free_gb,
                     before_kill_free_mib = before_kill_free_mib,
@@ -2553,6 +2570,7 @@ class InferenceOrchestrator:
                         self.models[self.active_model_name] = _mirrored_model_entry(
                             model_info, model_name
                         )
+                        self._worker_load_settings = (self._proc, _load_settings(sub_config))
                         self.models[self.active_model_name]["parallel_slots"] = parallel_slots
                         self.models[self.active_model_name]["can_batch"] = model_info.get(
                             "can_batch"
@@ -2618,6 +2636,77 @@ class InferenceOrchestrator:
             raise
         finally:
             self._release_load_downloads()
+
+    def _narrow_context_in_place(
+        self,
+        sub_config: dict,
+        model_name: str,
+        parallel_slots,
+        cancel_event = None,
+    ) -> bool:
+        """Whether the idle MLX worker holding this load took a smaller context in place."""
+        proc = self._proc
+        entry = self.models.get(model_name)
+        held = getattr(self, "_worker_load_settings", None)
+        if (
+            sub_config["device_backend"] != "mlx"
+            or sub_config["mlx_distributed"]
+            or entry is None
+            or self.active_model_name != model_name
+            or entry.get("parallel_slots") != parallel_slots
+            or not 0 < (sub_config["max_seq_length"] or 0) < (entry.get("context_length") or 0)
+            or held != (proc, _load_settings(sub_config))
+            or not proc.is_alive()
+            or self._replies_in_flight()
+        ):
+            return False
+        with self._dispatcher_lifecycle_lock:
+            if self._worker_reserved_for is not None:
+                return False
+            self._worker_reserved_for = "the context is being narrowed"
+        acquired = False
+        try:
+            # A running dispatcher would drop the reply.
+            if not self._wait_worker_idle():
+                return False
+            acquired = self._gen_lock.acquire(timeout = 5.0)
+            if not acquired or self._proc is not proc:
+                return False
+            with self._active_cancel_lock:
+                if self._active_cancel_events:
+                    return False
+            with self._send_order_lock:
+                self._send_cmd(
+                    {"type": "narrow_context", "max_seq_length": sub_config["max_seq_length"]}
+                )
+                fields = self._wait_response("context_narrowed", timeout = 60.0).get("fields")
+            if not fields:
+                return False
+            from utils.process_lifetime import is_process_shutting_down
+
+            with self._subprocess_shutdown_lock:
+                if (
+                    is_process_shutting_down()
+                    or self._proc is not proc
+                    or model_name not in self.loading_models
+                    or (cancel_event is not None and cancel_event.is_set())
+                ):
+                    return False
+                entry.update(fields)
+                self.load_generation += 1
+                self._loaded_by_user_action = False
+            logger.info(
+                "Model '%s' now serves a context of %s", model_name, fields["context_length"]
+            )
+            return True
+        except Exception as exc:
+            logger.warning("Could not narrow the context in place: %s", exc)
+            return False
+        finally:
+            if acquired:
+                self._gen_lock.release()
+            with self._dispatcher_lifecycle_lock:
+                self._worker_reserved_for = None
 
     def _claim_load_downloads(self, resp: dict) -> None:
         from hub.services.load_downloads import claim_load_downloads
@@ -3028,6 +3117,7 @@ class InferenceOrchestrator:
         request_branch: Optional[list] = None,
         live_branch: Optional[list] = None,
         force_reset: bool = False,
+        keeps_boundary: bool = False,
     ) -> dict:
         """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
@@ -3156,7 +3246,7 @@ class InferenceOrchestrator:
                 max_tokens = fit_max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
-                keeps_boundary = _keeps_compaction_boundary(thread_id),
+                keeps_boundary = keeps_boundary or _keeps_compaction_boundary(thread_id),
                 can_reset = can_reset,
                 recall_offered = recall_offered,
                 reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -3238,8 +3328,7 @@ class InferenceOrchestrator:
         timeout,
         cancelled = None,
     ):
-        """The worker's *reply_type* answer to *request_id*, or None once *timeout* passes
-        or *cancelled* returns true."""
+        """reply_type answer for request_id, or None on timeout or when cancelled is true."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if cancelled is not None and cancelled():
@@ -3600,9 +3689,8 @@ class InferenceOrchestrator:
         disable_parallel_tool_use: bool = False,
         **_unused,
     ):
-        """Run the safetensors agentic tool loop in the parent process, calling the worker for each
-        turn. Yields the same event dicts as the GGUF tool loop so the route layer can stream
-        both backends through one helper."""
+        """Runs the safetensors tool loop in the parent, calling the worker per turn; events match
+        GGUF's."""
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
@@ -3701,6 +3789,8 @@ class InferenceOrchestrator:
         _request_ids = {id(message) for message in initial}
         _sticky_boundary_applied = False
         _conversation_recall_done = False
+        # Later fits run on the cut history, so the cut stays put even without a saved thread.
+        _loop_cut = False
         # Loop notices are user turns, so the fit stops protecting the question as the newest user turn.
         _rolling_anchor_ids: set[int] = set()
         for message in reversed(initial):
@@ -3709,7 +3799,7 @@ class InferenceOrchestrator:
                 break
 
         def _fit_iteration(conversation: list, active_tools: list, live_branch: list) -> dict:
-            nonlocal _sticky_boundary_applied, _conversation_recall_done
+            nonlocal _sticky_boundary_applied, _conversation_recall_done, _loop_cut
             if loop_images:
                 # The count cannot price pictures.
                 return {}
@@ -3741,6 +3831,10 @@ class InferenceOrchestrator:
                 recall_done = _conversation_recall_done,
                 request_branch = _request_branch,
                 live_branch = live_branch,
+                keeps_boundary = _loop_cut,
+            )
+            _loop_cut = _loop_cut or any(
+                event.get("dropped_messages") for event in result.get("events") or ()
             )
             # The saved boundary applies once, in the first fit that runs (not resumed or failed).
             if result.get("boundary_applied"):
@@ -4040,8 +4134,7 @@ class InferenceOrchestrator:
         *,
         may_signal: bool = True,
     ) -> tuple[bool, bool]:
-        """End one request: by name where the worker reads stops, else via the shared event.
-        Reports (recorded, sent)."""
+        """End by name if the worker reads stops, else via the event; gives (recorded, sent)."""
         ledger = self._stop_ledger
         sent = False
         if ledger is not None:

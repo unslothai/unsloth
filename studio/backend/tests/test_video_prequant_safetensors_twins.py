@@ -57,51 +57,6 @@ CHAINS = {
         ["Wan2.2-T2V-A14B-INT8-2.pt"],
         ["Wan2.2-T2V-A14B-INT8-2.safetensors", "Wan2.2-T2V-A14B-INT8-2.pt"],
     ),
-    ("wan2.2-ti2v-5b", "nvfp4", None, None): (
-        ["Wan2.2-TI2V-5B-NVFP4.pt", "Wan2.2-TI2V-5B-NVFP4.safetensors", "transformer_nvfp4.pt"],
-        ["Wan2.2-TI2V-5B-NVFP4.safetensors", "Wan2.2-TI2V-5B-NVFP4.pt", "transformer_nvfp4.pt"],
-    ),
-    ("wan2.2-t2v-a14b", "nvfp4", None, None): (
-        ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-NVFP4.safetensors", "transformer_nvfp4.pt"],
-        ["Wan2.2-T2V-A14B-NVFP4.safetensors", "Wan2.2-T2V-A14B-NVFP4.pt", "transformer_nvfp4.pt"],
-    ),
-    ("wan2.2-t2v-a14b", "nvfp4", None, "transformer_2"): (
-        ["Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
-        [
-            "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
-            "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
-        ],
-    ),
-    ("hunyuanvideo-1.5", "nvfp4", None, None): (
-        [
-            "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt",
-            "HunyuanVideo-1.5-NVFP4.safetensors",
-            "HunyuanVideo-1.5-NVFP4.pt",
-            "transformer_nvfp4.pt",
-        ],
-        [
-            "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.safetensors",
-            "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt",
-            "HunyuanVideo-1.5-NVFP4.safetensors",
-            "HunyuanVideo-1.5-NVFP4.pt",
-            "transformer_nvfp4.pt",
-        ],
-    ),
-    ("hunyuanvideo-1.5-720p", "nvfp4", None, None): (
-        [
-            "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt",
-            "HunyuanVideo-1.5-NVFP4.safetensors",
-            "HunyuanVideo-1.5-NVFP4.pt",
-            "transformer_nvfp4.pt",
-        ],
-        [
-            "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.safetensors",
-            "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt",
-            "HunyuanVideo-1.5-NVFP4.safetensors",
-            "HunyuanVideo-1.5-NVFP4.pt",
-            "transformer_nvfp4.pt",
-        ],
-    ),
     # Already twin-first (derived chain or declared safetensors): unchanged.
     ("minimax-h3", "fp8", None, None): (
         ["MiniMax-H3-FP8.safetensors", "MiniMax-H3-FP8.pt", "transformer_fp8.pt"],
@@ -136,6 +91,22 @@ CHAINS = {
 }
 
 
+# nvfp4 is safetensors only: no .pt / .pth name in its chain, with the twins switch on or off.
+NVFP4_CHAINS = {
+    ("wan2.2-ti2v-5b", None): ["Wan2.2-TI2V-5B-NVFP4.safetensors"],
+    ("wan2.2-t2v-a14b", None): ["Wan2.2-T2V-A14B-NVFP4.safetensors"],
+    ("wan2.2-t2v-a14b", "transformer_2"): ["Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors"],
+    ("hunyuanvideo-1.5", None): [
+        "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.safetensors",
+        "HunyuanVideo-1.5-NVFP4.safetensors",
+    ],
+    ("hunyuanvideo-1.5-720p", None): [
+        "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.safetensors",
+        "HunyuanVideo-1.5-NVFP4.safetensors",
+    ],
+}
+
+
 @pytest.fixture(autouse = True)
 def _env(monkeypatch):
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
@@ -166,6 +137,28 @@ def test_kill_switch_restores_the_old_chain(key, monkeypatch):
     assert _chain(key)[1] == CHAINS[key][0]
 
 
+@pytest.mark.parametrize("twins", [None, "0"], ids = ["twins_on", "twins_off"])
+@pytest.mark.parametrize("key", sorted(NVFP4_CHAINS, key = str), ids = lambda k: "-".join(map(str, k)))
+def test_nvfp4_chain_is_safetensors_only(key, twins, monkeypatch):
+    if twins is not None:
+        monkeypatch.setenv(TWINS_ENV, twins)
+    fam, task = key
+    src, chain = _chain((fam, "nvfp4", None, task))
+    assert chain == NVFP4_CHAINS[key]
+    assert src.declared_filenames == (chain[0],)
+
+
+def test_no_video_family_declares_an_nvfp4_pickle():
+    rows = [
+        (fam.name, entry)
+        for fam in vf._FAMILIES
+        for entry in getattr(fam, "prequant_filenames", ()) or ()
+        if entry[0] == "nvfp4"
+    ]
+    assert len(rows) == 5
+    assert all(entry[-1].endswith(".safetensors") for _name, entry in rows), rows
+
+
 def test_every_declared_video_pickle_gets_its_twin_first():
     """Over the whole table, so a new family row cannot skip the rule."""
     seen = 0
@@ -182,7 +175,7 @@ def test_every_declared_video_pickle_gets_its_twin_first():
             twin = name[: -len(".pt")] + ".safetensors"
             assert chain.index(twin) == chain.index(name) - 1, (fam.name, chain)
             seen += 1
-    assert seen >= 8
+    assert seen >= 4
 
 
 class FakeHub:
@@ -241,9 +234,15 @@ CELLS = [
     ("minimax-h3", "int8", None, None, "MiniMax-H3-INT8-ConvRot"),
     ("minimax-h3", "fp8", None, "ref2va", "MiniMax-H3-Ref2VA-FP8"),
     ("wan2.2-t2v-a14b", "fp8", None, "transformer_2", "Wan2.2-T2V-A14B-FP8-2"),
+    ("wan2.2-t2v-a14b", "int8", None, "transformer_2", "Wan2.2-T2V-A14B-INT8-2"),
+    ("minimax-h3", "int8", None, "ref2va", "MiniMax-H3-Ref2VA-INT8-ConvRot"),
+]
+# nvfp4 shapes: a secondary expert and an agnostic declared name. Their .pt is never asked for.
+NVFP4_CELLS = [
     ("wan2.2-t2v-a14b", "nvfp4", None, "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4"),
     ("hunyuanvideo-1.5", "nvfp4", None, None, "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4"),
 ]
+NVFP4_CELL_IDS = [f"{c[0]}-{c[3]}" for c in NVFP4_CELLS]
 CELL_IDS = [f"{c[0]}-{c[1]}-{c[3]}" for c in CELLS]
 
 
@@ -367,7 +366,7 @@ def _video_sources(monkeypatch, fam_name, scheme):
 
 @pytest.mark.parametrize("cached_pt", [False, True], ids = ["new_user", "cached_pt"])
 def test_planner_prices_the_file_each_expert_will_open(cached_pt, tmp_path, monkeypatch):
-    """Wan A14B: both experts. Disk / memory planning counts the twin for a new user, the .pt for a cached one."""
+    """Wan A14B nvfp4: both experts. Planning and fetching count the .safetensors, even with a stale .pt cached."""
     from core.inference.video import VideoBackend
 
     stems = ["Wan2.2-T2V-A14B-NVFP4", "Wan2.2-T2V-A14B-transformer_2-NVFP4"]
@@ -391,7 +390,7 @@ def test_planner_prices_the_file_each_expert_will_open(cached_pt, tmp_path, monk
     if cached_pt:
         for s in stems:
             hub.cache(s + ".pt")
-    suffix = ".pt" if cached_pt else ".safetensors"
+    suffix = ".safetensors"
     api = _Api(sorted(hub.hosted))
     location, files = VideoBackend._denoiser_prequant_hub_files(None, "nvfp4", None, api)
     assert location == repo
@@ -410,3 +409,39 @@ def test_planner_prices_the_file_each_expert_will_open(cached_pt, tmp_path, monk
     assert fetched == [s + suffix for s in stems]
     for src, stem in zip(sources.values(), stems):
         assert _resolve(src, "nvfp4") == hub.cached[(repo, stem + suffix)]
+
+
+@pytest.mark.parametrize("cell", NVFP4_CELLS, ids = NVFP4_CELL_IDS)
+@pytest.mark.parametrize("offline", [False, True], ids = ["online", "offline"])
+def test_nvfp4_a_cached_pickle_is_never_opened(cell, offline, tmp_path, monkeypatch):
+    src, scheme, stem, hub = _setup(cell, tmp_path, monkeypatch)
+    hub.cache(stem + ".pt")
+    if offline:
+        with pytest.raises(LocalEntryNotFoundError):
+            _resolve(src, scheme, local_files_only = True)
+    else:
+        assert _resolve(src, scheme) == hub.cached[(src.location, stem + ".safetensors")]
+    assert stem + ".pt" not in hub.fetched
+    assert pq.cached_checkpoint_path(src, online = False) != hub.cached[(src.location, stem + ".pt")]
+
+
+@pytest.mark.parametrize("cell", NVFP4_CELLS, ids = NVFP4_CELL_IDS)
+def test_nvfp4_unreadable_twin_is_refused_not_swapped_for_the_pickle(cell, tmp_path, monkeypatch):
+    src, scheme, stem, hub = _setup(
+        cell,
+        tmp_path,
+        monkeypatch,
+        readable = lambda scheme = None, filename = None: not str(filename).endswith(".safetensors"),
+    )
+    hub.cache(stem + ".pt")
+    with pytest.raises(ValueError, match = "cannot be read here"):
+        _resolve(src, scheme)
+    assert hub.fetched == []
+
+
+@pytest.mark.parametrize("cell", NVFP4_CELLS, ids = NVFP4_CELL_IDS)
+def test_nvfp4_twin_not_hosted_never_falls_back_to_the_pickle(cell, tmp_path, monkeypatch):
+    src, scheme, stem, hub = _setup(cell, tmp_path, monkeypatch, hosted_twin = False)
+    with pytest.raises(EntryNotFoundError):
+        _resolve(src, scheme)
+    assert stem + ".pt" not in hub.fetched

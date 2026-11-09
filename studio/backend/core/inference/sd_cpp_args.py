@@ -27,9 +27,8 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "qwen-image": ("--qwen2vl",),
     "qwen-image-edit": ("--qwen2vl",),
     "qwen-image-layered": ("--qwen2vl",),
-    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
-    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
-    # reach the same field.
+    # 2.1 conditions on Qwen3-VL via --llm; --qwen2vl also enables Qwen2-VL's vision, the wrong
+    # door.
     "qwen-image-2.1": ("--llm",),
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
@@ -77,8 +76,7 @@ class SdCppGenParams:
 
     prompt: str
     negative_prompt: Optional[str] = None
-    # None = unset: an image-conditioned run lets sd.cpp derive the size from the input; a plain txt2img falls back to
-    # 1024x1024.
+    # None: unset, so image runs let sd.cpp derive size; plain txt2img defaults to 1024x1024.
     width: Optional[int] = None
     height: Optional[int] = None
     steps: Optional[int] = None
@@ -135,6 +133,8 @@ class SdCppUpscaleParams:
 
 # Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
 # Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
+# Read from the diffusion GGUF only (A100, Q8_0 DiT + Q4_K_M encoder: 1.57x); the env is process-wide, but prompt rows
+# stay below it. Drop the env once the pin carries fork patch 0016, the build's own Q8_0-only default.
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -162,36 +162,12 @@ def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]
         return None
 
 
-def model_files_quantized_weight_types(files: "SdCppModelFiles") -> Optional[frozenset[str]]:
-    """Quantized types across every loaded file (the env override is process-wide), or None if any GGUF is unreadable."""
-    types = gguf_quantized_weight_types(files.diffusion_model)
-    if types is None:
-        return None
-    for path in (
-        files.vae,
-        files.audio_vae,
-        files.clip_l,
-        files.clip_g,
-        files.t5xxl,
-        files.llm,
-        files.llm_vision,
-        files.qwen2vl,
-    ):
-        if not path or not str(path).lower().endswith(".gguf"):
-            continue
-        extra = gguf_quantized_weight_types(path)
-        if extra is None:
-            return None
-        types |= extra
-    return types
-
-
 def quant_cublas_env(
     cuda_ccs: Sequence[tuple[int, int]],
     environ: Optional[dict] = None,
     weight_types: Optional[frozenset[str]] = None,
 ) -> dict[str, str]:
-    """Set only if every card sd.cpp may pick agrees and all quantized tensors are Q8_0; a user value wins."""
+    """Set only if every card sd.cpp may pick agrees and the diffusion GGUF is all Q8_0; a user value wins."""
     import os
 
     environ = os.environ if environ is None else environ
@@ -312,10 +288,8 @@ def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
 
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
-    """True when sd.cpp runs the diffusion model on Apple Metal (macOS; an explicit ``--backend`` for it decides,
-    else an Apple Silicon machine whose GPU is not paravirtual).
-
-    Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
+    """True when sd.cpp runs diffusion on Apple Metal (an explicit --backend decides, else Apple
+    Silicon not paravirtual); direct conv stays off since CONV_2D trips the GPU watchdog."""
     import sys
 
     if sys.platform != "darwin":
@@ -410,8 +384,10 @@ def metal_placement_flags(offload: Sequence[str]) -> list[str]:
     return [f for f in flags if f not in offload]
 
 
-# 1 / 0 forces sd.cpp's --mmap on / off on macOS; unset decides from the installed build (``mac_mmap_flags``).
+# 1 / 0 forces sd.cpp's --mmap on / off; unset decides from the installed build (``mmap_flags``).
 SD_CPP_MMAP_ENV = "UNSLOTH_DIFFUSION_SD_CPP_MMAP"
+# Help text of builds whose --mmap still repacks CPU weights (older ones run them unrepacked: slower, other pixels).
+CPU_MMAP_REPACK_HELP = "weights the CPU repacks are still loaded"
 # leejet/stable-diffusion.cpp#2037 (master-907) maps mmapped weights through Metal device buffers. Older builds accept
 # --mmap but hand Metal a CPU buffer it cannot address, so the flag is only safe from this build on.
 METAL_MMAP_MIN_BUILD = 907
@@ -497,6 +473,73 @@ def mac_mmap_flags(binary: Optional[str], extra_args: Optional[Sequence[str]] = 
         return ["--mmap"]
     build = sd_cpp_build_number(_installed_sd_cpp_tag(str(binary))) if binary else None
     return ["--mmap"] if build is not None and build >= METAL_MMAP_MIN_BUILD else []
+
+
+@functools.lru_cache(maxsize = 8)
+def _installed_sd_cpp_accelerator(binary: str) -> Optional[str]:
+    """The accelerator class (``cpu`` / ``cuda`` / ``vulkan`` / ...) Studio's installer recorded next to ``binary``."""
+    import json
+    from pathlib import Path
+
+    try:
+        path = Path(binary).resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    for parent in list(path.parents)[:3]:
+        try:
+            with open(parent / _INSTALL_RECORD, "r", encoding = "utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        accel = rec.get("accelerator") if isinstance(rec, dict) else None
+        return accel if isinstance(accel, str) and accel else None
+    return None
+
+
+def sd_cpp_mmap_keeps_cpu_repack(binary: str) -> bool:
+    """True when ``binary --help`` says its --mmap still repacks CPU weights. Fails closed."""
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _cpu_mmap_repack_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _cpu_mmap_repack_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and CPU_MMAP_REPACK_HELP in text
+
+
+def mmap_flags(
+    binary: Optional[str],
+    extra_args: Optional[Sequence[str]] = None,
+    backend_args: Optional[Sequence[str]] = None,
+) -> list[str]:
+    """``--mmap`` on macOS Metal-mmap builds and on CPU renders whose --mmap still repacks CPU weights (keeps
+    unrepacked weights file-backed: ~4.6 GB vs 13.3 GB anonymous, pixel-identical). GPU renders are left alone."""
+    import sys
+
+    if sys.platform == "darwin":
+        return mac_mmap_flags(binary, extra_args)
+    if "--mmap" in (extra_args or ()):
+        return []
+    forced = os.environ.get(SD_CPP_MMAP_ENV, "").strip().lower()
+    if forced in ("0", "false", "no", "off"):
+        return []
+    if forced in ("1", "true", "yes", "on"):
+        return ["--mmap"]
+    if not binary:
+        return []
+    args = [*(backend_args or ()), *(extra_args or ())]
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    on_cpu = (
+        target.lower() == "cpu"
+        if target is not None
+        else _installed_sd_cpp_accelerator(str(binary)) == "cpu"
+    )
+    return ["--mmap"] if on_cpu and sd_cpp_mmap_keeps_cpu_repack(str(binary)) else []
 
 
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
@@ -819,7 +862,7 @@ def build_sd_cpp_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -917,7 +960,7 @@ def build_sd_cpp_video_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd.append("-v")
     if extra_args:
@@ -1025,7 +1068,7 @@ def build_sd_cpp_server_command(
         native_speed_flags(native_speed, backend_args, accelerator, binary), offload
     )
     cmd += placement
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:

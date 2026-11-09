@@ -206,12 +206,16 @@ export const pl = {
         history: "Odczyt historii przeglądania",
         move: "Przesuwanie myszy",
         drag: "Przeciąganie",
+        tabs: "Przeglądanie kart",
+        readFile: "Czytanie pliku",
+        editFile: "Edytowanie pliku",
       },
     },
     title: "Przeglądarka",
     tabs: "Karty przeglądarki",
     newTab: "Nowa karta",
     newTabFullView: "Nowa karta w pełnym widoku",
+    newTabFloating: "Nowa karta w pływającym oknie",
     closeTab: "Zamknij kartę",
     close: "Zamknij przeglądarkę",
     show: "Pokaż przeglądarkę",
@@ -361,6 +365,8 @@ export const pl = {
     askBeforeDownloadingSetting: "Pytaj przed pobraniem",
     askBeforeDownloadingSettingDescription:
       "Potwierdzaj pliki z witryn przed ich zapisaniem.",
+    askBeforeProgramDownloadsSetting: "Pytaj przed pobraniem programów",
+    askBeforeProgramDownloadsSettingDescription: "Potwierdzaj pliki, które mogą uruchamiać programy, takie jak .exe lub .dmg, nawet gdy inne pobrania nie pytają.",
     downloadSitesSetting: "Uprawnienia witryn do pobierania",
     downloadSitesSettingDescription:
       "Witryny, z których pobieranie jest zawsze dozwolone lub zawsze blokowane.",
@@ -369,6 +375,7 @@ export const pl = {
     downloadSitesFor: "Pobieranie z {host}",
     downloadSitesRemove: "Zapomnij {host}",
     downloadSiteAllow: "Zawsze zezwalaj",
+    downloadSiteAllowAll: "Zezwalaj też na programy",
     downloadSiteBlock: "Zawsze blokuj",
     downloadPrompt: {
       title: "Pobrać ten plik?",
@@ -377,6 +384,9 @@ export const pl = {
       dangerous:
         "Takie pliki mogą uruchamiać programy na Twoim komputerze. Pobierz go tylko wtedy, gdy ufasz witrynie {host}.",
       remember: "Zapamiętaj na przyszłość",
+      once: "Zapytaj następnym razem",
+      site: "Zawsze dla {host}",
+      all: "Zawsze pobieraj, z każdej witryny",
       cancel: "Anuluj",
       download: "Pobierz",
       blocked: "Zablokowano pobieranie z {host}.",
@@ -425,6 +435,12 @@ export const pl = {
       openChat: "Otwórz w pełnym widoku",
       moveLeft: "Przenieś do lewego panelu",
       moveRight: "Przenieś do prawego panelu",
+    },
+    floating: {
+      enter: "Pływające okno",
+      dock: "Przypnij z boku",
+      close: "Zamknij pływające okno",
+      handle: "Przesuń okno. Strzałki je przesuwają, Shift ze strzałkami zmienia jego rozmiar.",
     },
     annotate: {
       countOne: "1 adnotacja",
@@ -883,6 +899,9 @@ export const pl = {
     unifiedTightFit: "Ciasne dopasowanie",
     unifiedTightFitHint:
       "Może wczytać się z krótszym kontekstem lub działać wolniej na tym Macu.",
+    residentToRun: "do uruchomienia",
+    residentToRunHint:
+      "Pamięć GPU wymagana przez kontrolę ładowania podczas działania",
     onDevice: "Na urządzeniu",
     huggingFace: "Hugging Face",
     retry: "Ponów",
@@ -1205,6 +1224,9 @@ export const pl = {
         "Jeden model w wierszu, np. unsloth/Qwen3-4B-GGUF, lub unsloth/* dla całej organizacji. Pozostaw puste, aby zezwolić na każdy model.",
       modelAccessSave: "Zapisz",
       modelAccessLimited: "Ograniczony dostęp do modeli",
+      rename: "Zmień nazwę",
+      renameTitle: "Zmień nazwę {username}",
+      renameDescription: "Wybierz nazwę, której to konto używa do logowania. Czaty, pliki i klucze API pozostają na koncie. Użytkownik zostanie wylogowany i zaloguje się ponownie nową nazwą oraz obecnym hasłem.",
       empty: "Nie ma jeszcze innych kont",
       setupCode: "Kod konfiguracji",
       setupFor: "Kod konfiguracji dla: {username}",
@@ -1848,6 +1870,13 @@ export const pl = {
         sttQuantDescription:
           "Wybierz lub wyszukaj model STT do uruchomienia lokalnie, a następnie jego kwantyzację.",
         sttDeviceLabel: "Wczytaj do",
+        sttContextLabel: "Kontekst głosu",
+        sttContextAuto: "Automatycznie (zalecane)",
+        sttContextAutoDescription:
+          "Dopasowuje się do każdego nagrania, używając więcej pamięci przy dłuższym dźwięku. Starsze środowiska uruchomieniowe mogą wymagać stałego rozmiaru, aby ograniczyć użycie pamięci. Dotyczy Qwen3-ASR w sekcjach Głos i Transkrypcja.",
+        sttContextFixedDescription:
+          "Mniejsze limity zużywają mniej pamięci. Nagrania, które się nie mieszczą, wymagają wyższego limitu lub trybu Automatycznie. Dotyczy Qwen3-ASR w sekcjach Głos i Transkrypcja.",
+        sttContextTokens: "tokeny: {count}",
         sttDeviceAuto: "GPU, gdy jest dostępny",
         sttDeviceCpu: "RAM procesora CPU",
         sttDeviceAutoDescription:
@@ -2062,6 +2091,26 @@ export const pl = {
       autoTitleNewChats: "Automatyczne tytuły nowych czatów",
       autoTitleNewChatsDescription:
         "Generuj tytuł na podstawie pierwszej wiadomości.",
+      mlWarmup: {
+        sectionTitle: "Wydajność przy uruchamianiu",
+        description: "Przygotuj wybrane funkcje, aby przyspieszyć ich pierwsze użycie. Wszystkie opcje są domyślnie wyłączone. Mogą one wczytywać współdzielone zależności i zwiększać zużycie RAM w stanie bezczynności.",
+        restartRequired: "Zmiany zostaną zastosowane po ponownym uruchomieniu Unsloth.",
+        hardwareLabel: "Wykrywanie sprzętu",
+        hardwareDescription: "Wykryj GPU i przygotuj PyTorch.",
+        textLabel: "Modele tekstowe",
+        textDescription: "Przygotuj obsługę modeli tekstowych Transformers.",
+        datasetsLabel: "Przygotowanie zbiorów danych",
+        datasetsDescription: "Przygotuj Datasets i jego zależności do podglądu i przetwarzania.",
+        mediaLabel: "Modele obrazu i wideo",
+        mediaDescription: "Przygotuj Diffusers i współdzielone zależności modeli.",
+        advanced: "Zaawansowane",
+        quantizationLabel: "Wstępne kontrole kwantyzacji obrazów",
+        quantizationDescription: "Sprawdź obsługę przed pierwszym wczytaniem skwantyzowanego modelu obrazu. Może to na krótko zwiększyć zużycie RAM.",
+        requiredBySelections: "Wymagane przez wybrane opcje.",
+        disabledByEnv: "Wyłączone przez UNSLOTH_STUDIO_DISABLE_TORCH_WARM w środowisku backendu.",
+        loadError: "Nie udało się wczytać ustawień wstępnego przygotowania przy uruchamianiu.",
+        saveError: "Nie udało się zapisać ustawień wstępnego przygotowania przy uruchamianiu.",
+      },
       helperLlm: {
         sectionTitle: "Pomocniczy LLM",
         preloadOnStartup: "Wstępnie pobieraj pomocniczy LLM przy uruchamianiu",
@@ -2291,6 +2340,12 @@ export const pl = {
           "Opcja Automatycznie używa na tym komputerze metody {transport}.",
         xetMissing:
           "Xet jest niedostępny, ponieważ hf_xet nie jest zainstalowany.",
+        speedLimit: "Limit prędkości pobierania",
+        speedLimitDescription:
+          "Brak limitu, dopóki nie ustawisz wartości. Ograniczone pobieranie używa HTTPS.",
+        speedLimitNoLimit: "Brak limitu",
+        speedLimitInvalid: "Wpisz liczbę w Mbit/s albo zostaw pole puste.",
+        speedLimitUsesHttps: "Gdy ustawiony jest limit prędkości, pobieranie używa HTTPS. Pliki większe niż 50 GB nadal używają Xet, bez limitu.",
       },
       uploads: {
         sectionTitle: "Przesyłanie",
@@ -2685,6 +2740,10 @@ export const pl = {
         contrast: {
           label: "Kontrast",
         },
+        elementOutline: {
+          label: "Obramowanie elementów",
+          description: "Intensywność obramowania przycisków, pól, kart i menu.",
+        },
         reduceMotion: {
           label: "Ogranicz ruch",
           description: "Ogranicz animacje lub dopasuj do ustawień systemu.",
@@ -2745,7 +2804,22 @@ export const pl = {
           "Zobacz na bieżąco, co inne aplikacje wysyłają do API tego serwera.",
         summary: "Żądania na żywo, błędy i użycie tokenów",
         status: "Aktywne: {active} · Ostatnie: {recent} · {model}",
-        noModelLoaded: "nie wczytano modelu",
+        noModelLoaded: "Nie wczytano modelu",
+        memory: "Pamięć",
+        gpuInUse: "Użycie GPU",
+        availableForModels: "Dostępne dla modeli",
+        refreshRate: "Częstotliwość odświeżania",
+        refreshRateDescription: "Jak często pływający monitor odczytuje użycie pamięci i GPU, gdy jest otwarty.",
+        refreshEvery: "Co {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Inne aplikacje",
+        otherInUse: "Inne użycie",
+        freeLabel: "Wolne",
+        unslothApp: "Aplikacja Unsloth",
+        unslothShare: "Pokaż udział Unsloth",
+        unslothShareDescription: "Podziel pamięć na to, czego używa Unsloth, czego używają inne aplikacje i co jest wolne.",
+        modelBreakdown: "Podział według modelu",
+        modelBreakdownDescription: "Podziel część paska pamięci należącą do Unsloth na każdy załadowany model i resztę aplikacji.",
         autoOpen: "Monitor pływający otwiera się automatycznie",
         autoOpenDescription: "Otwiera mały panel, gdy pojawia się ruch API.",
         cpu: "CPU",
@@ -2761,8 +2835,7 @@ export const pl = {
         gpuUnusableDetail: "Wykryty, ale PyTorch nie może go używać",
         detailedView: "Widok szczegółowy",
         detailedViewDescription:
-          "Pokazuj w oknie pływającym obciążenie CPU oraz obciążenie, temperaturę i pobór mocy każdego GPU.",
-        cpuLoad: "Obciążenie CPU",
+          "Pokazuj w oknie pływającym obciążenie, temperaturę i pobór mocy każdego GPU.",
         gpuLoad: "Obciążenie GPU",
         temperature: "Temperatura",
         power: "Pobór mocy",
@@ -2779,7 +2852,7 @@ export const pl = {
         detecting: "Wyszukiwanie procesorów GPU...",
         unreadable: "Nie udało się odczytać sprzętu tego serwera.",
         noGpu:
-          "Nie wykryto widocznego GPU. Powyżej pokazano zasoby samego CPU.",
+          "Nie wykryto osobnej karty GPU.",
         noUsableGpu:
           "Żaden GPU na tym komputerze nie może być używany przez PyTorch.",
         mismatchCpuBuild:
@@ -2870,7 +2943,7 @@ export const pl = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary wnioskowanie akcelerator przełącz silnik ścieżka katalog plik wykonywalny",
       },
       modelMemory: {
-        title: "Pamięć modelu",
+        title: "Ładowanie modelu",
         keepResident: "Utrzymuj model w pamięci GPU",
         keepResidentDescription: "Pozostaje w VRAM między promptami.",
         keepResidentHint:
@@ -3070,7 +3143,7 @@ export const pl = {
       configurationDocs: "dokumentację",
       configurationFlagsSuffix: "na temat flag.",
       modelNote:
-        "Codex wymaga modelu GGUF udostępnianego przez llama-server. Inni agenci mogą też używać modeli opartych na transformers; usuń --model, aby użyć modelu już wczytanego w Unsloth.",
+        "Claude Code i Codex wymagają modelu GGUF udostępnianego przez llama-server lub modelu MLX. Inni agenci mogą też używać modeli opartych na transformers; usuń --model, aby użyć modelu już wczytanego w Unsloth.",
       subagent: {
         title: "Użyj modelu lokalnego jako podagenta",
         description:
@@ -3146,6 +3219,8 @@ export const pl = {
     },
     chat: {
       groups: {
+        replies: { title: "Odpowiedzi" },
+        thinkingTools: { title: "Myślenie i narzędzia" },
         conversations: {
           title: "Rozmowy",
         },
@@ -3244,19 +3319,27 @@ export const pl = {
         "Pokazuj pod odpowiedzią, kiedy się zakończyła.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message znacznik czasu godzina data odpowiedź wiadomość",
-      showGenerationDetails: "Szczegóły generowania",
+      showGenerationDetails: "Szczegółowe informacje o szybkości i ładowaniu",
       showGenerationDetailsDescription:
-        "Pokazuj na żywo szybkość przetwarzania promptu i odpowiedzi z liczbą tokenów oraz miejsce wczytania warstw modelu.",
+        "Dodaje do odczytów na żywo szybkość czytania promptu, liczbę tokenów i akceptację szkiców oraz pokazuje, gdzie załadowano warstwy modelu.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts szczegóły statystyki szybkość warstwy eksperci",
+      generationStatsUpdates: "Statystyki szybkości i kontekstu",
+      generationStatsUpdatesDescription:
+        "Tryb Na bieżąco liczy tokeny na sekundę i użycie kontekstu podczas strumieniowania odpowiedzi. Po zakończeniu aktualizuje je, gdy każda odpowiedź się skończy.",
+      generationStatsUpdatesHint:
+        "Na bieżąco odświeża wskaźnik tokenów na sekundę pod odpowiedzią i pasek kontekstu u góry czatu kilka razy na sekundę, gdy odpowiedź jest pisana. Po zakończeniu aktualizuje je raz, gdy każda odpowiedź się skończy. Tryb na bieżąco może powodować opóźnienia lub spadek wydajności, zwłaszcza na starszych lub obciążonych komputerach.",
+      generationStatsUpdatesSettled: "Po zakończeniu",
+      generationStatsUpdatesRealtime: "Na bieżąco",
+      generationStatsUpdatesKeywords:
+        "na bieżąco na żywo aktualizacja szybkość kontekst statystyki realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edycja odpowiedzi przy odpowiedziach",
       inlineEditResponseDescription:
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",
       turnNavigation: "Nawigacja po turach",
       turnNavigationDescription: "Pokazuje Twoje wiadomości jako pasek przy lewej krawędzi długich czatów. Najedź, aby zobaczyć podgląd tury, kliknij, aby do niej przejść, i dodaj zakładkę, aby łatwo ją znaleźć.",
-      composerAtBottom: "Pole wiadomości na dole",
-      composerAtBottomDescription:
-        "Rozpoczynaj nowe czaty z polem wiadomości na dole strony zamiast na środku.",
+      composerPosition: "Położenie pola wiadomości",
+      composerPositionDescription: "Gdzie znajduje się pole wiadomości po rozpoczęciu nowego czatu, od góry strony aż do dołu.",
       projectAttachments: "Udostępniaj pliki w całym projekcie",
       projectAttachmentsDescription:
         "Udostępniaj nowe załączniki czatu wszystkim czatom w projekcie.",
@@ -3401,12 +3484,10 @@ export const pl = {
       exportingAction: "Eksportowanie...",
       exportConversations: "Eksportuj Ostatnie i Projekty",
       exportConversationsDescription:
-        "Pobierz Ostatnie lub Ostatnie wraz z czatami projektów jako Training JSONL, CSV, ShareGPT JSONL lub Markdown, łącznie lub osobno dla każdego czatu. Message JSONL jest dostępny dla każdego czatu osobno.",
+        "Pobierz Ostatnie lub Ostatnie wraz z czatami projektów jako Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML lub PDF, łącznie lub osobno dla każdego czatu. Message JSONL jest dostępny dla każdego czatu osobno.",
       exportConversationsAction: "Eksportuj",
       exportScopeRecents: "Ostatnie",
       exportScopeAll: "Ostatnie + Projekty",
-      exportCombinedSuffix: "(łącznie)",
-      exportPerChatSuffix: "(każdy czat osobno)",
       importChats: "Importuj czaty",
       importChatsDescription:
         "Importuj pliki JSON, JSONL, NDJSON, CSV lub Markdown do sekcji Ostatnie.",
@@ -3779,6 +3860,9 @@ export const pl = {
         docsLabel: "Otwórz dokumentację Decision API",
         description:
           "Odpowiadaj na pytania tak/nie, wielokrotnego wyboru i punktowe dotyczące tekstu za pomocą modelu na tym komputerze lub modelu decyzyjnego z Połączeń. Działa z TypeSafe SDK.",
+        codeTitle: "Wywołaj z kodu",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Inni klienci MCP łączą się tutaj tym samym tokenem.",
         enable: "Obsługuj żądania",
         enableDescription:
           "Udostępnia /v1/systemone. Włączenie powoduje pobranie modelu.",
@@ -3836,7 +3920,7 @@ export const pl = {
       mcp: {
         title: "Dostęp agentów (MCP)",
         description:
-          "Pozwól agentom programistycznym, takim jak Claude Code i Codex, korzystać z Unsloth przez MCP. Agenci logują się kluczem API Unsloth z tej strony.",
+          "Pozwól agentom programistycznym, takim jak Claude Code i Codex, korzystać z Unsloth przez MCP.",
         enable: "Zezwalaj na połączenia agentów",
         enableDescription:
           "Udostępnia /mcp/ dla żądań zawierających klucz API Unsloth.",
@@ -3845,10 +3929,93 @@ export const pl = {
         saveError: "Nie udało się zapisać ustawienia dostępu agentów.",
         agent: "Agent",
         exportKeyHint:
-          "Przed uruchomieniem agenta ustaw {name} na klucz API Unsloth z tej strony.",
+          "Przed uruchomieniem agenta ustaw {name} na klucz API Unsloth.",
         configFileHint: "Dodaj to do {path}.",
         keywords:
           "mcp model context protocol agents claude codex tools agenci narzędzia",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Agenci logują się kluczem API Unsloth.",
+      createKey: "Utwórz klucz API",
+      tools: {
+        title: "Narzędzia",
+        count: "Włączone: {on} z {total}",
+        choose: "Wybierz narzędzia",
+        dialogTitle: "Narzędzia Unsloth MCP",
+        allTools: "Wszystkie narzędzia",
+        selectAll: "Zaznacz wszystko",
+        selectNone: "Nie zaznaczaj nic",
+        description:
+          "Każde włączone narzędzie dokłada się do tego, co agenci czytają przed startem, więc wyłącz te, których nie potrzebujesz. Agenci nigdy nie widzą wyłączonego narzędzia, a jego wywołania są odrzucane. Już połączeni agenci zobaczą zmianę po ponownym połączeniu.",
+        saveError: "Nie udało się zapisać ustawienia narzędzi Unsloth MCP.",
+        chatNote: "Czat nigdy nie dostaje {tools}.",
+        groups: {
+          models: "Modele",
+          generate: "Generowanie",
+          training: "Trening i eksport",
+          library: "Dane i biblioteka",
+          jobs: "Zadania",
+          other: "Inne",
+        },
+      },
+      status: {
+        on: "Włączone",
+        off: "Wyłączone",
+      },
+      apiKeysRow: {
+        open: "Otwórz w Agentach",
+      },
+      toolLabels: {
+        studioStatus: "Stan",
+        listModels: "Lista modeli",
+        loadModel: "Załaduj model",
+        unloadModel: "Zwolnij model",
+        planLoad: "Zaplanuj ładowanie",
+        downloadModel: "Pobierz model",
+        chat: "Czat",
+        embed: "Osadź tekst",
+        systemOne: "Model decyzyjny",
+        generateImage: "Generuj obrazy",
+        generateAudio: "Generuj dźwięk",
+        transcribe: "Transkrybuj",
+        analyzeAudio: "Analizuj dźwięk",
+        generateVideo: "Generuj wideo",
+        runRecipe: "Uruchom Data Recipe",
+        getJob: "Stan zadania",
+        datasets: "Zbiory danych",
+        startTraining: "Rozpocznij trening",
+        listTrainingRuns: "Przebiegi treningu",
+        exportModel: "Eksportuj model",
+        listMedia: "Zapisane multimedia",
+        voices: "Głosy",
+        cancel: "Anuluj pracę",
+      },
+      toolDescriptions: {
+        studioStatus: "Sprawdzić, co jest wczytane, działa i wolne na tym komputerze.",
+        listModels: "Wyświetlić modele, które agenci mogą wczytać.",
+        loadModel: "Wczytać model, aby agenci mogli z nim rozmawiać lub generować.",
+        unloadModel: "Zwolnić model, aby odzyskać pamięć.",
+        planLoad: "Zobaczyć rozmiar pobierania i pamięć wczytania bez wczytywania.",
+        downloadModel: "Pobrać model z Hugging Face.",
+        chat: "Rozmawiać z wczytanym modelem.",
+        embed: "Zamienić tekst na wektory lub uszeregować teksty według podobieństwa.",
+        systemOne: "Zadać modelowi decyzyjnemu pytania tak/nie, wyboru lub oceny.",
+        generateImage: "Generować obrazy i zapisywać je w galerii.",
+        generateAudio: "Generować mowę lub inny dźwięk.",
+        transcribe: "Zamienić mowę na tekst.",
+        analyzeAudio: "Sprawdzić mówców, czas i zgodność klipu ze scenariuszem.",
+        generateVideo: "Wygenerować wideo.",
+        runRecipe: "Uruchomić Data Recipe, aby zbudować zbiór danych.",
+        getJob: "Śledzić długie zadanie do końca.",
+        datasets: "Wyświetlać i przesyłać zbiory danych.",
+        startTraining: "Rozpocząć fine-tuning.",
+        listTrainingRuns: "Wyświetlić treningi i ich wyniki.",
+        exportModel: "Wyeksportować wytrenowany model, na przykład do GGUF.",
+        listMedia: "Przeglądać zapisane obrazy, dźwięki i wideo.",
+        voices: "Wyświetlać, zapisywać, zmieniać nazwy lub usuwać głosy.",
+        cancel: "Zatrzymać trwającą pracę, np. trening lub eksport.",
       },
     },
     about: {
@@ -3942,7 +4109,7 @@ export const pl = {
         desktopAvailableDescription:
           "Zaktualizuj teraz, a aplikacja komputerowa uruchomi się ponownie po zakończeniu.",
         desktopExternalServer:
-          "Aplikacja połączyła się z już działającym serwerem Unsloth i nie może go zaktualizować. Zatrzymaj ten serwer, a następnie zamknij i ponownie otwórz aplikację komputerową, aby ją zaktualizować.",
+          "Połączono z serwerem Unsloth na porcie {port}, którego ta aplikacja nie uruchomiła, na przykład `unsloth studio` w terminalu. Zatrzymaj go tam, gdzie został uruchomiony, a następnie zamknij i ponownie otwórz aplikację, aby ją zaktualizować.",
         desktopManualInstall:
           "Otwórz stronę wydania, aby zainstalować najnowszy pakiet dla systemu Linux.",
         desktopCheckFailed: "Nie udało się sprawdzić aktualizacji",
@@ -4259,8 +4426,6 @@ export const pl = {
             "Ten zbiór danych wygląda na obrazy, których nie można strumieniować.",
           audioDataset:
             "Ten zbiór danych wygląda na audio, którego nie można strumieniować.",
-          appleSilicon:
-            "Strumieniowanie nie jest jeszcze obsługiwane na Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "tylko odpowiedzi asystenta",
@@ -5523,6 +5688,8 @@ export const pl = {
     removeLevel: "Usuń poziom {n}",
     addLevel: "Dodaj poziom",
     jsonHelp: "Treść żądania. Uruchomienie wysyła ją w niezmienionej postaci.",
+    copyBody: "Kopiuj treść",
+    copyCurl: "Kopiuj jako cURL",
     examples: "Przykłady",
     presetToolApproval: "Zatwierdzanie wywołań narzędzi agenta",
     presetPromptInjection: "Wykrywanie wstrzykiwania promptów",
@@ -5583,6 +5750,7 @@ export const pl = {
     monitor: {
       dragHandleLabel:
         "Przesuń monitor na żywo. Klawisze strzałek lekko go przesuwają, dwukrotne kliknięcie przywraca położenie.",
+      resizeHint: "Przeciągnij krawędź lub róg, aby zmienić szerokość. Dwuklik przywraca domyślną.",
       reconnecting: "Ponowne łączenie...",
     },
   },
@@ -5901,8 +6069,7 @@ export const pl = {
     skippedVersion: "Na razie pominięto {component} {version}",
     skippedUpdate: "Na razie pominięto aktualizację: {component}",
     skippedUpdates: "Na razie pominięto aktualizacje: {components}",
-    vulkanFaster:
-      "Vulkan jest o ponad 10% szybszy niż ROCM. Nie trzeba uruchamiać ponownie",
+    vulkanFaster: "Ponad 10% szybciej",
     noRestart: "Nie trzeba uruchamiać ponownie",
     downloadSize: "Do pobrania: {size}",
     backendChange: "Backend: {change}",
@@ -5911,8 +6078,8 @@ export const pl = {
     installingPhase: "Instalowanie: {component} ({current} z {total})...",
     installingCount: "Instalowanie aktualizacji ({count})...",
     bundleTitle: "Aktualizacje środowiska uruchomieniowego: {count}",
-    newBackend: "Nowy backend: {component}",
-    newUpdate: "Nowa aktualizacja: {component}",
+    newBackend: "Nowy backend środowiska uruchomieniowego",
+    newUpdate: "Nowa aktualizacja środowiska uruchomieniowego",
     hideUpdate: "Ukryj aktualizację {component} do ponownego otwarcia Unsloth",
     hideUpdates:
       "Ukryj aktualizacje {components} do ponownego otwarcia Unsloth",
@@ -5925,6 +6092,7 @@ export const pl = {
   generationStats: {
     working: "Przetwarzanie...",
     processingPrompt: "Przetwarzanie promptu {percent}%",
+    compactingContext: "Kompaktowanie kontekstu...",
     timeLeft: "zostało {eta}",
     tokensOne: "tokeny: {count}",
     tokens: "tokeny: {count}",

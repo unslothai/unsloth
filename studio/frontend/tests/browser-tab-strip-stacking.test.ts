@@ -19,3 +19,23 @@ test("no query container wraps the browser tab strip, so it stays above the macO
     /^<TabStrip [^\n]*\n(?:[^\n]*\n){0,3}\s*<div className="browser-panel-body @container\/browser /,
   );
 });
+
+// Not the section (a stacking context) nor a pseudo-element (macOS native pages cut holes only through elements).
+test("the browser's glass frosts the tab strip and panel body, never the section", () => {
+  const css = readSrc("index.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]*\[data-slot="browser-panel"\][^{}]*)\{([^}]*)\}/g)];
+  const frosted = rules.filter(([, , body]) => /backdrop-filter/.test(body));
+  assert.ok(frosted.length > 0);
+  for (const [, selector] of frosted) {
+    for (const part of selector.split(",")) assert.match(part.trim(), /\[data-slot="browser-panel"\](:not\(\[data-browser-document\]\))? > \.browser-(chrome|panel-body)( ?\[data-native-hole\] > :not\(\[data-browser-page\]\))?$/);
+  }
+});
+
+test("a native page's hole drops backdrop filters and masks the wallpaper layer", () => {
+  const css = readSrc("index.css");
+  assert.match(css, /\[data-native-hole\] \{\n\t-webkit-backdrop-filter: none !important;\n\tbackdrop-filter: none !important;/);
+  assert.match(css, /\[data-native-hole-mask\] \{[^}]*mask-image: var\(--native-hole-mask\)/);
+  const view = readSrc("features/browser/native-view.ts");
+  assert.match(view, /node\.hasAttribute\?\.\("data-wallpaper-workspace"\)/);
+  assert.match(view, /child\.classList\.contains\("chat-wallpaper"\)/);
+});

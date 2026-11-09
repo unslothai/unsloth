@@ -50,10 +50,10 @@ if triton is not None:
         q_ptr,
         sf_ptr,
         M,
-        K: tl.constexpr,
-        NCB: tl.constexpr,
-        ROWS: tl.constexpr,
-        G: tl.constexpr,
+        K: tl.constexpr,  # in features
+        NCB: tl.constexpr,  # scale tile columns (K/16/4)
+        ROWS: tl.constexpr,  # rows per program
+        G: tl.constexpr,  # 16-element blocks per program
     ):
         # One program: ROWS rows x G blocks of 16 elements, held as [ROWS, G, 8] even / odd halves so each packed
         # byte is (even | odd << 4) with no reshape or split (layout conversions some tile shapes miscompiled).
@@ -117,10 +117,9 @@ _TAG_OFF = "0"
 
 
 def _set_compile_cache_tag(tag: str | None) -> None:
-    """Key torch's FX/AOTAutograd caches on the quantiser: the Dynamo graph calls ``to_nvfp4`` by name, so untagged,
-    a graph cached with the patch on is replayed with it off (the kill switch then still runs the kernel) and the
-    reverse. ``None`` removes our tag; other tags are kept. NVFP4 loads always set ``1`` / ``0``: pre-tag caches are
-    untagged and may hold the patched graph, so an untagged "off" could replay the kernel."""
+    """Tag compile caches by patch state: untagged, a graph cached with the patch on replays with it
+    off and vice versa; NVFP4 loads always set 1 or 0, as pre-tag caches may hold the patched
+    graph."""
     try:
         import torch.compiler.config as _cc
     except Exception:  # noqa: BLE001 - torch without compiler config: no persistent compile cache to split
@@ -199,11 +198,7 @@ def _eligible(
 
 
 def _traced(data_hp: Any) -> bool:
-    """Whether this call is being traced into a graph rather than run eagerly.
-
-    ``torch.compiler.is_compiling()`` alone is not enough: torchao's NVFP4 linear reaches ``to_nvfp4`` from the
-    tensor subclass's dispatch, which AOTAutograd traces after Dynamo has finished, with that flag False. The
-    tensors there are fake, so a fake input (or an active tracing context) marks the call as traced."""
+    """Traced call check: is_compiling() misses torchao's NVFP4 dispatch, so fake inputs also count."""
     import torch
 
     if torch.compiler.is_compiling():

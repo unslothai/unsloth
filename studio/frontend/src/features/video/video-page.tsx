@@ -225,6 +225,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
+import { videoFailureToast } from "./generation-failure";
 import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
@@ -285,6 +286,28 @@ function useVideoModels(
   );
 }
 
+const FAILURE_WITH_REASON_TOAST_MS = 10_000;
+
+/** False for the user's own Cancel, which is not an error. */
+function showVideoFailureToast(error: string | null | undefined): boolean {
+  const failure = videoFailureToast(error);
+  if (!failure) return false;
+  const { title, errorType, detail } = failure;
+  const hasReason = Boolean(errorType || detail);
+  toast.error(title, {
+    description: hasReason ? (
+      <span className="[overflow-wrap:anywhere]">
+        {errorType && <code className="font-mono">{errorType}</code>}
+        {errorType && detail ? ": " : null}
+        {detail}
+      </span>
+    ) : undefined,
+    duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
+    action: generationFailureLogsAction(title),
+  });
+  return true;
+}
+
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
 // normalized like the backend's family matcher (separator runs become "-", plus a trailing "-"), so "Wan2_1-T2V-14B"
 // and "wan2.1_t2v_14b" hit the same row.
@@ -318,12 +341,9 @@ function defaultsFor(repoId: string, family?: string): { steps: number; guidance
   const id = fold(repoId);
   // The Wan and FusionX rows count only in the model / file name, as on the backend.
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
-  // LTX-2.5 (diffusers' pre-release "2.4" too) is decided on the two names the backend gets: the selected file and
-  // the repo, read by their last segment. A local file's repo is the folder it sits in (the picker loads it from that
-  // directory), a Hub file's is the repo segment after the owner. The version is ltx_name_version's ("ltx-2.5",
-  // "LTX25", "ltx2.5", "LTX-Video-2.5"), or the explicit ltx-2.5 family. The variant is ltx25_is_dev's: the first
-  // name naming one decides, "distill" before a dev / full / sft token (or transformer_full); a dev pick runs 30
-  // steps at guidance 3, anything else the distilled 8 at guidance 1.
+  // LTX-2.5 (and pre-release 2.4) is read from the file and repo last path segments as the backend
+  // does; the first name naming a variant decides, distill before a dev, full or sft token (or
+  // transformer_full); dev runs 30 steps at guidance 3, else distilled 8 at guidance 1.
   const segments = repoId.replace(/[\\/]+$/, "").split(/[\\/]/);
   const local = /^([\\/~.]|[a-z]:)/i.test(repoId);
   const fileLeaf = segments[segments.length - 1] ?? "";
@@ -2636,10 +2656,8 @@ function VideoGenerator({
               void ensureSrc(clip);
             }
           } else if (p.phase === "failed") {
-            const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+            showVideoFailureToast(p.error);
           }
           return;
         }
@@ -2698,9 +2716,7 @@ function VideoGenerator({
           }
         } else if (g.phase === "failed") {
           // Kept until the next job, so a reload still shows the failure.
-          const msg = g.error || "Video generation failed";
-          if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+          showVideoFailureToast(g.error);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3675,8 +3691,9 @@ function VideoGenerator({
       });
     } catch (err) {
       if (!isMounted.current) return;
-      const refusal = err instanceof Error ? err.message : "Video generation failed";
-      toast.error(refusal, { action: generationFailureLogsAction(refusal) });
+      const refusal = err instanceof Error ? err.message : null;
+      // A refusal is never the user's own Cancel, so one that mentions "cancelled" still shows.
+      if (!showVideoFailureToast(refusal) && refusal) toast.error(refusal);
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded"; re-read status.
