@@ -6069,6 +6069,89 @@ def install_encode_release(
 
 MEASURED_RESERVE_DENOISE_PHASE_INDEX = 13
 
+DERIVED_REFERENCE_PRICE_ENV = "UNSLOTH_DIFFUSION_DERIVED_REFERENCE_PRICE"
+# References priced by token count, not the flat 8192 MiB/MP (Qwen-Image-2.1 edit 1024^2: 3271-3447 MiB, 2061 K/V cache).
+_DERIVED_REFERENCE_FAMILIES = frozenset({"qwen-image-2.1"})
+
+
+def derived_reference_pricing_enabled() -> bool:
+    return not _env_off(DERIVED_REFERENCE_PRICE_ENV)
+
+
+def _reference_pixels_per_token(pipe: Any) -> Optional[int]:
+    try:
+        scale = int(getattr(pipe, "vae_scale_factor", 0) or 0)
+        config = getattr(getattr(pipe, "transformer", None), "config", None)
+        patch = int(getattr(config, "patch_size", 1) or 1) if config is not None else 0
+    except Exception:  # noqa: BLE001
+        return None
+    if scale <= 0 or patch <= 0:
+        return None
+    return (scale * patch) ** 2
+
+
+def _prefix_kv_bytes_per_token(pipe: Any, compute_bytes: int) -> Optional[int]:
+    """Condition K/V cache bytes per cached token (0: no prefix cache; None: unreadable)."""
+    transformer = getattr(pipe, "transformer", None)
+    config = getattr(transformer, "config", None)
+    if transformer is None or config is None:
+        return None
+    try:
+        from .diffusion_prefix_kv import _takes_prefix_kv
+
+        if not _takes_prefix_kv(transformer) or not getattr(config, "causal_condition", False):
+            return 0
+        layers = int(getattr(config, "num_layers", 0) or 0)
+        heads = int(
+            getattr(config, "num_key_value_heads", None)
+            or getattr(config, "num_attention_heads", 0)
+            or 0
+        )
+        head_dim = int(getattr(config, "attention_head_dim", 0) or 0)
+    except Exception:  # noqa: BLE001
+        return None
+    if layers <= 0 or heads <= 0 or head_dim <= 0:
+        return None
+    return layers * 2 * heads * head_dim * max(1, int(compute_bytes or 2))
+
+
+def derived_reference_need_mib(
+    pipe: Any,
+    *,
+    family: Optional[str],
+    phase_mib: int,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    reference_pixels: int = 0,
+    cfg: Optional[bool] = None,
+    compute_bytes: int = 2,
+    quadratic_attention: bool = False,
+) -> Optional[int]:
+    """Denoise MiB of a reference request: ``phase_mib`` scaled by joint sequence / 1024^2 plus the condition K/V cache,
+    doubled under CFG. None keeps the flat allowance (unmeasured family, kill switch, quadratic attention, unreadable)."""
+    if not derived_reference_pricing_enabled() or quadratic_attention:
+        return None
+    name = (str(family or "").split() or [""])[0].lower()
+    if name not in _DERIVED_REFERENCE_FAMILIES or not phase_mib or int(reference_pixels or 0) <= 0:
+        return None
+    per_token = _reference_pixels_per_token(pipe)
+    kv_bytes = _prefix_kv_bytes_per_token(pipe, compute_bytes)
+    if per_token is None or kv_bytes is None:
+        return None
+    batch = max(1, int(batch_size or 1))
+    target = max(64, int(width or DEFAULT_IMAGE_WIDTH)) * max(
+        64, int(height or DEFAULT_IMAGE_HEIGHT)
+    )
+    reference = int(reference_pixels)
+    bucket = float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
+    branches = 1 if cfg is False else 2
+    activation = float(phase_mib) * max(1.0, (target + reference) * batch / bucket) * branches
+    cache = (reference // per_token) * batch * branches * kv_bytes / float(1 << 20)
+    step = _MEASURED_PEAK_ROUND_MIB
+    total = activation + cache * _MEASURED_PEAK_MARGIN
+    return int(-(-total // step) * step)
+
 
 def measured_request_extra_mib(
     pipe: Any,
@@ -6081,6 +6164,8 @@ def measured_request_extra_mib(
     unpriced_references: bool = False,
     workflow: Optional[str] = None,
     tier_peak_mib: Optional[int] = None,
+    reference_pixels: int = 0,
+    quadratic_attention: bool = False,
 ) -> int:
     """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made).  ``tier_peak_mib``:
     a deferred profile's tier peak (``TIER_MOVED_ATTR``), raising eager pricing; None keeps the flat estimate. ``workflow``:
@@ -6094,7 +6179,7 @@ def measured_request_extra_mib(
     only that phase's reserve while the steps run: a request it was sized for (text-to-image, at most the 1024x1024
     bucket, no condition images or tier peak, within the whole-render reserve) releases nothing, its encode and decode
     priced by their own hooks; any other request is priced against the denoise reserve, which first streams the blocks
-    the phase sizing added."""
+    the phase sizing added. ``reference_pixels`` (unweighted): priced by ``derived_reference_need_mib`` when set."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
@@ -6188,6 +6273,8 @@ def measured_request_extra_mib(
         need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
     if tier_peak is not None:
         need = tier_peak if need is None else max(int(need), tier_peak)
+    base_need = need
+    own_learned = None
     cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
     allowance = int(
         8192 * cond / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT) * _MEASURED_PEAK_MARGIN
@@ -6210,6 +6297,7 @@ def measured_request_extra_mib(
                 own = measured_image_runtime_mib(family, speed_mode, quant = off, **sized)
             if own is None:
                 own = measured_image_runtime_mib(family, speed_mode, quant = keyed, **sized)
+            own_learned = own
             if own is not None:
                 # the learned workflow peak is the other complete estimate: it was measured with the condition images
                 # resident, so the allowance is not charged on top of it
@@ -6222,14 +6310,33 @@ def measured_request_extra_mib(
             * max(64, int(height or DEFAULT_IMAGE_HEIGHT))
             * max(1, int(batch_size or 1))
         )
-        sized_for = (
-            sized_for
-            and allowance == 0
-            and tier_peak is None
+        within = (
+            tier_peak is None
             and pixels <= DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
-            and int(need) <= int(headroom)
+            and base_need is not None
+            and int(base_need) <= int(headroom)
         )
-        return 0 if sized_for else max(0, int(need) - int(phase))
+        if sized_for and allowance == 0 and within and int(need) <= int(headroom):
+            return 0
+        if within and allowance > 0 and int(reference_pixels or 0) > 0:
+            # encode and decode run under their own hooks; only the steps grow with the reference
+            derived = derived_reference_need_mib(
+                pipe,
+                family = family,
+                phase_mib = int(phase),
+                width = width,
+                height = height,
+                batch_size = batch_size,
+                reference_pixels = int(reference_pixels),
+                cfg = cfg,
+                compute_bytes = compute_bytes,
+                quadratic_attention = quadratic_attention,
+            )
+            if derived is not None:
+                if own_learned is not None:
+                    derived = max(int(derived), int(own_learned))
+                return max(0, int(derived) - int(phase))
+        return max(0, int(need) - int(phase))
     return max(0, int(need) - int(headroom))
 
 

@@ -14951,6 +14951,7 @@ class DiffusionBackend:
                 guard_release_mib, guard_capture_gen = 0, None
                 guard_batch = 1
                 guard_condition_pixels = 0
+                guard_reference_pixels = 0
 
                 try:
                     # Forward dims, not sliders: conditioned workflows size from the input image; same derivation as the compile-cache registration below.
@@ -14983,6 +14984,11 @@ class DiffusionBackend:
                             )
                         )
                     )
+                    # unweighted reference pixels: a measured placement prices them from their token count
+                    if ref_resolution is not None and not layer_count:
+                        guard_reference_pixels = int(
+                            (1 + len(ref_extra)) * ref_resolution * ref_resolution
+                        )
                     if layer_count:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
                         guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
@@ -15000,6 +15006,9 @@ class DiffusionBackend:
                         and not is_flux3_family(fam)
                     )
                     _follow_live_graph_mode(state)
+                    guard_quadratic = _quadratic_attention(
+                        guard_target, getattr(state, "attention_backend", None), pipe
+                    )
                     guard_cfg, extra_mib = split_aware_request_extra(
                         state.pipe,
                         guard_cfg,
@@ -15013,6 +15022,8 @@ class DiffusionBackend:
                             cfg = cfg,
                             unpriced_references = guard_unpriced_refs,
                             workflow = _peak_workflow(fam, workflow),
+                            reference_pixels = guard_reference_pixels,
+                            quadratic_attention = guard_quadratic,
                             tier_peak_mib = _tier_request_peak(
                                 state,
                                 width = guard_width,
@@ -15058,9 +15069,7 @@ class DiffusionBackend:
                         condition_pixels = guard_condition_pixels,
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
                         vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
-                        quadratic_attention = _quadratic_attention(
-                            guard_target, getattr(state, "attention_backend", None), pipe
-                        ),
+                        quadratic_attention = guard_quadratic,
                         allow_oversized = allow_oversized,
                         calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
                         controlnet = workflow == "controlnet" and control_pil is not None,
