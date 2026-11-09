@@ -77,12 +77,10 @@ SCENARIOS = {
         which_hit = "scoop/shims",
         path_dirs = [("scoop/shims", True), ("Program Files/Git/cmd", True)],
     ),
-    # only untrusted copies anywhere.
     "untrusted_only": dict(
         which_hit = "scoop/shims",
         path_dirs = [("scoop/shims", True), ("Users/me/bin", True)],
     ),
-    # nothing at all.
     "nothing": dict(which_hit = None, path_dirs = [("Users/me/bin", False)]),
 }
 
