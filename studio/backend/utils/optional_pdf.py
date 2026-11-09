@@ -246,7 +246,14 @@ def _install(target: Path, deadline: float) -> None:
 
 def _import(name: str) -> ModuleType | None:
     try:
-        return importlib.import_module(name)
+        # Keep each allowed import literal so the loader audit can verify its target.
+        if name == "fitz":
+            return importlib.import_module("fitz")
+        if name == "pymupdf":
+            return importlib.import_module("pymupdf")
+        if name == "pymupdf4llm":
+            return importlib.import_module("pymupdf4llm")
+        raise ValueError(f"Not an optional PDF module: {name}")
     except ModuleNotFoundError as exc:
         if exc.name in _MODULES | {"tabulate"}:
             return None

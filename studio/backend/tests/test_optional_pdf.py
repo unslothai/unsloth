@@ -78,13 +78,14 @@ def missing_pdf(monkeypatch, tmp_path):
     return calls
 
 
-def test_installed_parser_wins_even_when_downloads_disabled(monkeypatch):
-    installed = ModuleType("pymupdf")
-    monkeypatch.setitem(sys.modules, "pymupdf", installed)
+@pytest.mark.parametrize("name", sorted(pdf._MODULES))
+def test_installed_parser_wins_even_when_downloads_disabled(monkeypatch, name):
+    installed = ModuleType(name)
+    monkeypatch.setitem(sys.modules, name, installed)
     monkeypatch.setenv("UNSLOTH_PDF_AUTO_INSTALL", "0")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(pdf, "_target", lambda: pytest.fail("installed module needs no cache"))
-    assert pdf.load_pdf_module("pymupdf") is installed
+    assert pdf.load_pdf_module(name) is installed
 
 
 @pytest.mark.parametrize("name", ["os", "tabulate", "pymupdf;pip", ""])
