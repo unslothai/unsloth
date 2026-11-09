@@ -710,7 +710,7 @@ function RootLayout() {
       <ImageViewer />
       {!hideNavbar && <CommandPalette />}
       {hideNavbar ? (
-        <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
+        <main className="h-dvh flex-1 overflow-y-auto pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
             <Outlet />
           </RouteBoundary>
