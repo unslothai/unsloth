@@ -1005,7 +1005,6 @@ def test_mps_cap_failure_keeps_target(monkeypatch):
     assert t.device == "mps" and t.dtype == BF16
 
 
-# ---------------------------------------------------------------------------------------------- XPU float64
 _PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
 
 
@@ -1033,10 +1032,10 @@ def _fake_xpu_torch(has_fp64 = None, raises = False):
     "has_fp64, raises, env, want",
     [
         (False, False, None, False),  # Arc A-series
-        (True, False, None, True),  # Arc B-series / data center
-        (None, False, None, True),  # an older torch without the field: as before
-        (False, True, None, True),  # unanswerable probe: as before
-        (False, False, "0", True),  # kill switch
+        (True, False, None, True),
+        (None, False, None, True),
+        (False, True, None, True),
+        (False, False, "0", True),
     ],
 )
 def test_xpu_target_reports_the_devices_float64(monkeypatch, has_fp64, raises, env, want):
@@ -1063,7 +1062,6 @@ def test_fp64_less_xpu_demotes_ltx2_rope_to_float32(monkeypatch):
     assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(False))) == 1
     assert not rope.double_precision
     got = rope(coords, device = "cpu")
-    # MPS's float32 frequency base: 9.8e-4 here, 4.9e-3 at 4096 dims
     for a, b in zip(got, oracle):
         assert a.dtype == b.dtype == torch.float32
         assert 0 < float((a - b).abs().max()) < 1e-2
@@ -1071,8 +1069,7 @@ def test_fp64_less_xpu_demotes_ltx2_rope_to_float32(monkeypatch):
 
 
 def test_float64_device_probes_the_operands_xpu(monkeypatch):
-    """VAE tiling's blend weights (``float64_device``) take the reconstructed target, not ``_xpu_target``:
-    an fp64-less card must build them on CPU, and the probe must ask about the operand's own index."""
+    """``float64_device`` must probe the operand's own XPU index, not the current card."""
     import torch
 
     asked = []
@@ -1086,7 +1083,7 @@ def test_float64_device_probes_the_operands_xpu(monkeypatch):
     monkeypatch.delenv(_PROBE_ENV, raising = False)
     assert dd.float64_device("xpu:1") == "cpu"
     assert dd.float64_device("xpu:0") == "xpu:0"
-    assert dd.float64_device("xpu") == "cpu"  # no index: the current card (1)
+    assert dd.float64_device("xpu") == "cpu"
     assert asked == [1, 0, 1]
     monkeypatch.setenv(_PROBE_ENV, "0")
     assert dd.float64_device("xpu:1") == "xpu:1"

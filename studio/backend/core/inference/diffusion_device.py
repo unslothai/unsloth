@@ -846,7 +846,7 @@ XPU_FP64_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
 
 
 def _xpu_has_fp64(xpu: Any, index: Optional[int] = None) -> bool:
-    """``has_fp64`` of XPU ``index`` (default: the current one); True when off or unanswerable."""
+    """True when the probe is off or unanswerable."""
     if (os.environ.get(XPU_FP64_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return True
     try:
