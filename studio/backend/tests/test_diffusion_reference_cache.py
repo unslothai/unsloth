@@ -198,3 +198,34 @@ def test_reloaded_weights_and_config_encode_again():
     got, want = _encode(pipe, image)
     assert torch.equal(got, want)
     assert rc.STATS["misses"] == 3 and rc.STATS["hits"] == 1
+
+
+def test_assigned_weights_encode_again():
+    pipe = _pipe()
+    image = _images(n = 1)[0]
+    rc.install(pipe)
+    _encode(pipe, image)
+    before = rc._weights_revision(pipe.vae)
+    pipe.vae.load_state_dict(_vae(seed = 9).state_dict(), assign = True)
+    assert rc._weights_revision(pipe.vae) == before  # the revision alone cannot see the swap
+    got, want = _encode(pipe, image)
+    assert torch.equal(got, want)
+    pipe.vae.decoder.load_state_dict(_vae(seed = 11).decoder.state_dict(), assign = True)
+    got, want = _encode(pipe, image)
+    assert torch.equal(got, want)
+    _encode(pipe, image)
+    assert rc.STATS["misses"] == 3 and rc.STATS["hits"] == 1
+
+
+def test_a_vae_that_takes_no_hooks_is_never_cached(monkeypatch):
+    pipe = _pipe()
+    image = _images(n = 1)[0]
+
+    def _refuse(*a, **k):
+        raise RuntimeError("no hooks")
+
+    monkeypatch.setattr(torch.nn.Module, "register_load_state_dict_post_hook", _refuse)
+    rc.install(pipe)
+    got, want = _encode(pipe, image)
+    _encode(pipe, image)
+    assert torch.equal(got, want) and rc.STATS["hits"] == 0 and rc.STATS["bypassed"] == 2
