@@ -728,7 +728,15 @@ def test_generate_routes_only_static_cache_calls():
 def test_real_capture_matches_eager(name, monkeypatch):
     monkeypatch.setattr(G, "ENABLED", True)
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_pretrained(name, dtype = torch.bfloat16).cuda().eval()
+    # bf16 only where the GPU computes it natively: below sm80 Inductor skips a bf16 frame, which torch 2.14 turns
+    # into a hard error inside zoo's fullgraph-compiled Gemma3 RMSNorm (and the skip sticks to that code object for
+    # the rest of the process). Unsloth itself never runs Gemma3 in bf16 there (it forces float32).
+    bf16 = torch.cuda.is_bf16_supported(including_emulation = False)
+    model = (
+        AutoModelForCausalLM.from_pretrained(name, dtype = torch.bfloat16 if bf16 else torch.float16)
+        .cuda()
+        .eval()
+    )
     ids, mask = _ids(model, 2, pad = 1)
     ids, mask = ids.cuda(), mask.cuda()
     eager = _generate(model, ids, mask, False, 24)
