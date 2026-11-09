@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Builds a coding trace from one saved Studio chat thread, in the order the UI shows."""
+"""Builds a coding trace from one saved Studio chat thread, in the order the UI shows.
 
+The system text uses the thread's latest saved settings and the project's current instructions;
+Studio keeps no history of either, so an earlier turn may have seen different text.
+"""
+
+import json
+import re
 from typing import Optional
 
 from core.coding_traces.schema import (
@@ -12,9 +18,15 @@ from core.coding_traces.schema import (
     TraceMessage,
     TraceWarning,
 )
+from core.agents_md import agents_md_enabled
+from core.inference.tool_loop_controller import (
+    TOOL_MODEL_SUFFIX_KEY,
+    restore_replayed_tool_results,
+)
 from core.rag.conversation_archive import (
     _flushes_local_pair,
     _local_round_id,
+    _sanitised_assistant_text,
     _server_builtin,
     _tool_result_content,
     _with_attachments,
@@ -23,6 +35,19 @@ from storage import studio_db
 
 # Same order as compareStoredMessages in frontend/src/features/chat/utils/message-order.ts.
 _ROLE_ORDER = {"system": 0, "user": 1, "assistant": 2}
+
+# INCOMPLETE_LABELS in frontend/src/features/chat/utils/continuation.ts.
+_STOP_LABELS = {
+    "length": "Response hit the Max Tokens limit",
+    "cancelled": "Response stopped",
+    "interrupted": "Response interrupted",
+    "context_window": "Response filled the model's context window",
+    "empty": "The model returned an empty response",
+    "quote_cut": "This response may have ended early",
+}
+
+# resolveSystemPromptVariables in frontend/src/features/chat/api/chat-adapter.ts.
+_PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
 
 
 def _sort_key(message: dict) -> tuple:
@@ -73,7 +98,8 @@ def _newest_leaf(head_id: str, ordered: list[dict], parents: dict[str, Optional[
 
 
 def _model_parts(message: dict) -> list:
-    """Content plus attachments, minus mcpToolOnly parts, as modelVisibleMessage (mcp-image.ts) sends them."""
+    """Content plus attachments, minus mcpToolOnly parts, as modelVisibleMessage (mcp-image.ts)
+    sends them."""
     content = _with_attachments(message) or []
     return [p for p in content if not (isinstance(p, dict) and p.get("mcpToolOnly") is True)]
 
@@ -81,7 +107,7 @@ def _model_parts(message: dict) -> list:
 def _append_text(current: str, addition: str) -> str:
     if not addition:
         return current
-    return f"{current}\n\n{addition}" if current else addition
+    return f"{current}\n{addition}" if current else addition
 
 
 def _branch(
@@ -145,15 +171,9 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
         for position, part in enumerate(_model_parts(message)):
             kind = part.get("type") if isinstance(part, dict) else None
             if role == "assistant":
-                if kind == "tool-call" and _server_builtin(part)[0]:
-                    # The provider ran it; the model never got it back as a tool message.
-                    warnings.append(
-                        TraceWarning(
-                            "server_tool_skipped",
-                            f"Skipped provider-run tool {part.get('toolName')!r}",
-                            message_id,
-                        )
-                    )
+                skipped = _skipped_call(part, message_id, position) if kind == "tool-call" else None
+                if skipped:
+                    warnings.append(skipped)
                     continue
                 round_id = _local_round_id(part) if kind == "tool-call" else None
                 flush_pair = kind == "tool-call" and round_id is None and _flushes_local_pair(part)
@@ -207,20 +227,16 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                         arguments = args if isinstance(args, dict) else {},
                     )
                 )
-                if part.get("result") is None:
-                    warnings.append(
-                        TraceWarning(
-                            "unanswered_tool_call",
-                            f"Tool call {call_id!r} has no result",
-                            message_id,
-                        )
-                    )
-                    continue
+                wire = {"role": "tool", "name": name}
+                wire["content"] = _tool_result_content(part["result"], name)
+                suffix = (part.get("provenance") or {}).get("model_suffix")
+                if isinstance(suffix, str) and suffix:
+                    wire["extra_content"] = {TOOL_MODEL_SUFFIX_KEY: suffix}
                 pending.append(
                     TraceMessage(
                         id = f"{message_id}:{call_id}",
                         role = "tool",
-                        text = _tool_result_content(part["result"], name),
+                        text = restore_replayed_tool_results([wire])[0]["content"],
                         tool_call_id = call_id,
                         is_error = bool(part.get("isError")),
                         created_at = message.get("createdAt"),
@@ -234,7 +250,110 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
                 )
         out.extend(pending)
+    for m in out:
+        if m.role == "assistant":
+            m.text = _sanitised_assistant_text(m.text)
     return [m for m in out if m.text or m.reasoning or m.tool_calls or m.role == "tool"]
+
+
+def _skipped_call(part: dict, message_id: str, position: int) -> Optional[TraceWarning]:
+    """The warning for a tool-call part the UI never replays as a call, or None to keep it."""
+    name = part.get("toolName")
+    if name == "studio_load_skill":
+        # A request-local system-prompt preload (skill_mentions.py); chat-adapter.ts drops the card.
+        skill = (part.get("args") or {}).get("name")
+        return TraceWarning(
+            "skill_preload_not_stored",
+            f"Skill @{skill} was added to that request's system prompt; its text is not saved",
+            message_id,
+        )
+    builtin, native = _server_builtin(part)
+    if builtin:
+        # A native part would be a call with no tool message; the provider ran it either way.
+        detail = "; the UI replays its code and output to Gemini" if native else ""
+        return TraceWarning(
+            "server_tool_skipped",
+            f"Skipped provider-run tool {name!r}{detail}",
+            message_id,
+        )
+    if part.get("result") is None:
+        # serializeToolResultPart (chat-adapter.ts) and conversation_archive._replayable drop it.
+        call_id = part.get("toolCallId") or f"{message_id}-{position}"
+        return TraceWarning(
+            "unanswered_tool_call_dropped",
+            f"Dropped tool call {call_id!r} ({name!r}); it has no stored result",
+            message_id,
+        )
+    return None
+
+
+def _prune(chain: list[dict]) -> list[dict]:
+    """Drop refused and abandoned turns as pruneOutboundHistory (chat-adapter.ts) does, and give an
+    empty stopped turn its label, as fillStoppedAssistantReplay does."""
+
+    def custom(message):
+        metadata = message.get("metadata")
+        return (metadata.get("custom") or {}) if isinstance(metadata, dict) else {}
+
+    def empty(message):
+        return not _convert([message], [])
+
+    def abandoned(message):
+        # assistantTurnCarriesPayload reads the raw parts, before the replay sanitiser.
+        payload = any(
+            isinstance(p, dict)
+            and (
+                p.get("type") == "image"
+                or (p.get("type") == "text" and str(p.get("text") or "").strip())
+            )
+            for p in _model_parts(message)
+        )
+        return not payload and empty(message)
+
+    assistant = [m.get("role") == "assistant" for m in chain]
+    refused = [a and custom(m).get("anthropicRefusal") is True for m, a in zip(chain, assistant)]
+    stopped = [(custom(m).get("incomplete") or {}).get("reason") in _STOP_LABELS for m in chain]
+    dropped = [
+        r or (a and not s and abandoned(m))
+        for m, a, r, s in zip(chain, assistant, refused, stopped)
+    ]
+    last = max((i for i, d in enumerate(dropped) if not d), default = -1)
+    kept: list[dict] = []
+    for index, message in enumerate(chain):
+        if dropped[index]:
+            if (refused[index] or index < last) and kept and kept[-1].get("role") == "user":
+                kept.pop()
+            continue
+        if assistant[index] and stopped[index] and empty(message):
+            label = _STOP_LABELS[custom(message)["incomplete"]["reason"]]
+            message = {**message, "content": [{"type": "text", "text": label}], "attachments": []}
+        kept.append(message)
+    return kept
+
+
+def _fill_variables(prompt: str, raw: object) -> str:
+    """Fill custom systemVariables as resolveSystemPromptVariables does; $date, $time and $now
+    used the send-time clock, which is not stored, so they stay as written."""
+    try:
+        values = json.loads(raw) if isinstance(raw, str) and raw.strip() else {}
+    except ValueError:
+        values = {}
+
+    def fill(match):
+        current = values if isinstance(values, dict) else {}
+        if match.group(1) in ("$date", "$time", "$now"):
+            return match.group(0)
+        for key in filter(None, (p.strip() for p in match.group(1).split("."))):
+            if not isinstance(current, dict) or key not in current:
+                return match.group(0)
+            current = current[key]
+        if current is None:
+            return ""
+        if isinstance(current, str):
+            return current
+        return json.dumps(current, separators = (",", ":"), ensure_ascii = False)
+
+    return _PROMPT_VARIABLE.sub(fill, prompt)
 
 
 def _system_message(
@@ -242,7 +361,8 @@ def _system_message(
 ) -> Optional[TraceMessage]:
     """The system turn as composeChatInstructions (agents-md.ts) builds it from stored fields."""
     settings = thread.get("settings")
-    prompt = settings.get("systemPrompt") if isinstance(settings, dict) else None
+    settings = settings if isinstance(settings, dict) else {}
+    prompt = settings.get("systemPrompt")
     if not isinstance(prompt, str):
         # No thread snapshot means the chat ran on the browser's global prompt, which is not saved.
         warnings.append(
@@ -252,17 +372,24 @@ def _system_message(
             )
         )
         prompt = ""
-    elif "{{" in prompt:
+    prompt = _fill_variables(prompt, settings.get("systemVariables"))
+    if _PROMPT_VARIABLE.search(prompt):
         warnings.append(
             TraceWarning(
                 "system_prompt_variables",
-                "System prompt template variables are left as stored, not resolved",
+                "Send-time or unknown system prompt variables are left as stored",
             )
         )
     instructions = ""
     if project and not project.get("archived"):
         instructions = str(project.get("instructions") or "").strip()
-    # AGENTS.md is read live at send time and not kept with the thread, so it is not added.
+    if agents_md_enabled():
+        warnings.append(
+            TraceWarning(
+                "agents_md_not_stored",
+                "AGENTS.md is read at send time and not stored; the model may have seen it before this system text",
+            )
+        )
     text = "\n\n".join(
         part
         for part in (
@@ -289,11 +416,14 @@ def chat_to_trace(
 
     head_id picks the branch like a saved UI branch head (its newest leaf); None follows the newest
     row. Unlike the UI, an id that is not saved raises ChatTraceError instead of falling back.
+    Consecutive assistant rows merge into one message, because importers save one reply as several
+    rows; the UI sends them as separate messages. Tool text is the restored replay text; MCP image
+    envelopes are left out.
     """
     if not messages:
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no messages")
     warnings: list[TraceWarning] = []
-    trace_messages = _convert(_branch(messages, head_id, warnings), warnings)
+    trace_messages = _convert(_prune(_branch(messages, head_id, warnings)), warnings)
     if not trace_messages:
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")
     if not any(m.role == "user" for m in trace_messages):
@@ -316,7 +446,8 @@ def chat_to_trace(
 
 
 def load_chat_trace(thread_id: str, *, head_id: Optional[str] = None) -> ChatTrace:
-    """Load a saved Studio thread from the database and turn it into a coding trace; head_id works as in chat_to_trace."""
+    """Load a saved Studio thread from the database and turn it into a coding trace; head_id
+    works as in chat_to_trace."""
     thread = studio_db.get_chat_thread(thread_id)
     if thread is None:
         raise ChatTraceError(f"Thread {thread_id!r} does not exist")
