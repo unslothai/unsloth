@@ -1238,27 +1238,10 @@ def test_transformer_prequant_path_threads_through(client, monkeypatch):
         model_path = "x/z-image",
         gguf_filename = "q.gguf",
         transformer_quant = "fp8",
-        transformer_prequant_path = "/data/zimage_fp8.safetensors",
-    )
-    assert resp.status_code == 200
-    assert (
-        backend.last_load_kwargs.get("transformer_prequant_path") == "/data/zimage_fp8.safetensors"
-    )
-
-
-def test_a_pickle_transformer_prequant_path_is_refused(client, monkeypatch):
-    backend = _FakeBackend()
-    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
-    resp = _post_load(
-        client,
-        model_path = "x/z-image",
-        gguf_filename = "q.gguf",
-        transformer_quant = "fp8",
         transformer_prequant_path = "/data/zimage_fp8.pt",
     )
-    assert resp.status_code == 422
-    assert ".safetensors" in resp.text
-    assert getattr(backend, "last_load_kwargs", None) is None
+    assert resp.status_code == 200
+    assert backend.last_load_kwargs.get("transformer_prequant_path") == "/data/zimage_fp8.pt"
 
 
 def test_attention_backend_threads_through(client, monkeypatch):

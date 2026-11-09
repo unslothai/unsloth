@@ -79,7 +79,7 @@ def test_the_20_base_resolves_the_hosted_fp8_file(fam):
     assert video_family_prequant_repo(fam, "fp8", REPO) == REPO
     src = resolve_prequant_source(fam, "fp8", base_repo = BASE)
     assert (src.kind, src.location, src.filename) == ("repo", REPO, "LTX-2-FP8.safetensors")
-    assert src.fallback_filenames == ()
+    assert "LTX-2-FP8.pt" in src.fallback_filenames
 
 
 def test_int8_is_not_wired(fam):

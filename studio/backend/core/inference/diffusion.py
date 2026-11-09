@@ -485,7 +485,7 @@ from .diffusion_comfy_quant import (
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
-from .diffusion_single_file_trust import assert_pickle_free_single_file, single_file_load_allowed
+from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
 from .diffusers_safetensors import (
     component_safetensors_kwargs,
     component_weight_state,
@@ -6696,12 +6696,14 @@ class DiffusionBackend:
             )
             return None
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
+        # All candidates in loader order (safetensors, then pickle spellings).
         from .diffusion_prequant import (
             candidate_filenames_of,
             prefer_cached_pickle_twins,
             restricted_prequant_load_supported,
         )
 
+        # The resolver's order, so a cached .pt is priced and staged instead of its uncached twin.
         ordered = prefer_cached_pickle_twins(
             source.location,
             candidate_filenames_of(source),
@@ -7958,17 +7960,35 @@ class DiffusionBackend:
         itemsize: int,
         pinned: tuple[str, ...] = (),
     ) -> Optional[int]:
-        """A ``.bin`` is never unpickled to price it (it is only ever a component with no safetensors). A load at two
-        bytes or less per float is bounded by the stored size (None keeps it); a wider load is bounded as if every
-        float were stored at two bytes."""
-        del pinned
         try:
-            stored = int(path.stat().st_size)
-        except OSError:
+            import torch
+
+            state = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
+            if not isinstance(state, dict):
+                return None
+            tensors = []
+            seen: set = set()
+            for name, tensor in state.items():
+                if not isinstance(tensor, torch.Tensor):
+                    return None
+                # Tied weights are saved once and load as one tensor: count an exact alias once.
+                alias = (
+                    tensor.untyped_storage().data_ptr(),
+                    tensor.storage_offset(),
+                    tuple(tensor.shape),
+                    tuple(tensor.stride()),
+                    tensor.dtype,
+                )
+                if alias in seen:
+                    continue
+                seen.add(alias)
+                width = int(tensor.element_size()) if tensor.is_floating_point() else None
+                numel = int(tensor.numel())
+                tensors.append((str(name), width, numel, numel * int(tensor.element_size())))
+            del state
+            return DiffusionBackend._cast_tensor_bytes(tensors, itemsize, pinned)
+        except Exception:  # noqa: BLE001 - unreadable pickle keeps the on-disk size
             return None
-        if itemsize <= 2:
-            return None
-        return stored * int(itemsize) // 2
 
     @staticmethod
     def _cast_tensor_bytes(
@@ -8516,11 +8536,9 @@ class DiffusionBackend:
                 # A renamed or hand-picked FLUX.2 GGUF can still land on a different-size base, and no name-based rule
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
                 # raise a bare shape mismatch.
-                if kind == "single_file":
-                    # diffusers torch.loads any single file not named exactly *.safetensors, trusted repo or not.
-                    assert_pickle_free_single_file(
-                        single_file_path, check_header = not _is_trusted_diffusion_repo(repo_id)
-                    )
+                if kind == "single_file" and not _is_trusted_diffusion_repo(repo_id):
+                    # Admitted per file: prove it is a safetensors container before any probe or loader opens it.
+                    assert_safetensors_file(single_file_path)
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
                 assert_flux3_checkpoint_matches_family(fam, single_file_path)
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
@@ -11966,7 +11984,11 @@ class DiffusionBackend:
             # Dense bf16 transformer is the largest fetch on this path, so API-initiated loads are refused here.
             local_files_only = local_files_only,
             **component_safetensors_kwargs(
-                fetch_base, "transformer", cache_dir = hub_cache_dir(), model_cls = transformer_cls
+                fetch_base,
+                "transformer",
+                cache_dir = hub_cache_dir(),
+                model_cls = transformer_cls,
+                local_files_only = local_files_only,
             ),
         )
         check_cancelled()

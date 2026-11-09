@@ -1505,16 +1505,8 @@ def test_an_uncompilable_family_prices_a_pre_cast_text_encoder(monkeypatch):
     assert _settle(backend, text_encoder_quant = "fp8") is None
 
 
-def _cached_safetensors_seed(monkeypatch):
-    """The hosted .safetensors seed is in the cache (offline, an uncached one cannot be fetched; a cached .pt never counts)."""
-    monkeypatch.setattr(
-        pqmod, "cached_checkpoint_path", lambda *_a, **_k: "/cache/Z-Image-Turbo-FP8.safetensors"
-    )
-
-
 def test_an_offline_uncompilable_pick_keeps_a_cached_seed_without_released_shards(monkeypatch):
     backend = _settle_backend(monkeypatch)
-    _cached_safetensors_seed(monkeypatch)
     _offload_when_bf16_sized(monkeypatch, "none")
     _uncompilable(monkeypatch)
     monkeypatch.setattr(
@@ -1524,17 +1516,6 @@ def test_an_offline_uncompilable_pick_keeps_a_cached_seed_without_released_shard
     assert _settle(backend) is None
     monkeypatch.setattr(
         DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: True)
-    )
-    assert _settle(backend, local_files_only = True) is None
-
-
-def test_an_offline_pick_with_no_cached_safetensors_seed_keeps_the_released_weights(monkeypatch):
-    backend = _settle_backend(monkeypatch)
-    _offload_when_bf16_sized(monkeypatch, "none")
-    _uncompilable(monkeypatch)
-    monkeypatch.setattr(pqmod, "cached_checkpoint_path", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: False)
     )
     assert _settle(backend, local_files_only = True) is None
 
@@ -1692,7 +1673,6 @@ def test_an_offline_pick_budgets_the_encoder_dense(monkeypatch):
     import core.inference.diffusion_te_prequant as teq
 
     backend = _settle_backend(monkeypatch)
-    _cached_safetensors_seed(monkeypatch)
     monkeypatch.setattr(
         teq,
         "te_prequant_budget_scale",
@@ -1808,7 +1788,6 @@ def test_a_dtype_variant_twin_is_not_a_cached_release(tmp_path):
 
 def test_an_offline_pick_checks_only_the_repo_the_load_reads(monkeypatch):
     backend = _settle_backend(monkeypatch)
-    _cached_safetensors_seed(monkeypatch)
     _offload_when_bf16_sized(monkeypatch, "none")
     _uncompilable(monkeypatch)
     monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda base, *_a, **_k: base)

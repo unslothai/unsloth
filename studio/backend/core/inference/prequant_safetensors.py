@@ -112,33 +112,12 @@ def safetensors_scheme_supported(scheme: Optional[str] = None) -> bool:
     loadable ``.pt`` and then fail the read. An unreadable allowlist keeps the scheme-free answer.
     """
     if not safetensors_prequant_supported():
-        return native_read_supported(scheme)
+        return False
     wanted = _SCHEME_SUBCLASS.get((scheme or "").strip().lower())
     if wanted is None:
         return True
     names = _torchao_safetensors_subclasses()
     return names is None or wanted in names
-
-
-def native_read_supported(scheme: Optional[str] = None) -> bool:
-    """Below torchao's 0.16 reader floor (torchao 0.15 on torch 2.6 - 2.9), int8 / fp8 files are still read by
-    Studio's own rebuild (prequant_native), which needs only torchao's tensor classes and the safetensors package."""
-    try:
-        from .prequant_native import _torchao_api, _v1_int8_api, native_rebuild_enabled
-        if not native_rebuild_enabled():
-            return False
-        import safetensors  # noqa: F401
-    except Exception:  # noqa: BLE001
-        return False
-    api = _torchao_api()
-    if api is None:
-        return False
-    key = (scheme or "").strip().lower()
-    if key in ("", "fp8"):
-        return True
-    if key == "int8":
-        return "Int8Tensor" in api or _v1_int8_api() is not None
-    return False
 
 
 def plain_safetensors_supported() -> bool:
@@ -526,16 +505,15 @@ def load_prequant_safetensors(
     device: str = "cpu",
     mmap: bool = False,
 ) -> dict:
-    """The ``{format, state_dict, metadata, reader}`` dict every pre-quant loader validates."""
+    """Same dict as the pickle path so downstream validation is shared and the formats cannot drift."""
     helpers = _torchao_helpers()
-    unreadable = (
-        "this install cannot read a safetensors pre-quant checkpoint: torchao >= "
-        f"{'.'.join(str(p) for p in MIN_TORCHAO_VERSION)} is required for "
-        "torchao.prototype.safetensors.safetensors_support"
-    )
-    if helpers is None and not native_read_supported():
-        raise RuntimeError(unreadable)
-    unflatten = helpers[1] if helpers is not None else None
+    if helpers is None:
+        raise RuntimeError(
+            "this install cannot read a safetensors pre-quant checkpoint: torchao >= "
+            f"{'.'.join(str(p) for p in MIN_TORCHAO_VERSION)} is required for "
+            "torchao.prototype.safetensors.safetensors_support"
+        )
+    _, unflatten = helpers
     if mmap and str(device) == "cpu":
         raw, tensors = _mapped_tensors(path)
     else:
@@ -563,10 +541,6 @@ def load_prequant_safetensors(
 
     state_dict = native_unflatten(tensors, raw, path = path) if native_rebuild_enabled() else None
     reader = "native" if state_dict is not None else "torchao"
-    if state_dict is None and unflatten is None:
-        raise RuntimeError(
-            unreadable + " (the file holds weights the native int8 / fp8 rebuild does not cover)"
-        )
     if state_dict is None:
         # A newer torchao's field an older constructor lacks (how a published int8 file broke): dropped if inert.
         raw = _header_without_unconstructible_fields(unflatten, tensors, raw, path = path)

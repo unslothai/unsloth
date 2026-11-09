@@ -702,7 +702,8 @@ def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, varia
     wanted = f"{model}-{stem}.safetensors"
     # first after any ComfyUI twin (int8 tries a "-ComfyUI" name first, which neither repo hosts)
     assert [n for n in names if "-ComfyUI" not in n][0] == wanted
-    assert all(n.endswith(".safetensors") for n in names), names
+    # The safetensors artifact is tried before the legacy pickle name.
+    assert names.index(wanted) < names.index(f"{model}-{stem}.pt")
 
 
 def _comfy_int8_file(path):

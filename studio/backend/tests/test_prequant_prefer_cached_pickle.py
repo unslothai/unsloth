@@ -1,18 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pre-quant checkpoints load from .safetensors only: a cached .pt is never promoted, priced, prefetched or opened,
-whatever the chain a caller hands in still names; a repo or install that cannot serve the .safetensors falls back to
-runtime quantisation of the dense weights, never to the pickle. ``UNSLOTH_PREQUANT_PREFER_SAFETENSORS`` is inert."""
+"""Safetensors is preferred, but a cached .pt whose sha256 matches the Hub's record is reused rather than
+re-downloading its safetensors twin; an unverified one (mismatch, no record, offline) keeps safetensors first."""
 
 from __future__ import annotations
 
+import hashlib
 import types
 
 import huggingface_hub
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
+import core.inference.cached_weight_sha as cws
 import core.inference.diffusion_prequant as pq
 import core.inference.diffusion_te_prequant as tpq
 
@@ -36,6 +37,9 @@ class FakeHub:
         # names a 404 was recorded for, as huggingface_hub's .no_exist markers
         self.absent: set = set()
         self.downloads: list = []
+        # sha256 the Hub records per name; None = no LFS record. Default: the bytes cache() writes.
+        self.hub_sha: dict = {}
+        self.sha_calls: list = []
         for name in cached:
             self.cache(name)
 
@@ -92,6 +96,19 @@ def hub(tmp_path, monkeypatch):
     fake = FakeHub(tmp_path)
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake.try_to_load_from_cache)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake.hf_hub_download)
+
+    def hub_sha256s(repo_id, filenames, **_):
+        fake.sha_calls.append(tuple(filenames))
+        out = {}
+        for name in filenames:
+            sha = fake.hub_sha.get(name, hashlib.sha256(b"x").hexdigest())
+            if sha:
+                out[name] = sha
+        return out
+
+    monkeypatch.setattr(cws, "hub_sha256s", hub_sha256s)
+    monkeypatch.setattr(cws, "_store_path", lambda: tmp_path / "weight_sha256.json")
+    monkeypatch.setattr(cws, "_persisted", None)
     monkeypatch.setattr(
         pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
@@ -120,20 +137,19 @@ def _resolve(source, **kw):
     return pq._resolve_checkpoint_path(source, None, None, scheme = "int8", **kw)
 
 
-def test_a_cached_pickle_is_ignored_and_the_twin_fetched_online(hub, caplog):
+def test_cached_pickle_is_used_and_revalidated_online(hub, caplog):
     hub.cache("Model-INT8.pt")
     caplog.set_level("INFO")
-    assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.safetensors")]
-    assert hub.downloads == [("Model-INT8.safetensors", False)]
-    assert "Model-INT8.pt" not in hub.fetched
-    assert "using the cached Model-INT8.pt" not in caplog.text
+    assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.downloads == [("Model-INT8.pt", False)]
+    assert "Model-INT8.safetensors" not in hub.fetched
+    assert "using the cached Model-INT8.pt" in caplog.text
 
 
-def test_a_cached_pickle_is_never_opened_offline(hub):
+def test_cached_pickle_offline_uses_cache_without_a_network_call(hub):
     hub.cache("Model-INT8.pt")
-    with pytest.raises(LocalEntryNotFoundError):
-        _resolve(_dit(), local_files_only = True)
-    assert hub.downloads == [("Model-INT8.safetensors", True)]
+    assert _resolve(_dit(), local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.downloads == [("Model-INT8.pt", True)]
 
 
 def test_new_user_downloads_safetensors(hub):
@@ -155,11 +171,11 @@ def test_kill_switch_forces_safetensors(hub, monkeypatch):
     assert hub.fetched == ["Model-INT8.safetensors"]
 
 
-def test_a_cached_pickle_never_shadows_the_hosted_twin(hub):
+def test_twin_removed_from_hub_falls_back_to_the_chain(hub):
     hub.cache("Model-INT8.pt")
     hub.hosted = {"Model-INT8.safetensors"}
     assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.safetensors")]
-    assert hub.fetched == ["Model-INT8.safetensors"]
+    assert hub.fetched == ["Model-INT8.pt", "Model-INT8.safetensors"]
 
 
 def test_a_cached_different_artifact_does_not_preempt_a_better_one(hub):
@@ -199,25 +215,21 @@ def test_mirror_still_answers_first(hub, tmp_path, monkeypatch):
 def test_cache_probe_agrees_with_the_resolver(hub):
     hub.cache("Model-INT8.pt")
     src = _dit()
-    # the cached pickle is not what loads, so it is not "free"
-    assert pq.cached_checkpoint_path(src) is None
-    got = _resolve(src)
-    assert got == hub.cached[(REPO, "Model-INT8.safetensors")]
-    assert pq.cached_checkpoint_path(src) == got
+    assert pq.cached_checkpoint_path(src) == _resolve(src)
 
 
-def test_te_cached_pickle_is_ignored(hub):
+def test_te_cached_pickle_is_used(hub):
     hub.cache("Model-text_encoder-FP8.pt")
     got = tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
-    assert got == hub.cached[(REPO, "Model-text_encoder-FP8.safetensors")]
-    assert hub.downloads == [("Model-text_encoder-FP8.safetensors", False)]
+    assert got == hub.cached[(REPO, "Model-text_encoder-FP8.pt")]
+    assert hub.downloads == [("Model-text_encoder-FP8.pt", False)]
 
 
-def test_te_offline_cached_pickle_is_not_used(hub):
+def test_te_offline_cached_pickle(hub):
     hub.cache("Model-text_encoder-FP8.pt")
-    with pytest.raises(LocalEntryNotFoundError):
-        tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live", local_files_only = True)
-    assert "Model-text_encoder-FP8.pt" not in hub.fetched
+    got = tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live", local_files_only = True)
+    assert got == hub.cached[(REPO, "Model-text_encoder-FP8.pt")]
+    assert hub.downloads == [("Model-text_encoder-FP8.pt", True)]
 
 
 def test_te_new_user_downloads_safetensors(hub):
@@ -237,12 +249,12 @@ def test_te_cached_fp8_does_not_preempt_int8_convrot(hub):
     assert hub.fetched == ["Model-text_encoder-INT8-ConvRot.safetensors"]
 
 
-def test_te_cached_pickle_never_shadows_the_hosted_twin(hub):
+def test_te_twin_removed_from_hub_falls_back(hub):
     hub.cache("Model-text_encoder-FP8.pt")
     hub.hosted = {"Model-text_encoder-FP8.safetensors"}
     got = tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
     assert got == hub.cached[(REPO, "Model-text_encoder-FP8.safetensors")]
-    assert hub.fetched == ["Model-text_encoder-FP8.safetensors"]
+    assert hub.fetched == ["Model-text_encoder-FP8.pt", "Model-text_encoder-FP8.safetensors"]
 
 
 class _Api:
@@ -261,35 +273,31 @@ class _Api:
         )
 
 
-def test_te_hub_files_planner_never_prices_a_pickle(hub):
+def test_te_hub_files_planner_prices_the_cached_pickle(hub):
     hub.cache("Model-text_encoder-FP8.pt")
     api = _Api(["Model-text_encoder-FP8.safetensors", "Model-text_encoder-FP8.pt"])
     files = tpq.te_prequant_hub_files({"text_encoder": _te()}, api, None)
+    assert files == {"text_encoder": [("Model-text_encoder-FP8.pt", 101)]}
+    hub.cached.clear()
+    files = tpq.te_prequant_hub_files({"text_encoder": _te()}, api, None)
     assert files == {"text_encoder": [("Model-text_encoder-FP8.safetensors", 100)]}
-    files = tpq.te_prequant_hub_files(
-        {"text_encoder": _te()}, _Api(["Model-text_encoder-FP8.pt"]), None
-    )
-    assert files == {}
 
 
-def test_dit_planner_stages_the_safetensors_even_with_a_cached_pickle(hub, monkeypatch):
+def test_dit_planner_stages_the_cached_pickle(hub, monkeypatch):
     from core.inference.diffusion import DiffusionBackend
 
     api = _Api(["Model-INT8.safetensors", "Model-INT8.pt"])
     monkeypatch.setattr(huggingface_hub, "HfApi", lambda token = None: api)
     hub.cache("Model-INT8.pt")
     entry = DiffusionBackend._prequant_source_hub_entry(_dit(), None, scheme = "int8")
-    assert entry == (REPO, "Model-INT8.safetensors", 100)
+    assert entry == (REPO, "Model-INT8.pt", 101)
     assert entry[1] == _resolve(_dit()).rsplit("/", 1)[-1]
-    api.names = ["Model-INT8.pt"]
-    failures = []
-    assert (
-        DiffusionBackend._prequant_source_hub_entry(_dit(), None, failures, scheme = "int8") is None
-    )
-    assert failures
+    hub.cached.clear()
+    entry = DiffusionBackend._prequant_source_hub_entry(_dit(), None, scheme = "int8")
+    assert entry == (REPO, "Model-INT8.safetensors", 100)
 
 
-def test_video_denoiser_prefetch_never_fetches_the_cached_pickle(hub, monkeypatch):
+def test_video_denoiser_prefetch_fetches_the_cached_pickle(hub, monkeypatch):
     import utils.hf_xet_fallback as xet
     from core.inference.video import VideoBackend
 
@@ -305,7 +313,7 @@ def test_video_denoiser_prefetch_never_fetches_the_cached_pickle(hub, monkeypatc
     import threading
 
     VideoBackend._fetch_denoiser_prequant(backend, [_dit()], None, cancel_event = threading.Event())
-    assert fetched == ["Model-INT8.safetensors"]
+    assert fetched == ["Model-INT8.pt"]
 
 
 def test_video_denoiser_prefetch_skips_an_unreadable_cached_pickle(hub, monkeypatch):
@@ -335,7 +343,7 @@ def test_video_denoiser_prefetch_skips_an_unreadable_cached_pickle(hub, monkeypa
     assert fetched == ["Model-INT8.safetensors"]
 
 
-def test_video_te_prefetch_never_fetches_the_cached_pickle(hub, monkeypatch):
+def test_video_te_prefetch_fetches_the_cached_pickle(hub, monkeypatch):
     import threading
 
     import utils.hf_xet_fallback as xet
@@ -353,7 +361,7 @@ def test_video_te_prefetch_never_fetches_the_cached_pickle(hub, monkeypatch):
     got = VideoBackend._fetch_te_prequant(
         backend, {"text_encoder": _te()}, None, cancel_event = threading.Event()
     )
-    assert got == ("text_encoder",) and fetched == ["Model-text_encoder-FP8.safetensors"]
+    assert got == ("text_encoder",) and fetched == ["Model-text_encoder-FP8.pt"]
 
 
 def test_new_user_never_requests_the_pickle_when_the_twin_is_hosted(hub, monkeypatch):
@@ -396,40 +404,26 @@ def test_new_user_never_requests_the_pickle_when_the_twin_is_hosted(hub, monkeyp
     assert not any(n.endswith(".pt") for n in hub.fetched + fetched)
 
 
-def test_pickle_only_repo_is_never_loaded_and_the_probe_refuses_it(hub, monkeypatch):
-    import core.inference.prequant_header_probe as hp
-
+def test_pickle_only_repo_downloads_the_pickle_and_says_why(hub, caplog):
     hub.hosted = {"Model-INT8.pt"}
-    with pytest.raises(EntryNotFoundError):
-        _resolve(_dit())
-    assert hub.fetched == ["Model-INT8.safetensors"]
-    # planning learns the same up front: every .safetensors name 404s, so the dense weights are staged
-    monkeypatch.setattr(
-        hp,
-        "read_hub_checkpoint_header",
-        lambda repo, name, token = None, **_: (None, True if name in hub.hosted else False),
-    )
-    monkeypatch.setattr(pq, "hub_offline", lambda: False)
-    # the install's real rule: a pickle name is never readable, so the probe walks only the .safetensors names
-    monkeypatch.setattr(
-        pq,
-        "restricted_prequant_load_supported",
-        lambda scheme = None, filename = None: str(filename).endswith(".safetensors"),
-    )
-    pq._HEADER_PROBE_MEMO.clear()
-    reason = pq.hosted_prequant_refusal(_dit(), "int8", hf_token = "tok-pickle-only")
-    assert reason and "no .safetensors checkpoint is hosted" in reason
+    caplog.set_level("INFO")
+    assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.fetched == ["Model-INT8.safetensors", "Model-INT8.pt"]
+    assert "does not host the .safetensors twin yet" in caplog.text
 
 
-def test_install_without_safetensors_support_quantises_at_runtime(hub, monkeypatch):
+def test_install_without_safetensors_support_downloads_the_pickle_and_says_why(
+    hub, monkeypatch, caplog
+):
     monkeypatch.setattr(
         pq,
         "restricted_prequant_load_supported",
         lambda scheme = None, filename = None: not str(filename).endswith(".safetensors"),
     )
-    with pytest.raises(ValueError, match = "cannot be read here"):
-        _resolve(_dit())
-    assert hub.fetched == []
+    caplog.set_level("INFO")
+    assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.fetched == ["Model-INT8.pt"]
+    assert "cannot read the .safetensors container" in caplog.text
 
 
 CONVROT = ("Model-INT8-ConvRot.safetensors",)
@@ -459,49 +453,46 @@ def test_cached_int8_is_not_free_when_a_declared_convrot_is_ahead(hub):
     assert hub.fetched == ["Model-INT8-ConvRot.safetensors"]
 
 
-def test_offline_a_cached_int8_pickle_is_not_what_loads(hub):
+def test_offline_the_cached_int8_is_what_loads(hub):
     hub.cache("Model-INT8.pt")
     src = _convrot_dit()
-    assert pq.cached_checkpoint_path(src, online = False) is None
-    with pytest.raises(LocalEntryNotFoundError):
-        _resolve(src, local_files_only = True)
-    assert "Model-INT8.pt" not in hub.fetched
+    assert pq.cached_checkpoint_path(src, online = False) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert _resolve(src, local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
 
 
 def test_an_unpublished_convrot_stops_blocking_once_the_resolver_saw_its_404(hub):
-    """The code names a ConvRot build the repo does not host yet. The first load asks, gets a 404, and opens the
-    plain INT8 .safetensors (never the cached INT8 .pt); from then on the probe agrees with the resolver."""
+    """The code names a ConvRot build the repo does not host yet (merged before the upload). The
+    first load asks, gets a 404, and opens the cached INT8 .pt; from then on the probe agrees with
+    the resolver instead of planning a download that never happens on every load."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit()
     assert pq.cached_checkpoint_path(src, online = True) is None
     hub.hosted = set(PLAIN)
     got = _resolve(src)
-    assert got == hub.cached[(REPO, "Model-INT8.safetensors")]
-    assert hub.fetched == ["Model-INT8-ConvRot.safetensors", "Model-INT8.safetensors"]
+    assert got == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.fetched == ["Model-INT8-ConvRot.safetensors", "Model-INT8.pt"]
     assert pq.cached_checkpoint_path(src, online = True) == got
     assert pq.prequant_checkpoint_cached(src, online = True) is True
 
 
-def test_a_repo_hosting_only_the_pickle_leaves_nothing_cached_after_its_404s(hub):
-    """Same rule for derived names: after the .safetensors 404s nothing loads, and the cached .pt is not credited."""
+def test_a_derived_name_is_cleared_by_the_resolvers_own_404(hub):
+    """Same rule for a name derived from the repo id rather than declared by the family."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit(declared = False)
     assert pq.cached_checkpoint_path(src, online = True) is None
     hub.hosted = {"Model-INT8.pt"}
-    with pytest.raises(EntryNotFoundError):
-        _resolve(src)
-    assert "Model-INT8.pt" not in hub.fetched
-    assert pq.cached_checkpoint_path(src, online = True) is None
+    got = _resolve(src)
+    assert got == hub.cached[(REPO, "Model-INT8.pt")]
+    assert pq.cached_checkpoint_path(src, online = True) == got
 
 
-def test_a_cached_pickle_twin_never_counts(hub):
-    """The safetensors twin of a cached .pt is what loads, so the cached .pt makes nothing free."""
+def test_the_cached_pickle_twin_still_counts_online(hub):
+    """The safetensors twin of a cached .pt never blocks it: the resolver opens the .pt."""
     hub.cache("Model-INT8.pt")
     src = _dit()
-    assert pq.cached_checkpoint_path(src, online = True) is None
-    assert pq.cached_checkpoint_path(src, online = False) is None
-    assert _resolve(src) == hub.cached[(REPO, "Model-INT8.safetensors")]
-    assert hub.fetched == ["Model-INT8.safetensors"]
+    assert pq.cached_checkpoint_path(src, online = True) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert pq.cached_checkpoint_path(src, online = True) == _resolve(src)
+    assert hub.fetched == ["Model-INT8.pt"]
 
 
 def test_a_cached_convrot_is_free(hub):
@@ -528,14 +519,11 @@ def test_video_cached_repo_probe_follows_the_same_rule(hub, monkeypatch):
     )
     probe = VideoBackend._denoiser_prequant_cached_repo
     assert probe(None, "int8", "base/Model", online = True) is None
-    assert probe(None, "int8", "base/Model", online = False) is None
-    hub.cache("Model-INT8.safetensors")
-    assert probe(None, "int8", "base/Model", online = True) is None
     assert probe(None, "int8", "base/Model", online = False) == REPO
 
 
 def test_video_cached_repo_probe_ignores_a_cached_unreadable_file(hub, monkeypatch):
-    """Offline, a cached safetensors this install cannot read is not what the loader opens, nor is a cached .pt."""
+    """Offline, a cached safetensors this install cannot read is not what the loader opens."""
     from core.inference.diffusion import DiffusionBackend
     from core.inference.video import VideoBackend
 
@@ -555,19 +543,18 @@ def test_video_cached_repo_probe_ignores_a_cached_unreadable_file(hub, monkeypat
     )
     assert VideoBackend._denoiser_prequant_cached_repo(None, "int8", "b", online = False) is None
     hub.cache("Model-INT8.pt")
-    assert VideoBackend._denoiser_prequant_cached_repo(None, "int8", "b", online = False) is None
+    assert VideoBackend._denoiser_prequant_cached_repo(None, "int8", "b", online = False) == REPO
 
 
 def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tmp_path):
     """The text-encoder size estimate: a cached FP8 encoder is not what loads when an uncached
-    INT8-ConvRot encoder is ahead of it and no 404 for it is recorded, so the size is not exact.
-    A cached FP8 .pt is never priced at all."""
+    INT8-ConvRot encoder is ahead of it and no 404 for it is recorded, so the size is not exact."""
     import core.inference.diffusion as diffusion
     from core.inference.diffusion import DiffusionBackend
 
     snap = tmp_path / "snap"
     snap.mkdir()
-    (snap / "Model-text_encoder-FP8.pt").write_bytes(b"x" * (2 << 20))
+    (snap / "Model-text_encoder-FP8.pt").write_bytes(b"x" * 4096)
     hub.cache("Model-text_encoder-FP8.pt")
     convrot = ("Model-text_encoder-INT8-ConvRot.safetensors",)
 
@@ -591,15 +578,6 @@ def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tm
     monkeypatch.setattr(diffusion, "family_bf16_components_gb", lambda fam, base: (10.0, 16.0))
     monkeypatch.setattr(pq, "hub_offline", lambda: False)
     fam = types.SimpleNamespace(name = "probe")
-    hub.absent.add((REPO, convrot[0]))
-    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
-        fam, "base/Model", None, "int8"
-    )
-    assert components == ("text_encoder",)
-    assert exact is False
-    hub.absent.clear()
-    (snap / "Model-text_encoder-FP8.safetensors").write_bytes(b"x" * 4096)
-    hub.cache("Model-text_encoder-FP8.safetensors")
     mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
         fam, "base/Model", None, "int8"
     )
@@ -618,19 +596,17 @@ def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tm
     assert exact is True and mib == 3
 
 
-@pytest.mark.parametrize("value", [None, "1", "0"])
-def test_the_prefer_safetensors_switch_is_inert_for_the_cache_probe(hub, monkeypatch, value):
-    """Set or not, a cached pickle never makes the probe call the load free."""
+def test_kill_switch_probe_plans_the_safetensors_download(hub, monkeypatch):
+    """With the kill switch the resolver fetches the uncached safetensors, so the probe must not call it free."""
     hub.cache("Model-INT8.pt")
-    if value is not None:
-        monkeypatch.setenv(KILL_SWITCH, value)
+    monkeypatch.setenv(KILL_SWITCH, "1")
     assert pq.cached_checkpoint_path(_dit(), online = True) is None
-    assert pq.cached_checkpoint_path(_dit(), online = False) is None
+    assert pq.cached_checkpoint_path(_dit(), online = False) == hub.cached[(REPO, "Model-INT8.pt")]
 
 
-def test_te_pickle_in_the_default_root_is_never_reused(hub, monkeypatch):
-    """A pickle cached only under huggingface_hub's default root is not what loads: the TE resolver fetches the
-    .safetensors into the live root instead."""
+def test_te_pickle_in_the_default_root_is_reused_through_that_root(hub, monkeypatch):
+    """A pickle cached only under huggingface_hub's default root is what the planner and the video
+    prefetch count, so the TE resolver reuses it through that root instead of fetching the twin."""
     hub.cache("Model-text_encoder-FP8.pt")
     real = hub.try_to_load_from_cache
     real_dl = hub.hf_hub_download
@@ -656,32 +632,24 @@ def test_te_pickle_in_the_default_root_is_never_reused(hub, monkeypatch):
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", _default_root_only)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _dl)
     got = tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
-    assert got == hub.cached[(REPO, "Model-text_encoder-FP8.safetensors")]
-    assert hub.fetched == ["Model-text_encoder-FP8.safetensors"] and roots == ["/live"]
+    assert got == hub.cached[(REPO, "Model-text_encoder-FP8.pt")]
+    assert hub.fetched == ["Model-text_encoder-FP8.pt"] and roots == [None]
 
 
-def test_local_files_only_with_only_a_cached_pickle_is_unreachable(hub, monkeypatch):
-    """local_files_only with only the INT8 .pt cached: nothing loadable, so the hosted prequant is not reachable;
-    a cached INT8 .safetensors fallback is."""
+def test_local_files_only_reachability_uses_the_cached_fallback(hub, monkeypatch):
+    """local_files_only skips the uncached ConvRot and opens the cached INT8, so the prequant is reachable."""
     import core.inference.diffusion as dmod
 
     hub.cache("Model-INT8.pt")
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **k: _convrot_dit())
     backend = dmod.DiffusionBackend.__new__(dmod.DiffusionBackend)
-    assert backend._hosted_prequant_reachable(None, "int8", {"local_files_only": True}) is False
-    with pytest.raises(LocalEntryNotFoundError):
-        _resolve(_convrot_dit(), local_files_only = True)
-    hub.cache("Model-INT8.safetensors")
     assert backend._hosted_prequant_reachable(None, "int8", {"local_files_only": True}) is True
-    assert (
-        _resolve(_convrot_dit(), local_files_only = True)
-        == hub.cached[(REPO, "Model-INT8.safetensors")]
-    )
+    assert _resolve(_convrot_dit(), local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
 
 
 def test_a_local_files_only_load_probes_like_an_offline_one(hub, monkeypatch):
-    """Inside a local_files_only load every default probe opens the cached .safetensors fallback, as the resolver
-    will; outside it the uncached ConvRot still plans a download. A cached .pt alone counts for neither."""
+    """Inside a local_files_only load every default probe (auto policy, retry rung, plan source) opens
+    the cached fallback, as the resolver will; outside it the uncached ConvRot still plans a download."""
     monkeypatch.setattr(pq, "hub_offline", lambda: False)
     hub.cache("Model-INT8.pt")
     seen = {}
@@ -691,8 +659,6 @@ def test_a_local_files_only_load_probes_like_an_offline_one(hub, monkeypatch):
         seen["inner"] = pq.prequant_checkpoint_cached(_convrot_dit())
         return pq.prequant_checkpoint_cached(_convrot_dit())
 
-    assert _load(local_files_only = True) is False and seen["inner"] is False
-    hub.cache("Model-INT8.safetensors")
     assert _load(local_files_only = True) is True and seen["inner"] is True
     assert _load(local_files_only = False) is False
     assert pq.prequant_checkpoint_cached(_convrot_dit()) is False
@@ -720,22 +686,22 @@ def test_cached_own_safetensors_is_kept_over_the_comfy_twin(hub, caplog):
     assert "its ComfyUI-format twin" in caplog.text
 
 
-def test_a_cached_own_pickle_is_dropped_and_the_twin_leads(hub):
+def test_cached_own_pickle_is_kept_over_both_twins(hub):
     hub.cache("Model-INT8.pt")
     assert pq.prefer_cached_pickle_twins(REPO, _comfy_dit().candidate_filenames) == [
-        COMFY,
+        "Model-INT8.pt",
         "Model-INT8.safetensors",
+        COMFY,
+        "transformer_int8.pt",
     ]
-    assert _resolve(_comfy_dit()) == hub.cached[(REPO, COMFY)]
-    assert hub.fetched == [COMFY]
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.fetched == ["Model-INT8.pt"]
 
 
-def test_a_cached_own_pickle_offline_is_not_opened(hub):
+def test_cached_own_pickle_offline_never_asks_for_the_twin(hub):
     hub.cache("Model-INT8.pt")
-    with pytest.raises(LocalEntryNotFoundError):
-        _resolve(_comfy_dit(), local_files_only = True)
-    assert "Model-INT8.pt" not in hub.fetched
-    assert all(offline for _n, offline in hub.downloads)
+    assert _resolve(_comfy_dit(), local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.downloads == [("Model-INT8.pt", True)]
 
 
 def test_cached_comfy_twin_stays_first(hub):
@@ -883,14 +849,14 @@ def test_nvfp4_cached_pickle_offline_is_not_used(nv_hub):
 
 
 def test_nvfp4_cached_pickle_is_not_preferred_even_when_offered(nv_hub):
-    """A stale chain naming the .pt (an older caller) never moves the cached pickle ahead; it is dropped."""
+    """A stale chain naming the .pt (an older caller) still never moves the cached pickle ahead."""
     nv_hub.cache(NV_PT, NV_REPO)
     names = [NV_ST, NV_PT]
-    assert pq.prefer_cached_pickle_twins(NV_REPO, names, readable = None) == [NV_ST]
+    assert pq.prefer_cached_pickle_twins(NV_REPO, names, readable = None)[0] == NV_PT
     out = pq.prefer_cached_pickle_twins(
         NV_REPO, names, readable = lambda n: _REAL_LOAD_SUPPORTED("nvfp4", n)
     )
-    assert out == [NV_ST]
+    assert out.index(NV_ST) < out.index(NV_PT)
     assert pq.without_nvfp4_pickles("nvfp4", out) == [NV_ST]
 
 

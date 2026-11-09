@@ -185,11 +185,7 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
         by_name.setdefault(str(fam.name), []).append((registry, str(fam.name)))
 
     try:
-        from core.inference.diffusion_prequant import (
-            derived_prequant_filenames,
-            legacy_pickle_names,
-            with_comfy_twins,
-        )
+        from core.inference.diffusion_prequant import derived_prequant_filenames, with_comfy_twins
         from core.inference.video_denoiser_prequant import denoiser_components
         for registry, fam in families:
             owner = (registry, str(fam.name))
@@ -206,8 +202,6 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
                 names += [
                     row[-1] for row in getattr(fam, "prequant_filenames", ()) if row[0] == scheme
                 ]
-                # Cached .pt spellings from older builds stay companions so cleanup can free them.
-                names += legacy_pickle_names(names, scheme)
                 add(repo, with_comfy_twins(names), owner, _HOSTED_DENOISER)
     except Exception as exc:  # noqa: BLE001 -- no table: those repos keep the pre-table handling
         logger.debug("Hosted denoiser table unavailable: %s", exc)
@@ -233,13 +227,7 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
             ]
             for repo, component, slot in rows:
                 for scheme in ("fp8", "int8"):
-                    names = te_prequant_repo_filenames(repo, component, scheme)
-                    add(
-                        repo,
-                        [*names, *(n[: -len(".safetensors")] + ".pt" for n in names)],
-                        owner,
-                        slot,
-                    )
+                    add(repo, te_prequant_repo_filenames(repo, component, scheme), owner, slot)
             for row in getattr(fam, "hosted_bf16_vae", ()) or ():
                 if len(row) == 3:
                     add(row[1], [row[2]], owner, "vae")

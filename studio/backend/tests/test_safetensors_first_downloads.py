@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image / video downloads and diffusers loads stay on .safetensors: pickle files are never fetched, a single file
-must be named *.safetensors on every repo, and use_safetensors=True is passed where the folder ships safetensors."""
+"""Image / video downloads and diffusers loads put .safetensors first: a pickle beside its safetensors twin is never
+fetched, a pickle that is the only copy still is, and use_safetensors=True is passed where the folder ships
+safetensors."""
 
 from __future__ import annotations
 
 import ast
 import json
-import re
 import struct
 import sys
 import types
@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from core.inference import diffusers_safetensors as ds
-from core.inference.diffusion_single_file_trust import assert_pickle_free_single_file
 from hub.utils.snapshot_filters import (
     resolve_snapshot_ignore_patterns_for_files,
     sibling_matches_ignore,
@@ -67,9 +66,11 @@ _DIFFUSERS_REPO = [
     "safety_checker/pytorch_model.bin",  # its only copy: kept
     "vae/diffusion_pytorch_model.fp16.safetensors",  # a variant does not make the .bin redundant
     "vae/diffusion_pytorch_model.bin",
-    "sd_xl_base_1.0.ckpt",
+    "sd_xl_base_1.0.ckpt",  # root pickle with no safetensors twin: the only copy, kept
     "image_encoder/open_clip.pth",
-    "Wan2.2-T2V-A14B-FP8.pt",
+    "Wan2.2-T2V-A14B-FP8.pt",  # pre-quant hosted only as .pt: kept
+    "Wan2.2-T2V-A14B-INT8.pt",
+    "Wan2.2-T2V-A14B-INT8.safetensors",  # its twin makes the .pt redundant
 ]
 
 
@@ -78,9 +79,8 @@ def test_a_pipeline_repo_never_downloads_a_pickle_beside_safetensors():
     assert skipped == {
         "unet/diffusion_pytorch_model.bin",
         "text_encoder/pytorch_model.bin",
-        "sd_xl_base_1.0.ckpt",
         "image_encoder/open_clip.pth",
-        "Wan2.2-T2V-A14B-FP8.pt",
+        "Wan2.2-T2V-A14B-INT8.pt",
     }
 
 
@@ -88,6 +88,8 @@ def test_a_bin_only_component_still_downloads():
     skipped = set(ds.pipeline_pickle_files(_DIFFUSERS_REPO))
     assert "safety_checker/pytorch_model.bin" not in skipped
     assert "vae/diffusion_pytorch_model.bin" not in skipped
+    assert "sd_xl_base_1.0.ckpt" not in skipped
+    assert "Wan2.2-T2V-A14B-FP8.pt" not in skipped
 
 
 def test_a_modular_pipeline_repo_is_filtered_too():
@@ -96,6 +98,7 @@ def test_a_modular_pipeline_repo_is_filtered_too():
         "transformer/diffusion_pytorch_model.safetensors",
         "transformer/diffusion_pytorch_model.bin",
         "x.pt",
+        "x.safetensors",
     ]
     assert set(ds.pipeline_pickle_files(names)) == {
         "transformer/diffusion_pytorch_model.bin",
@@ -137,13 +140,14 @@ def test_a_non_pipeline_repo_keeps_its_files():
 
 def test_the_hub_snapshot_filter_skips_diffusers_pickles():
     ignore = resolve_snapshot_ignore_patterns_for_files(_DIFFUSERS_REPO)
-    for name in (
-        "unet/diffusion_pytorch_model.bin",
-        "sd_xl_base_1.0.ckpt",
-        "Wan2.2-T2V-A14B-FP8.pt",
-    ):
+    for name in ("unet/diffusion_pytorch_model.bin", "Wan2.2-T2V-A14B-INT8.pt"):
         assert sibling_matches_ignore(name, ignore), name
-    for name in ("unet/diffusion_pytorch_model.safetensors", "safety_checker/pytorch_model.bin"):
+    for name in (
+        "unet/diffusion_pytorch_model.safetensors",
+        "safety_checker/pytorch_model.bin",
+        "Wan2.2-T2V-A14B-FP8.pt",
+        "sd_xl_base_1.0.ckpt",
+    ):
         assert not sibling_matches_ignore(name, ignore), name
 
 
@@ -169,6 +173,7 @@ def test_the_frontend_size_estimate_mirrors_the_pipeline_pickle_filter():
     assert r"/\.(pt|pth|ckpt|pkl|pickle)$/i" in src
     assert r"/\.(fp16|bf16|non_ema|fp32)\./i" in src
     assert "pipelinePickles.has(filename)" in src
+    assert "safetensorsStems.has(" in src
 
 
 def test_pipeline_and_base_file_filters_drop_never_read_pickles():
@@ -348,52 +353,3 @@ def test_every_dense_diffusers_load_asks_for_safetensors():
     assert _calls_with_helper(image, "component_safetensors_kwargs") == 1
     assert _calls_with_helper(video, "_safetensors_kwargs") == 3
     assert _calls_with_helper(video, "component_safetensors_kwargs") == 1
-
-
-# --- single files -----------------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        "model.ckpt",
-        "model.pt",
-        "model.pth",
-        "model.bin",
-        "model.SafeTensors",
-        "model.sft",
-        ".safetensors",
-    ],
-)
-def test_a_pickle_single_file_is_refused_on_every_repo(tmp_path, name):
-    path = tmp_path / name
-    path.write_bytes(b"\x80\x04N.")
-    for check_header in (True, False):
-        with pytest.raises(ValueError, match = "safetensors only"):
-            assert_pickle_free_single_file(path, check_header = check_header)
-
-
-def test_a_safetensors_single_file_passes(tmp_path):
-    path = tmp_path / "model.safetensors"
-    _write_safetensors(path)
-    assert_pickle_free_single_file(path)
-    bad = tmp_path / "bad.safetensors"
-    bad.write_bytes(b"x")
-    assert_pickle_free_single_file(bad, check_header = False)  # trusted: name rule only
-    with pytest.raises(ValueError):
-        assert_pickle_free_single_file(bad)
-
-
-def test_the_single_file_check_no_longer_depends_on_repo_trust():
-    image = (_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
-    video = (_BACKEND / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
-    # The single-file check sits directly under the kind test, not behind a trust test.
-    assert re.search(
-        r'if kind == "single_file":\s*(?:#[^\n]*\n\s*)*assert_pickle_free_single_file\(', image
-    )
-    assert "assert_pickle_free_single_file(\n                        single_file_path" in image
-    assert (
-        "if checked_single_file:\n                assert_pickle_free_single_file(checkpoint_path"
-        in video
-    )
-    assert "assert_safetensors_file(" not in image and "assert_safetensors_file(" not in video

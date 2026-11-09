@@ -6,7 +6,13 @@
 ``use_safetensors = True`` turns diffusers' (and transformers') silent pickle fallback into an error, so it is passed
 only when the folder the load reads is known to ship ``.safetensors`` weights for every weight-bearing component. A
 folder that cannot be inspected (a Hub id nothing is cached for) keeps the library default, which is safetensors
-first and a ``.bin`` only for a component that has no safetensors at all. No torch, never raises."""
+first and a ``.bin`` only for a component that has no safetensors at all.
+
+``use_safetensors = False`` is passed only to reuse ``.bin`` weights already in the Hub cache whose sha256 matches the
+Hub's record, when the safetensors copy is not cached: the load then reads what is on disk instead of downloading the
+safetensors twin. Offline nothing can be downloaded or hashed against the Hub, so a snapshot cached only as ``.bin``
+loads that ``.bin`` (the library default would refuse the load). diffusers and transformers read a ``.bin`` with ``torch.load(weights_only = True)``. No torch, never
+raises."""
 
 from __future__ import annotations
 
@@ -17,7 +23,13 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Optional
 
-from .safetensors_only import is_pickle_weight
+_PICKLE_WEIGHT_SUFFIXES = (".pt", ".pth", ".ckpt", ".bin", ".pkl", ".pickle")
+
+
+def is_pickle_weight(name: Optional[Any]) -> bool:
+    """True when ``name`` (a file name or path) ends in a pickle container suffix."""
+    return str(name or "").strip().lower().endswith(_PICKLE_WEIGHT_SUFFIXES)
+
 
 _MANIFESTS = ("model_index.json", "modular_model_index.json")
 # Files a diffusers / transformers model load could read as weights.
@@ -36,6 +48,84 @@ _MODEL_SAFETENSORS = re.compile(
 
 def _is_model_safetensors(name: str) -> bool:
     return bool(_MODEL_SAFETENSORS.match(name.rsplit("/", 1)[-1]))
+
+
+# The pickle twins of those names (``diffusion_pytorch_model.bin``, ``pytorch_model-00001-of-00002.bin``).
+_MODEL_BIN = re.compile(r"^(diffusion_pytorch_model|pytorch_model)(-\d+-of-\d+)?\.bin$")
+
+
+def _is_model_bin(name: str) -> bool:
+    return bool(_MODEL_BIN.match(name.rsplit("/", 1)[-1]))
+
+
+def _snapshot_identity(root: Path) -> Optional[tuple]:
+    """``(repo_id, commit)`` of a Hub cache snapshot folder (``.../models--a--b/snapshots/<commit>``), else None."""
+    try:
+        parts = Path(os.path.realpath(str(root))).parts
+        if len(parts) < 3 or parts[-2] != "snapshots" or not parts[-3].startswith("models--"):
+            return None
+        return parts[-3][len("models--") :].replace("--", "/"), parts[-1]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _hub_offline() -> bool:
+    try:
+        from huggingface_hub import constants
+        return bool(constants.HF_HUB_OFFLINE)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def verified_bin_components(
+    root: Any,
+    components: Iterable[str],
+    *,
+    token: Optional[str] = None,
+    offline: bool = False,
+) -> set:
+    """The ``components`` of the cached snapshot ``root`` whose weights are on disk only as ``.bin`` (no
+    ``.safetensors`` weight cached) and every such ``.bin`` hashes to the sha256 the Hub records for it at the
+    snapshot's commit. Empty for a folder that is not a Hub cache snapshot or on any doubt. ``offline`` (nothing can
+    be downloaded, so the alternative to the cached ``.bin`` is a failed load) accepts the cached ``.bin`` unhashed."""
+    try:
+        from .cached_weight_sha import cached_copy_matches_hub, hub_sha256s, reuse_enabled
+
+        if not reuse_enabled():
+            return set()
+        ident = _snapshot_identity(Path(str(root)))
+        if ident is None:
+            return set()
+        repo_id, commit = ident
+        offline = offline or _hub_offline()
+        wanted: dict = {}
+        for component in components:
+            folder = Path(str(root)) / component
+            if not folder.is_dir() or component_weight_state(folder) is not False:
+                continue
+            bins = [p.name for p in folder.iterdir() if p.is_file() and _is_model_bin(p.name)]
+            if bins:
+                wanted[component] = [f"{component}/{b}" for b in bins]
+        if not wanted:
+            return set()
+        if offline:
+            return set(wanted)
+        shas = hub_sha256s(
+            repo_id, [n for names in wanted.values() for n in names], revision = commit, token = token
+        )
+        return {
+            component
+            for component, names in wanted.items()
+            if all(
+                n in shas
+                and cached_copy_matches_hub(
+                    repo_id, n, str(Path(str(root)) / n), revision = commit, expected = shas[n]
+                )
+                for n in names
+            )
+        }
+    except Exception:  # noqa: BLE001 - unverified: safetensors stays first
+        return set()
 
 
 def component_weight_state(folder: Any) -> Optional[bool]:
@@ -175,6 +265,21 @@ def pipeline_safetensors_kwargs(
                     break
         if root is not None and local_pipeline_safetensors_complete(root, passed):
             return {"use_safetensors": True}
+        if root is not None and _snapshot_identity(root) is not None:
+            # Every weight component already cached as a Hub-verified .bin: reuse it, download nothing new.
+            components = _manifest_components(root) or []
+            skip = set(passed or ())
+            needed = [
+                name
+                for name, class_name in components
+                if name not in skip and not _weightless(class_name)
+            ]
+            token = passed.get("token") if isinstance(passed, dict) else None
+            offline = bool(passed.get("local_files_only")) if isinstance(passed, dict) else False
+            if needed and verified_bin_components(
+                root, needed, token = token, offline = offline
+            ) == set(needed):
+                return {"use_safetensors": False}
     except Exception:  # noqa: BLE001 - unknown keeps the library default
         pass
     return {}
@@ -186,6 +291,7 @@ def component_safetensors_kwargs(
     *,
     cache_dir: Optional[str] = None,
     model_cls: Any = None,
+    local_files_only: bool = False,
 ) -> dict:
     """``{"use_safetensors": True}`` for ``from_pretrained(source, subfolder = subfolder)`` when that component folder
     (local, or in the cached snapshot of a Hub id) holds a safetensors weight; ``{}`` otherwise (and for a
@@ -203,6 +309,10 @@ def component_safetensors_kwargs(
             folder = snap / subfolder if snap is not None else None
         if folder is not None and component_weight_state(folder) is True:
             return {"use_safetensors": True}
+        if folder is not None and verified_bin_components(
+            folder.parent, [subfolder], offline = local_files_only
+        ):
+            return {"use_safetensors": False}
     except Exception:  # noqa: BLE001
         pass
     return {}
@@ -210,19 +320,24 @@ def component_safetensors_kwargs(
 
 def pipeline_pickle_files(filenames: Iterable[str]) -> list:
     """Repo files a diffusers pipeline download skips (exact names, for a repo with a pipeline manifest at its root):
-    every ``.pt`` / ``.pth`` / ``.ckpt`` / ``.pkl`` (no component loader reads them), and every ``.bin`` in a folder that
-    also holds the component's own non-variant ``.safetensors`` weight. A ``.bin`` in a folder without safetensors stays (the only copy of
-    that component). Empty for any other repo."""
+    every ``.pt`` / ``.pth`` / ``.ckpt`` / ``.pkl`` inside a component folder (no component loader reads them) or at the
+    root beside its same-stem ``.safetensors`` twin, and every ``.bin`` in a folder that also holds the component's own
+    non-variant ``.safetensors`` weight. A root pickle with no safetensors twin (a pre-quantized checkpoint only hosted
+    as ``.pt``) and a ``.bin`` in a folder without safetensors stay: they are the only copy. Empty for any other repo."""
     names = [n for n in filenames if isinstance(n, str)]
     if not any(n in _MANIFESTS for n in names):
         return []
     st_dirs = {n.rsplit("/", 1)[0] if "/" in n else "" for n in names if _is_model_safetensors(n)}
+    st_stems = {
+        n[: -len(".safetensors")].lower() for n in names if n.lower().endswith(".safetensors")
+    }
     out = []
     for n in names:
         low = n.lower()
         folder = n.rsplit("/", 1)[0] if "/" in n else ""
         if low.endswith(_NEVER_READ_PICKLES):
-            out.append(n)
+            if folder or low.rsplit(".", 1)[0] in st_stems:
+                out.append(n)
         elif (low.endswith(".bin") or low.endswith(".bin.index.json")) and folder in st_dirs:
             out.append(n)
     return out

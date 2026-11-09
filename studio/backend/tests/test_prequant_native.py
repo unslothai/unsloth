@@ -395,26 +395,21 @@ def _mirror(tmp_path, monkeypatch, *files):
 def test_a_mirrored_sibling_this_host_cannot_read_is_not_served(tmp_path, monkeypatch):
     _mirror(tmp_path, monkeypatch, "unsloth/Model-INT8/Model-INT8.safetensors")
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: False)
-    monkeypatch.setattr(ps, "native_read_supported", lambda scheme = None: False)
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
-    calls = []
-    monkeypatch.setattr(
-        pq, "_download_checkpoint_name", lambda *a, **k: calls.append(a) or "/hub/Model-INT8.pt"
-    )
+    monkeypatch.setattr(pq, "_download_checkpoint_name", lambda *a, **k: "/hub/Model-INT8.pt")
     src = pq.PrequantSource(
         kind = "repo",
         location = "unsloth/Model-INT8",
         filename = "Model-INT8.pt",
         declared_filenames = ("Model-INT8.pt",),
     )
-    # Neither the unreadable mirrored twin nor the pickle is served: nothing is resolved or fetched.
-    assert pq._resolve_checkpoint_path(src, None, None, scheme = "int8") is None
-    assert calls == []
-    assert pq.cached_checkpoint_path(src) is None
+    assert pq._resolve_checkpoint_path(src, None, None, scheme = "int8") == "/hub/Model-INT8.pt"
+    cached = pq.cached_checkpoint_path(src)
+    assert cached is None or not ps.is_safetensors_checkpoint(cached)
 
 
 def test_any_mirrored_name_wins_before_the_hub_is_asked(tmp_path, monkeypatch):
-    (pt,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-INT8/Model-INT8-Alt.safetensors")
+    (pt,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-INT8/Model-INT8.pt")
     monkeypatch.setattr(
         pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
@@ -428,15 +423,12 @@ def test_any_mirrored_name_wins_before_the_hub_is_asked(tmp_path, monkeypatch):
         kind = "repo",
         location = "unsloth/Model-INT8",
         filename = "Model-INT8.safetensors",
-        fallback_filenames = ("Model-INT8-Alt.safetensors",),
+        fallback_filenames = ("Model-INT8.pt",),
     )
     assert (
         pq._resolve_checkpoint_path(src, None, None, scheme = "int8") == str(pt.resolve())
         and calls == []
     )
-    (pickle,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-INT8/Model-INT8.pt")
-    assert pq.prequant_mirror_path("unsloth/Model-INT8", "Model-INT8.pt") is None
-    assert pickle.is_file()
 
 
 def test_the_text_encoder_mirror_is_used_when_the_hub_is_unreachable(tmp_path, monkeypatch):
@@ -445,7 +437,7 @@ def test_the_text_encoder_mirror_is_used_when_the_hub_is_unreachable(tmp_path, m
 
     import core.inference.diffusion_te_prequant as te
 
-    (pt,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-FP8/Model-text_encoder-FP8.safetensors")
+    (pt,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-FP8/Model-text_encoder-FP8.pt")
 
     def offline(*a, **k):
         raise LocalEntryNotFoundError("connection error")
@@ -460,10 +452,6 @@ def test_the_text_encoder_mirror_is_used_when_the_hub_is_unreachable(tmp_path, m
     assert te._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "hub")) == str(
         pt.resolve()
     )
-    pt.unlink()
-    _mirror(tmp_path, monkeypatch, "unsloth/Model-FP8/Model-text_encoder-FP8.pt")
-    with pytest.raises(LocalEntryNotFoundError):
-        te._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "hub"))
 
 
 def test_the_mirror_is_read_before_the_hub_and_cannot_escape_its_root(tmp_path, monkeypatch):
@@ -654,12 +642,9 @@ def test_the_converter_writes_a_bit_identical_v1_int8_artifact(
         raw = handle.metadata()
     assert json.loads(raw[pn.SOURCE_KEY])["sha256"] == conv.sha256_of(str(src))
     assert json.loads(raw[pn.QUANT_LAYOUT_KEY])["int8_v1"] == pn.INT8_V1_FACTS
-    # The .pt is read the way the converter reads it; the load path itself never opens a pickle.
-    a = pq._torch_load_prequant(str(src), map_location = "cpu")["state_dict"]
+    a = pq._load_prequant_checkpoint(str(src), map_location = "cpu")["state_dict"]
     b = pq._load_prequant_checkpoint(str(dst), map_location = "cpu", mmap = True)["state_dict"]
     assert conv.compare_state_dicts(a, b) == []
-    with pytest.raises(ValueError, match = "safetensors only"):
-        pq._load_prequant_checkpoint(str(src), map_location = "cpu")
 
 
 def test_the_converter_writes_a_text_encoder_with_tied_weights(tmp_path):

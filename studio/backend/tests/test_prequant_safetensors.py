@@ -53,7 +53,7 @@ def test_is_safetensors_checkpoint(name, expected):
 
 
 def test_load_dispatches_on_extension(monkeypatch):
-    """Picked by name: a .safetensors file goes to its reader, a pickle is refused before any reader runs."""
+    """The two readers are picked by name, and neither is consulted for the other's file."""
     calls = []
     monkeypatch.setattr(
         ps, "load_prequant_safetensors", lambda path, **kw: calls.append(("safetensors", path))
@@ -62,10 +62,8 @@ def test_load_dispatches_on_extension(monkeypatch):
         pq, "_torch_load_prequant", lambda path, **kw: calls.append(("pickle", path))
     )
     pq._load_prequant_checkpoint("/x/Model-FP8.safetensors")
-    for name in ("Model-FP8.pt", "Model-FP8.pth", "Model-FP8.bin", "Model-FP8.ckpt"):
-        with pytest.raises(ValueError, match = "safetensors only"):
-            pq._load_prequant_checkpoint(f"/x/{name}", map_location = "cpu")
-    assert calls == [("safetensors", "/x/Model-FP8.safetensors")]
+    pq._load_prequant_checkpoint("/x/Model-FP8.pt", map_location = "cpu")
+    assert calls == [("safetensors", "/x/Model-FP8.safetensors"), ("pickle", "/x/Model-FP8.pt")]
 
 
 def test_safetensors_needs_no_pickle_allowlist(monkeypatch):
@@ -73,8 +71,7 @@ def test_safetensors_needs_no_pickle_allowlist(monkeypatch):
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
 
-    # The scheme-only question is the safetensors one, so a missing pickle allowlist changes nothing.
-    assert pq.restricted_prequant_load_supported("fp8") is True
+    assert pq.restricted_prequant_load_supported("fp8") is False
     assert pq.restricted_prequant_load_supported("fp8", "Model-FP8.pt") is False
     assert pq.restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is True
 
@@ -84,10 +81,7 @@ def test_safetensors_gate_still_needs_torchao_helpers(monkeypatch):
     rather than letting planning drop the dense shards for a file nothing can read."""
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: False)
-    # Below the torchao reader floor the native int8 / fp8 rebuild still reads it; with that off too, nothing can.
-    monkeypatch.setattr(ps, "native_read_supported", lambda scheme = None: False)
     assert pq.restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is False
-    assert pq.restricted_prequant_load_supported("fp8") is False
 
 
 # torchao 0.16's safetensors allowlist, verbatim: flatten helpers present, no NVFP4Tensor / MXTensor.
@@ -155,18 +149,12 @@ def test_usable_source_survives_a_pickle_only_refusal(monkeypatch):
 
 def test_usable_source_still_refused_when_nothing_is_readable(monkeypatch):
     """A derived <Model>-<SCHEME>.safetensors name is a guess, not evidence that a readable source
-    exists: offline (nothing to fetch) it is no source, online the header probe's 404 decides."""
-    import core.inference.prequant_header_probe as hp
-
+    exists."""
     fam = _family(prequant_repos = (("fp8", "org/model-fp8"),))
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, **kw: None)
-    monkeypatch.setattr(pq, "hub_offline", lambda: True)
     assert pq.usable_prequant_source(fam, "fp8") is None
-    monkeypatch.setattr(pq, "hub_offline", lambda: False)
-    monkeypatch.setattr(hp, "read_hub_checkpoint_header", lambda *a, **k: (None, False))
-    assert pq.usable_prequant_source(fam, "fp8", hf_token = "tok-guess-404") is None
 
 
 def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
@@ -182,12 +170,17 @@ def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
     assert src is not None and src.filename == "model-FP8.safetensors"
 
 
-def test_the_derived_chain_is_safetensors_only(monkeypatch):
-    """No pickle spelling is ever derived: an existing .pt-only repo resolves no hosted file and the load
-    quantises the dense weights."""
+def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypatch):
+    """The preference itself, and the promise that nothing is dropped behind it: an existing
+    .pt-only repo still resolves both of the names it resolves today."""
     fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
     src = pq.resolve_prequant_source(fam, "fp8")
-    assert src.candidate_filenames == ("Model-FP8.safetensors", "Model-FP8-ComfyUI.safetensors")
+    assert src.candidate_filenames == (
+        "Model-FP8.safetensors",
+        "Model-FP8.pt",
+        "Model-FP8-ComfyUI.safetensors",
+        "transformer_fp8.pt",
+    )
 
 
 def test_local_scheme_probe_reads_the_header_only(monkeypatch, tmp_path):
@@ -743,7 +736,7 @@ def test_plain_encoder_gate_requires_safetensors(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "safetensors", None)
     assert not te_candidate_is_readable("encoder.safetensors")
-    assert not te_candidate_is_readable("encoder.pt")
+    assert te_candidate_is_readable("encoder.pt")
 
 
 def test_plain_encoder_resolver_uses_safetensors_without_torchao(monkeypatch):

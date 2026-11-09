@@ -32,12 +32,7 @@ def main(argv = None) -> int:
         "e.g. HiDream's Llama text_encoder_4)",
     )
     p.add_argument("--scheme", default = "fp8", choices = ["fp8"])
-    p.add_argument(
-        "--out",
-        required = True,
-        help = "output .pt path for the checkpoint; Studio loads .safetensors only, so convert it with "
-        "scripts/convert_prequant_to_safetensors.py before use",
-    )
+    p.add_argument("--out", required = True, help = "output .pt path for the checkpoint")
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
     p.add_argument("--hf-token", default = None)
     p.add_argument(

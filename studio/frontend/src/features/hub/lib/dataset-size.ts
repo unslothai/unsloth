@@ -319,7 +319,8 @@ function redundantTorchBinFiles(names: string[]): Set<string> {
 }
 
 // Mirrors pipeline_pickle_files (diffusers_safetensors.py, via diffusers_pickle_files in snapshot_filters.py):
-// a diffusers pipeline repo never downloads a .pt / .pth / .ckpt / .pkl, nor a .bin beside safetensors weights.
+// a diffusers pipeline repo skips a .pt / .pth / .ckpt / .pkl inside a component folder or beside its same-stem
+// .safetensors twin (a root pickle with no twin is the only copy and stays), and a .bin beside safetensors weights.
 const PIPELINE_MANIFESTS = ["model_index.json", "modular_model_index.json"];
 const NEVER_READ_PICKLE_RE = /\.(pt|pth|ckpt|pkl|pickle)$/i;
 const DTYPE_VARIANT_RE = /\.(fp16|bf16|non_ema|fp32)\./i;
@@ -341,10 +342,17 @@ function diffusersPickleFiles(names: string[]): Set<string> {
       )
       .map(folderOf),
   );
+  const safetensorsStems = new Set(
+    names
+      .filter((n) => n.toLowerCase().endsWith(".safetensors"))
+      .map((n) => n.slice(0, -".safetensors".length).toLowerCase()),
+  );
   for (const n of names) {
     const lower = n.toLowerCase();
     if (NEVER_READ_PICKLE_RE.test(lower)) {
-      out.add(n);
+      if (folderOf(n) !== "" || safetensorsStems.has(lower.slice(0, lower.lastIndexOf(".")))) {
+        out.add(n);
+      }
     } else if (
       (lower.endsWith(".bin") || lower.endsWith(".bin.index.json")) &&
       safetensorsFolders.has(folderOf(n))

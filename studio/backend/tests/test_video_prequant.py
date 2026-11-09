@@ -116,10 +116,15 @@ def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
 
 
 def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
-    # The rotated artifact needs a newer Unsloth, so the plain name stays a fallback; no pickle is ever named.
+    # The rotated artifact needs a newer Unsloth, so the plain name stays a fallback.
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, "int8")
-    assert src.fallback_filenames == ("MiniMax-H3-INT8.safetensors",)
+    assert src.fallback_filenames == (
+        "MiniMax-H3-INT8-ConvRot.pt",
+        "MiniMax-H3-INT8.safetensors",
+        "MiniMax-H3-INT8.pt",
+        "transformer_int8.pt",
+    )
     assert all("/" not in n and "\\" not in n for n in src.candidate_filenames)
 
 
@@ -134,7 +139,7 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
         cache_dir = None,
     ):
         seen["filename"] = filename
-        return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8-ConvRot.safetensors" else None
+        return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8-ConvRot.pt" else None
 
     import huggingface_hub
     import os
@@ -148,14 +153,17 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
     finally:
         huggingface_hub.try_to_load_from_cache = real_hub
         os.path.isfile = real_isfile
-    assert seen["filename"] == "MiniMax-H3-INT8-ConvRot.safetensors"
+    assert seen["filename"] == "MiniMax-H3-INT8-ConvRot.pt"
 
 
 def test_the_names_are_built_from_the_repo_and_the_scheme():
     fam = _fam(prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")))
     assert resolve_prequant_source(fam, "int8").filename == "Test-INT8.safetensors"
     assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.safetensors"
-    assert resolve_prequant_source(fam, "int8").fallback_filenames == ()
+    assert resolve_prequant_source(fam, "int8").fallback_filenames == (
+        "Test-INT8.pt",
+        "transformer_int8.pt",
+    )
 
 
 def test_a_task_specific_row_beats_the_task_agnostic_one():
@@ -172,11 +180,12 @@ def test_a_task_specific_row_beats_the_task_agnostic_one():
     )
     assert resolve_prequant_source(fam, "int8", task = " Ref2VA ").candidate_filenames == (
         "Test-Ref2VA-INT8-ConvRot.safetensors",
+        "Test-Ref2VA-INT8-ConvRot.pt",
     )
 
 
 def test_a_task_specific_artifact_gets_no_filename_fallback():
-    # Another partition's denoiser would be wrong; only this artifact's .safetensors container is tried.
+    # Another partition's denoiser would be wrong; only this artifact's two containers are tried.
     fam = _fam(
         prequant_repos = (("int8", "unsloth/Test-FP8"),),
         prequant_filenames = (
@@ -187,10 +196,14 @@ def test_a_task_specific_artifact_gets_no_filename_fallback():
     )
     assert resolve_prequant_source(fam, "int8", task = "ref2va").candidate_filenames == (
         "Test-Ref2VA-INT8-ConvRot.safetensors",
+        "Test-Ref2VA-INT8-ConvRot.pt",
     )
     assert resolve_prequant_source(fam, "int8").candidate_filenames == (
         "Test-INT8-ConvRot.safetensors",
+        "Test-INT8-ConvRot.pt",
         "Test-INT8.safetensors",
+        "Test-INT8.pt",
+        "transformer_int8.pt",
     )
 
 
@@ -235,7 +248,7 @@ def test_a_partition_task_with_no_artifact_of_its_own_is_unavailable():
 def test_h3_reference_video_resolves_its_own_hosted_denoiser(scheme, expected):
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, scheme, task = "ref2va")
-    assert src.candidate_filenames == (expected + ".safetensors",)
+    assert src.candidate_filenames == (expected + ".safetensors", expected + ".pt")
     assert "/" not in src.filename and "\\" not in src.filename
 
 
@@ -244,7 +257,8 @@ def test_h3_keyframe_and_text_only_resolve_exactly_what_they_resolved_before(tas
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     int8 = resolve_prequant_source(fam, "int8", task = task)
     assert int8.filename == "MiniMax-H3-INT8-ConvRot.safetensors"
-    assert int8.fallback_filenames == ("MiniMax-H3-INT8.safetensors",)
+    assert int8.fallback_filenames[0] == "MiniMax-H3-INT8-ConvRot.pt"
+    assert "MiniMax-H3-INT8.pt" in int8.fallback_filenames
     fp8 = resolve_prequant_source(fam, "fp8", task = task)
     assert fp8.filename == "MiniMax-H3-FP8.safetensors"
 

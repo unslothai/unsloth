@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Diffusion checkpoints load from .safetensors only: no .pt / .pth is resolved, preferred from the cache,
-accepted as a local override or unpickled. NVFP4 was first; int8 / fp8 now follow the same rule."""
+"""NVFP4 diffusion checkpoints load from .safetensors only: no .pt / .pth is resolved, preferred from the
+cache, accepted as a local override or unpickled. int8 / fp8 keep their pickle containers and fallbacks."""
 
 from __future__ import annotations
 
@@ -120,29 +120,29 @@ def test_a_family_still_declaring_an_nvfp4_pickle_resolves_only_its_twin():
         ("Tongyi-MAI/Z-Image-Turbo", "fp8", "Z-Image-Turbo-FP8.pt"),
     ],
 )
-def test_int8_and_fp8_chains_carry_no_pickle_name(base, scheme, pickle):
+def test_int8_and_fp8_chains_keep_their_pickle_fallbacks(base, scheme, pickle):
     src = pq.resolve_prequant_source(_family("image", base), scheme, base_repo = base)
     chain = pq.candidate_filenames_of(src)
-    assert pickle not in chain
-    assert f"transformer_{scheme}.pt" not in chain
-    assert pickle[: -len(".pt")] + ".safetensors" in chain
-    assert not [n for n in chain if n.lower().endswith(PICKLES)], chain
+    assert pickle in chain
+    assert f"transformer_{scheme}.pt" in chain
 
 
-def test_wan_int8_second_expert_resolves_only_its_safetensors_twin():
+def test_wan_int8_second_expert_keeps_its_declared_pickle_behind_its_twin():
     fam = _family("video", "Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     src = pq.resolve_prequant_source(fam, "int8", task = "transformer_2")
-    assert pq.candidate_filenames_of(src) == ("Wan2.2-T2V-A14B-INT8-2.safetensors",)
+    assert pq.candidate_filenames_of(src) == (
+        "Wan2.2-T2V-A14B-INT8-2.safetensors",
+        "Wan2.2-T2V-A14B-INT8-2.pt",
+    )
 
 
-def test_every_pickle_is_unreadable_for_every_scheme():
-    for scheme in ("nvfp4", "int8", "fp8"):
-        for name in ("x.pt", "x.pth", f"transformer_{scheme}.pt"):
-            assert pq.restricted_prequant_load_supported(scheme, name) is False
+def test_only_nvfp4_pickles_are_unreadable():
+    for name in ("x-NVFP4.pt", "x-NVFP4.pth", "transformer_nvfp4.pt"):
+        assert pq.restricted_prequant_load_supported("nvfp4", name) is False
     assert pq.nvfp4_pickle_name("nvfp4", "x.PT") is True
-    assert pq.nvfp4_pickle_name("int8", "x.pt") is True
+    assert pq.nvfp4_pickle_name("int8", "x.pt") is False
     assert pq.nvfp4_pickle_name("nvfp4", "x.safetensors") is False
-    assert pq.without_nvfp4_pickles("int8", ["a.safetensors", "a.pt"]) == ["a.safetensors"]
+    assert pq.without_nvfp4_pickles("int8", ["a.safetensors", "a.pt"]) == ["a.safetensors", "a.pt"]
     assert pq.without_nvfp4_pickles("nvfp4", ["a.safetensors", "a.pt", "b.pth"]) == [
         "a.safetensors"
     ]
@@ -180,35 +180,28 @@ def test_the_loader_refuses_an_nvfp4_pickle(tmp_path):
 
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
-def test_the_loader_refuses_an_int8_or_fp8_pickle(tmp_path, monkeypatch, scheme):
+def test_the_loader_still_reads_an_int8_or_fp8_pickle(tmp_path, scheme):
     path = _pickle(tmp_path / f"Model-{scheme.upper()}.pt", scheme)
-    opened = []
-    monkeypatch.setattr(pq, "_torch_load_prequant", lambda *a, **k: opened.append(a))
-    with pytest.raises(ValueError, match = "safetensors only"):
-        pq._load_prequant_checkpoint(str(path), map_location = "cpu")
-    assert pq.local_prequant_scheme(str(path)) is None
-    assert pq.restricted_prequant_load_supported(scheme, path.name) is False
-    assert opened == []
+    ckpt = pq._load_prequant_checkpoint(str(path), map_location = "cpu")
+    assert ckpt["metadata"]["scheme"] == scheme
+    assert pq.local_prequant_scheme(str(path)) == scheme
+    assert pq.restricted_prequant_load_supported(scheme, path.name) is True
 
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
-def test_naming_the_scheme_still_refuses_an_int8_or_fp8_pickle(tmp_path, scheme):
+def test_naming_the_scheme_still_reads_an_int8_or_fp8_pickle(tmp_path, scheme):
     path = _pickle(tmp_path / f"Model-{scheme.upper()}.pt", scheme)
-    with pytest.raises(ValueError, match = "safetensors only"):
-        pq._load_prequant_checkpoint(str(path), scheme = scheme, map_location = "cpu")
+    ckpt = pq._load_prequant_checkpoint(str(path), scheme = scheme, map_location = "cpu")
+    assert ckpt["metadata"]["scheme"] == scheme
 
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
-def test_an_int8_or_fp8_pickle_override_is_refused_by_name(tmp_path, monkeypatch, scheme):
+def test_an_int8_or_fp8_pickle_override_is_still_a_source(tmp_path, monkeypatch, scheme):
     fam = _family("image", "Tongyi-MAI/Z-Image-Turbo")
     path = _pickle(tmp_path / f"Model-{scheme.upper()}.pt", scheme)
-    # kept as a source so the load names the refusal instead of silently quantising
     got = pq.resolve_prequant_source(fam, scheme, path_override = str(path))
     assert got is not None and got.kind == "path"
-    with pytest.raises(ValueError, match = "safetensors only"):
-        pq._resolve_checkpoint_path(got, None, scheme = scheme)
-    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
-    assert pq.usable_prequant_source(fam, scheme, path_override = str(path)) is None
+    assert pq._resolve_checkpoint_path(got, None, scheme = scheme) == str(path)
 
 
 def test_a_local_nvfp4_pickle_never_reads_as_nvfp4(tmp_path):
@@ -219,10 +212,7 @@ def test_a_local_nvfp4_pickle_never_reads_as_nvfp4(tmp_path):
 def test_a_local_nvfp4_pickle_override_is_refused(tmp_path, monkeypatch):
     fam = _family("image", "Tongyi-MAI/Z-Image-Turbo")
     path = _pickle(tmp_path / "Model-NVFP4.pt", "nvfp4")
-    got = pq.resolve_prequant_source(fam, "nvfp4", path_override = str(path))
-    assert got is not None and got.kind == "path"
-    with pytest.raises(ValueError, match = "safetensors only"):
-        pq._resolve_checkpoint_path(got, None, scheme = "nvfp4")
+    assert pq.resolve_prequant_source(fam, "nvfp4", path_override = str(path)) is None
     monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     assert pq.usable_prequant_source(fam, "nvfp4", path_override = str(path)) is None
     # a hand-built source still never reaches the unpickler

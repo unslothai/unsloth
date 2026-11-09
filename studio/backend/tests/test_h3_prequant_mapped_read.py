@@ -7,7 +7,6 @@ import ast
 import inspect
 from pathlib import Path
 
-import pytest
 import torch
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -28,24 +27,6 @@ def test_host_destination_maps_only_when_a_host_copy_follows_on_linux(monkeypatc
     assert not pq.prequant_mmap_enabled("cpu", host_copy_follows = True)
 
 
-def _save_prequant_safetensors(ckpt, path):
-    """``ckpt`` written as Studio's safetensors pre-quant container (the only one the loader opens)."""
-    import json
-
-    from safetensors.torch import save_file
-
-    from core.inference import prequant_safetensors as ps
-
-    helpers = ps._torchao_helpers()
-    if helpers is None:
-        pytest.skip(reason = "needs torchao >= 0.16 flatten helpers to write the safetensors fixture")
-    flat, meta = helpers[0](ckpt["state_dict"])
-    header = dict(meta)
-    header[ps.UNSLOTH_FORMAT_KEY] = ckpt["format"]
-    header[ps.UNSLOTH_METADATA_KEY] = json.dumps(ckpt["metadata"])
-    save_file({k: v.contiguous() for k, v in flat.items()}, str(path), metadata = header)
-
-
 def test_mapped_host_read_matches_the_full_read(tmp_path, monkeypatch):
     from core.inference import diffusion_prequant as pq
 
@@ -56,8 +37,8 @@ def test_mapped_host_read_matches_the_full_read(tmp_path, monkeypatch):
         "state_dict": {"w": torch.arange(64, dtype = torch.int8).reshape(8, 8), "s": torch.rand(8)},
         "metadata": {"scheme": "int8"},
     }
-    path = tmp_path / "x.safetensors"
-    _save_prequant_safetensors(ckpt, path)
+    path = tmp_path / "x.pt"
+    torch.save(ckpt, path)
     seen = []
     real = pq._load_prequant_checkpoint
 

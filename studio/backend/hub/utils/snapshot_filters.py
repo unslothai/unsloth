@@ -168,10 +168,10 @@ def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list
 
 
 def diffusers_pickle_files(filenames: Iterable[str]) -> list[str]:
-    """For a diffusers pipeline repo (``model_index.json`` / ``modular_model_index.json`` at its root): every
-    .pt / .pth / .ckpt / .pkl and every .bin in a folder that also holds safetensors weights, as exact names. Studio
-    loads image / video weights from safetensors only; a .bin stays only where it is a component's only copy.
-    Empty for every other repo (LLM, audio, datasets keep their own rules above)."""
+    """For a diffusers pipeline repo (``model_index.json`` / ``modular_model_index.json`` at its root): the pickles a
+    safetensors copy makes redundant, as exact names (a component folder's .pt / .pth / .ckpt / .pkl, a root one beside
+    its same-stem .safetensors, a .bin beside the component's safetensors weights). A pickle that is the only copy
+    stays. Empty for every other repo (LLM, audio, datasets keep their own rules above)."""
     from core.inference.diffusers_safetensors import pipeline_pickle_files
     return pipeline_pickle_files(filenames)
 

@@ -13,8 +13,8 @@ the ~half-size fp8-storage state dict directly: meta-init the encoder skeleton,
 cast uses. The layerwise cast is a deterministic storage transform, so the loaded encoder is
 bit-identical to dense-load-then-cast by construction.
 
-v1 covers the layerwise ``fp8`` STORAGE scheme only: its state dict is plain tensors read
-from ``.safetensors`` only (a ``.pt`` is never opened), and cast-on-load equals
+v1 covers the layerwise ``fp8`` STORAGE scheme only: its state dict is plain tensors
+(``torch.load(weights_only = True)``, no pickle execution), and cast-on-load equals
 load-of-cast exactly. The dynamic-compute schemes (fp8_dynamic / int8 / nvfp4) build
 torchao subclass wrappers at runtime and int8 keys off per-family keep-bf16 schedules, so
 their artifacts are deliberately NOT hosted; the metadata layout leaves room to add them.
@@ -252,13 +252,11 @@ def family_te_int8_convrot(fam: Any, component: str) -> Optional[tuple[str, ...]
 
 
 def te_prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Optional[str]:
-    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that .safetensors file, else None. Never raises."""
+    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that file, else None. Never raises."""
     import os
 
-    from .safetensors_only import is_safetensors_name
-
     raw = (os.environ.get(TE_PREQUANT_MIRROR_ENV) or "").strip()
-    if not raw or not repo_id or not name or not is_safetensors_name(name):
+    if not raw or not repo_id or not name:
         return None
     parts = [*str(repo_id).split("/"), *str(name).split("/")]
     if any(p in ("", ".", "..") or "\\" in p for p in parts):
@@ -783,12 +781,12 @@ def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
 
 
 def te_prequant_repo_filenames(repo_id: str, component: str, scheme: str) -> tuple:
-    """The ``<stem>.safetensors`` name only: a hosted ``.pt`` twin is never requested or opened."""
+    """Both .safetensors and .pt are live and the name must be requested; safetensors is tried first."""
     # Lazy import: prequant_safetensors pulls torchao, which some hosts lack.
     from .prequant_safetensors import SAFETENSORS_SUFFIX
 
     stem = te_prequant_repo_stem(repo_id, component, scheme)
-    return (f"{stem}{SAFETENSORS_SUFFIX}",)
+    return (f"{stem}{SAFETENSORS_SUFFIX}", f"{stem}.pt")
 
 
 def te_prequant_companion_names(repo_id: str, families: Iterable[Any]) -> set[str]:
@@ -805,8 +803,6 @@ def te_prequant_companion_names(repo_id: str, families: Iterable[Any]) -> set[st
                 pairs.add((str(row[2]), str(row[1])))
     pairs |= {(c, s) for c, _s in pairs for s in ("fp8", "int8")}
     names = {n.lower() for c, s in pairs for n in te_prequant_repo_filenames(repo_id, c, s)}
-    # Cached .pt twins from older builds stay companions so cleanup can free them.
-    names |= {n[: -len(".safetensors")] + ".pt" for n in names if n.endswith(".safetensors")}
     key = str(repo_id or "").strip().lower()
     entries = [e for comps in TE_INT8_CONVROT_FILES.values() for e in comps.values()]
     entries += [
@@ -836,12 +832,12 @@ def te_candidate_filenames(source: Any) -> tuple:
 
 
 def te_candidate_is_readable(name: Optional[str]) -> bool:
-    """Not the DiT's torchao check: safetensors needs no torchao; a pickle (.pt) is never readable."""
+    """Not the DiT's torchao check: a plain-tensor .pt always reads; safetensors needs no torchao."""
     if not name:
         return False
     from .prequant_safetensors import is_safetensors_checkpoint, plain_safetensors_supported
 
-    return is_safetensors_checkpoint(name) and plain_safetensors_supported()
+    return plain_safetensors_supported() if is_safetensors_checkpoint(name) else True
 
 
 def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[str]:
@@ -1147,10 +1143,11 @@ def load_prequant_text_encoder(
         if path is None:
             return None
 
-        from .prequant_safetensors import is_safetensors_checkpoint, load_plain_prequant_safetensors
-        from .safetensors_only import refuse_pickle_path
+        import torch
 
-        refuse_pickle_path(path)
+        from .prequant_safetensors import is_safetensors_checkpoint, load_plain_prequant_safetensors
+
+        # weights_only=True: no pickle runs; a torchao-subclass scheme needs a format bump and an allowlist.
         from .diffusion_text_encoder_trim import (
             LM_HEAD_KEY,
             class_trims_lm_head,
@@ -1164,7 +1161,9 @@ def load_prequant_text_encoder(
             if trim_lm_head:
                 te_class = _safetensors_te_class(path)
             skip = (LM_HEAD_KEY,) if trim_lm_head and class_trims_lm_head(te_class) else ()
-        ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
+            ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
+        else:
+            ckpt = torch.load(path, weights_only = True, map_location = "cpu")
         # By format tag: an int8 request accepts its fp8 fallback; an fp8 request never accepts an int8 file.
         file_scheme = (
             "int8"
@@ -1566,7 +1565,9 @@ def _fetch_dense_components(
         fetched = snapshot_download(
             repo_id,
             allow_patterns = [f"{c}/*" for c in components],
-            ignore_patterns = _dense_component_pickles(repo_id, components, revision, hf_token),
+            ignore_patterns = _dense_component_pickles(
+                repo_id, components, revision, hf_token, cache_dir
+            ),
             token = hf_token,
             cache_dir = cache_dir,
             revision = revision,
@@ -1580,12 +1581,21 @@ def _fetch_dense_components(
 
 
 def _dense_component_pickles(
-    repo_id: str, components: list, revision: Optional[str], hf_token: Optional[str]
+    repo_id: str,
+    components: list,
+    revision: Optional[str],
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
 ) -> list:
     """ignore_patterns for a dense encoder fetch: every .pt / .pth / .ckpt / .pkl, plus a component's .bin shards when
-    the repo lists a safetensors weight for it. Without a listing only the never-read pickles are dropped, so a
-    component whose only copy is a .bin still loads."""
-    from .diffusers_safetensors import pipeline_pickle_files
+    the repo lists a safetensors weight for it. A component whose .bin is already cached and matches the Hub's sha256
+    (and whose safetensors is not cached) skips its safetensors instead, so nothing is downloaded twice. Without a
+    listing only the never-read pickles are dropped, so a component whose only copy is a .bin still loads."""
+    from .diffusers_safetensors import (
+        _is_model_safetensors,
+        pipeline_pickle_files,
+        verified_bin_components,
+    )
 
     patterns = [
         f"{c}/*{suffix}"
@@ -1597,10 +1607,28 @@ def _dense_component_pickles(
         names = HfApi().list_repo_files(repo_id, revision = revision, token = hf_token)
     except Exception:  # noqa: BLE001 - no listing: the .bin of a component without safetensors must stay fetchable
         return patterns
+    reused: set = set()
+    try:
+        import os
+
+        from huggingface_hub import try_to_load_from_cache
+
+        hit = try_to_load_from_cache(
+            repo_id, "model_index.json", cache_dir = cache_dir, revision = revision
+        )
+        if isinstance(hit, str):
+            reused = verified_bin_components(os.path.dirname(hit), components, token = hf_token)
+    except Exception:  # noqa: BLE001 - unverified: safetensors stays first
+        reused = set()
     wanted = tuple(f"{c}/" for c in components)
-    patterns.extend(
-        n for n in pipeline_pickle_files(list(names) + ["model_index.json"]) if n.startswith(wanted)
-    )
+    for n in pipeline_pickle_files(list(names) + ["model_index.json"]):
+        if n.startswith(wanted) and n.split("/", 1)[0] not in reused:
+            patterns.append(n)
+    for n in names:
+        if n.split("/", 1)[0] in reused and (
+            _is_model_safetensors(n) or n.endswith(".safetensors.index.json")
+        ):
+            patterns.append(n)
     return patterns
 
 
@@ -1832,14 +1860,9 @@ def _resolve_checkpoint_path(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """The local file path for ``source``, downloading from the Hub if needed; None if absent. A local override that
-    is not a .safetensors file raises (never opened)."""
+    """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
         import os
-
-        from .safetensors_only import refuse_pickle_path
-
-        refuse_pickle_path(source.location, f"the local pre-cast override {str(source.location)!r}")
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":

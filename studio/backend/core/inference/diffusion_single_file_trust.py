@@ -97,22 +97,3 @@ def assert_safetensors_file(path: Union[str, os.PathLike]) -> None:
         tensors += 1
     if tensors == 0:
         raise ValueError(f"'{label}' is not a valid safetensors checkpoint: it holds no tensors")
-
-
-def assert_pickle_free_single_file(
-    path: Union[str, os.PathLike], *, check_header: bool = True
-) -> None:
-    """Raise ValueError unless ``path`` is named exactly ``*.safetensors`` (diffusers' single-file loader dispatches
-    on that case-sensitive suffix and ``torch.load``s anything else), and with ``check_header`` is a well-formed
-    safetensors container. The name rule applies to every repo, trusted or not: ``.ckpt`` / ``.pt`` / ``.pth`` /
-    ``.bin`` single files are never loaded. A ``*.safetensors`` name alone already keeps pickle out (the loader then
-    parses a header, never a pickle), so trusted repos skip the header read."""
-    leaf = Path(path).name
-    if not leaf.endswith(SAFETENSORS_SUFFIX) or len(leaf) == len(SAFETENSORS_SUFFIX):
-        raise ValueError(
-            f"'{leaf}' is not a .safetensors file: image / video single-file checkpoints are loaded from "
-            f".safetensors only (a .ckpt / .pt / .pth / .bin is never opened). Use the .safetensors checkpoint "
-            f"(or a .gguf with model_kind 'gguf')."
-        )
-    if check_header:
-        assert_safetensors_file(path)

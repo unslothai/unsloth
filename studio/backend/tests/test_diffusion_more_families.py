@@ -385,6 +385,7 @@ def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
 
 
 def test_qwen_image_2512_prequant_filenames_match_its_repo():
+    # The .pt the repo serves today must stay in the chain; safetensors may only be added in front.
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
     fam = detect_family("Qwen/Qwen-Image-2512")
     for scheme, safetensors_name, pickle_name in (
@@ -403,8 +404,9 @@ def test_qwen_image_2512_prequant_filenames_match_its_repo():
             if scheme == "int8"
             else safetensors_name
         ), names
-        assert pickle_name not in names, names
-        assert all(n.endswith(".safetensors") for n in names), names
+        assert pickle_name in names[1:], names
+        # The legacy repo-agnostic name stays last, for repos predating the model-named one.
+        assert names[-1] == f"transformer_{scheme}.pt", names
 
 
 def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():

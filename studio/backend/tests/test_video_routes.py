@@ -1409,15 +1409,8 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
     assert seen["transformer_quant"] == "int8"
 
 
-@pytest.fixture
-def readable_safetensors(monkeypatch):
-    """The hosted fp8 safetensors reads here, so the plan tests do not depend on this host's torchao."""
-    import core.inference.prequant_safetensors as pst
-    monkeypatch.setattr(pst, "safetensors_scheme_supported", lambda scheme = None: True)
-
-
 def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_load(
-    client, monkeypatch, readable_safetensors
+    client, monkeypatch
 ):
     import types
 
@@ -1434,7 +1427,7 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
             _Sibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000),
             _Sibling("ltx-2.3-22b-dev.safetensors", 46_000_000_000),
         ],
-        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.safetensors", 19_057_628_489)],
+        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.pt", 19_057_628_489)],
         "unsloth/LTX-2.3-GGUF": [
             _Sibling("vae/ltx-2.3-22b-distilled_video_vae.safetensors", 2_400_000_000),
             _Sibling("vae/ltx-2.3-22b-distilled_audio_vae.safetensors", 200_000_000),
@@ -1500,9 +1493,7 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
         assert "unsloth/LTX-2.3-FP8" not in _staged(memory_mode), memory_mode
 
 
-def test_video_download_plan_does_not_probe_fp8_while_training(
-    client, monkeypatch, readable_safetensors
-):
+def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypatch):
     import types
 
     import core.inference.diffusion_device as devmod
@@ -1516,7 +1507,7 @@ def test_video_download_plan_does_not_probe_fp8_while_training(
 
     repos = {
         "Lightricks/LTX-2.3": [_Sibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000)],
-        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.safetensors", 19_057_628_489)],
+        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.pt", 19_057_628_489)],
         "unsloth/LTX-2.3-GGUF": [],
         "Lightricks/LTX-2": [_Sibling("model_index.json", 1000)],
     }

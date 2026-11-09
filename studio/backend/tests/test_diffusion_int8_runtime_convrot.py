@@ -467,8 +467,7 @@ def test_zimage_int8_resolves_the_rotated_artifact_first_unless_killed(
     src = resolve_prequant_source(fam, "int8")
     names = candidate_filenames_of(src)
     assert src.location == "unsloth/Z-Image-Turbo-FP8"
-    assert "Z-Image-Turbo-INT8.safetensors" in names
-    assert all(n.endswith(".safetensors") for n in names)
+    assert "Z-Image-Turbo-INT8.pt" in names
     assert (names[0] == "Z-Image-Turbo-INT8-ConvRot.safetensors") is rotated_first
     assert ("Z-Image-Turbo-INT8-ConvRot.safetensors" in names) is rotated_first
     assert "Z-Image-Turbo-INT8-ConvRot.safetensors" not in candidate_filenames_of(

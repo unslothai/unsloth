@@ -599,13 +599,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             "(27 per step at 16 GB), which a graph cannot record"
         ),
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
-        # Only way to run H3 quantized (no dense module to quantise); file <Model>-<SCHEME>.safetensors at repo root.
+        # Only way to run H3 quantized (no dense module to quantise); file <Model>-<SCHEME>.pt at repo root.
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
         # ConvRot INT8 gets own name for old installs; ref2va needs own file (the task alone separates).
         prequant_filenames = (
-            ("int8", "MiniMax-H3-INT8-ConvRot.safetensors"),
-            ("int8", "ref2va", "MiniMax-H3-Ref2VA-INT8-ConvRot.safetensors"),
-            ("fp8", "ref2va", "MiniMax-H3-Ref2VA-FP8.safetensors"),
+            ("int8", "MiniMax-H3-INT8-ConvRot.pt"),
+            ("int8", "ref2va", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
+            ("fp8", "ref2va", "MiniMax-H3-Ref2VA-FP8.pt"),
         ),
         # Equal to H3_TASK_REFERENCES (literal avoids importing the H3 module); no ref2va row means refused.
         prequant_partition_tasks = ("ref2va",),
@@ -819,7 +819,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-        # fp8 / int8: expert 2 is <name>-2.safetensors, not the derived transformer_2 name, so it needs its own row.
+        # fp8 / int8: expert 2 is <name>-2.pt, not the derived transformer_2 name, so it needs its own row.
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),
             ("fp8", "unsloth/Wan2.2-T2V-A14B-FP8"),
@@ -828,8 +828,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_filenames = (
             ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.safetensors"),
             ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors"),
-            ("fp8", "transformer_2", "Wan2.2-T2V-A14B-FP8-2.safetensors"),
-            ("int8", "transformer_2", "Wan2.2-T2V-A14B-INT8-2.safetensors"),
+            ("fp8", "transformer_2", "Wan2.2-T2V-A14B-FP8-2.pt"),
+            ("int8", "transformer_2", "Wan2.2-T2V-A14B-INT8-2.pt"),
         ),
         # BOTH experts: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2), ("fp8", 29.2), ("int8", 28.8)),

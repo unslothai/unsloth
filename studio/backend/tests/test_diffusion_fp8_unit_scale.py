@@ -184,15 +184,7 @@ def test_every_prequant_container_installs_the_dispatch(monkeypatch, container):
     monkeypatch.setattr(ps, "is_safetensors_checkpoint", lambda path: container == "safetensors")
     monkeypatch.setattr(ps, "load_prequant_safetensors", lambda path, mmap = False: {"format": "fp8"})
     monkeypatch.setattr(dp, "_torch_load_prequant", lambda path, **kwargs: {"format": "fp8"})
-    if container == "pickle":
-        # A pickle container never loads, so it never installs the dispatch either.
-        with pytest.raises(ValueError, match = "safetensors only"):
-            dp._load_prequant_checkpoint("model.bin", map_location = "cpu")
-        assert calls == []
-        return
-    assert dp._load_prequant_checkpoint("model.safetensors", map_location = "cpu") == {
-        "format": "fp8"
-    }
+    assert dp._load_prequant_checkpoint("model.bin", map_location = "cpu") == {"format": "fp8"}
     assert calls == [container]
 
 
