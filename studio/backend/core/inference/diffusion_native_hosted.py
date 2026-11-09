@@ -374,7 +374,9 @@ def _load_native_from_pickle(
         from .diffusion_native_quant import native_linear_class
         from .diffusion_transformer_quant import make_filter_fn
 
-        ckpt = pq._read_prequant_for(str(path), "cpu", logger)
+        # Mapped on Linux (file-backed pages, as the safetensors read): a full read would hold both 14 GB experts
+        # as anonymous memory before offload pins its own copies.
+        ckpt = pq._read_prequant_for(str(path), "cpu", logger, host_copy_follows = True)
         if not pq._validate_checkpoint(
             ckpt,
             "int8",

@@ -384,6 +384,25 @@ def test_a_real_torchao_v1_pickle_reads_natively(tmp_path):
         assert torch.equal(layer.weight_scale.view(torch.float32), impl.scale.float().reshape(-1))
 
 
+@needs_decoder
+def test_the_pickle_is_mapped_not_read_into_memory(hosted, monkeypatch):
+    """Both experts read in full would sit in anonymous host memory (~29 GB) before offload pins its copies."""
+    seen = []
+    real = pq._load_prequant_checkpoint
+
+    def spy(path, **kwargs):
+        seen.append(bool(kwargs.get("mmap")))
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(pq, "_load_prequant_checkpoint", spy)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv(pq._PREQUANT_MMAP_ENV, raising = False)
+    model = _load(hosted, "transformer")
+    assert model is not None and seen and seen[0] is True
+    codes, _scale = hosted.written["transformer"]["blocks.0.attn1.to_q"]
+    assert torch.equal(dict(model.named_buffers())["blocks.0.attn1.to_q.weight_q"], codes)
+
+
 def test_an_unreadable_pickle_never_raises(tmp_path):
     bad = tmp_path / "x.pt"
     bad.write_bytes(b"not a checkpoint")
