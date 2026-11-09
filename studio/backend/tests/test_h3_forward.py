@@ -41,7 +41,6 @@ def _model():
         time_embed_dim = 16,
         rope_freq_dim = 2,
     ).eval()
-    # random (non-zero-init) weights everywhere so every path contributes
     with torch.no_grad():
         for p in m.parameters():
             p.copy_(torch.randn_like(p) * 0.1)

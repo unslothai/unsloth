@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 denoiser outer forward, op for op the diffusers 0.42.1 one, with two per-step savings (inference only;
-installed only over the mirrored source hash, else stock):
+"""MiniMax-H3 denoiser outer forward, op for op the diffusers 0.42.1 one (installed only over the mirrored hash), with:
 
-* the text stream (``context_embedder`` + the two ``token_refiner`` blocks) reads only the render's fixed conditioning,
-  so it runs once per render and later steps reuse its rows, bit-identical; the cache lives only inside
-  ``h3_render_scope`` (one render: prompt / LoRA / dtype / device cannot change inside it) and is keyed on the
-  conditioning tensor itself and the call's LoRA scale. The modular denoise loop passes the same ``prompt_embeds``
-  every step and never writes it; an inference tensor has no version counter, so an in-place edit of it inside a
-  render would not be seen. ``UNSLOTH_H3_REFINER_CACHE=0`` recomputes it every step.
-* the packed sequence is filled in place (three ``index_copy_`` into one buffer) instead of three allocating
-  ``index_copy`` copies of the whole sequence. ``UNSLOTH_H3_INPLACE_PACK=0`` restores the copies.
+* the text stream run once per render inside ``h3_render_scope``, keyed on the conditioning tensor and LoRA scale; an
+  inference tensor has no version counter, so an in-place edit inside a render is not seen
+  (``UNSLOTH_H3_REFINER_CACHE=0`` disables).
+* the packed sequence filled in place with ``index_copy_`` (``UNSLOTH_H3_INPLACE_PACK=0`` disables).
 """
 
 from __future__ import annotations
@@ -158,7 +153,6 @@ def _body(
         (text_embeds.shape[0], sequence_length, text_embeds.shape[-1])
     )
     if inplace_pack_enabled():
-        # Same rows written to the same buffer; no full-sequence copy per modality.
         hidden_states.index_copy_(1, text_indices, text_embeds)
         hidden_states.index_copy_(1, video_indices, video_embeds.to(text_embeds.dtype))
         hidden_states.index_copy_(1, audio_indices, audio_embeds.to(text_embeds.dtype))
@@ -257,9 +251,7 @@ def _hooked(module: Any) -> bool:
 
 
 def install_h3_forward(transformer: Any, logger: Any = None) -> bool:
-    """Bind the mirrored forward on one H3 denoiser, before any offload hook wraps ``forward``; idempotent, never
-    raises. False (stock kept) when both switches are off, the class or its source differs, or ``forward`` is
-    already wrapped."""
+    """Bind the mirrored forward before any offload hook wraps ``forward``; idempotent, never raises, False = stock."""
     try:
         if transformer is None or type(transformer).__name__ != _CLASS_NAME:
             return False
