@@ -755,6 +755,7 @@ class Page:
     """One app page at one chat length and one appearance mode."""
 
     def __init__(self, browser, base: str, turns: int, mode: dict, settings_tabs: list[str]):
+        """Load the seeded chat at `base` in `mode` with every row mounted before tracing."""
         self.browser, self.turns, self.mode, self.tabs = browser, turns, mode, settings_tabs
         self.api = Api(turns)
         self.ctx = browser.new_context(viewport = {"width": 1440, "height": 900})
@@ -780,11 +781,19 @@ class Page:
         self.focusins_before = 0
         page.on("pageerror", lambda e: self.errors.append(str(e)[:200]))
         page.goto(f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000)
+        page.wait_for_selector("[data-role]", state = "attached", timeout = 120_000)
+        # Find completes progressive mounts before reading the DOM. Measure the full thread,
+        # not whichever tail has mounted while the browser is busy loading the page.
+        page.keyboard.press("ControlOrMeta+f")
+        find_bar = page.locator(".find-bar-surface")
+        find_bar.wait_for(state = "visible")
         page.wait_for_function(
             "(n) => document.querySelectorAll('[data-role]').length >= n",
             arg = 2 * turns,
             timeout = 120_000,
         )
+        page.keyboard.press("Escape")
+        find_bar.wait_for(state = "hidden")
         page.evaluate(PROBE)
         page.wait_for_timeout(600)
         self.mac = page.evaluate(
