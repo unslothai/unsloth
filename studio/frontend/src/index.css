@@ -2154,6 +2154,15 @@ html[data-chat-font] .aui-root {
 	body {
 		--removed-body-scroll-bar-size: 0px;
 	}
+	/* The scroll lock's body styles, preset on screen: flipping them re-laid out the whole page in WebKit
+	   (20-30 ms per modal at 150 turns). Safe because the page never scrolls itself (views sit in h-full
+	   html, body and #root); print keeps document flow. */
+	@media screen {
+		body {
+			overflow: hidden;
+			position: relative;
+		}
+	}
 
 	/* Radix modal layers (dialogs, modal menus, selects) write pointer-events: none on <body>.
 	   That property is inherited, so every open and close restyled each element of the chat:
