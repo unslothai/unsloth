@@ -3,15 +3,17 @@
 
 """Settings tabs on the real dialog, no backend; PW_CHUNK_DELAY_MS and PW_CHUNK_FAIL inject faults."""
 
+import base64
 import json
 import os
 import re
 import sys
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
@@ -630,6 +632,84 @@ PANEL_SCROLL_JS = """(sel) => {
 }"""
 
 
+def run_appearance_pickers(page) -> None:
+    """Visual comparisons stay open and keyboard accessible; scope choices commit and close."""
+    until(page, DIALOG_GONE)
+    open_dialog(page, "appearance")
+    settle_panel(page)
+    glass = page.get_by_role("switch", name = "Glass theme", exact = True)
+    if glass.get_attribute("aria-checked") != "true":
+        glass.click()
+
+    background = page.locator('section[data-settings-label="Background image"]')
+    image = page.evaluate("""() => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 16;
+        canvas.getContext('2d').fillRect(0, 0, 16, 16);
+        return canvas.toDataURL('image/png').split(',')[1];
+    }""")
+    background.locator('input[type="file"]').set_input_files(
+        {
+            "name": "picker-test.png",
+            "mimeType": "image/png",
+            "buffer": base64.b64decode(image),
+        }
+    )
+    cases = [
+        ("Style", "Frosted", "Blurred"),
+        ("Glass lens", "Magnify", "Shrink"),
+        ("Effect", "None", "Dither"),
+    ]
+    facts = {}
+    for label, initial, following in cases:
+        trigger = page.get_by_role("button", name = label, exact = True)
+        expect(trigger).to_be_enabled()
+        trigger.click()
+        group = page.get_by_role("radiogroup", name = label, exact = True)
+        selected = group.get_by_role("radio", name = initial, exact = True)
+        selected.click()
+        expect(selected).to_be_checked()
+        expect(group).to_be_visible()
+        page.keyboard.press("Escape")
+        expect(group).to_be_hidden()
+        expect(trigger).to_be_focused()
+        page.keyboard.press("Enter")
+        expect(selected).to_be_focused()
+        for key, name in [("ArrowDown", following), ("ArrowUp", initial)]:
+            option = group.get_by_role("radio", name = name, exact = True)
+            # Radix schedules roving focus; release after the browser handles the keydown.
+            page.keyboard.down(key)
+            try:
+                expect(option).to_be_focused()
+                expect(option).to_be_checked()
+            finally:
+                page.keyboard.up(key)
+            expect(trigger).to_have_text(name)
+            expect(group).to_be_visible()
+        expect(group.locator('[role="radio"][tabindex="0"]')).to_have_count(1)
+        facts[label] = {"arrow_down": following, "arrow_up": initial, "stays_open": True}
+        page.keyboard.press("Escape")
+        expect(group).to_be_hidden()
+        expect(trigger).to_be_focused()
+
+    scopes = page.get_by_role("combobox", name = "Show on", exact = True)
+    expect(scopes).to_have_count(2)
+    for index in range(2):
+        trigger = scopes.nth(index)
+        trigger.click()
+        page.get_by_role("option", name = "All pages", exact = True).click()
+        expect(page.get_by_role("listbox")).to_be_hidden()
+        expect(trigger).to_have_text("All pages")
+        expect(trigger).to_be_focused()
+    facts["scope_controls_close"] = 2
+    report["appearance_pickers"] = facts
+    background.get_by_role("button", name = "Remove background", exact = True).click()
+    glass.click()
+    close_dialog(page)
+    report["steps"].append("appearance-pickers")
+    log("appearance pickers: keyboard selection stays open; both scope controls close")
+
+
 def run_scroll_resets_on_tab_switch(page) -> None:
     """A tab opens at its top, not at the offset the previous tab was scrolled to (#14337)."""
     until(page, DIALOG_GONE)
@@ -768,6 +848,8 @@ def run(page) -> None:
 
     run_scroll_resets_on_tab_switch(page)
 
+    run_appearance_pickers(page)
+
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
 
 
@@ -782,16 +864,22 @@ def main() -> int:
     try:
         url = f"http://127.0.0.1:{PORT}/smoke-settings.html"
         wait_for_smoke_page(url, "smoke-settings-main.tsx", proc = vite)
-        with sync_playwright() as pw:
+        with TemporaryDirectory(prefix = "unsloth-settings-") as profile, sync_playwright() as pw:
             launcher = getattr(pw, ENGINE)
             kwargs: dict = {"headless": True}
             if ENGINE == "chromium":
                 kwargs["args"] = chromium_launch_args()
-            browser = launcher.launch(**kwargs)
-            ctx = browser.new_context(
-                viewport = {"width": 1440, "height": 900},
-                reduced_motion = "reduce",
-            )
+            context_options = {
+                "viewport": {"width": 1440, "height": 900},
+                "reduced_motion": "reduce",
+            }
+            if ENGINE == "webkit":
+                # WebKit private contexts cannot persist the background image blob in IndexedDB.
+                browser = None
+                ctx = launcher.launch_persistent_context(profile, **kwargs, **context_options)
+            else:
+                browser = launcher.launch(**kwargs)
+                ctx = browser.new_context(**context_options)
             page = ctx.new_page()
             page.route(
                 "**/api/settings/lan-access*",
@@ -845,7 +933,9 @@ def main() -> int:
                 report["error_boundary"] = boundary.inner_text() if boundary.count() else None
                 if report["error_boundary"] and not CHUNK_FAIL:
                     fail(f"error boundary tripped: {report['error_boundary']}")
-            browser.close()
+            ctx.close()
+            if browser is not None:
+                browser.close()
     except Exception as exc:
         report["aborted"] = f"{type(exc).__name__}: {exc}"
         fail(f"harness aborted: {report['aborted'].splitlines()[0]}")

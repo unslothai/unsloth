@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { HugeiconsIcon } from "@hugeicons/react";
+import { RadioGroup as RadioGroupPrimitive } from "radix-ui";
 import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -15,14 +16,7 @@ export type RadioPickerOption<T extends string> = {
   disabled?: boolean;
 };
 
-/**
- * A settings picker that stays open while options are compared.
- *
- * Visual settings (glass style, lens, background effect) are chosen by looking at the result, so
- * closing on every pick costs a reopen per comparison. A Popover does not dismiss on selection,
- * unlike Select and DropdownMenu, which is why the options are plain radio buttons rather than
- * menu items. For a value that commits (behaviour, an action), use a Select and let it close.
- */
+/** A visual-settings picker that stays open while options are compared. */
 export function RadioPicker<T extends string>({
   value,
   options,
@@ -66,17 +60,20 @@ export function RadioPicker<T extends string>({
         sideOffset={6}
         className={cn("w-52 gap-0 rounded-lg p-1", contentClassName)}
       >
-        <div role="radiogroup" aria-label={ariaLabel}>
+        <RadioGroupPrimitive.Root
+          value={value}
+          onValueChange={(next) => onValueChange(next as T)}
+          orientation="vertical"
+          disabled={disabled}
+          aria-label={ariaLabel}
+        >
           {options.map((option) => {
             const selected = option.value === value;
             return (
-              <button
+              <RadioGroupPrimitive.Item
                 key={option.value}
-                type="button"
-                role="radio"
-                aria-checked={selected}
+                value={option.value}
                 disabled={option.disabled}
-                onClick={() => onValueChange(option.value)}
                 className={cn(
                   "relative flex w-full cursor-pointer items-center rounded-md py-2 pr-9 pl-3 text-left text-sm outline-none transition-colors hover:bg-accent focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-50",
                   selected && "bg-accent/60",
@@ -89,10 +86,10 @@ export function RadioPicker<T extends string>({
                     className="absolute right-3 size-4 text-foreground"
                   />
                 ) : null}
-              </button>
+              </RadioGroupPrimitive.Item>
             );
           })}
-        </div>
+        </RadioGroupPrimitive.Root>
       </PopoverContent>
     </Popover>
   );
