@@ -147,7 +147,7 @@ def _write(tunable: Any) -> None:
         tmp.write_text("\n".join(lines) + "\n", encoding = "utf-8")
         os.replace(tmp, path)
         _STATE["written"] = len(results)
-    except OSError:  # an unwritable cache only costs a re-tune next session
+    except OSError:
         try:
             tmp.unlink()
         except OSError:

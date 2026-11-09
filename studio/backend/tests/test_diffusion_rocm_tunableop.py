@@ -66,7 +66,7 @@ class Denoiser(nn.Module):
 
     def forward(self, x, **_kw):
         self.seen.append(self.fake.tuning)
-        self.fake.results[f"shape{len(self.fake.results)}"] = 1.0  # a shape tuned inside the call
+        self.fake.results[f"shape{len(self.fake.results)}"] = 1.0
         return self.lin(x)
 
 
@@ -113,7 +113,7 @@ def test_tunes_only_inside_the_denoiser_and_persists(fake, tmp_path):
     assert pipe.transformer.seen == [False]
     pipe.transformer(x)  # the next step, same shapes: tunes
     assert pipe.transformer.seen == [False, True]
-    assert not fake.tuning  # back off for the text encoder / VAE
+    assert not fake.tuning
     from pathlib import Path
 
     text = Path(fake.filename).read_text(encoding = "utf-8").splitlines()
@@ -196,7 +196,7 @@ def test_speed_layer_installs_on_rocm_tiers_and_removes_on_off(monkeypatch):
     assert seen == ["uninstall"]
     cuda = types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = torch.bfloat16)
     ds.apply_speed_optims(pipe, cuda, is_gguf = False, family = None, speed_mode = "off")
-    assert seen == ["uninstall"]  # never on NVIDIA
+    assert seen == ["uninstall"]
 
 
 def test_prefill_and_new_prompt_shapes_do_not_tune(fake):
@@ -230,7 +230,7 @@ def test_default_reads_a_matching_table_and_never_tunes(fake, monkeypatch, tmp_p
     pipe = _pipe(fake)
     assert rt.install_for_pipe(pipe)
     assert fake.enabled and ("read", str(table)) in fake.calls
-    assert not pipe.transformer._forward_pre_hooks  # nothing to scope: lookups only
+    assert not pipe.transformer._forward_pre_hooks
     for _ in range(3):
         pipe.transformer(torch.randn(2, 4))
     assert pipe.transformer.seen == [False, False, False]
