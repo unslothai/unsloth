@@ -27349,40 +27349,54 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
-                        # Probe at _FIT_MIN_CTX, not _AUTO_OFFLOAD_CTX (a higher probe fails the slot reduction); must match _largest_ctx floor. Explicit contexts priced as given
-                        _reduce_ctx = (
-                            effective_ctx if explicit_ctx else min(effective_ctx, _FIT_MIN_CTX)
+                        # Probe at _FIT_MIN_CTX, not _AUTO_OFFLOAD_CTX (a higher probe fails the slot reduction); must match _largest_ctx floor. Explicit contexts priced as given.
+                        # Auto then tries llama.cpp's own fit floor (_LLAMA_FIT_MIN_CTX): a model a few hundred MiB
+                        # short at 8192 still holds every layer (and its MTP head) at 4096, while --fit on moves layers
+                        # to the CPU, which costs a dense model 2-7x decode.
+                        _reduce_probes = (
+                            [effective_ctx]
+                            if explicit_ctx
+                            else sorted(
+                                {
+                                    min(effective_ctx, _FIT_MIN_CTX),
+                                    min(effective_ctx, _LLAMA_FIT_MIN_CTX),
+                                },
+                                reverse = True,
+                            )
                         )
-                        # Slot-independent footprint (folded compute buffer and the MTP
-                        # reserve swapped out so the helper re-prices both per candidate).
-                        _base_footprint = (
-                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(_reduce_ctx)
-                        )
-                        _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
-                            n_parallel,
-                            _reduce_ctx,
-                            gpus,
-                            total_by_idx,
-                            _base_footprint,
-                            cache_type_kv,
-                            _pin_fraction,
-                            _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
-                            _layer_min_gpus,
-                            _effective_ubatch,
-                            swa_full = swa_full,
-                            kv_unified = planned_kv_unified,
-                            flash_attn = planned_flash_attn,
-                            split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
-                            ubatch_for_slots = _ubatch_for_slots,
-                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
-                            ctx_checkpoints = _placement_ctx_checkpoints,
-                            # An explicit device pick skips the discrete tier; host-only accounting still applies.
-                            integrated = _integrated_gpus,
-                            prefer_discrete = bool(_tier_gpus),
-                            discount_prefixes = _discount_prefixes,
-                            discrete_host_only_bytes = _discrete_host_only(),
-                            shared_gpu_ids = _shared_gpu_ids,
-                        )
+                        for _reduce_ctx in _reduce_probes:
+                            # Slot-independent footprint (folded compute buffer and the MTP
+                            # reserve swapped out so the helper re-prices both per candidate).
+                            _base_footprint = (
+                                model_size_fit - _compute_buffer_pipeline + _cc_bytes(_reduce_ctx)
+                            )
+                            _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
+                                n_parallel,
+                                _reduce_ctx,
+                                gpus,
+                                total_by_idx,
+                                _base_footprint,
+                                cache_type_kv,
+                                _pin_fraction,
+                                _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
+                                _layer_min_gpus,
+                                _effective_ubatch,
+                                swa_full = swa_full,
+                                kv_unified = planned_kv_unified,
+                                flash_attn = planned_flash_attn,
+                                split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
+                                ubatch_for_slots = _ubatch_for_slots,
+                                mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
+                                ctx_checkpoints = _placement_ctx_checkpoints,
+                                # An explicit device pick skips the discrete tier; host-only accounting still applies.
+                                integrated = _integrated_gpus,
+                                prefer_discrete = bool(_tier_gpus),
+                                discount_prefixes = _discount_prefixes,
+                                discrete_host_only_bytes = _discrete_host_only(),
+                                shared_gpu_ids = _shared_gpu_ids,
+                            )
+                            if not _uf_slots:
+                                break
                         if not _uf_slots:
                             _slots_asked = n_parallel
                             gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
@@ -27428,7 +27442,7 @@ class LlamaCppBackend:
                             ) -> Optional[tuple[int, list[int]]]:
                                 """Largest 256-aligned context the cards hold; footprint grows monotonically with context, and a missing native length (0 sentinel) would search nothing"""
                                 _native = self._context_length or _reduce_ctx
-                                _lo = max(1, min(_FIT_MIN_CTX, _native) // 256)
+                                _lo = max(1, min(_FIT_MIN_CTX, _reduce_ctx, _native) // 256)
                                 _hi = _native // 256
                                 _best = None
                                 while _lo <= _hi:
