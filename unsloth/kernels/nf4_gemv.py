@@ -191,9 +191,12 @@ _NARROW_CAPS = ((7, 5), (8, 9))
 
 @functools.lru_cache(maxsize = None)
 def _gemv_config(N: int, K: int, blocksize: int, capability, words_ok: bool, force):
-    """Config tuple (use the words kernel, grid, BLOCK_N, BLOCK_K, num_warps); the words kernel (one
-    row per program, one warp) beat bitsandbytes on T4, L4, A100, RTX PRO 6000 and B200 before
-    Triton 3.7, and 3.7's byte kernel is best at 4 rows, BLOCK_K 2048, 4 warps (B200)."""
+    """(use the words kernel, grid, BLOCK_N, BLOCK_K, num_warps).
+
+    Kernel time (CUDA graphs) over Llama 1B to 70B shapes: before Triton 3.7 the words kernel at
+    one row per program and one warp beat bitsandbytes on T4, L4, A100, RTX PRO 6000 and B200
+    (1.1x to 2.2x, lower error too); Triton 3.7 compiles the byte kernel better, best at 4 rows, BLOCK_K 2048 and
+    4 warps (measured on B200)."""
     block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
     use_words = words_ok and (force == "words" or (force is None and not _TRITON_37))
     if use_words:
