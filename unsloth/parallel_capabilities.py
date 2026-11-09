@@ -913,8 +913,20 @@ _DEEPSEEK_CASES = {
         "lora+experts": "v4_cp2_lora_experts",
     },
 }
+# Gemma 4: text-only Gemma4ForCausalLM, HF checkpointing only.
+_GEMMA4 = "tests/test_ulysses_gemma4.py::test_gemma4_cp_matches_fp64_reference"
+_GEMMA4_EAGER = "eager: block compile not measured for this family"
+_GEMMA4_CASES = {
+    "full": "moe_cp2|moe_cp2_window9_prompt_masked|moe_cp4|moe_dp2cp2|moe_cp2_eager_checkpoint",
+    "lora": "moe_cp2_lora",
+    "lora+experts": "moe_cp2_lora_experts|moe_cp2_lora_experts_eager_checkpoint",
+}
 # Attention implementations a family's evidence ran (default: _MOE_COMMON's sdpa and eager).
 _MOE_ATTENTION = {"deepseek_v4": ("eager",)}
+_MOE_TEXT_ONLY = {
+    "gemma4": "multimodal Gemma 4 refuses under Ulysses (its vision attention is bidirectional); only the "
+    "text-only Gemma4ForCausalLM ran",
+}
 # Families whose cp rows also ran Unsloth's checkpoint (path A and B); the others match HF checkpointing only.
 _MOE_UNSLOTH_GC_FAMILIES = ("qwen3_moe",)
 # (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
@@ -990,6 +1002,10 @@ _MOE_EVIDENCE = {
         for family, cases in _DEEPSEEK_CASES.items()
         for precision, ids in cases.items()
     },
+    **{
+        ("gemma4", precision, False, "cp"): (f"{_GEMMA4}[{ids}]",) * 2 + (_GEMMA4_EAGER,)
+        for precision, ids in _GEMMA4_CASES.items()
+    },
 }
 
 
@@ -1052,6 +1068,8 @@ def _moe_cells():
                     if evidence:
                         if family in _MOE_ATTENTION:
                             match = {**match, "attention": _MOE_ATTENTION[family]}
+                        if family in _MOE_TEXT_ONLY:
+                            match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
                         if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
                             match = {**match, "memory": _WITH_UNSLOTH_GC}
@@ -1064,6 +1082,17 @@ def _moe_cells():
                             # No evidence run swapped layers; block swap x tp / pp is its own cell.
                             match = {**match, "block_swap": (False,)}
                         cells.append(Cell(name, match, *evidence, note = note))
+                        if family in _MOE_TEXT_ONLY:
+                            cells.append(
+                                Cell(
+                                    name + ", multimodal",
+                                    {**match, "multimodal": (True,)},
+                                    None,
+                                    None,
+                                    None,
+                                    note = _MOE_TEXT_ONLY[family],
+                                )
+                            )
                         if mode in ("cp", "fsdp2_cp") and family not in _MOE_UNSLOTH_GC_FAMILIES:
                             cells.append(
                                 Cell(
