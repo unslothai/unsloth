@@ -1087,6 +1087,12 @@ def _pack_hidden_states(model: Any, ids: Any, mask: Any) -> Any:
     return torch.stack(out.hidden_states, dim = -1).flatten(2, 3).to(dtype = model.dtype)
 
 
+def compact_valid_rows(embeds: Any, mask: Any) -> Any:
+    """``[B, L, D]`` packed hidden states -> ``[valid rows, D]``, row-major over ``(B, L)`` (what
+    ``masked_scatter_`` refills). Left padding is a pad mask like any other: only the mask decides."""
+    return embeds[mask.to(device = embeds.device).bool()]
+
+
 def _truncate_dead_tail(tokenizer: Any, model: Any) -> dict:
     """All hidden states are read, so only the unused 262k-vocab logits head goes."""
     from core.inference.diffusion_te_truncate import truncate_text_encoders
@@ -1231,6 +1237,10 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
             ids = inputs.input_ids.to(device)
             mask = inputs.attention_mask.to(device)
             embeds = _pack_hidden_states(model, ids, mask)
+            if config.get("_compact"):
+                # Only the valid (unpadded) rows cross to the host: the connectors zero every padded row before any
+                # op that mixes tokens, so the server rebuilds identical connector inputs from these and the mask.
+                embeds = compact_valid_rows(embeds, mask)
             embeds_host = embeds.to("cpu")
             mask_host = mask.to("cpu")
             del embeds
@@ -1295,6 +1305,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
             continue
         try:
             config["_pin_host"] = bool(msg.get("pin_host"))
+            config["_compact"] = bool(msg.get("compact"))
             embeds, mask, device = _encode_on(
                 tokenizer,
                 model,
@@ -1309,6 +1320,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     "id": msg.get("id"),
                     "embeds": embeds,
                     "mask": mask,
+                    "compact": bool(config.get("_compact")),
                     "device": device,
                     "streamed": bool(config.get("_streamed")),
                     "prefetched_layers": int(
