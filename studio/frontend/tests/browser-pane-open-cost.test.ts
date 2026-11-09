@@ -23,3 +23,9 @@ test("a long chat takes the pane's width in one step; a short one keeps the slid
   assert.match(PAGE, /const prepFrameId = window\.requestAnimationFrame\(\(\) => \{\s*markInstantLayout\(contextSurfaceRef\.current\);\s*resizeFrameId = window\.requestAnimationFrame\(\(\) => \{\s*panel\.resize\(/);
   assert.doesNotMatch(PAGE.slice(PAGE.indexOf("function markInstantLayout"), PAGE.indexOf("const SingleContent")), /:scope >/);
 });
+
+test("the inset width is the surface's layout width, not its scaled entrance box", () => {
+  const observer = PAGE.slice(PAGE.indexOf("const resizeObserver = new ResizeObserver"), PAGE.indexOf("resizeObserver.observe(surface)"));
+  assert.match(observer, /const next = `\$\{surface\.offsetWidth\}px`;/);
+  assert.doesNotMatch(observer, /getBoundingClientRect/);
+});

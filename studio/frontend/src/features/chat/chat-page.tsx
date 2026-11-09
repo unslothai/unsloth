@@ -873,7 +873,8 @@ const SingleContent = memo(function SingleContent({
       }
     };
     const resizeObserver = new ResizeObserver(() => {
-      const next = `${Math.round(surface.getBoundingClientRect().width)}px`;
+      // Layout width: a one-step open reports once, while the surface is still scaled.
+      const next = `${surface.offsetWidth}px`;
       if (next === width) return;
       width = next;
       apply();
