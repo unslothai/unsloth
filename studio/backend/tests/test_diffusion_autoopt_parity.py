@@ -179,6 +179,7 @@ def _teardown() -> None:
         "diffusion_qwenimage_rope",
         "diffusion_zimage_fused",
         "diffusion_qwenimage21_fused",
+        "diffusion_flux_convrot_fused",
         "diffusion_rocm_fused",
         "diffusion_qwenimage21",
         "diffusion_qwenimage21_rope",

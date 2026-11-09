@@ -494,6 +494,14 @@ def _builtin_specs() -> list[PatchSpec]:
             else bool(ctx.denoiser_offloaded),
         )
 
+    def flux_convrot_fused(ctx: PatchContext) -> Any:
+        from ..diffusion_flux_convrot_fused import install
+        return install(ctx.transformer, ctx.logger)
+
+    def flux_convrot_fused_uninstall() -> None:
+        from ..diffusion_flux_convrot_fused import uninstall
+        uninstall()
+
     def moss_fused(ctx: PatchContext) -> Any:
         from ..diffusion_moss_fused import install
         return install(
@@ -630,6 +638,16 @@ def _builtin_specs() -> list[PatchSpec]:
             classes = ("QwenImage21Transformer2DModel",),
             warn = "qwen-image-2.1 dense gate/value GEMM",
             env = "UNSLOTH_DIFFUSION_Q21_DENSE_FUSED",
+        ),
+        PatchSpec(
+            "flux_convrot_fused",
+            STAGE_PRE_COMPILE,
+            flux_convrot_fused,
+            flux_convrot_fused_uninstall,
+            group = GROUP_FUSED_DIT,
+            classes = ("Flux2Transformer2DModel", "Flux3Transformer2DModel"),
+            warn = "flux convrot producer fusion",
+            env = "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED",
         ),
         PatchSpec(
             "moss_fused",

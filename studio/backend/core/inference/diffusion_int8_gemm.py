@@ -1190,6 +1190,50 @@ def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
     return y.reshape(*gate.shape[:-1], y.shape[-1])
 
 
+def producer_linear(down: Any, prefix: Any, gate: Any, value: Any) -> Optional[Any]:
+    """``down(cat([prefix.flatten(-2), silu(gate) * value], -1))`` (no prefix: ``down(silu(gate) * value)``) with the
+    product, concat, rotation and act quant in one kernel reading the producers' buffers, else None (caller: stock).
+    ``gate`` / ``value``: ``[..., F]`` halves of one projection output; ``prefix``: the attention output
+    ``[B, S, H, D]`` as the attention backend returned it."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    lead = gate.shape[:-1]
+    f = gate.shape[-1]
+    width = f if prefix is None else f + prefix.shape[-2] * prefix.shape[-1]
+    if (
+        not rotq
+        or group != 256
+        or gate.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or gate.shape != value.shape
+        or width != down.in_features
+        or gate.numel() < _MIN_ROWS * f
+    ):
+        return None
+    if prefix is not None and (prefix.dim() != 4 or prefix.shape[:2] != lead):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_producer_act_quant
+
+    q = convrot_producer_act_quant(
+        prefix, gate.reshape(-1, f), value.reshape(-1, f), group, kind == "v2"
+    )
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*lead, y.shape[-1])
+
+
 def _plain_silu(act: Any) -> bool:
     """``act`` is an exact, unhooked ``nn.SiLU`` (the fused prologue hard-codes SiLU); ``type() is`` avoids a graph break."""
     from torch import nn
