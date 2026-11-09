@@ -128,7 +128,6 @@ def test_the_streamed_decode_holds_at_most_two_block_slots():
 
     def slot(blk, x, b, s, st):
         held.append(b)
-        # counted while the new slot is built: the ones still live plus this one
         live = __import__("inspect").currentframe().f_back.f_locals["slots"]
         peak["n"] = max(peak["n"], len(live) + 1)
         return orig(blk, x, b, s, st)

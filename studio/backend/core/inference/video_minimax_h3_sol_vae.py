@@ -273,7 +273,7 @@ def _build_module_classes():
             keys = torch.cat([part(k), kg], 2)
             vals = torch.cat([part(v), vg], 2)
             mask = None
-            # Padding is decided by the geometry alone: no device read (a host sync, a graph break) per window.
+            # Geometry decides padding: no device read (host sync / graph break) per window.
             if not (k0 == 0 and n == tb and s == 0 and Hp == H and Wp == W):
                 valid = torch.zeros(tb, Hp, Wp, dtype = torch.bool, device = q.device)
                 valid[k0 : k0 + n, s : s + H, s : s + W] = True
@@ -320,7 +320,7 @@ def _build_module_classes():
                 hi = min(T - 1, (j + 1) * tb - st - 1)
                 b0, b1 = lo // tb, hi // tb
                 for b in [b for b in slots if b < b0]:
-                    del slots[b]  # the ring, freed before the next slot: at most two blocks live
+                    del slots[b]  # freed before the next slot: at most two live
                 for b in range(b0, b1 + 1):
                     if b not in slots:
                         slots[b] = self._slot(blk, x, b, s, st)
