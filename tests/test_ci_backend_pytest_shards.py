@@ -171,7 +171,6 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
     @pytest.mark.parametrize("letter", "abcdefghijklmnopqrstuvwxyz")
     def test_every_lowercase_first_letter_has_exactly_one_shard(self, letter):
-        """Splitting a range must leave no letter between the new ranges and none in two."""
         claiming = _claiming_shards(f"tests/test_{letter}_new.py", _shards())
         assert len(claiming) == 1, f"tests/test_{letter}*.py is collected by {claiming}"
 

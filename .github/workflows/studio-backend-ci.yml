@@ -124,10 +124,7 @@ jobs:
         #
         # Shards root at `tests/` and differ only in ignores: `--ignore=FILE` does not filter explicit arguments.
         # `rest` is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
-        # a-f / g-r, not a-k / l-r: a-k's parallel step reached 1024-1264 s against the 1500 s backstop,
-        # and hit it twice on 2026-10-23, while l-r took 590-867 s.
-        # g-r then split into g-l / m-r: it took 955-1433 s on main and hit the backstop on 2026-11-09.
-        # Per-letter progress timestamps put about 40% of g-r's time in g-l and 60% in m-r.
+        # Ranges balance the 1500 s backstop: a-k hit it on 2026-10-23, g-r on 2026-11-09 (g-l ~40%, m-r ~60%).
         include:
           - python: '3.13'
             scope: full
