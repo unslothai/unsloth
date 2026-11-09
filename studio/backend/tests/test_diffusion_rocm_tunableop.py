@@ -287,3 +287,22 @@ def test_shipped_tables_are_package_data():
     root = Path(rt.__file__).resolve().parents[4]
     text = (root / "pyproject.toml").read_text(encoding = "utf-8")
     assert '"backend/core/inference/rocm_gemm_tables/*.csv"' in text
+
+
+def test_mixed_arch_hosts_decline(fake, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(rt, "_arch", lambda device = None: "gfx1100" if device == 1 else "gfx1151")
+    ok, why = rt.eligible(0)
+    assert not ok and "mixed archs" in why
+    assert not rt.install_for_pipe(_pipe(fake), 0)
+    assert not fake.enabled
+
+
+def test_a_load_on_another_arch_drops_the_earlier_table(fake, monkeypatch, tmp_path):
+    monkeypatch.delenv(rt.TUNABLEOP_ENV)
+    _table(tmp_path, fake.get_validators())
+    assert rt.install_for_pipe(_pipe(fake))
+    assert fake.enabled and rt.is_active()
+    monkeypatch.setattr(rt, "_arch", lambda device = None: "gfx1201")
+    assert not rt.install_for_pipe(_pipe(fake))
+    assert not fake.enabled and not rt.is_active()

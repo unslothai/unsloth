@@ -97,6 +97,13 @@ def _arch(device: Any = None) -> Optional[str]:
         return None
 
 
+def _device_count(torch: Any) -> int:
+    try:
+        return int(torch.cuda.device_count())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def eligible(device: Any = None) -> tuple:
     """(True, arch) where this module would engage, else (False, reason)."""
     if disabled():
@@ -115,6 +122,10 @@ def eligible(device: Any = None) -> tuple:
     arch = _arch(device)
     if arch not in TUNED_ARCHES:
         return False, f"arch {arch} not measured"
+    # TunableOp is process-global and keys solutions on GEMM shape, not device: every visible card must share the arch.
+    others = {_arch(i) for i in range(_device_count(torch))} - {arch}
+    if others:
+        return False, f"mixed archs {sorted(map(str, others))} beside {arch}"
     return True, arch
 
 
@@ -282,6 +293,8 @@ def install_for_pipe(
 ) -> bool:
     ok, why = eligible(device)
     if not ok:
+        if _STATE["active"]:  # a load on another arch must not inherit an earlier load's table
+            uninstall(None)
         return False
     dits = _denoisers(pipe)
     if not dits or not _activate(why, logger):
