@@ -6699,6 +6699,12 @@ def _strip_tool_xml_for_display(
     """Only with Auto-Heal on; bare NAME[ARGS] needs an enabled non-execution tool; [TOOL_CALLS] always."""
     if not auto_heal_tool_calls:
         return text
+    # No arm edits text holding no sentinel and no ``call:`` (as ``_StreamingDisplayStrip`` relies on): skip the chain.
+    if (
+        not any(sentinel in text for sentinel in _DISPLAY_STRIP_SENTINELS)
+        and _DISPLAY_GEMMA_CALL_RE.search(text) is None
+    ):
+        return text
     from core.tool_healing import (
         _markerless_promotable,
         _strip_bracket_tag_calls,
