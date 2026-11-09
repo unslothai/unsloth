@@ -7619,6 +7619,21 @@ html[data-glass][data-glass-motion] [data-slot="dialog-content"][data-glass-movi
 html[data-glass][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface)[data-glass-moving] .sticky {
   background-color: var(--glass-page-popover) !important;
 }
+/* Windows Transparent (data-glass-clear): its menus and dialogs blur too, and the Glass fill variables are not set
+   there, so the paused surface takes the theme's own solid colours and stays readable over sharp content. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface):is([data-glass-moving], [data-slot$="-content"][data-state="closed"]) {
+  background-color: color-mix(in srgb, var(--popover) 96%, transparent) !important;
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface)[data-glass-moving] .sticky {
+  background-color: color-mix(in srgb, var(--popover) 96%, transparent) !important;
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] :is(.tooltip-compact, .tooltip-rich)[data-glass-moving] {
+  background-color: var(--tooltip-bg) !important;
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] [data-slot="dialog-content"]:is([data-glass-moving], [data-state="closed"]),
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] [data-slot="dialog-content"][data-glass-moving] .sticky {
+  background-color: color-mix(in srgb, var(--background) 96%, transparent) !important;
+}
 /* Liquid 3D's wide blurred inner glows are painted again with every repaint inside the surface (a Settings pane
    scrolling); while it moves they give way to the 1 px rim, as on the WebKitGTK path. Set on the dialog directly,
    so its large subtree is not restyled; menus pin their shadow in a layer, so there the rim variables change. */

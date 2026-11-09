@@ -316,7 +316,7 @@ test("the motion flag is keyed on the surface, never on html or body, and never 
     for (const sel of rule.selectors) {
       assert.doesNotMatch(sel, /html\[[^\]]*data-glass-moving|body\[[^\]]*data-glass-moving/, sel);
       assert.doesNotMatch(sel, /:has\(/, `${sel}: a :has() here would re-match on every DOM change`);
-      assert.match(sel, /^html(\.dark)?(\[data-glass|:is\(\[data-glass\],\[data-glass-clear\]\))/, `${sel}: only with Glass on (or Windows Transparent, which blurs)`);
+      assert.match(sel, /^html(\.dark)?(\[data-glass|:is\(\[data-glass\],\[data-glass-clear\]\)|\.tauri\.client-windows\[data-glass-clear\])/, `${sel}: only with Glass on (or Windows Transparent, which blurs)`);
       assert.match(sel, /^html[^ ]*\[data-glass-motion\]/, `${sel}: only with software compositing; with a GPU nothing changes`);
     }
     assert.equal(rule.parent?.type, "root", `${rule.selector}: unlayered, outside @layer and @media`);
