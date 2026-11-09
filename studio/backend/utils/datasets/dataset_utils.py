@@ -450,7 +450,7 @@ def _format_dataset(
         format_type = "raw"
 
     if format_type == "raw":
-        # An explicit "raw" gets its EOS from the trainer (CUDA) or MLXTrainingConfig.append_eos (MLX).
+        # Explicit "raw" already gets EOS from the trainer / MLXTrainingConfig.append_eos.
         raw_result = prepare_raw_text_dataset(
             dataset,
             split_name = split_name,
