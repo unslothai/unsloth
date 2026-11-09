@@ -7585,17 +7585,17 @@ html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog
    closing (data-state="closed") is in motion until it unmounts. Keyed on the surface, never on <html>, so the flag
    restyles only the surface and its own sticky bars. No descendant rule keys on data-state: Chromium would then
    search the subtree of every element whose data-state changes (the sidebar, collapsibles in the chat). */
-html[data-glass][data-glass-motion] [data-glass-moving],
-html[data-glass][data-glass-motion] [data-glass-moving]::before,
-html[data-glass][data-glass-motion] [data-glass-moving] .sticky,
-html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"],
-html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"]::before {
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving],
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving]::before,
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving] .sticky,
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"],
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"]::before {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 /* A transition outranks !important, and Radix content transitions every property (duration-100 with the initial
    transition-property: all), which would fade the blur out, and later back in, over the very frames this saves. */
-html[data-glass][data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"]) {
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"]) {
   transition: none !important;
 }
 html[data-glass][data-glass-motion][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"][data-glass-moving],
