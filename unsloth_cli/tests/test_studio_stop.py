@@ -517,7 +517,6 @@ def test_windows_failed_liveness_probe_preserves_the_record(monkeypatch):
 
     studio_mod = _studio()
     monkeypatch.setattr(sys, "platform", "win32")
-    # Without psutil the tasklist probe decides.
     monkeypatch.setitem(sys.modules, "psutil", None)
     monkeypatch.setattr(
         subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout = "", returncode = 1)
