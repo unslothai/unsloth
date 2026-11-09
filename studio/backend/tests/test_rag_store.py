@@ -87,6 +87,11 @@ def test_focused_query_keeps_a_cjk_identifier_whole(rag_conn):
     assert store.lexical_matching_ids(rag_conn, ["a:0", "b:0"], focused) == {"a:0"}
 
 
+def test_repeated_cjk_text_builds_each_phrase_once():
+    terms = store._match_query("订单：苹果手机一台。" * 200).split(" OR ")
+    assert len(terms) == len(set(terms)) == 6
+
+
 def test_existing_index_is_rebuilt_for_cjk_search(rag_conn):
     from storage import rag_db
 

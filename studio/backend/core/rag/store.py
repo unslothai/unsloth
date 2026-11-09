@@ -86,7 +86,9 @@ def _terms(token: str) -> list[str]:
 
 
 def _or_terms(tokens) -> str:
-    return " OR ".join(f'"{t}"' for token in tokens for t in _terms(token))
+    return " OR ".join(
+        f'"{t}"' for t in dict.fromkeys(t for token in tokens for t in _terms(token))
+    )
 
 
 def _match_query(query: str) -> str:
