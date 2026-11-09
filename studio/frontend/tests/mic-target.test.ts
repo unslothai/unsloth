@@ -12,7 +12,10 @@ import {
   dictationProducedClip,
   markDictationClip,
 } from "../src/features/chat/adapters/dictation-outcome.ts";
-import { shouldSubmitDictation } from "../src/features/chat/utils/dictation-send.ts";
+import {
+  clipStillAttached,
+  shouldSubmitDictation,
+} from "../src/features/chat/utils/dictation-send.ts";
 import {
   micClipFilename,
   MIN_MIC_CLIP_BYTES,
@@ -105,11 +108,28 @@ test("a recorded clip is a WAV named for the attachment chip", () => {
 
 test("a clip marks the session and resets on the next one", () => {
   beginDictationSession();
-  assert.equal(dictationProducedClip(), false);
-  markDictationClip();
-  assert.equal(dictationProducedClip(), true);
+  assert.equal(dictationProducedClip(), null);
+  const clip = new File([new Uint8Array(4)], "recording.wav", { type: "audio/wav" });
+  markDictationClip(clip);
+  assert.equal(dictationProducedClip(), clip);
   beginDictationSession();
-  assert.equal(dictationProducedClip(), false);
+  assert.equal(dictationProducedClip(), null);
+});
+
+test("a held stop-and-send drops the clip once it is removed from the composer", () => {
+  const clip = new File([new Uint8Array(4)], "recording.wav", { type: "audio/wav" });
+  const other = new File([new Uint8Array(4)], "recording.wav", { type: "audio/wav" });
+  assert.equal(clipStillAttached(clip, [{ file: clip }]), true);
+  assert.equal(clipStillAttached(clip, [{ file: other }, {}]), false);
+  assert.equal(clipStillAttached(clip, []), false);
+  assert.equal(clipStillAttached(null, [{ file: clip }]), false);
+  const base = { originComposer: "a", currentComposer: "a", producedTranscript: false, baseText: "", text: "hi" };
+  assert.equal(shouldSubmitDictation({ ...base, producedClip: clipStillAttached(clip, []) }), false);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(
+    thread,
+    /producedClip: clipStillAttached\(\s*dictationProducedClip\(\),\s*aui\.composer\(\)\.getState\(\)\.attachments,\s*\)/,
+  );
 });
 
 test("stop-and-send submits an attached clip with no new text", () => {

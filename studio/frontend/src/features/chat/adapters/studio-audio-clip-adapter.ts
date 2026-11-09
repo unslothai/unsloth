@@ -81,7 +81,7 @@ export function listenForAudioClip(
           void Promise.resolve()
             .then(() => onClip(file))
             .then(
-              () => markDictationClip(),
+              () => markDictationClip(file),
               (error: unknown) => {
                 // The attachment adapter already toasts its own refusals.
                 console.error("Could not attach the recording:", error);

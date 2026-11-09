@@ -111,7 +111,7 @@ test("a recording stops itself at the audio attachment limit and keeps the clip"
     assert.equal(clips.length, 1);
     assert.equal(clips[0].type, "audio/wav");
     assert.equal(session.status.type, "ended");
-    assert.equal(dictationOutcome.dictationProducedClip(), true);
+    assert.equal(dictationOutcome.dictationProducedClip(), clips[0]);
     assert.deepEqual(toasts, ["Recording stopped at the 25MB audio limit."]);
   } finally {
     mock.timers.reset();

@@ -43,3 +43,11 @@ export function shouldSubmitDictation(input: {
   if (!input.producedTranscript) return false;
   return dictationProducedText(input.baseText, input.text);
 }
+
+/** A held stop-and-send only counts the clip while that file is still attached. */
+export function clipStillAttached(
+  clip: File | null,
+  attachments: readonly { file?: File }[],
+): boolean {
+  return clip !== null && attachments.some((attachment) => attachment.file === clip);
+}
