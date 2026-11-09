@@ -25,8 +25,6 @@ def uvicorn_forwarded_kwargs(*, is_colab: bool) -> dict[str, Any]:
 
 
 class ManagedTunnelProxyHeaders:
-    """Rewrite client and scheme for Studio's managed Cloudflare tunnel, and on Colab for its notebook proxy."""
-
     def __init__(
         self,
         app,
@@ -44,7 +42,7 @@ class ManagedTunnelProxyHeaders:
             if _is_loopback_ip(peer) and request_from_managed_tunnel(scope, self.app_state):
                 scope = _rewrite_client_and_scheme(scope, b"cf-connecting-ip")
             elif self.is_colab:
-                # Colab's notebook proxy appends the address it saw; the leftmost entries are the caller's.
+                # Colab's proxy appends the peer it saw; earlier entries are caller-supplied.
                 scope = _rewrite_client_and_scheme(scope, b"x-forwarded-for")
         await self.app(scope, receive, send)
 
