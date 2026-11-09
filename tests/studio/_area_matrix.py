@@ -691,10 +691,8 @@ FIND = """(spec) => {
   el.setAttribute('data-gate-target', ''); el.scrollIntoView({block: 'nearest', behavior: 'instant'});
   return true;
 }"""
-# Before a trusted pointer action: the target must hold still and be the element under its own centre. In
-# the viewport is not enough: the composer floats over the thread's bottom edge, so a target scrolled in
-# from below (block: nearest) can sit under it and the pointer lands on the composer. Only an occluded
-# target is moved (centred), so a target already clear adds no scroll to the area's window.
+# The target must hold still and be hit at its centre: the floating composer can cover a row scrolled in from
+# below. Only an occluded target is re-centred, so a clear one adds no scroll to the measured window.
 STEADY = """async () => {
   const el = document.querySelector('[data-gate-target]');
   if (!el) return false;
