@@ -152,7 +152,7 @@ export function buildConversationHtmlDocument(
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="Unsloth Studio">
+<meta name="generator" content="Unsloth">
 <title>${safeTitle}</title>
 <style>${CONVERSATION_EXPORT_CSS}
 body { max-width: 820px; margin: 32px auto; padding: 0 20px; }
@@ -162,7 +162,7 @@ body { max-width: 820px; margin: 32px auto; padding: 0 20px; }
 <body>
 <header>
 <h1>${safeTitle}</h1>
-<p class="meta">Exported from Unsloth Studio on ${escapeHtml(exportedAt.toLocaleString())}</p>
+<p class="meta">Exported from Unsloth on ${escapeHtml(exportedAt.toLocaleString())}</p>
 </header>
 ${body}
 </body>

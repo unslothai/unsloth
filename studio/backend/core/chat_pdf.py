@@ -48,9 +48,7 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
 
     heading = html.escape(" ".join(title.split()) or "Conversation")
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    document = (
-        f"<h1>{heading}</h1><p class='meta'>Exported from Unsloth Studio on {stamp}</p>{body_html}"
-    )
+    document = f"<h1>{heading}</h1><p class='meta'>Exported from Unsloth on {stamp}</p>{body_html}"
     story = pymupdf.Story(html = document, user_css = _PDF_CSS)
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
@@ -71,7 +69,7 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
 
     pdf = pymupdf.open("pdf", buffer.getvalue())
     try:
-        pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth Studio"})
+        pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth"})
         # The CJK fallback font alone is ~2 MB; keep only the glyphs used.
         pdf.subset_fonts()
         return pdf.tobytes(garbage = 3, deflate = True)
