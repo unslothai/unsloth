@@ -709,8 +709,7 @@ def test_streamed_onload_of_a_compiled_wrapper_weight_does_not_swap(monkeypatch)
     x = torch.randn(2, 8)
     with torch.no_grad():
         compiled(x)
-    # Whether the compile's own weakref survives is a torch-version detail (gone by 2.12), so hold one
-    # explicitly: swap_tensors refuses any weakref'd tensor, which is the state a render hits.
+    # compile's own weakref is gone by torch 2.12; hold one so swap_tensors would refuse, as in a render.
     held = weakref.ref(lin.weight)
     assert weakref.getweakrefs(lin.weight)
     host = two.TwoTensor(w + 1, w + 2)
