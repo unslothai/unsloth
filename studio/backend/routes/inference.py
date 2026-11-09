@@ -41867,6 +41867,37 @@ def _llama_image_data_url(raw: bytes) -> str:
     return f"data:image/png;base64,{_image_bytes_to_png_b64(raw)}"
 
 
+# Chat history images are sent again on every turn and the result depends only on the payload.
+_LLAMA_IMAGE_MEMO: "collections.OrderedDict[bytes, str]" = collections.OrderedDict()
+_LLAMA_IMAGE_MEMO_MAX_CHARS = 64 * 1024 * 1024
+_llama_image_memo_chars = 0
+_llama_image_memo_lock = threading.Lock()
+
+
+def _llama_image_data_url_from_b64(b64data: str) -> str:
+    """_llama_image_data_url(base64.b64decode(b64data)), remembering recent successful results; failures raise as before"""
+    global _llama_image_memo_chars
+    key = _hashlib.sha256(b64data.encode("utf-8", "surrogatepass")).digest()
+    with _llama_image_memo_lock:
+        kept = _LLAMA_IMAGE_MEMO.get(key)
+        if kept is not None:
+            _LLAMA_IMAGE_MEMO.move_to_end(key)
+    if kept is not None:
+        # A bare prefix means the payload passed through unchanged.
+        return kept + b64data if kept.endswith(",") else kept
+    data_url = _llama_image_data_url(base64.b64decode(b64data))
+    prefix = data_url[: len(data_url) - len(b64data)]
+    kept = prefix if data_url.endswith(b64data) and prefix.endswith(";base64,") else data_url
+    with _llama_image_memo_lock:
+        if key not in _LLAMA_IMAGE_MEMO and len(kept) <= _LLAMA_IMAGE_MEMO_MAX_CHARS:
+            _LLAMA_IMAGE_MEMO[key] = kept
+            _llama_image_memo_chars += len(kept)
+            while _llama_image_memo_chars > _LLAMA_IMAGE_MEMO_MAX_CHARS:
+                _, dropped = _LLAMA_IMAGE_MEMO.popitem(last = False)
+                _llama_image_memo_chars -= len(dropped)
+    return data_url
+
+
 # Match llama-server's per-image limit and add a per-request budget.
 _REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _REMOTE_IMAGE_REQUEST_BUDGET_BYTES = 32 * 1024 * 1024
@@ -42104,8 +42135,7 @@ def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_imag
 
             try:
                 _, b64data = url.split(",", 1)
-                raw = base64.b64decode(b64data)
-                data_url = _llama_image_data_url(raw)
+                data_url = _llama_image_data_url_from_b64(b64data)
             except Exception:
                 raise HTTPException(
                     status_code = 400,
@@ -46718,8 +46748,7 @@ def _openai_messages_for_passthrough(
 
     if normalize_images:
         try:
-            raw = base64.b64decode(payload.image_base64)
-            data_url = _llama_image_data_url(raw)
+            data_url = _llama_image_data_url_from_b64(payload.image_base64)
         except Exception:
             raise HTTPException(
                 status_code = 400,
