@@ -7502,6 +7502,13 @@ html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sideb
   }
 }
 
+/* Software compositing: the translucent Glass Settings pane is not composited-scrolled, so every scroll frame
+   re-rasters it (about 2x the whole Settings scroll cost). Its own layer scrolls it on the compositor instead;
+   text in it loses subpixel antialiasing. The thread viewport is not given one: there it measured no cheaper. */
+html[data-glass][data-glass-motion] [data-settings-main-scroll] {
+  will-change: scroll-position;
+}
+
 /* Glass in motion, only with software compositing (data-glass-motion on <html>, set once by WindowMaterialMount
    when the page has no GPU WebGL renderer; with a GPU nothing here applies and glass looks and moves as before).
    data-glass-moving is set by glass-motion.ts on each surface while something opens, closes or

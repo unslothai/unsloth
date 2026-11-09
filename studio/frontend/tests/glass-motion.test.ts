@@ -294,6 +294,23 @@ test("stop() removes every listener, the observer and every flag, and is safe to
   assert.equal(a.writes, 2, "the cancelled timer never fires a late write");
 });
 
+test("a script-driven animation holds its surface through the running controller, and nothing without one", () => {
+  const panel = new FakeElement(["surface"]);
+  motion.holdGlassMotion(panel as unknown as Element, 1000);
+  assert.ok(!panel.hasAttribute(ATTR), "no controller: glass motion is off, nothing changes");
+  const { ctl } = page();
+  motion.holdGlassMotion(panel as unknown as Element, motion.ANIMATION_HOLD_MS);
+  assert.ok(panel.hasAttribute(ATTR));
+  motion.holdGlassMotion(panel as unknown as Element, motion.SETTLE_MS);
+  tick(motion.SETTLE_MS);
+  assert.ok(!panel.hasAttribute(ATTR), "the end of the animation releases it SETTLE_MS later");
+  ctl.stop();
+  const other = new FakeElement(["surface"]);
+  motion.holdGlassMotion(other as unknown as Element, 1000);
+  assert.ok(!other.hasAttribute(ATTR), "a stopped controller is no longer reachable");
+  motion.holdGlassMotion(null, 1000);
+});
+
 // --- wiring and CSS contract -----------------------------------------------------------------------
 
 test("glass motion runs only with software compositing, where glass blurs: never solid, Transparent, out of scope or WebKitGTK", () => {
@@ -386,4 +403,20 @@ test("in motion, Liquid 3D drops its wide blurred inner glows on dialogs and men
   }
   const dialog = rims.find((r) => r.selector.includes("dialog-content") && !r.selector.includes(".dark"));
   assert.ok(dialog?.nodes.some((n) => n.type === "decl" && n.prop === "box-shadow" && n.important), "set on the dialog itself, not inherited by its subtree");
+});
+
+test("the API monitor's script fade and the Settings pane's scrolling skip per-frame blur and raster work", () => {
+  const overlay = readSrc("features/api-monitor/api-monitor-overlay.tsx");
+  assert.match(overlay, /onAnimationStart=\{\(\) => holdGlassMotion\(monitorRef\.current, ANIMATION_HOLD_MS\)\}/);
+  assert.match(overlay, /onAnimationComplete=\{\(\) => holdGlassMotion\(monitorRef\.current, SETTLE_MS\)\}/);
+  assert.match(overlay, /"menu-soft-surface /, "the panel is a glass surface the pause rules cover");
+  assert.match(readSrc("features/settings/settings-dialog.tsx"), /ref=\{mainScrollRef\}\s+data-settings-main-scroll=""/);
+  const rule = postcss.parse(CSS).nodes.find(
+    (n): n is postcss.Rule => n.type === "rule" && n.selector === "html[data-glass][data-glass-motion] [data-settings-main-scroll]",
+  );
+  assert.ok(rule, "only with Glass under software compositing: GPU and the default look are unchanged");
+  assert.deepEqual(
+    rule.nodes.filter((n) => n.type === "decl").map((n) => `${(n as postcss.Declaration).prop}: ${(n as postcss.Declaration).value}`),
+    ["will-change: scroll-position"],
+  );
 });
