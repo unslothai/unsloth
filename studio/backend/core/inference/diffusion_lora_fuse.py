@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from .diffusion_manual_cast import lora_compute_dtype
+
 LORA_FUSE_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE"
 BACKUP_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_BACKUP"
 HOST_GUARD_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_HOST_GUARD"
@@ -65,7 +67,10 @@ def _plan(denoisers: list) -> Optional[list]:
                 for a in active
             ):
                 return None  # DoRA / LoRA bias change more than the weight
-            weight = getattr(layer.get_base_layer(), "weight", None)
+            base = layer.get_base_layer()
+            if lora_compute_dtype(base) is not None:
+                return None  # manual cast: folding into bf16 storage would round the fp32 update
+            weight = getattr(base, "weight", None)
             if (
                 not isinstance(weight, torch.Tensor)
                 or type(weight.data) is not torch.Tensor  # quantised / GGUF / torchao subclasses
