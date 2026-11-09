@@ -236,7 +236,6 @@ def test_rope_compiled_positions_one_launch_each_way(monkeypatch, one_launch):
 
 @pytest.mark.parametrize("grad", ["q", "k"])
 def test_rope_compiled_positions_one_sided_grad_stays_per_tensor(grad):
-    """Only Q or K needing a gradient: no gradient edge or backward rotation for the other one."""
     if not TRACEABLE:
         pytest.skip("this torch has no torch.library.triton_op")
     assert rope_embedding.COMPILED_ROPE_QK_ONE_LAUNCH
