@@ -329,7 +329,9 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     # Windows AMD: amd-smi is opt-in, but the DirectX registry records every adapter's dedicated memory.
     if platform.system() == "Windows":
         # The registry outlives the hardware, so a record only RE-LABELS an adapter the live WMI scan also returned, never adds one (setup.ps1 has the same rule).
-        _live = _windows_live_adapter_names()
+        # The PowerShell WMI scan costs ~1 s, so run it once, and only when a vendor has records.
+        _live_unset = object()
+        _live = _live_unset
         for _vendor, _vendor_id in (
             ("amd", _AMD_PCI_VENDOR_ID),
             # Same registry, one more vendor id: an Arc host whose XPU wheel became a CPU one.
@@ -346,6 +348,8 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                 continue
             if not records:
                 continue
+            if _live is _live_unset:
+                _live = _windows_live_adapter_names()
             if _live is None:
                 # The live scan could not answer, so contribute nothing and say so.
                 unanswered.add(_vendor)
