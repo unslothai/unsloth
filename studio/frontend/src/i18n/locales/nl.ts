@@ -3479,12 +3479,10 @@ export const nl = {
       exportingAction: "Exporteren...",
       exportConversations: "Recent en Projecten exporteren",
       exportConversationsDescription:
-        "Download Recent, of Recent plus projectchats, als Training JSONL, CSV, ShareGPT JSONL of Markdown, gecombineerd of per chat. Message JSONL is per chat beschikbaar.",
+        "Download Recent, of Recent plus projectchats, als Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML of PDF, gecombineerd of per chat. Message JSONL is per chat beschikbaar.",
       exportConversationsAction: "Exporteren",
       exportScopeRecents: "Recent",
       exportScopeAll: "Recent + Projecten",
-      exportCombinedSuffix: "(gecombineerd)",
-      exportPerChatSuffix: "(per chat)",
       importChats: "Chats importeren",
       importChatsDescription:
         "JSON-, JSONL-, NDJSON-, CSV- of Markdown-bestanden importeren in Recent.",

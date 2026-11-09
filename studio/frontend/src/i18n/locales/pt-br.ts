@@ -3189,12 +3189,10 @@ export const ptBR = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recentes e Projetos",
       exportConversationsDescription:
-        "Baixe os chats de Recentes ou de Recentes e Projetos como Training JSONL, CSV, JSONL do ShareGPT ou Markdown, em um arquivo combinado ou em arquivos separados por chat. Message JSONL está disponível apenas por chat.",
+        "Baixe os chats de Recentes ou de Recentes e Projetos como Training JSONL, CSV, JSONL do ShareGPT, Markdown, HTML ou PDF, em um arquivo combinado ou em arquivos separados por chat. Message JSONL está disponível apenas por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recentes",
       exportScopeAll: "Recentes + Projetos",
-      exportCombinedSuffix: "(combinado)",
-      exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
         "Importe arquivos JSON, JSONL, NDJSON, CSV ou Markdown para Recentes.",

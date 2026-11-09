@@ -3187,12 +3187,10 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL или Markdown, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML или PDF, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
-      exportCombinedSuffix: "(объединённо)",
-      exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
         "Импортируйте файлы JSON, JSONL, NDJSON, CSV или Markdown в Недавние.",

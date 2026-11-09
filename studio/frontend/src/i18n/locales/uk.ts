@@ -3469,12 +3469,10 @@ export const uk = {
       exportingAction: "Експортування...",
       exportConversations: "Експортувати «Нещодавні» та «Проєкти»",
       exportConversationsDescription:
-        "Завантажити «Нещодавні» або «Нещодавні» разом із чатами проєктів у форматі Training JSONL, CSV, ShareGPT JSONL або Markdown, одним файлом чи окремо для кожного чату. Message JSONL доступний для окремих чатів.",
+        "Завантажити «Нещодавні» або «Нещодавні» разом із чатами проєктів у форматі Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML або PDF, одним файлом чи окремо для кожного чату. Message JSONL доступний для окремих чатів.",
       exportConversationsAction: "Експортувати",
       exportScopeRecents: "Нещодавні",
       exportScopeAll: "Нещодавні + Проєкти",
-      exportCombinedSuffix: "(одним файлом)",
-      exportPerChatSuffix: "(для кожного чату)",
       importChats: "Імпортувати чати",
       importChatsDescription:
         "Імпортувати файли JSON, JSONL, NDJSON, CSV або Markdown у «Нещодавні».",

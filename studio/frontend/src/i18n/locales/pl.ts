@@ -3477,12 +3477,10 @@ export const pl = {
       exportingAction: "Eksportowanie...",
       exportConversations: "Eksportuj Ostatnie i Projekty",
       exportConversationsDescription:
-        "Pobierz Ostatnie lub Ostatnie wraz z czatami projektów jako Training JSONL, CSV, ShareGPT JSONL lub Markdown, łącznie lub osobno dla każdego czatu. Message JSONL jest dostępny dla każdego czatu osobno.",
+        "Pobierz Ostatnie lub Ostatnie wraz z czatami projektów jako Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML lub PDF, łącznie lub osobno dla każdego czatu. Message JSONL jest dostępny dla każdego czatu osobno.",
       exportConversationsAction: "Eksportuj",
       exportScopeRecents: "Ostatnie",
       exportScopeAll: "Ostatnie + Projekty",
-      exportCombinedSuffix: "(łącznie)",
-      exportPerChatSuffix: "(każdy czat osobno)",
       importChats: "Importuj czaty",
       importChatsDescription:
         "Importuj pliki JSON, JSONL, NDJSON, CSV lub Markdown do sekcji Ostatnie.",

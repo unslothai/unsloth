@@ -3212,12 +3212,10 @@ export const fr = {
       exportingAction: "Exportation...",
       exportConversations: "Exporter Récents et Projets",
       exportConversationsDescription:
-        "Télécharger Récents ou Récents plus les discussions de projet au format Training JSONL, CSV, JSONL ShareGPT ou Markdown, combinés ou par discussion. Message JSONL est disponible uniquement par discussion.",
+        "Télécharger Récents ou Récents plus les discussions de projet au format Training JSONL, CSV, JSONL ShareGPT, Markdown, HTML ou PDF, combinés ou par discussion. Message JSONL est disponible uniquement par discussion.",
       exportConversationsAction: "Exporter",
       exportScopeRecents: "Récents",
       exportScopeAll: "Récents + Projets",
-      exportCombinedSuffix: "(combiné)",
-      exportPerChatSuffix: "(par discussion)",
       importChats: "Importer des discussions",
       importChatsDescription:
         "Importez des fichiers JSON, JSONL, NDJSON, CSV ou Markdown dans Récents.",

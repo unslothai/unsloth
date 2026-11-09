@@ -3258,12 +3258,10 @@ export const he = {
       exportingAction: "מייצא...",
       exportConversations: "ייצוא אחרונים ופרויקטים",
       exportConversationsDescription:
-        "הורד צ'אטים מ'אחרונים' או מ'אחרונים ופרויקטים' בפורמט Training JSONL, CSV, ShareGPT JSONL או Markdown, כקובץ מאוחד או לכל צ'אט בנפרד. Message JSONL זמין לכל צ'אט בנפרד.",
+        "הורד צ'אטים מ'אחרונים' או מ'אחרונים ופרויקטים' בפורמט Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML או PDF, כקובץ מאוחד או לכל צ'אט בנפרד. Message JSONL זמין לכל צ'אט בנפרד.",
       exportConversationsAction: "ייצוא",
       exportScopeRecents: "אחרונים",
       exportScopeAll: "אחרונים + פרויקטים",
-      exportCombinedSuffix: "(משולב)",
-      exportPerChatSuffix: "(לכל צ'אט)",
       importChats: "ייבוא צ'אטים",
       importChatsDescription:
         "ייבא קובצי JSON, JSONL, NDJSON, CSV או Markdown אל 'אחרונים'.",

@@ -3295,12 +3295,10 @@ export const th = {
       exportingAction: "กำลังส่งออก...",
       exportConversations: "ส่งออกรายการล่าสุดและโปรเจกต์",
       exportConversationsDescription:
-        "ดาวน์โหลดรายการล่าสุด หรือรายการล่าสุดพร้อมแชทในโปรเจกต์ เป็น Training JSONL, CSV, ShareGPT JSONL หรือ Markdown แบบรวมไฟล์เดียวหรือแยกตามแชท ส่วน Message JSONL ใช้ได้เฉพาะแบบแยกตามแชท",
+        "ดาวน์โหลดรายการล่าสุด หรือรายการล่าสุดพร้อมแชทในโปรเจกต์ เป็น Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML หรือ PDF แบบรวมไฟล์เดียวหรือแยกตามแชท ส่วน Message JSONL ใช้ได้เฉพาะแบบแยกตามแชท",
       exportConversationsAction: "ส่งออก",
       exportScopeRecents: "รายการล่าสุด",
       exportScopeAll: "รายการล่าสุด + โปรเจกต์",
-      exportCombinedSuffix: "(รวม)",
-      exportPerChatSuffix: "(แยกตามแชท)",
       importChats: "นำเข้าแชท",
       importChatsDescription:
         "นำเข้าไฟล์ JSON, JSONL, NDJSON, CSV หรือ Markdown ไปยังรายการล่าสุด",

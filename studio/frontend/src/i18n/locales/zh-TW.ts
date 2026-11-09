@@ -3277,12 +3277,10 @@ export const zhTW = {
       exportingAction: "匯出中...",
       exportConversations: "匯出最近項目和專案",
       exportConversationsDescription:
-        "將最近項目，或最近項目加上專案聊天，下載為 Training JSONL、CSV、ShareGPT JSONL 或 Markdown，可合併為一個檔案或每個聊天各一個檔案。Message JSONL 僅提供每個聊天各一個檔案。",
+        "將最近項目，或最近項目加上專案聊天，下載為 Training JSONL、CSV、ShareGPT JSONL、Markdown、HTML 或 PDF，可合併為一個檔案或每個聊天各一個檔案。Message JSONL 僅提供每個聊天各一個檔案。",
       exportConversationsAction: "匯出",
       exportScopeRecents: "最近項目",
       exportScopeAll: "最近項目 + 專案",
-      exportCombinedSuffix: "（合併）",
-      exportPerChatSuffix: "（每個聊天）",
       importChats: "匯入聊天",
       importChatsDescription:
         "將 JSON、JSONL、NDJSON、CSV 或 Markdown 檔案匯入「最近項目」。",
