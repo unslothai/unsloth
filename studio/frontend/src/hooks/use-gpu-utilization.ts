@@ -61,11 +61,19 @@ export function useGpuUtilization(
         }
 
         void poll();
-        timerRef.current = setInterval(() => void poll(), intervalMs);
+        // Display only: skip ticks while the tab is hidden and catch up when it returns.
+        timerRef.current = setInterval(() => {
+            if (!document.hidden) void poll();
+        }, intervalMs);
+        const onVisibilityChange = () => {
+            if (!document.hidden) void poll();
+        };
+        document.addEventListener("visibilitychange", onVisibilityChange);
 
         return () => {
             cancelled = true;
             if (timerRef.current) clearInterval(timerRef.current);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
         };
     }, [enabled, intervalMs]);
 

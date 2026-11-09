@@ -66,10 +66,18 @@ export function useOffloadState(enabled: boolean, intervalMs = 2000): OffloadSta
       }
     }
     void poll();
-    const timer = setInterval(() => void poll(), intervalMs);
+    // Display only: skip ticks while the tab is hidden and catch up when it returns.
+    const timer = setInterval(() => {
+      if (!document.hidden) void poll();
+    }, intervalMs);
+    const onVisibilityChange = () => {
+      if (!document.hidden) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [enabled, intervalMs]);
   return data;
