@@ -1658,6 +1658,13 @@ export const zhCN = {
         audioUploadCancel: "取消转录",
         audioUploadTranscribing: "正在转录音频…",
         sectionTitle: "语音输入",
+        micTargetLabel: "麦克风按钮",
+        micTargetAsr: "使用 ASR 转写",
+        micTargetModel: "将音频发送给模型",
+        micTargetAsrDescription: "麦克风按钮会把你说的话输入到消息框中。",
+        micTargetModelDescription: "加载支持音频输入的模型后，麦克风会录制一段音频并附加到你的消息中。其他模型仍使用语音输入。",
+        micTargetModelUnavailable: "加载支持音频输入的模型（例如 LFM3-Omni）即可向它发送语音。",
+        micRecordForModel: "为模型录制音频",
         engineLabel: "语音输入引擎",
         engineBrowser: "浏览器",
         engineBrowserDescription:

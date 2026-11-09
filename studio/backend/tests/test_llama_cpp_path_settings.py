@@ -384,8 +384,7 @@ def test_the_resolvable_forms_still_expand(monkeypatch, tmp_path):
 
 
 def test_the_status_payload_survives_an_unresolvable_override(settings_store, monkeypatch):
-    """The UI reads this, and a raise here is a broken settings page rather than a
-    message saying the pin is unusable."""
+    """The UI reads this: raising would break the settings page, not flag the pin unusable."""
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", _UNKNOWN_USER)
     status = path_settings.custom_llama_cpp_path_status()
     assert status["source"] == "environment"

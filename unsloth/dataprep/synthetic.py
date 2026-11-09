@@ -173,12 +173,8 @@ class PipeCapture:
 
 
 def _deadline(timeout):
-    """Monotonic instant `timeout` seconds from now, `None` for never.
-
-    `timeout` arrives here untyped from the caller, and the `Event.wait` this
-    replaced read `None` as an unbounded wait, which is what a first load of a
-    large model over a slow link needs.
-    """
+    """Monotonic instant timeout seconds from now, or None for never; None must stay unbounded as
+    Event.wait treated it, since a first large-model load over a slow link needs that."""
     return None if timeout is None else time.monotonic() + timeout
 
 
@@ -395,12 +391,8 @@ class SyntheticDataKit:
         timeout,
         poll_interval = 1.0,
     ):
-        """Block until the server is ready, or raise saying why it is not.
-
-        The readiness event alone cannot notice the child dying, so a server
-        that failed to import in twenty seconds still burned the whole
-        `timeout`. Poll readiness, exit status and the closed pipe together.
-        """
+        """Blocks until the server is ready or raises why not; readiness alone cannot see the child
+        die and would burn the whole timeout, so also poll exit status and the closed pipe."""
         deadline = _deadline(timeout)
         while True:
             # Cap each wait at the time left so readiness after the deadline is not reported as success.
