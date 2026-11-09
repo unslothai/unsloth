@@ -445,9 +445,11 @@ def _fixed_layout(X):
     # expression (dK of a compiled backward can arrive as [b, h, d, s], dim stride = seq_len) would
     # be specialized into a guard, so every new sequence length recompiled the whole graph; eager, a
     # seq-major dim stride would build a new Triton binary per length.
-    seq_stride, dim_stride = X.stride(2), X.stride(3)
-    if not (_is_concrete_int(seq_stride) and _is_concrete_int(dim_stride)):
-        return False
+    _, _, seq_stride, dim_stride = X.stride()
+    # Plain ints (always, in eager) skip the symbolic check: this runs per layer on every decode step.
+    if type(seq_stride) is not int or type(dim_stride) is not int:
+        if not (_is_concrete_int(seq_stride) and _is_concrete_int(dim_stride)):
+            return False
     # Dense, the dim stride grows with seq_len only when the seq dim is the inner one.
     if dim_stride <= seq_stride or seq_stride == 0:
         return True
@@ -476,7 +478,10 @@ def _rope_launch(Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, 
     tensors = (Q, Q_out, K, K_out, cos, sin)
     kernel = (
         _rope_embedding_QK
-        if all(_fixed_layout(X) for X in (Q, Q_out, K, K_out))
+        if _fixed_layout(Q)
+        and _fixed_layout(K)
+        and (Q_out is Q or _fixed_layout(Q_out))
+        and (K_out is K or _fixed_layout(K_out))
         else _rope_embedding_QK_strided
     )
     wrap(kernel)[(batch * seq_len, n_groups_Q + n_groups_K)](
