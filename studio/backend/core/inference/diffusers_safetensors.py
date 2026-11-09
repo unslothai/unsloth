@@ -211,15 +211,23 @@ def local_pipeline_safetensors_complete(root: Any, passed: Iterable[str] = ()) -
     return seen
 
 
-def _cached_snapshot_dir(repo_id: str, probe: str, cache_dir: Optional[str]) -> Optional[Path]:
-    """The cached snapshot folder holding ``repo_id/probe``, or None. Offline: reads the cache only."""
+def _cached_snapshot_dir(
+    repo_id: str,
+    probe: str,
+    cache_dir: Optional[str],
+    revision: Optional[str] = None,
+) -> Optional[Path]:
+    """The cached snapshot folder of ``revision`` (default: the cached ``main``) holding ``repo_id/probe``, or None.
+    Offline: reads the cache only."""
     try:
         from huggingface_hub import try_to_load_from_cache
     except Exception:  # noqa: BLE001
         return None
     for root in dict.fromkeys((cache_dir, None)):
         try:
-            hit = try_to_load_from_cache(repo_id, probe, cache_dir = root)
+            hit = try_to_load_from_cache(
+                repo_id, probe, cache_dir = root, **({"revision": revision} if revision else {})
+            )
         except Exception:  # noqa: BLE001
             continue
         if isinstance(hit, str) and os.path.isfile(hit):
@@ -259,8 +267,10 @@ def pipeline_safetensors_kwargs(
             root: Optional[Path] = Path(text).expanduser()
         else:
             root = None
+            # The snapshot the load reads: a pinned ``revision`` among the load's kwargs, else the cached main.
+            revision = passed.get("revision") if isinstance(passed, dict) else None
             for manifest in _MANIFESTS:
-                root = _cached_snapshot_dir(text, manifest, cache_dir)
+                root = _cached_snapshot_dir(text, manifest, cache_dir, revision)
                 if root is not None:
                     break
         if root is not None and local_pipeline_safetensors_complete(root, passed):
@@ -292,6 +302,7 @@ def component_safetensors_kwargs(
     cache_dir: Optional[str] = None,
     model_cls: Any = None,
     local_files_only: bool = False,
+    revision: Optional[str] = None,
 ) -> dict:
     """``{"use_safetensors": True}`` for ``from_pretrained(source, subfolder = subfolder)`` when that component folder
     (local, or in the cached snapshot of a Hub id) holds a safetensors weight; ``{}`` otherwise (and for a
@@ -305,7 +316,7 @@ def component_safetensors_kwargs(
         if os.path.isdir(os.path.expanduser(text)):
             folder: Optional[Path] = Path(text).expanduser() / subfolder
         else:
-            snap = _cached_snapshot_dir(text, f"{subfolder}/config.json", cache_dir)
+            snap = _cached_snapshot_dir(text, f"{subfolder}/config.json", cache_dir, revision)
             folder = snap / subfolder if snap is not None else None
         if folder is not None and component_weight_state(folder) is True:
             return {"use_safetensors": True}

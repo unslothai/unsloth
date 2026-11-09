@@ -171,7 +171,13 @@ def test_the_frontend_size_estimate_mirrors_the_pipeline_pickle_filter():
     assert "function diffusersPickleFiles(" in src
     assert '"model_index.json", "modular_model_index.json"' in src
     assert r"/\.(pt|pth|ckpt|pkl|pickle)$/i" in src
-    assert r"/\.(fp16|bf16|non_ema|fp32)\./i" in src
+    # The same component-weight matcher as the backend: an adapter / variant safetensors never drops the .bin.
+    backend = ds._MODEL_SAFETENSORS.pattern
+    assert (
+        backend == r"^(diffusion_pytorch_model|model)(-\d+-of-\d+)?\.safetensors(\.index\.json)?$"
+    )
+    assert "/" + backend.replace("\\d", "\\d") + "/" in src
+    assert "MODEL_SAFETENSORS_RE.test(basename(n))" in src
     assert "pipelinePickles.has(filename)" in src
     assert "safetensorsStems.has(" in src
 
@@ -353,3 +359,36 @@ def test_every_dense_diffusers_load_asks_for_safetensors():
     assert _calls_with_helper(image, "component_safetensors_kwargs") == 1
     assert _calls_with_helper(video, "_safetensors_kwargs") == 3
     assert _calls_with_helper(video, "component_safetensors_kwargs") == 1
+
+
+def test_a_pinned_revision_is_judged_on_its_own_snapshot(tmp_path):
+    # Cached main ships safetensors, the pinned commit only a .bin: the pinned load must not be forced to safetensors.
+    cache = tmp_path / "hub"
+    repo = cache / "models--o--pipe"
+    main_rev, pinned = "a" * 40, "b" * 40
+    for rev, weight in (
+        (main_rev, "diffusion_pytorch_model.safetensors"),
+        (pinned, "diffusion_pytorch_model.bin"),
+    ):
+        snap = repo / "snapshots" / rev
+        (snap / "transformer").mkdir(parents = True)
+        (snap / "transformer" / "config.json").write_text("{}")
+        if weight.endswith(".safetensors"):
+            _write_safetensors(snap / "transformer" / weight)
+        else:
+            (snap / "transformer" / weight).write_bytes(b"x")
+        (snap / "model_index.json").write_text(json.dumps({"transformer": ["diffusers", "Y"]}))
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(main_rev)
+    assert ds.pipeline_safetensors_kwargs("o/pipe", cache_dir = str(cache)) == {
+        "use_safetensors": True
+    }
+    assert ds.pipeline_safetensors_kwargs(
+        "o/pipe", passed = {"revision": pinned}, cache_dir = str(cache)
+    ) != {"use_safetensors": True}
+    assert ds.component_safetensors_kwargs(
+        "o/pipe", "transformer", cache_dir = str(cache), revision = pinned
+    ) != {"use_safetensors": True}
+    assert ds.component_safetensors_kwargs("o/pipe", "transformer", cache_dir = str(cache)) == {
+        "use_safetensors": True
+    }

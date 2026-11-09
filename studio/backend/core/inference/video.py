@@ -9816,7 +9816,7 @@ class VideoBackend:
             """use_safetensors=True when the base folder ships safetensors for every component this load reads."""
             return pipeline_safetensors_kwargs(
                 _base_local_dir or fetch_base,
-                passed = kwargs,
+                passed = {**_pinned_base_kwargs(), **kwargs},
                 cache_dir = kwargs.get("cache_dir"),
                 pipeline_cls = pipeline_cls,
             )
@@ -10434,6 +10434,7 @@ class VideoBackend:
                                 cache_dir = hub_cache_dir(),
                                 model_cls = dense_cls,
                                 local_files_only = local_files_only,
+                                revision = _pinned_base_kwargs().get("revision"),
                             ),
                         )
                     }

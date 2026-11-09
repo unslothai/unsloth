@@ -323,7 +323,9 @@ function redundantTorchBinFiles(names: string[]): Set<string> {
 // .safetensors twin (a root pickle with no twin is the only copy and stays), and a .bin beside safetensors weights.
 const PIPELINE_MANIFESTS = ["model_index.json", "modular_model_index.json"];
 const NEVER_READ_PICKLE_RE = /\.(pt|pth|ckpt|pkl|pickle)$/i;
-const DTYPE_VARIANT_RE = /\.(fp16|bf16|non_ema|fp32)\./i;
+// Mirrors _MODEL_SAFETENSORS: only a component's own non-variant weights make its .bin redundant.
+const MODEL_SAFETENSORS_RE =
+  /^(diffusion_pytorch_model|model)(-\d+-of-\d+)?\.safetensors(\.index\.json)?$/;
 
 function folderOf(name: string): string {
   const slash = name.lastIndexOf("/");
@@ -335,11 +337,7 @@ function diffusersPickleFiles(names: string[]): Set<string> {
   if (!names.some((n) => PIPELINE_MANIFESTS.includes(n))) return out;
   const safetensorsFolders = new Set(
     names
-      .filter(
-        (n) =>
-          (n.endsWith(".safetensors") || n.endsWith(".safetensors.index.json")) &&
-          !DTYPE_VARIANT_RE.test(basename(n)),
-      )
+      .filter((n) => MODEL_SAFETENSORS_RE.test(basename(n)))
       .map(folderOf),
   );
   const safetensorsStems = new Set(
