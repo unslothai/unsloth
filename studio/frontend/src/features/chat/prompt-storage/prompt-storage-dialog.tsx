@@ -952,24 +952,33 @@ export async function exportBulkConversationsSeparate(
   await downloadBlob(zipped, `${basename}.zip`, "application/zip");
 }
 
-// "recents" = chats outside projects; "all" adds project chats.
+const SCOPE_BASENAMES = {
+  recents: "recents",
+  all: "all-chats",
+  history: "unsloth-chats",
+  archived: "unsloth-archived-chats",
+} as const;
+
+// "recents" = chats outside projects; "all" adds project chats; "history" adds archived ones too.
 export async function bulkExportConversationsByScope(
-  scope: "recents" | "all",
+  scope: keyof typeof SCOPE_BASENAMES,
   format: ConvExportFormat,
   merged: boolean,
 ): Promise<void> {
   try {
-    const threads = await listStoredChatThreads({
-      includeArchived: false,
+    const listed = await listStoredChatThreads({
+      includeArchived: scope === "history" || scope === "archived",
       ...(scope === "recents" ? { projectId: null } : {}),
     });
+    const threads =
+      scope === "archived" ? listed.filter((t) => t.archived) : listed;
     const ids = [...new Set(threads.map((t) => t.id))];
     if (ids.length === 0) {
       toast.info("No conversations to export.");
       return;
     }
     const ts = new Date().toISOString().slice(0, 10);
-    const basename = scope === "all" ? `all-chats-${ts}` : `recents-${ts}`;
+    const basename = `${SCOPE_BASENAMES[scope]}-${ts}`;
     if (merged) {
       await exportBulkConversationsMerged(ids, format, basename);
     } else {
