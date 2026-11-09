@@ -8,9 +8,13 @@ import test from "node:test";
 register("./helpers/tauri-window-resolver.mjs", import.meta.url);
 
 test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
-  const control = {
+  const control: {
+    fullscreen: boolean;
+    fullscreenChanges: boolean[];
+    fullscreenGate?: Promise<void>;
+  } = {
     fullscreen: false,
-    fullscreenChanges: [] as boolean[],
+    fullscreenChanges: [],
   };
   Object.assign(globalThis, { __TAURI_WINDOW_STUB__: control });
   const { watchDesktopFullscreen } =
@@ -44,4 +48,16 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
   press("F11");
   await settle();
   assert.deepEqual(control.fullscreenChanges, [true, false]);
+
+  let releaseGate: (() => void) | undefined;
+  control.fullscreenGate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  press("F11");
+  await settle();
+  press("F11");
+  assert.ok(releaseGate);
+  releaseGate();
+  await settle();
+  assert.deepEqual(control.fullscreenChanges, [true, false, true]);
 });

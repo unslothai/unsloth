@@ -20,6 +20,7 @@ export function getCurrentWindow() {
   return {
     isFullscreen: async () => control.fullscreen ?? false,
     setFullscreen: async (fullscreen) => {
+      if (control.fullscreenGate) await control.fullscreenGate;
       control.fullscreen = fullscreen;
       control.fullscreenChanges?.push(fullscreen);
     },
