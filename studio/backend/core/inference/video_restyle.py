@@ -416,6 +416,7 @@ class RestyleRunner:
         self._publishing = False
         # Held from before an upload is read until ``start``, so a second request is refused up front.
         self._reservation: Optional[str] = None
+        self._reservation_owner: Optional[str] = None
 
     def owned_by(self, owner: Optional[str]) -> bool:
         return self._owner is not None and self._owner == owner
@@ -429,11 +430,12 @@ class RestyleRunner:
                 return {"active": bool(state.get("active")), "phase": None}
             return dict(state)
 
-    def reserve(self) -> str:
+    def reserve(self, owner: Optional[str] = None) -> str:
         with self._lock:
             if self._state.get("active") or self._reservation is not None:
                 raise RestyleBusy("A restyle is already running.")
             self._reservation = uuid.uuid4().hex
+            self._reservation_owner = owner
             return self._reservation
 
     def release(self, reservation: str) -> None:
@@ -523,8 +525,11 @@ class RestyleRunner:
         return True
 
     def retire(self, owner: str) -> bool:
-        """Cancel ``owner``'s job for account retirement; True while it still holds the runner."""
+        """Cancel ``owner``'s job for account retirement; True while it still holds the runner.
+        A reservation of ``owner``'s is dropped; its request then meets the fence in ``start``."""
         with self._lock:
+            if self._reservation is not None and self._reservation_owner == owner:
+                self._reservation = None
             held = bool(self._state.get("active")) and self.owned_by(owner)
         if held:
             self.cancel(owner)
@@ -541,12 +546,15 @@ class RestyleRunner:
         with self._lock:
             return bool(self._state.get("active")) or self._reservation is not None
 
-    def unload_if_idle(self) -> bool:
+    def unload_if_idle(self, owner: Optional[str] = None) -> bool:
         """Detach the server under the same lock ``start`` claims, so a restyle can't begin in between.
-        A reservation counts as busy: that request is about to reuse the server."""
+        A reservation counts as busy: that request is about to reuse the server. With ``owner``, only
+        a server whose last job was ``owner``'s is detached (RestyleBusy otherwise)."""
         with self._lock:
             if self._state.get("active") or self._reservation is not None:
                 return False
+            if owner is not None and self._server is not None and not self.owned_by(owner):
+                raise RestyleBusy("Another account's restyle model is loaded.")
             server, self._server, self._server_files = self._server, None, None
         if server is not None:
             server.stop()

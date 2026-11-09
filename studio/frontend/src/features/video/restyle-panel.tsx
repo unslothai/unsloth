@@ -97,16 +97,18 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const unavailable = status !== null && !status.available;
 
   const refresh = useCallback(async () => {
+    // Taken before the progress request: a clip chosen while it is in flight voids its result.
+    const ticket = clipsFor.current;
     try {
       const next = await fetchVideoRestyleProgress();
       setProgress(next);
       if (next.phase === "error") {
         setError(next.error ?? "Restyle failed.");
       }
+      if (ticket !== clipsFor.current) return;
       if (next.phase === "done" && next.id && loadedFor.current !== next.id) {
         loadedFor.current = next.id;
         if (next.video) notifyGalleryChanged("videos");
-        const ticket = clipsFor.current;
         let clips: Blob[];
         try {
           clips = await Promise.all(

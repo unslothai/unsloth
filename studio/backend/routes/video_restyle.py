@@ -84,7 +84,7 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
     try:
-        reservation = video_restyle.runner.reserve()
+        reservation = video_restyle.runner.reserve(current_account_id())
     except RestyleBusy as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
     try:
@@ -100,6 +100,10 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
     from routes.inference import _diffusion_training_admission
     from routes.video import _guard_video_load_against_training
 
+    from state import active_generations
+
+    if kwargs.get("owner") is not None and active_generations.fenced(kwargs["owner"]):
+        raise HTTPException(status_code = 403, detail = "This account is being removed.")
     video_restyle.validate_request(kwargs["prompt"], kwargs["frames"])
     try:
         with _diffusion_training_admission():
@@ -192,7 +196,16 @@ async def cancel_restyle(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/video/restyle/unload")
 async def unload_restyle(current_subject: str = Depends(get_current_subject)):
-    if not await asyncio.to_thread(video_restyle.runner.unload_if_idle):
+    # A managed account may only unload a server its own last job loaded (as video unload checks).
+    owner = None
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
+        owner = current_account_id()
+    try:
+        unloaded = await asyncio.to_thread(video_restyle.runner.unload_if_idle, owner)
+    except RestyleBusy as exc:
+        raise HTTPException(status_code = 403, detail = str(exc))
+    if not unloaded:
         raise HTTPException(status_code = 409, detail = "A restyle is running.")
     return {"unloaded": True}
 

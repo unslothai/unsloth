@@ -922,3 +922,21 @@ def test_the_create_check_runs_under_the_arbiter_lock(weights, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         route._take_the_gpu()
     assert exc.value.status_code == 409 and held == [True] and evicted == []
+
+
+def test_retire_drops_the_accounts_reservation(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    runner.reserve("bob")
+    assert not runner.retire("alice") and runner.holds_gpu()
+    assert not runner.retire("bob") and not runner.holds_gpu()
+
+
+def test_unload_refuses_another_accounts_server(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    runner.start(prompt = "x", frames = _frames(5), owner = "alice")
+    runner._ensure_server(vr.model_files())
+    runner._update(active = False)
+    with pytest.raises(vr.RestyleBusy):
+        runner.unload_if_idle("bob")
+    assert runner._server is not None
+    assert runner.unload_if_idle("alice") and runner._server is None
