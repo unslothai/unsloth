@@ -4050,7 +4050,8 @@ const Composer: FC<{
 
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
-  const draftThreadId = referenceThreadId ?? threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
+  // Route and active IDs can lead the runtime switch; drafts belong to the composer on screen.
+  const draftThreadId = threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
   const restoredDraftScopeRef = useRef<string | undefined>(undefined);
   const previousDraftIdentityRef = useRef({
     draftThreadId,
@@ -4060,7 +4061,7 @@ const Composer: FC<{
   const draftKey = composerDraftKey(draftThreadId, shareDraft);
   const draftScope = incognito
     ? INCOGNITO_DRAFT_SCOPE
-    : `${draftKey}:${draftThreadId}`;
+    : `${draftKey}:${threadListItemId}`;
   // Text that came from Compare, so saving it back can't overwrite a newer write.
   const remoteDraftRef = useRef<string | null>(null);
   const [draftSource] = useState(() => Symbol("chat composer"));

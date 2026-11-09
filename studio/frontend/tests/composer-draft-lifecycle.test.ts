@@ -268,6 +268,13 @@ test("navigation before the runtime switch does not promote the outgoing New cha
     "existing draft",
   );
   await h.update({ threadId: "existing" });
+  assert.equal(h.props.text, "unsent new chat");
+  await h.update({
+    runtimeId: "existing",
+    remoteId: "existing",
+    text: "",
+    attachments: [],
+  });
   assert.equal(h.props.text, "existing draft");
   assert.equal(h.props.attachments.length, 0);
   assert.equal(
@@ -356,4 +363,65 @@ test("a saved New chat keeps its follow-up through Compare backgrounding", async
     h.drafts.latestDraft(h.drafts.composerDraftKey("saved")),
     "follow-up",
   );
+});
+
+test("a bare chat's uninitialized active ID still uses the common New chat slot", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.update({ threadId: "__LOCALID_first", runtimeId: "__LOCALID_first" });
+  await h.type("unfinished bare chat");
+  await h.paste("bare chat paste");
+  h.flush();
+  assert.equal(
+    h.drafts.readComposerDraft(
+      h.drafts.composerDraftKey(h.drafts.NEW_CHAT_DRAFT_ID),
+    ),
+    "unfinished bare chat",
+  );
+  assert.deepEqual(
+    h.drafts.readPasteDraft(
+      h.drafts.composerPasteDraftKey(h.drafts.NEW_CHAT_DRAFT_ID),
+    ),
+    ["bare chat paste"],
+  );
+  await h.update({
+    threadId: null,
+    runtimeId: "__LOCALID_second",
+    text: "",
+    attachments: [],
+  });
+  assert.equal(h.props.text, "unfinished bare chat");
+  assert.equal(h.props.attachments[0]?.file.paste, "bare chat paste");
+});
+
+test("a route changing before its runtime cannot erase the destination's pasted draft", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.update({ threadId: "A", runtimeId: "A", remoteId: "A" });
+  await h.type("draft A");
+  await h.paste("paste A");
+  h.drafts.writeComposerDraft(h.drafts.composerDraftKey("B"), "draft B");
+  h.drafts.writePasteDraft(h.drafts.composerPasteDraftKey("B"), ["paste B"]);
+  await h.update({ threadId: "B" });
+  await h.update({ runtimeId: "B", remoteId: "B", text: "", attachments: [] });
+  assert.equal(h.props.text, "draft B");
+  assert.equal(h.props.attachments[0]?.file.paste, "paste B");
+  assert.deepEqual(
+    h.drafts.latestPasteDraft(h.drafts.composerPasteDraftKey("B")),
+    ["paste B"],
+  );
+});
+
+test("a fresh runtime restores pastes from the same common New chat slot", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.type("unfinished");
+  await h.paste("unsaved paste");
+  await h.update({
+    runtimeId: "another-new-runtime",
+    text: "",
+    attachments: [],
+  });
+  assert.equal(h.props.text, "unfinished");
+  assert.equal(h.props.attachments[0]?.file.paste, "unsaved paste");
 });
