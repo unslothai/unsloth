@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The accept list carries extensions as well as mime types because the browser's answer is
-// unreliable for mkv and some mov files. A file taken on its extension can arrive as "" or as
-// application/octet-stream, and the request builder only recognises a file part whose mimeType
-// matches ^video/, so an un-normalised type costs the clip silently: it is attached, it is sent,
-// and the model answers as though nothing were there.
+// A file accepted by extension can arrive as "" or octet-stream, and only ^video/ parts are
+// sent as video, so an un-normalised type silently drops the clip.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -25,12 +22,11 @@ test("a browser that names the container is believed", () => {
     videoMimeForFile(file("clip.mkv", "video/x-matroska")),
     "video/x-matroska",
   );
-  // An unexpected video/* subtype is still a video type, so it is not rewritten.
   assert.equal(videoMimeForFile(file("clip.mkv", "video/mp2t")), "video/mp2t");
 });
 
 test("an octet-stream is replaced by the container the extension names", () => {
-  // Chromium on a Windows box with no codec pack registered.
+  // Chromium on Windows with no codec pack registered.
   assert.equal(
     videoMimeForFile(file("clip.mkv", "application/octet-stream")),
     "video/x-matroska",

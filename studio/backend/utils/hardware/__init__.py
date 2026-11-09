@@ -27,6 +27,7 @@ from .hardware import (
     get_backend_visible_gpu_info,
     get_vulkan_inference_gpu_info,
     get_cross_vendor_inference_gpu_info,
+    get_mixed_vulkan_inference_gpu_info,
     get_physical_gpu_count,
     get_visible_gpu_count,
     get_parent_visible_gpu_ids,
@@ -39,6 +40,7 @@ from .hardware import (
     safe_num_proc,
     safe_thread_num_proc,
     dataset_map_num_proc,
+    light_map_num_proc,
     get_device_map,
     get_offloaded_device_map_entries,
     raise_if_offloaded,
@@ -55,12 +57,7 @@ from .vram_estimation import (
 
 
 def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
-    """Detect once, from any thread; delegate so the live function always runs.
-
-    Wrapper rather than re-export, like export_capability() below: a re-export is an unused
-    module-level import, which scripts/verify_import_hoist.py flags. Must carry the epoch --
-    dropping it raises into the warm's _run_stage, leaving detection undone.
-    """
+    """Pass the epoch through: dropping it raises in the warm's _run_stage and leaves detection undone."""
     return _hardware.ensure_hardware_detected(epoch)
 
 
@@ -116,6 +113,7 @@ __all__ = [
     "get_backend_visible_gpu_info",
     "get_vulkan_inference_gpu_info",
     "get_cross_vendor_inference_gpu_info",
+    "get_mixed_vulkan_inference_gpu_info",
     "get_physical_gpu_count",
     "get_visible_gpu_count",
     "get_parent_visible_gpu_ids",
@@ -129,6 +127,7 @@ __all__ = [
     "safe_num_proc",
     "safe_thread_num_proc",
     "dataset_map_num_proc",
+    "light_map_num_proc",
     "get_device_map",
     "get_offloaded_device_map_entries",
     "raise_if_offloaded",

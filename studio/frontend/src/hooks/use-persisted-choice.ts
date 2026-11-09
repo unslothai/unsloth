@@ -3,17 +3,8 @@
 
 import { useCallback, useState } from "react";
 
-/** A string choice that survives reloads, falling back to `fallback`.
- *
- * The string sibling of `usePersistedToggle`, for a control that cannot be reseeded from the
- * loaded build: the backend reports the device a pipeline is on but not the physical card, so a
- * refresh would reset the GPU pick to Auto while the model stayed put and the next Reapply moved
- * it. The stored value is only a hint, so the caller must check it against the live inventory: a
- * card that has gone (driver reset, eGPU unplugged) falls back to automatic rather than being
- * sent to a backend that would 400 it.
- *
- * Storage failures keep the control working for the session.
- */
+/** For a GPU pick that status cannot reseed. The stored value is only a hint: callers must check it
+ * against the live inventory, since a vanished card would 400. Storage failures are tolerated. */
 export function usePersistedChoice(
   key: string,
   fallback: string,

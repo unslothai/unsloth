@@ -126,7 +126,6 @@ test("following the global mode, a stored Auto (null) equals the mode it resolve
 });
 
 test("between stored configs a null mode stays distinct from an explicit one", () => {
-  // Presets: null means no mode carried, so an explicit Off must never fold into it.
   const offEqual = configsEqual("off");
   assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "off" }));
   assert.ok(offEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }));

@@ -30,7 +30,7 @@ class _Progress:
     def __init__(self):
         self.step = 5
         self.total_steps = 10
-        self.loss = None  # cleared by the NaN honesty fix in core training
+        self.loss = None
         self.learning_rate = 8e-5
         self.epoch = 0.1
         self.grad_norm = None
@@ -108,14 +108,11 @@ def test_stream_reports_live_step_with_null_loss_during_nan(monkeypatch):
         f"stretch; steps seen: {[p.get('step') for p in payloads]}"
     )
     assert live[0]["loss"] is None
-    # The stale finite pair must not be re-emitted as the latest progress.
     stale = [p for p in payloads if p.get("step") == 2 and p.get("loss") == 1.5]
     assert not stale
 
 
 def test_inactive_stream_completes_with_live_step_and_null_loss(monkeypatch):
-    # Fresh connection after the run already ended during a NaN stretch: the
-    # immediate complete event must not replay the stale finite pair either.
     backend = _FakeBackend(active_polls = 0)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
@@ -127,9 +124,7 @@ def test_inactive_stream_completes_with_live_step_and_null_loss(monkeypatch):
 
 
 def test_disconnect_while_active_does_not_emit_complete(monkeypatch):
-    # Client drops mid-run: the stream must end without a terminal "complete"
-    # frame, which a buffered/proxy consumer could otherwise read as a finished
-    # run while training is still active.
+    # A dropped client must not get a terminal "complete" frame.
     backend = _FakeBackend(active_polls = 5)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
@@ -142,7 +137,6 @@ def test_disconnect_while_active_does_not_emit_complete(monkeypatch):
 
 def test_stream_uses_finite_history_when_progress_in_sync(monkeypatch):
     backend = _FakeBackend(active_polls = 2)
-    # Live progress agrees with the history tail: normal finite behavior.
     backend.trainer.training_progress.step = 2
     backend.trainer.training_progress.loss = 1.5
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)

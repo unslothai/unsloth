@@ -1,33 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolve the caller's IP for rate limiting.
-
-Trust model, in order:
-  1. If the operator opts in via ``UNSLOTH_STUDIO_TRUST_FORWARDED`` (Unsloth behind
-     their own reverse proxy), honor the *rightmost* ``X-Forwarded-For`` hop -- the
-     one the trusted proxy appended. The leftmost entry is client-controlled and
-     spoofable, so this assumes a proxy that appends (or overwrites) the header;
-     only enable the env var behind such a proxy.
-  2. If the socket peer is loopback, honor ``CF-Connecting-IP``. Unsloth's managed
-     Cloudflare tunnel terminates at 127.0.0.1, so every tunneled visitor would
-     otherwise collapse onto the same socket peer (the local cloudflared process)
-     and share one rate-limit bucket. ``CF-Connecting-IP`` is set by Cloudflare's
-     edge and can't be forged by a tunneled client.
-  3. Otherwise the socket peer, so a direct LAN caller can't spoof a header to
-     dodge a per-IP limit.
-"""
+"""Trust order: rightmost X-Forwarded-For only if UNSLOTH_STUDIO_TRUST_FORWARDED (leftmost is
+spoofable; enable only behind an appending proxy); CF-Connecting-IP only via loopback tunnel;
+relayed:<peer>; socket peer"""
 
 from __future__ import annotations
 
 import ipaddress
 import os
+from urllib.parse import urlparse
 
 _TRUST_FORWARDED_ENV = "UNSLOTH_STUDIO_TRUST_FORWARDED"
 
 
 def _trust_forwarded_for() -> bool:
     return os.environ.get(_TRUST_FORWARDED_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def trust_forwarded_headers() -> bool:
+    return _trust_forwarded_for()
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -52,6 +44,14 @@ def _normalize_addr(value: str | None) -> str | None:
         return None
 
 
+def header_fields(headers, name: str) -> str:
+    """All fields of a repeated header, comma-joined (``get`` returns only the first; HAProxy appends a field)."""
+    getlist = getattr(headers, "getlist", None)
+    if getlist is not None:
+        return ",".join(getlist(name))
+    return headers.get(name, "") or ""
+
+
 def client_ip(request) -> str:
     """Best-effort client IP, or ``"_unknown"`` when it can't be determined."""
     if request is None:
@@ -59,16 +59,62 @@ def client_ip(request) -> str:
     peer = request.client.host if request.client else None
     if _trust_forwarded_for():
         # Rightmost hop = what the trusted proxy saw; the leftmost is spoofable.
-        xff = request.headers.get("x-forwarded-for", "")
+        xff = header_fields(request.headers, "x-forwarded-for")
         if xff:
             normalized = _normalize_addr(xff.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
     if _is_loopback(peer):
-        cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
-        if cf:
-            return cf
+        if request_from_managed_tunnel(
+            getattr(request, "scope", None), _request_app_state(request)
+        ):
+            cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
+            if cf:
+                return cf
+        if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+            return f"relayed:{peer}"
     return peer or "_unknown"
+
+
+def _request_app_state(request):
+    try:
+        return request.app.state
+    except Exception:
+        return None
+
+
+def _managed_tunnel_hostname(app_state) -> str | None:
+    url = getattr(app_state, "cloudflare_url", None) if app_state is not None else None
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return None
+    return host.lower().rstrip(".") if host else None
+
+
+def request_from_managed_tunnel(scope, app_state) -> bool:
+    """Live published tunnel, one valid ``CF-Connecting-IP``, Host naming it. Caller checks the peer is loopback."""
+    expected = _managed_tunnel_hostname(app_state)
+    if not expected or not isinstance(scope, dict):
+        return False
+    cf_values = []
+    host_values = []
+    for name, value in scope.get("headers") or ():
+        if name == b"cf-connecting-ip":
+            cf_values.append(value)
+        elif name == b"host":
+            host_values.append(value)
+    if len(cf_values) != 1 or len(host_values) != 1:
+        return False
+    try:
+        if _normalize_addr(cf_values[0].decode("latin-1")) is None:
+            return False
+        request_host = urlparse("//" + host_values[0].decode("latin-1")).hostname
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return bool(request_host) and request_host.lower().rstrip(".") == expected
 
 
 def _is_loopback_ip(host: str | None) -> bool:
@@ -82,8 +128,7 @@ def _is_loopback_ip(host: str | None) -> bool:
     return ip.is_loopback or (mapped is not None and mapped.is_loopback)
 
 
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote client, so the peer is the
-# proxy, not the caller: cloudflared sets cf-connecting-ip, reverse proxies set the rest.
+# A loopback peer with these headers is a proxy relaying a remote client.
 _PROXIED_CLIENT_HEADERS = (
     "cf-connecting-ip",
     "forwarded",

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A gated model must say how to get in, not paste the 403 back at the user: the load error is
-surfaced verbatim in a toast, where a raw GatedRepoError is a request id and a resolve URL
-wrapped around one useful sentence.
-"""
+"""Gated models must explain how to get access, not paste the raw 403 into the toast."""
 
 import sys
 from pathlib import Path
@@ -45,7 +42,6 @@ def test_no_token_asks_for_access_and_a_token():
     assert "black-forest-labs/FLUX.2-klein-9B is gated" in message
     assert "https://huggingface.co/black-forest-labs/FLUX.2-klein-9B" in message
     assert "token" in message
-    # The resolve URL and request id are the noise this replaces.
     assert "model_index.json" not in message
     assert "Request ID" not in message
 
@@ -55,7 +51,6 @@ def test_a_token_that_still_bounces_names_the_account():
 
     assert message is not None
     assert "not on its access list" in message
-    # Telling someone with a token to add a token sends them in a circle.
     assert "add a Hugging Face token" not in message
 
 
@@ -108,7 +103,7 @@ def test_an_unparseable_repo_still_gives_the_instruction():
     ],
 )
 def test_other_failures_keep_their_own_text(exc):
-    # None is the signal to fall back to str(exc); rewriting these would bury the cause.
+    # None means fall back to str(exc); rewriting these would bury the cause.
     assert hub_access_message(exc, had_token = False) is None
 
 
@@ -155,7 +150,7 @@ def test_a_disabled_implicit_token_is_not_a_token(monkeypatch):
     monkeypatch.setattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", True)
     monkeypatch.setattr(_headers, "get_token", lambda: "hf_cached_login", raising = False)
 
-    # Real get_token_to_send, so this pins hub's actual policy rather than a stand-in.
+    # Uses the real get_token_to_send to pin hub's actual policy, not a stand-in.
     assert _hf_token_in_play(None) is False
     assert _hf_token_in_play("hf_explicit") is True
 

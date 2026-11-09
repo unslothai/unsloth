@@ -50,7 +50,6 @@ test("peer-tab account switch clears Alice's training handoff before Bob reloads
       reload() {
         reloads++;
         assert.equal(localStorage.getItem("unsloth_auth_token"), "bob-token");
-        // A real reload preserves sessionStorage. Read with the actual Chat consumer.
         handoffAtReload = getTrainingCompareHandoff();
       },
     },

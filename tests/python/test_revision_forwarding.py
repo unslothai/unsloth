@@ -43,12 +43,17 @@ def _params(function):
 
 
 def _calls(function, callee):
-    """Every Call whose dotted name ends with `callee`."""
-    return [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] == callee
-    ]
+    found = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if ast.unparse(node.func) == "_memo_config_probe" and node.args:
+            node = ast.copy_location(
+                ast.Call(func = node.args[0], args = node.args[1:], keywords = node.keywords), node
+            )
+        if ast.unparse(node.func).split(".")[-1] == callee:
+            found.append(node)
+    return found
 
 
 def _revision_kwarg(call):
@@ -125,6 +130,12 @@ def test_vision_loads_forward_revision(callee, minimum):
     function = _function(_tree(VISION), "from_pretrained", "FastBaseModel")
     calls = [
         c for c in _calls(function, "from_pretrained") if ast.unparse(c.func).startswith(callee)
+    ]
+    # Processor loads go through the padding_side retry, which forwards its kwargs.
+    calls += [
+        c
+        for c in _calls(function, "_from_pretrained_left_padded")
+        if c.args and ast.unparse(c.args[0]) == callee
     ]
     assert len(calls) >= minimum, f"expected >= {minimum} {callee} loads, found {len(calls)}"
     for call in calls:

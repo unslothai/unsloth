@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Muse Glimmer resolves to its published sampling defaults.
-
-Muse Glimmer recommends temperature 1.0, top_p 0.95, top_k 64. Without a family
-entry every id fell through to ``default.yaml`` at 0.7 / 0.95 / -1 / 0.01, so
-top_k was disabled outright and min_p was applied where the model asks for none.
-
-The defaults live in ``inference_defaults.json`` rather than a ``model_defaults``
-YAML, for the reason #7619 moved Kimi-K3's there: a YAML is reached only by exact
-alias or a one/two-component path suffix, so it would match the bare repo id and
-miss ``repo:variant``, the cache snapshot path and a plain ``.gguf`` path. Family
-patterns are substring-matched against the id with the org stripped, so one entry
-covers the GGUF, 4-bit and bf16 repos and every path shape they arrive as.
-"""
+"""Defaults sit in inference_defaults.json, so repo:variant, snapshot and .gguf paths all match."""
 
 from __future__ import annotations
 
@@ -29,9 +17,7 @@ if str(_backend_root) not in sys.path:
 
 EXPECTED = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0}
 
-# Every shape an id reaches load_inference_config as. The snapshot path is not
-# hypothetical: _repo_gguf_load_id publishes a snapshot filesystem path as the
-# load_id for a GGUF repo in a non-active cache root.
+# _repo_gguf_load_id can publish a snapshot path for a GGUF repo in a non-active cache root.
 MUSE_GLIMMER_IDS = [
     "unsloth/Muse-Glimmer-30B-GGUF",
     "unsloth/Muse-Glimmer-30B",

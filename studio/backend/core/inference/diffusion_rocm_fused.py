@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused RoPE and AdaLN modulation Triton kernels for the FLUX DiT on ROCm (bf16 / fp16).
-
-RoPE reuses ``diffusion_flux2_rope``'s kernel (bit-identical to stock). AdaLN keeps stock's rounding chain; only the
-row-reduction order differs. Inference only, never while compiling; any ineligible call runs the forward live at
-install. ``UNSLOTH_DIFFUSION_FUSED_ROPE=auto|0|1`` (auto = ROCm and NVIDIA CUDA on Linux; ComfyUI runs FLUX RoPE
-through comfy-kitchen's fused kernel by default), ``UNSLOTH_DIFFUSION_FUSED_ADALN=auto|0|1`` (auto = off: no gfx1151
-speedup and not bit-identical).
-"""
+"""Triton RoPE (auto on ROCm and NVIDIA CUDA Linux) and AdaLN kernels for FLUX; inference only,
+never while compiling; AdaLN auto on NVIDIA CUDA Linux off the ``off`` speed tier (one rounding instead of three, not
+bit-identical); UNSLOTH_DIFFUSION_FUSED_ROPE, UNSLOTH_DIFFUSION_FUSED_ADALN"""
 
 from __future__ import annotations
 
@@ -18,6 +13,7 @@ import os
 import sys
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FUSED_ROPE"
 FUSED_ADALN_ENV = "UNSLOTH_DIFFUSION_FUSED_ADALN"
@@ -68,7 +64,7 @@ def _is_rocm() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return bool(getattr(torch.version, "hip", None))
+    return is_rocm_torch(torch)
 
 
 def _is_nvidia_linux() -> bool:
@@ -79,14 +75,12 @@ def _is_nvidia_linux() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return getattr(torch.version, "hip", None) is None and bool(
-        getattr(torch.version, "cuda", None)
-    )
+    return not is_rocm_torch(torch) and bool(getattr(torch.version, "cuda", None))
 
 
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).
 _AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
-_AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
+_AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: True}
 
 
 def _switch_on(env: str) -> bool:
@@ -243,9 +237,22 @@ def _adaln_kernel() -> Optional[Callable]:
     except Exception:  # noqa: BLE001
         return None
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["S"])
     def _adaln_fwd(
-        X, SCALE, SHIFT, OUT, S, D, sxb, sxs, scb, shb, sob, sos, eps, BLOCK: tl.constexpr
+        X,
+        SCALE,
+        SHIFT,
+        OUT,
+        S,
+        D,
+        sxb,
+        sxs,
+        scb,
+        shb,
+        sob,
+        sos,
+        eps,
+        BLOCK: tl.constexpr,  # block size along hidden
     ):
         row = tl.program_id(0)
         b = row // S
@@ -504,8 +511,10 @@ def install_for_pipe(
     dtype: Any,
     device: Any = "cuda",
     logger: Any = None,
+    *,
+    adaln: bool = True,
 ) -> dict:
-    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock."""
+    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock; ``adaln=False`` (speed off) keeps stock AdaLN."""
     transformer = getattr(pipe, "transformer", None)
     module_name = type(transformer).__module__ if transformer is not None else ""
     if module_name not in _MODULES:
@@ -513,7 +522,7 @@ def install_for_pipe(
         return {"rope": False, "adaln": 0}
     uninstall()
     rope = install_rope(module_name, dtype, device)
-    adaln = install_adaln(dtype, device)
+    adaln = install_adaln(dtype, device) if adaln else 0
     if logger is not None and (rope or adaln):
         try:
             logger.info(

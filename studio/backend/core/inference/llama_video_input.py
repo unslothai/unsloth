@@ -11,9 +11,10 @@ import json
 import logging
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
@@ -22,29 +23,42 @@ logger = logging.getLogger(__name__)
 
 # An area, not an edge, so portrait and landscape clips get the same budget.
 MAX_FRAME_PIXELS = 640 * 360
-# llama-server's --video-fps default: encoding above it buys frames mtmd drops,
-# and those bytes count against max_bytes.
+# llama-server's --video-fps default; higher rates only add bytes mtmd drops.
 MAX_FRAME_RATE = 4
-# `fps` places its first output frame half an interval in, so at --video-fps 1 a
-# clip under ~0.5s decodes to NO frames. A whole second leaves user-rate headroom.
+# fps starts half an interval in, so clips under ~0.5s give NO frames at 1 fps; one whole second leaves user-rate headroom.
 MIN_SAMPLED_SECONDS = 1.0
 _PROBE_TIMEOUT_S = 30
 _SHRINK_TIMEOUT_S = 300
 
 
-def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
+def video_tools(ffmpeg_dir: Optional[str] = None) -> Optional[tuple[str, str]]:
+    names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
+    if ffmpeg_dir:
+        found = [shutil.which(name, path = ffmpeg_dir) for name in names]
+    else:
+        found = [shutil.which(name) for name in names]
+    return (found[0], found[1]) if found[0] and found[1] else None
+
+
+def _run(
+    argv: list[str],
+    timeout: float,
+    env: Optional[Mapping[str, str]] = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         argv,
         stdin = subprocess.DEVNULL,
         capture_output = True,
         timeout = timeout,
-        env = child_env_without_native_path_secret(),
+        env = child_env_without_native_path_secret(env),
         **windows_hidden_subprocess_kwargs(),
     )
 
 
 def _frame_geometry(
-    ffprobe: str, clip: Path
+    ffprobe: str,
+    clip: Path,
+    env: Optional[Mapping[str, str]] = None,
 ) -> tuple[Optional[int], Optional[float], Optional[float]]:
     """Any field is None when ffprobe cannot answer; the caller then leaves the clip alone."""
     result = _run(
@@ -66,11 +80,11 @@ def _frame_geometry(
             str(clip),
         ],
         _PROBE_TIMEOUT_S,
+        env = env,
     )
     if result.returncode != 0:
         return None, None, None
-    # A build answering `-of json` with a non-object must fall back, not raise
-    # AttributeError past the caller's except clause.
+    # A build answering -of json with a non-object must fall back, not raise AttributeError past except.
     payload = json.loads(result.stdout or b"{}")
     if not isinstance(payload, dict):
         return None, None, None
@@ -88,11 +102,15 @@ def _frame_geometry(
         except (TypeError, ValueError):
             duration = None
     if duration is None:
-        duration = _packet_duration(ffprobe, clip)
+        duration = _packet_duration(ffprobe, clip, env = env)
     return area, _frame_rate(streams[0].get("avg_frame_rate")), duration
 
 
-def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
+def _packet_duration(
+    ffprobe: str,
+    clip: Path,
+    env: Optional[Mapping[str, str]] = None,
+) -> Optional[float]:
     """Duration from packet timestamps, for containers that carry none: a raw
     elementary stream has no `format.duration`, so the sub-second floor never fired
     on one. Bounded to twice the floor, past which a clip is long enough anyway."""
@@ -114,6 +132,7 @@ def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
             str(clip),
         ],
         _PROBE_TIMEOUT_S,
+        env = env,
     )
     if result.returncode != 0:
         return None
@@ -133,8 +152,7 @@ def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
         try:
             end = max(end, float(packet.get("pts_time")) + span)
         except (TypeError, ValueError):
-            # Annex B carries no timestamps, only durations: summing is the only
-            # reading available for a raw stream.
+            # Annex B has no timestamps, only durations, so summing is the only option for a raw stream.
             continue
     return (end or total) or None
 
@@ -173,11 +191,7 @@ def _filter_chain(
     oversized: bool,
     sampled_fps: Optional[float] = None,
 ) -> str:
-    """Tail pad, then rate cap, then scale, each only when needed. Order matters:
-    the cap shares the blind spot the pad covers (`fps=4` on a 0.1s clip also emits
-    nothing, leaving tpad no frame to clone), the cap only goes downwards since
-    `fps` DUPLICATES when asked for more than the source has, and scale is skipped
-    inside the budget where it would UPSCALE."""
+    """Pad, then rate cap, then scale; order matters since the cap also emits nothing on tiny clips, leaving tpad no frame; cap only goes down."""
     ceiling = _rate_ceiling(sampled_fps)
     chain = []
     if duration is not None and 0 < duration < MIN_SAMPLED_SECONDS:
@@ -194,29 +208,31 @@ def shrink_video_for_llama(
     max_bytes: int,
     max_pixels: int = MAX_FRAME_PIXELS,
     sampled_fps: Optional[float] = None,
+    ffmpeg_dir: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
 ) -> str:
     """Make a clip cheap and safe for llama-server to sample, as bare base64.
 
     ``sampled_fps`` raises the rate ceiling. Keeps only video and the timing of every
     real frame. Missing tools, failures and an over-``max_bytes`` result pass through.
     """
-    ffmpeg = shutil.which("ffmpeg")
-    ffprobe = shutil.which("ffprobe")
-    if not ffmpeg or not ffprobe:
-        return video_b64
+    from utils.media_playlist import refuse_playlist
+
     try:
         raw = base64.b64decode(video_b64)
     except (binascii.Error, ValueError):
         return video_b64
-    from utils.media_playlist import refuse_playlist
-
-    # `-protocol_whitelist file` still lets a playlist read local files: refuse one outright.
+    # Before the tool check: without ffmpeg the clip still reaches llama-server's own FFmpeg.
     refuse_playlist(raw)
+    tools = video_tools(ffmpeg_dir)
+    if tools is None:
+        return video_b64
+    ffmpeg, ffprobe = tools
     try:
         with tempfile.TemporaryDirectory(prefix = "unsloth-video-") as tmp:
             source = Path(tmp) / "clip"
             source.write_bytes(raw)
-            area, rate, duration = _frame_geometry(ffprobe, source)
+            area, rate, duration = _frame_geometry(ffprobe, source, env = env)
             if area is None:
                 return video_b64
             oversized = area > max_pixels
@@ -247,8 +263,7 @@ def shrink_video_for_llama(
                     _filter_chain(max_pixels, rate, duration, oversized, sampled_fps),
                     "-c:v",
                     "mpeg4",
-                    # Widely available, but outgrows a low-bitrate source: -fs
-                    # bounds at the upload cap, not near the original.
+                    # mpeg4 is widely supported but can outgrow low-bitrate sources; -fs caps output at the upload limit.
                     "-q:v",
                     "5",
                     "-fs",
@@ -258,6 +273,7 @@ def shrink_video_for_llama(
                     str(shrunk),
                 ],
                 _SHRINK_TIMEOUT_S,
+                env = env,
             )
             if result.returncode != 0 or not shrunk.is_file() or shrunk.stat().st_size == 0:
                 logger.warning(

@@ -12,6 +12,7 @@ the load peaked at 4.6 GiB. CPU-only; loaded sizes and the torchao check are stu
 from __future__ import annotations
 
 import json
+import sys
 import types
 
 import pytest
@@ -59,6 +60,9 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mp, "current_device_name", lambda: "NVIDIA L4", raising = False
     )  # the planner's card
+    # Video keys read the card per device; without this a host with a real GPU records under None (stubbed torch)
+    # and reads under its own card name.
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
     return path
 
 
@@ -229,7 +233,14 @@ def test_request_guard_of_an_unseeded_family_reads_its_learned_peak(klein_pipe):
 # ---------------------------------------------------------------------------------------------------- video
 
 
+def _pin_device_name(monkeypatch):
+    """The fake torch these tests install has no get_device_name, so the record would key on None while the lookup,
+    on real torch, keys on the visible card's name: pin both."""
+    monkeypatch.setattr(mp, "device_name", lambda device: "NVIDIA L4")
+
+
 def test_video_request_peaks_persist_across_processes(store, monkeypatch):
+    _pin_device_name(monkeypatch)
     monkeypatch.setattr(dm, "stream_window_pad_mib", lambda pipe: 0)
     monkeypatch.setattr(vsr, "_PEAKS", {})
     key = vsr.calibration_key("wan2.2-ti2v-5b", "Wan-AI/x", "group", "cuda:0", speed_mode = "default")
@@ -247,7 +258,11 @@ def test_video_request_peaks_persist_across_processes(store, monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "torch", _Torch)
     assert vsr.record_request_peak(types.SimpleNamespace(transformer = module)) == 3000
     monkeypatch.undo()
+    _pin_device_name(monkeypatch)
     monkeypatch.setenv(mp.LEARNED_PEAKS_FILE_ENV, str(store))
+    monkeypatch.setattr(
+        mp, "device_name", lambda dev: "NVIDIA L4"
+    )  # undo() dropped the fixture's card
     monkeypatch.setattr(vsr, "_PEAKS", {})  # a new process
     mp._cache.update(path = None, mtime = None, data = None)
     assert vsr.measured_extra_mib(key, work) == 3000
@@ -1322,7 +1337,11 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None" in src
+    at = src.index("pipe._unsloth_phase_seeds = (")
+    window = " ".join(src[at : at + 300].split())  # the formatter may wrap the expression
+    assert (
+        "_calibrated_activation(fam, target, unpriced_references_ok = True) is not None" in window
+    )
 
 
 def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
@@ -1355,6 +1374,77 @@ def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
     assert dm._apply_group_offload(pipe, "cpu", None) is False
     assert unwound and not getattr(dit, "_fake_hooked", False)
     assert dm._is_oom(getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR))
+
+
+def test_the_setup_oom_retry_frees_what_the_failed_setup_allocated(monkeypatch):
+    """The failed setup's traceback holds its frames, so the stored failure is only type + message: a 4 MiB
+    allocation made before the OOM is gone by the time the retry installs again, and after it."""
+    import weakref
+
+    torch = pytest.importorskip("torch")
+    scratch_refs = []
+    alive_at_retry = []
+
+    def installer(module, **kwargs):
+        if not scratch_refs:
+            scratch = torch.empty(1 << 20, dtype = torch.float32)  # 4 MiB held by the failing frame
+            scratch_refs.append(weakref.ref(scratch))
+            raise torch.OutOfMemoryError("CUDA out of memory: injected group setup failure")
+        alive_at_retry.append(scratch_refs[0]() is not None)
+
+    hooks = types.ModuleType("diffusers.hooks")
+    hooks.apply_group_offloading = installer
+    hooks.group_offloading = types.SimpleNamespace(_is_torchao_tensor = lambda _: False)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+    monkeypatch.setattr(dm, "install_group_offload_buffer_restore", lambda: None)
+    monkeypatch.setattr(dm, "install_group_offload_hooks_eager", lambda: None)
+    monkeypatch.setattr(dm, "_has_offload_groups", lambda module: False)
+    monkeypatch.setattr(dm, "_torchao_group_offload_kwargs", lambda module, kwargs, pinned: kwargs)
+    monkeypatch.setattr(dm, "keep_cpu_weights_on_offload", lambda pipe, logger: 0)
+    dit = torch.nn.Linear(2, 2)
+    pipe = types.SimpleNamespace(
+        transformer = dit,
+        components = {"transformer": dit},
+        enable_model_cpu_offload = lambda **kwargs: None,
+    )
+    plan = dm.MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = dm.OFFLOAD_GROUP,
+        vae_tiling = False,
+        vae_slicing = False,
+        device_memory = _memory(16000, 16000),
+        estimates = {},
+        reasons = (),
+        stream_text_encoders = True,
+        stream_transformer = True,
+    )
+    policy, _ = dm.apply_memory_plan(pipe, plan, device = "cpu")
+    assert policy == dm.OFFLOAD_GROUP and dm.applied_plan(pipe, plan).estimates["setup_oom_retry"]
+    assert alive_at_retry == [False]
+    assert scratch_refs[0]() is None
+    assert (
+        getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR, None) is None
+    )  # cleared once the retry took over
+
+
+def test_a_stored_setup_failure_keeps_its_kind_but_not_its_traceback():
+    def nested():
+        try:
+            raise _OOM("CUDA out of memory")
+        except _OOM as oom:
+            raise RuntimeError("compile failed") from oom
+
+    pipe = types.SimpleNamespace()
+    try:
+        nested()
+    except RuntimeError as exc:
+        dm._set_group_offload_failure(pipe, exc)
+    stored = getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR)
+    assert dm._is_oom(stored)  # the OOM in the cause chain still classifies
+    assert stored.__traceback__ is None and stored.__cause__ is None and stored.__context__ is None
+    assert str(stored) == "RuntimeError: compile failed" and stored.type_name == "RuntimeError"
+    dm._set_group_offload_failure(pipe, ValueError("no block list"))
+    assert not dm._is_oom(getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR))
 
 
 def test_video_window_stays_open_until_the_high_water_mark_is_read(store, monkeypatch):
@@ -1516,6 +1606,7 @@ def test_compile_fallback_during_the_render_records_nothing(store, monkeypatch):
 
 
 def test_failed_capture_video_peak_never_reaches_the_keyed_or_persisted_peaks(store, monkeypatch):
+    _pin_device_name(monkeypatch)
     monkeypatch.setattr(dm, "stream_window_pad_mib", lambda pipe: 0)
     monkeypatch.setattr(vsr, "_PEAKS", {})
     key = vsr.calibration_key("wan2.2-ti2v-5b", "Wan-AI/x", "group", "cuda:0", speed_mode = "default")
@@ -1743,7 +1834,9 @@ def test_cfg_off_keys_are_wired_into_the_load_and_guard():
     src = "".join(src.split())  # whitespace-free: the formatter may wrap these lines
     for needle in (
         'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))',
-        "cfg = guard_cfg,",
+        # the guard's CFG value reaches the pricer through the split-aware wrapper
+        "guard_cfg, extra_mib = split_aware_request_extra(state.pipe, guard_cfg, workflow, lambda cfg:",
+        "cfg = cfg, unpriced_references = guard_unpriced_refs,",
         'plan.estimates.get("measured_learned_cfg_off", False),',
         "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)",
     ):
@@ -1859,6 +1952,7 @@ def test_resident_text_encoders_add_their_streaming_window(monkeypatch):
 
 
 def test_video_peaks_are_persisted_on_the_streamed_baseline(store, monkeypatch):
+    _pin_device_name(monkeypatch)
     monkeypatch.setattr(vsr, "_PEAKS", {})
     key = vsr.calibration_key("wan2.2-ti2v-5b", "Wan-AI/x", "group", "cuda:0", speed_mode = "default")
     work = 1280 * 704 * 49
@@ -1950,8 +2044,10 @@ def test_attention_scaling_unknown_render_is_not_recorded(store, monkeypatch):
     )
     monkeypatch.setattr(diffusion, "_conditioning_cache_hits", lambda pipe: 0)
     answers = {"math": False, "fused": False}
-    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target: answers["math"])
-    monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", lambda target: answers["fused"])
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target, *_: answers["math"])
+    monkeypatch.setattr(
+        diffusion, "sdpa_subquadratic_confirmed", lambda target, *_: answers["fused"]
+    )
     target = types.SimpleNamespace(device = "cuda:0")
     assert not diffusion._attention_scaling_known(target, "native")  # the probe answered nothing
     assert not diffusion._attention_scaling_known(None, None)

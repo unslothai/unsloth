@@ -1,15 +1,15 @@
 {
   "version": 1,
-  "comment": "Reviewed NVFP4 accuracy-gate verdicts, one entry per (family, base_repo, policy_id, policy_version, checkpoint_sha256). One entry says that ONE published checkpoint rendered the gate's prompt/resolution pairs within the recorded thresholds of its dense reference, on the backend, GPU and toolchain the entry names. Read by core/inference/diffusion_nvfp4_gate.py, which re-derives the verdict rather than trusting it as stored. Entries are measured out of band and committed after review; nothing writes this file at run time. Empty means no checkpoint has been gated yet, which keeps nvfp4 out of the auto ladder for every family.",
+  "comment": "Reviewed NVFP4 accuracy-gate verdicts, one entry per (family, base_repo, policy_id, policy_version, checkpoint_sha256). One entry says that ONE published checkpoint rendered the gate's prompt/resolution pairs within the recorded thresholds of its dense reference, on the backend, GPU and toolchain the entry names. Read by core/inference/diffusion_nvfp4_gate.py, which re-derives the verdict rather than trusting it as stored. Entries are measured out of band and committed after review; nothing writes this file at run time. Empty means no checkpoint has been gated yet, which keeps nvfp4 out of the auto ladder for every family. versions.flashinfer is the version a record was measured on; versions.flashinfer_bit_identical lists versions whose NVFP4 quantize + GEMM outputs were shown bit-identical on the gated checkpoints' own layers (0.6.6 vs 0.6.18.post1, B200: 144 of 144 layer / M cases, 36 on each of the four gated checkpoints). On any other installed flashinfer, or one whose version cannot be read, auto does not take a gated nvfp4 head, and an explicit nvfp4 load that moves layers onto flashinfer logs one warning.",
   "records": [
     {
       "family": "z-image",
       "base_repo": "Tongyi-MAI/Z-Image-Turbo",
       "policy_id": "zimg_rg76_v1",
       "policy_version": 1,
-      "checkpoint_sha256": "2453bc13d7abe5b4a49721f4a9d38a9aa16dee20085a9267f8a35867c7d9cc33",
+      "checkpoint_sha256": "0762fa96e1048c8c7732dae0a168f5df952808f76ffa5621a6dc2d27007e453c",
       "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
-      "filename": "Z-Image-Turbo-NVFP4.pt",
+      "filename": "Z-Image-Turbo-NVFP4.safetensors",
       "gptq": true,
       "all_pass": true,
       "num_pairs": 24,
@@ -44,7 +44,10 @@
         "torch": "2.12.1+cu130",
         "torchao": "0.18.0",
         "diffusers": "0.41.0.dev0",
-        "flashinfer": "0.6.18.post1"
+        "flashinfer": "0.6.18.post1",
+        "flashinfer_bit_identical": [
+         "0.6.6"
+        ]
       },
       "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
       "run_date": "2026-09-24",
@@ -84,9 +87,9 @@
       "base_repo": "Qwen/Qwen-Image-2.1",
       "policy_id": "qwen21_r020_v1",
       "policy_version": 1,
-      "checkpoint_sha256": "37af1338c21a0c20dd0518f1908f6bc5828740c1cd12c50718552a31d753c24d",
+      "checkpoint_sha256": "6656d1a0c442692f51e1b0ff81e23a0c6f3f693911e13a44035ab100b80f54c0",
       "repo_id": "unsloth/Qwen-Image-2.1-NVFP4",
-      "filename": "Qwen-Image-2.1-NVFP4.pt",
+      "filename": "Qwen-Image-2.1-NVFP4.safetensors",
       "gptq": true,
       "all_pass": true,
       "num_pairs": 28,
@@ -121,7 +124,10 @@
         "torch": "2.12.1+cu130",
         "torchao": "0.18.0",
         "diffusers": "0.41.0.dev0",
-        "flashinfer": "0.6.18.post1"
+        "flashinfer": "0.6.18.post1",
+        "flashinfer_bit_identical": [
+         "0.6.6"
+        ]
       },
       "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
       "run_date": "2026-09-24",
@@ -161,9 +167,9 @@
       "base_repo": "black-forest-labs/FLUX.1-schnell",
       "policy_id": "flux_r420_v1",
       "policy_version": 1,
-      "checkpoint_sha256": "d4e4c5e353374e022685f2e48dc7b38d054e36f30809dd8eb77a22a0a5d67006",
+      "checkpoint_sha256": "b8d92016e8a6b6274c6fb5244edf47fc9b646adc0535aa19f477a5396e72e7bc",
       "repo_id": "unsloth/FLUX.1-schnell-NVFP4",
-      "filename": "FLUX.1-schnell-NVFP4.pt",
+      "filename": "FLUX.1-schnell-NVFP4.safetensors",
       "gptq": true,
       "all_pass": true,
       "num_pairs": 24,
@@ -198,7 +204,10 @@
         "torch": "2.12.1+cu130",
         "torchao": "0.18.0",
         "diffusers": "0.41.0.dev0",
-        "flashinfer": "0.6.18.post1"
+        "flashinfer": "0.6.18.post1",
+        "flashinfer_bit_identical": [
+         "0.6.6"
+        ]
       },
       "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
       "run_date": "2026-09-24",
@@ -238,9 +247,9 @@
       "base_repo": "Qwen/Qwen-Image-2512",
       "policy_id": "qwen2512_m120_attn8_v1",
       "policy_version": 1,
-      "checkpoint_sha256": "665e8f9a12d31366cfd4ac10a93c751a32219ea2386107b55a43b0cde5955607",
+      "checkpoint_sha256": "0d3720a478323ec5592a56d7e27af75bac7d3f115beeffceb3488d1ca9755ec3",
       "repo_id": "unsloth/Qwen-Image-2512-NVFP4",
-      "filename": "Qwen-Image-2512-NVFP4.pt",
+      "filename": "Qwen-Image-2512-NVFP4.safetensors",
       "gptq": true,
       "all_pass": true,
       "num_pairs": 28,
@@ -275,7 +284,10 @@
         "torch": "2.12.1+cu130",
         "torchao": "0.18.0",
         "diffusers": "0.41.0.dev0",
-        "flashinfer": "0.6.18.post1"
+        "flashinfer": "0.6.18.post1",
+        "flashinfer_bit_identical": [
+         "0.6.6"
+        ]
       },
       "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
       "run_date": "2026-09-24",

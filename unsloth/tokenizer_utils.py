@@ -14,6 +14,7 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
+import json
 import shutil
 import tempfile
 import weakref
@@ -64,9 +65,8 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# gemma-4 base mirrors do not prepend <bos> (post_processor.single = [A], google's is [<bos>, A]).
-# Not keyed on add_bos_token (google omits it on E4B/31B/26B-A4B and still prepends) nor on repo
-# name. -it is skipped: its chat_template emits BOS. unslothai/unsloth#7903
+# gemma-4 base mirrors do not prepend <bos>. Not keyed on add_bos_token or repo name; -it is
+# skipped since its chat_template emits BOS. unslothai/unsloth#7903
 _GEMMA4_INSTRUCT_EOS = "<turn|>"
 
 # Anchored: a future gemma-4.5 / gemma_45 has its own BOS policy, and DiffusionGemma4... is not gemma 4.
@@ -302,27 +302,56 @@ def _resolve_tokenizer_json(
     tokenizer,
     cache_dir = None,
     revision = None,
+    filename = "tokenizer.json",
+    allow_default_cache = True,
 ):
     name = getattr(tokenizer, "name_or_path", None)
     if not isinstance(name, str) or not name:
         return None
     if os.path.isdir(name):
-        path = os.path.join(name, "tokenizer.json")
+        path = os.path.join(name, filename)
         return path if os.path.isfile(path) else None
     try:
         from huggingface_hub import try_to_load_from_cache
     except Exception:
         return None
-    for _cache_dir in dict.fromkeys((cache_dir, None)):
+    cache_dirs = (cache_dir, None) if allow_default_cache else (cache_dir,)
+    for _cache_dir in dict.fromkeys(cache_dirs):
         try:
-            path = try_to_load_from_cache(
-                name, "tokenizer.json", cache_dir = _cache_dir, revision = revision
-            )
+            path = try_to_load_from_cache(name, filename, cache_dir = _cache_dir, revision = revision)
         except Exception:
             path = None
         if isinstance(path, str) and os.path.isfile(path):
             return path
     return None
+
+
+def _inferred_tokenizer_max_length(
+    tokenizer,
+    cache_dir = None,
+    revision = None,
+):
+    backend = getattr(tokenizer, "_tokenizer", None)
+    truncation = getattr(backend, "truncation", None)
+    padding = getattr(backend, "padding", None)
+    limit = truncation["max_length"] if truncation else padding.get("length") if padding else None
+    if limit is None or getattr(tokenizer, "init_kwargs", {}).get("max_length") != limit:
+        return None
+    path = _resolve_tokenizer_json(
+        tokenizer,
+        cache_dir = cache_dir,
+        revision = revision,
+        filename = "tokenizer_config.json",
+        allow_default_cache = False,
+    )
+    if path is None:
+        return None
+    try:
+        with open(path, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+        return limit if isinstance(config, dict) and "max_length" not in config else None
+    except Exception:
+        return None
 
 
 def _repair_one_tokenizer_backend(
@@ -382,6 +411,13 @@ def _repair_tokenizer_backend_from_json(
     cache_dir = None,
     revision = None,
 ):
+    for obj in _tokenizer_objects(tokenizer):
+        backend = getattr(obj, "_tokenizer", None)
+        if backend is None or hasattr(obj, "_unsloth_loaded_runtime_max_length"):
+            continue
+        obj._unsloth_loaded_runtime_max_length = _inferred_tokenizer_max_length(
+            obj, cache_dir = cache_dir, revision = revision
+        )
     if tokenizer is None or os.environ.get("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "0") == "1":
         return tokenizer
     for obj in _tokenizer_objects(tokenizer):
@@ -500,6 +536,9 @@ def _apply_post_load_tokenizer_fixes(
     tokenizer = _repair_tokenizer_backend_from_json(
         tokenizer, cache_dir = cache_dir, revision = revision
     )
+    from .models.loader_utils import _mark_loaded_revision
+
+    _mark_loaded_revision(tokenizer, revision, cache_dir = cache_dir, load_kwargs = {})
     tokenizer = _fix_llava_num_additional_image_tokens(tokenizer, config = config)
     if not fix_tokenizer:
         return tokenizer
@@ -1004,21 +1043,40 @@ def _load_correct_tokenizer(
         cache_dir = None
     # else: keep a caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir instead of risking an in-process Hub/Xet transfer.
 
+    _repair_kwargs = dict(cache_dir = cache_dir, revision = revision)
+    _load_kwargs = dict(
+        model_max_length = model_max_length,
+        padding_side = padding_side,
+        token = token,
+        trust_remote_code = trust_remote_code,
+    )
+    _name_lower = tokenizer_name.lower()
+    # These return the fast tokenizer unread by the slow one, so skip the slow load; the post-load fixes repair the fast backend.
+    if (
+        not fix_tokenizer
+        or _name_lower in IGNORED_TOKENIZER_NAMES
+        or "mistral" in _name_lower
+        or "phi-4" in _name_lower
+    ):
+        fast_tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+        )
+        return _apply_post_load_tokenizer_fixes(
+            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+        )
+
     # Try the slow tokenizer first and fall back to fast only, mainly to solve Deepseek models with no tokenizer.model file.
     slow_tokenizer = None
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = model_max_length,
-            padding_side = padding_side,
-            token = token,
-            trust_remote_code = trust_remote_code,
             # use_fast = False alone is not enough; see twitter.com/danielhanchen/status/1789659394302718373
             use_fast = False,
             legacy = False,
             from_slow = True,
             cache_dir = cache_dir,
             revision = revision,
+            **_load_kwargs,
         )
     except:
         slow_tokenizer = None
@@ -1026,35 +1084,14 @@ def _load_correct_tokenizer(
         slow_tokenizer = None
 
     fast_tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name,
-        model_max_length = model_max_length,
-        padding_side = padding_side,
-        token = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
-        revision = revision,
+        tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
     )
     # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
-    _repair_kwargs = dict(cache_dir = cache_dir, revision = revision)
     if slow_tokenizer is not None:
         _repair_tokenizer_backend_from_json(slow_tokenizer, **_repair_kwargs)
     _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
 
-    if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
-        return _apply_post_load_tokenizer_fixes(
-            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
-        )
-    # Ignore Mistral ones - they're a bit weird to handle!
-    elif "mistral" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(
-            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
-        )
-    # Ignore Phi-4 ones as well
-    elif "phi-4" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(
-            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
-        )
-    elif slow_tokenizer is not None:
+    if slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
         if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
@@ -1072,7 +1109,6 @@ def _load_correct_tokenizer(
                 config,
                 **_repair_kwargs,
             )
-        pass
     else:
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
@@ -1089,6 +1125,30 @@ def _fix_pad_token(tokenizer):
         return tokenizer
     fix_pad_token(tokenizer, allow_add = False)
     return tokenizer
+
+
+def _sync_pad_token_id(model, tokenizer):
+    """Point config / generation_config pad_token_id at the tokenizer's pad when it has an embedding row (an older
+    unsloth_zoo raised after adding a pad, leaving the config on an id the fallback tokenizer lacks)."""
+    if model is None or tokenizer is None:
+        return model
+    inner = getattr(tokenizer, "tokenizer", None) or tokenizer
+    pad_id = getattr(inner, "pad_token_id", None)
+    if type(pad_id) is not int or pad_id < 0:
+        return model
+    try:
+        rows = model.get_input_embeddings().weight.shape[0]
+    except Exception:
+        return model
+    if pad_id >= rows:
+        return model
+    config = getattr(model, "config", None)
+    if config is not None and getattr(config, "pad_token_id", None) != pad_id:
+        config.update({"pad_token_id": pad_id})
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is not None and getattr(generation_config, "pad_token_id", None) != pad_id:
+        generation_config.update(pad_token_id = pad_id)
+    return model
 
 
 def load_correct_tokenizer(
@@ -1351,8 +1411,8 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     dash_r = "-" if end["dash_right"] else ""
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
-    # Case 1: the template ends with a single trailing {{ expr }} that is the generation prefix, so wrap it in an {% if add_generation_prompt %} block.
-    # Surrounding whitespace allowed (ERNIE-4.5: `{%- endfor %}\n {{- "..." }}`); it moves inside the block.
+    # Case 1: a single trailing {{ expr }} is the generation prefix; wrap it in an agp block.
+    # Surrounding whitespace allowed (ERNIE-4.5).
     trailing = after_endfor.strip()
     if (
         "{%" + dash_l + " if" not in after_endfor

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Follow-ups to the STT HTTP download work.
-
-Pinning downloads to a commit stopped huggingface_hub writing refs/main, and
-reserving the repository made a cancelled or wedged run everyone else's problem.
-These cover what that changed.
-"""
+"""Pinned STT downloads write no refs/main, and a cancelled run must not hold the shared repository."""
 
 import subprocess
 import sys
@@ -51,11 +46,8 @@ def _write_snapshot(hub_cache: Path, repo: str, revision: str, filename: str) ->
 
 
 def test_a_lost_revision_record_still_finds_the_downloaded_model(tmp_path, monkeypatch):
-    """A pinned download writes no refs/main, so the record is the only pointer.
-
-    Its write swallows OSError, so without a snapshot fallback an unwritable
-    profile would re-download the model on every launch.
-    """
+    """Pinned download writes no refs/main and its record write can fail, so the snapshot is the
+    fallback."""
     revision = "a" * 40
     repo = ggml_mod.GGML_STT_REPOS["tiny"]
     _write_snapshot(tmp_path, repo, revision, ggml_mod.GGML_STT_MODELS["tiny"])
@@ -93,15 +85,9 @@ def test_fallback_revisions_prefers_refs_main_and_skips_junk(tmp_path):
 def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
     module, state_factory, model_id, monkeypatch, tmp_path
 ):
-    """cancel() has no child to stop while metadata resolves.
-
-    Claiming the repository would lock out the Model Hub, and preparing the
-    cache would purge partials, both after the user was told it stopped.
-    """
+    """A cancel during metadata resolution must not claim the repository or purge the cache."""
     claims, prepares, spawns = [], [], []
-    # Stub the Hub metadata call. Unstubbed it reaches huggingface.co, and when that
-    # fails (offline CI) the exception lands in _run's handler before the guard under
-    # test, so every assertion below passes without the guard existing at all.
+    # Stub the Hub call: offline, it fails in _run's handler before the guard, passing vacuously.
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", lambda *a, **k: _FakeMeta())
@@ -121,7 +107,7 @@ def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
     )
 
     state = state_factory()
-    state._cancelled = True  # as cancel() leaves it during metadata
+    state._cancelled = True
     state._run(model_id, None, hub_cache = tmp_path)
 
     assert claims == [], "a cancelled run still reserved the repository"
@@ -396,11 +382,7 @@ def test_status_never_stats_the_cache_under_the_download_lock(state_factory, mod
 def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
     state_factory, model_id, restart, tmp_path
 ):
-    """status() reports bytes_total from under the lock and probes the cache after.
-
-    A run that starts in that gap replaces the fields the probe reads, so reading
-    them there paired one run's total with another's bytes, or blanked it.
-    """
+    """status() reads bytes_total under the lock: a run starting before the cache probe would mix totals."""
     state = state_factory()
     state._model_id = model_id
     state._repo = "org/repo"
@@ -415,7 +397,7 @@ def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
     real = state._downloaded_bytes
 
     def probe_after_a_restart(*args, **kwargs):
-        restart(state)  # the next run lands between the lock release and the probe
+        restart(state)
         return real(*args, **kwargs)
 
     state._downloaded_bytes = probe_after_a_restart

@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate text-encoder / VAE files (ComfyUI ``models/text_encoders``, ``models/vae``) beside a single-file DiT.
-
-Each file is classified from its header, assigned to the base pipeline slot whose class it fits, renamed under a
-rule that loads strictly, and built from the base repo's config (which still supplies configs and tokenizers).
-fp8, nvfp4 and mxfp8 dequantize, int8 ConvRot stays int8, every other ComfyUI quant format is refused by name.
-"""
+"""ComfyUI text-encoder and VAE files beside a single-file DiT; fp8, nvfp4 and mxfp8 dequantize,
+int8 ConvRot stays int8, other ComfyUI quant formats are refused by name"""
 
 from __future__ import annotations
 
@@ -44,6 +40,7 @@ TE_KIND_CLASSES: dict[str, frozenset] = {
     "qwen3": frozenset({"Qwen3Model", "Qwen3ForCausalLM"}),
     "qwen2_5_vl": frozenset({"Qwen2_5_VLForConditionalGeneration", "Qwen2_5_VLModel"}),
     "qwen3_vl": frozenset({"Qwen3VLForConditionalGeneration", "Qwen3VLModel"}),
+    "qwen3_5": frozenset({"Qwen3_5Model", "Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM"}),
     "mistral3": frozenset({"Mistral3ForConditionalGeneration", "Mistral3Model"}),
     "llama": frozenset({"LlamaForCausalLM", "LlamaModel"}),
     "gemma2": frozenset({"Gemma2Model", "Gemma2ForCausalLM"}),
@@ -98,7 +95,9 @@ class ComponentFileRef:
 
     @property
     def name(self) -> str:
-        return os.path.basename(self.local_path or self.filename or self.spec)
+        if self.local_path:
+            return re.split(r"[\\/]", self.spec)[-1] or os.path.basename(self.local_path)
+        return os.path.basename(self.filename or self.spec)
 
     @property
     def is_hub(self) -> bool:
@@ -140,10 +139,7 @@ def parse_component_file(
     trusted_repo: Optional[Callable[[str], bool]] = None,
     what: str = "text_encoder_file",
 ) -> ComponentFileRef:
-    """Validate one spec without touching the network. Local: an existing ``.safetensors`` file (a relative or
-    bare name resolves against a local ``model_path`` directory, so a ComfyUI ``models/`` tree works with
-    ``../text_encoders/x.safetensors``). Hub: ``owner/repo/path.safetensors`` held to ``trusted_repo``, the
-    same bar a single-file DiT clears."""
+    """Network-free check: local files resolve against model_path; Hub specs must be in trusted_repo."""
     spec = (spec or "").strip()
     if not spec:
         raise ComponentFileError(f"{what} is empty")
@@ -251,6 +247,9 @@ def classify_text_encoder(
     lm_prefix = "model.language_model." if has("model.language_model.layers.") else "model."
     if not has(lm_prefix + "layers."):
         return None
+    if has(lm_prefix + "layers.0.linear_attn."):
+        # Qwen3.5's layer 0 is gated-delta (no q_norm there), so the checks below would read it as Qwen2.5-VL.
+        return "qwen3_5"
     q_norm = has(lm_prefix + "layers.0.self_attn.q_norm.")
     if has(lm_prefix + "layers.0.pre_feedforward_layernorm."):
         return (
@@ -355,10 +354,7 @@ def match_keys(
     tied_missing: Iterable[str] = (),
     rules: Sequence[tuple[str, Callable[[str], Optional[str]]]] = KEY_RULES,
 ) -> KeyMapping:
-    """The first rename rule under which ``file_shapes`` loads STRICTLY into ``expected``: every expected
-    tensor present with the same shape, nothing extra except the known-dead tensors. ``tied_missing``
-    names model tensors the class re-ties after loading (an ``lm_head`` tied to the embedding).
-    Raises ``ComponentFileError`` with the closest rule's diagnostics."""
+    """First rename rule that loads the file strictly; tied_missing names tensors re-tied after loading."""
     tied = set(tied_missing)
     best: Optional[tuple[int, str, list, list, list]] = None
     for name, rule in rules:
@@ -664,6 +660,10 @@ def build_text_encoder(
         for key, tensor in list(state.items()):
             if key.endswith(".bias") and tensor.is_floating_point():
                 state[key] = tensor.to(dtype)
+    from .prequant_safetensors import _unviewed
+
+    # Views of the file mapping would keep it alive through the streaming pin's ``.data =`` re-point.
+    state = {key: _unviewed(tensor) for key, tensor in state.items()}
     missing, unexpected = encoder.load_state_dict(state, strict = False, assign = True)
     bad_missing = [k for k in missing if k not in tied and not _is_dead(k, _DEAD_MISSING)]
     if bad_missing or unexpected:
@@ -1204,6 +1204,7 @@ def load_override_modules(
     missing = [c for c in overrides.files if c not in overrides.modules]
     if not missing:
         return dict(overrides.modules)
+    from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
     from .diffusion_text_encoder_trim import family_trims_lm_head
 
     for component in missing:
@@ -1217,8 +1218,10 @@ def load_override_modules(
             cache_dir = cache_dir,
         )
         if component == COMPONENT_VAE:
+            # MOSS-Image decodes in fp32: a bf16 build first would round its weights.
+            vae_dtype = None if family == MOSS_IMAGE_FAMILY_NAME else dtype
             overrides.modules[component] = build_vae(
-                path, vae_cls = cls, config = config, dtype = dtype, logger = logger
+                path, vae_cls = cls, config = config, dtype = vae_dtype, logger = logger
             )
             continue
         trim = component == "text_encoder" and family_trims_lm_head(family)

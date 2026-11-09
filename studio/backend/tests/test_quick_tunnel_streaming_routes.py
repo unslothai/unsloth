@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep first-party event streams usable through Cloudflare Quick Tunnels.
-
-Measured on three fresh quick tunnels, one generator on both verbs so only the method
-differs: GET delivers its first byte when the stream closes (~12s), POST in under 300ms,
-and no response header recovers GET. Checks registration rather than source text, since a
-route that stopped resolving or lost a dependency would still spell "post" in the file.
-"""
+"""Event streams use POST: through Quick Tunnels GET delivers no first byte until the stream closes."""
 
 import importlib
 

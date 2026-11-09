@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stop durable runs whose owner asked for them to end once no tab is watching.
-
-A durable chat run or Deep Research run outlives its tab by design (#10365), which is what most
-people want from a long research task. Some want the opposite: closing the tab should stop the
-run, as the browser-owned stream always did. The client says so per run (``stopWhenUnattended``
-on admission), and this watchdog cancels such a run once ``run_subscribers`` has heard from no
-follower for ``_GRACE_S``.
-
-Attendance, not the closing request: a phone that kills a background tab sends nothing at all.
-The grace is what lets a reload, a follower reconnecting after a network blip (its backoff tops
-out at 8s), or a second tab pick the run up before it is stopped. A run nobody ever attaches to
-counts its grace from when it was watched, so a tab that closes between admission and its first
-event stream still stops the run.
-
-In memory, like ``run_subscribers``: a chat run does not survive a restart anyway, and a Deep
-Research run is re-armed from its stored config at startup and whenever a follower reattaches.
-"""
+"""Ends stopWhenUnattended runs once no follower for _GRACE_S; attendance, not a close request, counts"""
 
 from __future__ import annotations
 

@@ -33,3 +33,25 @@ def test_chat_audio_attachment_playlist_does_not_read_a_host_file(host_wav):
         inference_route._decode_audio_mono_with_av(_playlist("host.wav"))
     samples, rate = inference_route._decode_audio_mono_with_av(_real_wav_bytes())
     assert rate == 8000 and len(samples) == 8000
+
+
+def test_chat_audio_fallback_never_follows_a_playlist(tmp_path, monkeypatch):
+    pytest.importorskip("librosa")
+    from utils.paths import ensure_dir, tmp_root
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    private = ensure_dir(tmp_root()) / "private-audio.wav"
+    private.write_bytes(_real_wav_bytes())
+    dash = (
+        b'<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" '
+        b'profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"><Period><AdaptationSet>'
+        + f"<Representation><BaseURL>{private}</BaseURL></Representation>".encode()
+        + b"</AdaptationSet></Period></MPD>\n"
+    )
+    from utils.media_playlist import PlaylistRefused
+
+    for payload in (_playlist(private.name), dash):
+        with pytest.raises(PlaylistRefused):
+            inference_route._decode_audio_mono(payload)
+    samples, rate = inference_route._decode_audio_mono(_real_wav_bytes())
+    assert len(samples) == rate

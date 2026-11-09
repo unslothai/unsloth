@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Cancel01Icon, Download04Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Search01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -109,7 +109,7 @@ function SegmenterDownloadNotice({
   return (
     <div
       data-testid="mask-segmenter-download"
-      className="flex flex-col gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
+      className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
     >
       {download.downloading ? (
         <>
@@ -168,11 +168,11 @@ function SegmenterDownloadNotice({
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 gap-1.5 self-start text-xs"
+              className="gap-1.5 self-start text-xs"
               disabled={busy}
               onClick={() => void start()}
             >
-              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download04Icon} className="size-3.5" />}
+              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download01Icon} className="size-3.5" />}
               {size ? `Download (${size})` : "Download"}
             </Button>
           ) : (
@@ -292,7 +292,7 @@ export function MaskFromTextPanel({
           type="button"
           size="sm"
           variant="secondary"
-          className="h-8 gap-1.5 text-xs"
+          className="gap-1.5 text-xs"
           disabled={!canRun}
           onClick={() => void run()}
         >

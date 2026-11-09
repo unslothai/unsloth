@@ -10,6 +10,15 @@ import pytest
 from core.rag import chunking, config, embeddings, ingestion, reembed, retrieval, store
 from storage import rag_db
 
+import sqlite3
+
+# Every test here writes vectors. Same gate as the rag_conn fixture (the macos-15 runner's sqlite3
+# cannot load extensions, so RAG is unavailable there and the product reports it).
+pytestmark = pytest.mark.skipif(
+    not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason = "sqlite-vec cannot be loaded by this Python's sqlite3",
+)
+
 OLD, NEW, NEWER = "org/old-embedder", "org/new-embedder", "org/newer-embedder"
 WIDTHS = {OLD: 8, NEW: 12, NEWER: 12}  # same width: NEWER's rewrite must remove NEW's rows
 
@@ -28,6 +37,7 @@ def models(rag_home, stub_embeddings, monkeypatch):
     monkeypatch.setattr(embeddings, "encode", encode)
     monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(reembed, "_jobs", {})
+    monkeypatch.setattr(reembed, "_checked", set(), raising = False)
     monkeypatch.setattr(reembed, "_RETIRE_JOIN_SECONDS", 0.2)
     current = lambda fresh = False: state["model"] if fresh else state.get("cached", state["model"])
     monkeypatch.setattr(config, "effective_embedding_model", current)
@@ -75,6 +85,166 @@ def test_stale_documents_regain_dense_search_under_the_same_ids(models, tmp_path
     with _connect() as c:
         hits = retrieval.retrieve_dense(c, scope, "delta echo foxtrot", k = 5, model_name = NEW)
     assert hits[0].chunk_id == chunks[1][1][0]
+
+
+def test_documents_the_same_model_wrote_through_another_backend_re_embed_on_search(
+    models, tmp_path, monkeypatch
+):
+    scope = store.kb_scope("K10")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    doc = _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    llama = _row(doc)[0]
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    assert reembed.stale_counts() == {"documents": 1, "archived": 0}
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = OLD)
+    assert reembed.status() is not None
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "completed"
+    assert _row(doc)[0] == embeddings.embedding_identity(OLD) != llama
+    with _connect() as c:
+        hits = retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = OLD)
+    assert hits[0].chunk_id == f"{doc}:0"
+
+
+def test_a_model_switch_leaves_re_embedding_to_the_user(models, tmp_path):
+    scope = store.kb_scope("K11")
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    models["model"] = NEW
+    with _connect() as c:
+        assert retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = NEW) == []
+    assert reembed.status() is None
+
+
+def test_documents_left_from_a_model_switch_keep_re_embedding_with_the_user(
+    models, tmp_path, monkeypatch
+):
+    other = "org/other-embedder"
+    monkeypatch.setitem(WIDTHS, other, WIDTHS[OLD])
+    scope = store.kb_scope("K12")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    (tmp_path / "b.txt").write_text("charlie delta", encoding = "utf-8")
+    ingestion.start_ingestion(
+        scope, None, None, "b.txt", str(tmp_path / "b.txt"), model_name = other, background = False
+    )
+    assert reembed.stale_counts() == {"documents": 2, "archived": 0}
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = OLD)
+    assert reembed.status() is None
+
+
+def test_a_runtime_fallback_to_llama_server_leaves_the_st_vectors_alone(
+    models, tmp_path, monkeypatch
+):
+    scope = store.kb_scope("K13")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    doc = _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    st = _row(doc)[0]
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = OLD)
+    assert reembed.status() is None and _row(doc)[0] == st
+
+
+def test_a_model_switch_stops_an_automatic_re_embed(models, tmp_path, monkeypatch):
+    scope = store.kb_scope("K14")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    healthy = _ingest(tmp_path, scope, "b.txt", "charlie delta")
+    encode = embeddings.encode
+
+    def switch_while_a_encodes(texts, model_name, **kw):
+        if texts == ["alpha bravo"]:
+            models["model"] = NEW
+        return encode(texts, model_name, **kw)
+
+    monkeypatch.setattr(embeddings, "encode", switch_while_a_encodes)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha", k = 1, model_name = OLD)
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "cancelled"
+    assert _row(healthy)[0] == embeddings.embedding_identity(OLD)
+    assert all(m != NEW for m, _ in models["encoded"])
+
+
+def test_a_fallback_during_an_automatic_re_embed_stops_it(models, tmp_path, monkeypatch):
+    scope = store.kb_scope("K15")
+    llama = {"on": True}
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: llama["on"])
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    llama["on"] = False
+    healthy = _ingest(tmp_path, scope, "b.txt", "charlie delta")
+    st = _row(healthy)[0]
+    encode = embeddings.encode
+
+    def fall_back_while_a_encodes(texts, model_name, **kw):
+        if texts == ["alpha bravo"]:
+            llama["on"] = True
+        return encode(texts, model_name, **kw)
+
+    monkeypatch.setattr(embeddings, "encode", fall_back_while_a_encodes)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha", k = 1, model_name = OLD)
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "cancelled"
+    assert _row(healthy)[0] == st
+
+
+def test_a_re_embed_click_during_an_automatic_job_follows_a_model_switch(
+    models, tmp_path, monkeypatch
+):
+    scope = store.kb_scope("K16")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    doc = _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    encode = embeddings.encode
+
+    def switch_and_click_while_a_encodes(texts, model_name, **kw):
+        if texts == ["alpha bravo"] and model_name == OLD:
+            models["model"] = NEW
+            reembed.start()
+        return encode(texts, model_name, **kw)
+
+    monkeypatch.setattr(embeddings, "encode", switch_and_click_while_a_encodes)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha", k = 1, model_name = OLD)
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "completed"
+    assert _row(doc)[0] == embeddings.embedding_identity(NEW)
+
+
+def test_an_automatic_job_leaves_a_document_another_model_finished_meanwhile(
+    models, tmp_path, monkeypatch
+):
+    other = "org/other-embedder"
+    monkeypatch.setitem(WIDTHS, other, WIDTHS[OLD])
+    scope = store.kb_scope("K17")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    (tmp_path / "b.txt").write_text("charlie delta", encoding = "utf-8")
+    encode = embeddings.encode
+    late = []
+
+    def finish_an_upload_while_a_encodes(texts, model_name, **kw):
+        if texts == ["alpha bravo"] and not late:
+            late.append(
+                ingestion.start_ingestion(
+                    scope, None, None, "b.txt", str(tmp_path / "b.txt"),
+                    model_name = other, background = False,
+                )[0]
+            )  # fmt: skip
+        return encode(texts, model_name, **kw)
+
+    monkeypatch.setattr(embeddings, "encode", finish_an_upload_while_a_encodes)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha", k = 1, model_name = OLD)
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "cancelled"
+    assert _row(late[0])[0] == embeddings.embedding_identity(other)
 
 
 def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_path, monkeypatch):
@@ -219,3 +389,54 @@ def test_a_swap_committed_mid_search_cannot_pass_an_old_space_score(models, tmp_
     with _connect() as c:
         hits = retrieval.retrieve_dense(c, scope, "text a", k = 5, model_name = NEWER)
     assert hits == []
+
+
+def test_a_many_chunk_document_clips_its_chunks_in_batched_counts(models, tmp_path, monkeypatch):
+    words = [f"w{i}" for i in range(1700)]
+    document_id = _ingest(tmp_path, store.kb_scope("K9"), "long.txt", " ".join(words))
+    _, chunks = _row(document_id)
+    assert len(chunks) > 2
+    calls = {"many": [], "single": 0}
+
+    def _counter(model_name = None):
+        def _count(text):
+            calls["single"] += 1
+            return len(text.split())
+
+        def _many(texts):
+            calls["many"].append(len(texts))
+            return [len(t.split()) for t in texts]
+
+        _count.many = _many
+        return _count
+
+    sizes = sorted(len(text.split()) for _, text in chunks)
+    limit = sizes[0]
+    assert sizes[0] < sizes[-1]
+    monkeypatch.setattr(embeddings, "token_counter", _counter)
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: limit)
+    word_count = lambda t: len(t.split())
+    expected = [embeddings.clip_to_limit(text, word_count, limit) for _, text in chunks]
+    assert any(cut for _, cut in expected) and not all(cut for _, cut in expected)
+    models["model"] = NEW
+    status = _run_job()
+    sent = [t for m, t in models["encoded"] if m == NEW]
+    assert sent == [[text for text, _ in expected]]
+    assert status["clipped_chunks"] == sum(cut for _, cut in expected)
+    assert calls["single"] == 0
+    assert calls["many"][0] == len(chunks)
+    assert len(calls["many"]) <= 2 + max(len(text) for _, text in chunks).bit_length()
+
+
+def test_clip_many_matches_clip_to_limit_per_text():
+    import random
+
+    rng = random.Random(3407)
+    texts = [
+        " ".join(f"w{rng.randint(0, 99)}" for _ in range(rng.randint(0, 60))) for _ in range(40)
+    ]
+    word_count = lambda t: len(t.split())
+    word_count.many = lambda ts: [len(t.split()) for t in ts]
+    for limit in (None, 0, 1, 7, 30, 100):
+        expected = [embeddings.clip_to_limit(t, word_count, limit) for t in texts]
+        assert embeddings.clip_many_to_limit(texts, word_count, limit) == expected

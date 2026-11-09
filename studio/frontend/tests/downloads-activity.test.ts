@@ -29,7 +29,6 @@ test("the desktop quit warning sees a download from any source, sent once per ch
   activity.reportDownloadsActive("hub", false);
   activity.reportDownloadsActive("npu", true);
   activity.reportDownloadsActive("hub", true);
-  // A Hub download ending while an NPU pull runs must not clear the warning.
   activity.reportDownloadsActive("hub", false);
   activity.reportDownloadsActive("npu", false);
   await flush();

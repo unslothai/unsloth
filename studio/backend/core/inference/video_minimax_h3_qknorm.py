@@ -1,18 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 fused q/k RMSNorm + partial RoPE, one read and one write per row (``UNSLOTH_H3_QK_ROPE=0`` = off).
-
-Rounds where the eager bf16 chain rounds; only the order of the sum of squares is free, so rstd can differ in the
-last fp32 bit (bounded at one bf16 step by the tests). Opaque custom op with a fake kernel; Triton on NVIDIA CUDA
-only, the stock math everywhere else.
-"""
+"""Fused q/k RMSNorm + partial RoPE (off with UNSLOTH_H3_QK_ROPE=0); Triton on NVIDIA CUDA only,
+stock math elsewhere; rstd may differ in the last fp32 bit."""
 
 from __future__ import annotations
 
 import os
 from functools import lru_cache
 from typing import Any
+from .rocm_bf16 import is_rocm_torch
 
 QK_ROPE_ENV = "UNSLOTH_H3_QK_ROPE"
 _OP = "unsloth_h3::qk_norm_rope"
@@ -54,7 +51,7 @@ def _kernel() -> Any:
     _mul = libdevice.mul_rn
     _add = libdevice.add_rn
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_rows"])
     def _qk_norm_rope_kernel(
         x_ptr,
         w_ptr,
@@ -67,9 +64,9 @@ def _kernel() -> Any:
         stride_h,
         cos_stride,
         eps,
-        D: tl.constexpr,
-        HALF: tl.constexpr,
-        ROWS: tl.constexpr,
+        D: tl.constexpr,  # hd
+        HALF: tl.constexpr,  # rotary dim // 2
+        ROWS: tl.constexpr,  # rows per program
     ):
         pid = tl.program_id(0).to(tl.int64)
         rows = pid * ROWS + tl.arange(0, ROWS).to(tl.int64)
@@ -109,7 +106,7 @@ def _kernel() -> Any:
 def _triton_ok(x: Any) -> bool:
     try:
         import torch
-        if not (x.is_cuda and torch.version.hip is None):
+        if not (x.is_cuda and not is_rocm_torch(torch)):
             return False
         import triton  # noqa: F401
     except Exception:  # noqa: BLE001

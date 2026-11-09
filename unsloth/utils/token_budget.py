@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in token-aware SFT micro-batches, off unless their env var is set.
-
-UNSLOTH_TOKEN_BALANCE=1 spreads each optimizer step's rows over data-parallel ranks and
-accumulation slots with equal token counts; every step keeps its rows, so num_items_in_batch
-is unchanged. UNSLOTH_TOKEN_BUDGET=<tokens> runs a larger micro-batch as several passes over
-whole sequences, each divided by the same num_items_in_batch, so they sum to the unsplit loss.
-"""
+"""Opt-in token-aware SFT micro-batches: UNSLOTH_TOKEN_BALANCE=1 keeps num_items_in_batch unchanged;
+UNSLOTH_TOKEN_BUDGET passes sum to the unsplit loss."""
 
 from __future__ import annotations
 

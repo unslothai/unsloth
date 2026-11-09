@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One registry and one lifecycle for every diffusion source / forward patch.
-
-Each per-architecture module (eager fusions, arch ``_SPECS``, Qwen RoPE, Q2.1 fast step / RoPE / fused, FLUX.2 RoPE,
-ROCm fused, Z-Image fused, Wan fused) used to be installed from its own call site with its own teardown list. They now
-register a :class:`PatchSpec` here and are installed by stage, uninstalled by group, and report one outcome each into
-the load's audit record. The modules keep their internals (fingerprints, eligibility, stashes); the registry owns
-WHEN they run, the kill switches, and the record.
-
-Fingerprints share one helper, :func:`source_digest` (the two identical ``_digest`` copies it replaces stay importable
-as aliases), plus :func:`body_has` / :func:`body_has_once` for needle guards. :func:`splice_source` is the safe in-memory
-source rewrite of unsloth-zoo's ``fused_losses/forward_install.py``: exactly-once needles, an unresolved-globals check,
-exec in the original module globals, a digest gate, and the original kept for an exact uninstall.
-"""
+"""PatchSpec registry for source/forward patches; splice_source keeps originals for exact uninstall."""
 
 from __future__ import annotations
 
@@ -198,6 +186,8 @@ class PatchContext:
     dtype: Any = None
     device: Any = None
     speed_mode: Optional[str] = None
+    # The user asked for speed "off" (an unset request also resolves to off on dense loads); None = speed_mode == "off".
+    explicit_off: Optional[bool] = None
     offload_active: bool = False
     denoiser_offloaded: Optional[bool] = None
     backend: str = "image"
@@ -391,6 +381,27 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_eager_patches import uninstall_patches
         uninstall_patches()
 
+    def fp16_rmsnorm(ctx: PatchContext) -> bool:
+        from ..diffusion_eager_patches import (
+            fp16_rmsnorm_wanted,
+            install_fp16_rmsnorm,
+            uninstall_fp16_rmsnorm,
+        )
+
+        denoiser = (
+            ctx.transformer
+            if ctx.transformer is not None
+            else getattr(ctx.pipe, "transformer", None)
+        )
+        if not fp16_rmsnorm_wanted(denoiser, ctx.dtype, ctx.speed_mode):
+            uninstall_fp16_rmsnorm()  # never outlives the load that installed it
+            return False
+        return install_fp16_rmsnorm()
+
+    def fp16_rmsnorm_uninstall() -> None:
+        from ..diffusion_eager_patches import uninstall_fp16_rmsnorm
+        uninstall_fp16_rmsnorm()
+
     def arch_install(ctx: PatchContext) -> int:
         from ..diffusion_arch_patches import install_arch_patches
         return install_arch_patches()
@@ -411,9 +422,31 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_flux2_rope import uninstall
         uninstall()
 
+    def flux3_rope(ctx: PatchContext) -> bool:
+        from ..diffusion_flux3_rope import install_for_pipe
+        return install_for_pipe(ctx.pipe, ctx.device, ctx.logger)
+
+    def flux3_rope_uninstall() -> None:
+        from ..diffusion_flux3_rope import uninstall
+        uninstall()
+
+    def flux3_fp16_attn(ctx: PatchContext) -> bool:
+        from ..diffusion_flux3_half_attn import install_for_pipe
+        return install_for_pipe(
+            ctx.pipe, ctx.device, ctx.speed_mode, ctx.logger, explicit_off = ctx.explicit_off
+        )
+
+    def flux3_fp16_attn_uninstall() -> None:
+        from ..diffusion_flux3_half_attn import uninstall
+        uninstall()
+
     def rocm_fused(ctx: PatchContext) -> dict:
         from ..diffusion_rocm_fused import install_for_pipe
-        return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger)
+
+        exact = ctx.explicit_off
+        if exact is None:
+            exact = str(ctx.speed_mode or "").strip().lower() == "off"
+        return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger, adaln = not exact)
 
     def rocm_fused_uninstall() -> None:
         from ..diffusion_rocm_fused import uninstall
@@ -461,6 +494,34 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_qwenimage21_fused import uninstall
         uninstall()
 
+    def q21_dense_fused(ctx: PatchContext) -> Any:
+        from ..diffusion_qwenimage21_dense_fused import install
+        return install(
+            ctx.transformer,
+            ctx.logger,
+            offload_active = ctx.offload_active
+            if ctx.denoiser_offloaded is None
+            else bool(ctx.denoiser_offloaded),
+        )
+
+    def flux_convrot_fused(ctx: PatchContext) -> Any:
+        from ..diffusion_flux_convrot_fused import install
+        return install(ctx.transformer, ctx.logger)
+
+    def flux_convrot_fused_uninstall() -> None:
+        from ..diffusion_flux_convrot_fused import uninstall
+        uninstall()
+
+    def moss_fused(ctx: PatchContext) -> Any:
+        from ..diffusion_moss_fused import install
+        return install(
+            ctx.transformer,
+            ctx.logger,
+            offload_active = ctx.offload_active
+            if ctx.denoiser_offloaded is None
+            else bool(ctx.denoiser_offloaded),
+        )
+
     return [
         # Shared compile-safe fusions (RMSNorm / AdaLN) and the per-arch addcmul fusions: speed tiers only.
         PatchSpec(
@@ -483,6 +544,16 @@ def _builtin_specs() -> list[PatchSpec]:
             speed_only = True,
             env = "UNSLOTH_DIFFUSION_ARCH_PATCHES",
         ),
+        # Must follow the shared fusions (an ``off`` load uninstalls them first).
+        PatchSpec(
+            "fp16_eager_rmsnorm",
+            STAGE_LOAD_EAGER,
+            fp16_rmsnorm,
+            fp16_rmsnorm_uninstall,
+            group = GROUP_EAGER,
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_FP16_RMSNORM",
+        ),
         # Per-pipe installs that gate themselves on class / dtype / device, on every tier.
         PatchSpec(
             "qwenimage21_fast_step",
@@ -499,6 +570,24 @@ def _builtin_specs() -> list[PatchSpec]:
             group = GROUP_FUSED_DIT,
             backends = ("image",),
             env = "UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE",
+        ),
+        PatchSpec(
+            "flux3_rope",
+            STAGE_LOAD,
+            flux3_rope,
+            flux3_rope_uninstall,
+            group = GROUP_FUSED_DIT,
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_FLUX3_FUSED_ROPE",
+        ),
+        PatchSpec(
+            "flux3_fp16_attn",
+            STAGE_LOAD,
+            flux3_fp16_attn,
+            flux3_fp16_attn_uninstall,
+            group = GROUP_FUSED_DIT,
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_FLUX3_FP16_ATTN",
         ),
         PatchSpec(
             "rocm_fused",
@@ -558,5 +647,35 @@ def _builtin_specs() -> list[PatchSpec]:
             classes = ("QwenImage21Transformer2DModel",),
             warn = "qwen-image-2.1 convrot sharing",
             env = "UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED",
+        ),
+        PatchSpec(
+            "qwenimage21_dense_fused",
+            STAGE_PRE_COMPILE,
+            q21_dense_fused,
+            None,
+            group = GROUP_FUSED_DIT,
+            classes = ("QwenImage21Transformer2DModel",),
+            warn = "qwen-image-2.1 dense gate/value GEMM",
+            env = "UNSLOTH_DIFFUSION_Q21_DENSE_FUSED",
+        ),
+        PatchSpec(
+            "flux_convrot_fused",
+            STAGE_PRE_COMPILE,
+            flux_convrot_fused,
+            flux_convrot_fused_uninstall,
+            group = GROUP_FUSED_DIT,
+            classes = ("Flux2Transformer2DModel", "Flux3Transformer2DModel"),
+            warn = "flux convrot producer fusion",
+            env = "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED",
+        ),
+        PatchSpec(
+            "moss_fused",
+            STAGE_PRE_COMPILE,
+            moss_fused,
+            None,
+            group = GROUP_FUSED_DIT,
+            classes = ("MOSSImageTransformer",),
+            warn = "moss-image fused projections",
+            env = "UNSLOTH_DIFFUSION_MOSS_FUSED",
         ),
     ]

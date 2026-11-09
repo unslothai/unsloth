@@ -6,6 +6,7 @@
 import ast
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -455,14 +456,19 @@ class TestLlamaCppRuntimeNativeOrdering:
 
     def test_prepends_before_binary_dir(self):
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
-        idx_helper = source.find("lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))")
-        idx_binary = source.find("lib_dirs.append(binary_dir)")
+        idx_helper = source.find("_native_linux_system_rocm_lib_dirs(binary_dir)")
         assert (
             idx_helper != -1
         ), "serve-time launcher must call the native-Linux helper with binary_dir"
-        assert idx_binary != -1
+        # #14933 holds the result in a local so it can drop it when it hides the GPU.
+        call = source[source.rfind("\n", 0, idx_helper) : source.find("\n", idx_helper)]
+        held = re.match(r"\s*(\w+)\s*=\s*_native_linux_system_rocm_lib_dirs", call)
+        extend = f"lib_dirs.extend({held.group(1)})" if held else "lib_dirs.extend("
+        idx_extend = source.find(extend, idx_helper)
+        idx_binary = source.find("lib_dirs.append(binary_dir)", idx_helper)
+        assert idx_extend != -1 and idx_binary != -1
         assert (
-            idx_helper < idx_binary
+            idx_helper < idx_extend < idx_binary
         ), "system ROCm must be searched before the bundled HIP runtime"
 
     def test_dxg_detection_stays_on_the_wsl_branch(self):
@@ -470,7 +476,7 @@ class TestLlamaCppRuntimeNativeOrdering:
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
         idx_wsl = source.find("lib_dirs.extend(_wsl_system_rocm_lib_dirs())")
         idx_dxg = source.find('env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")', idx_wsl)
-        idx_native = source.find("lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))")
+        idx_native = source.find("_native_linux_system_rocm_lib_dirs(binary_dir)")
         assert idx_wsl != -1 and idx_dxg != -1 and idx_native != -1
         assert idx_wsl < idx_dxg < idx_native, (
             "HSA_ENABLE_DXG_DETECTION must be decided from the WSL dirs alone, before the "

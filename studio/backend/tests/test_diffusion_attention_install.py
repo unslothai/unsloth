@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What Studio installs for the on-demand attention kernels, and what it engages.
-
-SageAttention 2 is not on PyPI (only SageAttention 1.0.6), so ``sage`` without a local SageAttention 2 runs the
-kernels-community build through diffusers' ``sage_hub``, self-checked first, or keeps the default backend with a reason.
-FlashAttention 4 from the kernels hub imports nvidia-cutlass-dsl, which loads only at 4.4.x / 4.5.x."""
+"""SageAttention 2 is not on PyPI; FA4's nvidia-cutlass-dsl import works only at 4.4.x and 4.5.x."""
 
 from __future__ import annotations
 
@@ -193,7 +189,6 @@ def test_sage_hub_loader_reports_every_failed_version(monkeypatch):
     dispatch._HUB_KERNELS_REGISTRY[_HUB].kernel_fn = None
     fn, why = att._load_sage_hub_kernel()
     assert fn is None and "no variant v2" in why and "no variant v1" in why
-    # Remembered: the in-lock apply does not fetch again after the pre-install step failed.
     monkeypatch.setitem(
         sys.modules,
         "kernels",
@@ -289,7 +284,6 @@ def test_flash4_installs_its_python_deps_with_cutlass_dsl_held_to_the_working_ra
     assert "--no-deps" in kernels_cmd and "--only-binary" in kernels_cmd
     deps_cmd = next(cmd for cmd in run.calls if "nvidia-cutlass-dsl>=4.4,<4.6" in cmd)
     assert "--no-deps" not in deps_cmd  # cutlass-dsl needs its libs and cuda-python
-    # Once per process: the in-lock re-resolve must not run pip again.
     n = len(run.calls)
     att._ensure_attention_backend_installed("flash_4_hub")
     assert len(run.calls) == n
@@ -364,7 +358,6 @@ def test_studio_pins_a_kernels_release_diffusers_accepts_for_flash4():
 
 
 def test_a_kernels_upgrade_is_visible_to_diffusers_in_the_same_process(monkeypatch):
-    # Without the refresh the first load after the upgrade still fell back (fresh venv, torch 2.11 / 2.12).
     from diffusers.utils import import_utils
 
     monkeypatch.setattr(import_utils, "_kernels_version", "0.12.1")
@@ -405,7 +398,6 @@ def test_an_imported_old_kernels_is_not_papered_over(monkeypatch):
 
 
 def test_a_pth_installed_mid_process_is_activated(monkeypatch, tmp_path):
-    # Without running the .pth the first load after the install reported cutlass-dsl missing (fresh venv, B200).
     import importlib.metadata as md
 
     pkg_dir = tmp_path / "dsl_packages"
@@ -430,7 +422,6 @@ def test_a_pth_installed_mid_process_is_activated(monkeypatch, tmp_path):
 
 
 def test_nothing_to_install_still_activates_cutlass_pth(monkeypatch):
-    # An NVFP4 load installs cutlass-dsl through FlashInfer without running its .pth; a later flash4 must still see it.
     calls = []
     monkeypatch.setattr(att, "_fa4_python_deps_plan", lambda: ([], None))
     monkeypatch.setattr(att, "_activate_installed_pth_files", lambda *a: calls.append(a))

@@ -31,7 +31,6 @@ export type FrameMessage =
   /** The page's current markup, for printing; null when it couldn't be copied or was too large. */
   | { type: "snapshot"; html: string | null }
   | { type: "shortcut"; key: string; shift: boolean }
-  /** A zoom key or Ctrl+wheel in the page: a step in (1), out (-1), or back to 100% (0). */
   | { type: "zoom"; direction: 1 | -1 | 0; wheel: boolean }
   | { type: "annotate"; event: AnnotateEvent }
   /** The browser agent's answer to command `id` (agent/page-agent.ts); the panel checks `result`. */

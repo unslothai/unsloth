@@ -14,9 +14,17 @@ export function getCurrentWebview() {
   };
 }
 
+export const UserAttentionType = { Critical: 1, Informational: 2 };
+
 export function getCurrentWindow() {
   return {
     onScaleChanged: async () => () => undefined,
     scaleFactor: async () => 1,
+    requestUserAttention: async (type) => {
+      if (!control.attention) {
+        control.attention = [];
+      }
+      control.attention.push(type);
+    },
   };
 }

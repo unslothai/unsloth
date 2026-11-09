@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FlashInfer's per-call dispatch work, cached. Every private import is HERE, fenced by an EXACT version
-allowlist, ONE all-or-nothing try, and a per-device bit-identity ``verify()`` (a symbol can change meaning)."""
+"""FlashInfer dispatch: every private import lives here, behind an exact-version allowlist in one
+all-or-nothing try, plus per-device verify()"""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import weakref
 from functools import partial
 from typing import Any, Optional
 
-# The only versions whose private layout was read and verified. Exact, never a minimum.
-_SUPPORTED = ("0.6.6",)
+# Exact versions whose private layout was read, never a minimum.
+_SUPPORTED = ("0.6.6", "0.7.3")
 
 NVFP4_FAST_DISPATCH_ENV = "UNSLOTH_NVFP4_FAST_DISPATCH"
 
@@ -97,8 +97,11 @@ def _run_verify(device: Any) -> tuple:
     try:
         import flashinfer
         with torch.cuda.device(device):
-            x = torch.randn(256, 512, device = device, dtype = torch.bfloat16) * 0.05
-            w = torch.randn(128, 512, device = device, dtype = torch.bfloat16) * 0.02
+            # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
+            # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
+            gen = torch.Generator().manual_seed(0)
+            x = torch.randn(256, 512, dtype = torch.bfloat16, generator = gen).to(device) * 0.05
+            w = torch.randn(128, 512, dtype = torch.bfloat16, generator = gen).to(device) * 0.02
             a_gsf = _global_scale(x)
             w_gsf = _global_scale(w)
             alpha = (1.0 / (a_gsf * w_gsf)).float()
@@ -142,7 +145,9 @@ def _run_verify(device: Any) -> tuple:
                 ],
                 tactic = tactic,
             )
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             if not torch.equal(want, got):
                 return False, "the cached GEMM is not bit-identical to mm_fp4"
     except Exception as exc:  # noqa: BLE001 - a raise is a failed verify
@@ -198,7 +203,16 @@ def _fast_quantize(
     if got is None:
         return None, None
     fn, pdl = got
-    xq, sf = fn(x, global_sf, 16, False, True, False, pdl)
+    # By keyword: 0.7 put ``is_global_scale_inversed`` before ``enable_pdl``; positional pdl inverts the scale.
+    xq, sf = fn(
+        x,
+        global_sf,
+        sf_vec_size = 16,
+        sf_use_ue8m0 = False,
+        is_sf_swizzled_layout = True,
+        is_sf_8x4_layout = False,
+        enable_pdl = pdl,
+    )
     return xq, sf.reshape((-1, x.shape[-1] // 16))
 
 

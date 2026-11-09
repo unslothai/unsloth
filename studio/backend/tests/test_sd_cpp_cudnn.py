@@ -75,9 +75,6 @@ def _no_install(*_a, **_k):
     raise AssertionError("must not install")
 
 
-# --- who is eligible -------------------------------------------------------------------------------------------------
-
-
 def test_binary_scan_reads_the_build_marker_and_cuda_major(tmp_path):
     assert cd.binary_cudnn_build(_binary(tmp_path, cudnn = True)) == (True, 12)
     assert cd.binary_cudnn_build(_binary(tmp_path, cudnn = False, name = "old")) == (False, 12)
@@ -130,7 +127,6 @@ def test_sm80_plus_gets_the_managed_library_for_the_child_only(monkeypatch, tmp_
     )
     assert plan.env == ((cd.GGML_CUDNN_LIB_ENV, lib),)
     assert plan.state == cd.STATE_READY
-    # This process's environment is untouched: only the sd.cpp spawn gets the variable.
     assert dict(os.environ) == before
 
 
@@ -163,9 +159,6 @@ def test_offline_load_never_installs(monkeypatch, tmp_path):
         _binary(tmp_path, cudnn = True), (10, 0), platform = "linux", root = tmp_path, allow_install = False
     )
     assert plan.env == () and plan.state == cd.STATE_UNAVAILABLE
-
-
-# --- install safety --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("uv", ["/usr/bin/uv", None])
@@ -236,10 +229,8 @@ def test_install_stages_verifies_and_publishes_atomically(monkeypatch, tmp_path)
     calls = _fake_installer(monkeypatch)
     lib, reason = cd.ensure_library(RT, root = tmp_path)
     assert reason is None and lib == str(tmp_path / RT.dirname / "nvidia/cudnn/lib/libcudnn.so.9")
-    # Verified in a fresh interpreter, never dlopened in this one.
     assert calls[1][0] == sys.executable and ".staging-" in calls[1][-1]
     assert not [p for p in tmp_path.iterdir() if p.name.startswith(".staging-")]
-    # A second load reuses it without running anything.
     monkeypatch.setattr(cd, "_run", _no_install)
     assert cd.ensure_library(RT, root = tmp_path) == (lib, None)
 
@@ -319,9 +310,6 @@ def test_low_disk_refuses(monkeypatch, tmp_path):
     assert lib is None and "GiB free" in reason
 
 
-# --- engagement status -----------------------------------------------------------------------------------------------
-
-
 def test_status_engaged_from_the_fork_log_and_kept_on_a_reused_server():
     a = cd.CudnnAttention(cd.STATE_READY, env = ((cd.GGML_CUDNN_LIB_ENV, "/l"),))
     a.begin_render()
@@ -330,7 +318,6 @@ def test_status_engaged_from_the_fork_log_and_kept_on_a_reused_server():
     a.end_render()
     assert a.state == cd.STATE_ENGAGED and a.cudnn_version == 92700
     assert (19315, 19315, 128) in a.shapes
-    # The resident server prints nothing about cuDNN on its second render.
     a.begin_render()
     a.feed("[INFO   ] sampling completed, taking 5.69s")
     a.end_render()
@@ -349,14 +336,10 @@ def test_status_fallback_when_no_plan_or_library_not_loaded():
     b.feed("[INFO   ] sampling completed")
     b.end_render()
     assert b.state == cd.STATE_FALLBACK and "did not load" in b.reason
-    # A failed render settles nothing.
     c = cd.CudnnAttention(cd.STATE_READY)
     c.begin_render()
     c.end_render(ok = False)
     assert c.state == cd.STATE_READY
-
-
-# --- through the H3 native load --------------------------------------------------------------------------------------
 
 
 def _h3_load(
@@ -411,9 +394,6 @@ def test_status_route_model_carries_the_fields():
     from models.inference import VideoStatusResponse
     fields = VideoStatusResponse.model_fields
     assert "sd_cpp_cudnn_attention" in fields and "sd_cpp_cudnn_reason" in fields
-
-
-# --- round 2 ---------------------------------------------------------------------------------------------------------
 
 
 def test_preflight_refusals_are_rechecked_on_the_next_load(monkeypatch, tmp_path):

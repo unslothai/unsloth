@@ -330,7 +330,7 @@ def test_a_module_path_is_not_read_as_a_glob(modules_json, monkeypatch):
     """Repo filenames go into ignore_patterns verbatim, so a "[" in a name would silently become a
     character class and stop matching itself."""
     modules_json(EMBEDDINGGEMMA)
-    files = ["model.safetensors", "weird[1].bin", "2_Dense/pytorch_model.bin"]
+    files = ["modules.json", "model.safetensors", "weird[1].bin", "2_Dense/pytorch_model.bin"]
     patterns = _ignores("org/st-bin-dense", monkeypatch, siblings = files)
     kept = _kept(files, patterns)
     assert "weird[1].bin" not in kept, patterns

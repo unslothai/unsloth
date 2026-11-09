@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The vendored truststore keeps verification on when handshakes overlap (upstream issue #209).
-
-macOS and Windows switch OpenSSL verification off on the shared context during a wrap and
-verify against the OS store afterwards. The flag flipping is reproduced here on any platform,
-so the race is exercised without a network or a real handshake.
-"""
+"""Vendored truststore keeps verification on when TLS handshakes overlap on the shared context."""
 
 from __future__ import annotations
 
@@ -24,8 +19,8 @@ _PACKAGE = Path(__file__).resolve().parent.parent / "vendor" / "truststore"
 
 
 def _load_vendored(name, monkeypatch):
-    # Private name: an installed truststore must not stand in. Restore the stdlib class first,
-    # since native TLS may already have injected truststore into ssl (macOS / Windows default).
+    # Private name: an installed truststore must not stand in; native TLS may already have
+    # injected it into ssl.
     stdlib = next(c for c in ssl._SSLContext.__subclasses__() if c.__module__ == "ssl")
     monkeypatch.setattr(ssl, "SSLContext", stdlib)
     spec = importlib.util.spec_from_file_location(
@@ -252,7 +247,6 @@ def test_the_real_os_verifier_sees_the_policy_while_a_window_is_open(monkeypatch
                 return [_DerCert()]
 
         with ctx._verification_window():
-            # The shared context is CERT_NONE now; the caller's policy is still CERT_REQUIRED.
             assert ctx._ctx.verify_mode == ssl.CERT_NONE
             with pytest.raises(ssl.SSLCertVerificationError):
                 api._verify_peercerts(_Sock(), server_hostname = "unsloth-test.invalid")

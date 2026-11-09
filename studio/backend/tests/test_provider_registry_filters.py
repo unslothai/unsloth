@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Provider registry model-id filter regression tests.
-
-The OpenAI ``model_id_allowlist`` previously hardcoded the gpt-5.3/4/5
-families plus gpt-4.5 / o3 -- silently dropping every future family
-OpenAI shipped. Anthropic's ``model_id_denylist`` previously stripped
-every dated id, hiding the canonical names of every pre-4.6 model
-(Opus 4.5, Sonnet 4.5, Haiku 4.5, Opus 4.1, the 4.0 family).
-
-These tests pin the new denylist (OpenAI) and the empty denylist
-(Anthropic) by walking realistic ``/v1/models`` listings through
-``PROVIDER_REGISTRY`` and asserting the surviving set. The OpenAI bar is
-"servable on /v1/responses with stream: true", not merely "chat model" --
-Studio has no other OpenAI transport.
-"""
+"""OpenAI ids must be servable on /v1/responses with stream: true; Anthropic's denylist is empty."""
 
 from core.inference.providers import PROVIDER_REGISTRY
 
@@ -32,12 +19,8 @@ def _apply(provider_type: str, candidate_ids: list[str]) -> list[str]:
     return out
 
 
-# ── OpenAI: denylist drops what /v1/responses cannot serve ─────────
-
-
 def test_openai_keeps_every_known_chat_family():
     live = [
-        # Current generation (must survive).
         "gpt-5.5",
         "gpt-5.5-pro",
         "gpt-5.4",
@@ -49,8 +32,6 @@ def test_openai_keeps_every_known_chat_family():
         "o3",
         "o3-pro",
         "o3-mini",
-        # Hypothetical future families that the old allowlist would have
-        # silently dropped -- they MUST surface under the new denylist.
         "gpt-5.6",
         "gpt-5.6-mini",
         "gpt-6",
@@ -64,9 +45,7 @@ def test_openai_keeps_every_known_chat_family():
 
 
 def test_openai_drops_families_that_are_not_on_the_responses_endpoint():
-    # Studio serves every OpenAI turn from /v1/responses, so a model whose
-    # page marks that endpoint Not supported is unusable however
-    # chat-capable it is over /v1/chat/completions.
+    # Studio serves every OpenAI turn from /v1/responses; models without it are unusable.
     dropped = _apply(
         "openai",
         [
@@ -103,7 +82,6 @@ def test_openai_drops_deep_research_models():
 
 def test_openai_drops_non_chat_ids():
     noise = [
-        # Embeddings / TTS / image / moderation / whisper / etc.
         "text-embedding-3-small",
         "text-embedding-3-large",
         "text-embedding-ada-002",
@@ -123,16 +101,11 @@ def test_openai_drops_non_chat_ids():
         "gpt-4o-mini-transcribe",
         "gpt-4o-mini-tts",
         "omni-moderation-latest",
-        # Standalone search API endpoint.
         "gpt-5-search-api",
         "gpt-5-search-api-2025-10-14",
-        # Video generation.
         "sora-2",
         "sora-2-pro",
-        # Computer-use is an agentic harness, not a chat id.
         "computer-use-preview",
-        # Legacy bases and the first-generation embedding / search /
-        # similarity line.
         "babbage-002",
         "davinci-002",
         "text-davinci-003",
@@ -144,9 +117,7 @@ def test_openai_drops_non_chat_ids():
         "code-search-ada-code-001",
         "code-davinci-002",
         "code-cushman-001",
-        # Fine-tunes.
         "ft:gpt-4o-mini:acme:abc:xyz",
-        # Dated snapshots are still hidden.
         "gpt-4o-2024-08-06",
         "gpt-4o-mini-2024-07-18",
         "gpt-5.5-2026-04-23",
@@ -169,10 +140,7 @@ def test_openai_realtime_translate_variants_are_dropped():
 
 
 def test_openai_legacy_instruct_completion_ids_are_dropped():
-    """Legacy `*-instruct` completion-only ids (gpt-3.5-turbo-instruct
-    and friends) speak /v1/completions, not chat/responses. Our OpenAI
-    bridge only knows the chat/responses transport, so admitting them
-    into the picker would 4xx every selection."""
+    """*-instruct ids speak /v1/completions, which the chat/responses bridge cannot serve; drop them."""
     dropped = _apply(
         "openai",
         [
@@ -185,13 +153,7 @@ def test_openai_legacy_instruct_completion_ids_are_dropped():
 
 
 def test_openai_legacy_compact_snapshot_suffixes_are_dropped():
-    """Legacy `-MMDD` snapshot suffixes (gpt-3.5-turbo-0125,
-    gpt-4-0613, gpt-4-1106-preview, etc.) hide behind the canonical
-    id which the listing also returns; surface only the canonical so
-    users do not pick a deprecated snapshot by accident. The
-    `-\\d{4}(?:-preview)?$` rule must not catch canonical ids whose
-    minor version happens to be a year-like number (e.g. gpt-4.5,
-    o3) -- those are tested as KEEP below."""
+    """Hide -MMDD snapshots behind canonical ids; the year-suffix rule must not catch gpt-4.5 or o3."""
     dropped = _apply(
         "openai",
         [
@@ -207,7 +169,6 @@ def test_openai_legacy_compact_snapshot_suffixes_are_dropped():
     )
     assert dropped == [], dropped
 
-    # Canonical chat ids that share a digit-heavy tail must survive.
     kept = _apply(
         "openai",
         [
@@ -232,9 +193,7 @@ def test_openai_legacy_compact_snapshot_suffixes_are_dropped():
 
 
 def test_openai_legacy_completion_names_only_match_at_id_start():
-    # Hypothetical future chat ids that happen to contain a legacy
-    # completion-family name mid-string must NOT be dropped. The
-    # `^(?:babbage|davinci|ada|curie)\b` anchor is what makes this safe.
+    # The `^(?:babbage|davinci|ada|curie)\b` anchor keeps future ids containing these names.
     kept = _apply(
         "openai",
         [
@@ -253,7 +212,6 @@ def test_openai_legacy_completion_names_only_match_at_id_start():
         "gpt-7-babbage-mini",
         "codex-mini-latest",
     ], kept
-    # ...but the actual legacy-base ids stay dropped.
     dropped = _apply(
         "openai",
         ["babbage-002", "davinci-002", "text-davinci-003"],
@@ -261,11 +219,7 @@ def test_openai_legacy_completion_names_only_match_at_id_start():
     assert dropped == [], dropped
 
 
-# ── Anthropic: empty denylist; dated ids ARE canonical ───────────────
-
-
 def test_anthropic_surfaces_every_live_model_including_dated_ids():
-    # The full set of ids /v1/models returns today.
     live = [
         "claude-opus-4-7",
         "claude-sonnet-4-6",

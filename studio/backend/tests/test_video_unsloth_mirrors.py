@@ -47,6 +47,8 @@ NO_UNSLOTH_REPO = frozenset(
     {
         "wan-ai/wan2.1-t2v-1.3b-diffusers",
         "wan-ai/wan2.1-t2v-14b-diffusers",
+        "nvidia/cosmos3-nano",
+        "nvidia/cosmos3-edge",
     }
 )
 
@@ -100,7 +102,7 @@ def test_video_pairs_stay_out_of_the_image_companion_table():
     """The image companion table (companion_assets reads it) is unchanged; video ids only feed the id lookups."""
     image_ids = {rid.lower() for pair in _MIRROR_PAIRS for rid in pair}
     assert not image_ids & {rid.lower() for pair in _VIDEO_MIRROR_PAIRS for rid in pair}
-    assert len(_MIRROR_PAIRS) == len(_GATED_MIRROR_PAIRS) + len(_UNGATED_MIRROR_PAIRS) == 32
+    assert len(_MIRROR_PAIRS) == len(_GATED_MIRROR_PAIRS) + len(_UNGATED_MIRROR_PAIRS) == 34
 
 
 def _video_fetch_ids() -> dict[str, str]:

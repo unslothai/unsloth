@@ -452,7 +452,7 @@ def _cards(
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: sec_limit)
     monkeypatch.setattr(
-        mg, "best_secondary", lambda selection, probes = None: selection.secondaries[0]
+        mg, "best_secondary", lambda selection, probes = None, **_: selection.secondaries[0]
     )
     monkeypatch.setattr(
         lsp,

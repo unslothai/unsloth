@@ -6,14 +6,12 @@ import { subscribeHfTokenRejected } from "@/lib/hf-token-rejection";
 import { toast } from "@/lib/toast";
 import { useEffect } from "react";
 
-/** One toast when the Hub first refuses the saved token and a read recovers without it. The
- * store notifies once per token, so a page of refused requests is one message, not many. */
+/** The store notifies once per token, so a page of refused requests is one toast. */
 export function useHfTokenRejectedToast(): void {
   const t = useT();
   useEffect(
     () =>
       subscribeHfTokenRejected((event) => {
-        // A cleared refusal is good news, even while another Hub still refuses the token.
         if (event !== "rejected") return;
         toast.error(t("studio.modelPicker.tokenRejectedTitle"), {
           id: "hf-token-rejected",

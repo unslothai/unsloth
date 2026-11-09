@@ -116,9 +116,6 @@ def test_search_root_walk_still_works(tmp_path: Path):
     assert result == str(mmproj.resolve())
 
 
-# -- Family token detection: word-bounded matching ----------------------
-
-
 def test_family_token_phi_does_not_match_sapphire():
     """``phi`` substring inside ``sapphire`` must not tag Phi."""
     assert _detect_family_token("sapphire-7b-q4_k_m.gguf") is None
@@ -161,9 +158,6 @@ def test_family_token_new_families_recognised():
     assert _detect_family_token("LFM2.5-VL-1.6B-BF16.gguf") == "lfm"
 
 
-# -- Cross-family rejection with the expanded token list ----------------
-
-
 def test_blocks_cross_family_for_new_token_pair(tmp_path: Path):
     """Nemotron weight + lone Gemma projector returns None."""
     model = _touch(tmp_path / "NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-MXFP4_MOE.gguf")
@@ -177,9 +171,6 @@ def test_picks_devstral_mmproj_in_mixed_dir(tmp_path: Path):
     dev_mm = _touch(tmp_path / "Devstral-Small-2-mmproj-bf16.gguf")
     _touch(tmp_path / "Qwen3.5-9B-BF16-mmproj.gguf")
     assert detect_mmproj_file(str(model)) == str(dev_mm.resolve())
-
-
-# -- Launcher-level family guard ----------------------------------------
 
 
 def test_mmproj_family_guard_blocks_cross_family():
@@ -224,9 +215,6 @@ def test_mmproj_family_guard_allows_unrecognised_model_family():
     )
 
 
-# -- Metadata-primary pairing in detect_mmproj_file ---------------------
-
-
 def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
     """URL match beats a longer-prefix sibling."""
     weight = _gguf_with_general(
@@ -238,7 +226,6 @@ def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
         },
     )
-    # Closer filename prefix, wrong upstream.
     _gguf_with_general(
         tmp_path / "Qwen3.5-9B-mmproj-bf16.gguf",
         {
@@ -248,7 +235,6 @@ def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-1.5B",
         },
     )
-    # Matching upstream.
     correct = _gguf_with_general(
         tmp_path / "mmproj-BF16.gguf",
         {
@@ -341,9 +327,7 @@ def test_metadata_score_outranks_filename_prefix(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
         },
     )
-    # Headerless: long shared stem, score 0.
     _touch(tmp_path / "Qwen3.5-9B-Q4_K_M-mmproj.gguf")
-    # Headered: generic name, score 100.
     correct = _gguf_with_general(
         tmp_path / "mmproj-BF16.gguf",
         {
@@ -388,14 +372,8 @@ def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
 
 
 def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_path: Path):
-    """#10599's widening must not reach the quant next door.
-
-    ``allow_disjoint_search_root`` used to set ``recursive_root`` for every root, including
-    the one holding the weights, which is the case the incremental walk at the top of
-    detect_mmproj_file exists to confine. Every other quant subdirectory of the snapshot
-    became a candidate, and since none of them shares a prefix with the weight stem they
-    all tie at zero, so the shorter-stem rule handed UD-Q4_K_XL the IQ1_S projector.
-    """
+    """Disjoint-root widening must not recurse into sibling quants; a foreign projector then wins
+    the tie."""
     snapshot = tmp_path / "snapshots" / "rev"
     weight = _touch(snapshot / "UD-Q4_K_XL" / "Qwen3-VL-235B-UD-Q4_K_XL.gguf")
     mine = _touch(snapshot / "UD-Q4_K_XL" / "mmproj-UD-Q4_K_XL.gguf")
@@ -408,11 +386,8 @@ def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_pat
 
 
 def test_a_containing_trusted_root_keeps_its_own_root_level_projector(tmp_path: Path):
-    """The same guard, where the only correct projector sits at the snapshot root.
-
-    The ancestor walk still has to reach it, and a foreign quant's projector must not win
-    on a longer shared prefix just because the recursion made it a candidate.
-    """
+    """The ancestor walk must still reach a root-level projector without foreign quants winning on
+    prefix."""
     snapshot = tmp_path / "snapshots" / "rev"
     weight = _touch(snapshot / "UD-Q4_K_XL" / "vision-model-UD-Q4_K_XL.gguf")
     root_level = _touch(snapshot / "mmproj-F16.gguf")

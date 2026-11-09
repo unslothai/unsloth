@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A rendered chat prompt must carry exactly one BOS.
-
-Most templates emit it, so letting the tokenizer add another doubles it; zephyr and
-tinyllama-chat emit none, so suppressing specials unconditionally drops it. The deciding
-fact is whether the rendered text already starts with BOS.
-"""
+"""A rendered chat prompt carries one BOS, decided by whether the text already starts with it."""
 
 from __future__ import annotations
 
@@ -31,15 +26,7 @@ def _stub_if_missing(
     attrs = (),
     named_spec = False,
 ):
-    """Register a stub for a dep this job does not install. A real install is left alone.
-
-    Same helper and reason as test_vision_client_tools.py: core.inference.inference imports
-    unsloth and trl at module scope, which studio-backend-ci.yml does not install, so
-    unstubbed this file fails COLLECTION and takes the whole job down.
-
-    ``named_spec`` gives the stub a real ModuleSpec, which only torchao needs: transformers
-    probes it with find_spec, which raises ValueError on ``__spec__ = None``.
-    """
+    """Stub a missing dep so CI collection passes without unsloth and trl; real installs are kept."""
     if name in sys.modules:
         return
     try:
@@ -80,7 +67,11 @@ _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("unsloth_zoo")
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
-from core.inference.inference import _prompt_already_has_bos  # noqa: E402
+from core.inference.inference import (  # noqa: E402
+    _probe_prompt_bos,
+    _prompt_already_has_bos,
+    _tokenize_prompt,
+)
 
 # Drop the stubs now the name is bound; one left behind outlives this module.
 for _name in reversed(_STUBBED):
@@ -126,7 +117,6 @@ def test_rendered_prompt_carries_exactly_one_bos(template_emits_bos, auto_adds_b
 
 
 def test_template_that_omits_bos_keeps_the_tokenizer_one():
-    # Blanket add_special_tokens = False regressed exactly this shape.
     tokenizer = _tokenizer(auto_adds_bos = True)
     prompt = "user hello world"
 
@@ -171,3 +161,66 @@ def test_a_processor_is_probed_through_its_inner_tokenizer():
 
 def test_empty_prompt_does_not_index_out_of_range():
     assert _prompt_already_has_bos(_tokenizer(auto_adds_bos = True), "") is False
+
+
+def _tokenize_like_base(tokenizer, prompt):
+    add_special_tokens = not _prompt_already_has_bos(tokenizer, prompt)
+    return tokenizer(prompt, return_tensors = "pt", add_special_tokens = add_special_tokens)
+
+
+def _tokenize_like_head(tokenizer, prompt):
+    probe = _probe_prompt_bos(tokenizer, prompt)
+    return _tokenize_prompt(tokenizer, prompt, probe is None, probe)
+
+
+@pytest.mark.parametrize("auto_adds_bos", [True, False])
+@pytest.mark.parametrize(
+    "prompt",
+    ["<s> user hello world", "user hello world", "", " <s> hello", "<s> <s> hello", "</s> hello"],
+)
+def test_reused_probe_encoding_matches_a_fresh_tokenization(auto_adds_bos, prompt):
+    pytest.importorskip("torch")
+    tokenizer = _tokenizer(auto_adds_bos)
+    expected = _tokenize_like_base(tokenizer, prompt)
+    got = _tokenize_like_head(tokenizer, prompt)
+
+    assert set(got.keys()) == set(expected.keys())
+    for key in expected:
+        assert got[key].dtype == expected[key].dtype
+        assert got[key].tolist() == expected[key].tolist()
+
+
+def test_prompt_with_bos_is_tokenized_once():
+    pytest.importorskip("torch")
+    tokenizer = _tokenizer(auto_adds_bos = True)
+    calls = []
+    original = type(tokenizer).__call__
+
+    class _Counting(type(tokenizer)):
+        def __call__(self, *args, **kwargs):
+            calls.append(kwargs.get("add_special_tokens"))
+            return original(self, *args, **kwargs)
+
+    tokenizer.__class__ = _Counting
+    inputs = _tokenize_like_head(tokenizer, "<s> user hello world")
+
+    assert calls == [False]
+    assert inputs["input_ids"].tolist() == [[0, 4, 2, 3]]
+    calls.clear()
+    _tokenize_like_head(tokenizer, "user hello world")
+    assert calls == [False, True]
+
+
+def test_probe_is_not_reused_for_another_prompt_or_tokenizer():
+    pytest.importorskip("torch")
+    tokenizer = _tokenizer(auto_adds_bos = True)
+    other = _tokenizer(auto_adds_bos = True)
+    probe = _probe_prompt_bos(tokenizer, "<s> hello")
+    assert probe is not None
+    assert _tokenize_prompt(tokenizer, "<s> world", False, probe)["input_ids"].tolist() == [[0, 3]]
+    expected = other("<s> hello", return_tensors = "pt", add_special_tokens = True)
+    assert (
+        _tokenize_prompt(other, "<s> hello", True, probe)["input_ids"].tolist()
+        == expected["input_ids"].tolist()
+    )
+    assert _tokenize_prompt(other, "<s> hello", False, probe)["input_ids"].tolist() == [[0, 2]]

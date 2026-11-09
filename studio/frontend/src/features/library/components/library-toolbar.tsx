@@ -9,38 +9,48 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AiEditingIcon,
   FileEmpty02Icon,
   FilterMailIcon,
   FlimSlateIcon,
-  Folder01Icon,
   GridViewIcon,
-  Image02Icon,
+  ImageIcon,
   LeftToRightListBulletIcon,
   Note01Icon,
   Pdf01Icon,
   Presentation01Icon,
   Search01Icon,
-  Settings02Icon,
-  Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, Settings01Icon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowDownUpIcon } from "lucide-react";
+import { SortIcon } from "@/lib/sort-icon";
+import type { ReactNode } from "react";
 import type { LibrarySource } from "../api";
 import type { LibraryAudioWorkflow } from "../audio-items";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibrarySortKey, LibraryView } from "../settings-store";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const ICON = "size-icon";
 export const ROUND_BUTTON =
   "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:bg-white data-[active=true]:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:data-[active=true]:bg-card dark:data-[active=true]:shadow-none data-open:bg-muted";
+
+export function ToolbarTip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{children}</TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 interface MenuOption<T extends string> {
   value: T;
@@ -54,7 +64,7 @@ const SOURCE_OPTIONS: MenuOption<LibrarySource>[] = [
 ];
 
 const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
-  { value: "images", label: "library.tabs.images", icon: Image02Icon },
+  { value: "images", label: "library.tabs.images", icon: ImageIcon },
   { value: "videos", label: "library.tabs.videos", icon: FlimSlateIcon },
   { value: "audio", label: "library.tabs.audio", icon: AiSpeechIcon },
   { value: "documents", label: "library.toolbar.documents", icon: FileEmpty02Icon },
@@ -64,18 +74,16 @@ const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
 ];
 
 export const VIEW_OPTIONS = [
-  { value: "grid", label: "library.toolbar.gridView", icon: GridViewIcon },
-  { value: "list", label: "library.toolbar.listView", icon: LeftToRightListBulletIcon },
-] satisfies MenuOption<LibraryView>[];
+  { value: "grid", label: "library.toolbar.gridView", tip: "library.toolbar.grid", icon: GridViewIcon },
+  { value: "list", label: "library.toolbar.listView", tip: "library.toolbar.list", icon: LeftToRightListBulletIcon },
+] satisfies (MenuOption<LibraryView> & { tip: TranslationKey })[];
 
 export type LibrarySortChoice = "default" | LibrarySortKey;
 
 export interface LibrarySortMenuProps {
   value: LibrarySortChoice;
   onChange: (next: LibrarySortChoice) => void;
-  /** The view orders by last activity rather than modified time. */
   activity?: boolean;
-  /** False where only folders show, which have no size. */
   showSize?: boolean;
   desc?: boolean;
   onDirectionChange?: (desc: boolean) => void;
@@ -133,16 +141,18 @@ function FilterMenu({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={t("library.toolbar.filter")}
-          data-active={filtersActive(filters)}
-          className={ROUND_BUTTON}
-        >
-          <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
-        </button>
-      </DropdownMenuTrigger>
+      <ToolbarTip label={t("library.toolbar.filter")}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={t("library.toolbar.filter")}
+            data-active={filtersActive(filters)}
+            className={ROUND_BUTTON}
+          >
+            <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+          </button>
+        </DropdownMenuTrigger>
+      </ToolbarTip>
       <DropdownMenuContent align="end" sideOffset={4} className="library-menu w-max min-w-36">
         {showTypes && (
           <>
@@ -230,7 +240,6 @@ function SortMenu({
   onDirectionChange,
 }: LibrarySortMenuProps) {
   const t = useT();
-  // Suggested orders "Modified" by last activity, as its list view header says.
   const options = SORT_OPTIONS.filter((option) => showSize || option.value !== "size").map(
     (option) =>
       activity && option.value === "modified"
@@ -240,15 +249,17 @@ function SortMenu({
   const current = options.find((option) => option.value === value);
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-14 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-open:bg-muted data-open:text-foreground dark:text-foreground/70"
-        >
-          <ArrowDownUpIcon strokeWidth={1.75} className="size-[calc(16px*var(--ui-space-scale,1))]" />
-          {value === "default" || !current ? t("library.toolbar.sort") : t(current.label)}
-        </button>
-      </DropdownMenuTrigger>
+      <ToolbarTip label={t("library.toolbar.sort")}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-14 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-open:bg-muted data-open:text-foreground dark:text-foreground/70"
+          >
+            <HugeiconsIcon icon={SortIcon} strokeWidth={1.75} className="size-[calc(16px*var(--ui-space-scale,1))]" />
+            {value === "default" || !current ? t("library.toolbar.sort") : t(current.label)}
+          </button>
+        </DropdownMenuTrigger>
+      </ToolbarTip>
       <DropdownMenuContent align="start" sideOffset={4} className="library-menu w-max min-w-36">
         {options.map(({ value: option, label }) => (
           <SortRadio
@@ -289,11 +300,11 @@ export type NewAction =
 
 const NEW_OPTIONS: MenuOption<NewAction>[] = [
   { value: "note", label: "library.create.note", icon: Note01Icon },
-  { value: "image", label: "library.create.image", icon: Image02Icon },
+  { value: "image", label: "library.create.image", icon: ImageIcon },
   { value: "video", label: "library.create.video", icon: FlimSlateIcon },
   { value: "audio", label: "library.create.audio", icon: AiSpeechIcon },
   { value: "model", label: "library.create.model", icon: TestTubeOutlineIcon },
-  { value: "folder", label: "library.create.folder", icon: Folder01Icon },
+  { value: "folder", label: "library.create.folder", icon: FolderClosedIcon },
 ];
 
 function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
@@ -303,7 +314,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-ui-14 text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-action pl-[calc(15px*var(--ui-space-scale,1))] pr-[calc(14px*var(--ui-space-scale,1))] py-2 font-medium text-ui-14 text-background [&_svg]:-my-2 outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t("common.new")}
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
@@ -346,7 +357,6 @@ export function LibraryToolbar({
   workflows?: readonly LibraryAudioWorkflow[];
   view: LibraryView;
   onViewChange: (view: LibraryView) => void;
-  /** Grid view only: list view sorts by column headers. */
   sort?: LibrarySortMenuProps;
   search: string;
   onSearchChange: (value: string) => void;
@@ -366,21 +376,20 @@ export function LibraryToolbar({
           />
         )}
         {sort && <SortMenu {...sort} />}
-        {VIEW_OPTIONS.map(({ value, label, icon }) => (
-          <button
-            key={value}
-            type="button"
-            aria-label={t(label)}
-            data-active={view === value}
-            aria-pressed={view === value}
-            onClick={() => onViewChange(value)}
-            className={ROUND_BUTTON}
-          >
-            <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
-          </button>
+        {VIEW_OPTIONS.map(({ value, label, tip, icon }) => (
+          <ToolbarTip key={value} label={t(tip)}>
+            <button
+              type="button"
+              aria-label={t(label)}
+              data-active={view === value}
+              aria-pressed={view === value}
+              onClick={() => onViewChange(value)}
+              className={ROUND_BUTTON}
+            >
+              <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
+            </button>
+          </ToolbarTip>
         ))}
-        {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole.
-            Sized by the header row (cqw), not the window, so it never reaches the title. */}
         <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}
@@ -396,14 +405,16 @@ export function LibraryToolbar({
           />
         </label>
         <NewMenu onSelect={onNew} />
-        <button
-          type="button"
-          aria-label={t("library.toolbar.settings")}
-          onClick={onSettings}
-          className={cn(ROUND_BUTTON, "text-muted-foreground hover:text-foreground dark:text-foreground")}
-        >
-          <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-5" />
-        </button>
+        <ToolbarTip label={t("library.toolbar.settings")}>
+          <button
+            type="button"
+            aria-label={t("library.toolbar.settings")}
+            onClick={onSettings}
+            className={cn(ROUND_BUTTON, "text-muted-foreground hover:text-foreground dark:text-foreground")}
+          >
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-5" />
+          </button>
+        </ToolbarTip>
       </div>
   );
 }

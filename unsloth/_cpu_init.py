@@ -1,0 +1,352 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
+# CPU backend: reached only when unsloth_zoo found no accelerator (or UNSLOTH_FORCE_CPU=1). Like the
+# MLX branch it never imports the GPU model / kernel stack: stock transformers + PEFT + TRL, with
+# unsloth_zoo.cpu choosing dtype, 4-bit, chunked cross entropy and trainer defaults.
+
+import os
+import torch
+
+from ._version import __version__
+from unsloth_zoo.cpu import (
+    FastCPUModel,
+    cpu_capabilities,
+    cpu_bf16_supported,
+    install_cpu_training_defaults,
+)
+
+DEVICE_TYPE = "cpu"
+DEVICE_TYPE_TORCH = "cpu"
+DEVICE_COUNT = 0
+
+install_cpu_training_defaults()
+
+# Same every_n_layers / offload router the GPU route installs from models/_utils.py.
+from ._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
+
+patch_gradient_checkpointing_enable_kwargs()
+
+print(
+    f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
+    f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
+    f"slower than GPU training; supported: text LoRA / full finetuning with SFTTrainer. "
+    f"Set UNSLOTH_DISABLE_CPU_FALLBACK=1 to raise instead."
+)
+
+
+class FastLanguageModel(FastCPUModel):
+    @staticmethod
+    def from_pretrained(
+        *args,
+        unsloth_tiled_mlp = False,
+        **kwargs,
+    ):
+        # Tiling is plain torch, so honour it like the GPU loaders instead of dropping it.
+        from .tiling import check_tiling_available, loader_tile_mlp
+
+        check_tiling_available(unsloth_tiled_mlp)
+        model, tokenizer = FastCPUModel.from_pretrained(*args, **kwargs)
+        loader_tile_mlp(model, unsloth_tiled_mlp)
+        return model, tokenizer
+
+
+FastModel = FastLanguageModel
+FastTextModel = FastLanguageModel
+
+
+class FastVisionModel(FastLanguageModel):
+    @staticmethod
+    def from_pretrained(*args, **kwargs):
+        raise NotImplementedError(
+            "Unsloth: vision / audio models are not supported on the CPU backend yet."
+        )
+
+
+def is_bfloat16_supported(including_emulation = False):
+    return True if including_emulation else cpu_bf16_supported()
+
+
+def is_vLLM_available():
+    return False
+
+
+def get_chat_template(*args, **kwargs):
+    from .chat_templates import get_chat_template as _get_chat_template
+    return _get_chat_template(*args, **kwargs)
+
+
+def apply_chat_template(*args, **kwargs):
+    from .chat_templates import apply_chat_template as _apply_chat_template
+    return _apply_chat_template(*args, **kwargs)
+
+
+def standardize_data_formats(*args, **kwargs):
+    from unsloth_zoo.dataset_utils import standardize_data_formats as _standardize_data_formats
+    return _standardize_data_formats(*args, **kwargs)
+
+
+def standardize_sharegpt(*args, **kwargs):
+    return standardize_data_formats(*args, **kwargs)
+
+
+def train_on_responses_only(*args, **kwargs):
+    from .chat_templates import train_on_responses_only as _train_on_responses_only
+    if _train_on_responses_only is None:
+        from unsloth_zoo.dataset_utils import train_on_responses_only as _train_on_responses_only
+    return _train_on_responses_only(*args, **kwargs)
+
+
+def check_dataset(*args, **kwargs):
+    from .chat_templates import check_dataset as _check_dataset
+    return _check_dataset(*args, **kwargs)
+
+
+try:
+    from trl import SFTConfig as _SFTConfig, SFTTrainer as _SFTTrainer
+except ImportError:
+    # trl is not a default dependency on Apple Silicon: importing unsloth must still work there.
+    class _SFTConfig:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("Unsloth: CPU training needs TRL. Install it with `pip install trl`.")
+
+    _SFTTrainer = _SFTConfig
+
+
+class UnslothTrainingArguments(_SFTConfig):
+    def __init__(
+        self,
+        embedding_learning_rate = None,
+        q_galore_config = None,
+        *args,
+        loraplus_lr_ratio = None,
+        **kwargs,
+    ):
+        # Same positional order as the GPU class; Q-GaLore and LoRA+ are GPU-only, so they must stay unset.
+        if q_galore_config is not None or loraplus_lr_ratio is not None:
+            raise NotImplementedError(
+                "Unsloth: q_galore_config / loraplus_lr_ratio are not supported on the CPU backend."
+            )
+        self.embedding_learning_rate = embedding_learning_rate
+        super().__init__(*args, **kwargs)
+
+
+class UnslothTrainer(_SFTTrainer):
+    def create_optimizer(self, *args, **kwargs):
+        embedding_lr = getattr(self.args, "embedding_learning_rate", None)
+        if embedding_lr is None or self.optimizer is not None:
+            return super().create_optimizer(*args, **kwargs)
+        # Same split as the GPU UnslothTrainer: trained embed_tokens / lm_head copies get their own lr.
+        model = self.model
+        decay = set(self.get_decay_parameter_names(model))
+        custom = getattr(self, "optimizer_cls_and_kwargs", None)
+        if custom is not None:
+            optimizer_cls, optimizer_kwargs = custom[0], dict(custom[1])
+        else:
+            optimizer_cls, optimizer_kwargs = _SFTTrainer.get_optimizer_cls_and_kwargs(
+                self.args, model
+            )
+        if any(key in optimizer_kwargs for key in ("params", "model", "optimizer_dict")):
+            raise NotImplementedError(
+                f"Unsloth: embedding_learning_rate cannot be combined with optim = {self.args.optim!r} on CPU."
+            )
+        embedding_ids = set()
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            module = getattr(model, getter, lambda: None)()
+            if getattr(module, "weight", None) is not None:
+                embedding_ids.add(id(module.weight))
+        # Older transformers models can return None from get_output_embeddings yet still own an lm_head.
+        for owner in (model, getattr(getattr(model, "base_model", None), "model", None)):
+            weight = getattr(getattr(owner, "lm_head", None), "weight", None)
+            if weight is not None:
+                embedding_ids.add(id(weight))
+        groups = {}
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            is_embedding = (
+                name.endswith("modules_to_save.default.weight") or id(param) in embedding_ids
+            )
+            key = (is_embedding, name in decay)
+            groups.setdefault(key, []).append(param)
+        self.optimizer = optimizer_cls(
+            [
+                {
+                    "params": params,
+                    "lr": embedding_lr if is_embedding else self.args.learning_rate,
+                    "weight_decay": self.args.weight_decay if decays else 0.0,
+                }
+                # Same order as the GPU trainer's groups, so its checkpoints resume here.
+                for (is_embedding, decays), params in sorted(
+                    groups.items(), key = lambda kv: (kv[0][0], not kv[0][1])
+                )
+            ],
+            **optimizer_kwargs,
+        )
+        return self.optimizer
+
+
+class UnslothVisionDataCollator:
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Unsloth: vision / audio models are not supported on the CPU backend yet."
+        )
+
+
+def _install_cpu_trainer_module():
+    # `from unsloth.trainer import ...` would otherwise load unsloth/trainer.py and the GPU kernel stack.
+    import sys
+    import types
+    import importlib.machinery
+
+    module_name = __name__.rsplit(".", 1)[0] + ".trainer"
+    trainer = types.ModuleType(module_name)
+    trainer.__package__ = module_name.rsplit(".", 1)[0]
+    trainer.__spec__ = importlib.machinery.ModuleSpec(module_name, loader = None)
+    trainer.UnslothTrainer = UnslothTrainer
+    trainer.UnslothTrainingArguments = UnslothTrainingArguments
+    trainer.UnslothVisionDataCollator = UnslothVisionDataCollator
+    sys.modules[module_name] = trainer
+    package = sys.modules.get(trainer.__package__)
+    if package is not None:
+        setattr(package, "trainer", trainer)
+
+
+_install_cpu_trainer_module()
+del _install_cpu_trainer_module
+
+
+def _cpu_cp_requested(args, kwargs) -> bool:
+    from .parallel_env import env_cp_size
+
+    config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
+    size = getattr(config, "context_parallel_size", None)
+    if "context_parallel_size" in kwargs:
+        # The keyword wins over the config, and None opts out like 1 (context_parallel.patch_sft_trainer).
+        size = kwargs["context_parallel_size"]
+    if isinstance(size, int) and not isinstance(size, bool) and size > 1:
+        return True
+    return env_cp_size() > 1
+
+
+def _install_cpu_context_parallel():
+    # context_parallel loads the GPU model stack, so load it lazily on the first trainer requesting CP;
+    # that trainer gets CP or an error before __init__, never silent plain DDP.
+    import functools
+
+    trainer_cls = _SFTTrainer
+    if not isinstance(trainer_cls, type) or trainer_cls is _SFTConfig:
+        return  # TRL missing: the stub already raises
+    original_init = trainer_cls.__init__
+    cp_keys = (
+        "context_parallel_size",
+        "context_parallel_backend",
+        "context_parallel_rotate_method",
+    )
+    state = {}
+
+    @functools.wraps(original_init)
+    def cp_fields_into_config(self, *args, **kwargs):
+        # Stock TRL rejects CP kwargs (the GPU route's SFTConfig declares them), so move them onto the config.
+        cp = {key: kwargs.pop(key) for key in cp_keys if key in kwargs}
+        config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
+        if config is not None:
+            for key, value in cp.items():
+                setattr(config, key, value)
+        return original_init(self, *args, **kwargs)
+
+    @functools.wraps(original_init)
+    def __init__(self, *args, **kwargs):
+        requested = _cpu_cp_requested(args, kwargs)
+        if requested and "init" not in state:
+            current = trainer_cls.__init__
+            trainer_cls.__init__ = (
+                cp_fields_into_config  # patch_sft_trainer wraps the class's __init__
+            )
+            try:
+                from .context_parallel import patch_sft_trainer
+                patch_sft_trainer()
+                state["init"] = trainer_cls.__init__
+            except Exception as error:
+                raise RuntimeError(
+                    "Unsloth: context parallelism was requested (context_parallel_size > 1 or "
+                    "UNSLOTH_CP_SIZE / UNSLOTH_PARALLEL cp), but it could not be set up on the CPU backend: "
+                    f"{type(error).__name__}: {error}. Unset it to train without context parallelism."
+                ) from error
+            finally:
+                trainer_cls.__init__ = current
+        init = state.get("init")
+        if init is None:
+            # context_parallel_size = 1 / None opts out, but stock TRL still rejects the keyword.
+            init = cp_fields_into_config if any(key in kwargs for key in cp_keys) else original_init
+        init(self, *args, **kwargs)
+        # A config TRL rebuilt from to_dict() loses CP attributes set on it.
+        if (
+            requested
+            and init
+            is not cp_fields_into_config  # else an outer, hand-installed patch owns the check
+            and getattr(self, "_context_parallel_manager", None) is None
+        ):
+            raise RuntimeError(
+                "Unsloth: context parallelism was requested but the trainer did not set it up on the CPU "
+                "backend (pass a trl.SFTConfig as args); refusing to train without it."
+            )
+
+    trainer_cls.__init__ = __init__
+
+
+_install_cpu_context_parallel()
+del _install_cpu_context_parallel
+
+
+def _load_dataprep(name: str):
+    # By file: dataprep/__init__ also imports synthetic.py, which needs a GPU device type.
+    import sys
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "dataprep" / f"{name}.py"
+    module_name = f"{__name__.rsplit('.', 1)[0]}._cpu_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    # Registered so pickle (spawn workers, datasets num_proc) can import the classes back; a fresh
+    # process resolves the name because importing the package runs this loader again.
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+_raw_text = _load_dataprep("raw_text")
+RawTextDataLoader = _raw_text.RawTextDataLoader
+TextPreprocessor = _raw_text.TextPreprocessor
+load_ebook_dataset = _load_dataprep("ebooks").load_ebook_dataset
+del _raw_text, _load_dataprep
+
+__all__ = [
+    "FastLanguageModel",
+    "FastModel",
+    "FastTextModel",
+    "FastVisionModel",
+    "is_bfloat16_supported",
+    "is_vLLM_available",
+    "get_chat_template",
+    "apply_chat_template",
+    "standardize_data_formats",
+    "standardize_sharegpt",
+    "train_on_responses_only",
+    "check_dataset",
+    "UnslothTrainer",
+    "UnslothTrainingArguments",
+    "UnslothVisionDataCollator",
+    "RawTextDataLoader",
+    "TextPreprocessor",
+    "load_ebook_dataset",
+    "DEVICE_TYPE",
+    "DEVICE_TYPE_TORCH",
+    "DEVICE_COUNT",
+    "__version__",
+]

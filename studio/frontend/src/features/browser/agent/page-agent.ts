@@ -376,7 +376,8 @@ export function installPageAgent(): PageAgent {
     };
     const flush = () => {
       const text = clean(buffer, 400);
-      if (text && bufferShown && text.length > 1) push(text);
+      // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
+      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) push(text);
       buffer = "";
       bufferShown = false;
     };
@@ -585,9 +586,8 @@ export function installPageAgent(): PageAgent {
         position: "absolute", left: "-14px", top: "-14px", width: "28px", height: "28px", "box-sizing": "border-box",
         "border-radius": "50%", border: "2px solid", opacity: "0",
       });
-      // Hugeicons cursor-02, its corners rounded further by a round-joined stroke of the fill (white
-      // outline drawn wider underneath), then scaled back to size about its tip at (3, 3). The rounded
-      // tip ends up 1.25px short of (0, 0), hence the offset.
+      // Hugeicons cursor-02 with corners rounded by a round-joined fill stroke, scaled back about
+      // its tip at (3, 3); the rounded tip lands 1.25px short of (0, 0), hence the offset.
       const arrow = styled(document.createElementNS(SVG, "svg"), {
         position: "absolute", left: "-1.25px", top: "-1.25px", width: "24px", height: "24px", overflow: "visible",
       });
@@ -726,9 +726,8 @@ export function installPageAgent(): PageAgent {
 
   const describe = (ref: string, value?: unknown, point?: Point | null): Record<string, unknown> => {
     const found = point ? elementAt(point) : ref ? lookup(ref) : (document.activeElement ?? document.body);
-    // A click on text inside a button or label reaches that control (a label's being its field or
-    // button), which may submit.
-    // A point lands on whatever is drawn, often an icon inside a control: gate the control.
+    // A click on text inside a button or label reaches that control (a label being its field or
+    // button), which may submit; a point lands on whatever is drawn, so gate the control.
     const control = point ? (lineage(found).find((node) => roleOf(node) !== null) ?? found) : found;
     const holder = control.closest("button, label") ?? control;
     const el = holder instanceof HTMLLabelElement && holder.control ? holder.control : holder;
@@ -821,7 +820,8 @@ export function installPageAgent(): PageAgent {
     const href = anchor?.href ?? "";
     if (!anchor || !/^https?:/i.test(href)) return null;
     const target = new URL(href);
-    const hashOnly = target.hash && target.href.split("#")[0] === pageUrl().href.split("#")[0];
+    // href="#" has an empty hash, yet stays on the page like any other fragment.
+    const hashOnly = href.includes("#") && target.href.split("#")[0] === pageUrl().href.split("#")[0];
     return !hashOnly && (directLinks || anchor.target === "_blank") ? href : null;
   };
 
@@ -1079,10 +1079,9 @@ export function installPageAgent(): PageAgent {
     return down;
   };
 
-  // The agent works only in its own tab: a form or link aimed at a new tab (target, formtarget)
-  // would be dropped by the panel, which opens tabs only on a real user click, while the model hears
-  // it went. The target is read after the event, by the browser or by the proxy shell's deferred
-  // setTimeout, so it points here for the action and is put back on a later timer.
+  // The agent works only in its own tab: a target or formtarget aimed at a new tab would be dropped
+  // by the panel (tabs open only on a real click); the target is read after the event, so it is
+  // repointed for the action and restored on a later timer.
   const inOwnTab = <T>(act: () => T): T => {
     const restore: Array<() => void> = [];
     const point = (el: unknown, name: string) => {
@@ -1142,6 +1141,17 @@ export function installPageAgent(): PageAgent {
         return { ok: true, note: "Submitted the form." };
       }
       if (tag === "button" || tag === "a" || BUTTON_INPUTS.has(inputType)) (target as HTMLElement).click();
+      // A synthetic Enter inserts no line break.
+      else if (tag === "textarea") {
+        const area = target as HTMLTextAreaElement;
+        if (area.readOnly || area.matches(":disabled")) return { ok: false, error: "that key does nothing in this field; click or type instead." };
+        const end = area.selectionEnd ?? area.value.length;
+        const start = area.selectionStart ?? end;
+        setValue(area, `${area.value.slice(0, start)}\n${area.value.slice(end)}`);
+        area.setSelectionRange?.(start + 1, start + 1);
+      } else if ((target as HTMLElement).isContentEditable) {
+        if (!document.execCommand("insertParagraph")) document.execCommand("insertText", false, "\n");
+      }
     } else if (name === "Space" && (tag === "button" || (tag === "input" && ["checkbox", "radio"].includes((target as HTMLInputElement).type)))) {
       (target as HTMLElement).click();
     } else if ((name === "Backspace" || name === "Delete") && (tag === "input" || tag === "textarea")) {
@@ -1198,7 +1208,8 @@ export function installPageAgent(): PageAgent {
     if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has(field.type.toLowerCase()))) {
       // A date or time field drops a value it can't parse: tried on a detached field of the same
       // type first, so a bad value never blanks the page's field or fires its change handlers.
-      const format = DATE_FORMATS[field.type.toLowerCase()];
+      // A number field drops text too, which would read as "typed" with the field left empty.
+      const format = DATE_FORMATS[field.type.toLowerCase()] ?? (field.type.toLowerCase() === "number" ? "a number such as 42" : "");
       if (format && text) {
         const probe = document.createElement("input");
         probe.type = field.type;
@@ -1222,6 +1233,8 @@ export function installPageAgent(): PageAgent {
 
   const findOption = (select: HTMLSelectElement, value: string): HTMLOptionElement | undefined => {
     const wanted = value.trim().toLowerCase();
+    // An empty value would match the first option by inclusion.
+    if (!wanted) return undefined;
     return (
       Array.from(select.options).find(
         (candidate) => candidate.text.trim().toLowerCase() === wanted || candidate.value.toLowerCase() === wanted,

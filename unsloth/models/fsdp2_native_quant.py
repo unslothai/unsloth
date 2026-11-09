@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Quantized and exotic parameters under Unsloth's native FSDP2 wrap (`fsdp2_native.shard_model`).
-
-`shard_model` calls `fully_shard` on every repeated block and then on the root; around those calls
-`native_quant_context` makes bitsandbytes 4-bit weights shardable (packed bytes stored in the compute
-dtype, QuantState and the Params4bit class kept on the all-gathered weight, no mixed precision cast of
-packed bytes: `fsdp2_qlora.py`), and `after_native_shard` installs what saving and checkpointing need
-and checks that no trainable parameter was left out of FSDP2 (its gradient would not be reduced).
-
-    with native_quant_context(model) as quant:
-        for unit in units: fully_shard(unit, mp_policy = ...)
-        fully_shard(model, mp_policy = ...)
-    report = after_native_shard(model)
-"""
+"""bnb 4-bit shardable under native FSDP2; after_native_shard checks no trainable param skips FSDP2."""
 
 __all__ = [
     "native_quant_context",

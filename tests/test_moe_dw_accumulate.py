@@ -5,7 +5,6 @@
 
 import os
 import re
-import socket
 import sys
 from pathlib import Path
 
@@ -30,6 +29,19 @@ except Exception as exc:  # pragma: no cover - depends on the installed stack
     pytest.skip(f"grouped_gemm is unimportable here: {exc}", allow_module_level = True)
 
 DEV = "cuda"
+
+
+def _compile_dtype():
+    # Inductor skips (SkipFrame) any graph with bf16 inputs or outputs on a card without native bf16 (sm_75), so
+    # Dynamo then traces each nested Python frame, op bodies included, and fullgraph fails on the first one.
+    # fp16, the dtype Unsloth trains in there, compiles as one graph.
+    try:
+        native = torch.cuda.is_bf16_supported(including_emulation = False)
+    except TypeError:  # torch without the argument
+        native = torch.cuda.get_device_capability()[0] >= 8
+    return torch.bfloat16 if native else torch.float16
+
+
 TMA_STORE = [False, True] if gg.supports_tma() else [False]
 
 
@@ -384,8 +396,9 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
     from torch._dynamo.utils import counters
 
     E, N, K, T, topk = 4, 128, 128, 64, 2
+    dtype = _compile_dtype()
     cfgs = _cfgs()
-    c = _Case(E, N, K, T, topk, "permute_x", torch.bfloat16)
+    c = _Case(E, N, K, T, topk, "permute_x", dtype)
 
     def fn(X, W):
         return _gemm(X, W, c.m_sizes, c.gather, topk, c.mode, cfgs)
@@ -395,7 +408,7 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
     compiled = torch.compile(fn, fullgraph = True)
     grads = []
     for f in (fn, compiled):
-        W = _param(E, N, K, torch.bfloat16)
+        W = _param(E, N, K, dtype)
         g0 = torch.randn_like(W)
         W.grad = g0.clone()
         X = c.X.clone().requires_grad_(True)
@@ -414,7 +427,7 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
         return buf
 
     counters.clear()
-    buf_e = torch.randn(E, N, K, device = DEV).bfloat16()
+    buf_e = torch.randn(E, N, K, device = DEV).to(dtype)
     buf_c = buf_e.clone()
     acc(c.X, c.G, buf_e)
     torch.compile(acc, fullgraph = True)(c.X, c.G, buf_c)
@@ -425,9 +438,8 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _ddp_worker(rank, world, port, inplace, bucket_view, out_path):
@@ -454,13 +466,26 @@ def _ddp_worker(rank, world, port, inplace, bucket_view, out_path):
     cases = [
         _Case(E, N, K, T, topk, "permute_x", torch.bfloat16, seed = 100 * rank + i) for i in range(4)
     ]
+    allreduces = []
+
+    def counting_allreduce(state, bucket):
+        allreduces.append(1)
+        return (
+            dist.all_reduce(bucket.buffer(), async_op = True)
+            .get_future()
+            .then(lambda fut: fut.value()[0].div_(world))
+        )
+
+    ddp.register_comm_hook(None, counting_allreduce)
     for i, case in enumerate(cases):
-        loss = ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean()
+        # The forward runs inside no_sync too: DDP decides at forward time whether to reduce.
         if i < 3:
             with ddp.no_sync():
-                loss.backward()
+                ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean().backward()
         else:
-            loss.backward()
+            assert not allreduces, "a no_sync step reduced gradients"
+            ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean().backward()
+    assert allreduces
     torch.save(
         {"grad": model.w.grad.float().cpu(), "inplace": gg.DW_ACCUMULATE_STATS["inplace"]},
         f"{out_path}.{rank}",
@@ -539,7 +564,6 @@ def test_fsdp2_no_sync_gradient_accumulation(tmp_path):
 
 
 def test_existing_gradient_survives_in_microbatch_cancellation(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")
     E, N, K, T = 1, 64, 64, 128
     dtype, big = torch.bfloat16, 1e4
     X = torch.zeros(T, K, device = DEV, dtype = dtype)
@@ -549,11 +573,20 @@ def test_existing_gradient_survives_in_microbatch_cancellation(monkeypatch):
     m_sizes = torch.tensor([T], device = DEV, dtype = torch.int32)
     gather = torch.arange(T, device = DEV, dtype = torch.int32)
     W = _param(E, N, K, dtype)
-    W.grad = torch.ones_like(W)
-    before = gg.DW_ACCUMULATE_STATS["inplace"]
-    _gemm(X, W, m_sizes, gather, 1, "none", _cfgs()).backward(G)
-    assert gg.DW_ACCUMULATE_STATS["inplace"] == before + 1
-    assert torch.equal(W.grad, torch.ones_like(W))
+    grads = {}
+    for inplace in ("1", "0"):
+        monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", inplace)
+        W.grad = torch.ones_like(W)
+        before = gg.DW_ACCUMULATE_STATS["inplace"]
+        _gemm(X, W, m_sizes, gather, 1, "none", _cfgs()).backward(G)
+        assert gg.DW_ACCUMULATE_STATS["inplace"] == before + (inplace == "1")
+        grads[inplace] = W.grad.clone()
+    # The existing gradient is added after the reduction, exactly as grad + dW: folded in before it,
+    # the 1 would be lost against the 1e8 partial sum. gfx1151's MFMA leaves the cancelled dW at -4
+    # rather than 0 (4e-8 of the partials) in both arms, so only CUDA checks the absolute value.
+    assert torch.equal(grads["1"], grads["0"])
+    if torch.version.hip is None:
+        assert torch.equal(grads["1"], torch.ones_like(W))
 
 
 def test_side_stream_use_keeps_the_returned_gradient_path(monkeypatch):

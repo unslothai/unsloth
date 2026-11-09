@@ -132,7 +132,8 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
     return inference_config
 
 
-# field -> (env var, static default, min, max, is_int). Per field an operator pin via UNSLOTH_SAMPLING_* wins even over an explicit client value, then the client value, then the per-model recommendation, then the static schema default.
+# field -> (env var, default, min, max, is_int). Precedence: UNSLOTH_SAMPLING_* pin,
+# client value, per-model recommendation, static default.
 # ── Effective sampling resolution for `unsloth run` / `unsloth start` ──────────
 _SAMPLING_FIELDS = {
     "temperature": ("UNSLOTH_SAMPLING_TEMPERATURE", 0.6, 0.0, 2.0, False),
@@ -205,6 +206,18 @@ def _recommended_sampling(model_id: str) -> Dict[str, Any]:
     return recommended
 
 
+def _saved_sampling(model_id: Optional[str]) -> Dict[str, Any]:
+    """The user's saved defaults for this model; a store that cannot be read means none, never a failed request."""
+    if not model_id:
+        return {}
+    try:
+        from utils.model_sampling_defaults import saved_sampling_defaults
+        return saved_sampling_defaults(model_id)
+    except Exception as e:
+        logger.debug(f"Could not read saved sampling defaults for '{model_id}': {e}")
+        return {}
+
+
 def resolve_effective_sampling(
     model_id: Optional[str],
     explicit: Dict[str, Any],
@@ -212,10 +225,13 @@ def resolve_effective_sampling(
     fill_defaults: bool = True,
     thinking: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Resolve the effective sampling params for a request. ``explicit`` maps each field in :data:`SAMPLING_FIELD_NAMES` to the client-sent value, or ``None`` when the client omitted it. Precedence, highest first: an operator ``UNSLOTH_SAMPLING_*`` pin, the client's explicit value, the per-model recommendation, then the static schema default. When ``fill_defaults`` is False a field with none of the first three is omitted rather than set to the static default, so a raw proxy body (``/v1/completions``) keeps llama-server's own default for that field."""
+    """Resolve the effective sampling params for a request. ``explicit`` maps each field in :data:`SAMPLING_FIELD_NAMES` to the client-sent value, or ``None`` when the client omitted it. Precedence, highest first: an operator ``UNSLOTH_SAMPLING_*`` pin, the client's explicit value, the defaults the user saved for this model, the per-model recommendation, then the static schema default. When ``fill_defaults`` is False a field with none of the first four is omitted rather than set to the static default, so a raw proxy body (``/v1/completions``) keeps llama-server's own default for that field."""
     recommended = _recommended_sampling(model_id or "")
     if thinking is not None and "qwen3" in (model_id or "").lower():
         recommended = {**recommended, **_QWEN3_THINKING_SAMPLING[thinking]}
+    saved = _saved_sampling(model_id)
+    if saved:
+        recommended = {**recommended, **saved}
     effective: Dict[str, Any] = {}
     for field, (_env, default, _lo, _hi, _int) in _SAMPLING_FIELDS.items():
         override = _operator_sampling_override(field)

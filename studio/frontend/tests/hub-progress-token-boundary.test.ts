@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Assert on the request the browser emits, not the shape of the source: these still fail
-// if the header is dropped, blanked, or eaten by authFetch's own merge.
+// Assert on the emitted request, so dropping, blanking or merging away the header fails.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -83,7 +82,6 @@ test("hubTokenHeader never leaks the token anywhere but its own header", async (
 });
 
 test("the progress callers accept and forward a request-scoped token", () => {
-  // Whitespace-insensitive: the transport tests cannot prove these callers send one.
   const api = readText("../src/features/chat/api/chat-api.ts");
   for (const name of [
     "getGgufDownloadProgress",
@@ -104,7 +102,6 @@ test("the progress callers accept and forward a request-scoped token", () => {
 });
 
 test("a local load is not gated behind Hub token preparation", () => {
-  // prepareHfTokenForUse validates over the network and can block on a dialog.
   const chatRuntime = readText(
     "../src/features/chat/hooks/use-chat-model-runtime.ts",
   );
@@ -112,9 +109,7 @@ test("a local load is not gated behind Hub token preparation", () => {
   assert.notEqual(start, -1, "the local-load guard is missing");
   const guarded = chatRuntime.slice(start, start + 600);
   assert.match(guarded, /!isLocal/);
-  // An Ollama row is local too, but its id is an opaque reference rather than a path,
-  // so isLocalModelPath alone lets it through. chat-load-hub-token-reach.test.ts pins
-  // what the predicate itself classifies.
+  // An Ollama id is an opaque reference, not a path, so isLocalModelPath alone lets it through.
   assert.match(guarded, /!isOllamaModelId\(modelId\)/);
   assert.match(guarded, /nativePathToken\s*==\s*null/);
   assert.match(guarded, /if\s*\(mayReachHub\)\s*\{[\s\S]*prepareHfTokenForUse\(hfToken\)/);

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the offload-avoidance serving-slot reduction (`_slots_that_fit_on_gpu`).
-
-When a pinned context does not fit at the requested `--parallel` slot count, Unsloth would
-flip to `--fit on` and llama-server offloads layers to host RAM, collapsing decode ~3x
-(oobabooga #6718). Instead the loader retries the on-GPU fit at fewer slots and keeps the
-largest count that stays fully on GPU (`-ngl -1`). These tests drive the real helper with
-synthetic VRAM maps; the KV term is mocked so totals are controlled and the reduction logic
-is asserted directly (no GPU, network, or subprocess).
-"""
+"""Fewer serving slots keep the context fully on GPU, avoiding --fit on offload that collapses decode."""
 
 from __future__ import annotations
 
@@ -76,7 +68,6 @@ def _run(
     swa_full = False,
     split_extra_mib = 0,
 ):
-    # Split step passed only when set, so the other cases keep exercising the default.
     extra = {"split_extra_bytes": int(split_extra_mib * MIB)} if split_extra_mib else {}
     return b._slots_that_fit_on_gpu(
         n_parallel,
@@ -114,13 +105,10 @@ class TestSlotsThatFitOnGpu:
         assert use_fit is True and gi is None and slots == 4
 
     def test_roomy_would_keep_all_but_helper_only_reduces(self):
-        # On a roomy card par4 fits, so load_model never calls this helper; if called it
-        # still only searches < n_parallel and never raises the count above the request.
         gi, use_fit, slots = _run(_backend(), 4, 5000, [(0, 183000)], {0: 183000})
         assert use_fit is False and slots == 3 and slots < 4
 
     def test_single_slot_request_is_noop(self):
-        # n_parallel == 1: nothing to reduce (range empty) -> report offload unchanged.
         gi, use_fit, slots = _run(_backend(), 1, 22500, [(0, 24576)], {0: 24576})
         assert use_fit is True and gi is None and slots == 1
 
@@ -139,12 +127,9 @@ class TestSlotsThatFitOnGpu:
         assert use_fit is False and slots == 3
 
     def test_split_rate_is_rechecked_on_multi_gpu_candidates(self):
-        # The base footprint carries the context-compute buffer at the single-device
-        # rate, so a candidate that lands on 2 GPUs owes one enlarged copy per card.
-        # Charging it drops the count further (3 -> 1) rather than pinning an OOM.
+        # The base carries the compute buffer at the single-device rate; a 2-GPU candidate owes one copy per card.
         gpus, totals = [(0, 24576), (1, 24576)], {0: 24576, 1: 24576}
         assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 500) == ([0, 1], False, 1)
-        # And when no count clears it, offload (the pre-existing failure mode).
         assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 1000) == (None, True, 4)
 
     def test_split_step_does_not_touch_a_single_gpu_candidate(self):
@@ -200,10 +185,7 @@ class TestSlotsThatFitOnGpu:
 
 
 class TestMtpReserveIsRepricedPerCandidate:
-    """The MTP reserve is not slot-independent: compact SWA scales its window allowance by
-    the slot count under kv_unified, and an MLA target with recurrent (KDA) layers charges
-    per slot. Holding it at the requested count over-charged every candidate, so a smaller
-    one that fits was rejected and the load kept --fit and offloaded to host (PR #8172)."""
+    """The MTP reserve scales with the slot count, so it must be repriced per candidate, not held fixed."""
 
     def _fit(
         self,
@@ -230,8 +212,7 @@ class TestMtpReserveIsRepricedPerCandidate:
         assert use_fit is False and gi == [0] and slots == 2
 
     def test_holding_the_reserve_at_the_requested_count_would_reject_them_all(self):
-        # The old behaviour: every candidate charged the 4-slot reserve, so even one slot
-        # (22000+46+2000) looked too big and the load stayed on --fit.
+        # Charging every candidate the 4-slot reserve made even one slot look too big.
         gi, use_fit, slots = self._fit(lambda _s, _ub: int(500 * 4 * MIB))
         assert use_fit is True and gi is None and slots == 4
 
@@ -243,10 +224,7 @@ class TestMtpReserveIsRepricedPerCandidate:
         candidate lowers the batch floor, so the reserve has to see the candidate ubatch
         and not the one the original request was sized at (PR #8172)."""
         seen = []
-        # base 24000: no candidate fits, so every one is priced and observed.
         self._fit(lambda s, ub: seen.append((s, ub)) or 0, base_mib = 24000)
         assert seen, "the reserve callback was never consulted"
-        # ubatch_for_slots is None here, so n_ubatch passes through; what matters is that
-        # it travels with the slot count instead of being dropped.
         assert all(ub == 512 for _s, ub in seen), seen
         assert [s for s, _ub in seen] == [3, 2, 1]

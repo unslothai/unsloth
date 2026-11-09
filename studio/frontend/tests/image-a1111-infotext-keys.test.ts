@@ -13,9 +13,8 @@ import {
 
 type Handling = "applied" | "reported" | "ignored";
 
-// Every key AUTOMATIC1111 (create_infotext, extra_generation_params, the `infotext=` options) and Forge
-// write, with a value that changes the image where one exists. "ignored" is only for keys that set
-// nothing: hashes, the writer, the version. Anything not handled falls through to "reported".
+// Lists every infotext key AUTOMATIC1111 and Forge write; applied keys change the image, ignored
+// keys (hashes, writer, version) set nothing, and unhandled keys fall through to reported.
 const KEYS: Array<[string, string, Handling]> = [
   // create_infotext
   ["Steps", "30", "applied"],
@@ -47,7 +46,8 @@ const KEYS: Array<[string, string, Handling]> = [
   ["Version", "v1.10.1", "ignored"],
   ["User", "someone", "ignored"],
   // extra_generation_params (modules, scripts, extensions-builtin)
-  ["Hires upscale", "2", "reported"],
+  // Maps onto Hires fix (lib/hires-choice.ts); the others need a factor beside them, so alone they are reported.
+  ["Hires upscale", "2", "applied"],
   ["Hires steps", "10", "reported"],
   ["Hires upscaler", "Latent", "reported"],
   ["Hires resize", "1024x1024", "reported"],

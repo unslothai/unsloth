@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-install the SSM/Mamba kernels a hybrid model lazy-imports during ``from_pretrained``;
-the inference-path counterpart of the training worker's install.
-"""
+"""Auto-installs SSM/Mamba kernels that hybrid models lazy-import during from_pretrained."""
 
 from __future__ import annotations
 
@@ -631,6 +629,14 @@ def resolve_ssm_kernels(
         required = model_requires_mamba_ssm(probe)
     if wants is None:
         wants = model_wants_causal_conv1d(probe)
+    # zoo replaces causal_conv1d only in the native modeling modules; remote code may import it.
+    if (
+        not wants
+        and remote_code
+        and trust_remote_code is not False
+        and any(_is_zoo_gdn_model_type(model_type) for model_type in model_types)
+    ):
+        wants = True
     ssm_types = {t for t in model_types if t in SSM_MODEL_TYPES}
     remote_code_used = bool(remote_code) and (
         bool(trust_remote_code)
@@ -868,7 +874,7 @@ def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
         return run(cmd, **kwargs)
 
 
-# The torch build this process installs kernels for, probed once (one torch import in a child).
+# The torch build this process installs kernels for, read once (the loaded torch, else one torch import in a child).
 _TORCH_ENV: dict = {}
 # Kernels whose install already failed in this process, keyed by kernel, torch and toolchain, so a
 # later load stage (or the next load in the same worker) does not download or compile them again.
@@ -878,7 +884,9 @@ _FAILED_INSTALLS: set = set()
 def _torch_env() -> dict[str, str] | None:
     key = probe_torch_wheel_env
     if key not in _TORCH_ENV:
-        _TORCH_ENV[key] = probe_torch_wheel_env(timeout = 30, include_windows = True)
+        _TORCH_ENV[key] = probe_torch_wheel_env(
+            timeout = 30, include_windows = True, reuse_loaded_torch = True
+        )
     return _TORCH_ENV[key]
 
 

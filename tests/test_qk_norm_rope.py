@@ -229,3 +229,79 @@ def test_trainable_norm_fallback_reuses_grad_buffer():
     assert peaks[1] <= peaks[0], peaks
     for x, y in zip(outs[0], outs[1]):
         assert torch.equal(x, y)
+
+
+@pytest.mark.parametrize(
+    "value, device, expected",
+    [
+        (None, "cuda", True),
+        ("", "cuda", True),
+        (None, "hip", False),
+        (None, "xpu", False),
+        (None, "cpu", False),
+        ("0", "cuda", False),
+        (" false ", "cuda", False),
+        ("off", "cuda", False),
+        ("1", "cuda", True),
+        ("1", "hip", True),
+        ("on", "hip", True),
+    ],
+)
+def test_default_gate(monkeypatch, value, device, expected):
+    # On by default on NVIDIA CUDA; ROCm keeps the unfused training path unless forced with =1.
+    from unsloth.kernels import qk_norm_rope as QK
+
+    if value is None:
+        monkeypatch.delenv("UNSLOTH_FUSED_QKNORM_ROPE", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_FUSED_QKNORM_ROPE", value)
+    monkeypatch.setattr(QK, "DEVICE_TYPE", device)
+    assert QK._qk_norm_rope_default() is expected
+
+
+_ROUTE_SCRIPT = r"""
+import os, sys, torch
+from unsloth import FastLanguageModel
+from unsloth.kernels import qk_norm_rope as QK
+model, tok = FastLanguageModel.from_pretrained(
+    "trl-internal-testing/tiny-Qwen3ForCausalLM", max_seq_length = 256, load_in_4bit = False, dtype = None
+)
+model = FastLanguageModel.get_peft_model(model, r = 8, target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"])
+model.train()
+ids = torch.randint(0, 1000, (2, 200), device = "cuda")
+with torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CUDA]) as prof:
+    out = model(input_ids = ids, labels = ids)
+    out.loss.backward()
+    torch.cuda.synchronize()
+names = [e.key for e in prof.key_averages() for _ in range(e.count)]
+fwd = sum("_qk_norm_rope_forward" in n for n in names)
+bwd = sum("_qk_norm_rope_backward" in n for n in names)
+rope = sum("_rope_embedding" in n for n in names)
+print("ROUTE", int(QK.QK_NORM_ROPE_ENABLED), fwd, bwd, rope, torch.isfinite(out.loss).item())
+"""
+
+
+@pytest.mark.parametrize("value", [None, "0"])
+def test_qwen3_training_routes_by_default(value):
+    # A real Qwen3 LoRA training step: the fused kernels run by default, and =0 keeps the unfused
+    # fast_rms_layernorm + RoPE kernels.
+    import os
+    import subprocess
+    import sys
+
+    if torch.version.hip:
+        pytest.skip("ROCm: unfused by default, covered by test_default_gate")
+    env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_FUSED_QKNORM_ROPE"}
+    if value is not None:
+        env["UNSLOTH_FUSED_QKNORM_ROPE"] = value
+    r = subprocess.run(
+        [sys.executable, "-c", _ROUTE_SCRIPT], env = env, capture_output = True, text = True, timeout = 900
+    )
+    line = [l for l in r.stdout.splitlines() if l.startswith("ROUTE ")]
+    assert line, r.stdout[-3000:] + r.stderr[-3000:]
+    enabled, fwd, bwd, rope, finite = line[-1].split()[1:]
+    assert finite == "True"
+    if value is None:
+        assert enabled == "1" and int(fwd) > 0 and int(bwd) > 0 and int(rope) == 0, line
+    else:
+        assert enabled == "0" and int(fwd) == 0 and int(bwd) == 0 and int(rope) > 0, line

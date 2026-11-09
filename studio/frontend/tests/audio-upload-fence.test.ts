@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-// A peer tab has written the fence and published the next account's token.
 const sent: string[] = [];
 class FakeXhr {
   upload = { onprogress: null as unknown };

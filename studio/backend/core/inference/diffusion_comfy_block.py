@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI ``nvfp4`` / ``mxfp8`` layers: decode, dequantize, and the runtimes that keep them.
-
-Layout measured on Comfy-Org's files: nvfp4 ``.weight`` uint8 ``[N, K/2]`` with the EVEN column in the HIGH nibble,
-e4m3 block scales (per 16 columns) in the cuBLAS 128x4 tiled layout, ``.weight_scale_2`` per-tensor,
-``.input_scale`` = activation ``amax / (448 * 6)``, optional ``.pre_quant_scale`` input smoothing. mxfp8 ``.weight``
-e4m3 ``[N, K]`` with e8m0 exponents (per 32 columns) in the same tiled layout. Decoded layers are row-major so the
-row-tag mapping in ``diffusion_comfy_quant`` splits and concatenates them as for int8 / fp8.
-"""
+"""ComfyUI nvfp4/mxfp8 layer decode; nvfp4 stores the EVEN column in the HIGH nibble."""
 
 from __future__ import annotations
 
@@ -133,14 +126,22 @@ def _dequant_temp_bytes_per_row(fmt: str, cols: int, pre_quant: bool) -> int:
     return peak + (4 * cols if pre_quant else 0)
 
 
-def _dequant_block_rows(fmt, codes, scale, tensor_scale, pre_quant_scale):
+def _dequant_block_rows(
+    fmt,
+    codes,
+    scale,
+    tensor_scale,
+    pre_quant_scale,
+    lut = None,
+):
     import torch
 
     rows = int(codes.shape[0])
     if fmt == NVFP4:
-        lut = torch.tensor(
-            _E2M1 + tuple(-v for v in _E2M1), dtype = torch.float32, device = codes.device
-        )
+        if lut is None:
+            lut = torch.tensor(
+                _E2M1 + tuple(-v for v in _E2M1), dtype = torch.float32, device = codes.device
+            )
         c = codes.to(torch.int32)
         values = torch.stack((lut[c & 0x0F], lut[c >> 4]), dim = -1).reshape(rows, -1, 16)
         del c
@@ -168,12 +169,15 @@ def dequant_block(
     tensor_scale: Any = None,
     pre_quant_scale: Any = None,
     dtype: Any = None,
+    chunk_bytes: Optional[int] = None,
+    lut: Any = None,
 ) -> Any:
     """Dense ``[N, K]`` weight; ``pre_quant_scale`` folds into the columns: ``(x * s) @ W.T == x @ (W * s).T``.
 
     Dequantized in row chunks straight into the output, so the float32 intermediates stay bounded by
-    ``_DEQUANT_CHUNK_BYTES`` instead of several times the layer; every op is per row, so the result is
-    bit-identical to one pass."""
+    ``chunk_bytes`` (default ``_DEQUANT_CHUNK_BYTES``) instead of several times the layer; every op is per row, so
+    the result is bit-identical to one pass. ``tensor_scale``: one value or one per row. ``lut``: the e2m1 table
+    already on the device (a forward under CUDA graph capture must not upload one)."""
     import torch
 
     from .diffusion_single_file_converters import charge_host_ram
@@ -184,7 +188,7 @@ def dequant_block(
     rows = int(codes.shape[0])
     cols = logical_cols(fmt, codes)
     per_row = _dequant_temp_bytes_per_row(fmt, cols, pre_quant_scale is not None)
-    chunk = max(1, min(rows, _DEQUANT_CHUNK_BYTES // max(per_row, 1)))
+    chunk = max(1, min(rows, int(chunk_bytes or _DEQUANT_CHUNK_BYTES) // max(per_row, 1)))
     charge_host_ram(rows * cols * torch.empty((), dtype = dtype).element_size() + chunk * per_row)
     ts = None
     if tensor_scale is not None:
@@ -197,7 +201,7 @@ def dequant_block(
         stop = min(rows, start + chunk)
         part_ts = ts if ts is None or ts.shape[0] == 1 else ts[start:stop]
         out[start:stop] = _dequant_block_rows(
-            fmt, codes[start:stop], scale[start:stop], part_ts, pqs
+            fmt, codes[start:stop], scale[start:stop], part_ts, pqs, lut
         ).to(dtype)
     return out
 
@@ -309,7 +313,7 @@ def nvfp4_dynamic_linear_class():
             if self.protect.armed and self.protect.protected:
                 out = F.linear(
                     flat,
-                    dequantize_nvfp4_weight(self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16),
+                    dequantize_nvfp4_weight(self.wq, self.w_sf, self.w_scale, dtype = flat.dtype),
                 )
             else:
                 with _device_guard(flat):
@@ -368,8 +372,11 @@ def mxfp8_runtime_reason(target: Any) -> Optional[str]:
         if index not in _MX_PROBE:
             try:
                 with torch.cuda.device(index):
-                    x = torch.randn(128, 64, device = "cuda", dtype = torch.bfloat16)
-                    w = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+                    # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
+                    # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
+                    gen = torch.Generator().manual_seed(0)
+                    x = torch.randn(128, 64, dtype = torch.bfloat16, generator = gen).to("cuda")
+                    w = torch.randn(32, 64, dtype = torch.bfloat16, generator = gen).to("cuda")
                     wq, wsf = mx_quantize_activation(w)
                     linear = mxfp8_linear_class()(64, 32, codes = wq, tiled_scale = wsf)
                     y = linear(x).float()
@@ -553,8 +560,8 @@ def comfy_block_backends(
                 )
             else:
                 logger.info(
-                    "diffusion.comfy_quant: %d %s layer(s) are dequantized to the compute dtype on load: correct, but no memory "
-                    "saving over the bf16 checkpoint (%s)",
+                    "diffusion.comfy_quant: %d %s layer(s) have no native runtime here (%s): widened to the compute "
+                    "dtype on load, or kept packed and widened per layer when the load stores its weights compactly",
                     counts[fmt],
                     fmt,
                     reason,

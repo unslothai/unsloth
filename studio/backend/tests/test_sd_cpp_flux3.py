@@ -177,14 +177,17 @@ def _ref_png(color):
 
 @pytest.mark.parametrize("name", ["flux.3-klein", "flux.3-klein-base"])
 def test_flux3_references_run_natively_without_a_projector(monkeypatch, name):
-    # sd.cpp feeds FLUX.3 references through the VAE: no vision projector, no edit marker.
+    # sd.cpp feeds FLUX.3 references through the VAE: no vision projector, no edit marker. Edit is that same call.
     from PIL import Image
 
     engine = _FakeEngine()
     b = SdCppDiffusionBackend(engine = engine)
     b._state = _flux3_native_state(name)
     status = b.status()
-    assert "reference" in status["workflows"] and "edit" not in status["workflows"]
+    assert status["workflows"] == ["txt2img", "reference", "edit"]
+    assert status["conditioning"]["unified_edit"] is True
+    assert status["conditioning"]["localized_edit_modes"] == []
+    assert status["conditioning"]["notes"] == []
     seen = {}
 
     def _capture(files, params, output_path, **kw):
@@ -202,10 +205,27 @@ def test_flux3_references_run_natively_without_a_projector(monkeypatch, name):
         reference_images = [_ref_png((20, 0, 0))],
     )
     assert seen["refs"] == 2 and out["workflow"] == "reference"
-    # An instruction edit is still not something these families do natively.
-    with pytest.raises(ValueError, match = "Image editing is not available"):
+    seen.clear()
+    out = b.generate(
+        prompt = "p",
+        steps = 2,
+        workflow = "edit",
+        width = 768,
+        height = 512,
+        init_image = _ref_png((1, 1, 1)),
+        reference_images = [_ref_png((2, 2, 2))],
+    )
+    assert seen["refs"] == 2 and out["workflow"] == "edit"
+    from core.inference.diffusion_conditioning import LocalizedEdit
+
+    with pytest.raises(ValueError, match = "localized_edit"):
         b.generate(
-            prompt = "p", workflow = "edit", init_image = _ref_png((1, 1, 1)), width = 512, height = 512
+            prompt = "p",
+            workflow = "edit",
+            init_image = _ref_png((1, 1, 1)),
+            width = 512,
+            height = 512,
+            localized_edit = LocalizedEdit("paint", _ref_png((255, 255, 255))),
         )
 
 

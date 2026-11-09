@@ -240,11 +240,7 @@ def test_ambiguous_same_token_media_builds_are_not_both_loaded(monkeypatch):
 
 
 def test_a_standalone_gguf_resident_is_matched_by_its_load_directory(monkeypatch):
-    """A standalone GGUF loads with its PARENT directory as the model path.
-
-    Comparing the public id or the catalog's own file path reports the resident model as
-    unloaded and then adds a second entry named after the directory.
-    """
+    """A standalone GGUF is resident under its parent directory, so match by load path or it shows twice."""
     pick = MediaModelPick("z-image", "/srv/models", "z-image-Q4_K_M.gguf", "gguf")
     resident = {
         "text-to-image": {
@@ -423,7 +419,6 @@ def test_the_media_scan_is_reused_across_requests_in_one_catalog_window(monkeypa
         asyncio.run(inf._openai_catalog_objects())
     assert calls == list(inf._MEDIA_MODEL_TASKS), calls
 
-    # A replaced catalog scan rebuilds it.
     inf._CATALOG_CACHE["at"] = 5678.0
     asyncio.run(inf._openai_catalog_objects())
     assert calls == list(inf._MEDIA_MODEL_TASKS) * 2, calls
@@ -454,12 +449,7 @@ def test_concurrent_media_requests_share_one_catalog_rebuild(monkeypatch):
 
 
 def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
-    """The index already drops partial pulls, unopenable paths and ambiguous builds.
-
-    Listing anything it rejects advertises an id the generation route answers with
-    model_not_found, so an empty index must advertise nothing -- even while a model the
-    index does not know is resident.
-    """
+    """Only ids the media resolver accepts may be listed, or the route answers model_not_found."""
     resident = {
         "text-to-image": {
             "loaded": True,
@@ -654,16 +644,10 @@ def test_concurrent_custom_stt_requests_share_one_inventory_scan(monkeypatch):
 
 
 def test_a_whisper_id_cached_only_for_whisper_cpp_is_not_advertised(monkeypatch):
-    """/v1/audio/transcriptions never selects the GGML engine on its own.
-
-    _stt_engine_for_model forces only the mtmd ids, so a curated Whisper id resolves to
-    Transformers; advertising one that exists only in the whisper.cpp cache sends the
-    caller at an absent Transformers snapshot, which answers 409.
-    """
+    """/v1/audio/transcriptions never picks the GGML engine itself; a whisper.cpp-only id would 409 here."""
     from core.inference import stt_ggml_sidecar
 
     _stt(monkeypatch, downloaded = ())
-    # Resident on the GGML sidecar, and cached there, yet still not OpenAI-servable.
     monkeypatch.setattr(
         stt_ggml_sidecar, "_cached_model_path", lambda m: "/x" if m == "large-v3-turbo" else None
     )
@@ -831,10 +815,7 @@ def test_resident_audio_models_carry_task_and_workflows(monkeypatch, info, task,
 
 
 def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
-    """Only what /v1/audio/speech can actually serve is tagged text-to-speech.
-
-    whisper (ASR) and audio_vlm (Gemma 3n chat) carry an _audio_type but that route
-    400s on both, and csm is transformers-only, so none may advertise the task."""
+    """Only what /v1/audio/speech can serve gets the text-to-speech tag; whisper and csm must not."""
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
     for audio_type in ("whisper", "audio_vlm", "csm"):
         gguf = type(
@@ -867,7 +848,6 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
         (entry,) = inf._openai_model_objects()
         assert "task" not in entry, f"{audio_type} advertised as {entry.get('task')}"
 
-    # A transformers TTS codec still is tagged.
     unsloth = type(
         "_Tts",
         (_FakeUnsloth,),
@@ -880,7 +860,6 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     (entry,) = inf._openai_model_objects()
     assert entry["task"] == "text-to-speech"
 
-    # the mlx worker rejects audio generation even when its model metadata is tts.
     unsloth.models["unsloth/csm-1b"]["is_mlx"] = True
     (entry,) = inf._openai_model_objects()
     assert "task" not in entry

@@ -121,7 +121,7 @@ def test_load_checkpoint_resolves_hub_ids_before_choosing_4bit(
     monkeypatch.setattr(huggingface_hub, "file_exists", _file_exists)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _hf_hub_download)
 
-    # False is the "ambient token denied" sentinel; it must reach the Hub unchanged.
+    # False is the "ambient token denied" sentinel; it must reach the Hub unchanged
     load_in_4bit = _load_via_orchestrator(
         monkeypatch, "unsloth/Llama-3.2-1B-Instruct", None, hf_token = False
     )

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.2 RoPE as one Triton kernel on fp16 GPUs (T4 and other pre-Ampere cards).
-
-Same fp32 arithmetic and rounding order as stock ``apply_rotary_emb`` (FMA contraction off), so the output is
-bit-identical. Patches only ``transformer_flux2``'s global for fp16 CUDA loads; any other call falls through to stock.
-Kill switch: ``UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE=0``.
-"""
+"""Bit-identical FLUX.2 RoPE Triton kernel for fp16 GPUs; off via UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE=0."""
 
 from __future__ import annotations
 
@@ -15,6 +10,7 @@ import logging
 import os
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 FLUX2_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE"
 _MODULE = "diffusers.models.transformers.transformer_flux2"
@@ -45,7 +41,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
         return False
     if dtype is not torch.float16 or not str(device).startswith("cuda"):
         return False
-    if getattr(torch.version, "hip", None):
+    if is_rocm_torch(torch):
         return False
     return _kernel() is not None
 
@@ -59,7 +55,7 @@ def _kernel() -> Optional[Callable]:
     except Exception:  # noqa: BLE001
         return None
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["S"])
     def _rope_fwd(
         X,
         COS,
@@ -75,8 +71,8 @@ def _kernel() -> Optional[Callable]:
         sob,
         sos,
         soh,
-        HALF: tl.constexpr,
-        BLOCK: tl.constexpr,
+        HALF: tl.constexpr,  # hd // 2
+        BLOCK: tl.constexpr,  # block size over heads x pairs
     ):
         row = tl.program_id(0)
         b = row // S

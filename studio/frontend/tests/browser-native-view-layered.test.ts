@@ -32,6 +32,7 @@ function node(name: string, background: string, parent: object | null) {
     background,
     parentElement: parent,
     className: name,
+    classList: { contains: (token: string) => token === name },
     isConnected: true,
     offsetParent: {},
     attributes,
@@ -52,6 +53,14 @@ const html = node("html", "rgb(255, 255, 255)", null);
 const section = node("section", "oklch(0.97 0 0)", html);
 const wrapper = node("wrapper", "rgba(0, 0, 0, 0)", section);
 const placeholder = node("placeholder", "oklch(1 0 0 / 1)", wrapper);
+const wallpaper = Object.assign(node("wallpaper", "rgba(0, 0, 0, 0)", html), {
+  getBoundingClientRect: () => rect(100, 40, 1000, 800),
+  classList: { contains: (token: string) => token === "chat-wallpaper" },
+});
+Object.assign(section, {
+  hasAttribute: (name: string) => name === "data-wallpaper-workspace",
+  children: [wallpaper, wrapper],
+});
 
 const noop = () => undefined;
 const listeners = new Map<string, (event: { target: unknown }) => void>();
@@ -133,6 +142,11 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     // the rect goes on each holed node (the vars don't inherit), so moving it restyles only those
     assert.equal(placeholder.vars.get("--native-hole-y"), "100px");
     assert.equal(wrapper.vars.has("--native-hole-x"), false);
+    assert.equal(wallpaper.attributes.has("data-native-hole-mask"), true);
+    assert.equal(wallpaper.attributes.has("data-native-hole"), false);
+    assert.equal(wallpaper.vars.get("--native-hole-x"), "400px");
+    assert.equal(wallpaper.vars.get("--native-hole-y"), "60px");
+    assert.equal(wallpaper.vars.get("--native-hole-w"), "500px");
 
     // under the app's interface zoom the rect is divided by it: WebKit scales a fixed background's
     // lengths by the zoom on top of the layout they came from
@@ -141,6 +155,8 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     zoomChanged?.();
     assert.equal(html.vars.get("--native-hole-x"), "625px");
     assert.equal(placeholder.vars.get("--native-hole-h"), "750px");
+    assert.equal(wallpaper.vars.get("--native-hole-x"), "400px");
+    assert.equal(wallpaper.vars.get("--native-hole-w"), "500px");
     (globalThis as { nativeViewZoom?: number }).nativeViewZoom = 1;
     zoomChanged?.();
     assert.equal(html.vars.get("--native-hole-x"), "500px");
@@ -154,9 +170,8 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.equal(section.vars.get("--native-hole-bg"), "oklch(0.2 0 0)");
 
-    // a split drag pins the page at its old width while the panel shrinks past it: the app covers
-    // the overflow by cutting the hole no wider than the panel, and the page view isn't resized,
-    // which would relayout the page every frame
+    // A split drag pins the page at its old width while the panel shrinks past it; the hole is cut
+    // no wider than the panel and the page view is not resized, which would relayout every frame.
     let panelLeft = 650;
     const panelBody = { getBoundingClientRect: () => rect(panelLeft, 0, 1000 - panelLeft, 800), closest: () => null };
     // the pinned outer page box keeps its old rect, the page's own
@@ -167,7 +182,7 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     };
     const innerPage = { parentElement: outerPage, closest: () => innerPage };
     const unpinned = placeholder.closest;
-    Object.assign(placeholder, { closest: () => innerPage });
+    Object.assign(placeholder, { closest: (selector: string) => (selector === "[data-browser-page]" ? innerPage : null) });
     const showsBeforeDrag = calls.filter(({ command }) => command === "browser_view_show").length;
     for (const left of [650, 700, 750]) {
       panelLeft = left;
@@ -196,6 +211,14 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     if (tabId) useBrowserStore.getState().setZoom(tabId, 1.5);
     await frame();
     assert.ok(calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.5));
+    if (tabId) {
+      const before = calls.length;
+      useBrowserStore.getState().navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });
+      await frame();
+      const after = calls.slice(before).map(({ command, args }) => (command === "browser_view_zoom" ? args?.zoom : command));
+      const navigated = after.indexOf("browser_view_navigate");
+      assert.ok(navigated >= 0 && after.indexOf(1.5, navigated) > navigated, JSON.stringify(after));
+    }
 
     // a menu away from the page owns it too, so a click there closes the menu; a hover card doesn't
     blocking.length = 0;
@@ -303,6 +326,30 @@ test("a page at work in a chat off screen opens hidden, follows its tab, and out
   assert.ok(calls.some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
 });
 
+test("a kept tab that leaves its local origin is closed through the views, so its next page opens a new one", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.newTab();
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  store.navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });
+  const globals = globalThis as { nativeViewGranted?: (tab: string, url: string) => boolean; nativeViewCloseLocal?: (tab: string) => void };
+  globals.nativeViewGranted = (tab, url) => tab === tabId && url.startsWith("http://localhost:7860/");
+  keepInBackground(tabId);
+  await settle();
+  // Back to a new tab page drops the grant, and the views close the page themselves
+  store.goBack(tabId);
+  globals.nativeViewGranted = undefined;
+  calls.length = 0;
+  globals.nativeViewCloseLocal?.(tabId);
+  assert.deepEqual(calls.at(-1), { command: "browser_view_close", args: { tabId, forgetLocal: true } });
+  keepInBackground(tabId);
+  store.navigate(tabId, { url: "https://example.com/" }, { replace: false });
+  await settle();
+  assert.ok(calls.some(({ command, args }) => command === "browser_view_open_background" && args?.url === "https://example.com/"));
+  assert.ok(!calls.some(({ command }) => command === "browser_view_navigate"));
+  releaseBackground(tabId);
+});
+
 test("a background page's popup opens in its own chat, and a page that fails to open isn't retried in a loop", async () => {
   const store = useBrowserStore.getState();
   store.closePanel();
@@ -341,4 +388,173 @@ test("a background page's popup opens in its own chat, and a page that fails to 
   assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === failing)?.nativeError, null);
   releaseBackground(failing);
   releaseBackground(tabId);
+});
+
+test("a temporary page's popup in a chat off screen stays out of history", () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:saved");
+  const tabId = store.openTabIn("single:temporary", "https://worker.example/", { temporary: true }) ?? "";
+  const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+  listener?.({ payload: { kind: "newTab", tabId, url: "https://popup-temp.example/" } });
+  const popup = useBrowserStore.getState().tabs.find((tab) => {
+    const entry = currentEntry(tab);
+    return entry.kind === "web" && entry.url === "https://popup-temp.example/";
+  });
+  assert.equal(popup?.chat, "single:temporary");
+  const entry = popup && currentEntry(popup);
+  assert.equal(entry?.kind === "web" ? entry.temporary : undefined, true);
+});
+
+test("an address a local page can't go to itself is offered, not opened", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:local");
+  const tabId = store.openTabIn("single:local", "http://localhost:7860/") ?? "";
+  const tabs = useBrowserStore.getState().tabs.length;
+  const seen = ((globalThis as { nativeViewSeen?: { message: string }[] }).nativeViewSeen ??= []);
+  const before = seen.length;
+  const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+  listener?.({ payload: { kind: "refused", tabId, url: "https://docs.example/" } });
+  assert.equal(useBrowserStore.getState().tabs.length, tabs);
+  assert.deepEqual(seen.slice(before).map(({ message }) => message), ["browser.native.externalPrompt"]);
+});
+
+test("a page whose protections fail shows an error, and Try again opens a new view instead of reusing it", async () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://unprotected.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId ?? "";
+    assert.ok(calls.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId));
+    const before = calls.length;
+    const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+    // the old view had moved on; its replacement for the typed address is the one that fails
+    listener?.({ payload: { kind: "url", tabId, url: "https://unprotected.example/moved" } });
+    useBrowserStore.getState().navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });
+    await frame();
+    listener?.({ payload: { kind: "failed", tabId, error: "the page's protections couldn't be set up, so it wasn't opened" } });
+    const failed = useBrowserStore.getState().tabs.find((tab) => tab.id === tabId);
+    const shown = failed && currentEntry(failed);
+    assert.equal(shown?.kind === "web" && shown.url, "http://localhost:7860/");
+    assert.equal(failed?.nativeError, "the page's protections couldn't be set up, so it wasn't opened");
+    assert.equal(failed?.loading, false);
+    assert.ok(calls.slice(before).some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
+    await frame();
+
+    const retryFrom = calls.length;
+    useBrowserStore.getState().updateTab(tabId, { nativeError: null });
+    useBrowserStore.getState().reload(tabId);
+    await frame();
+    await frame();
+    const retried = calls.slice(retryFrom).filter(({ args }) => args?.tabId === tabId).map(({ command }) => command);
+    assert.ok(retried.includes("browser_view_show"), retried.join(","));
+    assert.ok(!retried.includes("browser_view_navigate") && !retried.includes("browser_view_action"), retried.join(","));
+  } finally {
+    stop();
+  }
+});
+
+test("a dragged floating window shows its layered page as a snapshot, and the live page again on the drop", async () => {
+  const doc = (globalThis as unknown as { document: { querySelector: (selector: string) => unknown } }).document;
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const { querySelector } = doc;
+  const { Image, nativeViewCall } = globals;
+  globals.Image = class {
+    src = "";
+    style = {};
+    parentElement: unknown = null;
+    decode = () => Promise.resolve();
+    remove = () => shown.splice(shown.indexOf(this as unknown as (typeof shown)[number]), 1);
+  };
+  globals.nativeViewCall = (command: string, args?: Record<string, unknown>) => {
+    calls.push({ command, args });
+    if (command === "browser_capture") return Promise.resolve(new Uint8Array([137, 80, 78, 71]).buffer);
+    return Promise.resolve(command === "browser_view_layered" ? true : undefined);
+  };
+  const unpinned = placeholder.closest;
+  Object.assign(placeholder, { closest: (selector: string) => (selector === "[data-browser-floating]" ? {} : null) });
+  const shown: { style: Record<string, string>; parentElement: unknown; remove: () => void }[] = [];
+  Object.assign(placeholder, {
+    appendChild: (child: (typeof shown)[number]) => {
+      child.parentElement = placeholder;
+      shown.push(child);
+    },
+  });
+  let moving = false;
+  doc.querySelector = (selector: string) =>
+    selector.startsWith("[data-floating-gesture") ? (moving ? {} : null) : querySelector(selector);
+  // an earlier test left only the section opaque
+  const cut = () => section.attributes.has("data-native-hole") && section.vars.get("--native-hole-w") !== "0px";
+  useBrowserStore.getState().openUrl("https://drag.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    assert.ok(cut(), "cut open while still");
+
+    const from = calls.length;
+    moving = true;
+    await frame();
+    await frame();
+    const during = calls.slice(from);
+    assert.ok(during.some(({ command, args }) => command === "browser_capture" && args?.tabId === tabId));
+    assert.ok(during.some(({ command, args }) => command === "browser_view_show" && args?.parked === true));
+    assert.ok(!cut(), "the picture shows, uncut, while the window moves");
+    assert.ok(section.attributes.has("data-native-hole"), "cuts stay marked, so the app is not restyled");
+    await settle();
+    assert.equal(shown.length, 1, "the picture is laid over the page");
+    const parked = calls.length;
+    await frame();
+    assert.equal(calls.length, parked, "nothing is sent per frame of the drag");
+
+    moving = false;
+    await frame();
+    await frame();
+    const dropped = calls.slice(parked);
+    assert.ok(dropped.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId && !args?.parked));
+    assert.ok(cut(), "cut open again on the drop");
+    assert.equal(shown.length, 1, "the picture stays a moment, while the page draws");
+    const held = calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    assert.equal(shown.length, 0, "and is taken away");
+    assert.ok(
+      calls.slice(held).some(({ command, args }) => command === "browser_capture" && args?.tabId === tabId),
+      "a fresh picture is taken for the next drag, with the pointer still on the bar",
+    );
+    await settle();
+    moving = true;
+    await frame();
+    assert.equal(shown.length, 1, "so the next drag shows it from its first frame");
+    moving = false;
+    await frame();
+    await frame();
+  } finally {
+    stop();
+    Object.assign(placeholder, { closest: unpinned });
+    doc.querySelector = querySelector;
+    globals.Image = Image;
+    globals.nativeViewCall = nativeViewCall;
+  }
+});
+
+test("a node around a layered page that starts painting later, with no class change, is cut too", async () => {
+  useBrowserStore.getState().openUrl("https://late.example/");
+  const stop = startNativeViews();
+  const before = wrapper.background;
+  try {
+    await frame();
+    await frame();
+    assert.ok(!wrapper.attributes.has("data-native-hole"), "transparent when marked");
+    // e.g. switching to the floating window: the panel's background lands a frame later
+    wrapper.background = "rgb(254, 254, 253)";
+    await frame();
+    assert.ok(wrapper.attributes.has("data-native-hole"), "cut once it paints");
+  } finally {
+    stop();
+    wrapper.background = before;
+  }
 });

@@ -1,23 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// ThreadScopedSettingsSync reads "this chat has no row yet" off `threads.newThreadId`, which
-// only discriminates while assistant-ui clears that field on new -> regular. Upstream has
-// shipped versions where it never was (assistant-ui issue #2292, 0.10.35 / 0.10.36), and such
-// a bump would make the guard permanently true and silently restore the bug this PR fixes.
-// The sibling tests are source-text regexes and would stay green through it, so this drives
-// the shipped reducer instead.
+// The newThreadId guard relies on assistant-ui clearing it on new -> regular, which some
+// versions did not (assistant-ui #2292), so this drives the shipped reducer.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// Deep relative path, not the package specifier: @assistant-ui/core's exports map does
-// not publish this module, and the point is to test the shipped artifact.
+// Deep relative path: @assistant-ui/core's exports map does not publish this module.
 import { createThreadMappingId, updateStatusReducer } from "../node_modules/@assistant-ui/core/dist/runtimes/remote-thread-list/remote-thread-state.js";
 
 const LOCAL_ID = "__LOCALID_contract0001";
 
-/** The state shape a pending new thread is in, as switchToNewThread leaves it. */
 function pendingNewThread() {
   return {
     isLoading: false,
@@ -25,9 +19,6 @@ function pendingNewThread() {
     threadIds: [] as string[],
     archivedThreadIds: [] as string[],
     threadIdMap: { [LOCAL_ID]: createThreadMappingId(LOCAL_ID) },
-    // RemoteThreadData's "new" variant: the id is the minted __LOCALID_ one and remoteId
-    // is still undefined -- initialize()'s response is what supplies it, and Studio's
-    // adapter answers with the same string it was handed.
     threadData: {
       [LOCAL_ID]: {
         id: LOCAL_ID,
@@ -65,8 +56,6 @@ test("newThreadId is cleared on new -> regular, which is what initialize() drive
 });
 
 test("the id keeps its __LOCALID_ prefix after the transition", () => {
-  // The other half of the premise: the prefix is NOT dropped when the thread is saved,
-  // which is why the prefix cannot be read as "no row yet".
   const after = updateStatusReducer(pendingNewThread(), LOCAL_ID, "regular");
 
   assert.ok(
@@ -87,7 +76,6 @@ test("archived and deleted also clear it, so no transition can strand the guard"
 });
 
 test("a no-op transition leaves the pending new thread pending", () => {
-  // The converse: while the chat really has not been sent to, the guard must stay true.
   const after = updateStatusReducer(pendingNewThread(), LOCAL_ID, "new" as never);
   assert.equal(after.newThreadId, LOCAL_ID);
 });

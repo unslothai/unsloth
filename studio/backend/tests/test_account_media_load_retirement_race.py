@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An image load caught by retirement must not run for the deleted account.
-
-Retirement tombstones the account and scans for its media work. A /images/load still inside a
-pre-admission await owns nothing the scan can see, so it used to start its load afterwards; and
-a load admitted just before the tombstone kept running. Now admission and the scan share one
-lock: the late request is refused, the early load is torn down."""
+"""Admission and the retirement scan share one lock, so a late /images/load is refused, not started."""
 
 from __future__ import annotations
 
@@ -19,7 +14,7 @@ from fastapi import HTTPException
 
 from auth import policy
 from core.inference import diffusion, diffusion_device, diffusion_engine_router, video
-from core.inference import diffusion_compat
+from core.inference import diffusion_compat, diffusion_local_files
 from core.training import account_jobs as jobs
 from hub.services.models import account_access as access
 from models.inference import DiffusionLoadRequest
@@ -69,7 +64,7 @@ def engine(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: backend)
     monkeypatch.setattr(diffusion, "resolve_model_kind", lambda *a, **k: "pipeline")
-    monkeypatch.setattr(diffusion, "resolve_local_single_file", lambda path: None)
+    monkeypatch.setattr(diffusion_local_files, "resolve_local_single_file", lambda path: None)
     monkeypatch.setattr(diffusion, "_diffusion_backend", fake)
     monkeypatch.setattr(
         diffusion_device,

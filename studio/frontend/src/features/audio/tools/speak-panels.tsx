@@ -12,6 +12,7 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import type { AudioOptionSpec } from "../audio-options";
 import { AudioOptionFields } from "../audio-options-fields";
 import { formatVibeVoiceScript } from "../clone-policy";
+import { FieldLabel } from "../components/field";
 import { VoicePicker } from "../components/voice-picker";
 import {
   SUPERTONIC_LANGUAGES,
@@ -107,7 +108,7 @@ const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
           1: Hello.” Plain text is read by Speaker 1.
         </p>
         {text && script !== text ? (
-          <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded-xl bg-muted px-3 py-2 font-mono text-ui-11p5 text-muted-foreground">
+          <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 font-mono text-ui-11p5 text-muted-foreground">
             {script}
           </pre>
         ) : null}
@@ -124,12 +125,12 @@ const supertonicLanguagePanel: AudioToolPanel<string> = {
   ...supertonicLanguageLogic,
   Component: ({ value, onChange, disabled }) => (
     <div className="grid gap-1.5">
-      <label
+      <FieldLabel
         className="text-ui-13 font-medium text-foreground"
         htmlFor="supertonic-language"
       >
         Language
-      </label>
+      </FieldLabel>
       <Select
         value={value || DEFAULT_LANGUAGE}
         onValueChange={(next) =>

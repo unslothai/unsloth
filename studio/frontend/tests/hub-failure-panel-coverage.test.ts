@@ -6,14 +6,8 @@ import test from "node:test";
 
 import { readText } from "./helpers/kit.ts";
 
-// The whole point of this change is that the panel names the cause. A kind the
-// renderer does not handle falls through to the generic wording, and because the
-// catalog blanks `message` whenever a failure exists, the classified text is not
-// shown anywhere else either. So every kind that can reach the panel must have a
-// case, and this is asserted against the type rather than a list, so adding a
-// kind without a branch fails here instead of silently degrading the panel.
+// Asserted against the type, so adding a failure kind without a panel branch fails here.
 
-// A superseded request is never rendered: it is not a failure the user caused.
 const NOT_RENDERED = new Set(["aborted"]);
 
 test("every renderable Hub failure kind has a branch in the panel", async () => {

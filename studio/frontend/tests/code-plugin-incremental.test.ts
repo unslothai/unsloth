@@ -86,7 +86,6 @@ const referenceHighlighters = new Map<
   ReturnType<typeof createHighlighter>
 >();
 
-/** Tokens shiki returns for the whole string in one call. */
 async function reference(code: string, language: HighlightOptions["language"]) {
   let loading = referenceHighlighters.get(language);
   if (!loading) {
@@ -101,9 +100,7 @@ async function reference(code: string, language: HighlightOptions["language"]) {
   return highlighter.codeToTokens(code, {
     lang: language,
     themes: { light: "github-light", dark: "github-dark" },
-    // The reference must run under the plugin's own tokenizer limits, or shiki's
-    // default wall-clock bail can degrade whichever side of the comparison is
-    // unlucky on a slow runner.
+    // Use the plugin's tokenizer limits so shiki's wall-clock bail cannot skew either side.
     ...TOKENIZE_LIMITS,
   });
 }
@@ -339,17 +336,8 @@ test("a failed grammar load releases pending callbacks before retry", async () =
 });
 
 test("a transiently failed grammar load is retried under the same cache key", async () => {
-  // The test above retries under a *different* key: swapping the theme
-  // definitions builds a new `highlighters` entry whether or not the failed one
-  // was cleaned up. A transient failure is the case that needs the cleanup --
-  // the browser re-fetches a module whose previous fetch failed
-  // (whatwg/html#10327), so the same key is asked for again and has to load. If
-  // the entry that failed were left behind, every later render of that language
-  // and theme pair would keep getting its null highlighter and the block would
-  // never highlight again for the life of the page.
-  //
-  // Keeping the same theme objects keeps the key identical; mutating them in
-  // place stands in for the chunk that failed once and loaded on the retry.
+  // A failed load must not leave its entry behind: browsers re-fetch failed modules
+  // (whatwg/html#10327), so the same key is asked again.
   const light: { name: string; settings: unknown } = {
     name: "transient-light",
     settings: 42,
@@ -424,7 +412,6 @@ test("re-opening a thread answers every fence from cache", async () => {
   for (const code of blocks) {
     first.push(await highlightOnce(plugin, { code, language, themes: THEMES }));
   }
-  // A thread mounts whole: the same object back means no tokenizer was reached.
   const reused = blocks.filter(
     (code, index) =>
       plugin.highlight({ code, language, themes: THEMES }) === first[index],
@@ -464,7 +451,6 @@ test("a single line past the throttle keeps its text and settles exact", async (
       resolve,
     );
     if (immediate) {
-      // Still inside the refresh interval: the trailing refresh resolves it.
       setTimeout(() => {
         const after = plugin.highlight({ code: grown, language, themes: THEMES });
         if (after) resolve(after);
@@ -478,14 +464,12 @@ test("a single line past the throttle keeps its text and settles exact", async (
 test("a shorter prefix sibling fence keeps the longer one highlighted", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "json" as HighlightOptions["language"];
-  // Single-line, so the longer fence commits nothing and stays prefix-reachable.
   const shorter = `{"values": [${Array.from({ length: 300 }, (_, i) => `"item-${i}"`).join(", ")}`;
   const longer = `${shorter}, "only-in-the-longer-fence"]}`;
 
   await highlightOnce(plugin, { code: longer, language, themes: THEMES });
   await highlightOnce(plugin, { code: shorter, language, themes: THEMES });
 
-  // Document order renders the shorter fence next, within one refresh interval.
   let rendered: HighlightResult | null = null;
   for (let frame = 0; frame < 3; frame += 1) {
     rendered = plugin.highlight({ code: longer, language, themes: THEMES });
@@ -503,8 +487,6 @@ test("a shorter prefix sibling fence keeps the longer one highlighted", async ()
   );
 });
 
-// None of these can close a fence: whitespace carries no marker, a closing run
-// never mixes backticks with tildes, and a closer starts its own line.
 for (const suffix of ["   ", "`~", "```"]) {
   test(`a sibling ending in ${JSON.stringify(suffix)} keeps its own entry`, async () => {
     const plugin = createCodePlugin({ themes: THEMES });
@@ -533,7 +515,6 @@ test("a changed theme definition is not answered from the old theme's cache", as
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
   const code = "value = 1\n";
-  // Same names, different definitions: only the definitions tell them apart.
   const pair = (background: string): [ThemeInput, ThemeInput] =>
     (["swap-light", "swap-dark"] as const).map(
       (name) =>
@@ -595,7 +576,6 @@ test("shedding a possible closing delimiter settles before the shorter result", 
     { length: 120 },
     (_, index) => `value_${index} = ${index}  # a completed Python line`,
   ).join("\n")}\n`;
-  // Markdown reports the closing run as body until it closes the fence.
   await highlightOnce(plugin, { code: `${body}\`\``, language, themes: THEMES });
 
   const settled: HighlightResult[] = [];
@@ -625,7 +605,6 @@ test("an unchanged fence does not cancel an identical sibling's refresh", async 
     { length: 120 },
     (_, index) => `value_${index} = ${index}  # a completed Python line`,
   ).join("\n")}\n`;
-  // Byte-identical fences cannot be told apart, so they share one entry.
   await highlightOnce(plugin, { code: body, language, themes: THEMES });
   await highlightOnce(plugin, { code: body, language, themes: THEMES });
 
@@ -651,8 +630,7 @@ test("an unchanged fence does not cancel an identical sibling's refresh", async 
 test("a block that keeps failing to tokenize does not fill the cache", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
-  // createHighlighter accepts a nameless theme, but codeToTokens cannot find it
-  // again, so tokenization throws after the grammar has loaded.
+  // createHighlighter accepts a nameless theme but codeToTokens then throws after load.
   const nameless = [{ settings: [] }, { settings: [] }] as unknown as [
     ThemeInput,
     ThemeInput,
@@ -669,15 +647,12 @@ test("a block that keeps failing to tokenize does not fill the cache", async () 
     console.error = () => {};
     for (let render = 0; render < 600; render += 1) {
       plugin.highlight({ code: "broken = 1\n", language, themes: nameless });
-      // The first render only queues; let the grammar load resolve.
       if (render === 0) await new Promise((resolve) => setTimeout(resolve, 50));
     }
   } finally {
     console.error = originalError;
   }
 
-  // A successful update runs eviction. Failed fences must not have crowded the
-  // cache past MAX_FENCES in the meantime.
   await highlightOnce(plugin, { code: "later = 2\n", language, themes: THEMES });
   assert.equal(
     plugin.highlight({ code: kept, language, themes: THEMES }),

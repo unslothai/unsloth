@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Video attachments ride the message list as llama-server's `input_video` part.
-
-llama.cpp takes video through its OpenAI-compatible chat endpoint as
-``{"type": "input_video", "input_video": {"data": ...}}`` (tools/server/
-server-common.cpp), refusing it unless the projector, the build and ffmpeg all
-line up -- which it reports at ``/props`` under ``modalities.video``. These tests
-pin the wire shape and that capability read, since neither is visible from the
-GGUF alone.
-"""
+"""Video clips are sent as input_video parts, gated by modalities.video reported at /props."""
 
 from __future__ import annotations
 
@@ -34,7 +26,6 @@ def test_a_video_part_is_appended_to_the_last_user_message():
     ]
     _inject_video_part(messages, "AAAA")
     assert messages[1]["content"][-1] == {"type": "input_video", "input_video": {"data": "AAAA"}}
-    # The system message is untouched.
     assert messages[0]["content"] == "be brief"
 
 
@@ -171,19 +162,19 @@ def _model_info(**fields):
 def test_a_video_backend_is_handed_the_bare_clip():
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
-    from routes.inference import _VIDEO_INPUT_REFUSAL, _local_video_clip
+    from routes.inference import _VIDEO_INPUT_REFUSAL, _local_video_clips
 
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _DATA_URI)
-    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+    assert _local_video_clips(payload, _model_info(has_video_input = True)) == [_CLIP_B64]
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _CLIP_B64)
-    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+    assert _local_video_clips(payload, _model_info(has_video_input = True)) == [_CLIP_B64]
 
     with pytest.raises(HTTPException) as exc:
-        _local_video_clip(payload, _model_info())
+        _local_video_clips(payload, _model_info())
     assert exc.value.status_code == 400 and exc.value.detail == _VIDEO_INPUT_REFUSAL
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = "data:video/mp4;base64,")
     with pytest.raises(HTTPException) as exc:
-        _local_video_clip(payload, _model_info(has_video_input = True))
+        _local_video_clips(payload, _model_info(has_video_input = True))
     assert exc.value.status_code == 400
 
 
@@ -191,34 +182,25 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     """The gate precedes the early-returning dispatches, and the clip rides the generation kwargs."""
     source = _inference_source()
     handler = source.index("using_gguf = llama_backend.is_loaded")
-    gate = source.index("_video_clip = _local_video_clip(payload, model_info)", handler)
+    gate = source.index("_video_clips = _local_video_clips(payload, model_info)", handler)
     speech = source.index("return await _monitored_generate_audio(model_name)", handler)
     audio_input = source.index("# ── Audio INPUT path", handler)
     assert gate < speech and gate < audio_input
-    assert 'gen_kwargs["video"] = _video_clip' in source
+    assert 'gen_kwargs["videos"] = _video_clips' in source
     use_tools = source.index("_sf_use_tools = (", handler)
     tools_block = source[use_tools : source.index("\n    )", use_tools)]
     tools_block = "\n".join(line.split("#")[0] for line in tools_block.splitlines())
-    assert "and _video_clip is None" in tools_block
-    # Structural, not literal. This pinned the exact
-    # "(image is not None or _video_clip is not None) and not _sf_use_tools"; #10970
-    # widened the image half to `_sf_has_image`, a superset, so the clause still fires
-    # for everything it used to and the test failed on the spelling.
+    assert "and not _video_clips" in tools_block
+    # Structural, not literal: #10970 widened the image half to `_sf_has_image`.
     client_tools = source.index("_sf_client_tools = (", handler)
     block = source[client_tools : source.index("\n    )", client_tools)]
-    # Comments stripped, then narrowed to the ONE line carrying the escape hatch. Both
-    # matter: the block names an image in its own prose and carries a second
-    # `and not _sf_use_tools` conjunct, so reading the whole block passes on the wrong
-    # occurrences. Two mutations below were missed before this narrowing.
+    # Strip comments and narrow to the ONE escape-hatch line, or other occurrences match.
     block = "\n".join(line.split("#")[0] for line in block.splitlines())
     escape = next(line for line in block.splitlines() if "not _sf_tools_on" in line)
     assert "and not _sf_use_tools" in escape, escape
-    # An image and a clip have to be ALTERNATIVES, each read positively. Merely occurring
-    # is not enough: `and` for `or` stops an image-only or video-only request entering the
-    # passthrough, and `image is None` / `not _sf_has_image` invert the condition. Either
-    # order, since which side reads first is arbitrary.
+    # Image and clip must be ALTERNATIVES, each read positively, in either order.
     image = r"(?:\bimage is not None\b|\b_sf_has_(?:any_)?image\b)"
-    clip = r"\b_video_clip is not None\b"
+    clip = r"\bbool\(_video_clips\)"
     assert re.search(rf"{image}\s+or\s+{clip}|{clip}\s+or\s+{image}", escape), escape
     assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_(?:any_)?image\b", escape), escape
     # Settled at the gate: a model without audio input never enters the audio-input path.
@@ -226,7 +208,9 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     assert conflict < speech
     assert "_AUDIO_VIDEO_INPUT_DETAIL" in source[conflict : conflict + 200]
     # The gate reads both spellings, so a video_url part reaches MLX exactly as the field does.
-    assert "if _request_has_video(payload):\n            _video_clip = _local_video_clip(" in source
+    assert (
+        "if _request_has_video(payload):\n            _video_clips = _local_video_clips(" in source
+    )
 
 
 def test_token_counting_refuses_video_like_image_and_audio():
@@ -240,10 +224,10 @@ def test_token_counting_refuses_video_like_image_and_audio():
 
 
 def test_both_video_checks_share_one_rule():
-    """Two size checks that drift let the pre-switch one pass what the post-load
-    one refuses, which is the model load this was meant to avoid."""
+    """Size checks that drift let the pre-switch one pass what a post-load one
+    refuses, which is the model load this was meant to avoid."""
     source = _inference_source()
-    assert source.count("= _request_video_rejection(payload)") == 2
+    assert source.count("= _request_video_rejection(payload)") == 3
 
 
 def _video_url_request(
@@ -340,12 +324,7 @@ def test_an_uppercase_scheme_is_refused_as_a_remote_url_too():
 
 
 def test_message_parts_are_translated_where_the_legacy_clip_is_injected():
-    """Both spellings reach llama-server from one place, after the capability gate.
-
-    The legacy clip is injected first and the translation is the last thing before dispatch, so
-    one call covers both. Asserted as order rather than adjacency: the destination guard runs
-    between them, and pinning the exact neighbouring line only broke on that.
-    """
+    """Both spellings translate once, just before dispatch; order is asserted, not adjacency."""
     source = _inference_source()
     inject = source.index("_inject_video_part(gguf_messages, video_b64)")
     translate = source.index("_translate_video_parts(gguf_messages)")

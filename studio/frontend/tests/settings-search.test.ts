@@ -9,6 +9,7 @@ import {
   createSettingsSearchIndex,
   renderedSearchEntries,
 } from "../src/features/settings/settings-search.ts";
+import { OWNER_ONLY_SETTINGS_TABS } from "../src/features/settings/settings-tab-visibility.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
 const UPDATE_ENTRY = "settings.about.updates";
@@ -42,8 +43,7 @@ test("interface scale is searchable on every build", () => {
   );
 });
 
-// The words a user types for this feature are not substrings of any of its
-// labels, so without keywords the rows it is named after were unfindable.
+// The feature's search terms are not substrings of its labels.
 test("model memory rows are reachable by the terms the feature is about", () => {
   const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
   const rows = [
@@ -137,20 +137,14 @@ test("the endpoint rows are searchable only while Hugging Face serves, as they r
 
 const MCP_ENTRY = "settings.apiKeys.mcp.title";
 
-test("agent access (MCP) is found by the protocol and the agents' names, by the owner only", () => {
+test("agent access (MCP) is found at the end of Agents, and on API for the owner, by the protocol and the agents' names", () => {
   const index = createSettingsSearchIndex({
     desktop: false,
     closeToTray: false,
     menuBarIcon: false,
   });
-  assert.ok(index["api-keys"].includes(MCP_ENTRY));
-  const keywordsKey = SETTINGS_SEARCH_KEYWORDS[MCP_ENTRY];
-  assert.equal(keywordsKey, "settings.apiKeys.mcp.keywords");
-  const haystack =
-    `${en.settings.apiKeys.mcp.title} ${en.settings.apiKeys.mcp.keywords}`.toLowerCase();
-  for (const term of ["mcp", "claude", "codex", "model context protocol"]) {
-    assert.ok(haystack.includes(term), `search matches "${term}"`);
-  }
+  assert.equal(index.agents.at(-1), MCP_ENTRY);
+  assert.ok(OWNER_ONLY_SETTINGS_TABS.has("agents"));
   assert.ok(
     renderedSearchEntries(index, "api-keys", "huggingface", true).includes(
       MCP_ENTRY,
@@ -161,6 +155,13 @@ test("agent access (MCP) is found by the protocol and the agents' names, by the 
       MCP_ENTRY,
     ),
   );
+  const keywordsKey = SETTINGS_SEARCH_KEYWORDS[MCP_ENTRY];
+  assert.equal(keywordsKey, "settings.apiKeys.mcp.keywords");
+  const haystack =
+    `${en.settings.apiKeys.mcp.title} ${en.settings.apiKeys.mcp.keywords}`.toLowerCase();
+  for (const term of ["mcp", "claude", "codex", "model context protocol"]) {
+    assert.ok(haystack.includes(term), `search matches "${term}"`);
+  }
 });
 
 const TOOL_RESULT_LIMIT_ENTRY = "settings.chat.toolResultLimit";
@@ -193,4 +194,44 @@ test("the multi-model, image/video idle and keepKv rows are found where they ren
   assert.ok(!index["api-keys"].includes("settings.general.modelAutoSwitch.mediaIdleUnload"));
   // ModelAutoSwitchSection is owner-only on a tab every account sees.
   assert.ok(!renderedSearchEntries(index, "api-keys", "huggingface", false).includes("settings.general.modelAutoSwitch.keepKv"));
+});
+
+const GPU_RENDERING_ENTRY = "settings.appearance.gpuRendering.label";
+
+test("GPU rendering is searchable on desktop only", () => {
+  // The Rendering section is desktop only, so the browser build has no row to scroll to.
+  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: false, menuBarIcon: true });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
+
+  assert.equal(desktop.appearance.filter((key) => key === GPU_RENDERING_ENTRY).length, 1);
+  assert.ok(!browser.appearance.includes(GPU_RENDERING_ENTRY));
+  // Indexed in render order: after Preferences, before the sidebar nav section.
+  assert.equal(
+    desktop.appearance.indexOf(GPU_RENDERING_ENTRY) + 1,
+    desktop.appearance.indexOf("settings.appearance.sidebarNav.title"),
+  );
+  assert.equal(desktop.appearance.length, browser.appearance.length + 1);
+});
+
+
+test("ML startup warmup is searchable in General for the owner on web and desktop", () => {
+  const entries = [
+    "settings.general.mlWarmup.sectionTitle",
+    "settings.general.mlWarmup.hardwareLabel",
+    "settings.general.mlWarmup.textLabel",
+    "settings.general.mlWarmup.datasetsLabel",
+    "settings.general.mlWarmup.mediaLabel",
+    "settings.general.mlWarmup.quantizationLabel",
+  ] as const;
+  for (const desktop of [false, true]) {
+    const index = createSettingsSearchIndex({
+      desktop,
+      closeToTray: false,
+      menuBarIcon: false,
+    });
+    for (const entry of entries) {
+      assert.ok(renderedSearchEntries(index, "general", "huggingface", true).includes(entry));
+      assert.ok(!renderedSearchEntries(index, "general", "huggingface", false).includes(entry));
+    }
+  }
 });

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/api/inference/validate must ignore pass-through arguments for a diffusion GGUF.
-
-/load already drops them: the visual runner builds its own command and appends none of
-them. /validate is the call that approves the load, and it reads a --ctx-size out of the
-same list to size the estimate, so leaving them in place approves a load against a
-command that will never carry them. The caller cannot decide this itself either, since
-its staged metadata is inconclusive for a GGUF it has not finished downloading, which is
-why the drop belongs after the authoritative classification rather than before it.
-"""
+"""/validate drops pass-through args for diffusion GGUFs only after classifying, like /load does."""
 
 import asyncio
 import importlib.util
@@ -17,6 +9,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from models.inference import ValidateModelRequest
 
@@ -98,10 +92,7 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
 
 
 class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
-    """The manual translation reads -ngl out of the extras and strips it, so it has to
-    run AFTER the list has been validated: otherwise a spelling /load refuses is
-    parsed and removed before validation sees it, and the switch is approved for a
-    load that answers 400."""
+    """Validate the extras before stripping -ngl from them, or a spelling /load refuses gets approved."""
 
     def _validate(
         self,
@@ -139,9 +130,7 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
             return asyncio.run(route.validate_model(request, current_subject = "test-user"))
 
     def test_an_attached_offload_spelling_is_refused_not_translated(self):
-        # llama.cpp looks the whole token up in its option map, so "--gpu-layers=20"
-        # is an argument it has never heard of; /load refuses the list. Translating
-        # first read the 20, stripped the token, and approved the switch.
+        # llama.cpp looks up the whole token, so "--gpu-layers=20" is unknown to it.
         from fastapi import HTTPException
 
         route = _load_route_module("inf_route_validate_order_1")
@@ -167,11 +156,7 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
 
 
 class TestValidateTranslatesManualNgl(unittest.TestCase):
-    """Manual GPU memory owns the offload flags, and /load turns an explicit -ngl into
-    the first-class field before stripping them. /validate has to do the same, or the
-    call that APPROVES the switch is judging a different command than the one that runs:
-    gpu_layers 0 with "-ngl 20" was approved as a load that places nothing on any device
-    and cannot compete with training for VRAM, and then launched twenty layers on it."""
+    """/validate must promote -ngl to gpu_layers as /load does, or it approves a different load."""
 
     def _validate(
         self,
@@ -180,6 +165,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         gpu_layers,
         extra_args,
         diffusion_kind = True,
+        gpu_memory_mode = "manual",
     ):
         seen: list = []
 
@@ -189,7 +175,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         request = ValidateModelRequest(
             model_path = "someone/diffusion-gguf",
             llama_extra_args = extra_args,
-            gpu_memory_mode = "manual",
+            gpu_memory_mode = gpu_memory_mode,
             gpu_layers = gpu_layers,
         )
         config = SimpleNamespace(
@@ -219,8 +205,6 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
     def test_an_explicit_layer_count_reaches_the_guard(self):
         route = _load_route_module("inf_route_manual_ngl_1")
         seen = self._validate(route, gpu_layers = 0, extra_args = ["-ngl", "20"])
-        # The layer count the load will really run, and the raw flag stripped out of
-        # the list exactly as /load strips it once it owns the field.
         self.assertEqual(seen, [(20, [])])
 
     def test_a_zero_layer_override_is_read_the_same_way(self):
@@ -231,8 +215,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         self.assertEqual(seen, [(0, [])])
 
     def test_auto_mode_leaves_the_flag_alone(self):
-        # Only manual mode owns these. In Auto the flag is a pass-through the loader
-        # honours, so translating it here would invent a first-class value /load never set.
+        # Only manual mode owns these; in Auto the flag passes through to the loader.
         route = _load_route_module("inf_route_manual_ngl_3")
         seen: list = []
 
@@ -268,11 +251,64 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         self.assertEqual(seen, [(request.gpu_layers, ["-ngl", "20"])])
 
 
+@pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
+@pytest.mark.parametrize("value, layers", [("auto", -1), ("all", 2147483647)])
+@pytest.mark.parametrize("mode", ["auto", "manual"])
+def test_validate_preserves_gpu_layer_keyword_intent(flag, value, layers, mode):
+    route = _load_route_module("inf_route_ngl_keywords")
+    args = [flag, value]
+    seen = TestValidateTranslatesManualNgl()._validate(
+        route,
+        gpu_layers = 0,
+        extra_args = args,
+        diffusion_kind = False,
+        gpu_memory_mode = mode,
+    )
+    assert seen == ([(layers, [])] if mode == "manual" else [(0, args)])
+
+
+@pytest.mark.parametrize("value, layers", [("auto", -1), ("all", 2147483647)])
+@pytest.mark.parametrize("mode", ["auto", "manual"])
+def test_load_normalizes_gpu_layer_keywords_before_model_work(monkeypatch, value, layers, mode):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from models.inference import LoadRequest
+    import routes.inference as route
+
+    seen = []
+
+    def capture(request, **kwargs):
+        seen.append((request.gpu_layers, request.llama_extra_args))
+        raise HTTPException(status_code = 418, detail = "stopped before model resolution")
+
+    async def no_ollama_lease(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(route, "_resolve_model_identifier_for_request", capture)
+    monkeypatch.setattr(route, "_lease_ollama_model_ref", no_ollama_lease)
+    monkeypatch.setattr(route, "_as_ollama_manifest_request", lambda request: request)
+    monkeypatch.setattr(route, "_as_local_scan_folder_request", lambda request, owner: request)
+    monkeypatch.setattr(route, "_repo_is_in_the_hub_cache", lambda model: None)
+    monkeypatch.setattr(route, "_hub_cache_footprint", lambda model: None)
+    monkeypatch.setattr(route, "_lora_base_already_in_the_hub_cache", lambda model: None)
+    monkeypatch.setattr(route, "_note_lora_base_fetched_with_a_request_token", lambda *a, **k: None)
+    args = ["-ngl", value]
+    request = LoadRequest(
+        model_path = "placeholder.gguf",
+        gpu_memory_mode = mode,
+        gpu_layers = 0,
+        llama_extra_args = args,
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(route._load_model_impl(request, Request({"type": "http", "headers": []}), "t"))
+
+    assert caught.value.status_code == 418
+    assert seen == ([(layers, [])] if mode == "manual" else [(0, args)])
+
+
 class TestValidateTranslatesManualTensorSplit(unittest.TestCase):
-    """Manual GPU memory strips ``-ts`` / ``--tensor-split`` because the first-class
-    ``tensor_split`` field owns it. /validate must promote the extras value first,
-    the same way it promotes ``-ngl``, or it judges a near-even default while /load
-    would have emitted the asymmetric MoE split (#11330)."""
+    """/validate must promote -ts to tensor_split as /load does, or it judges a different split."""
 
     def _validate(
         self,
@@ -450,8 +486,6 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         )
 
     def test_defaults_clamp_nothing(self):
-        # Nothing overrides the batch, so the launch runs llama.cpp's own 2048 and the
-        # micro-batch is nowhere near the slot count.
         route = _load_route_module("inf_route_embed_clamp_3")
         self.assertEqual(
             self._clamped(route, is_embedding = True, extra_args = ["--numa", "distribute"]),
@@ -511,8 +545,7 @@ class TestValidateAllowsTheEmbeddingClampedBatch(TestValidateRefusesWhatLoadWoul
         self.assertIn("aborts on --batch-size", str(caught.exception.detail))
 
     def test_an_embedding_gguf_below_its_own_floor_is_still_refused(self):
-        # The clamp floors at one slot, and llama-server aborts on a batch of 1 at any
-        # slot count, so this is not a refusal the clamp may lift.
+        # llama-server aborts on a batch of 1 at any slot count.
         route = _load_route_module("inf_route_validate_embed_3")
         with (
             patch.object(route, "_is_embedding_gguf", return_value = True),

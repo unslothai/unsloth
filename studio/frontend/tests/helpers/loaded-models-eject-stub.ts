@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Stubs the chat, images and video barrels; /unload 409s like the backend while a chat
+// Stubs the chat, images and video barrels and the embedder; /unload 409s like the backend while a chat
 // is generating unless forced.
 
 type UnloadPayload = { model_path: string; force_cancel_active?: boolean };
@@ -9,6 +9,8 @@ type UnloadPayload = { model_path: string; force_cancel_active?: boolean };
 export const state = {
   active: null as string | null,
   loaded: [] as string[],
+  servingCheckpoints: [] as string[],
+  embeddingLoaded: false,
   generating: false,
   confirmAnswer: { proceed: true, forceCancelActive: false },
   confirmCalls: [] as { action: string; effect: string; model?: string }[],
@@ -19,10 +21,14 @@ export const state = {
 export function resetStub({
   active = null as string | null,
   loaded = [] as string[],
+  servingCheckpoints = [] as string[],
+  embeddingLoaded = false,
   generating = false,
 } = {}): void {
   state.active = active;
   state.loaded = [...loaded];
+  state.servingCheckpoints = [...servingCheckpoints];
+  state.embeddingLoaded = embeddingLoaded;
   state.generating = generating;
   state.confirmAnswer = { proceed: true, forceCancelActive: false };
   state.confirmCalls = [];
@@ -31,7 +37,11 @@ export function resetStub({
 }
 
 export async function getInferenceStatus() {
-  return { active_model: state.active, loaded: [...state.loaded] };
+  return {
+    active_model: state.active,
+    loaded: [...state.loaded],
+    serving_checkpoints: [...state.servingCheckpoints],
+  };
 }
 
 export function resolveInferenceCheckpointId(status: {
@@ -53,6 +63,9 @@ export async function unloadModel(payload: UnloadPayload): Promise<void> {
   }
   state.generating = false;
   state.loaded = state.loaded.filter((name) => name !== payload.model_path);
+  state.servingCheckpoints = state.servingCheckpoints.filter(
+    (checkpoint) => checkpoint !== payload.model_path,
+  );
   if (state.active === payload.model_path) state.active = null;
 }
 
@@ -89,3 +102,15 @@ export async function getVideoStatus() {
 export async function unloadVideoModel() {
   return { loaded: false };
 }
+
+export async function unloadEmbeddingModel() {
+  state.embeddingLoaded = false;
+  return { backendLoaded: false };
+}
+export const useEmbeddingModelStore = {
+  getState: () => ({
+    applyResidency: async (request: () => Promise<unknown>) => {
+      await request();
+    },
+  }),
+};

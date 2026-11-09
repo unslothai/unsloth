@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -28,15 +29,14 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
-  Add01Icon,
-  AlertCircleIcon,
-  ArrowDown01Icon,
+  Alert02Icon,
   BookOpen01Icon,
   Cancel01Icon,
   CodeIcon,
-  PlayIcon,
+  PlusSignIcon,
   SlidersHorizontalIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -81,6 +81,9 @@ import {
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
 import { isModEnter, modEnterLabel } from "../lib/keyboard-shortcuts";
+import type { ExampleOs } from "./api-example-parts";
+import { buildDecisionCurl } from "./decision-api-snippets";
+import { type LucideIcon, PlayIcon } from "lucide-react";
 
 const SHORTCUT = modEnterLabel();
 
@@ -206,19 +209,47 @@ function ViewToggle<T extends string>({
   );
 }
 
+function CopyText({
+  label,
+  text,
+}: {
+  label: string;
+  text: string;
+}): ReactElement {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        if (await copyToClipboard(text)) {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1800);
+        }
+      }}
+      className="shrink-0 rounded font-sans text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {copied ? t("settings.apiKeys.copied") : label}
+    </button>
+  );
+}
+
 function CodeBlock({
   title,
   value,
   onChange,
+  actions,
 }: {
   title: string;
   value: string;
   onChange?: (value: string) => void;
+  actions?: ReactNode;
 }): ReactElement {
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-muted/40">
-      <div className="truncate border-b border-border/60 px-3.5 py-2 font-mono text-ui-11 text-muted-foreground">
-        {title}
+      <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3.5 py-2 font-mono text-ui-11 text-muted-foreground">
+        <span className="truncate">{title}</span>
+        {actions}
       </div>
       {onChange ? (
         <textarea
@@ -281,7 +312,7 @@ function AddButton({
       onClick={onClick}
       className="w-fit gap-1.5 px-2.5 text-ui-12 text-muted-foreground"
     >
-      <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-3.5" />
+      <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-3.5" />
       {children}
     </Button>
   );
@@ -632,14 +663,23 @@ function Notice({
   title,
   children,
 }: {
-  icon: IconSvgElement;
+  icon: IconSvgElement | LucideIcon;
   title: string;
   children?: ReactNode;
 }): ReactElement {
+  const Glyph = Array.isArray(icon) ? null : (icon as LucideIcon);
   return (
     <div className="flex min-h-64 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border/70 px-6 py-10 text-center">
       <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
-        <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
+        {Glyph ? (
+          <Glyph strokeWidth={1.75} className="size-4" />
+        ) : (
+          <HugeiconsIcon
+            icon={icon as IconSvgElement}
+            strokeWidth={1.75}
+            className="size-4"
+          />
+        )}
       </span>
       <div className="flex max-w-xs flex-col items-center gap-3">
         <span className="text-sm font-medium text-foreground">{title}</span>
@@ -660,10 +700,10 @@ function ErrorResult({
   return (
     <div
       role="alert"
-      className="flex gap-3 rounded-xl border border-red-500/25 bg-red-500/5 px-4 py-3.5"
+      className="flex gap-3 rounded-lg border border-red-500/25 bg-red-500/5 px-4 py-3.5"
     >
       <HugeiconsIcon
-        icon={AlertCircleIcon}
+        icon={Alert02Icon}
         strokeWidth={1.75}
         className="mt-0.5 size-4 shrink-0 text-red-600 dark:text-red-400"
       />
@@ -805,6 +845,7 @@ export function DecisionTryDialog({
   initialModel,
   settings,
   connections,
+  curlTarget,
   onRun,
 }: {
   open: boolean;
@@ -812,6 +853,7 @@ export function DecisionTryDialog({
   initialModel?: string;
   settings: SystemOneSettings;
   connections: SystemOneConnection[];
+  curlTarget: { base: string; apiKey: string; os: ExampleOs };
   onRun: () => void;
 }): ReactElement {
   const t = useT();
@@ -1174,6 +1216,21 @@ export function DecisionTryDialog({
                     title="POST /v1/systemone"
                     value={jsonText}
                     onChange={setJsonText}
+                    actions={
+                      <span className="flex shrink-0 items-center gap-3">
+                        <CopyText
+                          label={t("decisions.copyBody")}
+                          text={jsonText}
+                        />
+                        <CopyText
+                          label={t("decisions.copyCurl")}
+                          text={buildDecisionCurl({
+                            ...curlTarget,
+                            body: jsonText,
+                          })}
+                        />
+                      </span>
+                    }
                   />
                 </>
               )}
@@ -1195,7 +1252,7 @@ export function DecisionTryDialog({
                     />
                     {t("decisions.examples")}
                     <HugeiconsIcon
-                      icon={ArrowDown01Icon}
+                      icon={ChevronDownStandardIcon}
                       strokeWidth={1.75}
                       className="size-3.5"
                     />
@@ -1219,22 +1276,19 @@ export function DecisionTryDialog({
                 </DropdownMenuContent>
               </DropdownMenu>
               <Button
+                variant="dark"
                 type="button"
                 onClick={() => void run()}
                 aria-busy={running}
-                className="gap-2 pl-3.5 pr-2"
+                className="gap-2"
               >
                 {running ? (
-                  <Spinner className="size-4 text-primary-foreground" />
+                  <Spinner className="size-4 text-background" />
                 ) : (
-                  <HugeiconsIcon
-                    icon={PlayIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
+                  <PlayIcon strokeWidth={1.75} className="size-4" />
                 )}
                 {t("decisions.run")}
-                <kbd className="rounded-full bg-primary-foreground/20 px-1.5 py-0.5 font-mono text-ui-10 text-primary-foreground/90">
+                <kbd className="rounded-full bg-background/20 px-1.5 py-0.5 font-mono text-ui-10 text-background/90">
                   {SHORTCUT}
                 </kbd>
               </Button>
