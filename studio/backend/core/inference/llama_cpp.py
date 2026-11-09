@@ -1422,17 +1422,6 @@ def _has_unclosed_code_fence(text: str) -> bool:
     return active_char is not None
 
 
-def _has_unclosed_markup_block(text: str) -> bool:
-    """Counted rather than matched, so a closed block followed by an open one still counts as unclosed."""
-    opens_html = len(re.findall(r"<html\b", text, re.IGNORECASE))
-    closes_html = len(re.findall(r"</html\s*>", text, re.IGNORECASE))
-    if opens_html > closes_html:
-        return True
-    opens_svg = len(re.findall(r"<svg\b", text, re.IGNORECASE))
-    closes_svg = len(re.findall(r"</svg\s*>", text, re.IGNORECASE))
-    return opens_svg > closes_svg
-
-
 # "First, I'll create an <html></html> skeleton" is a plan, not a page.
 _EMPTY_MARKUP_SKELETON = re.compile(
     r"<(html|svg)\b[^>]*>\s*</\1\s*>",

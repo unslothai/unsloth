@@ -77,8 +77,6 @@ def _kernel_options_for_dtype(dtype, one_stage = False):
     return options
 
 
-_FLEX_KERNEL_OPTIONS = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
-
 # The compiled backward asserts unless T is a multiple of 128; pad tokens are fully masked and sliced off.
 _PAD_MULTIPLE = 128
 _PAD_GROUP = -99  # sentinel group id / suffix id for pad tokens
