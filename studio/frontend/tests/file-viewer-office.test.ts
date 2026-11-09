@@ -8,6 +8,9 @@ import { DOMParser } from "@xmldom/xmldom";
 import { strToU8, zipSync } from "fflate";
 
 import { formatNumber, readDelimited, readPptx, readXlsx } from "../src/components/file-viewer/office.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
 
 {
   const proto = Object.getPrototypeOf(new DOMParser().parseFromString("<a/>", "application/xml").documentElement);
@@ -267,6 +270,42 @@ test("pptx: maxSlides stops reading after that many slides", () => {
   assert.equal(first.slides.length, 1);
   assert.equal(first.truncated, true);
   assert.equal(first.slides[0]!.boxes[0]?.paragraphs?.[0]?.text, "one");
+});
+
+test("pptx attachments keep speaker notes without the slide number", async () => {
+  const { extractOfficeAttachmentText } = await import("../src/features/chat/attachment-content.ts");
+  const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const sp = (ph: string, body: string) =>
+    `<p:sp><p:nvSpPr><p:nvPr><p:ph type="${ph}"/></p:nvPr></p:nvSpPr><p:txBody>${body}</p:txBody></p:sp>`;
+  const zip = zipSync({
+    "ppt/presentation.xml": strToU8(
+      `<p:presentation xmlns:p="${P}" xmlns:r="${REL}"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>`,
+    ),
+    "ppt/_rels/presentation.xml.rels": rels(`<Relationship Id="rId1" Type="${REL}/slide" Target="slides/slide1.xml"/>`),
+    "ppt/slides/slide1.xml": strToU8(
+      `<p:sld xmlns:p="${P}" xmlns:a="${A}"><p:cSld><p:spTree>${sp("title", "<a:p><a:r><a:t>Quarterly plan</a:t></a:r></a:p>")}</p:spTree></p:cSld></p:sld>`,
+    ),
+    "ppt/slides/_rels/slide1.xml.rels": rels(
+      `<Relationship Id="rId2" Type="${REL}/notesSlide" Target="../notesSlides/notesSlide1.xml"/>`,
+    ),
+    "ppt/notesSlides/notesSlide1.xml": strToU8(
+      `<p:notes xmlns:p="${P}" xmlns:a="${A}"><p:cSld><p:spTree>` +
+        sp("sldImg", "") +
+        sp("body", "<a:p><a:r><a:t>Budget is 42 dollars</a:t></a:r></a:p><a:p><a:r><a:t>Ask about Q3</a:t></a:r></a:p>") +
+        sp("sldNum", '<a:p><a:fld type="slidenum"><a:t>1</a:t></a:fld></a:p>') +
+        `</p:spTree></p:cSld></p:notes>`,
+    ),
+  });
+  const file = new File([zip], "deck.pptx");
+  assert.equal(
+    await extractOfficeAttachmentText(file, "PPTX"),
+    "Slide 1\nQuarterly plan\nNotes:\nBudget is 42 dollars\nAsk about Q3",
+  );
+  assert.deepEqual(
+    readPptx(zip).slides[0]?.boxes.flatMap((box) => box.paragraphs?.map((p) => p.text) ?? []),
+    ["Quarterly plan"],
+  );
 });
 
 test("sheet limits cap rows, columns and parsed sheets", () => {
