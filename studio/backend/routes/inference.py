@@ -38917,15 +38917,10 @@ async def _truncated_llama_embedding_inputs(
     return out if cut else None
 
 
-def _yielding_float(text: str) -> float:
-    return float(text)
-
-
 def _embedding_response_json(resp):
     """The parsed body, or the exception parsing raised (each caller swallows it)."""
     try:
-        # float() is what the C scanner calls; a Python hook per number lets the loop take the GIL back.
-        return resp.json(parse_float = _yielding_float)
+        return resp.json()
     except Exception as exc:  # noqa: BLE001
         return exc
 
