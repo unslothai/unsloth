@@ -220,7 +220,6 @@ def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
 
 
 def _used_image_model_aliases(recipe: dict[str, Any]) -> set[str]:
-    """Return model_aliases referenced by an image column."""
     return _used_model_aliases(recipe, lambda column_type: column_type == "image")
 
 

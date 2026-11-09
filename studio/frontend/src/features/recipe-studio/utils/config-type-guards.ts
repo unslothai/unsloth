@@ -53,7 +53,6 @@ export function isImageConfig(
   return Boolean(config && config.kind === "image");
 }
 
-/** Image presets serve Image blocks; every other preset serves LLM blocks. */
 export function isImageModelConfig(
   config: NodeConfig | null | undefined,
 ): config is ModelConfig {

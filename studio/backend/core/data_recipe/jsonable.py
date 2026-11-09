@@ -211,7 +211,6 @@ def _open_generated_image(item: str, dataset_dir: Path | None) -> Any | None:
         except (HTTPException, OSError, RuntimeError, ValueError, TypeError):
             return None
     else:
-        # A preview keeps the model's base64 in the row.
         try:
             raw_bytes = base64.b64decode(item, validate = True)
         except (binascii.Error, ValueError):

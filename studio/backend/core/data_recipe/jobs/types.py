@@ -92,7 +92,6 @@ class Job:
     completed_columns: list[str] = field(default_factory = list)
     # Internal sk-unsloth-* key id; revoked when the job ends so its window matches the run, not the 24h TTL.
     internal_api_key_id: int | None = None
-    # Image columns; their cells are images/ paths that pages turn into thumbnails.
     image_columns: list[str] = field(default_factory = list)
     _current_usage_model: str | None = None
     _in_usage_summary: bool = False

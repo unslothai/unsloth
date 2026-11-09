@@ -18,7 +18,6 @@ export function isTextFormatValidatorTarget(config: NodeConfig): boolean {
   );
 }
 
-/** Steps that take a model preset: LLM blocks and Image blocks. */
 export function isModelStep(
   config: NodeConfig,
 ): config is LlmConfig | ImageConfig {

@@ -137,7 +137,6 @@ export function validateModelConfigProviders(
       errors.push(`Model config ${alias}: model is required.`);
       continue;
     }
-    // A local image preset uses whichever image model is loaded.
     if (isLocal && isUsed && !model && config.generation !== "image") {
       errors.push(`Model config ${alias}: choose a local model.`);
     }
