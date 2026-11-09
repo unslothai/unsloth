@@ -26,7 +26,9 @@ from core.inference.tool_loop_controller import (
 from core.rag.conversation_archive import (
     _flushes_local_pair,
     _local_round_id,
+    _mcp_image_result,
     _sanitised_assistant_text,
+    _search_images_result,
     _server_builtin,
     _tool_result_content,
     _with_attachments,
@@ -63,9 +65,8 @@ def _sort_key(message: dict) -> tuple:
 
 
 def _resolve_parents(ordered: list[dict]) -> dict[str, Optional[str]]:
-    # Mirrors createParentResolver (and the parent loop in studio_db.fork_chat_thread): rows saved
-    # before parent links existed chain to the previous row, while a null parent after any recorded
-    # parent starts a new root.
+    # Mirrors createParentResolver (and studio_db.fork_chat_thread): rows saved before parent links
+    # chain to the previous row; a null parent after any recorded parent starts a new root.
     parents: dict[str, Optional[str]] = {}
     previous_id = None
     saw_recorded_parent = False
@@ -196,17 +197,19 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
             elif kind == "tool-call" and role == "assistant":
                 call_id = str(part.get("toolCallId") or f"{message_id}-{position}")
                 if call_id in call_ids:
-                    suffix = 2
-                    while f"{call_id}#{suffix}" in call_ids:
-                        suffix += 1
-                    renamed = f"{call_id}#{suffix}"
+                    names = (f"{call_id}#{n}" for n in range(2, len(call_ids) + 3))
+                    renamed = next(name for name in names if name not in call_ids)
                     note = f"Tool call id {call_id!r} repeats; renamed to {renamed!r}"
                     warnings.append(TraceWarning("duplicate_tool_call_id", note, message_id))
                     call_id = renamed
                 call_ids.add(call_id)
                 args, raw = part.get("args"), part.get("argsText")
-                if isinstance(raw, str) and raw and args == {"_raw": raw}:
-                    args = {}  # toolCallReplayArguments replays the {_raw: argsText} marker as {}
+                try:  # toolCallReplayArguments sends argsText as is when it is one JSON object
+                    exact = json.loads(raw, parse_constant = _reject_constant)
+                except (TypeError, ValueError):
+                    exact = None
+                marker = isinstance(raw, str) and raw and args == {"_raw": raw}  # replays as {}
+                args = exact if isinstance(exact, dict) else {} if marker else args
                 name = str(part.get("toolName") or "")
                 current.tool_calls.append(
                     ToolCall(
@@ -216,10 +219,14 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     )
                 )
                 wire = {"role": "tool", "name": name}
-                result = part["result"]  # isMcpUiToolResult: an MCP App result replays as its text
+                result = part["result"]  # isMcpUiToolResult, then the gated isMcpImageToolResult
                 ui = _as_dict(result.get("ui")) if isinstance(result, dict) else {}
                 if name.startswith("mcp__") and isinstance(ui.get("resourceUri"), str):
                     result = result["text"] if isinstance(result.get("text"), str) else result
+                elif _mcp_image_result(result) and not _search_images_result(result):
+                    image_tool = name == "view_image" or name.startswith("mcp__")  # isImageToolName
+                    if "ui" in result or not (image_tool or set(result) <= {"text", "images"}):
+                        result = json.dumps(result, ensure_ascii = False, separators = (",", ":"))
                 wire["content"] = _tool_result_content(result, name)
                 suffix = _as_dict(part.get("provenance")).get("model_suffix")
                 if isinstance(suffix, str) and suffix:
@@ -239,9 +246,8 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     pending, pending_round = [], None
             else:
                 imaged = imaged or (kind == "image" and part.get("image"))
-                warnings.append(
-                    TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
-                )
+                note = f"Dropped a {kind!r} part"
+                warnings.append(TraceWarning("unsupported_part", note, message_id))
         out.extend(pending)
         kept += out[start:][:1] if imaged else []  # collectImageParts: the row's first UI group
         reason = _as_dict(_as_dict(message.get("metadata")).get("incomplete")).get("reason")
@@ -284,11 +290,8 @@ def _skipped_call(part: dict, message_id: str, position: int) -> Optional[TraceW
     if part.get("result") is None:
         # serializeToolResultPart (chat-adapter.ts) and conversation_archive._replayable drop it.
         call_id = part.get("toolCallId") or f"{message_id}-{position}"
-        return TraceWarning(
-            "unanswered_tool_call_dropped",
-            f"Dropped tool call {call_id!r} ({name!r}); it has no stored result",
-            message_id,
-        )
+        note = f"Dropped tool call {call_id!r} ({name!r}); it has no stored result"
+        return TraceWarning("unanswered_tool_call_dropped", note, message_id)
     return None
 
 

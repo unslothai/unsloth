@@ -168,26 +168,23 @@ def test_native_thread_follows_the_newest_branch_unless_a_head_is_given():
 def test_rows_from_a_service_need_no_database():
     thread = {"id": "t9", "title": "Rows", "modelId": "", "createdAt": 1, "updatedAt": 1}
     raw = {"_raw": "{x"}
+    parts = [
+        {"type": "reasoning", "text": "plan"},
+        _call("k", result = {"text": "ok"}, isError = True, args = raw, argsText = "{x"),
+        _call("k", result = {"text": "again"}, args = raw, argsText = "{y"),
+        _call("b", args = {"n": 2**53}, argsText = '{"n":9007199254740993}'),
+    ]
     messages = [
         _row("u1", "user", _text("Run it") + [{"type": "image", "image": "x"}], None, 1),
-        _row(
-            "a1",
-            "assistant",
-            [
-                {"type": "reasoning", "text": "plan"},
-                _call("k", result = {"text": "ok"}, isError = True, args = raw, argsText = "{x"),
-                _call("k", result = {"text": "again"}, args = raw, argsText = "{y"),
-            ],
-            "u1",
-            2,
-        ),
+        _row("a1", "assistant", parts, "u1", 2),
         _row("s1", "tool", _text("stray"), "a1", 3),
     ]
 
     trace = chat_to_trace(thread, messages)
     assistant, tool = trace.messages[1], trace.messages[2]
     assert assistant.reasoning == "plan"
-    assert [(c.id, c.arguments) for c in assistant.tool_calls] == [("k", {}), ("k#2", raw)]
+    assert [(c.id, c.arguments) for c in assistant.tool_calls[:2]] == [("k", {}), ("k#2", raw)]
+    assert assistant.tool_calls[2].arguments == {"n": 2**53 + 1}  # exact argsText, as the UI sends
     # Byte-exact JSON.stringify, as the UI replays a non-sandbox tool result.
     assert (tool.tool_call_id, tool.text, tool.is_error) == ("k", '{"text":"ok"}', True)
     assert _codes(trace) == ["unsupported_part", "duplicate_tool_call_id", "unknown_role"]
@@ -322,21 +319,6 @@ def test_assistant_rows_replay_like_the_ui(parts, text, codes, note):
         assert note in trace.warnings[0].message
 
 
-@pytest.mark.parametrize(
-    "part, text",
-    [
-        (_call("A", "python", {"text": "ok", "sessionId": "s", "images": []}), "ok"),
-        (_call("A", "mcp__s__ui", {"text": "", "ui": {"resourceUri": "u"}}), '{"result":""}'),
-        (_call("A", "search_knowledge_base", "Hit\n__RAG_SOURCES__:[1]"), "Hit"),
-        (_call("A", "python", "Error: boom"), "Error: boom" + TOOL_ERROR_NUDGE),
-        (_call("A", result = "out", provenance = {"model_suffix": " [2 left]"}), "out [2 left]"),
-        (_call("A", result = "out", provenance = "local"), "out"),
-    ],
-)
-def test_tool_results_match_the_ui_wire_text(part, text):
-    assert _assistant([part]).messages[2].text == text
-
-
 def _turn(custom, content):
     rows = [
         _row("u", "user", _text("go"), None, 1),
@@ -348,6 +330,7 @@ def _turn(custom, content):
 
 
 _STOPPED = {"incomplete": {"reason": "cancelled"}}
+_IMG = [{"data": "d", "mimeType": "m"}]
 
 
 # `before` is what the trace keeps ahead of the next turn ("again", "fine").
@@ -398,6 +381,25 @@ def test_native_builtin_or_image_turn_keeps_its_prompt_and_reasoning(custom, p):
     assert _turn(custom, [part, {"type": "reasoning", "text": "r"}]).messages[1].reasoning == tail
 
 
+@pytest.mark.parametrize(
+    "part, text",
+    [
+        (_call("A", "python", {"text": "ok", "sessionId": "s", "images": []}), "ok"),
+        (_call("A", "mcp__s__x", {"text": "t", "images": _IMG, "x": 1}), "t"),
+        (_call("A", "mcp__s__x", {"text": "t", "images": _IMG, "ui": {}}), None),
+        (_call("A", "run", {"text": "t", "images": _IMG, "x": 1}), None),
+        (_call("A", "mcp__s__ui", {"text": "", "ui": {"resourceUri": "u"}}), '{"result":""}'),
+        (_call("A", "search_knowledge_base", "Hit\n__RAG_SOURCES__:[1]"), "Hit"),
+        (_call("A", "python", "Error: boom"), "Error: boom" + TOOL_ERROR_NUDGE),
+        (_call("A", result = "out", provenance = {"model_suffix": " [2 left]"}), "out [2 left]"),
+        (_call("A", result = "out", provenance = "local"), "out"),
+    ],
+)
+def test_tool_results_match_the_ui_wire_text(part, text):
+    wire = json.dumps(part["result"], separators = (",", ":"))
+    assert _assistant([part]).messages[2].text == (text or wire)
+
+
 def test_user_attachments_are_model_input():
     attachments = [
         {"content": _text("def f(): pass")},
@@ -427,19 +429,14 @@ def test_user_attachments_are_model_input():
         (
             {
                 "systemPrompt": "{{repo}} {{a.b}} {{n}} {{ $date }}",
-                "systemVariables": '{"repo":"u","a":{"b":"x"},"n":3}',
+                "systemVariables": '{"repo":"u","a":{"b":"x"},"n":3.0}',
             },
             {"id": "p", "name": "P", "instructions": "Use tabs.", "archived": True},
             "u x 3 {{ $date }}",
             ["system_prompt_variables"],
         ),
         # JSON.parse and String() print 1.0 as 1; a NaN map fails the parse and fills nothing.
-        (
-            {"systemPrompt": "{{n}} {{x}}", "systemVariables": '{"n":1.0,"x":[1.0]}'},
-            None,
-            "1 [1]",
-            [],
-        ),
+        ({"systemPrompt": "{{x}}", "systemVariables": '{"x":[1.0]}'}, None, "[1]", []),
         (
             {"systemPrompt": "{{n}}", "systemVariables": '{"n":NaN}'},
             None,
