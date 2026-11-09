@@ -118,6 +118,10 @@ def _take_the_gpu() -> None:
 
     mode = get_multi_model_mode()
     video = get_video_backend()
+    if video.loading_repo_ids():
+        raise HTTPException(
+            status_code = 409, detail = "A video model is loading. Try again when it finishes."
+        )
     if video.status().get("loaded"):
         if generation_account_in_flight() is not None:
             raise HTTPException(

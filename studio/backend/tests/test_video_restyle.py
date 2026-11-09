@@ -575,7 +575,8 @@ def test_gpu_acquire_keeps_a_running_restyle_server(weights, monkeypatch):
     runner.start(prompt = "x", frames = _frames(5))
     monkeypatch.setattr(vr, "runner", runner)
     monkeypatch.setattr(arb, "_owner", None)
-    arb.acquire_for(arb.CHAT)
+    with pytest.raises(arb.RestyleRunningError):
+        arb.acquire_for(arb.CHAT)
     assert runner._server is server
 
 
@@ -773,8 +774,15 @@ def test_a_reserved_runner_keeps_its_server(weights):
 
 
 class _Video:
-    def __init__(self, loaded):
-        self.loaded, self.unloaded = loaded, 0
+    def __init__(
+        self,
+        loaded,
+        loading = (),
+    ):
+        self.loaded, self.loading, self.unloaded = loaded, loading, 0
+
+    def loading_repo_ids(self):
+        return self.loading
 
     def status(self):
         return {"loaded": self.loaded}
@@ -823,3 +831,30 @@ def test_start_refuses_to_drop_a_create_model_it_must_keep(weights, monkeypatch,
     with pytest.raises(HTTPException) as exc:
         route._take_the_gpu()
     assert exc.value.status_code == 409 and video.unloaded == 0 and acquired == []
+
+
+def test_start_refuses_while_a_create_model_loads(weights, monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import video_restyle as route
+
+    video = _Video(loaded = False, loading = ("org/some-video-model",))
+    acquired = _gpu_handoff(monkeypatch, "off", video)
+    with pytest.raises(HTTPException) as exc:
+        route._take_the_gpu()
+    assert exc.value.status_code == 409 and acquired == []
+
+
+def test_gpu_acquire_is_refused_while_a_restyle_runs(weights, monkeypatch):
+    import core.inference.gpu_arbiter as arb
+
+    evicted = []
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    runner.start(prompt = "x", frames = _frames(5))
+    monkeypatch.setattr(vr, "runner", runner)
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setitem(arb._EVICTORS, arb.CHAT, lambda: evicted.append("chat"))
+    with pytest.raises(arb.RestyleRunningError):
+        arb.acquire_for(arb.DIFFUSION)
+    assert evicted == []
+    assert arb.RestyleRunningError().as_http_exception().status_code == 409
