@@ -16,8 +16,7 @@ from torch.utils._python_dispatch import TorchDispatchMode  # noqa: E402
 
 from core.inference import diffusion_vae_attn_chunked as C  # noqa: E402
 
-# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
-# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+# CUDA version tag: Studio also reads ROCm from "+rocm" (AMD wheels leave torch.version.hip unset).
 _CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 
@@ -81,7 +80,7 @@ def test_mode_bounds_the_score_tile(rocm):
         probe = _LargestTensor()
         with probe:
             ref = F.scaled_dot_product_attention(q, q, q)
-        assert probe.max_bytes >= full  # the math kernel materialises every score
+        assert probe.max_bytes >= full
         mode = C.chunked_attention_mode(budget)
         probe = _LargestTensor()
         with mode, probe:
@@ -97,7 +96,6 @@ def test_mode_chunks_keyword_calls(rocm):
         ref = F.scaled_dot_product_attention(q, q, q, scale = 0.2)
         mode = C.chunked_attention_mode(512 * 512 * 4 // 8)
         with mode:
-            # the call shape of diffusers' native dispatch_attention_fn
             out = F.scaled_dot_product_attention(
                 query = q,
                 key = q,
@@ -119,7 +117,7 @@ def test_mode_leaves_fused_small_masked_and_causal_calls_alone(monkeypatch):
     real = C.chunked_sdpa
     monkeypatch.setattr(C, "chunked_sdpa", lambda *a, **k: calls.append(1) or real(*a, **k))
     q = torch.randn(1, 1, 256, 16)
-    big = 1024  # bytes: every call here is over budget
+    big = 1024
     mask = torch.ones(256, 256, dtype = torch.bool)
     with _math():
         ref = F.scaled_dot_product_attention(q, q, q)
@@ -324,7 +322,7 @@ def test_half_math_keeps_dtype_scoped_and_close(rocm, monkeypatch, chunk):
     assert mode.half == 1 and mode.chunked == int(chunk)
     if not chunk:
         assert torch.equal(out, want)
-        assert not torch.equal(out, upcast)  # the half path really ran
+        assert not torch.equal(out, upcast)
     torch.testing.assert_close(out.float(), ref32, atol = 2e-2, rtol = 2e-2)
 
 
