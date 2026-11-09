@@ -124,8 +124,7 @@ def modes(materials: list[str], lens_modes: list[str]) -> list[dict]:
     out.append({"name": f"{GLASS}+menus-off", "base": GLASS, "set": {**on_glass, "menus": False}})
     out.append({"name": "solid+dark", "base": "default", "set": {**DEFAULT, "theme": "dark"}})
     out.append({"name": f"{GLASS}+dark", "base": GLASS, "set": {**on_glass, "theme": "dark"}})
-    # Every other appearance setting (_appearance_coverage.py keeps this list complete): the costliest
-    # customisation values, a palette with its own effect rules, the strongest Glass, and a wallpaper.
+    # Costliest value of every other appearance setting (_appearance_coverage.py keeps this complete).
     for name, base, setting in (("solid", "default", DEFAULT), (GLASS, GLASS, on_glass)):
         out.append(
             {
@@ -804,8 +803,7 @@ def custom_storage(custom: dict) -> str:
     return json.dumps({"state": {"customization": custom}, "version": version})
 
 
-# Seeds a generated wallpaper into the app's own chat-background database (created on the first load);
-# the page is then reloaded so the app hydrates it like a stored upload.
+# Seeds a wallpaper into the app's chat-background database; a reload then hydrates it like an upload.
 SEED_WALLPAPER = """async (adjust) => {
   const dbs = await indexedDB.databases();
   const hit = dbs.find((d) => d.name && d.name.startsWith('unsloth-chat-background'));
@@ -887,8 +885,7 @@ class Page:
                 raise RuntimeError(f"wallpaper not seeded: {seeded}")
             load()
             if mode["set"]["wallpaper"].get("blur"):
-                # A blurred wallpaper is baked into a bitmap once (artwork.tsx); the live filter it replaces
-                # re-ran on every scroll frame. Measure the settled page, and fail if the bake never lands.
+                # Fail if the bake (artwork.tsx) never replaces the live, per-frame blur.
                 try:
                     page.wait_for_function(
                         "() => { const a = [...document.querySelectorAll('.chat-wallpaper-artwork')]"

@@ -21,8 +21,7 @@ MODEL_TS = SRC / "features" / "chat-background" / "model.ts"
 CUSTOM_TS = SRC / "features" / "settings" / "stores" / "appearance-custom-store.ts"
 THEMES_TS = SRC / "features" / "settings" / "lib" / "color-themes.ts"
 
-# Measured: each non-default value the gate applies in the `+custom` modes (solid and Glass).
-# These are the costliest value of each setting: every outline on, full contrast, largest fonts.
+# Measured by the `+custom` modes: the costliest value of each setting.
 CUSTOM_MEASURED = {
     "contrast": 100,
     "composerOutline": 100,
@@ -71,8 +70,7 @@ ENUM_ALLOW = {
     ("sentAttachments", "chips"): "attachment row layout",
 }
 
-# Measured: solid+palette. Palettes share one colour-token rule in index.css; this one also has its
-# own effect rules (composer glow), so it is the costliest palette.
+# Measured by solid+palette: the only palette with its own effect rules (composer glow).
 PALETTE_MEASURED = "neon-cyberpunk"
 
 # Measured: the `+wallpaper` modes seed a stored chat wallpaper with these adjustments.
