@@ -11139,9 +11139,13 @@ class DiffusionBackend:
                     from .diffusion_qwenimage21_vision import configure_vision_attention
 
                     configure_vision_attention(pipe, family = fam.name, target = target, logger = logger)
-                    from .diffusion_qwenimage21_te import skip_text_encoder_kv_cache
+                    from .diffusion_qwenimage21_te import (
+                        select_final_hidden_state,
+                        skip_text_encoder_kv_cache,
+                    )
 
                     skip_text_encoder_kv_cache(pipe, logger = logger)
+                    select_final_hidden_state(pipe, logger = logger)
 
                     # After the TE quant, so the cache key reflects the encoders that run.
                     cond_cache.install(
