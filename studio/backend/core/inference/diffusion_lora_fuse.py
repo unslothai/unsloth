@@ -121,8 +121,7 @@ def fuse(
     on_device = _backup_on_device(device, total)
     pin = False if on_device else _host_backup_pinned(device)
     if pin and _pow2_pack_enabled():
-        # every pinned block is rounded up to a power of two by the host allocator: lay the backup out in
-        # power-of-two chunks so ``total`` is what the pinned allocator really holds
+        # pinned allocator rounds every block up to a power of two: charge what it really holds
         places, sizes = _layout(nbytes_list, pow2 = True)
         total = sum(sizes)
     if not on_device and not _host_backup_fits(total):
@@ -176,10 +175,7 @@ def _pow2_pack_enabled() -> bool:
 
 
 def _layout(nbytes_list: list, pow2: bool) -> tuple:
-    """(chunk, offset) per weight and the chunk sizes. Without ``pow2``, weights up to ``_CHUNK`` share ``_CHUNK``
-    chunks and a larger weight gets its own exact slab. With ``pow2`` (pinned host memory, whose allocator rounds every
-    block up to a power of two) the weights are packed largest first into ``_PINNED_CHUNK`` chunks, each then trimmed
-    to the power of two that holds what it got, so a 72 MiB weight no longer holds a 128 MiB block alone."""
+    """(chunk, offset) per weight and chunk sizes. ``pow2``: largest-first into power-of-two chunks (pinned memory)."""
     places, sizes = [None] * len(nbytes_list), []
     if not pow2:
         used = _CHUNK

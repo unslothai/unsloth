@@ -303,7 +303,6 @@ def test_the_host_backup_is_pageable_on_an_integrated_gpu(monkeypatch, integrate
 
 
 def _pinned_backup_charge(monkeypatch, shapes):
-    """(bytes the host guard is charged, bytes the pinned host allocator holds) for a pinned backup of ``shapes``."""
     from core.inference import diffusion_lora_fuse as lf
 
     weights = [torch.empty(s, dtype = torch.bfloat16, device = "meta") for s in shapes]
@@ -343,9 +342,7 @@ def test_the_host_guard_is_charged_what_the_pinned_allocator_holds(monkeypatch):
     charged, held = _pinned_backup_charge(monkeypatch, _FLUX_LIKE)
     assert charged >= held
     exact = sum(-(-r * c * 2 // 64) * 64 for r, c in _FLUX_LIKE)
-    assert (
-        held <= exact * 1.15
-    )  # oversized weights share power-of-two chunks instead of holding one alone
+    assert held <= exact * 1.15
 
 
 def test_power_of_two_layout_places_every_weight_inside_its_chunk():
