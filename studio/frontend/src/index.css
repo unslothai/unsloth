@@ -6769,13 +6769,14 @@ html[data-glass="liquid-3d"] .wallpaper-preview[data-wallpaper-preview-outline-o
 }
 
 /* Frost the tab strip and the body, never the section: a backdrop-filter there would make it a
-   stacking context, trapping the tab strip under the macOS drag strip. No pseudo-element: a macOS
+   stacking context, trapping the tab strip under the macOS drag strip. A macOS
    native page cuts its hole only through elements. File views and the overlay's dialog stay solid. */
 html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] {
   background: transparent;
 }
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"]::before,
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) :not([data-windows-browser="web"])[data-slot="browser-panel"] > .browser-chrome,
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-windows-browser]):not([data-browser-document]) > .browser-panel-body {
   background-color: color-mix(in srgb, var(--glass-panel-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -6790,9 +6791,33 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
-html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"]::before,
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) :not([data-windows-browser="web"])[data-slot="browser-panel"] > .browser-chrome,
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-windows-browser]):not([data-browser-document]) > .browser-panel-body {
   background-image: var(--glass-sheen);
+}
+
+
+/* Windows hosts websites in a child WebView2 above the shell. A single glass
+   layer below the caption keeps both browser rows on the same backdrop. */
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"]::before {
+  content: "";
+  position: absolute;
+  inset: var(--studio-custom-titlebar-height, 0px) 0 0;
+  pointer-events: none;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"] > .browser-panel-body,
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"] [data-browser-new-tab] {
+  background-color: transparent;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"] [data-browser-new-tab] {
+  border-top-color: transparent;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"] [data-slot="browser-tab-divider"] {
+  visibility: hidden;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) .chat-artifact-pop-surface:has(> [data-windows-browser]) {
+  border-image: linear-gradient(to bottom, transparent var(--studio-custom-titlebar-height, 0px), var(--panel-edge) var(--studio-custom-titlebar-height, 0px)) 1;
 }
 
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
