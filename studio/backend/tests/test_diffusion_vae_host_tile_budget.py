@@ -48,6 +48,9 @@ def _memory(
     in_use = 0,
 ):
     monkeypatch.setattr(dm, "_system_memory_mib", lambda: (total_mib, free_mib))
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: free_mib)
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: total_mib)
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: None)
     monkeypatch.setattr(
         dm, "_metal_working_set_mib", lambda: (working_set, in_use) if working_set else (None, 0)
     )
@@ -109,8 +112,23 @@ def test_mps_reads_the_planners_unified_budget(monkeypatch):
     )
 
 
+def test_cpu_budget_is_capped_by_the_cgroup_and_windows_commit(monkeypatch):
+    """A container's enforcing limit, not host RAM: past it the process is killed, with no OOM to retry on."""
+    _memory(monkeypatch, "cpu", free_mib = 48 * 1024, total_mib = 64 * 1024)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 3 * 1024)
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 4 * 1024)
+    vae, z = _vae(torch.float32), torch.zeros(1, 16, 1, 64, 64)
+    capped = vt.decode_tile_budget(vae, z)
+    assert capped == _expected(3 * 1024, 4 * 1024, z, 4, 1024)
+    assert capped < 64 * 64 and vt.choose_tiles(64, 64, capped) != (64, 64)
+    _memory(monkeypatch, "cpu", free_mib = 48 * 1024, total_mib = 64 * 1024)
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: 3 * 1024)
+    assert vt.decode_tile_budget(vae, z) == _expected(3 * 1024, 64 * 1024, z, 4, 64 * 1024 // 10)
+
+
 def test_no_reading_keeps_the_floor(monkeypatch):
     monkeypatch.setattr(dm, "_system_memory_mib", lambda: (None, None))
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: None)
     assert vt.decode_tile_budget(_vae(), torch.zeros(1, 16, 1, 64, 64)) is None
 
 

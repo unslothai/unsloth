@@ -317,11 +317,25 @@ def _host_free_mib(vae: Any, z: Any) -> Optional[tuple[float, float]]:
     kind = getattr(getattr(z, "device", None), "type", None)
     if kind not in ("cpu", "mps") or host_budget_disabled():
         return None
-    from .diffusion_memory import _safe_device_budget_mib, snapshot_device_memory
-
-    budget = _safe_device_budget_mib(
-        snapshot_device_memory(types.SimpleNamespace(device = kind, backend = kind))
+    from .diffusion_memory import (
+        DeviceMemory,
+        _available_system_memory_mib,
+        _host_ram_capacity_mib,
+        _safe_device_budget_mib,
+        _windows_commit_headroom_mib,
+        snapshot_device_memory,
     )
+
+    if kind == "cpu":
+        # An enforcing cgroup kills the process past its limit (no OOM to retry on), and Windows fails on commit.
+        free = _available_system_memory_mib()
+        commit = _windows_commit_headroom_mib()
+        if free is not None and commit is not None:
+            free = min(free, commit)
+        memory = DeviceMemory("cpu", "cpu", "system_memory", free, _host_ram_capacity_mib())
+    else:
+        memory = snapshot_device_memory(types.SimpleNamespace(device = kind, backend = kind))
+    budget = _safe_device_budget_mib(memory)
     if budget is None:
         return None
     ratio = _geometry(vae)[0]
