@@ -3369,10 +3369,12 @@ def stop():
         raise typer.Exit(0)
 
     pending = list(signalled)
-    for _ in range(10):
+    # Check once before the first sleep: taskkill /F returns after the process is gone.
+    for attempt in range(11):
         if not pending:
             break
-        time.sleep(0.5)
+        if attempt:
+            time.sleep(0.5)
         for entry in list(pending):
             pid, paths = entry
             if not _pid_alive(pid):

@@ -538,3 +538,41 @@ def test_stop_drops_a_record_whose_stable_identity_proves_pid_reuse(monkeypatch,
     assert result.exit_code == 0, result.output
     assert killed == []
     assert not record.exists()
+
+
+def test_stop_does_not_sleep_when_the_server_is_already_gone(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
+    sleeps = []
+    monkeypatch.setattr(studio_mod.time, "sleep", sleeps.append)
+    live = {8550}
+    monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: pid in live)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
+    monkeypatch.setattr(studio_mod.os, "kill", lambda pid, sig: live.discard(pid))
+    monkeypatch.setattr(sys, "platform", "linux")
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert "stopped (1)" in result.output
+    assert sleeps == []
+    assert not (tmp_path / "studio-8901-8550.pid").exists()
+
+
+def test_stop_still_waits_ten_half_second_steps(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
+    sleeps = []
+    monkeypatch.setattr(studio_mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
+    monkeypatch.setattr(studio_mod.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+
+    _run_stop(studio_mod)
+
+    assert sleeps == [0.5] * 10
