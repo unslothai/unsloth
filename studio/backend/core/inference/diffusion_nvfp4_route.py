@@ -101,8 +101,8 @@ def _probe_device_profile() -> DeviceProfile:
 
 def _smi_visible_capabilities(torch: Any) -> tuple:
     """The visible NVIDIA cards' capabilities from nvidia-smi, without initialising CUDA in this process (a download
-    plan previewed during training must not take a context beside the trainer). Only when every visible card is on
-    the same side of Blackwell, since nvidia-smi rows are not torch ordinals; () sends the caller to torch."""
+    plan previewed during training must not take a context beside the trainer). Only when every visible card has the
+    same capability, since nvidia-smi rows are not torch ordinals; () sends the caller to torch."""
     try:
         if torch.cuda.is_initialized():
             return ()
@@ -116,7 +116,7 @@ def _smi_visible_capabilities(torch: Any) -> tuple:
         caps = tuple(sorted(by_row[i] for i in visible))
     except Exception:  # noqa: BLE001 -- no reading: torch answers instead
         return ()
-    if len({c[0] >= BLACKWELL_MAJOR for c in caps}) != 1:
+    if len(set(caps)) != 1:
         return ()
     return caps
 

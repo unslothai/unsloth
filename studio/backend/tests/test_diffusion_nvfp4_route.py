@@ -314,9 +314,12 @@ def test_nvidia_smi_answers_without_initialising_cuda(monkeypatch):
         assert route.device_profile() == DeviceProfile("nvidia", ((8, 9), (8, 9)))
     finally:
         route._probe_device_profile.cache_clear()
-    # A visible mix of both sides needs torch ordinals, so nvidia-smi does not answer.
-    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0, 2])
-    assert route._smi_visible_capabilities(torch) == ()
+    # Different cards need torch ordinals (rows are not ordinals), so nvidia-smi does not answer: a B200 beside an
+    # L4, and a 4090 beside a T4, where the TE target differs per card.
+    for caps in ({0: (8, 9), 1: (12, 0)}, {0: (8, 9), 1: (7, 5)}):
+        monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda caps = caps: caps)
+        monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0, 1])
+        assert route._smi_visible_capabilities(torch) == ()
 
 
 def test_the_device_is_read_once(monkeypatch):
