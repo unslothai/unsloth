@@ -80,6 +80,9 @@ def test_one_card_whenever_one_card_holds_everything_or_nothing_fits():
     assert _plan(secondary_limits_mib = {1: None})[0] is None
     assert _plan(primary_limit_mib = None)[0] is None
     assert _plan(text_encoder_mib = 0)[0] is None
+    # a VAE with no file of its own is never moved
+    split, _ = _plan(vae_mib = 0)
+    assert split is not None and split.vae_on_secondary is False
 
 
 def test_the_roomiest_secondary_is_chosen():
@@ -195,6 +198,7 @@ def _server_load(
     gpu_ordinals,
     memory_mode = None,
     limits = None,
+    gpu_ordinal = 0,
 ):
     _names(monkeypatch)
     # Two idle T4s as nvidia-smi reports them (free, total MiB); the split is sized from these rows.
@@ -230,7 +234,7 @@ def _server_load(
         fam = fam,
         hf_token = None,
         _load_token = 1,
-        gpu_ordinal = 0,
+        gpu_ordinal = gpu_ordinal,
         memory_mode = memory_mode,
     )
     if gpu_ordinals is not None:
@@ -288,3 +292,29 @@ def test_keep_multiple_models_loaded_keeps_one_card(monkeypatch, tmp_path):
     b, servers = _server_load(monkeypatch, tmp_path, gpu_ordinals = [0, 1])
     assert _backend_arg(servers[-1].started.get("offload")) == "diffusion=CUDA0,te=CUDA0,vae=CUDA0"
     assert os.environ.get("UNSLOTH_DIFFUSION_MULTIGPU_ALL") is None
+
+
+def test_automatic_with_an_unpinned_card_still_splits_and_pins_the_primary(monkeypatch, tmp_path):
+    # identical idle cards: Automatic's ranker leaves the load unpinned, the selection's primary is cuda:0
+    monkeypatch.setattr("core.inference.diffusion_device.auto_cuda_ranking_possible", lambda: True)
+    monkeypatch.setattr(
+        "core.inference.diffusion_device.resolve_diffusion_device_target",
+        lambda **kw: types.SimpleNamespace(device = "cuda"),
+    )
+    monkeypatch.setattr("torch.cuda.current_device", lambda: 0)
+    monkeypatch.setattr("torch.cuda.device_count", lambda: 2)
+    b, servers = _server_load(monkeypatch, tmp_path, gpu_ordinals = "automatic", gpu_ordinal = None)
+    assert _backend_arg(servers[-1].started.get("offload")) == "diffusion=CUDA0,te=CUDA1,vae=CUDA1"
+    assert b.status()["multi_gpu"]["primary"] == "cuda:0"
+
+
+def test_helpers_keep_to_the_split_diffusion_card_and_status_follows_a_cpu_restart(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr("utils.hardware.get_parent_visible_gpu_ids", lambda: [2, 3])
+    b, _servers = _server_load(monkeypatch, tmp_path, gpu_ordinals = [0, 1])
+    assert b._state.physical_gpu_id is None
+    assert b._state.placed_ordinal == 0
+    assert "multi_gpu" in b.status()
+    b._cpu_backend_forced = True
+    assert "multi_gpu" not in b.status()

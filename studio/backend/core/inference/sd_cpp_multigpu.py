@@ -79,7 +79,9 @@ def plan_sd_cpp_split(
     best = max(limits, key = lambda o: (limits[o], -o))
     with_vae = text_encoder_mib + vae_mib + max(ENCODER_HEADROOM_MIB, VAE_DECODE_HEADROOM_MIB)
     encoders = text_encoder_mib + ENCODER_HEADROOM_MIB
-    for need, vae_moves in ((with_vae, True), (encoders, False)):
+    # an unmeasured VAE (none in its own file) stays with the diffusion model
+    options = ((with_vae, True), (encoders, False)) if vae_mib > 0 else ((encoders, False),)
+    for need, vae_moves in options:
         if need > limits[best]:
             continue
         on_primary = diffusion_mib + (0 if vae_moves else vae_mib) + DENOISE_HEADROOM_MIB
@@ -143,22 +145,31 @@ def split_for_load(
     from .diffusion_multigpu import current_selection, multigpu_all_enabled
 
     selection = current_selection()
-    if selection is None or not multigpu_all_enabled() or primary is None:
+    if selection is None or not multigpu_all_enabled() or not selection.secondaries:
         return None
-    if int(primary) != int(selection.primary) or not selection.secondaries:
+    if primary is None and selection.automatic:
+        # Automatic left the card unpinned (identical idle cards): the selection's primary is the one sd.cpp defaults to
+        primary = selection.primary
+    if primary is None or int(primary) != int(selection.primary):
         return None
     limit_of = limit_of or card_limit_mib
     if list(offload):
         if logger is not None:
             logger.info("sd_cpp.multigpu: one card (explicit offload %s)", " ".join(offload))
         return None
+    from .diffusion_memory import vram_budget_scope
+
+    # priced under the image owner's VRAM Budget, as the diffusers image load prices its split
+    limits = vram_budget_scope("image", load = True)(
+        lambda: {int(o): limit_of(int(o)) for o in (int(primary), *selection.secondaries)}
+    )()
     split, why = plan_sd_cpp_split(
         diffusion_mib = file_mib(getattr(files, "diffusion_model", None)),
         text_encoder_mib = sum(file_mib(getattr(files, f, None)) for f in TEXT_ENCODER_FIELDS),
         vae_mib = file_mib(getattr(files, "vae", None)),
         primary = int(primary),
-        primary_limit_mib = limit_of(int(primary)),
-        secondary_limits_mib = {int(o): limit_of(int(o)) for o in selection.secondaries},
+        primary_limit_mib = limits.get(int(primary)),
+        secondary_limits_mib = {int(o): limits.get(int(o)) for o in selection.secondaries},
     )
     if logger is not None:
         logger.info(

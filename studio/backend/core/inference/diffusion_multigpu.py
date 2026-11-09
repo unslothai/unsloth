@@ -64,6 +64,8 @@ def multigpu_all_enabled() -> bool:
         "off",
         "false",
         "no",
+        "disable",
+        "disabled",
     )
 
 
