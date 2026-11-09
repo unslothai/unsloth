@@ -29,7 +29,8 @@ class ConvRotSpec:
     artifacts still validate. ``filename`` / ``repo`` name the hosted rotated build (only ``repo`` gets the rotated
     name prepended), ``variant_repos`` the variant repos that host one under their own name, ``default_on`` whether
     int8 rotates unless ``UNSLOTH_DIFFUSION_INT8_CONVROT`` turns it off (the rest are opt-in with ``=1``). ``group`` 0
-    means no runtime rotation: the entry only names a hosted build whose rotation is baked into the file."""
+    means no runtime rotation: the entry only names a hosted build whose rotation is baked into the file.
+    ``hosted_plain``: older hosted int8 files are unrotated, so with ConvRot on only ``filename`` is read."""
 
     group: int
     suffixes: tuple[str, ...]
@@ -37,6 +38,7 @@ class ConvRotSpec:
     repo: Optional[str] = None
     variant_repos: tuple[str, ...] = ()
     default_on: bool = False
+    hosted_plain: bool = False
 
 
 @dataclass(frozen = True)
