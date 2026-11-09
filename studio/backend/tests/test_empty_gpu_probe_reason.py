@@ -265,7 +265,7 @@ class TestItDoesNotAssertTheLaunchOutcome:
 
         src = inspect.getsource(mod.LlamaCppBackend.load_model)
         warn = src.find("could not enumerate any GPU")
-        restore = src.find("gpu_indices = _picked_order")
+        restore = src.find("self._picker_ordered_gpu_indices(")
         assert warn != -1 and restore != -1
         assert warn < restore, "if the pin moved above the warning, re-derive this guard"
 

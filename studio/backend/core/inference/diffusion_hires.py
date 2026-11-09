@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hires fix: txt2img, upscale, then refine (img2img at a denoise) in one request.
-
-Defaults follow ComfyUI's 2_pass_txt2img example (1.5x, denoise 0.5, 14 steps). Hires steps is the exact refine
-count, as in ComfyUI (``new_steps = int(steps / denoise)``) and A1111 (``hr_second_pass_steps or steps``).
-"""
+"""Hires fix (txt2img, upscale, img2img refine); hires steps is the exact refine count, as in ComfyUI."""
 
 from __future__ import annotations
 
@@ -57,6 +53,9 @@ class HiresPass:
     cancel: threading.Event
     preflight: Optional[Callable[[dict], None]] = None
     source: Any = None
+    # Base pass: return the sampler's latents (``output_type="latent"``), not decoded images (latent upscaler).
+    latent_output: bool = False
+    # Refine pass: this image's base latents, ``(1, C, h, w)``, upscaled in latent space as the img2img input.
     latent_from: Any = None
     # The base pass leaves a pending background compile for after the refine pass (else the refine pass waits on it).
     defer_bg_kick: bool = False
@@ -125,6 +124,18 @@ def steps_run(num_inference_steps: int, strength: float, rule: str) -> int:
         return min(int(n * s), n)
     t_start = int(max(n - min(n * s, n), 0))
     return n - t_start
+
+
+def min_inference_steps(steps: int, strength: float, rule: str) -> int:
+    """``steps``, raised to the smallest count that still denoises at least one step at ``strength``."""
+    n = max(1, int(steps))
+    s = float(strength)
+    if s <= 0.0 or s >= 1.0:
+        return n
+    limit = int(math.ceil(1.0 / max(s, MIN_DENOISE))) + 2
+    while steps_run(n, s, rule) < 1 and n < limit:
+        n += 1
+    return n
 
 
 def refine_inference_steps(steps: int, denoise: float, rule: str) -> int:
@@ -480,39 +491,18 @@ def sd_cpp_payload(
     }
 
 
-def encode_upscaled_latents(pipe: Any, base_image: Any, target: tuple[int, int]) -> Any:
-    """VAE-encode as StableDiffusionXLImg2ImgPipeline.prepare_latents does, then interpolate nearest-exact."""
+def upscale_latents(pipe: Any, latents: Any, target: tuple[int, int]) -> Any:
+    """ComfyUI ``LatentUpscale``: ``common_upscale(samples, w // 8, h // 8, "nearest-exact", crop="disabled")`` on the
+    sampler's own latents. No VAE round trip: nearest-exact commutes with the per-channel latent scaling."""
     import torch
     import torch.nn.functional as F
 
-    vae = pipe.vae
-    param = next(vae.parameters())
-    device, dtype = param.device, param.dtype
-    x = pipe.image_processor.preprocess(base_image).to(device = device, dtype = dtype)
-    upcast = bool(getattr(vae.config, "force_upcast", False)) and dtype == torch.float16
+    if not isinstance(latents, torch.Tensor) or latents.ndim != 4:
+        raise TypeError("The latent upscaler needs the base pass's latents, (1, C, h, w).")
+    tw, th = target
+    factor = int(getattr(pipe, "vae_scale_factor", SDXL_LATENT_FACTOR) or SDXL_LATENT_FACTOR)
     with torch.inference_mode():
-        if upcast:
-            vae.to(dtype = torch.float32)
-            x = x.float()
-        try:
-            lat = vae.encode(x).latent_dist.mode()
-        finally:
-            if upcast:
-                vae.to(dtype = dtype)
-        lat = lat.to(dtype)
-        mean = getattr(vae.config, "latents_mean", None)
-        std = getattr(vae.config, "latents_std", None)
-        sf = float(vae.config.scaling_factor)
-        if mean is not None and std is not None:
-            m = torch.tensor(mean, device = device, dtype = dtype).view(1, -1, 1, 1)
-            s = torch.tensor(std, device = device, dtype = dtype).view(1, -1, 1, 1)
-            lat = (lat - m) * sf / s
-        else:
-            lat = lat * sf
-        tw, th = target
-        factor = int(getattr(pipe, "vae_scale_factor", SDXL_LATENT_FACTOR) or SDXL_LATENT_FACTOR)
-        lat = F.interpolate(lat, size = (th // factor, tw // factor), mode = "nearest-exact")
-    return lat
+        return F.interpolate(latents, size = (th // factor, tw // factor), mode = "nearest-exact")
 
 
 def _rearm_cancel(backend: Any, cancel: threading.Event) -> None:
@@ -582,6 +572,7 @@ def run_hires(
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG, DIFFUSION_NOT_LOADED_MSG
     from core.inference.diffusion_memory import (
         ImageActivationShortfallError,
+        agreed_placement,
         raise_on_image_activation_shortfall,
     )
     from core.inference.generation_ticket import bind_generation_cancel
@@ -658,7 +649,13 @@ def run_hires(
         _plan()
         # A model upscaler also runs on the GPU after the base pass, so a background compile waits for it too.
         defer_kick = refine or upscalers.is_model_upscaler(params.upscaler)
-        ctx = HiresPass(cancel = cancel, preflight = _preflight, defer_bg_kick = defer_kick)
+        ctx = HiresPass(
+            cancel = cancel,
+            preflight = _preflight,
+            defer_bg_kick = defer_kick,
+            # The latent upscaler needs no pixels: the base pass skips its VAE decode and the refine its encode.
+            latent_output = refine and params.upscaler == upscalers.LATENT,
+        )
         base = generate(backend, **kwargs, _hires_pass = ctx)
         if defer_kick:
             # The base pass left a compile pending: start it once the passes after it end, also when one fails or is
@@ -669,6 +666,8 @@ def run_hires(
         seeds = list(base.get("seeds") or [base["seed"]] * len(images))
         prompts = kwargs.get("prompts") or None
         refined: list[Any] = []
+        # a larger refine pass can stream where the base stayed resident
+        placements = [base.get("denoiser_offload")]
         upscale_s = 0.0
         refine_s = 0.0
         upscale_info: dict = {}
@@ -687,9 +686,9 @@ def run_hires(
             t_up = time.perf_counter()
             latent_from = None
             if params.upscaler == upscalers.LATENT:
-                # Placeholder at the hires size: the refine call reads only its size; the latents replace it.
+                # Placeholder at the hires size: the refine call reads only its size; the base latents replace it.
                 source = Image.new("RGB", target)
-                latent_from = image
+                latent_from = image  # this image's (1, C, h, w) base latents
             elif params.upscaler == upscalers.LANCZOS:
                 source = image.convert("RGB").resize(target, Image.LANCZOS)
             else:
@@ -754,11 +753,13 @@ def run_hires(
                     f"Hires fix refine pass at {target[0]}x{target[1]}: {exc}"
                 ) from exc
             refined.extend(out["images"])
+            placements.append(out.get("denoiser_offload"))
             refine_s += time.perf_counter() - t_ref
             if out.get("negative_prompt") and not refine_negative:
                 refine_negative = out["negative_prompt"]
     result = dict(base)
     result["images"] = refined
+    result["denoiser_offload"] = agreed_placement(placements)
     if refine_negative and not result.get("negative_prompt"):
         # Hires CFG engaged a negative the base pass's guidance left off; the recipe must still carry it.
         result["negative_prompt"] = refine_negative

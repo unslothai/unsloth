@@ -31,7 +31,11 @@ class _Handler:
         return {"device": "cpu", "init_scale": 2.0**8}
 
 
-def _run(fused):
+def _run(
+    fused,
+    both = False,
+    unscale = True,
+):
     native = _load_native()
     rank = torch.distributed.get_rank()
     old = torch.amp.GradScaler("cpu", init_scale = 2.0**8)
@@ -49,10 +53,11 @@ def _run(fused):
         torch.manual_seed(100 + 10 * step + rank)
         loss = model(torch.randn(4, 8)).pow(2).mean()
         scaler.scale(loss).backward()
-        if step == 1 and rank == 1:
-            model.weight.grad[0, 0] = float("inf")  # one rank overflows: both must skip
-        scaler.unscale_(opt)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if step == 1 and (both or rank == 1):
+            model.weight.grad[0, 0] = float("inf")  # one rank (or every rank) overflows: all skip
+        if unscale:
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(opt)
         scaler.update()
         opt.zero_grad(set_to_none = True)
@@ -102,10 +107,15 @@ def _worker(rank, world, port, out):
     try:
         res = {}
         for fused in (False, True):
-            try:
-                res[fused] = _run(fused)
-            except Exception as e:  # recorded, asserted in the parent
-                res[fused] = repr(e)
+            for both in (False, True):
+                try:
+                    res[fused, both] = _run(fused, both)
+                except Exception as e:  # recorded, asserted in the parent
+                    res[fused, both] = repr(e)
+                try:
+                    res[fused, both, "no_unscale"] = _run(fused, both, unscale = False)
+                except Exception as e:
+                    res[fused, both, "no_unscale"] = repr(e)
         res["device"] = _device_kept()
         try:
             res["disabled"] = _disabled()
@@ -128,14 +138,36 @@ def test_swapped_scaler_keeps_the_device(ranks):
         assert res["device"] == ("cpu", True), res["device"]
 
 
-def test_fused_adamw_steps_through_the_native_fp16_scaler(ranks):
+@pytest.mark.parametrize("both", [False, True], ids = ["one_rank_inf", "every_rank_inf"])
+def test_fused_adamw_steps_through_the_native_fp16_scaler(ranks, both):
+    # every_rank_inf: the all-reduced found_inf is the number of ranks that overflowed (2 here). The
+    # fused AdamW kernel skips only on found_inf == 1, so a 2 stepped on inf / NaN gradients and wrote
+    # NaN weights (Qwen2.5-VL on Kaggle T4x2: loss NaN from step 4 under FSDP2, finite under DDP).
     for res in ranks:
         for fused in (False, True):
-            assert not isinstance(res[fused], str), f"fused={fused}: {res[fused]}"
-            steps, scale, _ = res[fused]
+            out = res[fused, both]
+            assert not isinstance(out, str), f"fused={fused}: {out}"
+            steps, scale, params = out
             assert steps == 2.0, (fused, steps)  # 3 steps, the overflow one skipped on every rank
-            assert scale == 2.0**7, (fused, scale)  # backed off once
-        for a, b in zip(res[False][2], res[True][2]):
+            # user init_scale is kept, not divided by the ranks
+            assert scale == 2.0**7, (fused, scale)
+            assert all(torch.isfinite(p).all() for p in params), fused
+        for a, b in zip(res[False, both][2], res[True, both][2]):
+            torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
+
+
+@pytest.mark.parametrize("both", [False, True], ids = ["one_rank_inf", "every_rank_inf"])
+def test_overflow_skips_on_every_rank_without_explicit_unscale(ranks, both):
+    # Fused step() without unscale_; before the fix one_rank_inf left ranks at 3 vs 2 steps.
+    for res in ranks:
+        for fused in (False, True):
+            out = res[fused, both, "no_unscale"]
+            assert not isinstance(out, str), f"fused={fused}: {out}"
+            steps, scale, params = out
+            assert steps == 2.0, (fused, both, steps)
+            assert scale == 2.0**7, (fused, both, scale)
+            assert all(torch.isfinite(p).all() for p in params), fused
+        for a, b in zip(res[False, both, "no_unscale"][2], res[True, both, "no_unscale"][2]):
             torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
 
 

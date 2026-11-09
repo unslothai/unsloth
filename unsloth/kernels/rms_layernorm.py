@@ -10,14 +10,13 @@
 # limitations under the License.
 
 import functools
-import hashlib
 import os
 import warnings
 import triton
 import triton.language as tl
 import torch
 from typing import Tuple
-from .utils import calculate_settings, long_indexing, torch_gpu_device
+from .utils import calculate_settings, long_indexing, norm_num_warps, torch_gpu_device
 from . import triton_launch
 from .triton_launch import launch
 
@@ -28,14 +27,14 @@ def _rms_layernorm_forward(
     X,
     W,
     r,
-    Y_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    W_row_stride: tl.constexpr,
-    r_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    Y_row_stride: tl.constexpr,  # Y row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    W_row_stride: tl.constexpr,  # W row stride
+    r_row_stride: tl.constexpr,  # rstd row stride
+    n_cols: tl.constexpr,  # hidden size (or hd)
+    eps: tl.constexpr,  # norm epsilon, per model
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # n_cols next pow2
 ):
     """
     Fast RMS Layernorm kernel
@@ -69,22 +68,22 @@ def _rms_layernorm_forward(
 @triton.jit
 def _rms_backward_row(
     dY,
-    dY_row_stride: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # dY row stride (hidden)
     dX,
-    dX_row_stride: tl.constexpr,
+    dX_row_stride: tl.constexpr,  # dX row stride (hidden)
     X,
-    X_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
     W,
     r,
-    r_row_stride: tl.constexpr,
+    r_row_stride: tl.constexpr,  # rstd row stride
     row_idx,
     col_offsets,
     mask,
-    n_cols: tl.constexpr,
-    GEMMA: tl.constexpr,
+    n_cols: tl.constexpr,  # hidden size (or hd)
+    GEMMA: tl.constexpr,  # gemma (1 + w) weight
     dW_acc,
-    TRAIN_W: tl.constexpr,
-    FROM_Y: tl.constexpr,
+    TRAIN_W: tl.constexpr,  # weight grad partials
+    FROM_Y: tl.constexpr,  # recompute normed from saved Y
 ):
     # with FROM_Y, X holds Y and normed = Y / W; r still scales dX.
     dY += row_idx * dY_row_stride
@@ -130,18 +129,18 @@ def _rms_layernorm_backward(
     dW,
     n_rows,
     rows_per_program,
-    dY_row_stride: tl.constexpr,
-    dX_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    W_row_stride: tl.constexpr,
-    r_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    GEMMA: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    TRAIN_W: tl.constexpr,
-    FROM_Y: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # dY row stride (hidden)
+    dX_row_stride: tl.constexpr,  # dX row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    W_row_stride: tl.constexpr,  # W row stride
+    r_row_stride: tl.constexpr,  # rstd row stride
+    n_cols: tl.constexpr,  # hidden size (or hd)
+    eps: tl.constexpr,  # norm epsilon, per model
+    GEMMA: tl.constexpr,  # gemma (1 + w) weight
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # n_cols next pow2
+    TRAIN_W: tl.constexpr,  # weight grad partials
+    FROM_Y: tl.constexpr,  # recompute normed from saved Y
 ):
     """
     Fast RMS Layernorm kernel for the backward pass
@@ -220,14 +219,14 @@ def _gemma_rms_layernorm_forward(
     X,
     W,
     r,
-    Y_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    W_row_stride: tl.constexpr,
-    r_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    Y_row_stride: tl.constexpr,  # Y row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    W_row_stride: tl.constexpr,  # W row stride
+    r_row_stride: tl.constexpr,  # rstd row stride
+    n_cols: tl.constexpr,  # hidden size (or hd)
+    eps: tl.constexpr,  # norm epsilon, per model
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # n_cols next pow2
 ):
     # Copies google-deepmind/gemma layers.py#L31 and keras-nlp gemma/rms_normalization.py#L33 exactly:
     # essentially all in float32.
@@ -256,7 +255,9 @@ def _gemma_rms_layernorm_forward(
 
 
 @triton.jit
-def _fold_lanes(x, ROWS: tl.constexpr, WARPS: tl.constexpr, HALF: tl.constexpr):
+def _fold_lanes(
+    x, ROWS: tl.constexpr, WARPS: tl.constexpr, HALF: tl.constexpr
+):  # ROWS rows per program, WARPS num_warps of the launch, HALF half of a lane pair
     return tl.sum(tl.reshape(x, (ROWS, WARPS, 2, HALF)), axis = 2)
 
 
@@ -266,7 +267,9 @@ _HIP_ROW_ORDER = tl.constexpr(bool(torch.version.hip))
 
 
 @triton.jit
-def _row_dot_in_hip_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+def _row_dot_in_hip_row_order(
+    a, b, ROWS: tl.constexpr, WARPS: tl.constexpr
+):  # ROWS rows per program, WARPS num_warps of the launch
     # Bit-exact replay of the one-row kernels' tl.sum on AMD (WARPS = BLOCK_SIZE // wavefront):
     # fma(a_l, b_l, a_(l-8) * b_(l-8)), row_shr 4, 2, 1, 16-lane rows by lane bit 4 then 5, warps.
     LANES: tl.constexpr = a.shape[1] // WARPS
@@ -288,7 +291,9 @@ def _row_dot_in_hip_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
 
 
 @triton.jit
-def _row_dot_in_cuda_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+def _row_dot_in_cuda_row_order(
+    a, b, ROWS: tl.constexpr, WARPS: tl.constexpr
+):  # ROWS rows per program, WARPS num_warps of the launch
     # Bit-exact replay of the one-row kernels' tl.sum (4 warps, 64 <= BLOCK_SIZE <= 128):
     # fma(a_l, b_l, a_(l+16) * b_(l+16)), lane xor 8, 4, 2, 1, warp xor 2, 1; explicit steps only.
     a = tl.permute(tl.reshape(a, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
@@ -307,7 +312,9 @@ def _row_dot_in_cuda_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
 
 
 @triton.jit
-def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+def _row_dot_in_row_kernel_order(
+    a, b, ROWS: tl.constexpr, WARPS: tl.constexpr
+):  # ROWS rows per program, WARPS num_warps of the launch
     if _HIP_ROW_ORDER:
         total = _row_dot_in_hip_row_order(a, b, ROWS, WARPS)
     else:
@@ -322,15 +329,15 @@ def _rms_layernorm_forward_rows(
     W,
     r,
     n_rows,
-    Y_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    GEMMA: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    ROWS: tl.constexpr,
-    WARPS: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    Y_row_stride: tl.constexpr,  # Y row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    n_cols: tl.constexpr,  # hidden size (or hd)
+    eps: tl.constexpr,  # norm epsilon, per model
+    GEMMA: tl.constexpr,  # gemma (1 + w) weight
+    BLOCK_SIZE: tl.constexpr,  # n_cols next pow2
+    ROWS: tl.constexpr,  # rows per program
+    WARPS: tl.constexpr,  # num_warps of the launch
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     pid = tl.program_id(0)
     if LONG_INDEXING:
@@ -365,21 +372,21 @@ def _rms_layernorm_forward_rows(
 @triton.jit
 def _rms_backward_rows_block(
     dY,
-    dY_row_stride: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # dY row stride (hidden)
     dX,
-    dX_row_stride: tl.constexpr,
+    dX_row_stride: tl.constexpr,  # dX row stride (hidden)
     X,
-    X_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
     W,
     r,
     rows,
     n_rows,
-    n_cols: tl.constexpr,
-    GEMMA: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    ROWS: tl.constexpr,
-    WARPS: tl.constexpr,
-    FROM_Y: tl.constexpr,
+    n_cols: tl.constexpr,  # hidden size (or hd)
+    GEMMA: tl.constexpr,  # gemma (1 + w) weight
+    BLOCK_SIZE: tl.constexpr,  # n_cols next pow2
+    ROWS: tl.constexpr,  # rows per program
+    WARPS: tl.constexpr,  # num_warps of the launch
+    FROM_Y: tl.constexpr,  # recompute normed from saved Y
 ):
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = rows < n_rows
@@ -427,18 +434,18 @@ def _rms_layernorm_backward_rows(
     dW,
     n_rows,
     blocks_per_program,
-    dY_row_stride: tl.constexpr,
-    dX_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    GEMMA: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    ROWS: tl.constexpr,
-    WARPS: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    TRAIN_W: tl.constexpr,
-    FROM_Y: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # dY row stride (hidden)
+    dX_row_stride: tl.constexpr,  # dX row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    n_cols: tl.constexpr,  # hidden size (or hd)
+    eps: tl.constexpr,  # norm epsilon, per model
+    GEMMA: tl.constexpr,  # gemma (1 + w) weight
+    BLOCK_SIZE: tl.constexpr,  # n_cols next pow2
+    ROWS: tl.constexpr,  # rows per program
+    WARPS: tl.constexpr,  # num_warps of the launch
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    TRAIN_W: tl.constexpr,  # weight grad partials
+    FROM_Y: tl.constexpr,  # recompute normed from saved Y
 ):
     pid = tl.program_id(0)
     if LONG_INDEXING:
@@ -491,7 +498,12 @@ def _rms_layernorm_backward_rows(
 
 @triton.jit(do_not_specialize = ("n_programs",))
 def _rms_sum_dw_partials(
-    partials, dW, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
+    partials,
+    dW,
+    n_programs,
+    n_cols,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,  # BLOCK_ROWS partial rows per step, BLOCK_COLS columns per program
 ):
     # Fixed tile order, so eager and torch.compile give the same bytes.
     cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
@@ -509,14 +521,48 @@ def _cdiv(a, b):
     return (a + b - 1) // b
 
 
-_cached_settings = functools.lru_cache(maxsize = None)(calculate_settings)
+# num_warps per (compute capability, n_cols), replacing calculate_settings' where a sweep (fp16 + bf16 on
+# sm_80+, fp16 on T4; 2k and 16k rows) found a width faster outside the run's A/A band in some cell and never
+# slower in any, at least 3% on the geometric mean, with max error vs fp64 no worse than the default's; every
+# entry then won again against main on torch 2.14.1 (same GPU tier, interleaved, outside A/A, never slower).
+# _NUM_WARPS: one-row forward + frozen-W backward; _DW_NUM_WARPS: the dW backward.
+_NUM_WARPS = {
+    ((7, 5), 1024): 8,
+    ((7, 5), 2048): 16,
+    ((7, 5), 2560): 16,
+    ((7, 5), 4096): 32,
+    ((7, 5), 5120): 32,
+    ((7, 5), 8192): 32,
+    ((9, 0), 5120): 4,
+}
+_DW_NUM_WARPS = {
+    ((8, 9), 2560): 4,
+    ((8, 9), 4096): 2,
+    ((12, 0), 1024): 8,
+    ((12, 0), 2560): 4,
+    ((12, 0), 5120): 8,
+    ((12, 0), 8192): 4,
+}
 
 
-def _settings(n_cols):
-    # Cached per width for eager calls (host bound at small shapes); tracing calls it directly.
-    if torch.compiler.is_compiling():
-        return calculate_settings(n_cols)
-    return _cached_settings(n_cols)
+def _arch_settings(n_cols, device, dw):
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    table = _DW_NUM_WARPS if dw else _NUM_WARPS
+    return BLOCK_SIZE, norm_num_warps(table, n_cols, num_warps, device)
+
+
+_cached_arch_settings = functools.lru_cache(maxsize = None)(_arch_settings)
+
+
+def _settings(
+    n_cols,
+    device = None,
+    dw = False,
+):
+    # Cached per (width, device) for eager calls; tracing and symbolic (unhashable) widths skip it.
+    if torch.compiler.is_compiling() or type(n_cols) is not int:
+        return _arch_settings(n_cols, device, dw)
+    return _cached_arch_settings(n_cols, device, dw)
 
 
 def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
@@ -644,6 +690,8 @@ def _multirow_checked(X, W, eps, gemma):
     if verdict is None:
         if X.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
             return None  # check on a later uncaptured call
+        # Real self-check launches need concrete dimensions, even during dynamic tracing.
+        n_cols, multirow = int(n_cols), tuple(int(v) for v in multirow)
         try:
             verdict = _multirow_self_check(X.device, X.dtype, W.dtype, n_cols, eps, gemma, multirow)
             reason = f"self-check mismatch for {key}"
@@ -708,7 +756,7 @@ def _rms_forward(
             if _multirow_must_raise(error, wrap):
                 raise
             _multirow_disable(f"launch failed: {error!r}")
-    BLOCK_SIZE, num_warps = _settings(n_cols)
+    BLOCK_SIZE, num_warps = _settings(n_cols, device)
     _launch(
         wrap,
         _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward,
@@ -763,7 +811,7 @@ def _dw_launch(units, device):
 @functools.lru_cache(maxsize = None)
 def _dw_row_config(device, n_cols):
     # Cached (host bound). 64-warp SMs, <= 16 elems/lane: cap registers at 64 so all programs stay resident.
-    BLOCK_SIZE, num_warps = _settings(n_cols)
+    BLOCK_SIZE, num_warps = _settings(n_cols, device, dw = True)
     per_sm, options = _DW_PROGRAMS_PER_SM, {}
     if (
         device.type == "cuda"
@@ -837,7 +885,7 @@ def _rms_backward(
         programs, per_program = _dw_split(n_rows, max_programs)
         partials = torch.empty((programs, n_cols), dtype = torch.float32, device = device)
     else:
-        BLOCK_SIZE, num_warps = _settings(n_cols)
+        BLOCK_SIZE, num_warps = _settings(n_cols, device)
     _launch(
         wrap,
         _rms_layernorm_backward,
@@ -1000,16 +1048,7 @@ def _bf16_traceable():
 _BF16_TRACEABLE = _TRACEABLE and _bf16_traceable()
 
 
-def _tag_compile_cache(path):
-    # Inductor's FX cache keys a triton_op without its source; key on the file so upgrades miss.
-    config = getattr(torch.compiler, "config", None)
-    if config is None or not hasattr(config, "cache_key_tag"):
-        return
-    with open(path, "rb") as file:
-        tag = f"unsloth/{os.path.basename(path)}:{hashlib.sha256(file.read()).hexdigest()[:16]}"
-    tags = [t for t in config.cache_key_tag.split(",") if t]
-    if tag not in tags:
-        config.cache_key_tag = ",".join(tags + [tag])
+_tag_compile_cache = triton_launch.tag_compile_cache
 
 
 def _traced_kernel(kernel):

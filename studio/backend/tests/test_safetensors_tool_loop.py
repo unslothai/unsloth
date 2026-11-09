@@ -2258,6 +2258,54 @@ class TestLoopBasic:
         assert "<!doctype html>" in real[0]["arguments"]["code"]
         assert exec_fn.calls[0][0] == "render_html"
 
+    @pytest.mark.parametrize("verdict", ["allow", "deny"])
+    def test_an_allowed_call_tells_every_follower_before_tool_end(self, monkeypatch, verdict):
+        """Only the client that answered clears its own prompt; other tabs learn it from tool_approved."""
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "approval-rh")
+        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
+        monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: verdict)
+
+        exec_fn, turn_iter = _shared_setup_1()
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "make html"}],
+                tools = [{"type": "function", "function": {"name": "render_html"}}],
+                execute_tool = exec_fn,
+                confirm_tool_calls = True,
+                permission_mode = "ask",
+                session_id = "sess",
+                max_tool_iterations = 3,
+            )
+        )
+        gated = [e for e in events if e["type"] == "tool_start" and e.get("awaiting_confirmation")]
+        approved = [e for e in events if e["type"] == "tool_approved"]
+        ends = [e for e in events if e["type"] == "tool_end"]
+        assert len(gated) == 1 and len(ends) == 1, events
+        if verdict == "deny":
+            assert approved == []
+            return
+        assert approved == [
+            {
+                "type": "tool_approved",
+                "tool_name": "render_html",
+                "tool_call_id": gated[0]["tool_call_id"],
+                "approval_id": "approval-rh",
+            }
+        ]
+        assert events.index(gated[0]) < events.index(approved[0]) < events.index(ends[0])
+        # Same order as the GGUF loop: the approval before the running status.
+        between = events[events.index(gated[0]) + 1 : events.index(approved[0])]
+        assert [e for e in between if e["type"] == "status"] == [], between
+
     def test_render_html_bypass_permissions_keeps_early_provisional(self, monkeypatch):
         """bypass_permissions wins over the confirm gate, so the early provisional
         card is preserved (no human approval is required)."""
@@ -2577,6 +2625,35 @@ class TestLoopBehaviour:
         )
 
         assert exec_fn.calls == [("python", {"code": "print(1)"})] * (1 if deduplicate else 2)
+
+    def test_two_identical_unseeded_studio_generations_in_one_turn_both_run(self):
+        from core.inference import tool_facts
+
+        name = "mcp__unsloth__generate_image"
+        tool_facts.note_mcp_tool(name, {"name": "generate_image"}, studio = True)
+        call = '<tool_call>{"name":"%s","arguments":{"prompt":"a cat"}}</tool_call>' % name
+        turns = iter([[call * 2], ["final"]])
+
+        def fake_single_turn(messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["img1", "img2"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "two cats"}],
+                tools = [{"type": "function", "function": {"name": name}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+                deduplicate_tool_calls = True,
+            )
+        )
+        tool_facts.note_mcp_tool(name, {"name": "generate_image"})
+
+        assert exec_fn.calls == [(name, {"prompt": "a cat"})] * 2
 
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []

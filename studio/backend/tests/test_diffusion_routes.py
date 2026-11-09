@@ -508,6 +508,46 @@ def test_generate_batch_size_persists_each_image(client):
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 3
 
 
+def test_gallery_records_generation_time_for_the_whole_batch(client, monkeypatch):
+    import time
+
+    backend = diffusion_module.get_diffusion_backend()
+    generate = backend.generate
+
+    def _slow_generate(**kwargs):
+        time.sleep(0.03)
+        return generate(**kwargs)
+
+    monkeypatch.setattr(backend, "generate", _slow_generate)
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    response = _post_generate(client, prompt = "p", batch_size = 2, seed = 5)
+    assert response.status_code == 200
+    images = response.json()["images"]
+    assert len(images) == 2
+    assert images[0]["generation_seconds"] >= 0.03
+    assert images[1]["generation_seconds"] == images[0]["generation_seconds"]
+    assert [image["generation_count"] for image in images] == [2, 2]
+    listed = client.get("/api/inference/images/gallery").json()["images"]
+    assert all(image["generation_seconds"] == images[0]["generation_seconds"] for image in listed)
+
+
+def test_generate_batch_persists_through_one_save_many(client, monkeypatch):
+    batches = []
+    real = gallery_module.save_many
+
+    def _spy(items):
+        items = list(items)
+        batches.append([meta["batch_index"] for _, meta in items])
+        return real(items)
+
+    monkeypatch.setattr(gallery_module, "save_many", _spy)
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    resp = _post_generate(client, prompt = "p", batch_size = 3, seed = 5)
+    assert resp.status_code == 200
+    assert batches == [[0, 1, 2]]
+    assert [i["batch_index"] for i in resp.json()["images"]] == [0, 1, 2]
+
+
 def test_generate_seed_list_records_replay_from_each_own_seed(client):
     # a seeds list gives each image its own seed, so restore must prefer batch_seed
     _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
@@ -649,6 +689,64 @@ def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
         assert leak not in detail
 
 
+def test_generate_native_job_failure_names_an_oom_from_its_log_tail(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[E] ggml: allocating 2304.00 MiB on device 0: cudaMalloc failed: out of memory"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("cudaMalloc", "2304", "generate_image"):
+        assert leak not in detail
+
+
+def test_generate_native_render_short_of_device_memory_names_the_shortfall(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n"
+            "[E] MOSS-Image segment 2/43 (moss_image.layers.1) failed during weight preparation\n"
+            "[E] sampling for image 1/1 failed after 0.87s\n"
+            "[W] model manager cannot make enough memory available on CUDA0: need 1223.37 MB device / 759.59 MB "
+            "budget, available 1187.75 MB device / 935.29 MB budget"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("CUDA0", "1223", "segment"):
+        assert leak not in detail
+
+
+def test_generate_failure_tail_echoing_a_prompt_word_is_not_an_oom(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[I] prompt: a cozy room with a broom, zoomed in"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Image generation failed."
+
+
 def test_generate_native_process_death_names_the_engine_not_its_output(client, monkeypatch):
     # Metal hosts: the native renderer aborts inside its text encoder
     backend = diffusion_module.get_diffusion_backend()
@@ -737,6 +835,51 @@ def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the
     other = client.post("/api/inference/images/generate", json = {"prompt": "p"})
     assert other.status_code == 400
     assert IMAGE_REFUSAL_HEADER not in other.headers
+
+
+def test_generate_unified_memory_load_refusal_is_structured_not_500(client, monkeypatch):
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        UNIFIED_OVERSIZE_REFUSAL_CODE,
+        UnifiedMemoryShortfallError,
+    )
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _refused(**kwargs):
+        raise UnifiedMemoryShortfallError("Could not load the diffusers engine: needs about 30 GB")
+
+    monkeypatch.setattr(backend, "generate", _refused)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 400
+    assert resp.headers.get(IMAGE_REFUSAL_HEADER) == UNIFIED_OVERSIZE_REFUSAL_CODE
+    assert "30 GB" in resp.json()["detail"]
+
+
+def test_generate_returns_the_load_refusal_of_a_refused_mlx_fallback(client, monkeypatch):
+    from fastapi import HTTPException
+    from core.inference.gpu_arbiter import MULTI_MODEL_REFUSAL_HEADERS
+    from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _refused(**kwargs):
+        raise FallbackLoadRefusedError(
+            HTTPException(
+                status_code = 409,
+                detail = "Unload the chat model first.",
+                headers = dict(MULTI_MODEL_REFUSAL_HEADERS),
+            )
+        )
+
+    monkeypatch.setattr(backend, "generate", _refused)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Unload the chat model first."
+    for key, value in MULTI_MODEL_REFUSAL_HEADERS.items():
+        assert resp.headers.get(key) == value
 
 
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
@@ -1279,8 +1422,14 @@ def _force_engine(monkeypatch, backend, *, engine_name, device):
     )
     acquired: list = []
 
-    def _fake_acquire(role, register = None):
+    def _fake_acquire(
+        role,
+        register = None,
+        admit = None,
+    ):
         acquired.append(role)
+        if admit is not None:
+            admit()
         return register() if register is not None else None
 
     monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)
@@ -2095,6 +2244,8 @@ def test_recipe_records_the_conditioned_workflow_settings(client, monkeypatch):
     assert gen.status_code == 200
     img = gen.json()["images"][0]
     assert img["workflow"] == "inpaint"
+    assert img["generation_seconds"] >= 0
+    assert img["generation_count"] == 1
     assert img["strength"] == 0.42
     plain = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
     assert plain.status_code == 200
@@ -2269,6 +2420,8 @@ def _pipeline_precision_gate(monkeypatch, **memory):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
@@ -2583,6 +2736,8 @@ def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
@@ -2669,6 +2824,8 @@ def test_a_transformer_family_still_reaches_the_scheme_check(monkeypatch):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     seen: list = []
     monkeypatch.setattr(
         diffusion_module,
@@ -2992,6 +3149,9 @@ def test_external_connection_generates_without_a_local_model_and_saves_to_galler
     assert [(i["prompt"], i["model"], i["width"], i["height"]) for i in images] == [
         ("a sloth", "qwen-image", 512, 256)
     ] * 2
+    assert images[0]["generation_seconds"] >= 0
+    assert images[1]["generation_seconds"] == images[0]["generation_seconds"]
+    assert [image["generation_count"] for image in images] == [2, 2]
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 2
     assert sent == [
         (
@@ -3314,3 +3474,158 @@ def test_a_retired_flux3_full_copy_reaches_the_backend_as_its_base(client):
     assert ("load", "black-forest-labs/flux-3-image-klein") in seen
     validated = [entry[2:] for entry in seen if entry[0] == "validate"]
     assert validated and set(validated) == {(None, "pipeline")}, seen
+
+
+@pytest.fixture
+def token_client(client, monkeypatch):
+    """The client, with begin_load publishing a state and moving the load epoch as the real engines do."""
+    from core.inference import media_load_ids
+
+    media_load_ids._reset_for_tests()
+    backend = diffusion_module.get_diffusion_backend()
+    begin, unload = backend.begin_load, backend.unload
+    backend._load_token, backend._state, backend.unloads = 0, None, 0
+
+    def begin_load(model_path, **kwargs):
+        backend._load_token += 1
+        backend._state = object()
+        return begin(model_path, **kwargs)
+
+    def counted_unload(**kwargs):
+        only_if = kwargs.get("only_if")
+        if only_if is not None and not only_if():
+            return None
+        backend.unloads += 1
+        backend._load_token += 1
+        backend._state = None
+        return unload()
+
+    monkeypatch.setattr(backend, "begin_load", begin_load)
+    monkeypatch.setattr(backend, "unload", counted_unload)
+    yield client, backend
+    media_load_ids._reset_for_tests()
+
+
+def _load_with_token(client, token):
+    body = {
+        "model_path": "unsloth/Z-Image-Turbo-GGUF",
+        "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+    }
+    return _post_load(client, **body, **({"load_token": token} if token else {}))
+
+
+def test_an_image_unload_naming_the_load_token_unloads_that_load(token_client):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200
+    assert (resp.json()["outcome"], resp.json()["loaded"]) == ("unloaded", False)
+    assert backend.unloads == 1
+
+
+@pytest.mark.parametrize("newer", [None, "t2"])
+def test_an_image_unload_naming_a_stale_token_leaves_the_newer_load_alone(token_client, newer):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    assert _load_with_token(client, newer).status_code == 200
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.json() == {"unloaded": False, "outcome": "superseded"}
+    assert backend.unloads == 0 and backend.loaded
+
+
+def test_an_image_unload_naming_a_load_not_started_yet_refuses_that_load(token_client):
+    client, backend = token_client
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.json() == {"unloaded": False, "outcome": "cancelled"}
+    refused = _load_with_token(client, "t1")
+    assert refused.status_code == 409 and "cancelled" in refused.json()["detail"]
+    assert backend.unloads == 0 and not backend.loaded
+
+
+def test_image_status_names_the_load_an_unload_can_name(token_client):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    assert client.get("/api/inference/images/status").json()["load_id"] == "t1"
+
+
+def test_image_status_and_load_id_name_the_same_load(token_client):
+    import threading
+
+    from core.inference import media_load_ids
+    from hub.services.models import account_access
+
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    read = backend.status
+    admitted = threading.Event()
+
+    def newer_load():
+        with account_access.media_load_lock:
+            prior = media_load_ids.admitting("diffusion", backend, "t2")
+            backend._load_token += 1
+            backend.loading = ("unsloth/Z-Image-Turbo-GGUF",)
+            media_load_ids.admitted("diffusion", backend, "t2", prior)
+            admitted.set()
+
+    reads = []
+
+    def racing_status():
+        # The first read is slow and a load is admitted meanwhile, which it does not hold up.
+        reads.append(True)
+        if len(reads) == 1:
+            worker = threading.Thread(target = newer_load)
+            worker.start()
+            worker.join(5)
+            assert not worker.is_alive()
+        return read()
+
+    backend.status = racing_status
+    try:
+        answer = client.get("/api/inference/images/status").json()
+    finally:
+        backend.status = read
+    assert admitted.wait(5)
+    # The read that straddled the admission was read again, so the id is that of the state it shows.
+    assert answer["load_id"] == "t2" and len(reads) == 2
+    backend.loading = ()
+
+
+def test_the_image_unload_answers_are_declared_in_the_schema(token_client):
+    import json
+
+    client, backend = token_client
+    schema = client.app.openapi()
+    answer = schema["paths"]["/api/inference/images/unload"]["post"]["responses"]["200"]
+    refs = json.dumps(answer)
+    for model in ("DiffusionLoadUnloadedResponse", "MediaUnloadOutcome", "DiffusionStatusResponse"):
+        assert f"#/components/schemas/{model}" in refs
+    assert _load_with_token(client, "t1").status_code == 200
+    plain = client.post("/api/inference/images/unload").json()
+    assert set(plain) == set(inference_routes.DiffusionStatusResponse.model_fields)
+    assert _load_with_token(client, "t2").status_code == 200
+    named = client.post("/api/inference/images/unload", json = {"expected_load_id": "t2"}).json()
+    assert set(named) == set(plain) | {"unloaded", "outcome"}
+    stale = client.post("/api/inference/images/unload", json = {"expected_load_id": "t2"}).json()
+    assert stale == {"unloaded": False, "outcome": "superseded"}
+
+
+def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it(monkeypatch):
+    # Weight 0 disables an adapter and every loader drops it, so an all-zero list is no LoRA load.
+    from fastapi import HTTPException
+    from core.inference import mlx_diffusion_routing as routing
+    from core.inference.diffusion_families import detect_family
+    from models.inference import DiffusionLoadRequest, LoraSpec
+
+    z_image = detect_family("z-image")
+    off = DiffusionLoadRequest(model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0)])
+    on = DiffusionLoadRequest(
+        model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0), LoraSpec(id = "b", weight = 0.5)]
+    )
+    assert inference_routes._has_active_loras(off.loras) is False
+    assert inference_routes._has_active_loras(on.loras) is True
+    inference_routes._refuse_mlx_loras(off, z_image)
+    inference_routes._refuse_mlx_loras(on, z_image)
+    monkeypatch.setitem(routing.MLX_CAPABILITIES, "z-image", routing.MlxCapabilities(loras = False))
+    inference_routes._refuse_mlx_loras(off, z_image)
+    with pytest.raises(HTTPException):
+        inference_routes._refuse_mlx_loras(on, z_image)

@@ -3,6 +3,7 @@
 
 import type { InterpolationValues, Locale, TranslationKey } from "@/i18n";
 import { formatRelativeTime } from "../../i18n/relative-time.ts";
+import { withTimeFormat } from "../../lib/time-format.ts";
 
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
 
@@ -27,10 +28,13 @@ export function formatCardTime(ts: number, locale: Locale, now: number = Date.no
   if (!Number.isFinite(ts)) return "";
   const then = new Date(ts);
   const today = new Date(now);
-  // Rounded: a day with a daylight-saving change is 23 or 25 hours long.
+  // Rounded: DST days are 23 or 25 hours long.
   const days = Math.round((startOfDay(today) - startOfDay(then)) / DAY_MS);
   if (days === 0) {
-    return then.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+    return then.toLocaleTimeString(
+      locale,
+      withTimeFormat({ hour: "numeric", minute: "2-digit" }, locale),
+    );
   }
   if (days === 1) {
     const word = yesterday(locale);

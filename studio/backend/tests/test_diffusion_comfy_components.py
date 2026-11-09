@@ -53,6 +53,24 @@ def test_parse_local_absolute_relative_and_bare(tmp_path):
     assert bare.local_path.endswith("vae_here.safetensors")
 
 
+def test_status_summary_names_the_supplied_basename_of_a_symlinked_cache_file(tmp_path):
+    blob = _save(tmp_path / "blobs" / "0123abcdef", {"x": torch.zeros(1)})
+    snap = tmp_path / "snapshots" / "rev" / "ae.safetensors"
+    snap.parent.mkdir(parents = True)
+    try:
+        snap.symlink_to(blob)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    ref = C.parse_component_file(str(snap), what = "vae_file")
+    assert ref.local_path == str(Path(blob).resolve())  # loads still read the real file
+    assert ref.name == "ae.safetensors"
+    assert C.ComponentOverrides(files = {"vae": ref}).summary() == {"vae": "ae.safetensors"}
+    rel = C.parse_component_file(
+        "../snapshots/rev/ae.safetensors", model_path = str(tmp_path / "blobs")
+    )
+    assert rel.name == "ae.safetensors"
+
+
 def test_parse_existing_subpath_under_model_dir_is_local(tmp_path):
     dit_dir = tmp_path / "models" / "diffusion_models"
     two = _save(dit_dir / "components" / "clip_l.safetensors", {"x": torch.zeros(1)})
@@ -411,6 +429,45 @@ def test_qwen3_comfy_layout_int8_convrot_stays_int8(tmp_path):
         want = ref.to(torch.bfloat16)(input_ids = ids).last_hidden_state.float()
     cos = torch.nn.functional.cosine_similarity(got.flatten(), want.flatten(), dim = 0)
     assert cos > 0.98
+
+
+def test_int8_convrot_encoder_releases_the_file_once_its_weights_are_repointed(tmp_path):
+    """Streaming re-points every host tensor at its pinned copy with ``.data =``; an int8 code buffer that was still a
+    view of the file mapping kept the whole file mapped (and undeletable on Windows) for the model's life."""
+    import gc
+    import os
+    import sys
+
+    cfg, ref = _tiny_qwen3()
+    group = 16
+    out = {}
+    for key, value in ref.state_dict().items():
+        comfy_key = "model." + key
+        if ".mlp." in key and key.endswith(".weight"):
+            codes, scale = _convrot_int8(value, group)
+            stem = comfy_key[: -len(".weight")]
+            out[comfy_key] = codes
+            out[stem + ".weight_scale"] = scale
+            out[stem + ".comfy_quant"] = _quant_blob(
+                {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": group}
+            )
+        else:
+            out[comfy_key] = value.to(torch.bfloat16)
+    path = _save(tmp_path / "qwen_3_4b_int8_convrot.safetensors", out)
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.bfloat16
+    )
+    expected = {k: v.clone() for k, v in enc.state_dict().items()}
+    for tensor in list(enc.parameters()) + list(enc.buffers()):
+        tensor.data = tensor.data.clone()  # the pinned copy, as the group pinner re-points it
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        real = os.path.realpath(path)
+        with open("/proc/self/maps", encoding = "utf-8") as fh:
+            assert not any(line.rstrip().endswith(real) for line in fh)
+    os.remove(path)
+    for key, value in enc.state_dict().items():
+        assert torch.equal(value, expected[key]), key
 
 
 def test_qwen3_bf16_strip_model_prefix_and_dead_lm_head(tmp_path):

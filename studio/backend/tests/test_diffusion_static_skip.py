@@ -926,14 +926,11 @@ def test_status_route_shows_skip_counts_only_to_their_producer(monkeypatch, scop
         "planned_skips": 9,
         "stats": {"calls": 25, "computed": 16, "skipped": 9},
     }
-    monkeypatch.setattr(
-        diffusion_engine_router,
-        "active_status",
-        lambda: {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats},
-    )
-    # The caller gets the view's snapshot, not the earlier status() read.
+    status = {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats}
+    # The caller gets the view's snapshot, not the earlier status() read. The route reads the
+    # engine's own status() (paired with its load id), so the fake engine answers it.
     fresh = {**stats, "stats": {"calls": 30, "computed": 19, "skipped": 11}}
-    engine = types.SimpleNamespace(static_skip_view = lambda: (owner, fresh))
+    engine = types.SimpleNamespace(status = lambda: status, static_skip_view = lambda: (owner, fresh))
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: engine)
     monkeypatch.setattr(account_access, "resident_hidden", lambda *a, **k: False)
     monkeypatch.setattr(account_access, "account_scope", lambda: scope)

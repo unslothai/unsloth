@@ -5,6 +5,7 @@
  *  back. The page keeps owning progress polling, Stop, the gallery merge and error toasts. */
 
 import type { ControlNetSpecInput, DiffusionGenerateRequest, GalleryImage } from "../api.ts";
+import { HIRES_UPSCALER_LABELS, type HiresRequest } from "../lib/hires-choice.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "../lib/sampler-choice.ts";
 import { gridInfotext } from "./compose-grid.ts";
 import { joinAxisList } from "./compare-values.ts";
@@ -143,6 +144,21 @@ function controlNetUnit(value: unknown): string | undefined {
   return parts.join(", ");
 }
 
+const sameHires = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+/** Hires fields in A1111 names (diffusion_hires.infotext_fields); Size stays the base pass. */
+function hiresFields(hires: HiresRequest | undefined): Array<[string, string | number | undefined]> {
+  if (!hires) return [];
+  const upscaler = hires.upscaler ? (HIRES_UPSCALER_LABELS[hires.upscaler] ?? hires.upscaler.replace(/^local:/, "")) : undefined;
+  return [
+    ["Denoising strength", hires.denoise],
+    ["Hires upscale", hires.scale],
+    ["Hires steps", hires.steps ? hires.steps : undefined],
+    ["Hires upscaler", upscaler],
+    ["Hires CFG Scale", hires.guidance ?? undefined],
+  ];
+}
+
 /** The grid's shared recipe for its `parameters` chunk, from the requests the cells were sent with: a field is
  *  written only when every cell ran the same value, so the PNG never claims one cell's setting for the grid. */
 export function gridRecipeFields(
@@ -181,6 +197,7 @@ export function gridRecipeFields(
     ["ControlNet 0", controlNetUnit(sharedValue(sent, varied, "controlnet", "controlnet", sameControlNet)?.value)],
     // Every cell runs with the prompt enhancer off (compare/ forces it), so a restore must not rewrite the prompt.
     ["Prompt enhancement", sharedValue(sent, varied, "enhance_prompt")?.value === false ? "off" : undefined],
+    ...hiresFields(sharedValue(sent, varied, "hires", "hires", sameHires)?.value as HiresRequest | undefined),
   ];
   return fields.filter(([, value]) => value !== undefined);
 }

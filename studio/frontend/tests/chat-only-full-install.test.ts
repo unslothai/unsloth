@@ -73,13 +73,25 @@ test("the Chat only confirm copy states the download and does not claim a reinst
   assert.doesNotMatch(repair.confirmDescriptionChatOnly, /reinstalls/);
 });
 
+test("the CPU-only Chat only copy offers CPU training and none of the GPU features", () => {
+  const full = en.settings.general.fullInstall;
+  for (const text of [full.descriptionCpu, full.confirmDescriptionCpu]) {
+    assert.match(text, /training on the CPU/);
+    for (const gpuOnly of ["export", "video", "safetensors"]) {
+      assert.doesNotMatch(text, new RegExp(gpuOnly));
+    }
+  }
+  assert.match(full.confirmDescriptionCpu, /at least 5 GB of disk space/);
+  assert.doesNotMatch(full.confirmDescriptionCpu, /reinstall/i);
+});
+
 test("the greyed Train row points at the Install type row, not at Danger zone", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
   const hint = /const trainDisabledHint: string \| undefined = ([\s\S]*?\n\s*: undefined);/.exec(source);
   assert.ok(hint, "could not find trainDisabledHint");
   const forNoTorch = (canRepair: boolean, chatOnlyHint: string | null = null) =>
     new Function(
-      "chatOnlyMeasured",
+      "trainBlocked",
       "chatOnlyReason",
       "chatOnlyDetail",
       "chatOnlyHint",
@@ -98,13 +110,41 @@ test("the greyed Train row opens the full install dialog when the upgrade is off
   const row = /train: \{[\s\S]*?\n    \},\n/.exec(source);
   assert.ok(row, "could not find the train nav row");
   // Clickable (not natively disabled) only while the upgrade is offered, and greyed all the same.
-  assert.match(row[0], /disabled: chatOnlyMeasured && !fullInstall,/);
-  assert.match(row[0], /dimmed: chatOnlyMeasured && fullInstall !== null,/);
+  assert.match(row[0], /disabled: trainBlocked && !fullInstall,/);
+  assert.match(row[0], /dimmed: trainBlocked && fullInstall !== null,/);
   assert.match(row[0], /setFullInstallOpen\(true\)/);
   assert.match(row[0], /5 GB/);
   // Never navigates or preloads Train on a Chat only install.
-  assert.match(row[0], /if \(chatOnlyMeasured\) \{[\s\S]*?return;\n        \}\n        navigateFromRow/);
-  assert.match(row[0], /onIntent: \(\) => \{\n        if \(chatOnlyMeasured\) return;/);
+  assert.match(row[0], /if \(trainBlocked\) \{[\s\S]*?return;\n        \}\n        navigateFromRow/);
+  assert.match(row[0], /onIntent: \(\) => \{\n        if \(trainBlocked\) return;/);
   assert.match(source, /<FullInstallDialog\s+open=\{fullInstallOpen\}/);
   assert.match(en.settings.general.fullInstall.confirmDescription, /at least 5 GB of disk space/);
+});
+
+test("the Train hint and the Export banner both carry an Install Training button", async () => {
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
+  const row = /train: \{[\s\S]*?\n    \},\n/.exec(sidebar);
+  assert.ok(row, "could not find the train nav row");
+  assert.match(
+    row[0],
+    /tooltipAction: fullInstall\s*\? \{ label: "Install Training", onClick: \(\) => setFullInstallOpen\(true\) \}\s*: undefined,/,
+  );
+  // The inline row renders it, and a still-spinning row never offers it.
+  assert.match(sidebar, /tooltipAction=\{rowState\.pending \? undefined : row\.tooltipAction\}/);
+  assert.match(sidebar, /<Button size="xs" onClick=\{tooltipAction\.onClick\}>/);
+  // The More flyout renders no button, so its title keeps the click guidance.
+  assert.match(sidebar, /row\.tooltipAction && !rowState\.pending\s*\? `\$\{rowState\.tooltip\} Click to install it\.`/);
+  // The nav provider disables hoverable tooltips; a tooltip with a button must opt back in.
+  assert.match(sidebar, /interactiveTooltip=\{Boolean\(tooltip && tooltipAction\)\}/);
+
+  const exportPage = await readSrcAsync("features/export/export-page.tsx");
+  const banner = /<AlertTitle>Export unavailable<\/AlertTitle>[\s\S]*?<\/Alert>/.exec(exportPage);
+  assert.ok(banner, "could not find the Export unavailable banner");
+  assert.match(banner[0], /\{offerFullInstall && \([\s\S]*?setFullInstallOpen\(true\)[\s\S]*?Install Training/);
+  // Without a GPU the full install trains on CPU and still cannot export, so the banner does not offer it.
+  assert.match(
+    exportPage,
+    /const offerFullInstall = canUpgrade && hardware\.exportUnsupportedReason === "no_torch";/,
+  );
+  assert.match(exportPage, /<FullInstallDialog\s+open=\{fullInstallOpen\}/);
 });

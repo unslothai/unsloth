@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { accountDatabaseName } from "@/lib/account-transition";
 import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import { hostOf } from "./address";
@@ -101,7 +101,6 @@ const newId = () => `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 interface BrowserHistoryState {
   history: HistoryItem[];
   downloads: DownloadItem[];
-  /** Host to the icon its pages declared, newest last. */
   icons: Record<string, string>;
   recordVisit: (url: string, title: string, temporary?: boolean) => void;
   recordIcon: (host: string, icon: string, temporary?: boolean) => void;

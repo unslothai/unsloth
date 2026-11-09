@@ -42,6 +42,7 @@ import {
   setPageDownload,
   useBrowserStore,
 } from "./store";
+import { LineBox } from "@/components/ui/line-box";
 
 type LoadState =
   | { status: "loading" }
@@ -280,13 +281,13 @@ function PageError({
               })}
       </p>
       {message ? (
-        <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>
+        <LineBox as="p" className="break-all bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</LineBox>
       ) : null}
       <div className="mt-1 flex gap-2">
         <Button type="button" variant={botCheck ? "ghost" : "outline"} size="sm" onClick={onRetry}>
           {t("browser.error.retry")}
         </Button>
-        <Button type="button" variant={botCheck ? "default" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
+        <Button type="button" variant={botCheck ? "dark" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
           {t("browser.openExternal")}
         </Button>
       </div>

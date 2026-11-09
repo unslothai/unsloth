@@ -3,7 +3,6 @@
 
 import type { TourStep } from "@/features/tour";
 
-/** The list and the learning-recipe cards are two branches of one slot; neither mounts until ready. */
 export function buildDataRecipesTourSteps({
   ready,
   hasRecipes,

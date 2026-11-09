@@ -440,7 +440,7 @@ test("leaving Audio cancels an owned TTS load without touching a pre-request pro
 test("history-only downloads save the fetched blob without caching a URL", () => {
   assert.match(
     audioPageSource,
-    /handleDownloadClipById[\s\S]*galleryCache\.srcById\.get\(clip\.id\) \?\? null,\s*\(\) => fetchClipBlob\(clip\.url\),/,
+    /handleDownloadClipById[\s\S]*saveAudio\(\s*clipFileName\(clip\),\s*null,\s*\(\) => fetchClipBlob\(clip\.url\),/,
   );
   assert.doesNotMatch(
     audioPageSource,
@@ -533,7 +533,7 @@ test("Record is offered only where the browser can capture audio", () => {
 });
 
 test("a Transcribe recording is stopped at the 30 minute limit the inputs route accepts", () => {
-  // 30 minutes of 16 kHz PCM is ~58 MB, under the 200 MB backend cap.
+  // 30 minutes of 16 kHz PCM is ~58 MB, under the backend cap's 200 MB floor.
   assert.match(audioPageSource, /const RECORDING_MAX_SECONDS = 30 \* 60;/);
   assert.match(audioPageSource, /maxRecordSeconds=\{RECORDING_MAX_SECONDS\}/);
   assert.match(

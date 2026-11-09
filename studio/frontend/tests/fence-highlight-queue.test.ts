@@ -237,5 +237,27 @@ test("only a selection that ends inside a fence holds the highlight queue", () =
   const element = { nodeType: 1, closest: () => ({}) } as unknown as Node;
   assert.equal(selectionInFence({ anchorNode: element, focusNode: null }), true, "an element endpoint is checked itself");
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
-  assert.match(defer, /blocked: \(\) => inputPointerHeld\(\) \|\| highlightQuietIn\(\) > 0 \|\| selectionInFence\(liveSelection\(\)\),/);
+  assert.match(defer, /blocked: \(duringScroll\) =>\s+inputPointerHeld\(\) \|\| highlightQuietIn\(duringScroll\) > 0 \|\| selectionInFence\(liveSelection\(\)\),/);
+});
+
+test("mid-scroll only entries marked for it run, ahead of older ones that wait for quiet", () => {
+  let scrolling = true;
+  const flags: boolean[] = [];
+  const h = harness({
+    schedule: (callback, duringScroll) => {
+      flags.push(duringScroll);
+      h.callbacks.add(callback);
+      return () => { h.callbacks.delete(callback); };
+    },
+    blocked: (duringScroll) => scrolling && !duringScroll,
+  });
+  const ran: string[] = [];
+  h.queue.add(() => { ran.push("rest of a long fence"); return true; }, () => {});
+  h.queue.add(() => { ran.push("lines in view"); return true; }, () => {}, true);
+  h.run();
+  assert.deepEqual(ran, ["lines in view"]);
+  assert.equal(flags.at(-1), false, "with only waiting work left, the next slot waits for quiet");
+  scrolling = false;
+  h.run();
+  assert.deepEqual(ran, ["lines in view", "rest of a long fence"]);
 });

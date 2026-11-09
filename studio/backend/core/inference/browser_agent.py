@@ -1,18 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser use: tools that let the model drive the browser panel the user is looking at.
-
-Every tool loop (GGUF, safetensors/MLX, external providers) runs these like any other tool; the
-page itself is driven by the chat tab, which runs each action in the agent's own browser tab and
-posts the result back (``state.browser_actions``). The tab is where the user can watch, stop and
-take over, and it gates the risky actions (submitting forms, buying, signing in, new sites) with a
-prompt this side cannot classify: only the live page knows what ``r12`` is.
-
-What this side enforces: argument shapes, http(s) only, public hosts or this machine off Studio's own
-ports, the request's website policy before and after a navigation, and that page text reaches the model
-fenced as untrusted.
-"""
+"""Lets the model drive the chat tab browser panel, its web pages and the files it shows (user can
+watch, stop, take over; tab gates risky actions). Enforces argument shapes, http(s) only, public or
+this-machine hosts off Studio ports, website policy before and after navigation, and fenced
+untrusted page text."""
 
 from __future__ import annotations
 
@@ -297,6 +289,81 @@ BROWSER_HISTORY_TOOL = {
     },
 }
 
+BROWSER_TABS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_tabs",
+        "description": (
+            "List the tabs open in the browser panel, web pages and files alike (an HTML page or "
+            "React component made in this chat, a PDF, an image, code, text), or switch to one by "
+            "its number. The other browser tools then work in that tab: on an HTML or React file "
+            "they read and click its preview as on any page, and browser_read_file and "
+            "browser_edit_file read and change the file itself."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab": {
+                    "type": "integer",
+                    "description": "The number of the tab to switch to; leave out to only list.",
+                }
+            },
+        },
+    },
+}
+
+BROWSER_READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_read_file",
+        "description": (
+            "Read the file shown in the browser panel: the source of an HTML, React, Markdown, "
+            "code or text file, or the text of a PDF or document, with line numbers (not part "
+            "of the file). Works in the agent's tab, or the file tab in front if the agent's tab "
+            "is a web page."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "start_line": {
+                    "type": "integer",
+                    "description": "First line to read, from 1; for files too long for one read.",
+                }
+            },
+        },
+    },
+}
+
+BROWSER_EDIT_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_edit_file",
+        "description": (
+            "Change the HTML, React, Markdown, code or text file shown in the browser panel: "
+            "replace old_text, copied exactly from browser_read_file without the line numbers, "
+            "with new_text, or give content to rewrite the whole file. The preview reloads with "
+            "the change, and Back in the panel shows the version before it. PDFs, documents and "
+            "images can't be edited here. For files in the panel, not edit_file, which works on "
+            "the code sandbox's files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "old_text": {
+                    "type": "string",
+                    "description": "Text to replace; it must appear once, unless replace_all.",
+                },
+                "new_text": {"type": "string"},
+                "replace_all": {"type": "boolean"},
+                "content": {
+                    "type": "string",
+                    "description": "The whole new file, instead of old_text and new_text.",
+                },
+            },
+        },
+    },
+}
+
 BROWSER_TOOLS = [
     BROWSER_NAVIGATE_TOOL,
     BROWSER_SNAPSHOT_TOOL,
@@ -311,6 +378,9 @@ BROWSER_TOOLS = [
     BROWSER_EVALUATE_TOOL,
     BROWSER_SCREENSHOT_TOOL,
     BROWSER_HISTORY_TOOL,
+    BROWSER_TABS_TOOL,
+    BROWSER_READ_FILE_TOOL,
+    BROWSER_EDIT_FILE_TOOL,
 ]
 
 BROWSER_TOOL_NAMES = frozenset(tool["function"]["name"] for tool in BROWSER_TOOLS)
@@ -323,6 +393,8 @@ _MIN_ACTION_TIMEOUT_S = 30.0
 _MAX_URL_CHARS = 4096
 _MAX_TEXT_CHARS = 8000
 _MAX_SCRIPT_CHARS = 8000
+_MAX_FILE_EDIT_CHARS = 500_000
+_MAX_TAB = 1000
 _HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
 # Past any real screen: a point there is a mistake, not a far corner.
 _MAX_POINT = 100_000
@@ -342,6 +414,8 @@ _LOCAL_SUFFIXES = (
 _STUDIO_PORTS = range(8888, 8909)
 _ASSIGNED_PORTS = 32768
 _FENCE = "untrusted_web_content"
+# Google's country domains, not google.com.evil.example; mirrored in features/browser/address.ts.
+_GOOGLE_HOST = r"google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})"
 
 
 def is_browser_tool(name: Any) -> bool:
@@ -462,7 +536,7 @@ def _redirect_target(url: str) -> Optional[str]:
     target = None
     if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and path == "/l/":
         target = (query.get("uddg") or [None])[0]
-    elif re.fullmatch(r"google\.[a-z.]+", host) and path == "/url":
+    elif re.fullmatch(_GOOGLE_HOST, host) and path == "/url":
         target = (query.get("q") or query.get("url") or [None])[0]
     return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
 
@@ -561,7 +635,13 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             value = arguments.get("value")
             if isinstance(value, bool):
                 value = "true" if value else "false"
-            request["value"] = ("" if value is None else str(value))[:500]
+            value = ("" if value is None else str(value)).strip()
+            # The tab matches an empty value to the first option, which the model never meant.
+            if not value:
+                raise ValueError(
+                    'value is empty. Give the option text, or "true"/"false" for a checkbox.'
+                )
+            request["value"] = value[:500]
         return request
     if name == "browser_scroll":
         direction = str(arguments.get("direction") or "down").lower()
@@ -590,7 +670,61 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             "query": str(arguments.get("query") or "").strip()[:200],
             "limit": max(1, min(limit, 50)),
         }
+    if name == "browser_tabs":
+        tab = _whole_number(arguments, "tab")
+        if tab is not None and not 1 <= tab <= _MAX_TAB:
+            raise ValueError("tab must be the number of a tab in the list.")
+        return {"op": "tabs", **({"tab": tab} if tab is not None else {})}
+    if name == "browser_read_file":
+        start = _whole_number(arguments, "start_line") or 1
+        if start < 1:
+            raise ValueError("start_line counts from 1.")
+        return {"op": "read_file", "start_line": start}
+    if name == "browser_edit_file":
+        return {"op": "edit_file", **_file_edit(arguments)}
     raise ValueError(f"unknown browser tool {name}.")
+
+
+def _whole_number(arguments: dict, key: str) -> Optional[int]:
+    raw = arguments.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{key} must be a whole number.")
+    if isinstance(raw, bool) or not value.is_integer():
+        raise ValueError(f"{key} must be a whole number.")
+    return int(value)
+
+
+def _file_edit(arguments: dict) -> dict:
+    def text(key: str) -> Optional[str]:
+        value = arguments.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be a string.")
+        if len(value) > _MAX_FILE_EDIT_CHARS:
+            raise ValueError(f"{key} is longer than {_MAX_FILE_EDIT_CHARS} characters.")
+        return value
+
+    content = text("content")
+    old = text("old_text")
+    new = text("new_text")
+    if content is not None:
+        if old is not None or new is not None:
+            raise ValueError("give either content, or old_text and new_text, not both.")
+        return {"content": content}
+    if not old:
+        raise ValueError(
+            "old_text is empty. Give the text to replace, or content for the whole file."
+        )
+    if new is None:
+        raise ValueError("new_text is required with old_text; an empty string deletes old_text.")
+    if old == new:
+        raise ValueError("old_text and new_text are the same, so nothing would change.")
+    return {"old_text": old, "new_text": new, "replace_all": arguments.get("replace_all") is True}
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -617,7 +751,10 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
     url = _one_line(_clip(result.get("url"), _MAX_URL_CHARS))
     if url.lower().startswith(("http://", "https://")):
         # A followed link or a redirect can land where browser_navigate would refuse to go.
-        host = urlsplit(url).hostname or ""
+        try:
+            host = urlsplit(url).hostname or ""
+        except ValueError:
+            return "Error: the page's address could not be read, so its content is withheld."
         problem = _studio_port_problem(url) if _is_loopback(host) else _host_problem(host)
         if problem:
             return (
@@ -632,18 +769,23 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
                 "disallows, so its content is withheld. Navigate somewhere else."
             )
     title = _one_line(_clip(result.get("title"), 300))
+    file = _one_line(_clip(result.get("file"), 300))
     note = _one_line(_clip(result.get("note"), 1000))
     text = _clip(result.get("text"), 400_000)
     if len(text) > _MAX_MODEL_CHARS:
-        text = (
-            text[:_MAX_MODEL_CHARS]
-            + "\n... (cut here: use browser_find, browser_scroll or a snapshot ref to see more)"
+        more = (
+            "browser_read_file with a later start_line"
+            if name == "browser_read_file"
+            else "browser_find, browser_scroll or a snapshot ref"
         )
+        text = text[:_MAX_MODEL_CHARS] + f"\n... (cut here: use {more} to see more)"
     # The title and note come from the page too (a selected option's words), so everything but
     # this tool's own framing goes inside the fence.
     page = []
     if url:
         page.append(f"Page: {title + ' ' if title else ''}<{url}>")
+    elif file:
+        page.append(f"File: {file}")
     if note:
         page.append(note)
     if text:
@@ -700,6 +842,7 @@ def execute_browser_tool(
 ) -> str:
     from state.browser_actions import (
         begin_browser_action,
+        discard_browser_action,
         new_action_id,
         wait_browser_action,
     )
@@ -729,21 +872,23 @@ def execute_browser_tool(
         if timeout is None
         else max(_MIN_ACTION_TIMEOUT_S, min(float(timeout), _ACTION_TIMEOUT_S))
     )
-    output_callback(
-        {
-            "browser_action": {
-                "id": action_id,
-                "session_id": session_id or "",
-                **request,
-                # The tab keeps clicks and form posts to the same limits a navigation is held to.
-                "allowed_domains": list(policy["allowedDomains"]),
-                "blocked_domains": list(policy["blockedDomains"]),
-                # The tab drops a question still open when this side stops waiting, so a late
-                # Allow can't run an action nobody is waiting for.
-                "timeout_s": wait,
+    try:
+        output_callback(
+            {
+                "browser_action": {
+                    "id": action_id,
+                    "session_id": session_id or "",
+                    **request,
+                    "allowed_domains": list(policy["allowedDomains"]),
+                    "blocked_domains": list(policy["blockedDomains"]),
+                    # The tab drops an unanswered question once this side stops waiting, so a late Allow can't run.
+                    "timeout_s": wait,
+                }
             }
-        }
-    )
+        )
+    except BaseException:
+        discard_browser_action(action_id, slot)
+        raise
     outcome, result = wait_browser_action(slot, action_id, cancel_event, wait)
     if outcome == "cancelled":
         return "Error: the browser action was stopped."

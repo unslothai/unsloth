@@ -161,7 +161,7 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
 });
 
 test("the composer's one-row clamp is one row at any size", () => {
-  // The editor box wins over the input's min-height, so all three clamps and the JS floor move together.
+  // The editor box wins over the input's min-height, so the clamps and the JS floor move together.
   const clamps = CSS.match(/calc\(40px \* var\(--ui-space-scale, 1\)\)/g) ?? [];
   assert.equal(clamps.length, 3, "a 40px composer clamp is still fixed");
   const thread = readSrc("components/assistant-ui/thread.tsx");
@@ -268,11 +268,11 @@ test("the plain stylesheets' controls follow the scale", () => {
     const body = HUB.slice(at, HUB.indexOf("}", at));
     assert.match(
       body,
-      /(?:height|width): calc\([\d.]+rem \* var\(--ui-space-scale, 1\)\)/,
+      /(?:height|width|padding): calc\([\d.]+rem \* var\(--ui-space-scale, 1\)\)/,
       `${rule} has a fixed size`,
     );
   }
-  assert.match(CSS, /--slider-thumb-size: calc\(1\.25rem \* var\(--ui-space-scale, 1\)\);/);
+  assert.match(CSS, /--slider-thumb-size: calc\(1\.125rem \* var\(--ui-space-scale, 1\)\);/);
   assert.match(CSS, /--slider-track-height: calc\(0\.15625rem \* var\(--ui-space-scale, 1\)\);/);
 });
 
@@ -348,15 +348,21 @@ test("a scaled media rail leaves the preview its minimum", () => {
     "features/video/video-page.tsx",
   ]) {
     const source = readSrc(file);
+    const minimum = file.includes("/audio/") ? "13rem" : "var(--media-header-min-width)";
     assert.ok(
-      source.includes(`@[50rem]:w-[min(${rail},calc(100%-13rem))]`),
+      source.includes(`@[50rem]:w-[min(${rail},calc(100%-${minimum}))]`),
       `${file} rail can outgrow its split`,
     );
     assert.ok(
-      source.includes(`grid-cols-[minmax(0,${rail})_minmax(13rem,1fr)]`),
+      source.includes(`grid-cols-[minmax(0,${rail})_minmax(${minimum},1fr)]`),
       `${file} header column drifts from its rail`,
     );
   }
+  assert.match(
+    CSS,
+    /@container \(width < 50rem\) \{\s*\.media-header-layout > \* \{\s*--media-header-min-width: min\([^;]*, 50%\);/,
+    "the stacked header must leave the model selector half the row",
+  );
 });
 
 test("the settings rail never takes more than half the dialog", () => {
@@ -388,7 +394,7 @@ test("settings stacks its rail where the scaled dialog is too narrow for it", ()
   const dialog = readSrc("features/settings/settings-dialog.tsx");
   assert.match(dialog, /const width = 608 \* useUiSpaceScale\(\);/);
   assert.match(dialog, /`\(width < \$\{width \+ 32\}px\)`/);
-  assert.match(dialog, /return width > 960 \|\| narrow;/);
+  assert.match(dialog, /return width > 1000 \|\| narrow;/);
   assert.match(dialog, /data-stacked=\{stacked \|\| undefined\}/);
   const shell = dialog.match(/max-sm:[^\s"]+/g) ?? [];
   assert.deepEqual(shell.sort(), [
@@ -412,7 +418,7 @@ test("composite settings controls shrink inside their row", () => {
     ),
   );
   const resources = readSrc("features/settings/tabs/resources-tab.tsx");
-  assert.ok(resources.includes("flex min-w-0 flex-wrap items-center justify-between"));
+  assert.ok(resources.includes("flex min-w-0 flex-wrap items-start justify-between"));
   assert.ok(
     resources.includes(
       '"flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col',

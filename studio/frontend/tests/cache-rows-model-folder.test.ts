@@ -15,6 +15,7 @@ const ROWS_URL = new URL(
 
 type Rows = {
   singleClearDescriptionKeys: (key: string) => string[];
+  presentCaches: (inventory: unknown) => { key: string; sizeBytes: number }[];
 };
 
 function loadRows(): Rows {
@@ -39,16 +40,45 @@ function loadRows(): Rows {
     "@/features/hub/stores/inventory-events": { useInventoryVersion: () => 0 },
     "@/i18n": { useT: () => (key: string) => key },
     "@/lib/toast": { toast: {} },
+    "@hugeicons/core-free-icons": {},
+    "@/lib/hugeicons-derived": { TrashIcon: {} },
+    "@/lib/folder-icons": {},
+    "@hugeicons/react": { HugeiconsIcon: noop },
     "../api/caches": {
       bulkPurgeKeys: () => [],
       loadCacheInventory: async () => null,
       purgeCaches: async () => null,
     },
-    "./settings-row": { SettingsRow: noop },
+    "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+    "./storage-overview": { SettingsCardRow: noop },
   });
 }
 
 const SAFETY = "settings.resources.storage.caches.safety";
+
+test("cache rows show largest occupancy first with deterministic ties and no input mutation", () => {
+  const { presentCaches } = loadRows();
+  const entries = Object.freeze([
+    Object.freeze({ key: "uv", sizeBytes: 20, present: true }),
+    Object.freeze({ key: "triton", sizeBytes: 500, present: true }),
+    Object.freeze({ key: "hf_hub", sizeBytes: 500, present: true }),
+    Object.freeze({ key: "pip", sizeBytes: 900, present: false }),
+  ]);
+  const result = presentCaches({ caches: entries });
+  assert.deepEqual(
+    result.map((row) => row.key),
+    ["hf_hub", "triton", "uv"],
+  );
+  assert.deepEqual(
+    entries.map((row) => row.key),
+    ["uv", "triton", "hf_hub", "pip"],
+  );
+  assert.deepEqual(
+    presentCaches({ caches: [...entries].reverse() }).map((row) => row.key),
+    result.map((row) => row.key),
+  );
+  assert.deepEqual(presentCaches(null), []);
+});
 
 test("the model cache clear does not promise that models are untouched", () => {
   assert.ok(
@@ -130,7 +160,10 @@ function driveRows(options: {
     },
   };
 
-  const rows = loadWithStubs<{ CacheStorageRows: () => unknown }>(ROWS_URL, {
+  const rows = loadWithStubs<{
+    CacheStorageRows: (props: { cache: unknown }) => unknown;
+    useCacheStorage: () => unknown;
+  }>(ROWS_URL, {
     react,
     "react/jsx-runtime": stubJsxRuntime(),
     "@/components/ui/button": { Button: "Button" },
@@ -155,24 +188,34 @@ function driveRows(options: {
         error: () => undefined,
       },
     },
+    "@hugeicons/core-free-icons": {},
+    "@/lib/hugeicons-derived": { TrashIcon: {} },
+    "@/lib/folder-icons": {},
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api/caches": {
       bulkPurgeKeys: () => ["uv"],
       loadCacheInventory: options.load,
       purgeCaches: options.purge ?? (async () => ({})),
     },
-    "./settings-row": { SettingsRow: "SettingsRow" },
+    "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+    "./storage-overview": { SettingsCardRow: "SettingsCardRow" },
   });
 
-  return () => {
+  let cleanup: (() => void) | undefined;
+  const render = () => {
     stateCursor = 0;
     refCursor = 0;
     callbackCursor = 0;
-    const tree = rows.CacheStorageRows();
-    const effect = pending;
+    const tree = rows.CacheStorageRows({ cache: rows.useCacheStorage() });
+    const effect = pending as (() => (() => void) | undefined) | null;
     pending = null;
-    effect?.();
+    if (effect) {
+      cleanup?.();
+      cleanup = effect() ?? undefined;
+    }
     return tree;
   };
+  return Object.assign(render, { unmount: () => cleanup?.() });
 }
 
 type Element = { type: unknown; props?: Record<string, unknown> };
@@ -274,8 +317,9 @@ test("a clear waits for the measurement that is replacing the rows", async () =>
   const confirm = [...walk(reloading)].filter(
     (element) =>
       element.type === "Button" &&
-      typeof element.props?.className === "string" &&
-      element.props.className.includes("bg-destructive"),
+      // The dialog's confirm: the row triggers are size="sm".
+      element.props?.variant === "destructive" &&
+      element.props?.size === undefined,
   );
   assert.equal(confirm.length, 1);
   assert.equal(confirm[0].props?.disabled, true);
@@ -309,8 +353,69 @@ test("a measurement that failed leaves the clears disabled", async () => {
   const destructive = [...walk(failed)].filter(
     (element) =>
       element.type === "Button" &&
-      typeof element.props?.className === "string" &&
-      element.props.className.includes("bg-destructive"),
+      element.props?.variant === "destructive" &&
+      element.props?.size === undefined,
   );
   assert.equal(destructive[0].props?.disabled, true);
+});
+
+test("a size still being re-walked is asked for again until it is current", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending: ((value: unknown) => void)[] = [];
+  const asked: { refresh?: boolean }[] = [];
+  const render = driveRows({
+    load: (options) => {
+      asked.push(options);
+      return new Promise((resolve) => pending.push(resolve));
+    },
+    version: () => 0,
+  });
+
+  render();
+  pending[0]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  const shown = render();
+  // The old size stays on screen, without the measuring state, while the walk runs.
+  assert.equal(buttons(shown, CLEAR_ONE).length, 0);
+  click(buttons(shown, DETAILS)[0]);
+  assert.equal(buttons(render(), CLEAR_ONE)[0].props?.disabled, false);
+  assert.equal(pending.length, 1);
+
+  t.mock.timers.tick(2000);
+  await settle();
+  assert.equal(pending.length, 2);
+  assert.deepEqual(asked[1], {});
+  assert.equal(buttons(render(), CLEAR_ONE)[0].props?.disabled, false);
+  pending[1]({ ...inventory("/new/hub"), refreshing: false });
+  await settle();
+
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(pending.length, 2, "a current answer is not asked for again");
+  const paths = [...walk(render())]
+    .map((element) => element.props?.title)
+    .filter((title) => typeof title === "string");
+  assert.deepEqual(paths, ["/new/hub"]);
+});
+
+test("leaving the page stops a follow-up read still in flight", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending: ((value: unknown) => void)[] = [];
+  const render = driveRows({
+    load: () => new Promise((resolve) => pending.push(resolve)),
+    version: () => 0,
+  });
+
+  render();
+  pending[0]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  t.mock.timers.tick(2000);
+  await settle();
+  assert.equal(pending.length, 2);
+  render.unmount();
+  pending[1]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(pending.length, 2);
 });

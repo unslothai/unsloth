@@ -16,7 +16,10 @@ test("the compact face is the ring, unless there is no window to fill", () => {
 
 test("the bar hands every input to the state, batching flags included", () => {
   const bar = readSrc("features/chat/components/context-usage-bar.tsx");
-  assert.match(bar, /\(\{ className, compactUnknownAsIcon = false, \.\.\.input \}\) => \{\s*const state = deriveContextUsageBar\(input\);/);
+  assert.match(
+    bar,
+    /\(\{ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2\.5, ringFirst = false, fitContent = false, \.\.\.input \}\) => \{\s*const pin = useClickPin\(pinOnClick\);\s*const state = deriveContextUsageBar\(input\);/,
+  );
 });
 
 test("the header shrinks the context bar before the model name", () => {
@@ -30,6 +33,6 @@ test("both faces draw the ring, not the line", () => {
   assert.match(bar, /\{compactFace === null \? \(\s*<span[^>]*>\s*<UsageRing /);
   // The full face retains the state's ring policy; only the compact fallback can opt into an icon.
   assert.match(bar, /const showRing = state\.compactFace === null;/);
-  assert.match(bar, /\{showRing \? <UsageRing percent=\{percent\} stroke=\{severity\.stroke\} \/> : null\}/);
+  assert.match(bar, /\{showRing && ringFirst \? <UsageRing percent=\{percent\} stroke=\{severity\.stroke\} \/> : null\}\s*<Face face=\{face\} \/>\s*\{showRing && !ringFirst \? <UsageRing /);
   assert.doesNotMatch(bar, /style=\{\{ width: `\$\{percent\}%` \}\}/);
 });

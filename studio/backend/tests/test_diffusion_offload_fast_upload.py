@@ -333,3 +333,222 @@ def test_tensors_left_out_of_the_layout_are_not_uploaded_with_the_chunk(fake_pin
     for name, _, view in kept:
         assert params[name].data_ptr() != view.data_ptr()
         assert torch.equal(params[name].detach(), expect[name])
+
+
+def _layout_chunk_ptrs(module):
+    layout = module.__dict__[dm._KEEP_ATTR].get("pin_layout") or []
+    return {buf.data_ptr() for buf, _ in layout}
+
+
+@pytest.mark.parametrize("fast_upload", ["1", "0"])
+@pytest.mark.parametrize("cast_on", ["host", "device"])
+def test_a_dtype_change_releases_the_obsolete_pinned_chunks(
+    fake_pin, monkeypatch, fast_upload, cast_on
+):
+    # The SDXL fp32 VAE decode casts an offloaded component and back: its kept weights are new host tensors, so the
+    # chunks pinned for the old ones must not stay referenced by the layout (fast upload on or off).
+    monkeypatch.setenv(dm.OFFLOAD_FAST_UPLOAD_ENV, fast_upload)
+    pipe = _pipe("cpu", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    module = _onload(pipe)
+    old = _layout_chunk_ptrs(module)
+    assert old
+    if cast_on == "device":
+        module.half()  # cast while onloaded: the offload brings back new host tensors
+        module._hf_hook.init_hook(module)
+    else:
+        module._hf_hook.init_hook(module)
+        module.half()  # cast while offloaded: the next onload finds new host tensors
+        _onload(pipe)
+    assert not old & _layout_chunk_ptrs(module)
+    state = module.__dict__[dm._KEEP_ATTR]
+    live = {v.untyped_storage().data_ptr() for v in state["host"].values()}
+    assert not old & live
+
+
+def test_a_replaced_weight_drops_out_of_the_layout_and_the_rest_stays(fake_pin):
+    pipe = _pipe("cpu", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    module = _onload(pipe)
+    module._hf_hook.init_hook(module)
+    before = module.__dict__[dm._KEEP_ATTR]["pin_layout"]
+    names = {name for _, entries in before for name, _, _ in entries}
+    module[0].weight = torch.nn.Parameter(torch.zeros(16, 16))
+    _onload(pipe)
+    after = module.__dict__[dm._KEEP_ATTR]["pin_layout"]
+    left = {name for _, entries in after for name, _, _ in entries}
+    assert left == names - {"0.weight"}
+
+
+def _quantised(scheme, n = N_LAYERS):
+    """A Linear stack with torchao int8 / fp8 wrapper weights (Studio's quantised denoisers under low_vram)."""
+    quant = pytest.importorskip("torchao.quantization")
+    torch.manual_seed(0)
+    module = torch.nn.Sequential(
+        *(torch.nn.Linear(64, 64, bias = True, dtype = torch.bfloat16) for _ in range(n))
+    )
+    if scheme == "int8":
+        try:
+            config = quant.Int8DynamicActivationInt8WeightConfig(version = 2)
+        except TypeError:
+            config = quant.Int8DynamicActivationInt8WeightConfig()
+    else:
+        config = quant.Float8DynamicActivationFloat8WeightConfig(granularity = quant.PerRow())
+    try:
+        quant.quantize_(module, config)
+    except Exception as exc:  # noqa: BLE001 - e.g. an fp8 build that needs a capable GPU
+        pytest.skip(f"torchao {scheme} quantize unavailable here: {exc}")
+    if dm._wrapper_inner(module[0].weight.data) is None:
+        pytest.skip("this torchao build stores the weights without a traceable wrapper")
+    return module
+
+
+def _inner_state(t):
+    return {attr: x.detach().clone() for attr, x in dm._wrapper_inner(t)}
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_wrapper_weights_ride_the_chunk_and_are_rebuilt_over_its_slices(fake_pin, scheme):
+    module = _quantised(scheme)
+    host = {n: p.data for n, p in module.named_parameters()}
+    owner = dict(module.named_parameters())
+    expect = {
+        n: _inner_state(p.data) for n, p in module.named_parameters() if dm._wrapper_inner(p.data)
+    }
+    layout: list = []
+    assert dm._pin_host_weights(module, host, layout = layout) > 0
+    listed = [(name, view) for _, entries in layout for name, _, view in entries]
+    for name in expect:
+        # one layout entry per inner tensor, each at the pinned inner tensor the host weight now reads
+        views = [view for n, view in listed if n == name]
+        assert sorted(v.data_ptr() for v in views) == sorted(
+            x.data_ptr() for _, x in dm._wrapper_inner(host[name])
+        )
+    params = dict(module.named_parameters())
+    ids = {n: id(p) for n, p in params.items()}
+    copied = dm._upload_pinned_chunks(module, layout, host, owner, {}, torch.device("cpu"))
+    assert copied >= sum(x.nbytes for n in expect for _, x in dm._wrapper_inner(host[n]))
+    chunk_ptrs = {buf.data_ptr() for buf, _ in layout}
+    for name, inner in expect.items():
+        p = dict(module.named_parameters())[name]
+        assert id(p) == ids[name] and type(p) is type(
+            host[name]
+        )  # swapped in place, same Parameter object
+        now = dict(dm._wrapper_inner(p.data))
+        assert set(now) == set(inner)
+        for attr, x in now.items():
+            assert torch.equal(x, inner[attr])
+            assert (
+                x.data_ptr() not in chunk_ptrs
+                and x.data_ptr() != dict(dm._wrapper_inner(host[name]))[attr].data_ptr()
+            )
+        assert p.shape == host[name].shape and p.dtype == host[name].dtype
+    storages = {
+        x.untyped_storage().data_ptr()
+        for n in expect
+        for _, x in dm._wrapper_inner(dict(module.named_parameters())[n].data)
+    }
+    assert len(storages) <= len(layout)
+
+
+def test_a_wrapper_with_an_inner_tensor_outside_the_layout_takes_the_stock_copy(fake_pin):
+    module = _quantised("int8", n = 2)
+    host = {n: p.data for n, p in module.named_parameters()}
+    owner = dict(module.named_parameters())
+    layout: list = []
+    assert dm._pin_host_weights(module, host, layout = layout) > 0
+    name = "0.weight"
+    drop = dm._wrapper_inner(host[name])[1][1]  # its scale
+    trimmed = [
+        (buf, [e for e in entries if not (e[0] == name and e[2].data_ptr() == drop.data_ptr())])
+        for buf, entries in layout
+    ]
+    before = [x.data_ptr() for _, x in dm._wrapper_inner(module[0].weight.data)]
+    dm._upload_pinned_chunks(module, trimmed, host, owner, {}, torch.device("cpu"))
+    assert [
+        x.data_ptr() for _, x in dm._wrapper_inner(module[0].weight.data)
+    ] == before  # left on the host
+    assert [x.data_ptr() for _, x in dm._wrapper_inner(module[1].weight.data)] != [
+        x.data_ptr() for _, x in dm._wrapper_inner(host["1.weight"])
+    ]
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_the_layout_prune_keeps_unchanged_wrapper_weights_and_drops_replaced_ones(fake_pin, scheme):
+    # A wrapper weight's entries are its inner tensors: the prune must match those, not the wrapper itself.
+    module = _quantised(scheme)
+    host = {n: p.data for n, p in module.named_parameters()}
+    layout: list = []
+    assert dm._pin_host_weights(module, host, layout = layout) > 0
+    host = {n: p.data for n, p in module.named_parameters()}
+    names = [name for _, entries in layout for name, _, _ in entries]
+    wrapped = {n for n in names if dm._wrapper_inner(host.get(n)) is not None}
+    assert wrapped
+    dm._prune_pin_layout(layout, host, {})
+    assert [name for _, entries in layout for name, _, _ in entries] == names
+    # a dequantised (dtype-changed) or re-quantised weight is a new host tensor: its entries go, the rest stay
+    host["0.weight"] = host["0.weight"].dequantize()
+    host["1.weight"] = _quantised(scheme, n = 2)[1].weight.data
+    dm._prune_pin_layout(layout, host, {})
+    left = [name for _, entries in layout for name, _, _ in entries]
+    assert left == [n for n in names if n not in ("0.weight", "1.weight")]
+
+
+def _quantised_pipe(scheme):
+    pipe = _pipe("cuda", "text_encoder", "transformer")
+    pipe.components["text_encoder"] = torch.nn.Linear(8, 64, dtype = torch.bfloat16)
+    pipe.components["transformer"] = _quantised(scheme)
+    pipe.text_encoder, pipe.transformer = (
+        pipe.components["text_encoder"],
+        pipe.components["transformer"],
+    )
+    return pipe
+
+
+@cuda
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_quantised_chunk_onload_is_bit_identical_and_skips_the_per_tensor_copy(monkeypatch, scheme):
+    # no_grad only: torchao weights cannot move under inference_mode, so Studio renders offloaded quant under no_grad.
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
+    monkeypatch.setattr(dm, "_PIN_CHUNK_BYTES", 4096)
+    if scheme == "fp8" and torch.cuda.get_device_capability() < (8, 9):
+        pytest.skip("fp8 matmul needs sm89+")
+    ctx = torch.no_grad
+    x = torch.randn(4, 8, dtype = torch.bfloat16)
+    stock = _quantised_pipe(scheme)
+    stock.enable_model_cpu_offload()
+    ref = _render(stock, x, ctx)
+    pipe = _quantised_pipe(scheme)
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    assert torch.equal(_render(pipe, x, ctx), ref)  # the first render pins
+    module = pipe.transformer
+    layout = module.__dict__[dm._KEEP_ATTR]["pin_layout"]
+    assert layout
+    seen = []
+
+    def spy(mod, *args):
+        inner = [
+            x
+            for p in mod.parameters()
+            if dm._wrapper_inner(p.data)
+            for _, x in dm._wrapper_inner(p.data)
+        ]
+        assert inner and all(x.device.type == "cuda" for x in inner)
+        seen.append({x.untyped_storage().data_ptr() for x in inner})
+
+    module.register_forward_hook(spy)
+
+    allocs = _device_allocs()
+    for _ in range(3):
+        assert torch.equal(_render(pipe, x, ctx), ref)
+    # every inner tensor is a slice of one of the chunk allocations (per tensor: one storage each) ...
+    assert all(len(s) <= len(layout) for s in seen) and len(seen) == 3
+    # ... the chunks come back out of the caching allocator ...
+    assert _device_allocs() - allocs <= 2
+    # ... and every offload re-points the weights at their pinned host tensors
+    host = module.__dict__[dm._KEEP_ATTR]["host"]
+    for n, p in module.named_parameters():
+        assert p.device.type == "cpu" and dm._tensor_ptr(p.data) == dm._tensor_ptr(host[n])

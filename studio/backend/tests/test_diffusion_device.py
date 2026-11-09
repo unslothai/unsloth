@@ -503,7 +503,22 @@ def test_the_image_loader_installs_the_frame_pad_fix():
     assert "install_frame_pad_fix(pipe, target, logger = logger)" in src
 
 
-# ── Pressure-gated decoder sync ───────────────────────────────────────
+def test_the_image_loader_syncs_every_decoder_call():
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference import diffusion
+
+    src = textwrap.dedent(
+        inspect.getsource(inspect.unwrap(diffusion.DiffusionBackend.load_pipeline))
+    )
+    calls = [
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "install_vae_sync"
+    ]
+    assert len(calls) == 1
 
 
 def _target(device: str) -> dd.DiffusionDeviceTarget:
@@ -539,137 +554,62 @@ class _FakeDecoder:
         return outputs
 
 
-def _pipe_with(decoder) -> types.SimpleNamespace:
-    return types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder))
+def _pipe_with(decoder, encoder = None) -> types.SimpleNamespace:
+    return types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder, encoder = encoder))
 
 
-def _mps_torch(used = 0, recommended = 100) -> types.ModuleType:
-    """torch whose mps backend counts synchronize() calls over a settable memory reading."""
+def _mps_torch() -> types.ModuleType:
     torch = types.ModuleType("torch")
     torch.syncs = 0
-    torch.used = used
 
     def _bump():
         torch.syncs += 1
 
-    torch.mps = types.SimpleNamespace(
-        synchronize = _bump,
-        recommended_max_memory = lambda: recommended,
-        driver_allocated_memory = lambda: torch.used,
-    )
+    torch.mps = types.SimpleNamespace(synchronize = _bump)
     return torch
 
 
 @pytest.mark.parametrize("device", ["cuda", "xpu", "cpu"])
-def test_decoder_sync_is_metal_only(monkeypatch, device):
+def test_vae_sync_is_metal_only(monkeypatch, device):
     monkeypatch.setitem(sys.modules, "torch", _mps_torch())
     decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target(device)) is False
+    assert dd.install_vae_sync(_pipe_with(decoder), _target(device)) is False
     assert decoder.hooks == []
 
 
-def test_decoder_sync_idle_while_memory_is_plentiful(monkeypatch):
-    torch = _mps_torch(recommended = 100, used = 10)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
-    decoder.decode(5)
-    assert torch.syncs == 0
-
-
-def test_decoder_sync_runs_once_per_decoder_call_above_the_threshold(monkeypatch):
-    torch = _mps_torch(recommended = 100, used = 10)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
-    decoder.decode(2)
-    assert torch.syncs == 0
-    torch.used = 100 * dd.DECODE_SYNC_FRACTION
-    decoder.decode(3)
-    assert torch.syncs == 3
-    torch.used = 10
-    decoder.decode(4)
-    assert torch.syncs == 3
-
-
-def test_decoder_sync_threshold_scales_with_the_device(monkeypatch):
-    # The budget is a fraction of this device's working set, not a fixed byte count.
-    torch = _mps_torch(recommended = 200, used = 169)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
-    decoder.decode(1)
-    assert torch.syncs == 0
-    torch.used = 170
-    decoder.decode(1)
-    assert torch.syncs == 1
-    assert dd.DECODE_SYNC_FRACTION == 0.85
-
-
-def test_decoder_sync_preserves_the_decoder_output(monkeypatch):
+def test_vae_sync_runs_after_every_decoder_call_and_keeps_its_output(monkeypatch):
     # An nn.Module forward hook that returns non-None REPLACES the output; this one must not.
-    torch = _mps_torch(recommended = 100, used = 100)
+    torch = _mps_torch()
     monkeypatch.setitem(sys.modules, "torch", torch)
     decoder = _FakeDecoder()
-    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
-    assert decoder.decode(2) == ["out0", "out1"]
-    assert torch.syncs == 2
-
-
-@pytest.mark.parametrize("pipe", [types.SimpleNamespace(), _pipe_with(None), _pipe_with(object())])
-def test_decoder_sync_no_op_without_a_hookable_decoder(monkeypatch, pipe):
-    monkeypatch.setitem(sys.modules, "torch", _mps_torch())
-    assert dd.install_decoder_sync(pipe, _target("mps")) is False
-
-
-def _mps_torch_without_recommended(used = 0) -> types.ModuleType:
-    """torch 2.4 has no mps working-set reading: only driver_allocated_memory and synchronize exist."""
-    torch = _mps_torch(used = used)
-    del torch.mps.recommended_max_memory
-    return torch
-
-
-def test_decoder_sync_survives_a_torch_without_the_memory_reading(monkeypatch):
-    # install.sh keeps an existing venv's torch (>=2.4); recommended_max_memory is a 2.5 API.
-    torch = _mps_torch_without_recommended()
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
-    # No budget: sync every call rather than assume the decode is fine (Wan grew past 148 GiB).
+    assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(3) == ["out0", "out1", "out2"]
     assert torch.syncs == 3
 
 
-def test_decoder_sync_survives_a_working_set_reading_that_raises(monkeypatch):
+def test_vae_sync_runs_after_every_encoder_call_too(monkeypatch):
     torch = _mps_torch()
-
-    def _boom():
-        raise RuntimeError("MPS backend is not available")
-
-    torch.mps.recommended_max_memory = _boom
     monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
-    decoder.decode(2)
+    decoder, encoder = _FakeDecoder(), _FakeDecoder()
+    assert dd.install_vae_sync(_pipe_with(decoder, encoder), _target("mps")) is True
+    assert encoder.decode(2) == ["out0", "out1"]
     assert torch.syncs == 2
+    decoder.decode(1)
+    assert torch.syncs == 3
+    lone = _FakeDecoder()
+    assert dd.install_vae_sync(_pipe_with(object(), lone), _target("mps")) is True
+    lone.decode(1)
+    assert torch.syncs == 4
 
 
-def test_decoder_sync_survives_a_gauge_that_raises_mid_decode(monkeypatch):
-    torch = _mps_torch(recommended = 100, used = 10)
-
-    def _boom():
-        raise RuntimeError("driver reading unavailable")
-
-    torch.mps.driver_allocated_memory = _boom
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
-    assert decoder.decode(2) == ["out0", "out1"]
-    assert torch.syncs == 2
+@pytest.mark.parametrize("pipe", [types.SimpleNamespace(), _pipe_with(None), _pipe_with(object())])
+def test_vae_sync_no_op_without_a_hookable_decoder(monkeypatch, pipe):
+    monkeypatch.setitem(sys.modules, "torch", _mps_torch())
+    assert dd.install_vae_sync(pipe, _target("mps")) is False
 
 
-def test_decoder_sync_survives_a_synchronize_that_raises(monkeypatch):
-    torch = _mps_torch_without_recommended()
+def test_vae_sync_survives_a_synchronize_that_raises(monkeypatch):
+    torch = _mps_torch()
 
     def _boom():
         raise RuntimeError("Torch not compiled with MPS enabled")
@@ -677,7 +617,7 @@ def test_decoder_sync_survives_a_synchronize_that_raises(monkeypatch):
     torch.mps.synchronize = _boom
     monkeypatch.setitem(sys.modules, "torch", torch)
     decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(2) == ["out0", "out1"]
 
 
@@ -1063,3 +1003,87 @@ def test_mps_cap_failure_keeps_target(monkeypatch):
     _install(monkeypatch, _mps_cap_torch([], fraction_raises = True), studio_device = "mlx")
     t = dd.resolve_diffusion_device_target()
     assert t.device == "mps" and t.dtype == BF16
+
+
+_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _fake_xpu_torch(has_fp64 = None, raises = False):
+    import torch
+
+    def props(index):
+        if raises:
+            raise RuntimeError("no device properties")
+        return (
+            types.SimpleNamespace()
+            if has_fp64 is None
+            else types.SimpleNamespace(has_fp64 = has_fp64)
+        )
+
+    xpu = types.SimpleNamespace(
+        is_bf16_supported = lambda: True,
+        current_device = lambda: 0,
+        get_device_properties = props,
+    )
+    return types.SimpleNamespace(xpu = xpu, bfloat16 = torch.bfloat16, float16 = torch.float16)
+
+
+@pytest.mark.parametrize(
+    "has_fp64, raises, env, want",
+    [
+        (False, False, None, False),  # Arc A-series
+        (True, False, None, True),
+        (None, False, None, True),
+        (False, True, None, True),
+        (False, False, "0", True),
+    ],
+)
+def test_xpu_target_reports_the_devices_float64(monkeypatch, has_fp64, raises, env, want):
+    if env is None:
+        monkeypatch.delenv(_PROBE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_PROBE_ENV, env)
+    target = dd._xpu_target(_fake_xpu_torch(has_fp64, raises))
+    assert target.device == "xpu"
+    assert target.supports_float64 is want
+
+
+def test_fp64_less_xpu_demotes_ltx2_rope_to_float32(monkeypatch):
+    torch = pytest.importorskip("torch")
+    ltx2 = pytest.importorskip("diffusers.models.transformers.transformer_ltx2")
+    monkeypatch.delenv(_PROBE_ENV, raising = False)
+    rope = ltx2.LTX2AudioVideoRotaryPosEmbed(dim = 96, num_attention_heads = 2)
+    assert rope.double_precision
+    pipe = types.SimpleNamespace(components = {"transformer": torch.nn.Sequential(rope)})
+    coords = rope.prepare_video_coords(1, 4, 8, 8, device = "cpu")
+    oracle = rope(coords, device = "cpu")
+    assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(True))) == 0
+    assert rope.double_precision
+    assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(False))) == 1
+    assert not rope.double_precision
+    got = rope(coords, device = "cpu")
+    for a, b in zip(got, oracle):
+        assert a.dtype == b.dtype == torch.float32
+        assert 0 < float((a - b).abs().max()) < 1e-2
+    assert dd.float64_device("cpu") == "cpu"
+
+
+def test_float64_device_probes_the_operands_xpu(monkeypatch):
+    """``float64_device`` must probe the operand's own XPU index, not the current card."""
+    import torch
+
+    asked = []
+
+    def props(index):
+        asked.append(index)
+        return types.SimpleNamespace(has_fp64 = index != 1)
+
+    xpu = types.SimpleNamespace(current_device = lambda: 1, get_device_properties = props)
+    monkeypatch.setattr(torch, "xpu", xpu, raising = False)
+    monkeypatch.delenv(_PROBE_ENV, raising = False)
+    assert dd.float64_device("xpu:1") == "cpu"
+    assert dd.float64_device("xpu:0") == "xpu:0"
+    assert dd.float64_device("xpu") == "cpu"
+    assert asked == [1, 0, 1]
+    monkeypatch.setenv(_PROBE_ENV, "0")
+    assert dd.float64_device("xpu:1") == "xpu:1"

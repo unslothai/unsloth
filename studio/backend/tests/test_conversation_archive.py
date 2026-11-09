@@ -94,6 +94,17 @@ def conn(rag_home, rag_conn, stub_embeddings):
     return rag_conn
 
 
+def _fail_embedder(monkeypatch):
+    """Archiving then falls back to keyword-only copies, as with a llama.cpp that cannot load the embedder."""
+    from core.rag import embeddings
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+
+
 def _tool_part(
     *,
     type = "tool-call",
@@ -213,6 +224,7 @@ def test_recall_degrades_to_lexical_when_dense_retrieval_raises(monkeypatch, con
         model_name = None,
         mode = "hybrid",
         lexical_query = None,
+        **_legs,
     ):
         if mode != "lexical":
             raise RuntimeError("no embedding backend available")
@@ -1224,11 +1236,16 @@ def test_an_embedder_download_still_pending_is_logged_once_without_a_traceback(
     turn = _turn("what is the deploy code", "the deploy code is 5150")
     caplog.set_level(logging.INFO, logger = conversation_archive.logger.name)
 
-    for _ in range(3):
-        assert _archive([dict(m) for m in turn]) == 0
+    # The first fit keeps a keyword copy of the evicted turn; later fits find it there and add none.
+    # Saved once: each saved occurrence gets its own copy.
+    _save_thread(THREAD, turn, append = True)
+    for expected in (1, 0, 0):
+        assert conversation_archive.archive_turns(THREAD, [dict(m) for m in turn]) == expected
         assert conversation_archive.degraded() is True
         found = conversation_archive.recall(THREAD, "sourdough")
         assert found is not None and "sourdough" in found[0]
+        found = conversation_archive.recall(THREAD, "deploy code")
+        assert found is not None and "5150" in found[0]
 
     records = [r for r in caplog.records if r.name == conversation_archive.logger.name]
     assert not [r for r in records if r.levelno >= logging.WARNING or r.exc_info]
@@ -1257,12 +1274,133 @@ def test_a_failed_archive_marks_the_feature_degraded(conn, monkeypatch):
         raise RuntimeError("no embedding model could be started")
 
     monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
-    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 0
+    # Kept for keyword search, but dense recall is still down.
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
     assert conversation_archive.degraded() is True
 
     monkeypatch.setattr(embeddings, "encode_with_identity", real)
+    # The keyword copy is re-embedded in place.
     assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
     assert conversation_archive.degraded() is False
+
+
+def test_turns_evicted_while_the_embedder_fails_stay_searchable(conn, monkeypatch):
+    """#16706: with no archive the chat never gets search_conversation, and recall finds nothing."""
+    from core.inference import tools
+    from core.rag import embeddings
+
+    thread_id = "no-embedder-thread"
+    turns = _turn("what is the deploy code", "the deploy code is 5150") + _turn(
+        "which colour did we pick", "we picked teal"
+    )
+    _save_thread(thread_id, turns + [{"role": "user", "content": "and now?"}])
+
+    real_encode = embeddings.encode_with_identity
+    real_counter = embeddings.token_counter
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("llama-server binary not found")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    assert conversation_archive.has_archive(thread_id) is False
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 2
+    assert conversation_archive.has_archive(thread_id) is True
+
+    # The model's own search, through the tool it is now offered, answers from keyword matches.
+    found = tools._search_conversation({"query": "deploy code"}, {"thread_id": thread_id})
+    assert "5150" in found
+    found = tools._search_conversation({"query": "colour teal"}, {"thread_id": thread_id})
+    assert "teal" in found
+
+    scope = store.conversation_archive_scope(thread_id)
+    before = {
+        row["sha256"]: row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT sha256, archive_ordinal FROM documents WHERE scope = ?", (scope,)
+        )
+    }
+    assert len(before) == 2
+
+    # Once the embedder works, the same eviction re-embeds both turns where they were.
+    monkeypatch.setattr(embeddings, "encode_with_identity", real_encode)
+    monkeypatch.setattr(embeddings, "token_counter", real_counter)
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 2
+    rows = conn.execute(
+        "SELECT sha256, archive_ordinal, embedding_model FROM documents WHERE scope = ?", (scope,)
+    ).fetchall()
+    assert {row["sha256"]: row["archive_ordinal"] for row in rows} == before
+    assert all(row["embedding_model"] != conversation_archive.LEXICAL_ONLY_IDENTITY for row in rows)
+    vectors = conn.execute("SELECT COUNT(*) FROM chunks_vec WHERE scope = ?", (scope,)).fetchone()[
+        0
+    ]
+    assert vectors > 0
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 0
+
+
+def test_keyword_copies_keep_every_evicted_occurrence_of_a_repeated_turn(conn, monkeypatch):
+    """A turn said twice keeps both seats, or recall shows the value it replaced as the latest."""
+    from core.rag import embeddings
+
+    thread_id = "repeat-no-embedder"
+    turns = _turn("set X to 1", "ok") + _turn("set X to 2", "ok") + _turn("set X to 1", "ok")
+    live = [{"role": "user", "content": "what is X now?"}]
+    _save_thread(thread_id, turns + live)
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns], live = live) == 3
+    ordinals = [
+        row[0]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope = ? ORDER BY archive_ordinal",
+            (store.conversation_archive_scope(thread_id),),
+        )
+    ]
+    assert ordinals == [0, 1, 2]
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns], live = live) == 0
+
+
+def test_chat_stop_interrupts_the_keyword_fallback(conn, monkeypatch):
+    from core.rag import embeddings
+
+    thread_id = "stop-no-embedder"
+    turns = [m for i in range(5) for m in _turn(f"question {i}", f"answer {i}")]
+    _save_thread(thread_id, turns + [{"role": "user", "content": "next"}])
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    polls = []
+
+    def stop_after_one_write():
+        polls.append(1)
+        # Polled once before the dense pass, once before the fallback, then once per turn.
+        return len(polls) > 3
+
+    written = conversation_archive.archive_turns(
+        thread_id, [dict(m) for m in turns], cancel_check = stop_after_one_write
+    )
+    assert written == 1
+
+
+def test_a_failing_store_does_not_fall_back_to_keyword_copies(conn, monkeypatch):
+    """Only the embedder failing falls back: a store that cannot write chunks is left to retry."""
+    turns = _turn("what is a wombat", "a burrowing marsupial")
+    real_add_chunks = store.add_chunks
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(store, "add_chunks", explode)
+    assert _archive(turns, thread_id = "store-fails") == 0
+    assert conversation_archive.has_archive("store-fails") is False
+    monkeypatch.setattr(store, "add_chunks", real_add_chunks)
 
 
 def test_the_late_archive_cleanup_spares_a_recreated_thread(conn):
@@ -1462,6 +1600,904 @@ def test_a_first_compaction_embeds_its_turns_in_one_pass(conn, monkeypatch):
     assert conversation_archive.archive_turns(thread_id, evicted) == 12
     assert len(calls) == 1
     assert calls[0] >= 12
+
+
+def test_archive_embed_honors_cancel_between_batches(conn, monkeypatch):
+    """Chat Stop must interrupt the pre-inference SentenceTransformer.encode (#14519)."""
+    from core.rag import embeddings
+
+    thread_id = "cancel-embed-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_BATCH", 2)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT", 10_000)
+
+    calls = []
+    real = embeddings.encode_with_identity
+
+    def counted(texts, **kwargs):
+        calls.append(len(texts))
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", counted)
+
+    evicted = []
+    for index in range(8):
+        evicted.append({"role": "user", "content": f"cancel question {index} unique {index}"})
+        evicted.append({"role": "assistant", "content": f"cancel answer {index} unique {index}"})
+
+    def cancel_check():
+        return bool(calls)
+
+    written = conversation_archive.archive_turns(thread_id, evicted, cancel_check = cancel_check)
+    assert 0 < written < 8
+    assert len(calls) == 1
+    assert conversation_archive.archive_turns(thread_id, evicted) == 8 - written
+
+
+def test_archive_embed_caps_chunks_per_call(conn, monkeypatch):
+    """A huge first compaction must not monopolise the generation path (#14519)."""
+    from core.rag import embeddings
+
+    thread_id = "cap-embed-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "4")
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_BATCH", 64)
+
+    calls = []
+    real = embeddings.encode_with_identity
+
+    def counted(texts, **kwargs):
+        calls.append(len(texts))
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", counted)
+
+    evicted = []
+    for index in range(10):
+        evicted.append({"role": "user", "content": f"cap question {index} unique token {index}"})
+        evicted.append({"role": "assistant", "content": f"cap answer {index} unique token {index}"})
+
+    first = conversation_archive.archive_turns(thread_id, evicted)
+    assert 0 < first < 10
+    assert calls and calls[0] <= 4
+    total = first
+    for _ in range(10):
+        written = conversation_archive.archive_turns(thread_id, evicted)
+        if not written:
+            break
+        total += written
+    assert total == 10
+    assert all(n <= 4 for n in calls)
+    assert conversation_archive.archive_turns(thread_id, evicted) == 0
+
+
+def test_a_stop_before_chunking_skips_the_embedder_entirely(conn, monkeypatch):
+    """Stop already set: no tokenizer load, no chunking, no encode (#14519)."""
+    from core.rag import embeddings
+
+    thread_id = "stop-early-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    touched = []
+    monkeypatch.setattr(embeddings, "token_counter", lambda *_a, **_k: touched.append("count"))
+    monkeypatch.setattr(
+        conversation_archive, "chunk_pages", lambda *_a, **_k: touched.append("chunk")
+    )
+    evicted = _turn("early question", "early answer")
+
+    assert conversation_archive.archive_turns(thread_id, evicted, cancel_check = lambda: True) == 0
+    assert touched == []
+
+
+def test_chunking_stops_once_the_cap_is_reached(conn, monkeypatch):
+    """A long backlog must not be tokenized in full when only the cap's worth is embedded."""
+    thread_id = "cap-chunk-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "3")
+    real = conversation_archive.chunk_pages
+    chunked = []
+
+    def counted(*args, **kwargs):
+        chunked.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conversation_archive, "chunk_pages", counted)
+    evicted = []
+    for index in range(20):
+        evicted += _turn(f"chunk question {index} unique {index}", f"chunk answer {index}")
+
+    assert conversation_archive.archive_turns(thread_id, evicted) == 3
+    assert len(chunked) == 3
+
+
+def test_archive_embed_restarts_in_the_new_space_after_a_backend_swap(conn, monkeypatch):
+    """Batches before an ST -> llama-server swap must not be written under the old identity."""
+    from core.rag import embeddings
+
+    thread_id = "swap-embed-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_BATCH", 2)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT", 10_000)
+
+    real = embeddings.encode_with_identity
+    calls = []
+
+    def swapping(texts, **kwargs):
+        calls.append(len(texts))
+        vectors, _identity = real(texts, **kwargs)
+        return vectors, "sentence-transformers:old" if len(calls) <= 2 else "llama-server:new"
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", swapping)
+
+    evicted = []
+    for index in range(8):
+        evicted.append({"role": "user", "content": f"swap question {index} unique {index}"})
+        evicted.append({"role": "assistant", "content": f"swap answer {index} unique {index}"})
+
+    assert conversation_archive.archive_turns(thread_id, evicted) == 8
+    scope = store.conversation_archive_scope(thread_id)
+    labels = {
+        row[0]
+        for row in conn.execute("SELECT embedding_model FROM documents WHERE scope = ?", (scope,))
+    }
+    assert labels == {"llama-server:new"}
+
+
+def _gap_thread(
+    thread_id,
+    n,
+    tag = "gap",
+):
+    turns = []
+    for index in range(n):
+        turns += _turn(
+            f"{tag} question {index} unique {index}", f"{tag} answer {index} code {index}"
+        )
+    _save_thread(thread_id, turns, append = True)
+    return turns
+
+
+def _counting_encoder(monkeypatch):
+    from core.rag import embeddings
+
+    calls = []
+    real = embeddings.encode_with_identity
+
+    def counted(texts, **kwargs):
+        calls.append(list(texts))
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", counted)
+    return calls
+
+
+def _run_gap():
+    conversation_archive._start_prewarm()
+    worker = conversation_archive._prewarm_worker
+    if worker is not None:
+        worker.join()
+
+
+def test_an_idle_gap_pre_embeds_so_compaction_encodes_nothing(conn, monkeypatch):
+    """Turns embedded while llama.cpp is idle cost no encode when they are evicted (#14519)."""
+    thread_id = "gap-thread"
+    turns = _gap_thread(thread_id, 6)
+    calls = _counting_encoder(monkeypatch)
+
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+    assert calls
+    scope = store.conversation_archive_scope(thread_id)
+    # The gap only fills a cache: an edit or rewind before the next request strands nothing.
+    assert (
+        conn.execute("SELECT COUNT(*) FROM documents WHERE scope = ?", (scope,)).fetchone()[0] == 0
+    )
+
+    calls.clear()
+    assert conversation_archive.archive_turns(thread_id, turns[:8]) == 4
+    assert calls == []
+
+
+def test_inference_stops_the_gap_worker_and_it_never_overlaps(conn, monkeypatch):
+    """No embedding batch may run while a llama.cpp stream is open."""
+    import threading
+    import time
+
+    from core.rag import embeddings
+
+    thread_id = "overlap-thread"
+    turns = _gap_thread(thread_id, 40, tag = "overlap")
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    real = embeddings.encode_with_identity
+    started = threading.Event()
+    overlapped = []
+
+    def slow(texts, **kwargs):
+        started.set()
+        overlapped.append(conversation_archive._inference_depth > 0)
+        time.sleep(0.02)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    conversation_archive.note_branch(thread_id, turns)
+    conversation_archive._start_prewarm()
+    assert started.wait(5)
+
+    with conversation_archive.inference_running():
+        worker = conversation_archive._prewarm_worker
+        assert worker is None or not worker.is_alive()
+        before = len(overlapped)
+        time.sleep(0.1)
+        assert len(overlapped) == before
+    assert not any(overlapped)
+    assert len(overlapped) < 40
+
+
+def test_a_foreground_archive_stops_the_gap_worker_first(conn, monkeypatch):
+    """A new request's compaction must not queue behind a background job (it runs before the stream opens)."""
+    import threading
+    import time
+
+    from core.rag import embeddings
+
+    background = "fg-background-thread"
+    turns = _gap_thread(background, 40, tag = "fgbg")
+    foreground = "fg-foreground-thread"
+    fg_turns = _gap_thread(foreground, 2, tag = "fgfg")
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    real = embeddings.encode_with_identity
+    started = threading.Event()
+    worker_calls = []
+
+    def slow(texts, **kwargs):
+        if threading.current_thread().name == "archive-prewarm":
+            started.set()
+            worker_calls.append(len(texts))
+            time.sleep(0.02)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    conversation_archive.note_branch(background, turns)
+    conversation_archive._start_prewarm()
+    assert started.wait(5)
+
+    assert conversation_archive.archive_turns(foreground, fg_turns) == 2
+    worker = conversation_archive._prewarm_worker
+    assert worker is None or not worker.is_alive()
+    assert len(worker_calls) < 40
+
+
+def test_another_slots_stream_ending_does_not_restart_the_worker_mid_compaction(conn, monkeypatch):
+    """With several llama.cpp slots, a stream can end while this request is still compacting."""
+    import threading
+
+    from core.rag import embeddings
+
+    thread_id = "slots-thread"
+    turns = _gap_thread(thread_id, 2, tag = "slots")
+    other = _gap_thread("slots-other", 4, tag = "slotsother")
+    real = embeddings.encode_with_identity
+    in_archive, release = threading.Event(), threading.Event()
+
+    def held(texts, **kwargs):
+        if threading.current_thread().name != "archive-prewarm":
+            in_archive.set()
+            release.wait(5)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", held)
+    fg = threading.Thread(target = conversation_archive.archive_turns, args = (thread_id, turns))
+    fg.start()
+    assert in_archive.wait(5)
+    conversation_archive.note_branch("slots-other", other)
+    with conversation_archive.inference_running():
+        pass
+    worker = conversation_archive._prewarm_worker
+    assert worker is None or not worker.is_alive()
+    release.set()
+    fg.join(5)
+
+
+def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
+    """MLX / Transformers generation, audio and model loads pause the worker too, not only llama streams."""
+    import threading
+
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.inference_gate import holds_inference, pauses_background_embedding
+    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.mlx_diffusion_backend import MlxDiffusionBackend
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+    from core.inference.orchestrator import InferenceOrchestrator
+    from core.inference.video import VideoBackend
+    from core.training.diffusion_training_service import DiffusionTrainingService
+    from core.training.training import TrainingBackend
+    from core.inference import stt_registry
+    from routes import inference as inference_routes
+
+    for fn in (
+        InferenceOrchestrator._generate_dispatched,
+        InferenceOrchestrator._generate_inner,
+        InferenceOrchestrator.generate_audio_response,
+        InferenceOrchestrator.generate_whisper_response,
+        InferenceOrchestrator.generate_audio_input_response,
+        InferenceOrchestrator.load_model,
+        LlamaCppBackend.generate_audio_response,
+        LlamaCppBackend.load_model,
+        DiffusionBackend.generate,
+        SdCppDiffusionBackend.generate,
+        MlxDiffusionBackend.generate,
+        VideoBackend.generate,
+        DiffusionBackend.begin_load,
+        SdCppDiffusionBackend.begin_load,
+        MlxDiffusionBackend.begin_load,
+        VideoBackend.begin_load,
+        inference_routes._transcribe_audio_result,
+        InferenceOrchestrator.load_stt_model,
+        stt_registry.load,
+        TrainingBackend.start_training,
+        DiffusionTrainingService.start,
+    ):
+        assert hasattr(fn, "__wrapped__"), fn.__qualname__
+
+    thread_id = "gate-thread"
+    turns = _gap_thread(thread_id, 30, tag = "gate")
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns)
+    conversation_archive._start_prewarm()
+    seen = {}
+
+    @holds_inference
+    def tokens():
+        seen["depth"] = conversation_archive._inference_depth
+        worker = conversation_archive._prewarm_worker
+        seen["worker_alive"] = worker is not None and worker.is_alive()
+        before = len(calls)
+        yield 1
+        seen["embedded_during"] = len(calls) - before
+
+    @holds_inference
+    def load():
+        return conversation_archive._inference_depth
+
+    assert list(tokens()) == [1]
+    assert seen == {"depth": 1, "worker_alive": False, "embedded_during": 0}
+    assert load() == 1
+    assert conversation_archive._inference_depth == 0
+
+    # Async entry points (speech to text) hold it too, waiting out the batch off the event loop.
+    import asyncio
+
+    conversation_archive._start_prewarm()
+
+    @holds_inference
+    async def transcribe():
+        worker = conversation_archive._prewarm_worker
+        return conversation_archive._inference_depth, worker is not None and worker.is_alive()
+
+    assert asyncio.run(transcribe()) == (1, False)
+    assert conversation_archive._inference_depth == 0
+    assert threading.current_thread().name != "archive-prewarm"
+
+    # A training start stops the worker before admitting the job; its busy probe keeps it idle after.
+    conversation_archive._start_prewarm()
+
+    @pauses_background_embedding
+    def start():
+        worker = conversation_archive._prewarm_worker
+        return worker is not None and worker.is_alive()
+
+    assert start() is False
+
+
+def test_an_interrupted_gap_requeues_what_it_did_not_finish(conn, monkeypatch):
+    """A closed gap keeps unfinished chats queued for the next one; a stopped request is still dropped."""
+    import threading
+    import time
+
+    from core.rag import embeddings
+
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    real = embeddings.encode_with_identity
+    started = threading.Event()
+
+    def slow(texts, **kwargs):
+        started.set()
+        time.sleep(0.02)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    stop = threading.Event()
+    for name in ("requeue-a", "requeue-b", "requeue-stopped"):
+        cancel = stop.is_set if name.endswith("stopped") else None
+        conversation_archive.note_branch(name, _gap_thread(name, 20, tag = name), cancel)
+    conversation_archive._start_prewarm()
+    assert started.wait(5)
+    stop.set()
+    with conversation_archive.inference_running():
+        queued = [key[1] for key in conversation_archive._noted_branches]
+        # Nothing left for the stream's end to restart, so teardown has no worker to wait out.
+        conversation_archive._noted_branches.clear()
+    assert queued == ["requeue-a", "requeue-b"]
+
+
+def test_a_direct_llama_call_holds_the_gap_closed(conn, monkeypatch):
+    """Caption / OCR during ingestion and TTS post to llama-server directly, outside the chat paths."""
+    import threading
+    import time
+
+    from core.rag import embeddings
+    from routes import inference as inference_routes
+
+    # From a worker thread (caption / OCR) the request waits out a batch already in flight.
+    real = embeddings.encode_with_identity
+    in_batch, encoding = threading.Event(), threading.Event()
+
+    def slow(texts, **kwargs):
+        encoding.set()
+        try:
+            in_batch.set()
+            time.sleep(3)
+            return real(texts, **kwargs)
+        finally:
+            encoding.clear()
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    conversation_archive.note_branch("direct-thread", _gap_thread("direct-thread", 4, tag = "direct"))
+    conversation_archive._start_prewarm()
+    assert in_batch.wait(5)
+    with inference_routes._direct_llama_request():
+        assert not encoding.is_set()
+        conversation_archive._noted_branches.clear()
+
+    with inference_routes._direct_llama_request():
+        assert conversation_archive._inference_depth == 1
+        assert conversation_archive._prewarm_stop.is_set()
+    assert conversation_archive._inference_depth == 0
+    with inference_routes._direct_llama_request(counted = False):
+        assert conversation_archive._inference_depth == 0
+
+
+def test_cached_vectors_do_not_keep_their_batch_alive(conn):
+    import numpy as np
+
+    batch = np.ones((64, 8), dtype = np.float32)
+    conversation_archive._remember_vectors("identity", [f"chunk {i}" for i in range(64)], batch)
+    [vector] = conversation_archive._cached_vectors("identity", ["chunk 3"])
+    assert vector.base is None and np.array_equal(vector, batch[3])
+
+
+def test_a_job_start_keeps_the_gap_closed_until_it_returns(conn, monkeypatch):
+    """A stream ending while a load validates (before it publishes its busy state) must not restart the worker."""
+    from core.inference.inference_gate import pauses_background_embedding
+
+    thread_id = "start-thread"
+    conversation_archive.note_branch(thread_id, _gap_thread(thread_id, 3, tag = "start"))
+    calls = _counting_encoder(monkeypatch)
+
+    @pauses_background_embedding
+    def begin_load():
+        with conversation_archive.inference_running():
+            pass
+        worker = conversation_archive._prewarm_worker
+        return worker is not None and worker.is_alive()
+
+    assert begin_load() is False
+    assert calls == []
+
+
+def test_a_cancelled_transcription_holds_the_gap_until_its_thread_ends(conn, monkeypatch):
+    """Cancelling the request task returns at once; the speech thread it started keeps running."""
+    import asyncio
+    import threading
+
+    from core.inference.inference_gate import holds_inference
+
+    started, finish = threading.Event(), threading.Event()
+
+    def transcribe():
+        started.set()
+        finish.wait(5)
+
+    async def route():
+        task = asyncio.ensure_future(asyncio.to_thread(holds_inference(transcribe)))
+        await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        held = conversation_archive._inference_depth
+        finish.set()
+        return held
+
+    # asyncio.run joins the executor on exit, so the thread has ended by then.
+    assert asyncio.run(route()) == 1
+    assert conversation_archive._inference_depth == 0
+
+
+def test_api_passthrough_clients_hold_the_gap_closed_until_closed(conn, monkeypatch):
+    """OpenAI / Anthropic / managed-engine passthroughs talk to the engine over their own per-request client."""
+    import asyncio
+    import gc
+
+    import httpx
+
+    from core.inference import inference_gate
+
+    closed = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def aclose(self):
+            closed.append(self.kwargs)
+
+    # Passthrough tests fake the client class on the httpx module; the gate must build through it.
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    thread_id = "passthrough-thread"
+    conversation_archive.note_branch(thread_id, _gap_thread(thread_id, 3, tag = "pass"))
+    calls = _counting_encoder(monkeypatch)
+
+    client = inference_gate.gated_async_client(trust_env = False)
+    assert isinstance(client, FakeClient)
+    assert (
+        conversation_archive._inference_depth == 1 and conversation_archive._prewarm_stop.is_set()
+    )
+    conversation_archive._start_prewarm()
+    worker = conversation_archive._prewarm_worker
+    assert (worker is None or not worker.is_alive()) and calls == []
+
+    asyncio.run(client.aclose())
+    asyncio.run(client.aclose())
+    assert closed == [{"trust_env": False}] * 2
+    assert conversation_archive._inference_depth == 0
+
+    # The first send waits out a batch already in flight, then goes out.
+    import threading
+    import time
+
+    from core.rag import embeddings
+
+    real = embeddings.encode_with_identity
+    in_batch, encoding, sent_mid_batch = threading.Event(), threading.Event(), []
+
+    def slow(texts, **kwargs):
+        encoding.set()
+        try:
+            in_batch.set()
+            # Long enough to still be running when the request goes out on a loaded host.
+            time.sleep(3)
+            return real(texts, **kwargs)
+        finally:
+            encoding.clear()
+
+    class SendingClient(FakeClient):
+        async def send(self, request):
+            sent_mid_batch.append(encoding.is_set())
+            return "response"
+
+    monkeypatch.setattr(httpx, "AsyncClient", SendingClient)
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    conversation_archive.note_branch(thread_id, _gap_thread(thread_id, 6, tag = "send"))
+    conversation_archive._start_prewarm()
+    assert in_batch.wait(5)
+    client = inference_gate.gated_async_client()
+    assert asyncio.run(client.send("request")) == "response"
+    assert sent_mid_batch == [False]
+    conversation_archive._noted_branches.clear()
+    asyncio.run(client.aclose())
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    # A path that never closes its client still reopens the gap once it is collected.
+    inference_gate.gated_async_client()
+    gc.collect()
+    assert conversation_archive._inference_depth == 0
+
+
+@pytest.mark.parametrize("held", ["compute", "llama_serve", "backend_build"])
+def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypatch, held):
+    """While ingestion holds the embedder, a new generation must not wait for the worker to get and finish its turn."""
+    import time
+
+    from core.rag import embeddings
+
+    thread_id = "lock-thread"
+    turns = _gap_thread(thread_id, 6, tag = "lock")
+    real = embeddings.encode_with_identity
+
+    import threading
+    import types
+
+    # The llama-server embedder serialises on its own reentrant lock, not the ST one.
+    serve = threading.RLock()
+    monkeypatch.setattr(embeddings, "_backend", types.SimpleNamespace(_serve_lock = serve))
+    lock = {
+        "compute": embeddings._compute_lock,
+        "llama_serve": serve,
+        "backend_build": embeddings._backend_lock,
+    }[held]
+
+    encoded = threading.Event()
+
+    # Queue behind the other user's lock, then encode outside it. Holding it across real() made
+    # the worker take the same non-reentrant lock again inside encode, so once the gap reopened it
+    # hung for good and stalled the next test on that xdist worker until pytest-timeout fired.
+    def locked(texts, **kwargs):
+        with lock:
+            time.sleep(0.5)
+        try:
+            return real(texts, **kwargs)
+        finally:
+            encoded.set()
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", locked)
+    monkeypatch.setattr(conversation_archive, "_PAUSE_JOIN_S", 30.0)
+    conversation_archive.note_branch(thread_id, turns)
+    with lock:
+        conversation_archive._start_prewarm()
+        time.sleep(0.3)
+        started = time.monotonic()
+        with conversation_archive.inference_running():
+            waited = time.monotonic() - started
+    assert waited < 1.0
+    assert encoded.wait(timeout = 30), "the gap worker never finished the encode it queued"
+
+
+@pytest.mark.parametrize("busy", ["training", "diffusion_training", "media", "unreadable"])
+def test_image_video_or_training_work_keeps_the_gap_closed(conn, monkeypatch, busy):
+    """Non-LLM accelerator work pauses the worker too; an unreadable probe counts as busy."""
+    import sys
+    import types
+
+    class Service:
+        def is_training_active(self):
+            return busy == "training"
+
+        def is_active(self):
+            return busy == "diffusion_training"
+
+    training = types.SimpleNamespace(_training_backend = Service())
+    diffusion = types.SimpleNamespace(_service = Service())
+
+    def media_busy(owner):
+        if busy == "unreadable":
+            raise RuntimeError("probe failed")
+        return (False, busy == "media")
+
+    residency = types.SimpleNamespace(MEDIA_OWNERS = ("diffusion", "video"), _media_busy = media_busy)
+    monkeypatch.setitem(sys.modules, "core.training.training", training)
+    monkeypatch.setitem(sys.modules, "core.training.diffusion_training_service", diffusion)
+    monkeypatch.setitem(sys.modules, "core.inference.gpu_residency", residency)
+
+    thread_id = f"busy-{busy}"
+    turns = _gap_thread(thread_id, 3, tag = busy)
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+    assert calls == []
+
+
+def test_the_gap_opens_when_nothing_else_is_running(conn, monkeypatch):
+    import sys
+    import types
+
+    idle = types.SimpleNamespace(is_training_active = lambda: False, is_active = lambda: False)
+    monkeypatch.setitem(
+        sys.modules, "core.training.training", types.SimpleNamespace(_training_backend = idle)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "core.training.diffusion_training_service",
+        types.SimpleNamespace(_service = idle),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.gpu_residency",
+        types.SimpleNamespace(
+            MEDIA_OWNERS = ("diffusion",), _media_busy = lambda owner: (False, False)
+        ),
+    )
+    thread_id = "idle-thread"
+    turns = _gap_thread(thread_id, 3, tag = "idle")
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+    assert calls
+
+
+def test_an_edited_turn_misses_the_cache_and_is_embedded_fresh(conn, monkeypatch):
+    thread_id = "edit-thread"
+    turns = _gap_thread(thread_id, 2, tag = "edit")
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+
+    edited = [dict(m) for m in turns]
+    edited[1]["content"] = "edit answer 0 was revised to code 77"
+    _save_thread(thread_id, edited, append = False)
+    calls.clear()
+    assert conversation_archive.archive_turns(thread_id, edited[:2]) == 1
+    assert [text for batch in calls for text in batch] and all(
+        "code 77" in text for batch in calls for text in batch
+    )
+
+
+def test_the_cap_counts_only_chunks_that_still_need_embedding(conn, monkeypatch):
+    thread_id = "cap-cache-thread"
+    turns = _gap_thread(thread_id, 6, tag = "capcache")
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "2")
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+
+    calls = _counting_encoder(monkeypatch)
+    assert conversation_archive.archive_turns(thread_id, turns) == 6
+    assert calls == []
+
+
+def test_an_oversized_turn_after_a_cached_one_waits_for_the_next_compaction(conn, monkeypatch):
+    """A pre-embedded first turn counts nothing toward the cap; the huge turn behind it must still be deferred."""
+    thread_id = "cap-cached-then-huge"
+    cached = _gap_thread(thread_id, 1, tag = "cachedfirst")
+    huge = _turn("paste this log", " ".join(f"line{i}" for i in range(6000)))
+    _save_thread(thread_id, huge, append = True)
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "2")
+    conversation_archive.note_branch(thread_id, cached)
+    _run_gap()
+
+    calls = _counting_encoder(monkeypatch)
+    assert conversation_archive.archive_turns(thread_id, cached + huge) == 1
+    assert calls == []
+
+
+def test_a_gap_job_runs_as_the_account_that_noted_it(monkeypatch):
+    """The worker is a plain thread; without the binding it would read the owner's databases."""
+    from utils.account_context import AccountContext, current_account, run_as
+
+    seen = []
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(
+        conversation_archive,
+        "_prewarm_thread",
+        lambda thread_id, messages, stopped: seen.append((current_account().account_id, thread_id)),
+    )
+    member = AccountContext("acct-member", "member", "user")
+    run_as(
+        member,
+        conversation_archive.note_branch,
+        "member-thread",
+        [{"role": "user", "content": "x"}],
+    )
+    _run_gap()
+    assert seen == [("acct-member", "member-thread")]
+
+
+def test_a_stopped_request_leaves_no_background_work(conn, monkeypatch):
+    """Stop before the gap: the noted job is dropped, not resumed in the background."""
+    thread_id = "stopped-gap-thread"
+    turns = _gap_thread(thread_id, 4, tag = "stopped")
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns, lambda: True)
+    _run_gap()
+    assert calls == []
+
+
+def test_stop_during_the_gap_ends_the_background_work(conn, monkeypatch):
+    thread_id = "stop-mid-gap-thread"
+    turns = _gap_thread(thread_id, 20, tag = "midgap")
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns, lambda: len(calls) >= 2)
+    _run_gap()
+    assert len(calls) == 2
+
+
+def test_the_cap_holds_when_the_cache_churns_before_the_encode(conn, monkeypatch):
+    """Vectors counted as free stay free even if the cache evicts them before encoding."""
+    thread_id = "churn-thread"
+    turns = _gap_thread(thread_id, 6, tag = "churn")
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "2")
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+
+    real = conversation_archive._embed_pending_chunks
+
+    def evict_then_embed(*args, **kwargs):
+        conversation_archive._vector_cache.clear()
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conversation_archive, "_embed_pending_chunks", evict_then_embed)
+    calls = _counting_encoder(monkeypatch)
+    assert conversation_archive.archive_turns(thread_id, turns) == 6
+    assert calls == []
+
+
+def test_an_embedder_swap_restart_still_honours_the_cap(conn, monkeypatch):
+    """A restart in the new space re-encodes former cache hits; it must stay within the request's cap."""
+    from core.rag import embeddings
+
+    thread_id = "swap-cap-thread"
+    turns = _gap_thread(thread_id, 6, tag = "swapcap")
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+    extra = _turn("swapcap fresh question", "swapcap fresh answer")
+    _save_thread(thread_id, extra, append = True)
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "2")
+
+    real = embeddings.encode_with_identity
+    calls = []
+
+    def swapped(texts, **kwargs):
+        calls.append(len(texts))
+        vectors, _identity = real(texts, **kwargs)
+        return vectors, "llama-server:swapped"
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", swapped)
+    conversation_archive.archive_turns(thread_id, turns + extra)
+    assert calls[0] == 1
+    assert sum(calls[1:]) <= 2
+
+
+def test_noted_snapshots_of_stopped_requests_do_not_pile_up(monkeypatch):
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    message = [{"role": "user", "content": "x"}]
+    conversation_archive.note_branch("stopped-a", message, lambda: True)
+    conversation_archive.note_branch("live-b", message)
+    assert [key[1] for key in conversation_archive._noted_branches] == ["live-b"]
+    for index in range(20):
+        conversation_archive.note_branch(f"many-{index}", message)
+    assert len(conversation_archive._noted_branches) <= conversation_archive._NOTED_MAX
+    # Re-noting a queued thread replaces its snapshot without evicting an unrelated chat.
+    queued = list(conversation_archive._noted_branches)
+    conversation_archive.note_branch(queued[-1][1], message)
+    assert set(conversation_archive._noted_branches) == set(queued)
+
+
+def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
+    """A batch failing late in a long pass must not discard the batches before it (#14519)."""
+    from core.rag import embeddings
+
+    thread_id = "fail-embed-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_BATCH", 2)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT", 10_000)
+
+    real = embeddings.encode_with_identity
+    calls = []
+
+    def flaky(texts, **kwargs):
+        calls.append(len(texts))
+        if len(calls) == 3:
+            raise TimeoutError("embedder timed out")
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", flaky)
+
+    evicted = []
+    for index in range(8):
+        evicted.append({"role": "user", "content": f"fail question {index} unique {index}"})
+        evicted.append({"role": "assistant", "content": f"fail answer {index} unique {index}"})
+
+    scope = store.conversation_archive_scope(thread_id)
+
+    def keyword_only():
+        return conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE scope = ? AND embedding_model = ?",
+            (scope, conversation_archive.LEXICAL_ONLY_IDENTITY),
+        ).fetchone()[0]
+
+    # Every turn is kept: the embedded batches with vectors, the rest for keyword search only.
+    assert conversation_archive.archive_turns(thread_id, evicted) == 8
+    unembedded = keyword_only()
+    assert 0 < unembedded < 8
+    assert conversation_archive.degraded()
+    calls.clear()
+    # Only the keyword-only turns are encoded again.
+    assert conversation_archive.archive_turns(thread_id, evicted) == unembedded
+    assert sum(calls) <= unembedded
+    assert keyword_only() == 0
 
 
 VARIABLE = "ZQXVARA123"
@@ -2593,6 +3629,220 @@ def test_an_out_of_order_eviction_still_numbers_turns_in_conversation_order(conn
     assert text.index("standing instruction") < text.index("middle turn") < text.index("final turn")
 
 
+_REPORT = "[PDF: report.pdf]\nThe service listens on port 8080."
+_REPORT_SHA = "0123456789ab" + "0" * 52
+_REPORT_NOTE = (
+    "[report.pdf: its text is below, so answer from it. For calculations, the python tool has the "
+    'file at path = ".unsloth_attachments/0123456789ab/report.pdf"; fitz.open(path)]'
+)
+_BOOK_PLACEHOLDER = "[book.epub: only the python tool can read this file]"
+_BOOK_NOTE = (
+    "[book.epub is saved at .unsloth_attachments/0123456789ab/book.epub in the python tool's "
+    'working directory; open it with fitz.open(path), where path = ".unsloth_attachments/0123456789ab/book.epub"]'
+)
+
+
+def _document(name, text):
+    """An attached file as the frontend stores it: apart from the typed words."""
+    return {
+        "id": f"att-{name}",
+        "type": "document",
+        "name": name,
+        "contentType": "text/plain",
+        "content": [{"type": "text", "text": text}],
+        "status": {"type": "complete"},
+        "original": {"sha256": _REPORT_SHA, "sizeBytes": 10},
+    }
+
+
+def _save_rows(thread_id, rows):
+    """Persist (role, typed text, attachments) rows in the shape the frontend stores them."""
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    stored = []
+    for index, (role, text, attachments) in enumerate(rows):
+        row = {
+            "id": f"{thread_id}-{index}",
+            "threadId": thread_id,
+            "parentId": f"{thread_id}-{index - 1}" if index else None,
+            "role": role,
+            "content": [{"type": "text", "text": text}],
+            "createdAt": index + 2,
+        }
+        if attachments:
+            row["attachments"] = attachments
+        stored.append(row)
+    studio_db.sync_chat_messages(thread_id, stored, prune_missing = True)
+
+
+def _ordinals_by_text(conn, thread_id = THREAD):
+    scope = store.conversation_archive_scope(thread_id)
+    return {
+        row["text"]: row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT d.archive_ordinal, c.text FROM documents d JOIN chunks c ON c.document_id = d.id "
+            "WHERE d.scope = ? ORDER BY d.archive_ordinal",
+            (scope,),
+        ).fetchall()
+    }
+
+
+def _report_then_correction(sent_report):
+    """A turn sent with a document, a later correction, then a newer turn. Returns the wire messages."""
+    _save_rows(
+        THREAD,
+        [
+            ("user", "Here is the deployment report.", [_document("report.pdf", _REPORT)]),
+            ("assistant", "Noted, the service listens on port 8080.", None),
+            ("user", "Correction: the service now listens on port 9090.", None),
+            ("assistant", "Updated, the port is 9090.", None),
+            ("user", "Unrelated: what do pelicans eat?", None),
+        ],
+    )
+    return [
+        {"role": "user", "content": f"Here is the deployment report.\n{sent_report}"},
+        {"role": "assistant", "content": "Noted, the service listens on port 8080."},
+        {"role": "user", "content": "Correction: the service now listens on port 9090."},
+        {"role": "assistant", "content": "Updated, the port is 9090."},
+        {"role": "user", "content": "Unrelated: what do pelicans eat?"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "sent_report",
+    [_REPORT, f"{_REPORT_NOTE}\n{_REPORT}"],
+    ids = ["python-off", "python-on"],
+)
+def test_a_turn_sent_with_an_attachment_keeps_its_place(conn, sent_report):
+    """The stored row keeps the document under `attachments` while the request inlines it (after the python
+    tool's path note when that is on). Read without them, the turn took the fallback ordinal and came back
+    as the latest turn, superseding the correction that followed it."""
+    wire = _report_then_correction(sent_report)
+
+    assert conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:]) == 2
+
+    ordinals = _ordinals_by_text(conn)
+    assert sorted(ordinals.values()) == [0, 1]
+    assert ordinals[next(text for text in ordinals if "8080" in text)] == 0
+    found = conversation_archive.recall(
+        THREAD, "which port does the service listen on", top_k = 4, branch_messages = wire
+    )
+    assert found is not None
+    text = found[0]
+    assert 'turn="1"' in text and 'turn="2"' in text
+    assert text.index("port 8080") < text.index("port 9090")
+
+
+def test_a_tool_only_attachment_keeps_its_place_with_the_python_tool_on(conn):
+    """The other note form: a file the python tool alone can read is sent as its path note and placeholder."""
+    _save_rows(
+        THREAD,
+        [
+            ("user", "Summarise chapter one.", [_document("book.epub", _BOOK_PLACEHOLDER)]),
+            ("assistant", "Chapter one is about pelicans.", None),
+            ("user", "And chapter two?", None),
+            ("assistant", "Chapter two is about herons.", None),
+            ("user", "Thanks.", None),
+        ],
+    )
+    wire = [
+        {"role": "user", "content": f"Summarise chapter one.\n{_BOOK_NOTE}\n{_BOOK_PLACEHOLDER}"},
+        {"role": "assistant", "content": "Chapter one is about pelicans."},
+        {"role": "user", "content": "And chapter two?"},
+        {"role": "assistant", "content": "Chapter two is about herons."},
+    ]
+
+    conversation_archive.archive_turns(THREAD, wire)
+
+    ordinals = _ordinals_by_text(conn)
+    assert ordinals[next(text for text in ordinals if "pelicans" in text)] == 0
+    assert ordinals[next(text for text in ordinals if "herons" in text)] == 1
+
+
+def test_an_attachment_turn_numbered_past_the_end_converges_on_the_next_compaction(conn):
+    """Archives written before the fold hold the attachment turn after every later one; the next eviction
+    of that turn moves it back to its seat."""
+    wire = _report_then_correction(_REPORT)
+    conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:])
+    scope = store.conversation_archive_scope(THREAD)
+    conn.execute(
+        "UPDATE documents SET archive_ordinal = 7 WHERE scope = ? AND archive_ordinal = 0", (scope,)
+    )
+    conn.commit()
+
+    assert conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:]) == 0
+
+    assert sorted(_ordinals_by_text(conn).values()) == [0, 1]
+
+
+def test_recall_without_a_request_branch_keeps_an_attachment_turn(conn):
+    """The branch filter's stored-transcript fallback reads the same rows: without the attachment text,
+    the archived turn looked rolled back and no query could return it. Studio always passes its branch,
+    so this covers other callers only, and only without the python tool's notes."""
+    wire = _report_then_correction(_REPORT)
+    conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:])
+
+    found = conversation_archive.recall(THREAD, "deployment report port 8080", top_k = 4)
+
+    assert found is not None
+    assert "The service listens on port 8080." in found[0]
+
+
+def test_stored_attachments_are_projected_the_way_the_client_sends_them():
+    image = {"type": "image", "image": "data:image/png;base64,AAAA"}
+    rows = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "typed"}],
+            "attachments": [
+                _document("a.md", "first file"),
+                {"id": "i", "type": "image", "name": "p.png", "content": [image]},
+                {"id": "t", "type": "image", "mcpToolOnly": True, "content": [image]},
+                _document("b.md", "second file"),
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "reply"}],
+            "attachments": [_document("c.md", "not sent as text")],
+        },
+        {"role": "user", "content": [{"type": "text", "text": "plain"}]},
+    ]
+
+    wire = conversation_archive._as_wire(rows)
+
+    assert wire[0]["content"] == [
+        {"type": "text", "text": "typed"},
+        {"type": "text", "text": "first file"},
+        image,
+        {"type": "text", "text": "second file"},
+    ]
+    assert conversation_archive._probe_text(wire[0]) == "typed\nfirst file\nsecond file"
+    assert wire[1]["content"] == [{"type": "text", "text": "reply"}]
+    assert wire[2]["content"] is rows[2]["content"]
+
+
+def test_seat_text_drops_only_the_python_tool_path_notes():
+    live = {"role": "user", "content": f"typed\n{_REPORT_NOTE}\n{_REPORT}"}
+    quoted = {"role": "assistant", "content": f"typed\n{_REPORT_NOTE}"}
+    lookalike = {"role": "user", "content": "[report.pdf: its text is below, so answer from it.]"}
+
+    assert conversation_archive._seat_text(live) == conversation_archive._seat_text(
+        {"role": "user", "content": f"typed\n{_REPORT}"}
+    )
+    assert "its text is below" in conversation_archive._seat_text(quoted)
+    assert "its text is below" in conversation_archive._seat_text(lookalike)
+
+
 def test_two_turns_that_start_the_same_do_not_take_each_others_places(conn):
     """Turns sharing a first message must match on the whole turn, or each takes the other's seat."""
     first = _turn("continue ZQXVARA123", "the first continuation, about ducks")
@@ -2833,8 +4083,13 @@ def test_a_retried_turn_is_numbered_on_the_branch_the_user_is_on(conn):
     assert ordinals == [0, 1, 2]
 
 
-def test_a_rewind_retires_the_copy_the_conversation_no_longer_holds(conn):
+@pytest.mark.parametrize("embedder_fails", [False, True])
+def test_a_rewind_retires_the_copy_the_conversation_no_longer_holds(
+    conn, monkeypatch, embedder_fails
+):
     """Identical copies outnumber occurrences after a rewind, so surplus copies must be retired."""
+    if embedder_fails:
+        _fail_embedder(monkeypatch)
     first = _turn("set ZQXVARA123 to 1", "ok")
     second = _turn("set ZQXVARA123 to 2", "ok")
     repeat = _turn("set ZQXVARA123 to 1", "ok")
@@ -3825,8 +5080,13 @@ def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
     assert conversation_archive._occurrences(positions, live) == [1]
 
 
-def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
+@pytest.mark.parametrize("embedder_fails", [False, True])
+def test_the_same_text_over_a_longer_span_widens_the_stored_window(
+    conn, monkeypatch, embedder_fails
+):
     """Same text over a longer span must widen the stored window, or the turn is filtered out of recall."""
+    if embedder_fails:
+        _fail_embedder(monkeypatch)
     short = [
         _assistant_call("terminal", '{"command":"ls"}', id = "c2"),
         {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},

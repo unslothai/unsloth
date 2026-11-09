@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image upscalers for Hires fix and the Upscale workflow: Lanczos, latent, and ESRGAN-family models via spandrel.
-
-The catalog holds only redistributable weights (Real-ESRGAN, BSD-3-Clause, pinned by size and SHA-256); others
-(4x-UltraSharp is CC BY-NC-SA) stay user-supplied in ``<workspace>/upscale_models``. A request never carries a path.
-"""
+"""Upscaler catalog holds only redistributable weights pinned by SHA-256; others are user-supplied
+in workspace upscale_models; a request never carries a path"""
 
 from __future__ import annotations
 
@@ -38,6 +35,7 @@ DEFAULT_OVERLAP = 32
 MIN_TILE = 64
 # ComfyUI ImageUpscaleWithModel halves the tile on an OOM and gives up below 128 px.
 OOM_MIN_TILE = 128
+INPLACE_ENV = "UNSLOTH_UPSCALER_INPLACE"
 
 DOWNLOAD_TIMEOUT_S = 600
 _SOCKET_TIMEOUT_S = 60
@@ -281,6 +279,10 @@ def resolve_model_path(upscaler_id: str, *, cancel: Any = None) -> Path:
     return dest
 
 
+def inplace_enabled() -> bool:
+    return (os.environ.get(INPLACE_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
 def tile_starts(length: int, tile: int, overlap: int) -> list[int]:
     """Start offsets covering ``[0, length)`` with windows of ``tile`` that overlap by at least ``overlap``; the last
     window ends exactly at ``length``. One window when ``length <= tile``."""
@@ -363,7 +365,9 @@ def tiled_apply(
     # Stop may land while the last tile runs: never hand back a result for an accepted cancel.
     if cancel is not None and cancel.is_set():
         _raise_cancelled()
-    return out / weight.clamp_min(1e-8)
+    if not inplace_enabled():
+        return out / weight.clamp_min(1e-8)
+    return out.div_(weight.clamp_min_(1e-8))
 
 
 _model_lock = threading.Lock()
@@ -414,6 +418,20 @@ def _load(path: Path, device: Any) -> tuple[Any, Any]:
     return descriptor, dtype
 
 
+def _to_uint8_hwc(y: Any, source: Any) -> Any:
+    """In place unless ``y`` shares ``source``'s storage; inference mode because ``y`` is an inference tensor."""
+    import torch
+
+    if (
+        not inplace_enabled()
+        or y.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+    ):
+        return (y.clamp(0, 1) * 255.0).round().to(torch.uint8)[0].permute(1, 2, 0).cpu().numpy()
+    with torch.inference_mode():
+        y.clamp_(0, 1).mul_(255.0).round_()
+        return y.to(torch.uint8)[0].permute(1, 2, 0).cpu().numpy()
+
+
 @dataclass
 class UpscaleOutcome:
     image: Any
@@ -462,10 +480,10 @@ def upscale_with_model(
         arr = torch.from_numpy(np.asarray(rgb, dtype = np.uint8).copy())
         x = arr.permute(2, 0, 1).unsqueeze(0).to(device = dev, dtype = torch.float32) / 255.0
         scale = int(descriptor.scale)
-        model = descriptor.model
 
         def _run(piece: Any) -> Any:
-            return model(piece.to(dtype)).float()
+            # Not descriptor.model: the descriptor pads, unwraps tuple outputs (MMRealSR) and clamps.
+            return descriptor(piece.to(dtype)).float()
 
         boxes = tile_boxes(x.shape[3], x.shape[2], tile, overlap)
         try:
@@ -498,13 +516,13 @@ def upscale_with_model(
                         boxes = tile_boxes(x.shape[3], x.shape[2], tile, overlap)
         finally:
             if not keep_resident:
-                del model, descriptor, cached
+                del descriptor, cached
                 _resident.pop(key, None)
         tw, th = int(target[0]), int(target[1])
         if (y.shape[3], y.shape[2]) != (tw, th):
             # Resized where it accumulated (host), as ComfyUI's ImageScale after ImageUpscaleWithModel.
             y = torch.nn.functional.interpolate(y, size = (th, tw), mode = "bicubic", antialias = True)
-        out = (y.clamp(0, 1) * 255.0).round().to(torch.uint8)[0].permute(1, 2, 0).cpu().numpy()
+        out = _to_uint8_hwc(y, x)
     result = Image.fromarray(out, mode = "RGB")
     del x, y
     released = not keep_resident

@@ -190,14 +190,18 @@ function makeWorld(options: {
     "@/features/hub": { formatBytes: (bytes: number) => `${bytes} B` },
     "@/i18n": { useT: () => t },
     "@/lib/api-base": apiStubs["@/lib/api-base"],
-    "@/lib/chevron-icons": { ChevronDownDoubleStandardIcon: [] },
     "@/lib/strip-ansi": { stripAnsi: (value: string) => value },
     "@/lib/toast": { toast },
     "@/lib/utils": {
       cn: (...parts: unknown[]) => parts.filter(Boolean).join(" "),
     },
     "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/hugeicons-derived": { LineWrapDisableIcon: {}, LineWrapIcon: {} },
     "@hugeicons/react": { HugeiconsIcon: () => null },
+    "@/lib/tick-icon": { Tick02Icon: {} },
+    "@/lib/copy-icon": { Copy01Icon: {} },
+    "lucide-react": { ArrowDownIcon: () => null },
     "../api/debug-logs": api,
     "../components/settings-row": {
       SettingsRow: (props: { label: string; children?: React.ReactNode }) =>
@@ -308,9 +312,8 @@ test("openLogsFolder preserves the selected path with an older backend", async (
 });
 
 test("an export that works does not touch the session", async () => {
-  // refreshSession rotates the stored pair, so refreshing before every export
-  // would spend a refresh token, and risk a sign-out, just for clicking
-  // Download all logs.
+  // refreshSession rotates the stored pair, so refreshing before every export would spend a refresh
+  // token and risk a sign-out just to click Download all logs.
   const world = makeWorld({
     isTauri: true,
     invoke: async () => SAVED_PATH,

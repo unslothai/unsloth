@@ -324,6 +324,41 @@ def test_apply_event_transitions():
     assert svc.status()["status"] == "error" and svc.status()["message"] == "boom"
 
 
+def test_preparation_counts_survive_status_polling_and_clear_for_training():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 48, "total": 60})
+    assert svc.status()["preparation"] == {"stage": "cache_latents", "done": 48, "total": 60}
+    assert svc.status()["in_model_load"] is True
+    svc._apply_event({"type": "model_load_completed"})
+    assert svc.status()["preparation"] is None
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 60, "total": 60})
+    svc._apply_event({"type": "progress", "step": 1, "total_steps": 30, "loss": 0.4})
+    assert svc.status()["preparation"] is None
+    assert svc.status()["in_model_load"] is False
+
+
+@pytest.mark.parametrize("event", [{"type": "complete"}, {"type": "error", "message": "boom"}])
+def test_terminal_events_clear_preparation_counts(event):
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 48, "total": 60})
+    svc._apply_event(event)
+    assert svc.status()["preparation"] is None
+
+
+def _dies_while_preparing(*, event_queue, stop_queue, config):
+    event_queue.put({"type": "model_load_started", "num_images": 60})
+    event_queue.put({"type": "preparing", "stage": "cache_latents", "done": 12, "total": 60})
+
+
+def test_worker_dying_mid_preparation_clears_preparation_counts():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _dies_while_preparing)
+    svc.start(dict(_CFG))
+    st = _wait_status(svc, "error")
+    assert st["status"] == "error"
+    assert st["preparation"] is None
+    assert st["in_model_load"] is False
+
+
 def test_the_joint_losses_reach_status_and_history():
     """video_loss and audio_loss must reach status and history, index-aligned with steps."""
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
@@ -2062,6 +2097,18 @@ def test_complete_event_records_family_and_catalog():
     assert st["catalog_path"] == "/loras/w.safetensors"
 
 
+def test_status_route_returns_preparation_counts(client):
+    # The response model filters unknown keys, so the counts reach the UI only if it declares them.
+    client._fake.status_extra = {
+        "in_model_load": True,
+        "preparation": {"stage": "cache_latents", "done": 48, "total": 60},
+    }
+    body = client.get("/api/train/diffusion/status").json()
+    assert body["preparation"] == {"stage": "cache_latents", "done": 48, "total": 60}
+    client._fake.status_extra = {"preparation": None}
+    assert client.get("/api/train/diffusion/status").json()["preparation"] is None
+
+
 def test_status_route_nests_metric_history(client):
     client._fake.status_extra = {
         "metric_steps": [1, 2],
@@ -2566,3 +2613,131 @@ def test_llm_start_admission_fails_open_without_a_diffusion_stack(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.training.diffusion_training_service", None)
     with tr._diffusion_gpu_admission():
         pass
+
+
+def test_status_route_preserves_model_download_bytes(client):
+    progress = {
+        "bytes_done": 4,
+        "bytes_total": 10,
+        "label": "model.safetensors",
+        "scope": "active_files",
+    }
+    client._fake.status_extra = {"in_model_load": True, "download_progress": progress}
+    assert client.get("/api/train/diffusion/status").json()["download_progress"] == progress
+
+
+def test_model_download_progress_clears_before_preparation():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "model_load_started"})
+    event = {
+        "type": "model_download_progress",
+        "download_progress": {"bytes_done": 4, "bytes_total": 10},
+    }
+    svc._apply_event(event)
+    assert svc.status()["download_progress"]["bytes_done"] == 4
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 3, "total": 10})
+    svc._apply_event(event)
+    assert svc.status()["download_progress"] is None
+    assert svc.status()["preparation"]["done"] == 3
+    svc._apply_event({"type": "model_load_started"})
+    svc._apply_event(event)
+    assert svc.status()["preparation"] is None
+    assert svc.status()["download_progress"]["bytes_done"] == 4
+
+
+@pytest.mark.parametrize(
+    "progress", [None, "invalid", {"bytes_done": float("nan"), "bytes_total": 10}]
+)
+def test_model_download_progress_rejects_unknown_byte_counts(progress):
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "model_load_started"})
+    svc._apply_event({"type": "model_download_progress", "download_progress": progress})
+    assert svc.status()["download_progress"] is None
+
+
+def test_model_loading_stage_follows_phase_boundaries():
+    svc = DiffusionTrainingService()
+    assert svc.status()["model_load_stage"] is None
+    svc._apply_event({"type": "model_load_started", "stage": "conditioning"})
+    assert svc.status()["model_load_stage"] == "conditioning"
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 5, "total": 5})
+    assert svc.status()["model_load_stage"] is None
+    svc._apply_event({"type": "model_load_started", "stage": "quantizing"})
+    assert svc.status()["model_load_stage"] == "quantizing"
+    assert svc.status()["preparation"] is None
+    svc._apply_event({"type": "model_load_completed"})
+    assert svc.status()["model_load_stage"] is None
+    assert svc.status()["in_model_load"] is False
+    svc._apply_event({"type": "model_load_started", "stage": "transformer"})
+    assert svc.status()["model_load_stage"] == "transformer"
+    # Trainers that do not emit a stage retain the generic loading fallback.
+    svc._apply_event({"type": "model_load_started"})
+    assert svc.status()["model_load_stage"] is None
+
+
+def test_route_preserves_measured_loading_and_preparation_fields(client):
+    svc = DiffusionTrainingService()
+    client._fake.status = svc.status
+    svc._apply_event({"type": "model_load_started", "stage": "quantizing"})
+    svc._apply_event(
+        {
+            "type": "model_load_progress",
+            "done": 12,
+            "total": 40,
+            "unit": "tensors",
+            "label": "FluxTransformer2DModel",
+        }
+    )
+    response = client.get("/api/train/diffusion/status")
+    assert response.status_code == 200
+    status = response.json()
+    assert status["model_load_stage"] == "quantizing"
+    assert status["model_load_progress"] == {
+        "done": 12,
+        "total": 40,
+        "unit": "tensors",
+        "label": "FluxTransformer2DModel",
+    }
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 2, "total": 5})
+    status = client.get("/api/train/diffusion/status").json()
+    assert status["model_load_progress"] is None
+    assert status["preparation"] == {"stage": "cache_latents", "done": 2, "total": 5}
+    svc._apply_event({"type": "model_load_started", "stage": "transformer"})
+    status = client.get("/api/train/diffusion/status").json()
+    assert status["preparation"] is None
+    assert status["model_load_progress"] is None
+    svc._apply_event({"type": "model_load_completed"})
+    assert client.get("/api/train/diffusion/status").json()["model_load_stage"] is None
+
+
+@pytest.mark.parametrize(
+    "done,total,unit",
+    [
+        (-1, 2, "tensors"),
+        (3, 2, "tensors"),
+        (0, 0, "tensors"),
+        (1, 2, "seconds"),
+        (float("nan"), 2, "tensors"),
+    ],
+)
+def test_invalid_model_load_counts_are_ignored(done, total, unit):
+    svc = DiffusionTrainingService()
+    svc._apply_event({"type": "model_load_started"})
+    svc._apply_event({"type": "model_load_progress", "done": done, "total": total, "unit": unit})
+    assert svc.status()["model_load_progress"] is None
+
+
+@pytest.mark.parametrize(
+    "terminal", ["complete", "error", "progress", "preparing", "model_load_completed"]
+)
+def test_measured_loading_clears_when_leaving_load_phase(terminal):
+    svc = DiffusionTrainingService()
+    svc._apply_event({"type": "model_load_started", "stage": "quantizing"})
+    event = {"type": "model_load_progress", "done": 1, "total": 2, "unit": "tensors"}
+    svc._apply_event(event)
+    assert svc.status()["model_load_progress"]["done"] == 1
+    svc._apply_event({"type": terminal})
+    assert svc.status()["model_load_progress"] is None
+    assert svc.status()["model_load_stage"] is None
+    svc._apply_event(event)
+    assert svc.status()["model_load_progress"] is None

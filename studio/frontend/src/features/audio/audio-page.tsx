@@ -6,6 +6,7 @@
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -122,6 +123,7 @@ import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
 import { TranscribeFooter, TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
 import type { SendTarget } from "./components/stem-mixer-types";
 import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
+import { AUDIO_DEVICE_KEY } from "./audio-workspace-constants";
 import { selectionExpired } from "./audio-run-request";
 import type { AudioSourceInputHandle } from "./components/audio-source-input";
 import type { AudioSourceStatus } from "./hooks/audio-source-state";
@@ -200,8 +202,7 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
         durationS: null,
       }
     : null;
-  // An upload expires within a day; the clip kept what it converted, so upload that copy again.
-  // Empty until the live id lands (the old id let Generate race the upload); expired on failure.
+  // An upload expires within a day; re-upload the clip's kept copy. Empty until the live id lands.
   reuseSeq += 1;
   if (!clip.source_clip_id && clip.source_saved && sourceId) {
     const seq = reuseSeq;
@@ -269,7 +270,6 @@ export function AudioPage({
   onInitialReady?: () => void;
 }) {
   const initialReadySent = useRef(false);
-  // Clear the floating sidebar toggle on mobile.
   const isMobileShell = useIsMobileShell();
   const { pinned } = useSidebar();
   const [mode, setMode] = useState<CreateMode>("speak");
@@ -331,7 +331,7 @@ export function AudioPage({
   );
   // Read at load time; the handler below ejects so a change takes effect.
   const [audioDevice, setAudioDeviceState] = usePersistedChoice(
-    "unsloth_audio_device",
+    AUDIO_DEVICE_KEY,
     "auto",
   );
 
@@ -440,6 +440,7 @@ export function AudioPage({
     srcById,
     peaksById,
     ensureClipSrc,
+    retryClipSrc,
     refreshGallery,
     loadMore,
     selectClip,
@@ -498,8 +499,7 @@ export function AudioPage({
     refreshSttStatus,
   ]);
 
-  // Activation alone is not enough: the loaded-models indicator can eject the TTS model out from
-  // under a page that stays active, leaving Generate enabled against an empty slot.
+  // The loaded-models indicator can eject the model while the page stays active.
   useEffect(() => {
     if (!active) return;
     return subscribeModelLifecycle(({ runtime, loading }) => {
@@ -1036,7 +1036,6 @@ export function AudioPage({
       }
       if (target.workflow === "transcribe") {
         if (!transitionWorkflow("transcribe")) return;
-        // A stem is a history clip, so it goes in by id like any other.
         useAudioTranscribeStore.setState({
           source: {
             kind: "clip",
@@ -1593,7 +1592,6 @@ export function AudioPage({
         transcribeSourceHandle.current?.markExpired();
       },
     ).then(() => {
-      // A timestamped run may have downloaded the aligner.
       if (request.timestamps) transcribeCaps.refresh();
     });
   };
@@ -1841,7 +1839,6 @@ export function AudioPage({
       ref={pageRootRef}
       className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
-      {/* Page-level, so the handle covers the divider through the header too. */}
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -1941,14 +1938,13 @@ export function AudioPage({
                   : undefined
               }
               variant="ghost"
-              className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
-              triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
+              className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={HUB_TASKS_BY_MODE[mode]}
               // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
               hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
               catalog={AUDIO_CATALOG}
-              // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
-              // audio repo loads here.
+              cpuLoad={audioDevice === "cpu"}
+              // TTS/ASR use the checkpoint's own tokenizer, so any publisher's audio repo loads.
               communityModelPolicy="search-only"
               hubCapability="audio"
               placeholder="Select audio model"
@@ -1957,8 +1953,8 @@ export function AudioPage({
             />
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
-          <div className="pointer-events-auto col-start-2 justify-self-end pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             {workflowTab.createTrain ? (
               <PillTabs
                 ariaLabel="Page mode"
@@ -1973,7 +1969,7 @@ export function AudioPage({
                   void navigateSelf({ to: "/studio" });
                 }}
                 fit={true}
-                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 [[data-media-header-tight]_&]:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
                 tabs={[
                   {
                     value: "create",
@@ -1996,25 +1992,22 @@ export function AudioPage({
               />
             ) : null}
           </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              {connection || (mode === "transcribe" && transcribeConnection) ? null : (
-                <UseViaApiButton
-                  workflow={pageWorkflow}
-                  model={selectorValue ?? null}
-                />
-              )}
-              <LibraryPageLink
-                tab="audio"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
+          <MediaHeaderActions className="pr-2" groupClassName="gap-2">
+            {connection || (mode === "transcribe" && transcribeConnection) ? null : (
+              <UseViaApiButton
+                workflow={pageWorkflow}
+                model={selectorValue ?? null}
               />
-            </div>
-          </div>
+            )}
+            <LibraryPageLink
+              tab="audio"
+              labelClassName="hidden @[50rem]:inline [[data-media-header-tight]_&]:hidden"
+              arrowClassName="hidden @[50rem]:block [[data-media-header-tight]_&]:hidden"
+            />
+          </MediaHeaderActions>
         </div>
       </div>
-      {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
-          side by side, the rail plus a usable preview needs more width. */}
+      {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"
@@ -2024,7 +2017,7 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
@@ -2170,7 +2163,7 @@ export function AudioPage({
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
               {ttsWorkflow === "edit" ? (
                 <EditFooter
                   busy={busy}
@@ -2249,7 +2242,7 @@ export function AudioPage({
               )}
             </div>
           ) : (
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
               <TranscribeFooter
                 busy={busy}
                 blocker={transcribeBlocker}
@@ -2333,6 +2326,7 @@ export function AudioPage({
                   clips: visibleClips,
                   selectedClip,
                   selectedClipSrc,
+                  retryClipSrc,
                   srcById,
                   handleDownloadClip,
                   handleDeleteClip,
@@ -2356,7 +2350,7 @@ export function AudioPage({
                   announcement,
                 };
                 return ttsWorkflow === "music" ? (
-                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} />
+                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} loading={busy === "loading"} onChooseModel={openSelector} />
                 ) : ttsWorkflow === "edit" ? (
                   <EditOutput
                     {...outputProps}

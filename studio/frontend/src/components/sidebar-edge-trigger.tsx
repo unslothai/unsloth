@@ -15,18 +15,7 @@ import { cn } from "@/lib/utils";
 import { type ReactElement, useRef, useState } from "react";
 
 /**
- * Draggable window edge for the desktop sidebar, which collapses to zero width
- * and so has no edge of its own to grab. The same handle the pinned sidebar
- * uses, anchored to the window instead of to an off-screen panel: hover holds
- * the sidebar out, click or Enter pins it, drag resizes it.
- *
- * Hover and the keyboard are what land on macOS. A decorated window keeps its
- * resize border over the first few CSS pixels of the content and takes the
- * press there, so at 2px the click and the drag go to the window instead. Both
- * reach the 12px strip on Windows and Linux.
- *
- * Desktop only. On the web a collapsed sidebar keeps its icon rail, and that
- * rail already carries the handle.
+ * Sidebar drag edge; macOS's window resize border takes the presses, so only hover and keys work.
  */
 export function SidebarEdgeTrigger({
   className,
@@ -52,9 +41,8 @@ export function SidebarEdgeTrigger({
     setWidth,
     resetWidth,
   } = useSidebarWidth();
-  // A drag that reaches the minimum pins the sidebar part-way through, which
-  // would unmount this: the handle would lose pointer capture and the width
-  // would never commit. Hold on until the pointer is released.
+  // Holds the drag until release: reaching the minimum would pin the sidebar and unmount this
+  // handle.
   const [holding, setHolding] = useState(false);
   const release = () => setHolding(false);
 
@@ -67,17 +55,14 @@ export function SidebarEdgeTrigger({
     <div
       ref={ref}
       className="contents"
-      // Only a primary press takes pointer capture, so only a primary press
-      // has a release to wait for. Holding for any other would never clear.
+      // Only a primary press takes pointer capture, so only it has a release to wait for.
       onPointerDownCapture={(event) => {
         if (event.button === 0) setHolding(true);
       }}
       onPointerUp={release}
       onPointerCancel={release}
       onLostPointerCapture={release}
-      // Tab reaches the strip with no pointer to hold the sidebar out, so
-      // focus does it instead. focusin and focusout bubble, which leaves the
-      // strip's own focus handling to the shared handle.
+      // Keyboard users have no pointer to hold the sidebar out, so focus does it.
       onFocus={() => setPeeking(true)}
       onBlur={() => setPeeking(false)}
     >

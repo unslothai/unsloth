@@ -143,6 +143,20 @@ def test_fused_query_is_stock_off_cuda():
     assert C.fused_sdpa_available(q, q, q) is True
 
 
+@pytest.mark.parametrize("head_dim, fused", [(512, False), (384, False), (128, True)])
+def test_fused_query_on_mps_asks_the_prefill_kernel(monkeypatch, head_dim, fused):
+    # No MPS fused kernel takes the VAE's head dim 384 / 512, whatever the torch build.
+    monkeypatch.setattr(torch, "__version__", "2.14.1")
+    monkeypatch.delenv("PYTORCH_MPS_DISABLE_PREFILL_ATTENTION", raising = False)
+    q = types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "mps"),
+        dtype = torch.bfloat16,
+        shape = (1, 1, 16384, head_dim),
+        requires_grad = False,
+    )
+    assert C.fused_sdpa_available(q, q, q) is fused
+
+
 def _tiny_vae(name):
     diffusers = pytest.importorskip("diffusers")
     torch.manual_seed(0)
@@ -193,6 +207,28 @@ def test_vae_decode_peak_bounded_and_equal(rocm, monkeypatch, name):
     torch.testing.assert_close(out, ref, atol = 1e-4, rtol = 1e-4)
 
 
+@pytest.mark.parametrize(
+    "backend, env, budget_mb", [("rocm", None, 1024), ("mps", None, 256), ("mps", "64", 64)]
+)
+def test_install_budget_follows_the_device(rocm, monkeypatch, backend, env, budget_mb):
+    # MPSGraph holds several score-sized buffers, so a 1 GiB FLUX.1 tile is chunked there but not on ROCm.
+    if env is not None:
+        monkeypatch.setenv(C.VAE_ATTN_CHUNK_MB_ENV, env)
+    else:
+        monkeypatch.delenv(C.VAE_ATTN_CHUNK_MB_ENV, raising = False)
+    monkeypatch.setattr(torch.version, "hip", None if backend == "mps" else "7.2.0", raising = False)
+    vae = _tiny_vae("AutoencoderKL")
+    assert C.install(vae, types.SimpleNamespace(backend = backend, device = backend)) == 2
+    budgets = []
+    real = C.chunked_attention_mode
+    monkeypatch.setattr(
+        C, "chunked_attention_mode", lambda budget = None: budgets.append(budget) or real(budget)
+    )
+    with torch.no_grad():
+        vae.decode(torch.randn(1, 4, 8, 8))
+    assert budgets == [budget_mb * 2**20]
+
+
 def test_install_gates(monkeypatch, rocm):
     vae = _tiny_vae("AutoencoderKL")
     assert C.install(vae, types.SimpleNamespace(backend = "cuda", device = "cuda")) == 0
@@ -230,7 +266,7 @@ def test_kill_switch_at_call_time(rocm, monkeypatch):
     assert probe.max_bytes >= 48 * 48 * 48 * 48 * 4
 
 
-def test_speed_layer_installs_on_rocm_even_when_off(rocm, monkeypatch):
+def test_speed_layer_installs_on_rocm_and_mps_even_when_off(rocm, monkeypatch):
     from core.inference import diffusion_speed as S
 
     vae = _tiny_vae("AutoencoderKL")
@@ -243,6 +279,15 @@ def test_speed_layer_installs_on_rocm_even_when_off(rocm, monkeypatch):
         speed_mode = S.SPEED_OFF,
     )
     assert sum(getattr(m, C._PATCHED, False) for m in vae.modules()) == 2
+    mac = _tiny_vae("AutoencoderKL")
+    S.apply_speed_optims(
+        types.SimpleNamespace(vae = mac),
+        types.SimpleNamespace(backend = "mps", device = "mps", dtype = torch.bfloat16),
+        is_gguf = False,
+        family = types.SimpleNamespace(),
+        speed_mode = S.SPEED_OFF,
+    )
+    assert sum(getattr(m, C._PATCHED, False) for m in mac.modules()) == 2
     nvidia = _tiny_vae("AutoencoderKL")
     S.apply_speed_optims(
         types.SimpleNamespace(vae = nvidia),

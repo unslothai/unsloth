@@ -351,3 +351,11 @@ test("the Wan2.1 rows are sized by the bf16 weights the backend keeps resident",
   assert.equal(curatedArtifactFitsDevice(WAN21_1_3B, VIDEO_CATALOG, onCard(24)), true);
   assert.equal(curatedArtifactFitsDevice(WAN21_1_3B, VIDEO_CATALOG, onCard(16)), false);
 });
+
+test("the Cosmos3 rows are sized by the bf16 weights the backend keeps resident", () => {
+  const EDGE = "nvidia/Cosmos3-Edge";
+  assert.equal(artifactForRepoId("nvidia/Cosmos3-Nano", VIDEO_CATALOG), null);
+  assert.equal(artifactForRepoId(EDGE, VIDEO_CATALOG)?.artifact.approxSizeGb, 9);
+  assert.equal(curatedArtifactFitsDevice(EDGE, VIDEO_CATALOG, onCard(16)), true);
+  assert.equal(curatedArtifactFitsDevice(EDGE, VIDEO_CATALOG, onCard(12)), false);
+});

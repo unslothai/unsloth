@@ -347,7 +347,7 @@ test("Escape in the composer is left to a mounted, keyboard-ready decline", () =
   );
   assert.match(
     controls,
-    /const keyboardReady =\n\s*!disclosure &&\n\s*chatActive &&\n\s*soleRequest &&/,
+    /const keyboardReady =\n\s*!disclosure &&\n\s*chatActive &&\n\s*!fullAccessOpen &&\n\s*soleRequest &&/,
   );
 });
 
@@ -359,6 +359,6 @@ test("search chats fires from the composer, and toggleSidebar not behind a modal
   );
   assert.match(
     readSrc("components/ui/sidebar.tsx"),
-    /useShortcut\("toggleSidebar", toggleSidebar, \{\n\s*claims: \(\) =>\n\s*\(isMobile && openMobile\) \|\| document\.querySelector\(OPEN_DIALOG_SELECTOR\) === null,/,
+    /useShortcut\("toggleSidebar", toggleSidebar, \{\n\s*claims: \(\) =>\n\s*\(isMobile && openMobile\) \|\| !hasTrackedSurface\(MODAL_SURFACE, OPEN_DIALOG_SELECTOR\),/,
   );
 });

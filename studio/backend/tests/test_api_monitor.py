@@ -947,7 +947,7 @@ def test_direct_llama_counter_is_started_last_before_its_guarding_try():
     import inspect
     import textwrap
 
-    for func_name in ("openai_completions", "openai_embeddings", "_direct_llama_request"):
+    for func_name in ("openai_completions", "_monitored_llama_call", "_direct_llama_request"):
         tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(inference_route, func_name))))
         started = [
             node

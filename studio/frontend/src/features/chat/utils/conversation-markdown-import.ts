@@ -185,7 +185,6 @@ export function parseConversationMarkdownDocument(
     const nextTitle = documentTitle(nodes, index + 1, text);
     const start = node.position?.start.offset;
     const end = node.position?.end.offset;
-    // bulk exports frame each chat with a rule, title and first role heading.
     if (
       start === undefined ||
       end === undefined ||

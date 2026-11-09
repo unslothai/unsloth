@@ -1,30 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Process-level server-side tool policy.
-
-Two slots, both set at startup and consulted by the inference route gates.
-
-The OVERRIDE (`set_tool_policy`) comes from an explicit `--enable-tools`/
-`--disable-tools` and beats the request:
-
-  None  -> no CLI override (default). Per-request `enable_tools` is honored.
-  True  -> CLI forced tools on for every request. Not on /v1/messages: that channel
-           cannot present a confirmation prompt, so it takes the on direction from the
-           request itself (see _anthropic_selects_server_tools).
-  False -> CLI forced tools off for every request, /v1/messages included.
-
-The DEFAULT (`set_tool_policy_default`) is what an omitted `enable_tools` falls
-back to. `unsloth studio run` installs True for every bind, `--secure` included,
-so a plain request to a tool-capable model can use tools. It is only a default:
-a request that says `enable_tools: false` (what the Unsloth UI sends with its tool
-pills off) turns them off, which the override deliberately would not.
-
-No other launcher installs it. `unsloth studio`, the desktop app and Colab leave
-it unset, so an omitted `enable_tools` still means no tools there, which is what
-paths like `n > 1`, `max_tool_calls_per_message: 0` and the pre-switch
-passthrough guard are built around.
-"""
+"""CLI override (--enable-tools/--disable-tools) beats the request, except True on /v1/messages
+where the request decides; default applies only when enable_tools is omitted, set only by unsloth
+studio run; other launchers leave it unset, so no tools"""
 
 import contextvars
 from contextlib import contextmanager
@@ -191,10 +170,7 @@ def requires_os_isolation(
     is_high_risk = None,
     sandbox_level: Optional[str] = None,
 ) -> bool:
-    """Whether this call must launch with tool_execution_mode="required" (no software fallback).
-
-    ``prompted`` is needs_tool_confirmation's decision; re-reading the cache here could race a refresh.
-    """
+    """Whether the call must launch with tool_execution_mode required (no software fallback); prompted is passed in to avoid a cache race."""
     if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
         return False
     if name not in OS_SANDBOXED_TOOLS or runs_without_os_sandbox(name, sandbox_level):
@@ -205,9 +181,15 @@ def requires_os_isolation(
 
 
 def account_tool_stream(stream):
-    from utils.account_context import current_account, is_owner_context, run_as
+    from utils.account_context import (
+        current_account,
+        is_owner_context,
+        run_as,
+        via_api_key_context,
+    )
 
-    if is_owner_context():
+    # An owner API-key request is rebound too: the tool thread must still know it came from an API key.
+    if is_owner_context() and not via_api_key_context():
         return stream
     account = current_account()
 

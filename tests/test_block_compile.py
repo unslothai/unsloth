@@ -53,6 +53,74 @@ def test_mark_seq_dynamic_skips_widths(monkeypatch):
     assert sorted(marked) == [(2, 1), (3, 1), (3, 2), (4, 2), (4, 3)]
 
 
+def test_mark_batch_dynamic_marks_dim0_only(monkeypatch):
+    M = _load()
+    marked = []
+    monkeypatch.setattr(
+        torch._dynamo, "maybe_mark_dynamic", lambda t, d: marked.append((t.dim(), d))
+    )
+    B, L = 4, 16
+    hidden = torch.zeros(B, L, 8)
+    mask4d = torch.zeros(B, 1, L, L)
+    pos = torch.zeros(1, L, dtype = torch.long)  # broadcast over the batch: not marked
+    scale = torch.zeros(B)  # 1D: not marked
+    M._mark_batch_dynamic(B, (hidden, {"m": mask4d}, [pos, scale, "x", None]))
+    assert sorted(marked) == [(3, 0), (4, 0)]
+
+
+@pytest.mark.parametrize("dynamic_batch", ["1", "0"])
+def test_batch_change_does_not_recompile(monkeypatch, dynamic_batch):
+    """An uneven last batch recompiled every compiled block (+8 graphs, 40 s on a 4-bit Qwen3-0.6B, B200)."""
+    monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE_DYNAMIC_BATCH", dynamic_batch)
+    M = _load()
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class BatchDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+            position_ids = None,
+            **kwargs,
+        ):
+            out = self.proj(hidden_states) + position_ids[..., None].to(hidden_states.dtype)
+            return out * attention_mask[:, 0, :, :1]
+
+    M._wrap(BatchDecoderLayer, {})
+    layer = BatchDecoderLayer().train()
+
+    def step(B, L):
+        x = torch.randn(B, L, 8, requires_grad = True)
+        mask = torch.ones(B, 1, L, L)
+        pos = torch.arange(L)[None].expand(B, -1)
+        layer(x, attention_mask = mask, position_ids = pos).sum().backward()
+
+    step(4, 16)
+    step(4, 24)  # sequence dim is dynamic: no recompile
+    before = counter.frame_count
+    step(3, 20)  # uneven last batch
+    step(6, 12)
+    extra = counter.frame_count - before
+    torch._dynamo.reset()
+    if dynamic_batch == "1":
+        assert extra == 0
+    else:
+        assert extra >= 1  # the control: without the batch mark the batch change recompiles
+
+
 def test_rebind_globals_resolves():
     M = _load()
     ns = {"__name__": "not_a_registered_module", "OFFSET": 3}
@@ -185,6 +253,46 @@ def test_outer_compile_owns_the_block(monkeypatch, fullgraph, suppress):
     assert inner
 
 
+@pytest.mark.parametrize("fullgraph", [True, False], ids = ["fullgraph", "default"])
+def test_compiled_region_flag_only_in_own_block(monkeypatch, fullgraph):
+    """_IN_COMPILED_REGION marks Unsloth's own block compile (a graph break is legal there), not the block
+    traced inside a user's compile, which also sets _IN_BLOCK (unsloth_zoo's sparse flex reads it)."""
+    M = _load()
+    real_compile = torch.compile
+
+    class ToyDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states):
+            # Flags read where the zoo reads them: inside the traced layer.
+            in_block = float(M._IN_BLOCK[0] != M._OFF)
+            region = float(M._IN_COMPILED_REGION[0])
+            return self.proj(hidden_states) + in_block + 10 * region
+
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = "eager", fullgraph = False, dynamic = None),
+    )
+    original = ToyDecoderLayer.forward
+    M._wrap(ToyDecoderLayer, {})
+    monkeypatch.setattr(torch, "compile", real_compile)
+    torch.manual_seed(0)
+    layer = ToyDecoderLayer().train()
+    x = torch.randn(2, 4, 8)
+    stock = original(layer, x).detach()
+
+    torch._dynamo.reset()
+    torch.testing.assert_close(layer(x).detach(), stock + 11)  # Unsloth's block: both flags
+    torch._dynamo.reset()
+    outer = torch.compile(layer, backend = "eager", fullgraph = fullgraph)
+    torch.testing.assert_close(outer(x).detach(), stock + 1)  # user's compile: _IN_BLOCK only
+    torch._dynamo.reset()
+    assert M._IN_BLOCK[0] == M._OFF and M._IN_COMPILED_REGION[0] is False
+
+
 def _install_blocks(M, model, monkeypatch):
     """patch_block_compile on CPU with an eager inner compile, restored at teardown."""
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -218,6 +326,57 @@ def _install_blocks(M, model, monkeypatch):
     monkeypatch.setattr(torch, "compile", real_compile)
     monkeypatch.setattr(torch.cuda, "is_available", real_available)
     return inner
+
+
+@pytest.mark.parametrize("fp8_first", [False, True])
+def test_fp8_precision_options_are_per_instance_and_reused(monkeypatch, fp8_first):
+    import copy
+
+    M = _load()
+
+    class PrecisionDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, x):
+            return self.proj(x)
+
+    plain, fp8 = PrecisionDecoderLayer(), PrecisionDecoderLayer()
+    fp8.proj._unsloth_fp8_lora = object()
+    options = []
+
+    def compile(fn, **kwargs):
+        precision = kwargs["options"].get("emulate_precision_casts", False)
+        options.append(precision)
+
+        def run(*args, **kw):
+            return fn(*args, **kw) + int(precision)
+
+        return run
+
+    monkeypatch.setattr(torch, "compile", compile)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(M, "_layers", lambda model: [(model, True)])
+    monkeypatch.setattr(M, "_torch_supported", lambda: True)
+    monkeypatch.setattr(M, "_zero3_partitioned", lambda *args: False)
+    original = PrecisionDecoderLayer.forward
+    for layer in (fp8, plain) if fp8_first else (plain, fp8):
+        M.patch_block_compile(layer)
+    x = torch.randn(2, 4, 8)
+    torch.testing.assert_close(plain(x), original(plain, x))
+    torch.testing.assert_close(fp8(x), original(fp8, x) + 1)
+    assert "forward" not in plain.__dict__
+    assert not M._COMPILE_OPTIONS.get("emulate_precision_casts", False)
+    assert options == [False, True]
+    forward = fp8.forward
+    M.patch_block_compile(fp8)
+    assert fp8.forward is forward and options == [False, True]
+    twin = copy.deepcopy(fp8)
+    assert twin.forward.__self__ is twin
+    torch.testing.assert_close(twin(x), original(twin, x) + 1)
+    fp8.eval()
+    torch.testing.assert_close(fp8(x), original(fp8, x))
 
 
 def _outer_loss(
@@ -476,6 +635,67 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
     assert calls  # no host metadata: compiled
 
 
+def test_packed_stock_forward_says_blocks_run_uncompiled(monkeypatch, capsys):
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+
+    class PackedDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    PackedDecoderLayer.forward.__module__ = "unsloth.models.llama"
+    M._wrap(PackedDecoderLayer, {})
+    layer = PackedDecoderLayer().train()
+    x = torch.randn(1, 4, 8)
+    layer(x)
+    layer(x, packed_seq_lengths = None)
+    assert "uncompiled" not in capsys.readouterr().out
+    layer(x, packed_seq_lengths = torch.tensor([2, 2]))
+    layer(x, packed_seq_lengths = torch.tensor([1, 3]))
+    out = capsys.readouterr().out
+    assert out.count("packed / padding-free rows run each transformer block uncompiled") == 1
+
+
+def test_compiled_block_flags_packed_attention(monkeypatch):
+    """hf_packed_attention runs packed rows outside the graph only while a block's compiled call
+    runs: set there, restored after, never on the stock forward."""
+    M = _load()
+    packed_mod = types.ModuleType(M._PACKED_MODULE)
+    packed_mod.IN_COMPILED_BLOCK = [False]
+    monkeypatch.setitem(sys.modules, M._PACKED_MODULE, packed_mod)
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            seen.append(packed_mod.IN_COMPILED_BLOCK[0])
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    x = torch.randn(1, 4, 8)
+    with torch.no_grad():
+        layer(x)
+    assert seen and all(seen)
+    assert packed_mod.IN_COMPILED_BLOCK == [False]
+    seen.clear()
+    layer.eval()(x)  # stock forward
+    assert seen == [] and packed_mod.IN_COMPILED_BLOCK == [False]
+    # Without the module (never imported) the block still runs.
+    monkeypatch.delitem(sys.modules, M._PACKED_MODULE)
+    layer.train()
+    with torch.no_grad():
+        layer(x)
+    assert M._NO_PACKED == [False]
+
+
 def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     M = _load()
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -717,6 +937,10 @@ def test_sm_count_is_read_outside_the_trace(monkeypatch):
 
     fla.get_multiprocessor_count = get_multiprocessor_count
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        torch._C, "_cuda_init", lambda: pytest.fail("CPU test initialized CUDA"), raising = False
+    )
     M._route_sm_count({fla.__name__: fla})
     out = torch.compile(
         lambda x: x * fla.get_multiprocessor_count(0), fullgraph = True, backend = "eager"
@@ -1395,3 +1619,337 @@ def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
     assert calls == []
     model.layers[0](x).sum().backward()
     assert calls
+
+
+def test_router_logits_after_a_forward_without_them(request, monkeypatch):
+    """transformers installs the router_logits hooks on the first forward that asks for them.
+
+    Dynamo does not guard on module hooks (skip_nnmodule_hook_guards), so a block compiled during an
+    earlier forward without output_router_logits kept running without the gate hook: no router logits,
+    and the aux loss raised IndexError in load_balancing_loss_func. The hooks now exist before the
+    first block compiles, and the hook body (guarded on the collector keys) decides per call.
+    """
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch)
+    ids = torch.randint(0, 100, (2, 8))
+    want = model(input_ids = ids, labels = ids, use_cache = False, output_router_logits = True)
+    model = (
+        type(model)
+        .from_pretrained(
+            "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
+            dtype = torch.float32,
+            experts_implementation = "batched_mm",
+        )
+        .train()
+    )
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    inner = _install_blocks(M, model, monkeypatch)
+    torch._dynamo.reset()
+    model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
+    out = model(input_ids = ids, labels = ids, use_cache = False, output_router_logits = True)
+    out.loss.backward()
+    assert inner, "the blocks did not run compiled"
+    assert len(out.router_logits) == len(want.router_logits) == model.config.num_hidden_layers
+    torch.testing.assert_close(out.aux_loss.detach(), want.aux_loss.detach())
+    torch.testing.assert_close(out.loss.detach(), want.loss.detach())
+    torch._dynamo.reset()
+
+
+def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, monkeypatch):
+    """Failing before: an eager capturing forward hooks the inner model; installing on the unflagged outer
+    CausalLM recursed into it again and every captured tuple held each layer twice."""
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch).train()
+    ids = torch.randint(0, 100, (2, 8))
+    kwargs = dict(use_cache = False, output_router_logits = True, output_hidden_states = True)
+    model(input_ids = ids, **kwargs)
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    _install_blocks(M, model, monkeypatch)
+    torch._dynamo.reset()
+    out = model(input_ids = ids, **kwargs)
+    layers = model.config.num_hidden_layers
+    assert len(out.router_logits) == layers, len(out.router_logits)
+    assert len(out.hidden_states) == layers + 1, len(out.hidden_states)
+    torch._dynamo.reset()
+
+
+def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
+    """A capture hook inside the block appends to an empty scratch list on every call.
+
+    Before: the hook appended to the collector's list and Dynamo guarded on its length (the layer
+    index), so each of 10 layers compiled its own graph. Now <= 2 graphs (static, then dynamic) across
+    10 layers at 10 sequence lengths, and the collected logits match the stock forward in order.
+    """
+    output_capturing = pytest.importorskip("transformers.utils.output_capturing")
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    from torch._dynamo.testing import CompileCounter
+
+    M = _load()
+    cc = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kw: real_compile(fn, backend = cc, fullgraph = False, dynamic = None),
+    )
+    var = output_capturing._active_collector
+
+    class RouterDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+            self.router = torch.nn.Linear(8, 4)
+
+            def hook(
+                module, args, output
+            ):  # transformers' capture hook for a non hidden_states key
+                collected = var.get()
+                if collected is None or "router_logits" not in collected.keys():
+                    return
+                collected["router_logits"].append(output)
+
+            self.router.register_forward_hook(hook)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            return self.proj(hidden_states) + self.router(hidden_states).sum(-1, keepdim = True)
+
+    M._wrap(RouterDecoderLayer, {})
+    lengths = [5, 9, 12, 17, 23, 31, 40, 47, 58, 64]
+    layers = [RouterDecoderLayer() for _ in lengths]
+    xs = [torch.randn(2, n, 8) for n in lengths]
+    with torch.no_grad():
+        want = [layer.router(x) for layer, x in zip(layers, xs)]
+    torch._dynamo.reset()
+    collected = {"router_logits": []}
+    token = var.set(collected)
+    try:
+        for layer, x in zip(layers, xs):
+            layer(x.requires_grad_())
+    finally:
+        var.reset(token)
+    assert cc.frame_count <= 2, f"{cc.frame_count} graphs for {len(lengths)} layers"
+    got = collected["router_logits"]
+    assert len(got) == len(want)
+    for g, w in zip(got, want):
+        torch.testing.assert_close(g.detach(), w)
+
+
+@pytest.mark.parametrize("backend", ["AUTO", "TRITON"])
+def test_training_flex_options_keep_a_callers_backend(backend):
+    """BACKEND supersedes FORCE_USE_FLEX_ATTENTION, and torch 2.10+ raises when both are set."""
+    M = _load()
+    options = {"BACKEND": backend}
+    assert M._training_flex_options(options) == options
+    assert M._training_flex_options({"ROWS_GUARANTEED_SAFE": True}) == {
+        "ROWS_GUARANTEED_SAFE": True,
+        "FORCE_USE_FLEX_ATTENTION": True,
+    }
+    flex = pytest.importorskip("torch.nn.attention.flex_attention")
+    if (
+        not hasattr(flex, "_apply_kernel_options")
+        or "BACKEND" not in getattr(flex, "FlexKernelOptions", {}).__annotations__
+    ):
+        return
+    q = torch.randn(1, 1, 16, 16)
+    flex._apply_kernel_options(q, q, q, False, M._training_flex_options(options))
+
+
+@pytest.mark.skipif(
+    "isolate_recompiles" not in __import__("inspect").signature(torch.compile).parameters,
+    reason = "torch < 2.13: no isolate_recompiles",
+)
+def test_recompile_storm_stops_at_the_region_limit(monkeypatch):
+    """A recompile storm stops at _region_recompile_limit (not the global 1024) and runs eager."""
+    M = _load()
+    from torch._dynamo.testing import CompileCounter
+
+    config = torch._dynamo.config
+    monkeypatch.setattr(config, "recompile_limit", 1024)
+    monkeypatch.setattr(config, "accumulated_recompile_limit", 1024)
+    counter, seen = CompileCounter(), []
+    real_compile = torch.compile
+
+    def counting_compile(fn, **kwargs):
+        seen.append(kwargs)
+        return real_compile(
+            fn,
+            backend = counter,
+            fullgraph = False,
+            dynamic = None,
+            isolate_recompiles = kwargs["isolate_recompiles"],
+            recompile_limit = kwargs["recompile_limit"],
+        )
+
+    monkeypatch.setattr(torch, "compile", counting_compile)
+    torch._dynamo.reset()
+
+    class StormDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+            self.tag = "a"
+
+        def forward(self, hidden_states, **kwargs):
+            # A str attribute is guarded by value: a new value every call recompiles.
+            return self.proj(hidden_states) + len(self.tag)
+
+    M._wrap(StormDecoderLayer, {}, 1)
+    layer = StormDecoderLayer().train()
+    for k in range(60):
+        layer.tag = "a" * (k + 1)
+        x = torch.randn(2, 5, 8, requires_grad = True)
+        out = layer(x)
+        torch.testing.assert_close(out, layer.proj(x) + (k + 1))
+        out.sum().backward()
+    torch._dynamo.reset()
+    assert seen[0]["isolate_recompiles"] is True
+    assert counter.frame_count == seen[0]["recompile_limit"] == M._region_recompile_limit(1) == 32
+
+
+def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
+    # The graphs-off compile from UNSLOTH_BLOCK_CUDAGRAPHS needs the same isolation options.
+    M = _load()
+    if not M._ISOLATE_RECOMPILES:
+        pytest.skip("torch < 2.13: no per-region recompile limit")
+    seen = []
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: seen.append(kwargs) or fn)
+
+    class GraphsDecoderLayer(torch.nn.Module):
+        def forward(self, hidden_states, **kwargs):
+            return hidden_states
+
+    M._wrap(GraphsDecoderLayer, {"triton.cudagraphs": True}, 2)
+    assert len(seen) == 2
+    for kwargs in seen:
+        assert kwargs["isolate_recompiles"] is True
+        assert kwargs["recompile_limit"] == M._region_recompile_limit(2) == 48
+
+
+def test_shared_kv_writer_recompute_reuses_the_forward_graph(monkeypatch):
+    """Gemma-4 E2B: recompute saw `shared_kv_states` filled and compiled a second graph (CheckpointError)."""
+    from collections import UserDict
+    from torch._dynamo.testing import CompileCounter
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class Attn(torch.nn.Module):
+        def __init__(self, store, shared):
+            super().__init__()
+            self.store_full_length_kv, self.is_kv_shared_layer = store, shared
+            self.q = torch.nn.Linear(8, 8)
+            self.k = torch.nn.Linear(8, 8)
+
+        def forward(self, x, shared_kv_states):
+            if self.is_kv_shared_layer:
+                k = shared_kv_states["sliding"]
+            else:
+                k = self.k(x)
+            if self.store_full_length_kv:
+                shared_kv_states["sliding"] = k
+            return self.q(x) * k
+
+    class KvDecoderLayer(torch.nn.Module):
+        def __init__(self, store, shared):
+            super().__init__()
+            self.self_attn = Attn(store, shared)
+
+        def forward(
+            self,
+            hidden_states,
+            shared_kv_states = None,
+            **kwargs,
+        ):
+            return hidden_states + self.self_attn(hidden_states, shared_kv_states)
+
+    torch.manual_seed(0)
+    layers = [
+        KvDecoderLayer(False, False),
+        KvDecoderLayer(True, False),
+        KvDecoderLayer(False, True),
+    ]
+    stock = [KvDecoderLayer(False, False), KvDecoderLayer(True, False), KvDecoderLayer(False, True)]
+    for a, b in zip(stock, layers):
+        b.load_state_dict(a.state_dict())
+    M._wrap(KvDecoderLayer, {})
+    for layer in layers + stock:
+        layer.train()
+    for layer in stock:
+        layer.__dict__["_unsloth_block_mode"] = M._OFF
+
+    def step(stack, x):
+        shared = UserDict()
+        h = x
+        for layer in stack:
+            h = checkpoint(layer, h, shared_kv_states = shared, use_reentrant = False)
+        return h, shared
+
+    x = torch.randn(2, 5, 8)
+    ref, ref_shared = step(stock, x)
+    ref.sum().backward()
+    out, shared = step(layers, x)
+    forward_frames = counter.frame_count
+    out.sum().backward()
+    recompute_frames = counter.frame_count - forward_frames
+    torch._dynamo.reset()
+    assert recompute_frames == 0
+    assert list(shared.keys()) == ["sliding"]
+    torch.testing.assert_close(out, ref)
+    for a, b in zip(stock, layers):
+        for pa, pb in zip(a.parameters(), b.parameters()):
+            torch.testing.assert_close(pa.grad, pb.grad)
+
+
+def test_parametrized_class_is_reused_per_module(monkeypatch):
+    """PEFT's ParamWrapper registers a parametrization per forward: each module keeps one
+    Parametrized<Class> (a stable type id for Dynamo), and two modules never share one."""
+    from torch.nn.utils import parametrize
+
+    monkeypatch.setattr(parametrize, "_inject_new_class", parametrize._inject_new_class)
+    bc = _load()
+    bc._stable_parametrized_classes()
+    bc._stable_parametrized_classes()  # idempotent
+
+    class Double(torch.nn.Module):
+        def forward(self, w):
+            return 2 * w
+
+    a, b = torch.nn.Linear(3, 3), torch.nn.Linear(3, 3)
+    seen = []
+    for _ in range(3):
+        parametrize.register_parametrization(a, "weight", Double())
+        seen.append(type(a))
+        expected = 2 * a.parametrizations["weight"].original
+        assert torch.equal(a.weight, expected)
+        parametrize.remove_parametrizations(a, "weight", leave_parametrized = False)
+        assert type(a) is torch.nn.Linear and "weight" in a._parameters
+    assert seen[0] is seen[1] is seen[2] and seen[0] is not torch.nn.Linear
+    parametrize.register_parametrization(b, "weight", Double())
+    assert type(b) is not seen[0] and torch.equal(
+        b.weight, 2 * b.parametrizations["weight"].original
+    )

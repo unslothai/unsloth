@@ -446,8 +446,8 @@ def test_compiled_cache_is_pinned_under_the_studio_home(tmp_path, monkeypatch):
     assert str(tmp_path / "studio_home") in str(location)
 
 
-def test_cache_cleanup_finds_the_configured_and_cwd_caches(tmp_path, monkeypatch):
-    """Cache cleanup must find the pinned compiled cache and a legacy one left in the launcher's CWD."""
+def test_cache_cleanup_finds_the_configured_cache_and_not_the_cwd_one(tmp_path, monkeypatch):
+    """unsloth_zoo writes only to UNSLOTH_COMPILE_LOCATION once it is set, so a same-named folder in the launcher's CWD is not ours."""
     from utils import cache_cleanup
 
     monkeypatch.chdir(tmp_path)
@@ -457,10 +457,11 @@ def test_cache_cleanup_finds_the_configured_and_cwd_caches(tmp_path, monkeypatch
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(configured))
 
     found = {str(Path(d).resolve()) for d in cache_cleanup.get_existing_cache_dirs()}
-    print("\nfound cache dirs:")
-    for d in sorted(found):
-        print("   ", d)
     assert str(configured.resolve()) in found
+    assert str((tmp_path / "unsloth_compiled_cache").resolve()) not in found
+
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION")
+    found = {str(Path(d).resolve()) for d in cache_cleanup.get_existing_cache_dirs()}
     assert str((tmp_path / "unsloth_compiled_cache").resolve()) in found
 
 

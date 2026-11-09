@@ -27,12 +27,11 @@ name: Model catalog network check
 
 on:
   schedule:
-    - cron: '19 6 * * *'   # 06:19 UTC daily, off the cron rush
+    - cron: '19 6 * * *'
   workflow_dispatch:
 
 concurrency:
-  # The event is part of the group so a manual dispatch and the nightly cannot
-  # coalesce; both resolve to refs/heads/main.
+  # Event is in the group so a manual dispatch and the nightly cannot coalesce.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
 
@@ -56,9 +55,6 @@ jobs:
         with:
           node-version: '22'
 
-      # No `npm ci`: the check is a standalone node script over two data
-      # modules and the built-in fetch, so it needs no dependencies at all.
-      # Skipping the install also keeps this job away from the lockfile /
-      # allowScripts machinery the frontend PR gate has to run.
+      # No `npm ci`: the check is a standalone node script with no dependencies.
       - name: Catalog entries must still resolve on the Hub
         run: npm run catalog:check:network

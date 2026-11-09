@@ -18,6 +18,7 @@ import triton.language as tl
 import torch
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE_TORCH
 from typing import Tuple
+from torch.fx.experimental.symbolic_shapes import is_concrete_int as _is_concrete_int
 from .utils import long_indexing, next_power_of_2, torch_gpu_device, torch_device_stream
 from .rms_layernorm import (
     _BF16_TRACEABLE,
@@ -46,12 +47,12 @@ def _rope_heads_tile(
     n_heads,
     cos1,
     sin1,
-    half_head_dim: tl.constexpr,
-    HEADS: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    CAST_TO_SIN: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BACKWARD_PASS: tl.constexpr,
+    half_head_dim: tl.constexpr,  # hd // 2
+    HEADS: tl.constexpr,  # heads per program
+    BLOCK_SIZE: tl.constexpr,  # hd // 2 next pow2
+    CAST_TO_SIN: tl.constexpr,  # compute in sin dtype (fp32 gemma)
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BACKWARD_PASS: tl.constexpr,  # backward (negated sin)
 ):
     # Rotates HEADS heads of one (batch, seq) row from X into OUT (OUT may be X: each element is
     # read before it is written by the same program).
@@ -93,7 +94,8 @@ def _rope_heads_tile(
     tl.store(out_ptr + half_head_dim * out_dim_stride, out1, mask = mask)
 
 
-def _rope_embedding_QK(
+@triton.jit
+def _rope_qk_program(
     Q,
     Q_out,
     K,
@@ -115,23 +117,23 @@ def _rope_embedding_QK(
     ko_head_stride,
     ko_dim_stride,
     cos,
-    cos_row_stride,
+    cos_row_stride,  # runtime: a SymInt in compiled graphs
     sin,
     sin_row_stride,
     rope_embedding_indices,
-    seqlen,
-    n_heads_Q,
-    n_heads_K,
-    n_groups_Q,
-    half_head_dim: tl.constexpr,
-    BACKWARD_PASS: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    CAST_TO_SIN: tl.constexpr,
-    HEADS_Q: tl.constexpr,
-    HEADS_K: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    EVICT_INDICES: tl.constexpr,
+    seqlen,  # runtime, not specialized: varies per call
+    n_heads_Q: tl.constexpr,  # 32
+    n_heads_K: tl.constexpr,  # 8 (0 without K)
+    n_groups_Q: tl.constexpr,  # 1
+    half_head_dim: tl.constexpr,  # hd // 2
+    BACKWARD_PASS: tl.constexpr,  # backward (negated sin)
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    CAST_TO_SIN: tl.constexpr,  # compute in sin dtype (fp32 gemma)
+    HEADS_Q: tl.constexpr,  # query heads per program
+    HEADS_K: tl.constexpr,  # key heads per program
+    BLOCK_SIZE: tl.constexpr,  # hd // 2 next pow2
+    EVICT_INDICES: tl.constexpr,  # evict-first hint on position ids
 ):
     """
     RoPE is Q * cos + rotate_half(Q) * sin; the backward is the same with -sin.
@@ -154,6 +156,9 @@ def _rope_embedding_QK(
             rot_position = tl.load(rope_embedding_indices + row_position).to(tl.int32)
     else:
         rot_position = row_position % seqlen
+    if LONG_INDEXING:
+        # cos / sin tables past 2**31 elements need a 64-bit row offset.
+        rot_position = rot_position.to(tl.int64)
 
     sin1 = tl.load(sin + rot_position * sin_row_stride + col_offsets, mask = mask, other = 0)
     cos1 = tl.load(cos + rot_position * cos_row_stride + col_offsets, mask = mask, other = 0)
@@ -219,9 +224,190 @@ def _rope_embedding_QK(
         )
 
 
+def _rope_embedding_QK(
+    Q,
+    Q_out,
+    K,
+    K_out,
+    q_batch_stride,
+    q_seq_stride: tl.constexpr,
+    q_head_stride,
+    q_dim_stride: tl.constexpr,
+    qo_batch_stride,
+    qo_seq_stride: tl.constexpr,
+    qo_head_stride,
+    qo_dim_stride: tl.constexpr,
+    k_batch_stride,
+    k_seq_stride: tl.constexpr,
+    k_head_stride,
+    k_dim_stride: tl.constexpr,
+    ko_batch_stride,
+    ko_seq_stride: tl.constexpr,
+    ko_head_stride,
+    ko_dim_stride: tl.constexpr,
+    cos,
+    cos_row_stride,
+    sin,
+    sin_row_stride,
+    rope_embedding_indices,
+    seqlen,
+    n_heads_Q: tl.constexpr,
+    n_heads_K: tl.constexpr,
+    n_groups_Q: tl.constexpr,
+    half_head_dim: tl.constexpr,
+    BACKWARD_PASS: tl.constexpr,
+    HAS_ROPE_INDICES: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    CAST_TO_SIN: tl.constexpr,
+    HEADS_Q: tl.constexpr,
+    HEADS_K: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    EVICT_INDICES: tl.constexpr,
+):
+    """Layout strides as constexprs (fixed per model)."""
+    _rope_qk_program(
+        Q,
+        Q_out,
+        K,
+        K_out,
+        q_batch_stride,
+        q_seq_stride,
+        q_head_stride,
+        q_dim_stride,
+        qo_batch_stride,
+        qo_seq_stride,
+        qo_head_stride,
+        qo_dim_stride,
+        k_batch_stride,
+        k_seq_stride,
+        k_head_stride,
+        k_dim_stride,
+        ko_batch_stride,
+        ko_seq_stride,
+        ko_head_stride,
+        ko_dim_stride,
+        cos,
+        cos_row_stride,
+        sin,
+        sin_row_stride,
+        rope_embedding_indices,
+        seqlen,
+        n_heads_Q,
+        n_heads_K,
+        n_groups_Q,
+        half_head_dim,
+        BACKWARD_PASS,
+        HAS_ROPE_INDICES,
+        LONG_INDEXING,
+        CAST_TO_SIN,
+        HEADS_Q,
+        HEADS_K,
+        BLOCK_SIZE,
+        EVICT_INDICES,
+    )
+
+
+def _rope_embedding_QK_strided(
+    Q,
+    Q_out,
+    K,
+    K_out,
+    q_batch_stride,
+    q_seq_stride,
+    q_head_stride,
+    q_dim_stride,
+    qo_batch_stride,
+    qo_seq_stride,
+    qo_head_stride,
+    qo_dim_stride,
+    k_batch_stride,
+    k_seq_stride,
+    k_head_stride,
+    k_dim_stride,
+    ko_batch_stride,
+    ko_seq_stride,
+    ko_head_stride,
+    ko_dim_stride,
+    cos,
+    cos_row_stride,
+    sin,
+    sin_row_stride,
+    rope_embedding_indices,
+    seqlen,
+    n_heads_Q: tl.constexpr,
+    n_heads_K: tl.constexpr,
+    n_groups_Q: tl.constexpr,
+    half_head_dim: tl.constexpr,
+    BACKWARD_PASS: tl.constexpr,
+    HAS_ROPE_INDICES: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    CAST_TO_SIN: tl.constexpr,
+    HEADS_Q: tl.constexpr,
+    HEADS_K: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    EVICT_INDICES: tl.constexpr,
+):
+    """Runtime layout strides, for strides that depend on seq_len (dK as [b, h, d, s])."""
+    _rope_qk_program(
+        Q,
+        Q_out,
+        K,
+        K_out,
+        q_batch_stride,
+        q_seq_stride,
+        q_head_stride,
+        q_dim_stride,
+        qo_batch_stride,
+        qo_seq_stride,
+        qo_head_stride,
+        qo_dim_stride,
+        k_batch_stride,
+        k_seq_stride,
+        k_head_stride,
+        k_dim_stride,
+        ko_batch_stride,
+        ko_seq_stride,
+        ko_head_stride,
+        ko_dim_stride,
+        cos,
+        cos_row_stride,
+        sin,
+        sin_row_stride,
+        rope_embedding_indices,
+        seqlen,
+        n_heads_Q,
+        n_heads_K,
+        n_groups_Q,
+        half_head_dim,
+        BACKWARD_PASS,
+        HAS_ROPE_INDICES,
+        LONG_INDEXING,
+        CAST_TO_SIN,
+        HEADS_Q,
+        HEADS_K,
+        BLOCK_SIZE,
+        EVICT_INDICES,
+    )
+
+
+_LAYOUT_STRIDES = (
+    "q_seq_stride",
+    "q_dim_stride",
+    "qo_seq_stride",
+    "qo_dim_stride",
+    "k_seq_stride",
+    "k_dim_stride",
+    "ko_seq_stride",
+    "ko_dim_stride",
+)
+
+
 # No triton.heuristics wrapper: the launcher passes real bools, and the wrapper's per-call cost
 # showed up at small (decode / short-sequence) shapes.
-_rope_embedding_QK = triton.jit(_rope_embedding_QK)
+_rope_embedding_QK = triton.jit(_rope_embedding_QK, do_not_specialize = ("seqlen",))
+_rope_embedding_QK_strided = triton.jit(
+    _rope_embedding_QK_strided, do_not_specialize = ("seqlen",) + _LAYOUT_STRIDES
+)
 
 # Elements of one half-head tile a program rotates: several heads per program instead of one
 # program per (row, head) with half its lanes masked off.
@@ -252,6 +438,19 @@ def _heads_per_program(n_heads, block_size):
     return max(1, min(next_power_of_2(n_heads), ROPE_TILE_ELEMENTS // block_size))
 
 
+def _fixed_layout(X):
+    # Seq-dependent strides as constexprs recompile per length (a guard traced, a binary eager).
+    _, _, seq_stride, dim_stride = X.stride()
+    # Plain ints (eager) skip the symbolic check: hot on every decode step.
+    if type(seq_stride) is not int or type(dim_stride) is not int:
+        if not (_is_concrete_int(seq_stride) and _is_concrete_int(dim_stride)):
+            return False
+    # Dense, the dim stride grows with seq_len only when the seq dim is the inner one.
+    if dim_stride <= seq_stride or seq_stride == 0:
+        return True
+    return X.shape[2] <= 1 or X.shape[3] <= 1
+
+
 def _rope_launch(Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, cast_to_sin, wrap):
     # Q, K, Q_out, K_out: [batch, n_heads, seq_len, head_dim] at any strides (K may be None).
     # Q_out may be Q itself (in place).
@@ -271,8 +470,16 @@ def _rope_launch(Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, 
         n_groups_K = (n_heads_K + HEADS_K - 1) // HEADS_K
     if rope_ptr is None:
         rope_ptr = cos  # never read without HAS_ROPE_INDICES
-    tensors = (Q, Q_out, K, K_out)
-    wrap(_rope_embedding_QK)[(batch * seq_len, n_groups_Q + n_groups_K)](
+    tensors = (Q, Q_out, K, K_out, cos, sin)
+    kernel = (
+        _rope_embedding_QK
+        if _fixed_layout(Q)
+        and _fixed_layout(K)
+        and (Q_out is Q or _fixed_layout(Q_out))
+        and (K_out is K or _fixed_layout(K_out))
+        else _rope_embedding_QK_strided
+    )
+    wrap(kernel)[(batch * seq_len, n_groups_Q + n_groups_K)](
         Q,
         Q_out,
         K,
@@ -430,7 +637,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
 
         if has_indices:
             # TRL's rotary indices are always int32, so the cast is only for safety.
-            rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
+            rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
         else:
             rope_ptr = None
 
@@ -494,6 +701,40 @@ if _TRACEABLE:
 
     _rope_embedding_op.register_autograd(
         _rope_embedding_op_backward, setup_context = _rope_setup_context
+    )
+
+    @torch.library.triton_op("unsloth::rope_embedding_rows_qk", mutates_args = ())
+    def _rope_embedding_rows_qk_op(
+        Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, backward: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # unsloth::rope_embedding on Q and K in one launch (same kernel and flags: bitwise equal).
+        Q_out = torch.empty(Q.shape, dtype = Q.dtype, device = Q.device)
+        K_out = torch.empty(K.shape, dtype = K.dtype, device = K.device)
+        _rope_launch(
+            Q.transpose(1, 2),
+            Q_out.transpose(1, 2),
+            K.transpose(1, 2),
+            K_out.transpose(1, 2),
+            cos,
+            sin,
+            None,
+            False,
+            backward,
+            True,
+            _traced_kernel,
+        )
+        return Q_out, K_out
+
+    def _rope_rows_qk_setup_context(ctx, inputs, output):
+        ctx.save_for_backward(inputs[2], inputs[3])
+
+    def _rope_embedding_rows_qk_op_backward(ctx, dQ, dK):
+        cos, sin = ctx.saved_tensors
+        dQ, dK = torch.ops.unsloth.rope_embedding_rows_qk(dQ, dK, cos, sin, True)
+        return dQ, dK, None, None, None
+
+    _rope_embedding_rows_qk_op.register_autograd(
+        _rope_embedding_rows_qk_op_backward, setup_context = _rope_rows_qk_setup_context
     )
 
     @torch.library.triton_op("unsloth::rope_embedding_qk", mutates_args = ())
@@ -635,6 +876,11 @@ def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
 
 _fast_rope_embedding_untraced = torch.compiler.disable(_fast_rope_embedding_eager)
 
+# UNSLOTH_COMPILED_ROPE_QK_ONE_LAUNCH=0: compiled RoPE launches once per tensor instead of once for Q and K.
+COMPILED_ROPE_QK_ONE_LAUNCH = os.environ.get(
+    "UNSLOTH_COMPILED_ROPE_QK_ONE_LAUNCH", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+
 
 # Decode RoPE in one launch instead of ~12 per layer per token; UNSLOTH_DECODE_FUSED_ROPE=0 disables it.
 DECODE_FUSED_ROPE = os.environ.get("UNSLOTH_DECODE_FUSED_ROPE", "1").strip().lower() not in (
@@ -701,8 +947,24 @@ def fast_rope_embedding(
         return _fast_rope_embedding_untraced(Q, K, cos, sin, rope_embedding_indices)
     cos, sin = cos.squeeze(), sin.squeeze()
     if rope_embedding_indices is not None:
-        rope_ptr = rope_embedding_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
+        rope_ptr = (
+            rope_embedding_indices.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
+        )
         return torch.ops.unsloth.rope_embedding_qk(Q, K, cos, sin, rope_ptr, False)
+    if (
+        COMPILED_ROPE_QK_ONE_LAUNCH
+        and K.dtype == Q.dtype
+        and K.device == Q.device
+        and K.shape[0] == Q.shape[0]
+        and K.shape[2] == Q.shape[2]
+        and K.shape[3] == Q.shape[3]
+        # The paired backward rotates both gradients: only Q or K needing one stays per tensor.
+        and Q.requires_grad == K.requires_grad
+    ):
+        Q_out, K_out = torch.ops.unsloth.rope_embedding_rows_qk(
+            Q.transpose(1, 2), K.transpose(1, 2), cos, sin, False
+        )
+        return Q_out.transpose(1, 2), K_out.transpose(1, 2)
     Q_out = torch.ops.unsloth.rope_embedding(Q.transpose(1, 2), cos, sin, False).transpose(1, 2)
     K_out = torch.ops.unsloth.rope_embedding(K.transpose(1, 2), cos, sin, False).transpose(1, 2)
     return Q_out, K_out

@@ -27,7 +27,6 @@ pub(crate) struct DesktopUpdatePolicy {
 pub(crate) struct ManualUpdateInfo {
     version: String,
     current_version: String,
-    // Backend release this desktop build pins, which preflight checks against.
     pypi_version: Option<String>,
     body: Option<String>,
     date: Option<String>,
@@ -36,7 +35,7 @@ pub(crate) struct ManualUpdateInfo {
 #[derive(Debug, serde::Deserialize)]
 struct ChannelMetadata {
     version: String,
-    // latest.json publishes Tauri's `notes`/`pub_date`; aliases keep older metadata working.
+    // Aliases keep older latest.json metadata working.
     pypi_version: Option<String>,
     #[serde(alias = "body")]
     notes: Option<String>,

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for external LLM provider configurations.
-
-Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL, per-function connections). API keys are
-NOT stored here: they live only in the browser (localStorage) and are sent encrypted per-request. Enabled model
-selections and discovered catalog IDs are stored server-side so remote Unsloth clients see the same connection
-state (#7281).
-"""
+"""SQLite for LLM providers; API keys stay in the browser and are sent encrypted per request"""
 
 from __future__ import annotations
 
@@ -24,7 +18,11 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-from models.providers import ProviderReasoningConfig, normalize_provider_reasoning_config
+from models.providers import (
+    ProviderReasoningConfig,
+    normalize_provider_extra_headers,
+    normalize_provider_reasoning_config,
+)
 from storage.studio_db import connect_studio_db
 from utils.paths import studio_db_path, ensure_dir
 
@@ -41,12 +39,7 @@ _LEGACY_CUSTOM_PRESET_TYPES = {
 
 
 def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
-    """Align rows created before Custom had its own backend provider types.
-
-    Older Studio builds saved every OpenAI-compatible connection as ``openai``. A
-    non-OpenAI URL may still be an OpenAI reverse proxy, so only an exact built-in
-    custom/preset label is sufficient evidence to change the stored provider type.
-    """
+    """Rows saved as openai change type only on an exact built-in label; a URL may be an OpenAI proxy."""
     updates: list[tuple[str, str]] = []
     rows = conn.execute(
         "SELECT id, display_name, base_url FROM llm_providers WHERE provider_type = 'openai'"
@@ -60,8 +53,7 @@ def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
         except ValueError:
             host = ""
 
-        # A display name is user-editable metadata. Never let it turn an OpenAI-managed
-        # endpoint into a custom connection, even if it happens to equal a preset label.
+        # Display name is user-editable; never let it turn an OpenAI endpoint into a custom one.
         if host == "api.openai.com" or host.endswith(
             (".openai.azure.com", ".services.ai.azure.com")
         ):
@@ -112,6 +104,22 @@ def _decode_reasoning_config(raw) -> Optional[dict]:
         return None
 
 
+def _encode_extra_headers(headers) -> Optional[str]:
+    normalized = normalize_provider_extra_headers(headers)
+    if not normalized:
+        return None
+    return json.dumps(normalized)
+
+
+def _decode_extra_headers(raw) -> dict[str, str]:
+    if not raw:
+        return {}
+    try:
+        return normalize_provider_extra_headers(json.loads(raw))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
 def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
     return (
         _decode_models_json(row["models_json"] if "models_json" in row.keys() else None),
@@ -153,6 +161,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
     if "reasoning_config_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
+    if "extra_headers_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN extra_headers_json TEXT")
     if "shared" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
     # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
@@ -184,12 +194,8 @@ def get_connection() -> sqlite3.Connection:
 
 @contextmanager
 def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
-    """Atomically mutate a provider row and its saved credentials. Provider metadata and encrypted credentials
-    share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
-    endpoint with the previous key (or the inverse) while a provider edit is in progress.
-    """
-    # Ensure both tables exist before opening the transaction. The credential module commits schema
-    # initialization on its own connection.
+    """One SQLite write transaction, so no other process sees a new endpoint paired with the old key."""
+    # Both tables must exist before the transaction; credential_secrets commits its own schema.
     from storage import credential_secrets
 
     credential_secrets.ensure_schema()
@@ -217,10 +223,12 @@ def create_provider(
     max_output_tokens: Optional[int] = None,
     api_type: str = "chat_completions",
     reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[dict] = None,
     shared: bool = False,
 ) -> None:
     """Insert a new provider configuration."""
     reasoning_json = _encode_reasoning_config(reasoning_config)
+    extra_headers_json = _encode_extra_headers(extra_headers)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -229,9 +237,9 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                reasoning_config_json, shared, created_at, updated_at
+                reasoning_config_json, extra_headers_json, shared, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -243,6 +251,7 @@ def create_provider(
                 max_output_tokens,
                 api_type,
                 reasoning_json,
+                extra_headers_json,
                 1 if shared else 0,
                 now,
                 now,
@@ -265,6 +274,7 @@ def update_provider(
     connection: sqlite3.Connection | None = None,
     api_type: str | None = None,
     reasoning_config: dict | None | object = _UNSET,
+    extra_headers: dict | None | object = _UNSET,
     shared: bool | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
@@ -294,6 +304,9 @@ def update_provider(
     if reasoning_config is not _UNSET:
         updates.append("reasoning_config_json = ?")
         params.append(_encode_reasoning_config(reasoning_config))
+    if extra_headers is not _UNSET:
+        updates.append("extra_headers_json = ?")
+        params.append(_encode_extra_headers(extra_headers))
     if shared is not None:
         updates.append("shared = ?")
         params.append(1 if shared else 0)
@@ -332,6 +345,7 @@ def delete_provider(id: str) -> bool:
 def _row_to_provider(row: sqlite3.Row) -> dict:
     data = dict(row)
     data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
+    data["extra_headers"] = _decode_extra_headers(data.pop("extra_headers_json", None))
     models, available_models = _row_models(row)
     data["models"] = models
     data["available_models"] = available_models

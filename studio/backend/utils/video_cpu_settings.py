@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Developer mode: the installation-wide opt-in that lets video generation run on a CPU-only host.
-
-Off by default. When on, ``video_capability()`` reports video as supported (experimental) on a host
-whose only blocker is the missing accelerator (reason ``no_accelerator``); every other refusal
-(detection failure, broken or missing torch, Intel Mac, a GPU that is present but unusable) stays
-blocked, since running on the CPU would not be what the user asked for there.
-
-Precedence: ``UNSLOTH_VIDEO_ALLOW_CPU`` in the backend environment, when set to a recognised
-boolean, wins over the persisted owner setting in both directions (an admin can force it on for a
-headless install, or off for a shared one). Unset or unrecognised falls through to the setting.
-"""
+"""Developer opt-in (off by default): video runs on a CPU-only host, experimental, only when
+no_accelerator is the sole blocker; other refusals stay. UNSLOTH_VIDEO_ALLOW_CPU, if a recognised
+boolean, overrides the saved setting."""
 
 from __future__ import annotations
 

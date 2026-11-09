@@ -62,6 +62,9 @@ def _physical_metal(monkeypatch):
     import core.inference.sd_cpp_args as sd_cpp_args
 
     monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    # Commands are built for a Linux host unless a test sets the platform, so a Mac runner gets the same
+    # commands as Linux (Metal drops direct conv and adds --clip-on-cpu).
+    monkeypatch.setattr("sys.platform", "linux")
     # The real probe is cached and reads sysctl; follow the patched platform.machine() instead.
     import platform
 
@@ -1058,9 +1061,11 @@ def _all_builders(binary, extra_args = None):
 @pytest.mark.parametrize(
     "tag, expected",
     [
-        ("master-982-0518b34-ud331c66", True),  # the pinned bundle
-        ("master-968-8cd731e-ubdb47d1", True),  # the previous pin
-        ("master-951-f89d9b1-uafac7a7", True),  # the pin before it
+        ("master-982-0518b34-uba6ac30", True),  # the pinned bundle
+        ("master-982-0518b34-uaba3a1c", True),  # the previous pin
+        ("master-982-0518b34-ud331c66", True),  # an older pin
+        ("master-968-8cd731e-ubdb47d1", True),  # the pin before it
+        ("master-951-f89d9b1-uafac7a7", True),  # an older pin
         ("master-907-500ef5f", True),  # the build that merged #2037
         ("master-906-abcdef0", False),  # --mmap there hands Metal an unaddressable CPU buffer
         ("master-813-bfbef5b-u6321a69", False),
@@ -1101,3 +1106,184 @@ def test_mmap_env_override_and_no_duplicate(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP")
     for cmd in _all_builders(new, extra_args = ["--mmap"]):
         assert cmd.count("--mmap") == 1
+
+
+# ── CPU mmap (repack-aware builds) ──────────────────────────────────────────
+
+_REPACK_HELP = "  --mmap  whether to memory-map model (CPU: weights the CPU repacks are still loaded and repacked)\n"
+_OLD_HELP = "  --mmap  whether to memory-map model\n"
+
+
+def _cpu_install(
+    tmp_path,
+    monkeypatch,
+    help_text,
+    accelerator = "cpu",
+):
+    import json
+
+    import core.inference.sd_cpp_backend as backend
+
+    root = tmp_path / f"sd-{accelerator}-{abs(hash(help_text)) % 10**6}"
+    (root / "bin").mkdir(parents = True)
+    binary = root / "bin" / "sd-cli"
+    binary.write_text("")
+    (root / ".unsloth-sd-cpp-install.json").write_text(
+        json.dumps({"tag": "master-982-0518b34-uba6ac30", "accelerator": accelerator})
+    )
+    for fn in (
+        _sd_cpp_args_module._installed_sd_cpp_tag,
+        _sd_cpp_args_module._installed_sd_cpp_accelerator,
+        _sd_cpp_args_module._cpu_mmap_repack_in_help,
+    ):
+        fn.cache_clear()
+    monkeypatch.setattr(backend, "_sd_cpp_probe_output", lambda b, *a, **k: help_text)
+    return str(binary)
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_cpu_mmap_on_repack_aware_cpu_builds_only(monkeypatch, tmp_path, platform):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    monkeypatch.setattr("sys.platform", platform)
+    new = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    for cmd in _all_builders(new):
+        assert cmd.count("--mmap") == 1
+    # The pinned build maps repackable weights and runs them unrepacked: never sent there.
+    old = _cpu_install(tmp_path, monkeypatch, _OLD_HELP)
+    assert all("--mmap" not in cmd for cmd in _all_builders(old))
+    for accel in ("cuda", "vulkan", "rocm"):
+        gpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP, accelerator = accel)
+        assert all("--mmap" not in cmd for cmd in _all_builders(gpu))
+
+
+def test_cpu_mmap_follows_an_explicit_backend(monkeypatch, tmp_path):
+    from core.inference.sd_cpp_args import mmap_flags
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    monkeypatch.setattr("sys.platform", "linux")
+    gpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP, accelerator = "vulkan")
+    assert mmap_flags(gpu, None, ["--backend", "cpu"]) == ["--mmap"]
+    cpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    assert mmap_flags(cpu, None, ["--backend", "diffusion=vulkan0"]) == []
+    assert mmap_flags(cpu, ["--mmap"], None) == []
+    assert mmap_flags(None, None, None) == []
+    # an unreadable / unprobeable binary fails closed
+    assert (
+        _cpu_install(tmp_path, monkeypatch, None)
+        and mmap_flags(str(tmp_path / "missing" / "sd-cli")) == []
+    )
+
+
+def test_cpu_mmap_env_override(monkeypatch, tmp_path):
+    from core.inference.sd_cpp_args import mmap_flags
+
+    monkeypatch.setattr("sys.platform", "linux")
+    new = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "0")
+    assert mmap_flags(new) == []
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "1")
+    old = _cpu_install(tmp_path, monkeypatch, _OLD_HELP)
+    assert mmap_flags(old) == ["--mmap"]
+
+
+@pytest.mark.parametrize(
+    "ccs,expected",
+    [
+        ([(8, 0)], "1024"),  # A100
+        ([(9, 0)], "1024"),  # H100
+        ([(10, 0)], "1024"),  # B200
+        ([(10, 3)], "1024"),
+        ([(12, 0)], "4096"),  # RTX PRO 6000 / RTX 50
+        ([(8, 9)], None),  # L4 / RTX 40: MMQ stays faster
+        ([(8, 6)], None),
+        ([(8, 7)], None),
+        ([(7, 5)], None),
+        ([(11, 0)], None),
+        ([(8, 0), (10, 0)], "1024"),
+        ([(8, 0), (8, 9)], None),  # sd.cpp may land on either card
+        ([(10, 0), (12, 0)], None),
+        ([], None),
+    ],
+)
+def test_quant_cublas_env_follows_the_measured_architectures(ccs, expected):
+    env = _sd_cpp_args_module.quant_cublas_env(ccs, environ = {}, weight_types = frozenset({"Q8_0"}))
+    assert env == ({} if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected})
+
+
+@pytest.mark.parametrize("user_value", ["0", "512"])
+def test_quant_cublas_env_never_overrides_the_user(user_value):
+    environ = {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": user_value}
+    assert (
+        _sd_cpp_args_module.quant_cublas_env(
+            [(10, 0)], environ = environ, weight_types = frozenset({"Q8_0"})
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize(
+    "weight_types,expected",
+    [
+        (frozenset({"Q8_0"}), "1024"),
+        (frozenset({"Q4_K"}), None),  # k-quants keep MMQ
+        (frozenset({"Q4_K", "Q5_K"}), None),
+        (frozenset({"Q8_0", "Q4_K"}), None),  # a mixed file would route its k-quants too
+        (frozenset({"Q4_0"}), None),
+        (frozenset(), None),  # unquantized: nothing to route
+        (None, None),  # unknown (safetensors, unreadable)
+    ],
+)
+def test_quant_cublas_env_only_for_q8_0_diffusion_ggufs(weight_types, expected):
+    env = _sd_cpp_args_module.quant_cublas_env([(10, 0)], environ = {}, weight_types = weight_types)
+    assert env == ({} if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected})
+
+
+def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
+    gguf = pytest.importorskip("gguf")
+    import numpy as np
+
+    def write(name, tensors):
+        path = tmp_path / name
+        w = gguf.GGUFWriter(str(path), "test")
+        for tname, arr, qtype in tensors:
+            if qtype is None:
+                w.add_tensor(tname, arr)
+            elif arr is None:  # gguf-py cannot quantize k-quants: write zeroed blocks of that type
+                blocks = np.zeros((4, gguf.GGML_QUANT_SIZES[qtype][1]), dtype = np.uint8)
+                w.add_tensor(tname, blocks, raw_dtype = qtype)
+            else:
+                w.add_tensor(tname, gguf.quants.quantize(arr, qtype), raw_dtype = qtype)
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+        return str(path)
+
+    x = np.ones((4, 256), dtype = np.float32)
+    q8 = write(
+        "q8.gguf",
+        [("a", x, gguf.GGMLQuantizationType.Q8_0), ("n", np.ones(4, dtype = np.float32), None)],
+    )
+    mixed = write(
+        "mixed.gguf",
+        [("a", x, gguf.GGMLQuantizationType.Q8_0), ("b", x, gguf.GGMLQuantizationType.Q4_0)],
+    )
+    types_of = _sd_cpp_args_module.gguf_quantized_weight_types
+    assert types_of(q8) == frozenset({"Q8_0"})
+    assert types_of(mixed) == frozenset({"Q8_0", "Q4_0"})
+    assert types_of(str(tmp_path / "missing.gguf")) is None
+    assert types_of(str(tmp_path / "model.safetensors")) is None
+    assert types_of(None) is None
+
+    k_quant = write("te_q4k.gguf", [("w", None, gguf.GGMLQuantizationType.Q4_K)])
+    assert types_of(k_quant) == frozenset({"Q4_K"})
+
+    def route(path):
+        return _sd_cpp_args_module.quant_cublas_env(
+            [(10, 0)], environ = {}, weight_types = types_of(path)
+        )
+
+    assert route(q8) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert route(mixed) == {}
+    assert route(k_quant) == {}
+    assert route(str(tmp_path / "missing.gguf")) == {}

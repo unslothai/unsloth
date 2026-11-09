@@ -5,6 +5,7 @@
 isolated, opaque-origin shell that a page cannot navigate out from under the proxy."""
 
 import asyncio
+import codecs
 import json
 import threading
 import time
@@ -335,6 +336,96 @@ def test_prepare_page_strips_what_would_escape_the_sandbox():
     )
 
 
+def test_prepare_page_leaves_inert_base_and_refresh_tags_alone():
+    page = (
+        '<noscript><meta http-equiv="refresh" content="0; url=/nojs"></noscript>'
+        '<!-- <meta http-equiv="refresh" content="0; url=/old"> -->'
+        "<script>var s = \"<base href='https://evil.example/'>\";</script>"
+        '<textarea><base href="https://evil.example/"></textarea>'
+        '<template><meta http-equiv="refresh" content="0; url=/tpl"></template>'
+        '<meta http-equiv="refresh" content="1; url=/live"><p>x</p>'
+    )
+    html, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base is None
+    assert refresh == {"delay": 1.0, "url": "https://example.com/live"}
+    assert "url=/nojs" in html and "url=/old" in html and "url=/tpl" in html
+    assert "<base href='https://evil.example/'>" in html
+    assert '<textarea><base href="https://evil.example/"></textarea>' in html
+    assert "url=/live" not in html
+    page = '<textarea><base href="https://evil.example/"></textarea><base href="/docs/"><p>y</p>'
+    html, base, _ = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base == "https://example.com/docs/"
+    assert html == '<textarea><base href="https://evil.example/"></textarea><p>y</p>'
+
+
+def test_prepare_page_scans_for_inert_text_only_when_a_tag_needs_it(monkeypatch):
+    calls = []
+    scan = browser_mod._inert_spans
+    monkeypatch.setattr(
+        browser_mod,
+        "_inert_spans",
+        lambda *args, **kwargs: calls.append(1) or scan(*args, **kwargs),
+    )
+    page = '<meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><p>x</p>'
+    assert browser_mod._prepare_page(page, "https://example.com/")[0] == page
+    assert calls == []
+    page = '<base href="/d/"><meta http-equiv="refresh" content="1; url=n"><p>x</p>'
+    _, base, refresh = browser_mod._prepare_page(page, "https://example.com/")
+    assert base == "https://example.com/d/" and refresh["url"] == "https://example.com/d/n"
+    assert calls == [1]
+
+
+@pytest.mark.parametrize("comment", ["<!-->", "<!--->", "<!-- x --!>"])
+def test_a_comment_ends_where_the_tokenizer_ends_it(comment):
+    page = f'{comment}<base href="/docs/"><meta http-equiv="refresh" content="1; url=next">'
+    html, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base == "https://example.com/docs/"
+    assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
+    assert html == comment
+
+
+def test_custom_elements_named_like_raw_text_ones_are_not_inert():
+    page = (
+        "<title-bar>x</title-bar><template-card></template-card><script-loader></script-loader>"
+        '<base href="/docs/"><meta http-equiv="refresh" content="1; url=next">'
+    )
+    html, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base == "https://example.com/docs/"
+    assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
+    assert "<base" not in html and "refresh" not in html
+
+
+@pytest.mark.parametrize(
+    "inside",
+    [
+        '<script>const s = "<template>";</script>',
+        "<!-- <template> -->",
+        "<textarea><template></textarea>",
+        '<div title="<script>"></div>',
+        "<a data-x='<template>'>x</a><template-card></template-card>",
+        "<template><base href='https://evil.example/'></template>",
+    ],
+)
+def test_a_template_ends_where_the_parser_ends_it(inside):
+    page = (
+        f"<template>{inside}</template>"
+        '<base href="/docs/"><meta http-equiv="refresh" content="1; url=next">'
+    )
+    _, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base == "https://example.com/docs/"
+    assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
+
+
+def test_a_custom_element_named_like_template_does_not_close_it():
+    page = (
+        '<template><template-card></template-card><base href="https://evil.example/"></template>'
+        '<base href="/docs/">'
+    )
+    assert browser_mod._prepare_page(page, "https://example.com/a/")[1] == (
+        "https://example.com/docs/"
+    )
+
+
 def test_a_failed_fetch_of_an_unparseable_address_still_answers_502():
     from fastapi import HTTPException
 
@@ -350,6 +441,9 @@ def test_prepare_page_is_linear_on_unclosed_tags():
     start = time.monotonic()
     # 23 s quadratic, a few ms linear: room for a loaded CI box without losing the regression.
     browser_mod._prepare_page("<meta<base" * 80_000, "https://example.com/")
+    browser_mod._prepare_page("<template>" + "<meta<base" * 80_000, "https://example.com/")
+    browser_mod._prepare_page("<p>x</p><a" + "b" * 400_000, "https://example.com/")
+    browser_mod._prepare_page("<template><a" + "b" * 400_000, "https://example.com/")
     assert time.monotonic() - start < 5
 
 
@@ -459,6 +553,30 @@ def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
     response = _call(url = "https://example.com/c.csv")
     assert response.body.decode("utf-8") == "a,café\n"
     assert response.headers["content-type"] == "text/csv; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "body, text",
+    [
+        ("a,café\n".encode("utf-8"), "a,café\n"),
+        ("a,caf\xe9\n".encode("cp1252"), "a,café\n"),
+        (codecs.BOM_UTF8 + "a,café\n".encode("utf-8"), "a,café\n"),
+        (codecs.BOM_UTF16_LE + "a,café\n".encode("utf-16-le"), "a,café\n"),
+    ],
+)
+def test_unlabelled_raw_text_is_read_as_a_browser_would(monkeypatch, body, text):
+    _fetch(monkeypatch, (None, body, "text/plain"), {"url": "https://example.com/x.txt"})
+    response = _call(url = "https://example.com/x.txt")
+    assert response.body == text.encode("utf-8")
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+def test_html_behind_a_bom_without_a_content_type_is_a_page(monkeypatch):
+    body = codecs.BOM_UTF8 + b"<!DOCTYPE html><html><body><p>hi</p></body></html>"
+    _fetch(monkeypatch, (None, body, ""), {"url": "https://example.com/"})
+    response = _call(url = "https://example.com/")
+    assert response.headers[browser_mod.KIND_HEADER] == "html"
+    assert "<p>hi</p>" in json.loads(response.body)["html"]
 
 
 @pytest.mark.parametrize(

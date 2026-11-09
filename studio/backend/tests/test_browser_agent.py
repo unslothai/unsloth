@@ -125,8 +125,11 @@ def test_type_select_scroll_and_keys():
     assert _request("browser_select", {"ref": "r4", "value": "Large"})["value"] == "Large"
     assert _request("browser_select", {"ref": "r4", "value": False})["value"] == "false"
     assert _request("browser_select", {"ref": "r4", "value": 0})["value"] == "0"
-    assert _request("browser_select", {"ref": "r4"})["value"] == ""
+    assert _request("browser_select", {"ref": "r4", "value": " Large "})["value"] == "Large"
     assert _request("browser_select", {"ref": "r4", "value": True})["value"] == "true"
+    for empty in (None, "", "   "):
+        with pytest.raises(ValueError, match = "value is empty"):
+            _request("browser_select", {"ref": "r4", "value": empty})
     assert _request("browser_scroll", {}) == {"op": "scroll", "direction": "down"}
     assert _request("browser_press_key", {"key": "enter"}) == {"op": "press", "key": "Enter"}
     with pytest.raises(ValueError):
@@ -253,6 +256,49 @@ def test_errors_and_long_pages():
     assert len(long) < 26_000 and "cut here" in long
 
 
+def test_an_unreadable_address_is_withheld_rather_than_raised():
+    out = browser_agent.format_result(
+        "browser_snapshot", {"ok": True, "url": "https://[bad/", "text": "secret"}, None
+    )
+    assert out.startswith("Error:")
+    assert "secret" not in out
+
+
+def test_status_badges_say_what_the_browser_does():
+    from core.inference.tool_loop_controller import status_for_tool
+
+    assert (
+        status_for_tool("browser_navigate", {"url": "www.example.com/a?b=1"})
+        == "Opening: example.com"
+    )
+    assert (
+        status_for_tool("browser_navigate", {"url": "https://Docs.Example.org/x"})
+        == "Opening: docs.example.org"
+    )
+    assert status_for_tool("browser_navigate", {"url": "back"}) == "Going back"
+    assert status_for_tool("browser_navigate", {"url": "http://[bad/"}) == "Opening a page..."
+    assert status_for_tool("browser_snapshot", {}) == "Reading the page"
+    assert status_for_tool("browser_find", {"query": "  sign\nin "}) == "Finding: sign in"
+    assert status_for_tool("browser_click", {"ref": "r12"}) == "Clicking: r12"
+    assert status_for_tool("browser_click", {"x": 1, "y": 2}) == "Clicking the page"
+    assert status_for_tool("browser_type", {"ref": "r3", "text": "x" * 80}) == "Typing: " + "x" * 40
+    assert status_for_tool("browser_select", {"ref": "r3", "value": "Large"}) == "Choosing: Large"
+    assert status_for_tool("browser_scroll", {"direction": "up"}) == "Scrolling up"
+    assert status_for_tool("browser_scroll", {}) == "Scrolling down"
+    assert status_for_tool("browser_press_key", {"key": "Enter"}) == "Pressing: Enter"
+    assert (
+        status_for_tool("browser_evaluate", {"script": "return 1"})
+        == "Running a script on the page"
+    )
+    assert status_for_tool("browser_screenshot", {}) == "Taking a screenshot"
+    assert (
+        status_for_tool("browser_history", {"query": "qwen"}) == "Searching browsing history: qwen"
+    )
+    assert status_for_tool("browser_history", {}) == "Reading browsing history"
+    assert status_for_tool("browser_move_mouse", {"ref": "r1"}) == "Moving the mouse"
+    assert status_for_tool("browser_drag", {}) == "Dragging"
+
+
 def test_a_page_that_moved_off_the_policy_is_withheld():
     policy = {"allowedDomains": ["wikipedia.org"], "blockedDomains": []}
     out = browser_agent.format_result(
@@ -351,6 +397,18 @@ def test_bad_arguments_never_reach_the_tab():
         "browser_navigate", {"url": "http://10.0.0.1:8888"}, output_callback = callback
     )
     assert out.startswith("Error:") and seen == []
+
+
+def test_a_stream_that_is_gone_leaves_no_slot_behind():
+    def closed(_event):
+        raise RuntimeError("stream closed")
+
+    before = set(browser_actions._pending)
+    with pytest.raises(RuntimeError):
+        browser_agent.execute_browser_tool(
+            "browser_snapshot", {}, output_callback = closed, session_id = "s"
+        )
+    assert set(browser_actions._pending) == before
 
 
 def test_without_a_chat_tab_the_tool_says_so():
@@ -481,6 +539,8 @@ def test_repeated_browser_calls_run_again_and_keep_the_tools():
         "https://www.google.com//.././url?q=http://127.0.0.1:8888/private",
         # ... and maps the host the way IDNA does.
         "https://www.google\u3002com/url?q=http://127.0.0.1:8888/private",
+        "https://www.google.co.uk/url?q=http://127.0.0.1:8888/private",
+        "https://google.com.au/url?q=http://127.0.0.1:8888/private",
     ],
 )
 def test_redirect_target_is_checked_like_the_link(url):
@@ -504,3 +564,76 @@ def test_redirect_target_honours_the_website_policy():
         "op": "navigate",
         "url": "https://www.google.com/url?q=https://unsloth.ai/",
     }
+
+
+def test_file_tools_take_bounded_arguments():
+    assert _request("browser_tabs", {}) == {"op": "tabs"}
+    assert _request("browser_tabs", {"tab": 2}) == {"op": "tabs", "tab": 2}
+    assert _request("browser_tabs", {"tab": "3"}) == {"op": "tabs", "tab": 3}
+    for bad in (0, -1, 1.5, True, "two", 5000):
+        with pytest.raises(ValueError):
+            _request("browser_tabs", {"tab": bad})
+    assert _request("browser_read_file", {}) == {"op": "read_file", "start_line": 1}
+    assert _request("browser_read_file", {"start_line": 40}) == {
+        "op": "read_file",
+        "start_line": 40,
+    }
+    with pytest.raises(ValueError, match = "from 1"):
+        _request("browser_read_file", {"start_line": -3})
+
+    assert _request("browser_edit_file", {"old_text": "<h1>", "new_text": "<h2>"}) == {
+        "op": "edit_file",
+        "old_text": "<h1>",
+        "new_text": "<h2>",
+        "replace_all": False,
+    }
+    assert _request("browser_edit_file", {"old_text": "x", "new_text": ""})["new_text"] == ""
+    assert _request("browser_edit_file", {"content": ""}) == {"op": "edit_file", "content": ""}
+    for arguments, message in (
+        ({}, "old_text is empty"),
+        ({"old_text": "a"}, "new_text is required"),
+        ({"old_text": "a", "new_text": "a"}, "the same"),
+        ({"content": "x", "old_text": "a", "new_text": "b"}, "not both"),
+        ({"content": 5}, "must be a string"),
+        ({"content": "x" * 500_001}, "longer than"),
+    ):
+        with pytest.raises(ValueError, match = message):
+            _request("browser_edit_file", arguments)
+
+
+def test_file_results_name_the_file_inside_the_fence():
+    out = browser_agent.format_result(
+        "browser_read_file",
+        {"ok": True, "file": "page.html", "text": "1\t<h1>Hi</h1>", "note": "Lines 1-1 of 1."},
+        None,
+    )
+    assert out.index("File: page.html") > out.index("<untrusted_web_content>")
+    assert "1\t<h1>Hi</h1>" in out
+    long = browser_agent.format_result(
+        "browser_read_file", {"ok": True, "file": "a.txt", "text": "x" * 50_000}, None
+    )
+    assert "browser_read_file with a later start_line" in long
+
+
+def test_file_tools_have_status_badges_and_are_browser_tools():
+    from core.inference.tool_loop_controller import status_for_tool
+
+    for name in ("browser_tabs", "browser_read_file", "browser_edit_file"):
+        assert browser_agent.is_browser_tool(name)
+    assert status_for_tool("browser_tabs", {}) == "Listing browser tabs"
+    assert status_for_tool("browser_tabs", {"tab": 2}) == "Switching tabs"
+    assert status_for_tool("browser_read_file", {}) == "Reading the file"
+    assert (
+        status_for_tool("browser_edit_file", {"old_text": "a", "new_text": "b"})
+        == "Editing the file"
+    )
+
+
+def test_the_artifact_frame_installs_the_agent_without_eval():
+    from routes.inference import _ARTIFACT_PREVIEW_FRAME_STRICT_CSP, _artifact_preview_frame_html
+
+    html = _artifact_preview_frame_html()
+    assert 'data.command === "agent"' in html
+    assert "buildAgent(data.code)" in html
+    assert "unsafe-eval" not in _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
+    assert "new Function" not in html and "eval(" not in html

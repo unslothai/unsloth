@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -19,12 +20,11 @@ import {
   DocumentAttachmentIcon,
   PlusSignIcon,
   Search01Icon,
-  Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Settings01Icon } from "@/lib/hugeicons-derived";
 import {
   ArrowLeftIcon,
-  ChevronRightIcon,
 } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -148,7 +148,7 @@ const MODEL_ROOT_GROUP: RootGroup = {
   kind: "model",
   title: "Models",
   description: "Connect a provider and pick which model powers your AI steps.",
-  icon: Settings02Icon,
+  icon: Settings01Icon,
 };
 const MODEL_SETUP_TYPES = new Set<BlockType>(["model_provider", "model_config"]);
 const ROOT_GROUPS_WITH_SEED_FIRST: RootGroup[] = [
@@ -213,7 +213,7 @@ function BlockSheetButton({
             : "border-transparent hover:border-border/60"
       } ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
     >
-      <div className="flex size-9 items-center justify-center rounded-xl text-foreground/70">
+      <div className="flex size-9 items-center justify-center rounded-md text-foreground/70">
         <HugeiconsIcon icon={icon} className="size-5" />
       </div>
       <div className="min-w-0 flex-1">
@@ -232,7 +232,8 @@ function BlockSheetButton({
         </p>
       </div>
       {trailing === "chevron" ? (
-        <ChevronRightIcon
+        <HugeiconsIcon
+          icon={ChevronRightStandardIcon}
           className="size-3.5 text-muted-foreground"
         />
       ) : trailing === "drag" ? (
@@ -480,9 +481,9 @@ export function BlockSheet({
           <div className="flex-1 min-h-0 overflow-y-auto py-4">
             <div className="mt-4 flex flex-col gap-2">
               {isRootView && !hasSearch && (
-                <div className={`mx-3 mb-2 rounded-2xl border px-4 py-4 ${RECIPE_STUDIO_ONBOARDING_SURFACE_TONE}`}>
+                <div className={`mx-3 mb-2 rounded-xl border px-4 py-4 ${RECIPE_STUDIO_ONBOARDING_SURFACE_TONE}`}>
                   <div className="flex items-start gap-3">
-                    <div className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl ${RECIPE_STUDIO_ONBOARDING_ICON_TONE}`}>
+                    <div className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md ${RECIPE_STUDIO_ONBOARDING_ICON_TONE}`}>
                       <HugeiconsIcon
                         icon={DocumentAttachmentIcon}
                         className="size-4"
@@ -715,7 +716,7 @@ export function BlockSheet({
                       setSheetOpen(false);
                       onOpenProcessors();
                     }}
-                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25"
+                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25"
                   >
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground">

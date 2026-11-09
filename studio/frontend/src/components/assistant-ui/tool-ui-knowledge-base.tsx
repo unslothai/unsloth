@@ -62,7 +62,7 @@ export function CitationBadge({
       size="sm"
       className={`rounded-full inline-flex items-center gap-1.5 max-w-[calc(15rem*var(--ui-space-scale,1))] ${
         clickable
-          ? "cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
+          ? "btn-fill cursor-pointer border-transparent hover:text-accent-foreground transition-colors"
           : "cursor-default"
       }`}
     >
@@ -133,8 +133,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   const hasText = useAuiState(({ message }) =>
     partsHaveNonEmptyText(message.content),
   );
-  // Ask permission gates every local tool call, and what is being approved
-  // lives inside the content while Allow/Deny render outside it.
+  // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
@@ -209,7 +208,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
               </>
             ) : resultText ? (
               <ScrollPane
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {resultText}
@@ -220,7 +219,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             {query.length > QUERY_INLINE_MAX ? (
               <ScrollPane
                 data-slot="knowledge-base-query"
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {query}

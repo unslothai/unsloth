@@ -1,32 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Throughput layout for native FSDP2 when the model fits on one GPU.
-
-Plain FSDP2 is slower than DDP for a model that fits on each GPU because it moves weights DDP never
-moves: every block's frozen LoRA base weights are all-gathered in forward and again for the backward
-(or gradient checkpointing) recompute, and full fine-tuning all-gathers each block twice per step.
-When the model fits, the layout here keeps:
-
-  * frozen parameters replicated (passed as ``ignored_params``): never gathered, never reduced, exactly
-    like DDP, and bitsandbytes 4-bit base weights stay plain ``Params4bit``;
-  * trainable parameters, their gradients and optimizer state sharded as usual;
-  * the gathered trainable weights resident from forward to backward (``reshard_after_forward=False``),
-    one all-gather per step instead of two;
-  * explicit next-block prefetch in forward and backward;
-  * when only small trainable params are left (LoRA adapters), a single root unit: one all-gather and
-    one reduce-scatter per step, no per-block hooks.
-
-Units holding no trainable parameter are not wrapped (no hooks, no empty collectives). Peak memory stays
-at or below DDP: frozen weights are what DDP holds, trainable weights are held once gathered plus one
-shard, and gradients plus optimizer state are sharded.
-
-Env overrides (read only when native FSDP2 is used): ``UNSLOTH_FSDP2_REPLICATE_FROZEN`` = auto | 1 | 0,
-``UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD`` = auto | 1 | 0, ``UNSLOTH_FSDP2_PREFETCH`` = 1 | 0,
-``UNSLOTH_FSDP2_FIT_FRACTION`` (default 0.4 of one device's memory).
-"""
+"""Throughput FSDP2 layout for models fitting one GPU: frozen weights replicated, trainable sharded."""
 
 from dataclasses import dataclass, field
+from typing import Optional
 import os
 
 import torch
@@ -79,6 +57,33 @@ def _device_bytes(device = None):
         return 0
 
 
+def _device_free_bytes(device = None):
+    """``mem_get_info`` free plus torch's unallocated cache; None off CUDA or if unreadable."""
+    if device is not None and torch.device(device).type != "cuda":
+        return None
+    try:
+        if device is None:
+            device = torch.cuda.current_device()
+        free, _ = torch.cuda.mem_get_info(device)
+        cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+        return int(free) + max(int(cached), 0)
+    except Exception:
+        return None
+
+
+def _resident_bytes(params, device):
+    """Bytes of `params` already stored on `device`."""
+    if device is None:
+        return 0
+    target = torch.device(device)
+    if target.type == "cuda" and target.index is None:
+        try:
+            target = torch.device("cuda", torch.cuda.current_device())
+        except Exception:
+            return 0
+    return _param_bytes(p for p in params if p.device == target)
+
+
 @dataclass
 class FSDP2Layout:
     replicate_frozen: bool = False
@@ -89,6 +94,7 @@ class FSDP2Layout:
     frozen_bytes: int = 0
     trainable_bytes: int = 0
     device_bytes: int = 0
+    available_bytes: Optional[int] = None
     reasons: list = field(default_factory = list)
 
     def as_dict(self):
@@ -101,6 +107,9 @@ class FSDP2Layout:
             "frozen_gib": round(self.frozen_bytes / 2**30, 3),
             "trainable_gib": round(self.trainable_bytes / 2**30, 3),
             "device_gib": round(self.device_bytes / 2**30, 1),
+            "available_gib": None
+            if self.available_bytes is None
+            else round(self.available_bytes / 2**30, 2),
             "reasons": list(self.reasons),
         }
 
@@ -131,6 +140,15 @@ def plan_fsdp2_layout(
         fraction = float(os.environ.get("UNSLOTH_FSDP2_FIT_FRACTION", "0.4"))
     except ValueError:
         fraction = 0.4
+    # Scales with `fraction`, so the free-memory rule binds only once > 20% of the card is in use.
+    default_free_fraction = max(0.5, fraction / 0.8)
+    try:
+        free_fraction = float(
+            os.environ.get("UNSLOTH_FSDP2_FREE_FIT_FRACTION", str(default_free_fraction))
+        )
+    except ValueError:
+        free_fraction = default_free_fraction
+    model_bytes = layout.frozen_bytes + layout.trainable_bytes
     # "Fits" = the whole model (what DDP keeps on every GPU) uses at most `fraction` of one device,
     # leaving the rest for activations, gradients and optimizer state.
     # CPU offload asks for memory, not speed: keep the plain sharded layout.
@@ -143,10 +161,21 @@ def plan_fsdp2_layout(
         layout.fits = (
             not cpu_offload
             and layout.device_bytes > 0
-            and (layout.frozen_bytes + layout.trainable_bytes) <= fraction * layout.device_bytes
+            and model_bytes <= fraction * layout.device_bytes
         )
+        if layout.fits:
+            # Crowded GPUs shard; ranks AND their decision, so one crowded rank shards everyone.
+            free = _device_free_bytes(device)
+            if free is not None:
+                layout.available_bytes = free + _resident_bytes(params, device)
+                if model_bytes > free_fraction * layout.available_bytes:
+                    layout.fits = False
+                    layout.reasons.append(
+                        f"fits=False: only {layout.available_bytes / 2**30:.2f} GiB usable on this GPU "
+                        f"(free + cached + resident model), model needs <= {free_fraction} of it"
+                    )
     layout.reasons.append(
-        f"fits={layout.fits} (model {(layout.frozen_bytes + layout.trainable_bytes) / 2**30:.2f} GiB vs {fraction} x {layout.device_bytes / 2**30:.1f} GiB)"
+        f"fits={layout.fits} (model {model_bytes / 2**30:.2f} GiB vs {fraction} x {layout.device_bytes / 2**30:.1f} GiB)"
     )
 
     replicate = replicate_frozen
@@ -225,9 +254,48 @@ def apply_fsdp2_prefetch(
         behind = units[max(0, i - backward_depth) : i][::-1]
         if ahead:
             unit.set_modules_to_forward_prefetch(ahead)
+            _skip_forward_prefetch_in_backward(unit, ahead)
         if behind:
             unit.set_modules_to_backward_prefetch(behind)
     return len(units)
+
+
+def _in_backward():
+    task = getattr(torch._C, "_current_graph_task_id", None)
+    return task is not None and task() != -1
+
+
+def _skip_forward_prefetch_in_backward(unit, ahead):
+    """Gradient checkpointing re-runs a block's forward inside backward, which fires its pre-forward
+    hook and with it the explicit forward prefetch of block i+1: block i+1 has already run its backward
+    and been resharded, so it is gathered again for nothing (one wasted all-gather per block per
+    micro-batch). Clear the forward prefetch while autograd is running a backward and restore it for
+    the next real forward. Public FSDPModule API only; `UNSLOTH_FSDP2_RECOMPUTE_PREFETCH=1` keeps torch's
+    behaviour."""
+    if os.environ.get("UNSLOTH_FSDP2_RECOMPUTE_PREFETCH", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
+    if getattr(unit, "_unsloth_recompute_prefetch_hooked", False):
+        unit._unsloth_forward_prefetch = list(ahead)
+        return
+    unit._unsloth_forward_prefetch = list(ahead)
+    state = {"cleared": False}
+
+    def _pre_forward(module, args):
+        if _in_backward():
+            if not state["cleared"]:
+                module.set_modules_to_forward_prefetch([])
+                state["cleared"] = True
+        elif state["cleared"]:
+            module.set_modules_to_forward_prefetch(module._unsloth_forward_prefetch)
+            state["cleared"] = False
+
+    # prepend: runs before FSDP's own pre-forward hook, which issues the prefetch.
+    unit.register_forward_pre_hook(_pre_forward, prepend = True)
+    unit._unsloth_recompute_prefetch_hooked = True
 
 
 def _env_int(name, default):

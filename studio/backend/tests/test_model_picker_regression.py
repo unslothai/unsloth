@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -174,6 +176,54 @@ def test_chat_template_over_byte_limit_is_rejected():
     assert len(multibyte.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES
     with pytest.raises(Exception):
         _load_request(chat_template_override = multibyte)
+
+
+def _large_community_template(target_bytes: int) -> str:
+    # Shaped like the large community templates in #14841: one long chain of role branches.
+    branch = (
+        "{%- elif message['role'] == 'persona_{i}' -%}"
+        "{{ '<|im_start|>persona_{i}\\n' + message['content'] | trim + '<|im_end|>\\n' }}\n"
+    )
+    body, i = [], 0
+    while sum(map(len, body)) < target_bytes:
+        body.append(branch.replace("{i}", str(i)))
+        i += 1
+    return (
+        "{%- for message in messages -%}\n"
+        "{%- if message['role'] == 'system' -%}{{ message['content'] }}\n"
+        + "".join(body)
+        + "{%- endif -%}{%- endfor -%}"
+    )
+
+
+def test_large_community_chat_template_is_accepted_end_to_end():
+    from picker.schemas import ValidateChatTemplateRequest
+    from picker.service import validate_chat_template
+    from utils import openai_auto_switch_settings as settings
+
+    template = _large_community_template(230 * 1024)
+    assert len(template.encode("utf-8")) > 230 * 1024
+    assert _load_request(chat_template_override = template).chat_template_override == template
+    assert ValidateChatTemplateRequest(template = template).template == template
+    assert validate_chat_template(template).valid
+    stored = settings.normalize_model_override({"chat_template_override": template})
+    assert stored["chat_template_override"] == template
+
+
+def test_frontend_chat_template_limit_matches_backend():
+    import re
+
+    from utils import openai_auto_switch_settings as settings
+
+    ts = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/features/model-picker/model-config/per-model-config.ts"
+    ).read_text(encoding = "utf-8")
+    match = re.search(r"export const MAX_CHAT_TEMPLATE_BYTES = ([0-9_ *]+);", ts)
+    assert match is not None
+    frontend_limit = math.prod(int(part) for part in match.group(1).replace("_", "").split("*"))
+    assert frontend_limit == MAX_CHAT_TEMPLATE_BYTES
+    assert settings.MAX_CHAT_TEMPLATE_OVERRIDE_BYTES == MAX_CHAT_TEMPLATE_BYTES
 
 
 def test_read_bounded_text_reads_within_limit(tmp_path):

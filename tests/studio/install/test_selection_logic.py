@@ -5075,3 +5075,130 @@ class TestForkOnlyPrebuilts:
         )
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(_host, release)
         assert [a.name for a in attempts][:1] == [f"app-{self.TAG}-linux-arm64-vulkan.tar.gz"]
+
+
+class TestLinuxUncoveredRocmGpuTakesVulkan:
+    """Linux gfx1153 (no ROCm bundle): Vulkan without hipcc, the HIP source build with it."""
+
+    TAG = "b11798-mix-f8a7950"
+    ROCM = f"app-{TAG}-linux-x64-rocm-gfx110X.tar.gz"
+    VULKAN = f"app-{TAG}-linux-x64-vulkan.tar.gz"
+    CPU = f"app-{TAG}-linux-x64-cpu.tar.gz"
+
+    def _release(self):
+        return make_release(
+            [
+                make_cpu_artifact(
+                    self.ROCM,
+                    install_kind = "linux-rocm",
+                    rank = 1000,
+                    gfx_target = "gfx110X",
+                    mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+                ),
+                make_cpu_artifact(self.VULKAN, install_kind = "linux-vulkan", rank = 1000),
+                make_cpu_artifact(self.CPU, install_kind = "linux-cpu", rank = 1000),
+            ],
+            release_tag = self.TAG,
+            upstream_tag = "b11798",
+        )
+
+    def _host(self, gfx, **overrides):
+        defaults = dict(
+            machine = "x86_64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+            rocm_gfx_target = gfx,
+            rocm_gfx_targets = [gfx],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _resolve(
+        self,
+        gfx,
+        backend = None,
+        **host_overrides,
+    ):
+        route = INSTALL_LLAMA_PREBUILT.route_backend_request(
+            backend = backend,
+            published_repo = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_REPO,
+            published_release_tag = self.TAG,
+            host = self._host(gfx, **host_overrides),
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(route.host, self._release())
+        if backend is not None:
+            attempts = INSTALL_LLAMA_PREBUILT._backend_only_attempts(attempts, backend)
+        if not attempts:
+            # What the installer raises for an empty Linux plan: setup.sh then source-builds.
+            raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+        return apply_approved_hashes(attempts, make_checksums([self.ROCM, self.VULKAN, self.CPU]))
+
+    @pytest.fixture(autouse = True)
+    def _clean(self, monkeypatch):
+        for var in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            "GGML_VK_VISIBLE_DEVICES",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "UNSLOTH_LLAMA_CPP_BACKEND",
+            "UNSLOTH_FORCE_VULKAN",
+        ):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setenv("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: False)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "_hipcc_available", lambda: False, raising = False
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: pytest.fail("listed an upstream release"),
+        )
+
+    @pytest.mark.parametrize("gfx", ["gfx1153", "gfx1152"])
+    def test_an_uncovered_gpu_without_hipcc_takes_the_vulkan_bundle(self, gfx):
+        assert [c.name for c in self._resolve(gfx)] == [self.VULKAN]
+
+    def test_with_hipcc_the_source_build_stays(self, monkeypatch):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_hipcc_available", lambda: True)
+        with pytest.raises(PrebuiltFallback):
+            self._resolve("gfx1153")
+
+    def test_a_covered_gpu_keeps_its_rocm_bundle(self):
+        assert [c.name for c in self._resolve("gfx1100")] == [self.ROCM]
+
+    def test_an_explicit_hip_backend_is_not_rerouted(self):
+        with pytest.raises(PrebuiltFallback):
+            self._resolve("gfx1153", backend = "rocm")
+
+    @pytest.mark.parametrize(
+        "mask_env", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES"]
+    )
+    def test_a_mask_keeps_the_source_build(self, monkeypatch, mask_env):
+        # Vulkan ignores the HIP masks, and a Vulkan mask's ordinals are unknowable here.
+        monkeypatch.setenv(mask_env, "0")
+        with pytest.raises(PrebuiltFallback):
+            self._resolve("gfx1153")
+
+    def test_rocm_torch_beside_an_nvidia_card_keeps_the_source_build(self, monkeypatch):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: True)
+        with pytest.raises(PrebuiltFallback):
+            self._resolve(
+                "gfx1152",
+                nvidia_smi = "/usr/bin/nvidia-smi",
+                driver_cuda_version = (12, 8),
+                compute_caps = ["89"],
+                physical_compute_caps = ["89"],
+                has_physical_nvidia = True,
+                has_usable_nvidia = True,
+            )
+
+    def test_beside_an_nvidia_card_the_source_build_stays(self):
+        # Vulkan would reach the NVIDIA card too; the masked-NVIDIA rules stay as they are.
+        with pytest.raises(PrebuiltFallback):
+            self._resolve("gfx1153", has_physical_nvidia = True)

@@ -249,5 +249,6 @@ def test_generate_passes_unpriced_references_to_the_guard():
         "not is_flux3_family(fam)",
     ):
         assert part in window, part
-    call = src.index("extra_mib = measured_request_extra_mib(", at)
-    assert "unpriced_references = guard_unpriced_refs," in src[call : call + 500]
+    call = src.index("extra_mib = split_aware_request_extra(", at)
+    assert "measured_request_extra_mib(" in src[call : call + 500]
+    assert "unpriced_references = guard_unpriced_refs," in src[call : call + 800]

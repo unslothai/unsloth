@@ -20,6 +20,9 @@ test("a Vulkan CPU fallback does not replace the standing GPU intent", () => {
     shouldHydrateGpuPlacementControls("vulkan_startup_crash"),
     false,
   );
+  for (const reason of ["vulkan_no_device", "vulkan_startup_stall"] as const) {
+    assert.equal(shouldHydrateGpuPlacementControls(reason), false);
+  }
   assert.equal(shouldHydrateGpuPlacementControls(null), true);
 });
 

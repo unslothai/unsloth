@@ -27,7 +27,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 23;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 24;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -138,7 +138,7 @@ function migrateThroughVersion12(
     if (legacyToken) {
       stageLegacyHfTokenForMigration(legacyToken);
     }
-    // Keep the legacy value persisted until authenticated migration confirms the backend write.
+    // Keep the legacy value until authenticated migration confirms the backend write.
   }
 }
 
@@ -242,8 +242,7 @@ function migrateThroughVersion21(
   version: number,
 ): void {
   if (version < 21) {
-    // currentStep belonged to the onboarding wizard and was persisted, so without
-    // this it survives every rehydrate and partialize writes it straight back.
+    // currentStep belonged to the removed onboarding wizard and would otherwise persist forever.
     Reflect.deleteProperty(state, "currentStep");
   }
 }
@@ -451,11 +450,22 @@ export function mergeTrainingConfig(
     baselineTrainOnCompletions === undefined
       ? modelDefaultsAppliedFor
       : null;
+  const choices = persistedState.trainingToggleChoices;
+  const trainingToggleChoices: TrainingConfigState["trainingToggleChoices"] = {};
+  for (const key of ["packing", "trainOnCompletions"] as const) {
+    const explicit = choices?.[key];
+    if (typeof explicit === "boolean") trainingToggleChoices[key] = explicit;
+    // Older drafts did not record provenance. Preserve saved booleans instead of guessing away an opt-out.
+    else if (choices === undefined && typeof persistedState[key] === "boolean") {
+      trainingToggleChoices[key] = persistedState[key];
+    }
+  }
   const merged: TrainingConfigStore = {
     ...current,
     ...persistedState,
     wandbToken: current.wandbToken,
     trainOnCompletions,
+    trainingToggleChoices,
     modelDefaultsAppliedFor,
     advancedSettingsBaseline,
     trainOnCompletionsDefaultPendingFor,

@@ -13,6 +13,12 @@ import types
 
 import pytest
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
+
 from core.inference import diffusion as dmod
 from core.inference import diffusion_prequant as pqmod
 from core.inference import diffusion_transformer_quant as tqmod
@@ -20,8 +26,9 @@ from core.inference.diffusion import DiffusionBackend
 from core.inference.diffusion_auto_policy import DenseQuantEstimate
 from core.inference.diffusion_denoiser_prequant import PIPELINE_SEED_DECLINED
 from core.inference.diffusion_device import DiffusionDeviceTarget
-from core.inference.diffusion_families import detect_family_for_pick
+from core.inference.diffusion_families import ANIMA_BF16_WHEN_RESIDENT, detect_family_for_pick
 from core.inference.diffusion_memory import DeviceMemory
+from models.inference import DiffusionDownloadPlanResponse
 
 MIB = 1024 * 1024
 
@@ -200,6 +207,7 @@ def _plan_backend(
     return backend
 
 
+@needs_torchao
 def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
     backend = _plan_backend(monkeypatch, planned = "fp8")
     plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
@@ -211,7 +219,7 @@ def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
     assert "transformer/config.json" in entries[Z_IMAGE_REPO]["files"]
     assert plan["required_bytes"] == ALL_BYTES - DENOISER_BYTES + PREQUANT_BYTES
     assert entries[Z_IMAGE_REPO]["checkpoint"] is True
-    assert entries[PREQUANT_REPO]["checkpoint"] is False
+    assert entries[PREQUANT_REPO]["checkpoint"] is True
 
 
 def test_an_unplanned_pipeline_pick_plans_exactly_as_before(monkeypatch, hub):
@@ -234,6 +242,7 @@ def test_a_declined_plan_keeps_the_released_shards(monkeypatch, hub):
     assert all(shard in entries[Z_IMAGE_REPO]["files"] for shard in DENOISER_SHARDS)
 
 
+@needs_torchao
 def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(monkeypatch, hub):
     """The unified-memory refusal prices the denoiser from the artifact, not the dropped shards."""
     backend = _plan_backend(monkeypatch, planned = "fp8")
@@ -247,6 +256,22 @@ def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(m
     backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
     assert seen["prequant_bytes"] == PREQUANT_BYTES
     assert not [name for name, _s in seen["declared_files"] if name.startswith("transformer/")]
+
+
+def test_the_hosted_vae_carries_its_share_of_the_unified_memory_verdict(monkeypatch, hub):
+    """A hosted VAE that replaces the dropped vae/ shards is priced in the memory verdict."""
+    backend = _plan_backend(monkeypatch, planned = None)
+    hosted = {"vae": ("unsloth/hosted-vae", [("vae.safetensors", 675)])}
+    monkeypatch.setattr(DiffusionBackend, "_hosted_vae_plan_files", lambda *_a, **_k: hosted)
+    seen: dict = {}
+
+    def _shortfall(_self, *_a, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(DiffusionBackend, "declared_footprint_shortfall", _shortfall)
+    backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
+    assert seen["prequant_bytes"] == 675
 
 
 def test_a_gguf_pick_still_never_downloads_a_second_denoiser(monkeypatch):
@@ -840,7 +865,7 @@ def _load_backend(
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
     )
-    monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe: None)
+    monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe, **_kw: None)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "stored_denoiser_precision", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "denoiser_modules", lambda pipe: [("transformer", object())])
@@ -1408,6 +1433,9 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("black-forest-labs/flux-3-image-klein-base", True),
         ("black-forest-labs/FLUX.2-dev", False),
         ("Qwen/Qwen-Image", False),
+        # A 5B DiT: INT8-ConvRot doubles LPIPS against the eager port, so bf16 while it fits.
+        ("OpenMOSS-Team/MOSS-Image-SFT", True),
+        ("OpenMOSS-Team/MOSS-Image-Base", True),
     ],
 )
 def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
@@ -1886,6 +1914,8 @@ def _small_dit_kept_bf16(monkeypatch, reason):
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, None, "default", False),
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, "off", "off", False),
         ("measured: no faster", None, "off", True),
+        # Anima's reason keeps the deferred compile (background, from render 3).
+        (ANIMA_BF16_WHEN_RESIDENT, None, "off", True),
     ],
 )
 def test_a_small_dit_kept_bf16_compiles_from_render_1(
@@ -1939,3 +1969,29 @@ def test_a_large_variant_of_a_small_dit_family_quantises_under_auto(fake_runtime
     _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
     assert Z_IMAGE_REPO in seen  # the load hands the decider its resolved base
     assert spy.quantised == ["auto"]
+
+
+@needs_torchao
+@pytest.mark.parametrize("shared_repo", [False, True])
+def test_denoiser_is_a_checkpoint_and_encoder_only_is_an_asset(monkeypatch, hub, shared_repo):
+    backend = _plan_backend(monkeypatch, planned = "fp8")
+    encoder_repo = PREQUANT_REPO if shared_repo else "test/shared-encoder"
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_te_prequant_plan_files",
+        lambda *_a, **_k: {
+            "text_encoder": (encoder_repo, [("text_encoder/model.safetensors", 1234)])
+        },
+    )
+    plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
+    entries = {entry["repo_id"]: entry for entry in plan["entries"]}
+    assert entries[PREQUANT_REPO]["checkpoint"] is True
+    assert entries[PREQUANT_REPO]["hosted_denoiser"] is True
+    assert entries[Z_IMAGE_REPO]["hosted_denoiser"] is False
+    # The route returns this model, which would drop an undeclared field.
+    served = DiffusionDownloadPlanResponse(**plan).entries
+    assert {e.repo_id for e in served if e.hosted_denoiser} == {PREQUANT_REPO}
+    assert entries[encoder_repo]["checkpoint"] is shared_repo
+    assert entries[encoder_repo]["hosted_denoiser"] is shared_repo
+    assert "text_encoder/model.safetensors" in entries[encoder_repo]["files"]
+    assert entries[PREQUANT_REPO]["bytes"] == PREQUANT_BYTES + (1234 if shared_repo else 0)

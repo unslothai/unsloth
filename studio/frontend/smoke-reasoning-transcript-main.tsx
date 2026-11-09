@@ -24,7 +24,6 @@ import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
-// A real Thread/runtime, deterministic bytes, no backend, authentication, or model.
 const fetchOriginal = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url =

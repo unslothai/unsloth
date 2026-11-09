@@ -48,6 +48,9 @@ def ac(monkeypatch, tmp_path):
     monkeypatch.setattr(torch.version, "hip", None)
     module = importlib.import_module("unsloth.kernels.moe.autotune_cache")
     monkeypatch.setattr(module, "_device_smem_per_block", lambda: SM86_SMEM)
+    # No readable GPU model, so the keys these tests write are the ones get_or_autotune_moe_kernels reads.
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(module, "_device_model", lambda index: None)
     module.clear_cache()
     yield module
     module.clear_cache()

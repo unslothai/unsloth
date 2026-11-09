@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { QWEN3_LANGUAGE_NAMES } from "../clone-policy";
+import { FieldLabel } from "./field";
 
 // Radix Select cannot hold an empty value, so "no language" travels as this.
 const AUTO = "__auto__";
@@ -34,9 +35,12 @@ export function LanguageSelect({
   if (value && !names.includes(value)) names.push(value);
   return (
     <div className="grid gap-1.5">
-      <label className="text-ui-13 font-medium text-foreground" htmlFor={id}>
+      <FieldLabel
+        className="text-ui-13 font-medium text-foreground"
+        htmlFor={id}
+      >
         {label}
-      </label>
+      </FieldLabel>
       <Select
         value={value || AUTO}
         onValueChange={(next) => onChange(next === AUTO ? "" : next)}

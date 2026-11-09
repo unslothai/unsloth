@@ -18,6 +18,36 @@ SPARK_TOTAL_BYTES = 124609 * MIB
 SPARK_TOTAL_GB = round(SPARK_TOTAL_BYTES / GIB, 2)
 
 
+def test_spark_npu_is_not_a_cuda_gpu_even_when_smi_lists_it(monkeypatch):
+    monkeypatch.setattr(
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0,
+            stdout = "0, NVIDIA RTX Spark N1X, 8128\n1, NVIDIA NPU, [N/A]\n",
+        ),
+    )
+    result = nvidia.get_backend_visible_gpu_info([0, 1], None)
+    assert result["available"] is True
+    assert [(d["index"], d["name"]) for d in result["devices"]] == [(0, "NVIDIA RTX Spark N1X")]
+    assert len(nvidia.get_physical_gpu_inventory()["devices"]) == 1
+
+
+def test_npu_exclusion_keeps_real_gpus_with_unknown_memory_and_physical_ids(monkeypatch):
+    monkeypatch.setattr(
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0,
+            stdout = "0, NVIDIA NPU, [N/A]\n1, NVIDIA GB10, [N/A]\n2, NVIDIA H100, 81920\n",
+        ),
+    )
+    rows = nvidia._query_gpu_inventory("test")
+    assert [d["index"] for d in rows] == [1, 2]
+    assert rows[0]["memory_total_gb"] is None
+    assert rows[1]["memory_total_gb"] == 80
+
+
 class _SparkProps:
     """cudaDeviceProp as torch surfaces it for a GB10."""
 

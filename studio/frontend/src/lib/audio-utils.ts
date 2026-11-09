@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Containers the backend can reach wav/mp3 from: wav and mp3 pass through, the
-// rest decode via libsndfile, PyAV's bundled FFmpeg, or finally librosa.
+// wav and mp3 pass through; the rest decode via libsndfile, PyAV's FFmpeg, or librosa.
 export const AUDIO_ACCEPT =
   "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp,audio/x-matroska";
 // Browsers report an empty or wrong type for several of these containers, so
@@ -14,17 +13,10 @@ export const AUDIO_ACCEPT_EXTENSIONS =
  *  audio adapter is matched before its video one, so claiming the name here
  *  would take every 3GP video as audio. */
 export const AUDIO_ATTACHMENT_ACCEPT = `${AUDIO_ACCEPT},audio/x-m4a,${AUDIO_ACCEPT_EXTENSIONS}`;
-/**
- * What a file dialog should offer.
- *
- * Wider than the accept above, because a dialog only decides what is selectable
- * and a platform that maps .3gp to video/3gpp, or to nothing, greys out a voice
- * recording the surface would otherwise take. The tracks are read once the file
- * is in hand, and a real clip is refused then.
- */
+/** Wider than the accept, since platforms map .3gp to video or nothing; clips are refused once
+ * the tracks are read. */
 export const AUDIO_PICKER_ACCEPT = `${AUDIO_ATTACHMENT_ACCEPT},.3gp`;
 
-/** Whether a dropped or pasted file is audio, by MIME or, failing that, name. */
 export function isAudioAttachmentFile(file: {
   name: string;
   type: string;
@@ -50,7 +42,7 @@ export function getAudioSizeError(size: number): string | null {
 // Keep in sync with _MAX_AUDIO_CLIPS_PER_REQUEST. MAX_AUDIO_SIZE covers all clips together.
 export const MAX_AUDIO_FILES = 8;
 
-/** Max clips per message for a model. MLX takes one. */
+/** MLX takes one. */
 export function maxAudioFilesFor(model: { isMlx?: boolean } | undefined): number {
   return model?.isMlx ? 1 : MAX_AUDIO_FILES;
 }

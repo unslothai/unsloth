@@ -406,6 +406,30 @@ def test_a_planted_symlink_is_not_appended_to(monkeypatch, tmp_path):
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
 
 
+def test_a_link_swapped_in_after_the_lstat_is_not_appended_to(monkeypatch, tmp_path):
+    """Without O_NOFOLLOW (Windows) the open follows a link planted between the lstat and the open."""
+    calls, module, partial, victim = _shared_setup_3(monkeypatch, tmp_path)
+    partial.write_bytes(b"y" * 40)
+    monkeypatch.delattr(rp.os, "O_NOFOLLOW", raising = False)
+    real_open, swapped = os.open, []
+
+    def swap_then_open(path, *args, **kwargs):
+        if Path(path) == partial and not swapped:
+            swapped.append(1)
+            partial.unlink()
+            partial.symlink_to(victim)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(rp.os, "open", swap_then_open)
+
+    _shared_setup_1(module, partial, tmp_path)
+
+    assert (
+        victim.read_bytes() == b"keep me"
+    ), "the download was appended to the swapped-in link target"
+    assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
+
+
 def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
     """Never append to a partial another account wrote; upstream checks size, never the hash."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
@@ -457,14 +481,16 @@ def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatc
 def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tmp_path):
     """_chmod_and_move re-resolves the name, so the partial must still be the file written, not a swap."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
-    real_http_get = module.http_get
+    real_check = rp._still_the_written_file
 
-    def swap_then_write(url, handle, **kwargs):
-        real_http_get(url, handle, **kwargs)
-        partial.unlink()
-        partial.write_bytes(b"attacker's model")
+    # After the handle closes: Windows refuses to move an open file. Moved aside, not unlinked, so the inode cannot be reused.
+    def swap_then_check(path, written):
+        if calls["http_get"]:
+            path.rename(tmp_path / "moved-aside")
+            path.write_bytes(b"attacker's model")
+        return real_check(path, written)
 
-    module.http_get = swap_then_write
+    monkeypatch.setattr(rp, "_still_the_written_file", swap_then_check)
 
     _shared_setup_1(module, partial, tmp_path)
 
@@ -475,6 +501,7 @@ def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tm
 def test_ownership_that_cannot_be_established_is_an_objection(monkeypatch, tmp_path):
     """An owner that cannot be established is an objection, so an unknown owner never reads as ours."""
     monkeypatch.delattr(rp.os, "geteuid", raising = False)
+    monkeypatch.setattr(rp.os, "name", "posix")
     target = tmp_path / "partial"
     target.write_bytes(b"whoever wrote this")
     descriptor = os.open(target, os.O_RDONLY)
@@ -484,11 +511,10 @@ def test_ownership_that_cannot_be_established_is_an_objection(monkeypatch, tmp_p
         os.close(descriptor)
 
 
-def test_windows_keeps_the_stock_writer(monkeypatch, tmp_path):
-    """Without fcntl or provable ownership the shared name stays off; os.name and fcntl are both faked."""
+def test_windows_byte_range_locks_count_as_exclusion(monkeypatch, tmp_path):
+    """No fcntl on Windows: filelock, and so huggingface_hub, locks there with msvcrt instead."""
     monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
     monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: True)
-    monkeypatch.setattr(rp.os, "name", "nt")
     real_import = builtins.__import__
 
     def without_fcntl(name, *args, **kwargs):
@@ -497,7 +523,57 @@ def test_windows_keeps_the_stock_writer(monkeypatch, tmp_path):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", without_fcntl)
-    assert rp._exclusion_is_provable() is False
+    held: list[int] = []
+
+    def locking(fd, mode, nbytes):
+        if held and locking.excludes:
+            raise OSError(errno.EACCES, "locked")
+        held.append(fd)
+
+    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(locking = locking, LK_NBLCK = 2))
+    for excludes in (True, False):
+        rp.invalidate_probe_cache()
+        held.clear()
+        locking.excludes = excludes
+        assert rp._exclusion_is_provable() is excludes
+    assert not list(tmp_path.iterdir()), "the probe left its file behind"
+
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason = "real Windows locks and owners")
+
+
+@windows_only
+def test_a_local_windows_cache_resumes_partials(tmp_path):
+    assert rp.can_restore_partials(tmp_path) is True
+
+
+@windows_only
+def test_a_partial_this_account_wrote_is_appended_to_on_windows(tmp_path):
+    target = tmp_path / "abc.incomplete"
+    target.write_bytes(b"mine")
+    descriptor = os.open(target, os.O_WRONLY | os.O_APPEND)
+    try:
+        assert rp._objection_to(descriptor) is None
+    finally:
+        os.close(descriptor)
+
+
+@windows_only
+def test_a_partial_another_account_owns_is_refused_on_windows(tmp_path):
+    import subprocess
+
+    target = tmp_path / "abc.incomplete"
+    target.write_bytes(b"planted")
+    # LocalSystem stands in for another account; changing the owner needs an administrator.
+    if subprocess.run(
+        ["icacls", str(target), "/setowner", "*S-1-5-18"], capture_output = True
+    ).returncode:
+        pytest.skip(reason = "changing a file owner needs administrator rights")
+    descriptor = os.open(target, os.O_WRONLY | os.O_APPEND)
+    try:
+        assert rp._objection_to(descriptor) == "owned by another user"
+    finally:
+        os.close(descriptor)
 
 
 def test_an_oversized_partial_is_restarted_rather_than_resumed(monkeypatch, tmp_path):

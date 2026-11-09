@@ -290,7 +290,7 @@ function RangeStops({
                   !edge(i) && "-translate-x-1/2",
                   covered(i)
                     ? cn(
-                        "-mx-1 -my-0.5 rounded-md px-1 py-0.5 font-semibold text-background",
+                        "-mx-1 -my-0.5 rounded-full px-1 py-0.5 font-semibold text-background",
                         RANGE_FILL,
                       )
                     : "text-muted-foreground",

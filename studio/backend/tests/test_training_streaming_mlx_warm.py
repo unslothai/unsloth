@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MLX streaming guard must force detection first, since DEVICE is None during warm-up."""
+"""A streaming start must force detection first, since DEVICE is None during warm-up."""
 
 from __future__ import annotations
 
@@ -16,8 +16,7 @@ import routes.training as training_routes
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from utils.hardware import hardware as hw
 
-# Clears every streaming precondition but the MLX guard; load_in_4bit off keeps the
-# sidecar probe offline.
+# Clears every streaming precondition; load_in_4bit off keeps the sidecar probe offline.
 _STREAMING_START = {
     "model_name": "unsloth/Llama-3.2-1B-Instruct",
     "training_type": "LoRA/QLoRA",
@@ -34,8 +33,6 @@ _NON_STREAMING_START = {
     "dataset_streaming": False,
     "max_steps": None,
 }
-
-_MLX_REJECTION = "dataset_streaming is not yet supported on Apple Silicon (MLX)"
 
 
 @pytest.fixture
@@ -99,36 +96,18 @@ def _pretend_cpu_linux(monkeypatch):
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
 
 
-def test_streaming_is_rejected_on_mlx_before_detection_has_run(
-    monkeypatch, hardware_globals, spawn_calls, client
-):
-    """The regression: DEVICE is still None when the request lands."""
+@pytest.mark.parametrize("detected", [False, True], ids = ["warm-window", "detected"])
+def test_streaming_starts_on_mlx(monkeypatch, hardware_globals, spawn_calls, client, detected):
+    """The MLX worker streams too, whether or not the warm thread has detected the device yet."""
     _pretend_apple_silicon(monkeypatch)
-    hardware_globals.DEVICE = None  # warm thread has not finished
+    hardware_globals.DEVICE = hw.DeviceType.MLX if detected else None
 
     response = client.post("/training/start", json = _STREAMING_START)
 
-    assert response.status_code == 400, (
-        "streaming start on an Apple Silicon host was not rejected while DEVICE "
-        f"was still unset (got {response.status_code}: {response.text}); the guard "
-        "read the pre-detection default instead of detecting"
-    )
-    assert _MLX_REJECTION in response.json()["detail"]
-    spawn_calls.start_training.assert_not_called()
-
-
-def test_the_guard_detects_rather_than_reading_the_default(
-    monkeypatch, hardware_globals, spawn_calls, client
-):
-    """The guard forces detection, not some later step: DEVICE goes None -> MLX across
-    a request that never reaches the worker config builder."""
-    _pretend_apple_silicon(monkeypatch)
-    hardware_globals.DEVICE = None
-
-    client.post("/training/start", json = _STREAMING_START)
-
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "queued"
     assert hardware_globals.DEVICE == hw.DeviceType.MLX
-    spawn_calls.start_training.assert_not_called()
+    spawn_calls.start_training.assert_called_once()
 
 
 def test_streaming_still_starts_on_a_non_mlx_host_during_the_warm_window(
@@ -144,20 +123,6 @@ def test_streaming_still_starts_on_a_non_mlx_host_during_the_warm_window(
     assert response.json()["status"] == "queued"
     assert hardware_globals.DEVICE == hw.DeviceType.CPU
     spawn_calls.start_training.assert_called_once()
-
-
-def test_rejection_still_fires_once_detection_has_already_run(
-    monkeypatch, hardware_globals, spawn_calls, client
-):
-    """The pre-existing behaviour, unchanged: DEVICE already MLX."""
-    _pretend_apple_silicon(monkeypatch)
-    hardware_globals.DEVICE = hw.DeviceType.MLX
-
-    response = client.post("/training/start", json = _STREAMING_START)
-
-    assert response.status_code == 400
-    assert _MLX_REJECTION in response.json()["detail"]
-    spawn_calls.start_training.assert_not_called()
 
 
 def test_non_streaming_start_detects_before_entering_the_sync_backend(

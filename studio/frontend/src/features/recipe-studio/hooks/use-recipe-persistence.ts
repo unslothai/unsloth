@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toastError, toastSuccess } from "@/shared/toast";
@@ -179,9 +180,8 @@ function sanitizeSeedForShare(payload: unknown): unknown {
   return root;
 }
 
-// Delete queued upload directories once a save stops referencing them, so a
-// reload before autosave can never leave the saved recipe pointing at
-// already-deleted files. Skips any uid the just-saved payload still uses.
+// Delete queued upload dirs only once a save no longer references them, so a reload before
+// autosave never leaves the saved recipe pointing at deleted files.
 function drainQueuedUploadCleanups(
   savedPayload: RecipePayloadResult["payload"],
 ): void {
@@ -231,7 +231,7 @@ export function useRecipePersistence({
   const [workflowName, setWorkflowName] = useState("Unnamed");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [savedSignature, setSavedSignature] = useState("");
-  // Autosave does not retry the exact content that just failed (e.g. a 409 from another window).
+  // Do not retry the exact content that just failed (e.g. a 409 from another window).
   const [failedSignature, setFailedSignature] = useState<string | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -251,6 +251,7 @@ export function useRecipePersistence({
   const saveTone: SaveTone =
     !isDirty && Boolean(lastSavedAt) ? "success" : "error";
   const savedAtLabel = formatSavedLabel(lastSavedAt);
+  useTimeFormat();
 
   useEffect(() => {
     setInitialRecipeReady(false);
@@ -324,11 +325,8 @@ export function useRecipePersistence({
     return () => window.clearTimeout(timeoutId);
   }, [currentSignature, failedSignature, isDirty, persistRecipe, saveLoading]);
 
-  // Drain queued cleanups even when autosave is skipped: a net-zero edit (add then remove an
-  // unstructured seed before the 800ms debounce) keeps isDirty false, so the autosave effect never
-  // drains and the queued uid leaks its upload dir. Not-dirty means currentPayload equals the saved
-  // recipe, and drain skips the uid it still references, so only dirs no saved recipe points at are
-  // deleted (keeps the save-first invariant).
+  // Drain even when not dirty: a net-zero edit inside the debounce would otherwise leak the upload
+  // dir. Drain skips uids the saved recipe still references.
   useEffect(() => {
     if (!initialRecipeReady || isDirty || saveLoading) {
       return;

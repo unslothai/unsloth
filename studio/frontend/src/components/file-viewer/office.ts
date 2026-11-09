@@ -849,10 +849,18 @@ function flattenMarkup(text: string): string {
   );
 }
 
+function decodeXstring(text: string): string {
+  return text.replace(
+    /_x005[fF]_(x[0-9a-fA-F]{4}_)|_x([0-9a-fA-F]{4})_/g,
+    (_match, literal?: string, hex?: string) =>
+      literal ? `_${literal}` : String.fromCharCode(parseInt(hex!, 16)),
+  );
+}
+
 function stringText(xmlText: string): string {
   let out = "";
   for (const match of flattenMarkup(xmlText).replace(PHONETIC, "").matchAll(TEXT_RUN)) {
-    out += decodeXml(match[1]!.slice(0, MAX_CELL_BYTES));
+    out += decodeXstring(decodeXml(match[1]!.slice(0, MAX_CELL_BYTES)));
     if (out.length >= MAX_CELL_TEXT) return out.slice(0, MAX_CELL_TEXT);
   }
   return out;
@@ -933,7 +941,7 @@ function readSheet(
       let numeric = false;
       if (raw === "" && formula && !(type === "str" && cached)) value = `=${formula}`;
       else if (type === "s" || type === "inlineStr" || type === "str") {
-        value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : raw, cellStyle.format);
+        value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : decodeXstring(raw), cellStyle.format);
       } else if (type === "b") value = isTrue(raw) ? "TRUE" : "FALSE";
       else if (type !== "str" && type !== "e" && raw !== "" && Number.isFinite(Number(raw))) {
         value = formatNumber(Number(raw), cellStyle.format, date1904);

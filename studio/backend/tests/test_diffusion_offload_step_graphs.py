@@ -282,6 +282,7 @@ def test_every_live_graph_pool_stays_out_of_the_reclaimable_memory(monkeypatch):
         },
     ]
     monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: segments)
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: segments, raising = False)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     assert cg.live_pool_free_bytes() == 60
 
@@ -669,6 +670,10 @@ def test_releasing_an_offloaded_step_graph_frees_its_capture_stream_workspace(mo
         torch._C, "_cuda_clearCublasWorkspaces", lambda: calls.append(1), raising = False
     )
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(2))
+    # The flush only runs where CUDA is available (#14777). Pin it here: on a CPU runner the answer otherwise
+    # depends on whether an earlier test in the worker installed the CUDA spoof.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
     handle = cg.GraphedForward.__new__(cg.GraphedForward)
     handle.placement = _Placement(streams = True)
     handle._release()

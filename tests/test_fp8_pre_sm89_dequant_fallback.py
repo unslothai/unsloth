@@ -18,8 +18,10 @@ def _clear_capability_cache():
     from unsloth.kernels import fp8
 
     fp8._fp8_device_lacks_kernel.cache_clear()
+    fp8._rocm_bytes_dequant_arch.cache_clear()
     yield
     fp8._fp8_device_lacks_kernel.cache_clear()
+    fp8._rocm_bytes_dequant_arch.cache_clear()
 
 
 def _make(
@@ -122,6 +124,10 @@ def test_rocm_routes_on_gfx_arch_not_capability(
 ):
     # get_device_capability is gfx-derived on ROCm (gfx1151 reports 11.5, above any sm89 cut), so
     # the guard keys on the arch: archs AMD triton cannot compile fp8e4nv for take the torch path.
+    # fp8e4nv gate alone: ROCm byte decoder off.
+    from unsloth.kernels import fp8
+
+    monkeypatch.setattr(fp8, "_HIP_FP8_BYTES_DEQUANT", False)
     weight, scale = _make()
     route = _route(
         monkeypatch,

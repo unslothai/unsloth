@@ -87,6 +87,19 @@ def test_an_overflowing_prompt_drops_its_oldest_turns_and_reports_the_boundary(
     assert result["messages"][-1] is messages[-1]
 
 
+def test_chat_stop_reaches_the_archive_embedding_pass(archive_calls):
+    """Stop must be able to interrupt the archive's embedding before inference (#14519)."""
+    import threading
+
+    stop = threading.Event()
+    _fit(_backend(), _thread(), thread_id = "thread-1", cancel_event = stop)
+
+    cancel_check = archive_calls[-1]["cancel_check"]
+    assert cancel_check() is False
+    stop.set()
+    assert cancel_check() is True
+
+
 @pytest.mark.parametrize(
     "case", ["not_opted_in", "not_mlx", "media", "resumed_reply", "resumed_thought", "no_count"]
 )
@@ -180,9 +193,8 @@ def _run_loop(monkeypatch, messages, replies, result_chars, **kwargs):
         tools = [WEB],
         max_tokens = 200,
         nudge_tool_calls = True,
-        thread_id = "thread-1",
         context_overflow = "truncate_oldest",
-        **kwargs,
+        **{"thread_id": "thread-1", **kwargs},
     )
     truncated = [event for event in events if event.get("type") == "context_truncated"]
     return truncated, prompts, branches
@@ -216,6 +228,8 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     ran = [m for m in last_fit["branch_messages"] if m["role"] == "tool"][-3:]
     assert [m["content"][:8] for m in ran] == ["result 1", "result 2", "result 3"]
     assert [m for m in last_fit["branch_messages"] if m["role"] == "user"] == [old, QUESTION]
+    # The recall query comes from the client's turns, never from a re-prompt the loop added (#16187).
+    assert [m for m in last_fit["query_messages"] if m["role"] == "user"][-1] is QUESTION
     assert len(truncated) == fits and all(event["fits"] for event in truncated)
     assert bool(truncated[0].get("checkpoint_started")) is (policy == "checkpoint")
     assert last_fit["thread_id"] == "thread-1"
@@ -274,3 +288,31 @@ def test_the_only_tool_result_is_not_evicted_to_make_room_for_what_the_loop_says
     # Dropping the result would fit but leave nothing to answer from.
     assert truncation["fits"] is fits and truncation["dropped_messages"] == dropped
     assert [m["role"] for m in prompts[-1]].count("tool") == 1
+
+
+@pytest.fixture
+def fresh_cut_memory():
+    from core.inference import prefix_boundary
+
+    prefix_boundary.clear()
+    yield
+    prefix_boundary.clear()
+
+
+def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(
+    monkeypatch, archive_calls, fresh_cut_memory
+):
+    rounds = 16
+    _, prompts, _ = _run_loop(
+        monkeypatch,
+        [QUESTION],
+        [CALL % i for i in range(rounds)] + ["done"],
+        400,
+        max_tool_iterations = rounds,
+        context_policy = "rolling",
+        thread_id = None,
+    )
+
+    heads = [str(prompt[:3]) for prompt in prompts]
+    moves = sum(before != after for before, after in zip(heads, heads[1:]))
+    assert moves < len(prompts) // 2, moves
