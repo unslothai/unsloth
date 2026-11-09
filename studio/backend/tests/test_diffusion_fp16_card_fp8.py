@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FP8 on fp16-only NVIDIA cards (Turing, T4): weight-only fp8 native linears (per-row e4m3 codes, upcast to the
-pipeline dtype per call) instead of a refusal. Capability and ROCm are monkeypatched, so this runs without a GPU."""
+"""Weight-only fp8 on fp16-only NVIDIA cards (Turing); capability is monkeypatched, no GPU needed."""
 
 from __future__ import annotations
 
@@ -90,12 +89,10 @@ def test_kill_switch_restores_the_refusal(nvidia, monkeypatch, raw):
     monkeypatch.setenv(FP8_KILL_SWITCH, raw)
     assert tq.fp16_card_fp8_scheme(_target(torch.float32), "fp8") is None
     assert not tq.fp16_card_native_host(_target(torch.float32), "fp8")
-    # int8 keeps its own switch
     assert tq.fp16_card_native_scheme(_target(torch.float32), "int8") == "int8"
 
 
 def test_the_int8_kill_switch_also_closes_fp8(nvidia, monkeypatch):
-    # both ride the same Turing host predicate
     _cap(monkeypatch, (7, 5))
     monkeypatch.setenv(INT8_KILL_SWITCH, "0")
     assert tq.fp16_card_fp8_scheme(_target(torch.float32), "fp8") is None

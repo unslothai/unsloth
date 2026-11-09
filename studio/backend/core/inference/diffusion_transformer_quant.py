@@ -1270,10 +1270,8 @@ def fp16_card_fp8_scheme(
     requested: Optional[str],
     family: Optional[str] = None,
 ) -> Optional[str]:
-    """``fp8`` for an explicit fp8 request on an ``fp16_card_int8_host``, else None (AUTO is unchanged). The card has
-    no fp8 matmul, so this is weight-only: the native fp8 Linear keeps per-row e4m3 codes and upcasts them to the
-    pipeline dtype per call (float32 for fp16-incompatible families), as the baseline stack's fp8 manual cast does.
-    ``UNSLOTH_DIFFUSION_FP16_CARD_FP8=0`` restores the refusal."""
+    """``fp8`` for an explicit fp8 request on an ``fp16_card_int8_host``, else None. Weight-only (no fp8 matmul
+    below sm_89); ``UNSLOTH_DIFFUSION_FP16_CARD_FP8=0`` restores the refusal."""
     if normalize_transformer_quant(requested) != TQ_FP8 or not fp16_card_fp8_enabled():
         return None
     if not fp16_card_int8_host(target) or _family_denied(family, TQ_FP8):
@@ -1288,7 +1286,6 @@ def fp16_card_fp8_scheme(
 
 
 def fp16_card_native_host(target: Any, requested: Optional[str]) -> bool:
-    """Whether an explicit ``requested`` scheme takes the fp16-only card's native build (int8 W8A8 or fp8 weight-only)."""
     scheme = normalize_transformer_quant(requested)
     if scheme == TQ_FP8 and not fp16_card_fp8_enabled():
         return False
@@ -2192,8 +2189,7 @@ def quantize_transformer(
     fp16_card = fp16_card_scheme is not None
     if fp16_card:
         native = fp16_card_scheme
-        # native_int8_act is False on any fp16 CUDA target (int8_storage_host); the int8 build is the W8A8 one, the
-        # fp8 build is weight-only (no fp8 matmul below sm_89).
+        # native_int8_act is False on fp16 CUDA targets; int8 here is W8A8, fp8 weight-only.
         act_int8 = fp16_card_int8_act(target) if native == TQ_INT8 else False
     if native is not None:
         mps = _mps_bf16(target)
