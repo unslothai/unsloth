@@ -2793,14 +2793,25 @@ def h3_streamed_int8_supported(target: Any = None) -> bool:
 
 
 def _h3_others_bytes(
-    fam: Any, components: Any, *, te_scheme: Optional[str], dtype: Any, rotating: bool
+    fam: Any,
+    components: Any,
+    *,
+    te_scheme: Optional[str],
+    dtype: Any,
+    rotating: bool,
+    te_streamed: bool = False,
 ) -> int:
     """Bytes beside the denoiser. ``rotating``: conditioner and VAEs rotate (the 40 GB reserve evicts
-    one before placing the other), so only the larger counts; otherwise they add up."""
+    one before placing the other), so only the larger counts; otherwise they add up. ``te_streamed``: the
+    conditioner counts at its streamed encode footprint."""
     import torch
 
     scale = 2.0 if dtype is torch.float32 else 1.0
-    text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = components[1])
+    if te_streamed:
+        from .video_minimax_h3_te import H3_TE_STREAMED_GB
+        text_encoder_gb = H3_TE_STREAMED_GB
+    else:
+        text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = components[1])
     headroom_bytes = (
         estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
@@ -2821,6 +2832,7 @@ def _h3_dense_denoiser_resident_bytes(
     te_scheme: Optional[str],
     dtype: Any,
     rotating: bool = False,
+    te_streamed: bool = False,
 ) -> Optional[tuple[int, int]]:
     """Denoiser size is measured from the built module, not the family table's released dense figure."""
     components = getattr(fam, "bf16_components_gb", None)
@@ -2839,7 +2851,12 @@ def _h3_dense_denoiser_resident_bytes(
         if denoiser_bytes <= 0:
             return None
         others = _h3_others_bytes(
-            fam, components, te_scheme = te_scheme, dtype = dtype, rotating = rotating
+            fam,
+            components,
+            te_scheme = te_scheme,
+            dtype = dtype,
+            rotating = rotating,
+            te_streamed = te_streamed,
         )
         return int(denoiser_bytes), others
     except Exception:  # noqa: BLE001 -- an unanswerable estimate keeps the rotation as it is
@@ -3120,6 +3137,95 @@ def _h3_dense_denoiser_fits(sizes: Optional[tuple[int, int]], free_bytes: Option
         return False
     denoiser_bytes, others_bytes = sizes
     return int(free_bytes) >= int(denoiser_bytes) + int(others_bytes)
+
+
+def _h3_dense_pin_plan(
+    rotating_sizes: Optional[tuple[int, int]],
+    streamed_sizes: Optional[tuple[int, int]],
+    free_bytes: Optional[int],
+) -> Optional[str]:
+    """``"pin"`` (fits beside a rotating conditioner), ``"pin_stream_te"`` (only beside a streamed one) or None."""
+    if _h3_dense_denoiser_fits(rotating_sizes, free_bytes):
+        return "pin"
+    if _h3_dense_denoiser_fits(streamed_sizes, free_bytes):
+        return "pin_stream_te"
+    return None
+
+
+def _h3_dense_demote(
+    pipe: Any,
+    denoiser: Any,
+    *,
+    logger: Any = None,
+) -> bool:
+    """Move a streamed-conditioner-pinned denoiser back into the CPU-offload rotation; False = unchanged."""
+    try:
+        manager = getattr(pipe, "_components_manager", None)
+        hooks = list(getattr(manager, "model_hooks", None) or ())
+        if any(getattr(hook, "model", None) is denoiser for hook in hooks):
+            return True
+        device = getattr(manager, "_auto_offload_device", None)
+        name = next(
+            (k for k, v in (getattr(manager, "components", None) or {}).items() if v is denoiser),
+            None,
+        )
+        if denoiser is None or not hooks or device is None or name is None:
+            return False
+        from .diffusion_memory import _available_system_memory_mib
+        from .diffusion_prequant import tensor_payload_bytes
+
+        need_mib = sum(tensor_payload_bytes(t) for t in denoiser.parameters()) >> 20
+        available_mib = _available_system_memory_mib()
+        if available_mib is None or available_mib < need_mib + max(4096, need_mib // 10):
+            return False
+        from diffusers.modular_pipelines.components_manager import custom_offload_with_hook
+
+        hook = custom_offload_with_hook(
+            name, denoiser, device, offload_strategy = getattr(manager, "_offload_strategy", None)
+        )
+        for other in hooks:
+            if other.hook.execution_device == hook.hook.execution_device:
+                hook.add_other_hook(other)
+                other.add_other_hook(hook)
+        manager.model_hooks = hooks + [hook]
+        hook.offload()
+        clear_gpu_cache()
+        if logger is not None:
+            logger.info(
+                "video.h3_denoiser_placement: this request needs the rotation's VRAM floor, so the bf16 denoiser "
+                "rejoins the CPU-offload rotation until the next load"
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the request guard refuses as before
+        if logger is not None:
+            logger.warning("video.h3_denoiser_placement: could not rejoin the rotation: %s", exc)
+        return False
+
+
+def _h3_group_offload_available() -> bool:
+    try:
+        from diffusers.hooks import apply_group_offloading  # noqa: F401
+    except Exception:  # noqa: BLE001 -- no group offloading: the conditioner cannot stream
+        return False
+    return True
+
+
+def _h3_dense_unpin(
+    manager: Any,
+    denoiser: Any,
+    device: Any,
+    *,
+    logger: Any = None,
+) -> None:
+    """Return a pinned released denoiser to the CPU-offload rotation (re-hooks every component)."""
+    try:
+        denoiser.to("cpu")
+        manager.disable_auto_cpu_offload()
+        manager.enable_auto_cpu_offload(device = device, memory_reserve_margin = "40GB")
+    except Exception as exc:  # noqa: BLE001 -- the load continues with what placement it has
+        logger.warning(
+            "video.h3_denoiser_placement: could not return the denoiser to the rotation: %s", exc
+        )
 
 
 def _h3_residency_budget_bytes(
@@ -11889,6 +11995,7 @@ class VideoBackend:
                 )
         offload_policy = "none"
         denoiser_pinned = False
+        dense_compile_held = False
         denoiser_streamed: Optional[str] = None
         denoiser_single_host_copy = False
         te_streamed: Optional[str] = None
@@ -12128,9 +12235,27 @@ class VideoBackend:
                         except Exception:  # noqa: BLE001 -- unreadable free memory keeps the rotation
                             free_bytes = None
                     if sizes is not None and free_bytes is not None:
-                        denoiser_bytes, others_bytes = sizes
-                        if _h3_dense_denoiser_fits(sizes, free_bytes):
-                            from .diffusion_prequant import pin_prequantized_module
+                        from .video_minimax_h3_te import h3_te_stream_enabled
+
+                        streamed_sizes = (
+                            _h3_dense_denoiser_resident_bytes(
+                                fam,
+                                denoiser = denoiser,
+                                te_scheme = text_encoder_quant_engaged,
+                                dtype = dtype,
+                                rotating = True,
+                                te_streamed = True,
+                            )
+                            if h3_te_stream_enabled() and _h3_group_offload_available()
+                            else None
+                        )
+                        pin_plan = _h3_dense_pin_plan(sizes, streamed_sizes, free_bytes)
+                        from .diffusion_prequant import pin_prequantized_module
+
+                        if pin_plan == "pin_stream_te":
+                            from .video_minimax_h3_te import stream_h3_text_encoder
+
+                            # Denoiser first: pinning the conditioner first evicts its cached pages (66 GB re-read).
                             denoiser_pinned = pin_prequantized_module(
                                 manager,
                                 denoiser,
@@ -12138,6 +12263,39 @@ class VideoBackend:
                                 logger = logger,
                                 label = "released bfloat16 denoiser",
                             )
+                            te_streamed = stream_h3_text_encoder(
+                                manager,
+                                getattr(pipe, "text_encoder", None),
+                                device,
+                                logger = logger,
+                            )
+                            if te_streamed:
+                                sizes = streamed_sizes
+                            else:
+                                # Sized for the stream: beside a rotating conditioner it OOMs at the encode.
+                                _h3_dense_unpin(manager, denoiser, device, logger = logger)
+                                denoiser_pinned = False
+                                pin_plan = None
+                        elif pin_plan == "pin":
+                            denoiser_pinned = pin_prequantized_module(
+                                manager,
+                                denoiser,
+                                device,
+                                logger = logger,
+                                label = "released bfloat16 denoiser",
+                            )
+                        denoiser_bytes, others_bytes = sizes
+                        if pin_plan is not None:
+                            if te_streamed:
+                                # Compile is not bit-identical here (G4: LPIPS 0.115 over 20 steps): stay eager.
+                                dense_compile_held = bool(denoiser_pinned)
+                                logger.info(
+                                    "video.h3_denoiser_placement: %.1f GB free holds the denoiser beside the "
+                                    "streamed conditioner (%.1f GB), not beside a rotating one, so it stays "
+                                    "resident",
+                                    free_bytes / 1e9,
+                                    (denoiser_bytes + others_bytes) / 1e9,
+                                )
                         else:
                             logger.info(
                                 "video.h3_denoiser_placement: %.1f GB free is under the %.1f GB the "
@@ -12148,7 +12306,14 @@ class VideoBackend:
                             )
 
         # Speed layer applied here after offload (compile needs denoiser_pinned); not in load_pipeline.
-        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (
+        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and dense_compile_held:
+            logger.info(
+                "video.speed_mode: the released bf16 denoiser is resident beside the streamed "
+                "conditioner; the regional compile is held off so the output matches the rotation "
+                "it replaces; keeping the lossless optimisations"
+            )
+            effective_speed = SPEED_EAGER
+        elif effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (
             denoiser_pinned or denoiser_streamed
         ):
             # Compile only a resident or streamed denoiser; in the rotation the graph fights the onload hooks.
@@ -12451,7 +12616,7 @@ class VideoBackend:
                         else ""
                     )
                     + (
-                        "; the quantized conditioner streams leaf by leaf (group offload)"
+                        "; the conditioner streams leaf by leaf (group offload)"
                         if te_streamed
                         else ""
                     ),
@@ -12465,7 +12630,12 @@ class VideoBackend:
                         else "regional compile over the resident pre-quantized denoiser"
                     )
                     if "compiled" in speed_optims
-                    else "lossless optimisations only; the denoiser is in the CPU-offload rotation",
+                    else (
+                        "lossless optimisations only; the bf16 denoiser is resident beside the "
+                        "streamed conditioner (compile held off: output unchanged)"
+                        if dense_compile_held
+                        else "lossless optimisations only; the denoiser is in the CPU-offload rotation"
+                    ),
                 ),
                 "attention_backend": (
                     attention_backend,
@@ -13286,6 +13456,29 @@ class VideoBackend:
                                     ),
                                 )
                             )
+                        if (
+                            available_vram_gb + 0.25 < required_vram_gb
+                            and getattr(state, "denoiser_pinned", False)
+                            and getattr(state, "te_streamed", False)
+                            and state.transformer_quant is None
+                            and state.offload_policy != "none"
+                        ):
+                            # Pin was sized for the default clip; a longer one the rotation fits must not be refused.
+                            rotation_gb = estimate_h3_diffusers_vram_gb(
+                                width,
+                                height,
+                                frames,
+                                text_encoder_gb = h3_te_resident_gb(
+                                    state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
+                                ),
+                                text_encoder_streamed = True,
+                            )
+                            if available_vram_gb + 0.25 >= rotation_gb and _h3_dense_demote(
+                                state.pipe,
+                                getattr(state.pipe, h3_denoiser_component(state.h3_task), None),
+                                logger = logger,
+                            ):
+                                required_vram_gb = rotation_gb
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "
