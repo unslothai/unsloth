@@ -217,5 +217,36 @@ def test_v5_real_qwen2_tokenizer_constructed_once(tmp_path):
     ]
 
 
+def test_v5_failed_slow_load_keeps_the_tokenizer_as_loaded(tmp_path):
+    # tokenizer.json adds BOS while add_bos_token reports False, so the replayed setters drop BOS and the
+    # slow load runs; when that load fails, the fast tokenizer must come back as loaded, BOS included.
+    transformers = pytest.importorskip("transformers")
+    if int(transformers.__version__.split(".")[0]) < 5:
+        pytest.skip("transformers 4 loads a real slow tokenizer first")
+    from tokenizers import processors
+
+    vocab = {c: i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz\u0120!")}
+    vocab["<s>"] = len(vocab)
+    tokenizer = transformers.Qwen2Tokenizer(
+        vocab = vocab, merges = [], eos_token = "<|endoftext|>", unk_token = None, bos_token = "<s>"
+    )
+    tokenizer._tokenizer.post_processor = processors.TemplateProcessing(
+        single = "<s>:0 $A:0", pair = "<s>:0 $A:0 $B:1", special_tokens = [("<s>", vocab["<s>"])]
+    )
+    tokenizer.save_pretrained(tmp_path)
+    original = tu.AutoTokenizer.from_pretrained
+    expected = original(str(tmp_path))("ab").input_ids
+    assert expected[0] == vocab["<s>"]
+
+    def from_pretrained(*args, **kwargs):
+        if kwargs.get("use_fast") is False:
+            raise OSError("slow load failed")
+        return original(*args, **kwargs)
+
+    with patch.object(tu, "AutoTokenizer", types.SimpleNamespace(from_pretrained = from_pretrained)):
+        loaded = tu.load_correct_tokenizer(str(tmp_path))
+    assert loaded("ab").input_ids == expected
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

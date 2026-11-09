@@ -1064,11 +1064,29 @@ def _same_tokenization_as_own_copy(fast_tokenizer):
         before = fast_tokenizer(string).input_ids
     except Exception:
         return False
-    _sync_add_special_tokens(fast_tokenizer, fast_tokenizer)
+    # The setters rebuild the post_processor in place. When the ids move, undo them, so the slow load
+    # path (and its fast-only fallback when that load fails) starts from the tokenizer as loaded.
+    backend = getattr(fast_tokenizer, "_tokenizer", None)
+    saved_post_processor = getattr(backend, "post_processor", None)
+    saved_flags = {
+        k: fast_tokenizer.__dict__[k]
+        for k in ("_add_bos_token", "_add_eos_token")
+        if k in fast_tokenizer.__dict__
+    }
     try:
-        return fast_tokenizer(string).input_ids == before
+        _sync_add_special_tokens(fast_tokenizer, fast_tokenizer)
+        same = fast_tokenizer(string).input_ids == before
     except Exception:
-        return False
+        same = False
+    if not same:
+        for k in ("_add_bos_token", "_add_eos_token"):
+            if k in saved_flags:
+                object.__setattr__(fast_tokenizer, k, saved_flags[k])
+            else:
+                fast_tokenizer.__dict__.pop(k, None)
+        if backend is not None:
+            backend.post_processor = saved_post_processor
+    return same
 
 
 def _load_correct_tokenizer(
