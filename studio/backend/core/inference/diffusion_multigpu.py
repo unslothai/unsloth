@@ -2232,7 +2232,7 @@ def _latent_arg(args: tuple, kwargs: dict) -> Any:
         value = kwargs.get(key)
         if isinstance(value, torch.Tensor):
             return value
-    # Cosmos 3 passes its noisy tokens as ``vision_tokens=[t]``: a new list each call around the same tensor
+    # Cosmos 3: ``vision_tokens=[t]``, a new list each call around the same tensor
     vision = kwargs.get("vision_tokens")
     if (
         isinstance(vision, (list, tuple))
@@ -3006,9 +3006,8 @@ class CfgParallelRouter:
     def _batch_split(self, latent: Any, args: tuple, kwargs: dict) -> Any:
         """A step without guidance branches (a distilled model, or both branches batched into one call) whose batch is
         even: the first half runs on the source, the second on the replica at the same time. Only for denoiser classes
-        whose every batched input is known (``_DIT_BATCH_SPLIT_KWARGS``, plus ``_DIT_BATCH_SPLIT_KWARGS_ALL`` unless
-        ``UNSLOTH_DIFFUSION_MULTIGPU_ALL=0``); anything else, an odd batch, or the kill
-        switch keeps the call whole. None = not split (the caller runs it whole)."""
+        whose every batched input is known (``_DIT_BATCH_SPLIT_KWARGS`` / ``_ALL``); anything else, an odd
+        batch, or the kill switch keeps the call whole. None = not split (the caller runs it whole)."""
         torch = _torch()
         module = self.module_ref()
         allowed, joins_all = _batch_split_kwargs(module)
@@ -3635,10 +3634,7 @@ _DIT_BATCH_SPLIT_KWARGS = {
         }
     ),
 }
-# Further DiT classes, checked against diffusers' forwards and their pipelines' calls: every tensor input is per sample
-# on dim 0 or unbatched (ids / position ids / padding masks whose leading size is never the batch), every list is
-# per-render (Qwen-Image's equal img_shapes). LTX-2 and HiDream-style pipelines batch cond + uncond into ONE call, which
-# the split cuts back into the two branches. LTX-2 returns (video, audio): both halves are joined.
+# Every tensor input is per sample on dim 0 or unbatched (ids / masks); LTX-2 returns (video, audio), both joined.
 # Left out: HiDream (its llama states are layers x batch, batched on dim 1), MOSS-Image (positional inputs), Anima
 # (Studio's wrapper renders one image per call, so no batch reaches the denoiser), FLUX.3 /
 # Qwen-Image 2.1 (a per-branch prefix KV cache object), and an attention_kwargs that is not empty.

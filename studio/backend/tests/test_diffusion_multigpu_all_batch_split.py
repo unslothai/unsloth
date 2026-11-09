@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Batch split for the remaining DiT classes and CFG pairing for Cosmos 3, on tiny random instances of the real
-diffusers classes (CPU, fp32): a render through the CFG-parallel router with a replica matches the one-card render,
-``UNSLOTH_DIFFUSION_MULTIGPU_ALL=0`` keeps every call whole as before, and a one-card selection arms nothing."""
+"""Batch split for the remaining DiT classes and Cosmos 3 CFG pairing on tiny random diffusers models (CPU)."""
 
 import types
 
@@ -61,7 +59,7 @@ def _ltx2():
         1, frames, height, width, torch.device("cpu"), fps = 24.0
     )
     audio_coords = m.audio_rope.prepare_audio_coords(1, audio_len, torch.device("cpu"))
-    # one render, batched CFG as LTX2Pipeline sends it: uncond + cond concatenated into one call
+    # LTX2Pipeline batches uncond + cond into one call
     state = {
         "video": torch.randn(1, frames * height * width, 8, generator = g),
         "audio": torch.randn(1, audio_len, 8, generator = g),
@@ -218,8 +216,6 @@ def _krea2():
 
 
 def _distilled_step(state, kw, timestep):
-    """A guidance-free render at batch B: one call per step."""
-
     def step(model, i):
         out = model(hidden_states = state["x"], timestep = timestep(i), **kw)[0]
         state["x"] = state["x"] - 0.1 * out
@@ -256,7 +252,7 @@ def test_new_class_batch_splits_and_matches_one_card(name, monkeypatch):
     ref, _m, _r, _b = _render(CASES[name], routed = False)
     out, model, router, built = _render(CASES[name], routed = True)
     assert type(model).__name__ == name
-    # step 1 learns there is one call per step; steps 2.. are cut B -> B/2 + B/2, half on the replica
+    # step 1 learns the call pattern; later steps split
     assert router.stats["batch_splits"] == STEPS - 1, router.stats
     assert len(built) == 1
     torch.testing.assert_close(out, ref, rtol = 1e-4, atol = 1e-5)
