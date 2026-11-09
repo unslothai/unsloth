@@ -30,9 +30,7 @@ class ConvRotSpec:
     name prepended), ``variant_repos`` the variant repos that host one under their own name, ``default_on`` whether
     int8 rotates unless ``UNSLOTH_DIFFUSION_INT8_CONVROT`` turns it off (the rest are opt-in with ``=1``). ``group`` 0
     means no runtime rotation: the entry only names a hosted build whose rotation is baked into the file.
-    ``hosted_plain``: the family's older hosted int8 files are unrotated, so while ConvRot is on only the rotated
-    ``filename`` is read and, when it is absent, the load rotates and quantizes at load; the kill switch reads the
-    unrotated files again."""
+    ``hosted_plain``: older hosted int8 files are unrotated, so with ConvRot on only ``filename`` is read."""
 
     group: int
     suffixes: tuple[str, ...]

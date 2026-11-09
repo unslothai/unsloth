@@ -1041,7 +1041,7 @@ def resolve_prequant_source(
         from .diffusion_transformer_quant import convrot_drops_plain_hosted
 
         if rotated and convrot_drops_plain_hosted(scheme, fam_name):
-            # The older hosted int8 files are unrotated: the rotated file or nothing, so a miss rotates at load.
+            # Hosted plain int8 files are unrotated: rotated file or rotate at load.
             names = (
                 [rotated] if str(repo_id).strip().lower() == str(rotated_repo or "").lower() else []
             )

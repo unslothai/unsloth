@@ -611,7 +611,6 @@ def test_qwen_image_21_offline_default_still_loads_the_cached_plain_artifact(mon
 
 
 def test_qwen_image_21_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch):
-    # an int8-quantized but unrotated Linear would be a silent accuracy hole
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     diffusers = pytest.importorskip("diffusers")
     cls = getattr(diffusers, "QwenImage21Transformer2DModel", None)
@@ -715,7 +714,6 @@ def _skeleton(linears):
     ],
 )
 def test_flux_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch, family, linears, expect):
-    # an int8-quantized but unrotated Linear would be a silent accuracy hole
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     model = _skeleton(linears)
     filt = _filter(family)
@@ -741,7 +739,6 @@ def test_flux_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch, 
         assert not tq.int8_convrot_enabled(family)
         model = _skeleton(_FLUX2_KLEIN_LINEARS if family == "flux.2-klein" else _FLUX3_LINEARS)
         assert tq.apply_runtime_convrot(model, tq.TQ_INT8, family, _filter(family)) == ()
-    # FLUX.2-dev and FLUX.1 share no spec: unmeasured, so unchanged
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     for other in ("flux.2-dev", "flux.1", "flux.1-kontext"):
         assert tq.convrot_spec_for_scheme(tq.TQ_INT8, other) == (0, ())
@@ -766,8 +763,7 @@ def test_flux_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch, 
 def test_flux_int8_reads_only_the_rotated_hosted_file_unless_killed(
     monkeypatch, repo, hosted, rotated
 ):
-    # The older hosted int8 file is unrotated: by default only the rotated file is named, so a miss rotates
-    # at load; the kill switch names the unrotated file again (and never the rotated one).
+    # Default names only the rotated file; the kill switch names only the unrotated one.
     from core.inference import diffusion_prequant as pq
     from core.inference import diffusion_prequant_cache as pqc
     from core.inference.diffusion_families import detect_family
@@ -785,7 +781,6 @@ def test_flux_int8_reads_only_the_rotated_hosted_file_unless_killed(
     assert plain.kind == "repo" and plain.location == hosted
     names = candidate_filenames_of(plain)
     assert names and not any("ConvRot" in n for n in names)
-    # fp8 is untouched either way
     for env in ("0", "1"):
         monkeypatch.setenv(tq.INT8_CONVROT_ENV, env)
         fp8 = pq.resolve_prequant_source(fam, "fp8")
