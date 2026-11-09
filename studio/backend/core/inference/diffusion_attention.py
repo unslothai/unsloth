@@ -3583,6 +3583,9 @@ def apply_attention_backend(
             engaged = False
         if engaged:
             _tag_dits(pipe, backend)
+            if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):
+                from .diffusion_flux3_attn import install as install_flux3_strided
+                install_flux3_strided(pipe, backend, target, logger)
             if backend == "flash" and target is not None and _is_cuda_rocm(target):
                 _track_rocm_flash_calls(pipe)
             else:
