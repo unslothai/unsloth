@@ -148,7 +148,7 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
     out: list[TraceMessage] = []
     call_ids: set[str] = set()
     for message in chain:
-        role, message_id, start = message.get("role"), message["id"], len(out)
+        role, message_id, start, kept = message.get("role"), message["id"], len(out), []
         if role not in ("system", "user", "assistant"):
             warnings.append(TraceWarning("unknown_role", f"Skipped role {role!r}", message_id))
             continue
@@ -166,6 +166,7 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                 skipped = _skipped_call(part, message_id, position) if kind == "tool-call" else None
                 if skipped:
                     warnings.append(skipped)
+                    kept += out[start:][-1:] if _server_builtin(part)[1] else []
                     continue
                 round_id = _local_round_id(part) if kind == "tool-call" else None
                 flush_pair = kind == "tool-call" and round_id is None and _flushes_local_pair(part)
@@ -241,14 +242,16 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     out.extend(pending)
                     pending, pending_round = [], None
             else:
+                kept += out[start:][:1] if kind == "image" and part.get("image") else []
                 warnings.append(
                     TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
                 )
         out.extend(pending)
-        incomplete = _as_dict(_as_dict(message.get("metadata")).get("incomplete"))
-        for m in out[start:] if incomplete.get("reason") in tuple(_STOP_LABELS) else []:
-            if not (_sanitised_assistant_text(m.text) or m.tool_calls):
-                m.reasoning = ""  # shouldReplayAssistantReasoning: the text check is untrimmed
+        reason = _as_dict(_as_dict(message.get("metadata")).get("incomplete")).get("reason")
+        if isinstance(reason, str) and reason in _STOP_LABELS:
+            for m in out[start:]:
+                if not (_sanitised_assistant_text(m.text) or m.tool_calls or m in kept):
+                    m.reasoning = ""  # shouldReplayAssistantReasoning: the text check is untrimmed
     for m in out:
         if m.role == "assistant":
             m.text = _sanitised_assistant_text(m.text)
@@ -297,22 +300,15 @@ def _prune(chain: list[dict]) -> list[dict]:
     empty stopped turn its label, as fillStoppedAssistantReplay does. An unsettled run's row gets no
     "Response interrupted" label: the UI asks the server if the run is live, and rows lack that."""
 
-    def custom(message):
-        # The UI stores message.metadata.custom as the row's metadata (runtime-provider.tsx).
-        return _as_dict(message.get("metadata"))
-
     def replayed(message, reasoning):
-        # The UI sends a native Gemini builtin as a tool call (serializeAssistantToolCallPart),
-        # though the trace drops it.
-        if any(
-            isinstance(p, dict) and p.get("type") == "tool-call" and _server_builtin(p)[1]
-            for p in _model_parts(message)
-        ):
-            return True
-        converted = _convert([message], [])
+        # The UI sends an image (collectImageParts) and a native Gemini call; the trace drops both.
         return any(
+            p.get("image") if p.get("type") == "image" else _server_builtin(p)[1]
+            for p in _model_parts(message)
+            if isinstance(p, dict) and p.get("type") in ("image", "tool-call")
+        ) or any(
             m.text.strip() or m.tool_calls or (m.reasoning and (reasoning or m.text))
-            for m in converted
+            for m in _convert([message], [])
         )
 
     def abandoned(message):
@@ -328,9 +324,10 @@ def _prune(chain: list[dict]) -> list[dict]:
         )
         return not payload and not replayed(message, reasoning = True)
 
+    meta = [_as_dict(m.get("metadata")) for m in chain]  # runtime-provider.tsx: metadata.custom
     assistant = [m.get("role") == "assistant" for m in chain]
-    refused = [a and custom(m).get("anthropicRefusal") is True for m, a in zip(chain, assistant)]
-    reasons = [_as_dict(custom(m).get("incomplete")).get("reason") for m in chain]
+    refused = [a and d.get("anthropicRefusal") is True for d, a in zip(meta, assistant)]
+    reasons = [_as_dict(d.get("incomplete")).get("reason") for d in meta]
     stopped = [isinstance(r, str) and r in _STOP_LABELS for r in reasons]
     dropped = [
         r or (a and not s and abandoned(m))
@@ -431,9 +428,9 @@ def chat_to_trace(
 
     head_id picks the branch like a saved UI branch head (its newest leaf); None uses the newest
     row's leaf. Unlike the UI, an unsaved id raises ChatTraceError instead of falling back.
-    Consecutive assistant rows merge into one message, because importers save one reply as several
-    rows; the UI sends them as separate messages. Tool text is the restored replay text; MCP image
-    envelopes are left out.
+    Consecutive assistant rows merge (importers split one reply into rows; the UI sends each row).
+    Reasoning is kept as for a local model; the UI drops it for most external providers, which rows
+    do not record. Tool text is the restored replay text; MCP image envelopes are left out.
     """
     if not messages:
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no messages")

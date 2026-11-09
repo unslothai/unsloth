@@ -386,12 +386,15 @@ def test_stopped_turn_replays_reasoning_beside_text_or_calls():
 
 
 @pytest.mark.parametrize("custom", [{}, _STOPPED])
-def test_native_builtin_turn_keeps_its_prompt(custom):
-    # The UI replays the native part as a tool call, so the turn is neither abandoned nor labelled.
-    native = _call("x", "code_execution", None, args = {"google": {"native_part": {}}})
-    trace = _turn(custom, [native])
+@pytest.mark.parametrize("p", [{"google": {"native_part": {}}}, {"type": "image", "image": "x"}])
+def test_native_builtin_or_image_turn_keeps_its_prompt_and_reasoning(custom, p):
+    # The UI sends both, so no prune or label; their UI group keeps its reasoning (a call ends one).
+    part = p if "image" in p else _call("x", "code_execution", None, args = p)
+    trace, tail = _turn(custom, [part]), "" if custom and "image" not in p else "r"
     assert _shape(trace) == [("user", "go"), ("user", "again"), ("assistant", "fine")]
-    assert _codes(trace) == ["server_tool_skipped"]
+    assert _codes(trace) == ["unsupported_part" if "image" in p else "server_tool_skipped"]
+    assert _turn(custom, [{"type": "reasoning", "text": "r"}, part]).messages[1].reasoning == "r"
+    assert _turn(custom, [part, {"type": "reasoning", "text": "r"}]).messages[1].reasoning == tail
 
 
 def test_user_attachments_are_model_input():
