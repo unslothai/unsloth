@@ -96,7 +96,6 @@ def test_scaled_half_attention_matches_float32(monkeypatch, fake_module, v_scale
     monkeypatch.setattr(ha, "_eligible", lambda *a: True)
     got = ha._half_dispatch(q, k, v, attn_mask = None)
     assert got.dtype == torch.float32 and torch.isfinite(got).all()
-    # float16 rounding of Q / K / V: relative to each head's own magnitude
     for head in range(q.shape[2]):
         ref = want[:, :, head]
         err = (got[:, :, head].double() - ref).abs().max() / ref.abs().max()
@@ -122,7 +121,6 @@ def test_ineligible_calls_run_stock(fake_module):
     stock.__name__ = ha._ATTR
     ha._STOCK[ha._ATTR] = stock
     q, k, v = _qkv(1.0)
-    # CPU tensors, 16-bit inputs, an additive mask: all stock and untouched
     assert ha._half_dispatch(q, k, v) is v
     assert ha._half_dispatch(q.half(), k.half(), v.half()) is not None
     assert calls == [torch.float32, torch.float16]
@@ -153,7 +151,6 @@ def test_install_gates_and_uninstall_restores(monkeypatch, fake_module):
     # a norm weight that could push Q / K near the float16 range: stock
     loud = types.SimpleNamespace(transformer = Transformer(wmax = 2000.0))
     assert ha.install_for_pipe(loud, "cuda", "default") is False
-    # another denoiser class, or a GPU with bf16
     assert (
         ha.install_for_pipe(
             types.SimpleNamespace(transformer = torch.nn.Linear(2, 2)), "cuda", "default"

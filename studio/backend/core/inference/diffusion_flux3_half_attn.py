@@ -1,20 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 attention in float16 on fp16-only GPUs; off via UNSLOTH_DIFFUSION_FLUX3_FP16_ATTN=0.
+"""FLUX.3 attention in float16 on fp16-only GPUs (sm70 / sm75, which run FLUX.3 in float32); off via
+UNSLOTH_DIFFUSION_FLUX3_FP16_ATTN=0.
 
-GPUs without bf16 (T4 and the other Turing / Volta cards) run FLUX.3 in float32, because its residual stream
-overflows float16. Attention itself cannot overflow there, so this runs it on float16 tensor cores instead of the float32
-SIMT kernel (memory-efficient SDPA, 42 s of a 210 s T4 render):
-
-- Q and K come out of an RMSNorm (then RoPE, which keeps each rotated pair's norm), so every entry is at most
-  ``sqrt(head_dim) * max|norm weight|``. That bound is read from the loaded weights once at install; the patch engages
-  only when it sits below ``QK_BOUND`` (float16 max is 65504).
-- V is unbounded, so each (batch, head) slice is divided by a power of two that puts its largest entry in [2^13, 2^14]
-  (exact in float32), and the output, a convex combination of V rows, is multiplied back in float32.
-
-Float16 keeps 10 mantissa bits, more than the 7 bf16 GPUs run this same attention at. An explicit speed ``off``
-(exact) keeps stock float32 attention, as does every 16-bit load and every GPU with bf16.
+Q / K come out of an RMSNorm (RoPE keeps pair norms), so each entry is at most ``sqrt(head_dim) * max|norm weight|``,
+read from the weights at install; engages only below ``QK_BOUND``. V is unbounded, so each (batch, head) slice is
+divided by a power of two (exact) and the output is multiplied back in float32.
 """
 
 from __future__ import annotations
@@ -127,9 +119,8 @@ def install_for_pipe(
     logger: Any = None,
     explicit_off: Any = None,
 ) -> bool:
-    """Idempotent. False (stock) unless: a FLUX.3 transformer on an sm70 / sm75 GPU (where FLUX.3 computes in float32;
-    each call still checks float32 inputs), no explicit speed ``off`` (``explicit_off``; None reads ``speed_mode``: a
-    dense load's unset request also resolves to off and keeps this), the diffusers symbol is the expected one, and the
+    """Idempotent. Stock unless FLUX.3 on sm70 / sm75, no explicit speed ``off`` (``explicit_off``; None reads
+    ``speed_mode``; a dense load's unset request resolving to off still engages), expected diffusers symbol, and the
     RMSNorm bound proves Q / K fit."""
     import sys
 
