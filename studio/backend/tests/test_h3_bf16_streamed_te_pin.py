@@ -178,7 +178,8 @@ class _Hook:
 
 def _demote_fixture(monkeypatch, available_mib):
     import torch
-    from diffusers.modular_pipelines import components_manager as cm
+
+    cm = pytest.importorskip("diffusers.modular_pipelines.components_manager")
 
     from core.inference import diffusion_memory
     from core.inference import video as vid
