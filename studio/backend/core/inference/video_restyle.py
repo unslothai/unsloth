@@ -728,6 +728,9 @@ class RestyleRunner:
                 self._update(active = False, phase = "error", error = str(exc))
         finally:
             lease.close()
+            # Not kept resident: an idle ~30 GB server would sit outside every other loader's VRAM
+            # accounting. stop() is counted (holds_gpu) until the process has exited.
+            self.unload()
 
 
 runner = RestyleRunner()

@@ -225,9 +225,10 @@ def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     for kind in ("input", "control", "output"):
         assert runner.media_path(state["id"], kind) is not None
     assert runner.media_path("other", "output") is None
-    # The resident server is reused for the next restyle.
+    # The server is stopped when the job ends, so nothing idle holds VRAM between restyles.
+    assert runner._server is None and not runner.holds_gpu()
     runner.run(runner.start(prompt = "blue car", frames = _frames(5)))
-    assert server.started == 1
+    assert server.started == 2 and runner._server is None
 
 
 def test_runner_reports_failure(weights):

@@ -28,7 +28,7 @@ const IMAGE_RE = /\.(png|jpe?g|webp|bmp)$/i;
 
 const PHASE_LABEL: Record<string, string> = {
   edges: "Tracing edges",
-  loading: "Loading Cosmos3 (the first run takes about a minute)",
+  loading: "Loading Cosmos3 (about a minute)",
   generate: "Restyling",
   decode: "Decoding video",
   export: "Saving",
