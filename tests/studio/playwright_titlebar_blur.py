@@ -171,6 +171,10 @@ def run():
                         e.append(body);
                     }""")
                     close = dialog.locator('[data-slot="dialog-close"]')
+                    # Measure after the open animation: a scaling dialog moves its fixed close button.
+                    dialog.evaluate(
+                        "e => Promise.all(e.getAnimations({ subtree: true }).map(a => a.finished))"
+                    )
                     expect(close).to_have_css("position", "fixed")
                     expect(dialog).to_have_css("backdrop-filter", "none")
                     close_top = close.evaluate("e => e.getBoundingClientRect().top")
