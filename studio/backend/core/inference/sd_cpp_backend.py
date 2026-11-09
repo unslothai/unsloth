@@ -41,7 +41,14 @@ from core.inference.diffusion_device import (
     auto_cuda_ordinal_for_load,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
+    resolve_selected_cuda_ordinals,
 )
+from core.inference.diffusion_multigpu import (
+    AUTOMATIC_ORDINALS,
+    multigpu_all_enabled,
+    with_load_selection,
+)
+from core.inference.sd_cpp_multigpu import split_for_load
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
@@ -2909,6 +2916,8 @@ class _SdState:
     child_env: tuple[tuple[str, str], ...] = ()
     # The user picked the GPU (a gpu_ids pool or UNSLOTH_DIFFUSION_SD_CPP_DEVICE): never moved to CPU behind their back.
     gpu_explicit: bool = False
+    # A multi-GPU split the committed argv carries (sd_cpp_multigpu), as ``status()["multi_gpu"]``; None on one card.
+    multi_gpu: Optional[dict[str, Any]] = None
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
@@ -2927,9 +2936,13 @@ class _SdState:
 
 
 def _offload_with_device_pin_impl(
-    offload: tuple[str, ...] | list[str], binary: Optional[str], ordinal: Optional[int]
+    offload: tuple[str, ...] | list[str],
+    binary: Optional[str],
+    ordinal: Optional[int],
+    split: Any = None,
 ) -> list[str]:
-    """``offload`` plus the ``--backend`` pin for whichever build is about to run it."""
+    """``offload`` plus the ``--backend`` pin for whichever build is about to run it. ``split`` (an ``SdCppCardSplit``
+    for ``ordinal``): the text encoders (and the VAE when it says so) run on its second card."""
     flags = list(offload)
     if ordinal is None:
         return flags
@@ -2938,7 +2951,37 @@ def _offload_with_device_pin_impl(
         # `Vulkan0` is not a physical index; pin by card name instead.
         selected_name, selected_position = physical_card_name(ordinal)
         device_name = sd_cpp_device_named(binary, selected_name, position = selected_position)
+    if split is not None and device_name is not None and int(split.primary) == int(ordinal):
+        second = sd_cpp_device_name_for_ordinal(binary, int(split.secondary))
+        if second is not None and second != device_name:
+            return [
+                *flags,
+                *device_backend_flags(
+                    device_name,
+                    flags,
+                    te_device = second,
+                    vae_device = second if split.vae_on_secondary else None,
+                ),
+            ]
+        logger.info(
+            "sd_cpp.multigpu: one card (cuda:%s has no device name in this build)", split.secondary
+        )
     return [*flags, *device_backend_flags(device_name, flags)]
+
+
+def _backend_devices(committed_flags: tuple[str, ...]) -> set[str]:
+    """Every device a committed ``--backend`` assignment names (``diffusion=CUDA0,te=CUDA1`` -> CUDA0, CUDA1)."""
+    out: set[str] = set()
+    for index, flag in enumerate(committed_flags[:-1]):
+        if flag != "--backend":
+            continue
+        for part in str(committed_flags[index + 1]).split(","):
+            _key, sep, value = part.partition("=")
+            for name in (value if sep else part).split("&"):
+                name = name.strip()
+                if name and name.lower() != "cpu":
+                    out.add(name.lower())
+    return out
 
 
 def _resolved_server_physical_gpu_id(
@@ -2946,6 +2989,9 @@ def _resolved_server_physical_gpu_id(
 ) -> Optional[int]:
     """Physical id for a provably single-device resident sd-server."""
     if device != "cuda" or "--offload-to-cpu" in committed_flags:
+        return None
+    if len(_backend_devices(committed_flags)) > 1:
+        # a multi-GPU split: its weights are on two cards, so no single card can be charged for them
         return None
     try:
         from utils.hardware import get_parent_visible_gpu_ids
@@ -3518,6 +3564,17 @@ class SdCppDiffusionBackend:
         if auto_ordinal:
             # Automatic ranks the torch cards too, after validation, unless sd.cpp runs on one torch cannot see.
             gpu_ordinal = auto_cuda_ordinal_for_load()
+        # The multi-card selection, exactly as the diffusers backend builds it; an off-torch card stays one card.
+        gpu_ordinals: Any = None
+        if (
+            off_torch is None
+            and multigpu_all_enabled()
+            and resolve_diffusion_device_target().device == "cuda"
+        ):
+            if gpu_ids and len(set(gpu_ids)) > 1:
+                gpu_ordinals = resolve_selected_cuda_ordinals(gpu_ids)
+            elif not gpu_ids:
+                gpu_ordinals = AUTOMATIC_ORDINALS
         self._loading_family = fam
 
         base = resolve_base_repo(fam, base_repo)
@@ -3585,12 +3642,15 @@ class SdCppDiffusionBackend:
                 off_torch = off_torch,
                 _load_token = token,
                 _cancel_event = cancel_event,
+                **({"_gpu_ordinals": gpu_ordinals} if gpu_ordinals else {}),
             ),
             daemon = True,
         ).start()
         return self.status()
 
     @_invalidates_gpu_memory("sd.cpp load")
+    # The multi-card selection (begin_load's ``_gpu_ordinals``) is visible to this load's placement only.
+    @with_load_selection
     def _run_load(
         self,
         *,
@@ -3793,6 +3853,24 @@ class SdCppDiffusionBackend:
             def _ordinal() -> Optional[int]:
                 return selected_ordinal if device == "cuda" else None
 
+            split_memo: dict[tuple, Any] = {}
+
+            def _split() -> Any:
+                # Under a multi-card selection only (diffusion_multigpu), for the placement and flags in force now.
+                key = (device, _ordinal(), tuple(offload))
+                if key not in split_memo:
+                    split_memo[key] = (
+                        split_for_load(files, primary = _ordinal(), offload = offload, logger = logger)
+                        if device == "cuda" and off_torch is None
+                        else None
+                    )
+                return split_memo[key]
+
+            def _split_arg() -> tuple:
+                # Passed only when there is a split: a one-card load calls the pin exactly as before.
+                split = _split()
+                return () if split is None else (split,)
+
             native_speed = _native_speed_for(speed_mode)
 
             # Teardown and commit run under _generate_lock, taken only now: abort and wait for a generation begun during the download, so no stale image persists.
@@ -3877,7 +3955,7 @@ class SdCppDiffusionBackend:
                     started_ok = False
                     try:
                         server_offload = _offload_with_device_pin_impl(
-                            offload, server_binary, _ordinal()
+                            offload, server_binary, _ordinal(), *_split_arg()
                         )
                         spawn_env = _sd_cpp_spawn_env(
                             off_torch,
@@ -3960,6 +4038,7 @@ class SdCppDiffusionBackend:
                         offload,
                         server_binary if mode == "server" else getattr(engine, "binary", None),
                         _ordinal(),
+                        *_split_arg(),
                     )
                 )
                 # Recomputed for what is committed: a deferred install or the one-shot fallback can move placement.
@@ -4011,6 +4090,12 @@ class SdCppDiffusionBackend:
                         else None
                     ),
                     selected_card = self._loading_card,
+                    multi_gpu = (
+                        _split().describe()
+                        if _split() is not None
+                        and len(_backend_devices(committed_offload_flags)) > 1
+                        else None
+                    ),
                     off_torch_device = off_torch.label if off_torch is not None else None,
                     child_env = tuple(sorted((spawn_env or {}).items())),
                     gpu_explicit = gpu_explicit,
@@ -5003,6 +5088,7 @@ class SdCppDiffusionBackend:
                                     without_device_backend_flags(state.offload_flags)
                                 ),
                                 physical_gpu_id = None,
+                                multi_gpu = None,
                             )
                         self._hand_over_replacement(state, server, old_server)
                         # The old server's stop removed its scratch dir, and the staged adapters with it.
@@ -5592,6 +5678,7 @@ class SdCppDiffusionBackend:
             "workflows": workflows,
             "conditioning": conditioning,
             **_native_hires_status(state),
+            **({"multi_gpu": state.multi_gpu} if state.multi_gpu is not None else {}),
         }
 
 

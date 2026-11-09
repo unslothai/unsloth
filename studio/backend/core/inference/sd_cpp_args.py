@@ -714,14 +714,19 @@ def is_device_oom_text(text: Optional[str]) -> bool:
 
 
 def device_backend_flags(
-    device_name: Optional[str], offload: Optional[list[str]] = None
+    device_name: Optional[str],
+    offload: Optional[list[str]] = None,
+    *,
+    te_device: Optional[str] = None,
+    vae_device: Optional[str] = None,
 ) -> list[str]:
-    """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu."""
+    """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu.
+    ``te_device`` / ``vae_device``: another card for the encoders / the VAE (a multi-GPU split; default the same card)."""
     if not device_name:
         return []
     flags = offload or []
-    te = "cpu" if "--clip-on-cpu" in flags else device_name
-    vae = "cpu" if "--vae-on-cpu" in flags else device_name
+    te = "cpu" if "--clip-on-cpu" in flags else (te_device or device_name)
+    vae = "cpu" if "--vae-on-cpu" in flags else (vae_device or device_name)
     return ["--backend", f"diffusion={device_name},te={te},vae={vae}"]
 
 

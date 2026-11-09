@@ -52,6 +52,21 @@ def multigpu_mode() -> str:
     return "auto"
 
 
+MULTIGPU_ALL_ENV = "UNSLOTH_DIFFUSION_MULTIGPU_ALL"
+
+
+def multigpu_all_enabled() -> bool:
+    """The multi-GPU paths added for the remaining families and formats; ``0`` keeps the earlier one-card choices."""
+    if multigpu_mode() == "off":
+        return False
+    return (os.environ.get(MULTIGPU_ALL_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 UNET_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET"
 # Automatic (no gpu_ids) arms CFG-parallel on an idle card of the same model; 0 keeps the replica to explicit picks.
 AUTO_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_AUTO"
