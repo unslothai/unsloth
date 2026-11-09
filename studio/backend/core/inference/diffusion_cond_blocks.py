@@ -5,7 +5,9 @@
 and end of each pipeline call; installed only on matching diffusers forward hash, else stock;
 UNSLOTH_DIFFUSION_COND_BLOCKS=0 disables. Offloaded (CUDA): computed inside the hooked forward,
 UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE=0 keeps stock. Modulation heads project one row per sample,
-not per token (any FLUX.3), UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD=0 restores per-token rows"""
+not per token (any FLUX.3), UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD=0 restores per-token rows. With reference
+images the joint blocks take one row per span (image, references) instead of a per-token copy, bit-identical;
+UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD=0 restores the per-token rows"""
 
 from __future__ import annotations
 
@@ -20,14 +22,21 @@ from .rocm_bf16 import is_rocm_torch
 COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
 OFFLOAD_COND_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE"
 COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
+SPAN_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD"
+SPAN_KWARG = "unsloth_cond_mod"
+SPAN_LEN_KWARG = "unsloth_cond_span"
 COND_KWARG = "unsloth_cond"
 _COMPACT_ATTR = "_unsloth_compact_mod"
+_SPAN_ATTR = "_unsloth_span_mod"
 _OFFLOADED_ATTR = "_unsloth_cond_offloaded"
 
 # sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (d42ebf9c and 0.42.1).
 _FLUX3_FORWARD_SHA = frozenset({"f2f7c836416cfd58"})
+# Same, for Flux3SingleTransformerBlock.forward (the span-modulated joint block mirrors it).
+_FLUX3_SINGLE_SHA = frozenset({"92269bb072da8335"})
 
 _PATCHED: dict[type, Any] = {}
+_PATCHED_SINGLE: dict[type, Any] = {}
 
 
 def _switch(name: str) -> bool:
@@ -44,6 +53,10 @@ def offload_cache_enabled() -> bool:
 
 def compact_enabled() -> bool:
     return _switch(COMPACT_MOD_ENV)
+
+
+def span_enabled() -> bool:
+    return _switch(SPAN_MOD_ENV)
 
 
 def _forward_sha(cls: type) -> Optional[str]:
@@ -319,18 +332,30 @@ def _flux3_cached_forward(
     for block in self.mode_blocks["image"]:
         hidden_states = block(hidden_states, image_early_mod, image_rotary_emb)
 
+    block_kwargs: dict = {}
     if has_cond:
         cond_states = unsloth_cond["cond_states"]
         cond_rotary_emb = (unsloth_cond["cond_cos"], unsloth_cond["cond_sin"])
         content_states = torch.cat([hidden_states, cond_states], dim = 1)
-        # image and reference spans carry different timesteps: per token here
-        content_mod = torch.cat(
-            [
-                _rows(image_single_mod, batch_size, image_seq_len),
-                _rows(unsloth_cond["cond_single_mod"], batch_size, cond_states.shape[1]),
-            ],
-            dim = 1,
-        )
+        cond_single_mod = unsloth_cond["cond_single_mod"]
+        if (
+            self.__dict__.get(_SPAN_ATTR)
+            and image_single_mod.shape[1] == 1
+            and cond_single_mod.shape[1] == 1
+        ):
+            # one row per span; the span length rides on a storage-free tensor so block graphs can copy every input
+            content_mod = image_single_mod
+            block_kwargs[SPAN_KWARG] = cond_single_mod
+            block_kwargs[SPAN_LEN_KWARG] = cond_states.new_empty((cond_states.shape[1], 0))
+        else:
+            # image and reference spans carry different timesteps: per token here
+            content_mod = torch.cat(
+                [
+                    _rows(image_single_mod, batch_size, image_seq_len),
+                    _rows(cond_single_mod, batch_size, cond_states.shape[1]),
+                ],
+                dim = 1,
+            )
         joint_rotary_emb = (
             torch.cat([txt_rotary_emb[0], image_rotary_emb[0], cond_rotary_emb[0]], dim = 0),
             torch.cat([txt_rotary_emb[1], image_rotary_emb[1], cond_rotary_emb[1]], dim = 0),
@@ -350,6 +375,7 @@ def _flux3_cached_forward(
             temb_mod = content_mod,
             temb_mod_context = txt_single_mod,
             image_rotary_emb = joint_rotary_emb,
+            **block_kwargs,
         )
 
     hidden_states = content_states[:, :image_seq_len]
@@ -359,6 +385,96 @@ def _flux3_cached_forward(
     if not return_dict:
         return (output,)
     return Transformer2DModelOutput(sample = output)
+
+
+def _flux3_span_single_forward(
+    self: Any,
+    hidden_states: Any,
+    encoder_hidden_states: Any,
+    temb_mod: Any,
+    temb_mod_context: Any,
+    image_rotary_emb: Any,
+    unsloth_cond_mod: Any = None,
+    unsloth_cond_span: Any = None,
+) -> Any:
+    """Stock joint block, op for op, with one ``[B, 1, 3D]`` modulation row per span: ``temb_mod`` (image),
+    ``unsloth_cond_mod`` (reference, length = ``unsloth_cond_span``'s ``[reference_tokens, 0]`` shape)."""
+    if unsloth_cond_mod is None or unsloth_cond_span is None:
+        return _stock_single_forward(self)(
+            self,
+            hidden_states = hidden_states,
+            encoder_hidden_states = encoder_hidden_states,
+            temb_mod = temb_mod,
+            temb_mod_context = temb_mod_context,
+            image_rotary_emb = image_rotary_emb,
+        )
+    import torch
+
+    n_cond = unsloth_cond_span.shape[0]
+    n_image = hidden_states.shape[1] - n_cond
+    mod_shift, mod_scale, mod_gate = torch.chunk(temb_mod, 3, dim = -1)
+    r_shift, r_scale, r_gate = torch.chunk(unsloth_cond_mod, 3, dim = -1)
+    c_mod_shift, c_mod_scale, c_mod_gate = torch.chunk(temb_mod_context, 3, dim = -1)
+
+    norm_hidden_states = self.norm(hidden_states)
+    norm_image, norm_cond = torch.split(norm_hidden_states, [n_image, n_cond], dim = 1)
+    norm_hidden_states = torch.cat(
+        [(1 + mod_scale) * norm_image + mod_shift, (1 + r_scale) * norm_cond + r_shift], dim = 1
+    )
+
+    norm_encoder_hidden_states = self.norm(encoder_hidden_states)
+    norm_encoder_hidden_states = (1 + c_mod_scale) * norm_encoder_hidden_states + c_mod_shift
+
+    combined = torch.cat([norm_encoder_hidden_states, norm_hidden_states], dim = 1)
+
+    attn_output = self.attn(hidden_states = combined, image_rotary_emb = image_rotary_emb)
+    ff_output = self.ff(combined)
+    output = attn_output + ff_output
+
+    context_output, image_output, cond_output = torch.split(
+        output, [encoder_hidden_states.shape[1], n_image, n_cond], dim = 1
+    )
+    encoder_hidden_states = encoder_hidden_states + c_mod_gate * context_output
+    image_states, cond_states = torch.split(hidden_states, [n_image, n_cond], dim = 1)
+    hidden_states = torch.cat(
+        [image_states + mod_gate * image_output, cond_states + r_gate * cond_output], dim = 1
+    )
+
+    return encoder_hidden_states, hidden_states
+
+
+def _stock_single_forward(module: Any) -> Any:
+    for cls in type(module).__mro__:
+        stock = _PATCHED_SINGLE.get(cls)
+        if stock is not None:
+            return stock
+    raise RuntimeError(f"{type(module).__name__} has no stock forward recorded")
+
+
+def patch_single_class(cls: type) -> Optional[str]:
+    """Install the span-aware joint block forward on ``cls`` (at load, before compile or a hook binds it)."""
+    if any(c in _PATCHED_SINGLE for c in cls.__mro__):
+        return None
+    sha = _forward_sha(cls)
+    if sha not in _FLUX3_SINGLE_SHA:
+        return f"diffusers joint block changed (source {sha})"
+    _PATCHED_SINGLE[cls] = cls.forward
+    cls.forward = _flux3_span_single_forward
+    return None
+
+
+def _span_ready(transformer: Any) -> Optional[str]:
+    """None when every joint block runs the span-aware forward; else why the per-token rows stay."""
+    blocks = list(getattr(transformer, "single_transformer_blocks", None) or ())
+    if not blocks:
+        return "no joint blocks"
+    for block in blocks:
+        why = patch_single_class(type(block))
+        if why is not None:
+            return why
+        if type(block).forward is not _flux3_span_single_forward:
+            return "the joint block forward is not the patched one"
+    return None
 
 
 def _stock_forward(module: Any) -> Any:
@@ -511,6 +627,13 @@ def prepare(transformer: Any, logger: Any = None) -> bool:
     transformer.__dict__[_COMPACT_ATTR] = compact
     if compact and logger is not None:
         logger.info("diffusion.cond_blocks: FLUX.3 modulation heads project one row per sample")
+    span = False
+    if compact and span_enabled():
+        why = _span_ready(transformer)
+        span = why is None
+        if why is not None and logger is not None:
+            logger.info("diffusion.cond_blocks: reference modulation stays per token (%s)", why)
+    transformer.__dict__[_SPAN_ATTR] = span
     if not cond_on:
         return False
     if applies is not None:
