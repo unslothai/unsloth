@@ -516,7 +516,6 @@ def apply_speed_optims(
     # Stability, not speed, so also before the `off` return.
     _enable_miopen_immediate(logger)
     if getattr(target, "backend", None) == "rocm":
-        # GEMM solution choice is speed, not exactness: on `off` the default pick comes back.
         try:
             from . import diffusion_rocm_tunableop as rocm_tunableop
             if mode == SPEED_OFF:

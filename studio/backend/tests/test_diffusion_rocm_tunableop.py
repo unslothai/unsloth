@@ -132,7 +132,7 @@ def test_nested_calls_keep_tuning_on_until_the_outer_returns(fake):
     rt._post(None, (), {}, None)
     rt._pre(None, (torch.zeros(1, 4),), {})  # steady: tuning on
     pipe.transformer(torch.randn(1, 4))
-    assert fake.tuning  # the outer call is still running
+    assert fake.tuning
     rt._post(None, (), {}, None)
     assert not fake.tuning
 
@@ -203,7 +203,7 @@ def test_prefill_and_new_prompt_shapes_do_not_tune(fake):
     pipe = _pipe(fake)
     rt.install_for_pipe(pipe)
     lat = torch.randn(1, 4)
-    for text in (5, 9):  # two prompts of different lengths
+    for text in (5, 9):
         pipe.transformer(
             lat, encoder_hidden_states = torch.zeros(1, text, 4), kv_cache_mode = "extract"
         )

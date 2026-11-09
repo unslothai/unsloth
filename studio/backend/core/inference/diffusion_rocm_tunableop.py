@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ROCm GEMM selection for diffusion denoisers on the measured RDNA APUs (gfx1151): hipBLASLt's default pick at DiT
-shapes runs 20-38% below the card's best solution. torch's TunableOp can use a table of the fastest solution per GEMM
-shape, but building it costs 17-215 s per shape (budget-independent: candidate enumeration dominates), so by default
-Studio only READS a table measured on AMD CI for the default resolutions of each family (``rocm_gemm_tables/``),
-and only when its library validators (torch, HIP, hipBLASLt, rocBLAS, arch) equal this process's: no tuning, no first
-render cost, shapes outside the table keep the default pick. ``UNSLOTH_DIFFUSION_ROCM_TUNABLEOP=tune`` also tunes new
-shapes inside the denoiser on steady calls (a render's first call and a prefix-cache prefill never tune), persisted
-under the compile cache; ``=0`` keeps the default pick everywhere."""
+"""ROCm TunableOp GEMM tables for diffusion denoisers on gfx1151 (hipBLASLt's default pick is 20-38% slow at DiT
+shapes). Tuning costs 17-215 s per shape, so by default only READ the AMD CI tables in ``rocm_gemm_tables/`` whose
+validators match exactly. ``UNSLOTH_DIFFUSION_ROCM_TUNABLEOP=tune`` also tunes on steady denoiser calls; ``=0`` off."""
 
 from __future__ import annotations
 
@@ -21,9 +16,8 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 TUNABLEOP_ENV = "UNSLOTH_DIFFUSION_ROCM_TUNABLEOP"
-# Measured archs only (AMD CI gfx1151 GEMM + end-to-end A/B); widen with evidence.
+# Measured archs only; widen with evidence.
 TUNED_ARCHES = frozenset({"gfx1151"})
-# Per GEMM shape: at most this long benchmarking candidates, at most this many timed runs of each.
 MAX_TUNING_MS = 30
 MAX_TUNING_ITERS = 20
 _HOOK_ATTR = "_unsloth_tunableop_hooks"
@@ -51,7 +45,6 @@ def disabled() -> bool:
 
 
 def tuning_requested() -> bool:
-    """Online tuning of shapes the shipped table lacks: opt-in (its first render pays 17-215 s per new shape)."""
     return _env() == "tune"
 
 
@@ -65,8 +58,7 @@ def _validators(text: str) -> dict:
 
 
 def shipped_tables(arch: str, validators: dict) -> list:
-    """The shipped tables for ``arch`` whose every validator equals this process's (solution indices are only
-    meaningful for the exact hipBLASLt / rocBLAS build that measured them)."""
+    """Tables whose validators all match: solution indices are only valid for the exact build that measured them."""
     out = []
     want = {str(k): str(v) for k, v in validators.items()}
     for path in sorted(_TABLE_DIR.glob(f"{arch}_*.csv")):
@@ -80,7 +72,6 @@ def shipped_tables(arch: str, validators: dict) -> list:
 
 
 def _user_owns_tunableop() -> bool:
-    """A user who set any PYTORCH_TUNABLEOP_* variable drives TunableOp themselves."""
     return any(k.startswith("PYTORCH_TUNABLEOP_") for k in os.environ)
 
 
@@ -105,7 +96,6 @@ def _device_count(torch: Any) -> int:
 
 
 def eligible(device: Any = None) -> tuple:
-    """(True, arch) where this module would engage, else (False, reason)."""
     if disabled():
         return False, f"{TUNABLEOP_ENV}=0"
     if _user_owns_tunableop():
@@ -122,7 +112,7 @@ def eligible(device: Any = None) -> tuple:
     arch = _arch(device)
     if arch not in TUNED_ARCHES:
         return False, f"arch {arch} not measured"
-    # TunableOp is process-global and keys solutions on GEMM shape, not device: every visible card must share the arch.
+    # TunableOp is process-global and keyed on shape, not device: every visible card must share the arch.
     others = {_arch(i) for i in range(_device_count(torch))} - {arch}
     if others:
         return False, f"mixed archs {sorted(map(str, others))} beside {arch}"
@@ -141,8 +131,7 @@ def results_file(arch: str) -> Path:
 
 
 def _write(tunable: Any) -> None:
-    """Persist new results in torch's own CSV layout (validators, then one line per tuned GEMM), atomically. torch
-    itself writes only at interpreter exit, which a killed server never reaches."""
+    """Atomic write in torch's CSV layout; torch only writes at exit, which a killed server never reaches."""
     try:
         results = list(tunable.get_results() or ())
         validators = list(tunable.get_validators() or ())
@@ -166,7 +155,6 @@ def _write(tunable: Any) -> None:
 
 
 def _call_key(args: Any, kwargs: Any) -> tuple:
-    """Shapes of every tensor input plus the string-valued options (e.g. a prefix cache's extract / cached mode)."""
     import torch
 
     key = []
@@ -179,9 +167,7 @@ def _call_key(args: Any, kwargs: Any) -> tuple:
 
 
 def _pre(_module: Any, args: Any, kwargs: Any) -> None:
-    """Tune only on a call shaped like the one before it: the steady steps of a render. A render's first call (and a
-    prefix-cache prefill, whose text length changes with every prompt) runs on what is already tuned, so a new prompt
-    never pays a tuning pass for shapes it uses once."""
+    """Tune only on a call shaped like the previous one, so one-off shapes (first call, prefix prefill) never tune."""
     import torch
 
     key = _call_key(args, kwargs)
@@ -234,7 +220,7 @@ def _activate(arch: str, logger: Any = None) -> bool:
             str(k): str(v) for k, v in validators.items()
         }
         if not tune and not tables and not cached:
-            tunable.enable(False)  # nothing to look up: no per-GEMM lookup cost either
+            tunable.enable(False)
             return False
         tunable.set_filename(str(path), insert_device_ordinal = False)
         tunable.set_max_tuning_duration(MAX_TUNING_MS)
@@ -261,8 +247,7 @@ def _activate(arch: str, logger: Any = None) -> bool:
 
 
 def _prime(torch: Any) -> None:
-    """torch registers the hipBLASLt / rocBLAS / HIP validators when its first tunable GEMM is built, so run one tiny
-    GEMM (an untabled shape: the default pick) before comparing them with a table's."""
+    """torch registers validators on its first tunable GEMM: run a tiny one before comparing them."""
     try:
         a = torch.ones(8, 8, dtype = torch.bfloat16, device = "cuda")
         (a @ a).sum().item()
@@ -300,7 +285,7 @@ def install_for_pipe(
     if not dits or not _activate(why, logger):
         return False
     if not _STATE.get("tune"):
-        return True  # table lookups only: nothing to scope
+        return True
     for dit in dits:
         if dit.__dict__.get(_HOOK_ATTR):
             continue
@@ -312,7 +297,6 @@ def install_for_pipe(
 
 
 def uninstall(pipe: Any = None) -> None:
-    """Back to torch's default pick (the hooks of ``pipe``'s denoisers removed; a later load re-reads the file)."""
     try:
         import torch
         tunable = torch.cuda.tunable
