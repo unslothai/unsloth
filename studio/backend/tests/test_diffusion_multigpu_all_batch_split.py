@@ -14,6 +14,8 @@ diffusers = pytest.importorskip("diffusers")
 
 from core.inference import diffusion_multigpu as mg  # noqa: E402
 
+# literal, not ALL_ENV: on a tree without the switch the tests fail on behaviour, not on a name
+ALL_ENV = "UNSLOTH_DIFFUSION_MULTIGPU_ALL"
 B = 2
 MASK = [[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]]
 
@@ -274,7 +276,7 @@ def _render(build, routed):
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_new_class_batch_splits_and_matches_one_card(name, monkeypatch):
-    monkeypatch.delenv(mg.MULTIGPU_ALL_ENV, raising = False)
+    monkeypatch.delenv(ALL_ENV, raising = False)
     ref, _m, _r, _b = _render(CASES[name], routed = False)
     out, model, router, built = _render(CASES[name], routed = True)
     assert type(model).__name__ == name
@@ -286,41 +288,48 @@ def test_new_class_batch_splits_and_matches_one_card(name, monkeypatch):
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_kill_switch_keeps_the_new_classes_whole(name, monkeypatch):
-    monkeypatch.setenv(mg.MULTIGPU_ALL_ENV, "0")
+    monkeypatch.setenv(ALL_ENV, "0")
     ref, _m, _r, _b = _render(CASES[name], routed = False)
     out, _model, router, built = _render(CASES[name], routed = True)
     assert router.stats["batch_splits"] == 0 and not built
     torch.testing.assert_close(out, ref, rtol = 0, atol = 0)
-    monkeypatch.delenv(mg.MULTIGPU_ALL_ENV)
+    monkeypatch.delenv(ALL_ENV)
     _out, _model, router, built = _render(CASES[name], routed = True)
     assert router.stats["batch_splits"] == STEPS - 1 and len(built) == 1
 
 
+def _identity_class(name):
+    return type(name, (torch.nn.Module,), {"forward": lambda self, **k: (k["hidden_states"] * 2,)})
+
+
+def _distilled_calls(model, steps = 3):
+    x = torch.ones(2, 3)
+    for i in range(steps):
+        x = x - 0.1 * model(hidden_states = x, timestep = torch.ones(2) * i, return_dict = False)[0]
+    return x
+
+
 def test_existing_classes_are_unchanged_by_the_kill_switch(monkeypatch):
     for value in ("0", "1"):
-        monkeypatch.setenv(mg.MULTIGPU_ALL_ENV, value)
+        monkeypatch.setenv(ALL_ENV, value)
         for name in (
             "FluxTransformer2DModel",
             "Flux2Transformer2DModel",
             "Lumina2Transformer2DModel",
         ):
-            module = type(name, (torch.nn.Module,), {})()
-            allowed, joins_all = mg._batch_split_kwargs(module)
-            assert allowed is mg._DIT_BATCH_SPLIT_KWARGS[name] and joins_all is False
-        assert mg._batch_split_kwargs(
-            type("HiDreamImageTransformer2DModel", (torch.nn.Module,), {})()
-        ) == (
-            None,
-            False,
-        )
-    monkeypatch.setenv(mg.MULTIGPU_ALL_ENV, "0")
-    assert mg._batch_split_kwargs(
-        type("LTX2VideoTransformer3DModel", (torch.nn.Module,), {})()
-    ) == (None, False)
+            model = _identity_class(name)()
+            router, built = _router(model)
+            _distilled_calls(model)
+            assert router.stats["batch_splits"] == 2 and len(built) == 1, (name, value)
+        # never added: HiDream batches its llama states on dim 1
+        model = _identity_class("HiDreamImageTransformer2DModel")()
+        router, built = _router(model)
+        _distilled_calls(model)
+        assert router.stats["batch_splits"] == 0 and not built
 
 
 def test_attention_kwargs_keep_a_new_class_whole(monkeypatch):
-    monkeypatch.delenv(mg.MULTIGPU_ALL_ENV, raising = False)
+    monkeypatch.delenv(ALL_ENV, raising = False)
     torch.manual_seed(0)
     model = type(
         "QwenImageTransformer2DModel",
@@ -379,7 +388,7 @@ def _cosmos3_render(model, steps = 5):
 
 
 def test_cosmos3_vision_tokens_pair_on_the_replica_and_match_one_card(monkeypatch):
-    monkeypatch.delenv(mg.MULTIGPU_ALL_ENV, raising = False)
+    monkeypatch.delenv(ALL_ENV, raising = False)
     torch.manual_seed(0)
     ref = _cosmos3_render(Cosmos3OmniTransformer())
     torch.manual_seed(0)
@@ -389,7 +398,7 @@ def test_cosmos3_vision_tokens_pair_on_the_replica_and_match_one_card(monkeypatc
         out = _cosmos3_render(model)
     torch.testing.assert_close(out, ref, rtol = 0, atol = 0)
     assert len(built) == 1 and router.stats["replica_calls"] >= 4, router.stats
-    monkeypatch.setenv(mg.MULTIGPU_ALL_ENV, "0")
+    monkeypatch.setenv(ALL_ENV, "0")
     torch.manual_seed(0)
     model = Cosmos3OmniTransformer()
     router, built = _router(model)
@@ -400,7 +409,7 @@ def test_cosmos3_vision_tokens_pair_on_the_replica_and_match_one_card(monkeypatc
 
 
 def test_one_card_selection_arms_nothing_and_two_cards_split(monkeypatch):
-    monkeypatch.delenv(mg.MULTIGPU_ALL_ENV, raising = False)
+    monkeypatch.delenv(ALL_ENV, raising = False)
     torch.manual_seed(0)
     model, _step = _chroma()
     forward = model.forward
