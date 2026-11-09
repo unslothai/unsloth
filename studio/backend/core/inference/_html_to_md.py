@@ -1392,7 +1392,7 @@ class _MarkdownRenderer(HTMLParser):
             return
         frame = self._header_stack[-1]
         if not text.isascii():
-            text = _UNICODE_SPACE_RUN.sub("", text)
+            text = _WHITESPACE_RUN.sub(" ", text)
         chars = len(text.strip())
         frame.text_chars += chars
         # anchors without usable hrefs render as prose

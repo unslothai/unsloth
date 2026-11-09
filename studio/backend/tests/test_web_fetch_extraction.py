@@ -1591,7 +1591,7 @@ def test_no_break_spaces_are_kept(markup, expected, main_content):
 
 
 @pytest.mark.parametrize("tag", ["span", "code", "pre"])
-@pytest.mark.parametrize("nbsp", ["&nbsp;", "\xa0"])
+@pytest.mark.parametrize("nbsp", ["&nbsp;", "\xa0", "&nbsp; "])
 def test_kept_no_break_spaces_do_not_dilute_a_link_header(nbsp, tag):
     links = "".join(f'<a href="/s{i}">Section {i}</a> ' for i in range(20))
     prose = "Article prose. " * 20
