@@ -1027,10 +1027,8 @@ def release_asset_download_url(repo: str, release_tag: str, asset_name: str) -> 
     )
 
 
-# Per process: the "already current" check and the release resolve that follows it
-# (and the whisper installer's llama-side check) all ask the same HEAD. Only a resolved
-# tag is kept, so a failure or a None answer is asked again. Keyed on the opener too, so
-# a swapped opener (tests, a reloaded module) never reads another opener's answer.
+# Per process: the currency check and the resolve after it ask the same HEAD. Only a resolved tag is
+# kept, so a failure is asked again; keyed on the opener so a swapped opener never reads another's answer.
 _DOWNLOAD_HOST_LATEST_TAG_MEMO: dict[tuple[str, Any], str] = {}
 
 
