@@ -2005,6 +2005,20 @@ def run(
     if again and RECHECKS:
         _in_thread(remeasure, result, again, log)
         verdicts = judge(result)
+        # A recheck that lowers a short reading can make a length failure appear only now, judged on a
+        # long reading that was never measured again: measure those once more at both lengths.
+        late = sorted(
+            {
+                (t, v["mode"], v["area"])
+                for v in verdicts
+                if v["fail"] and v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")
+                for t in (SHORT, LONG)
+            }
+            - set(again)
+        )
+        if late:
+            _in_thread(remeasure, result, late, log)
+            verdicts = judge(result)
     failures, details = [], []
     trig = (result["pages"].get((SHORT, "default")) or {}).get("triggers")
     if trig is None:

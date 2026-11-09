@@ -336,6 +336,52 @@ def test_missing_default_page_fails_coverage(monkeypatch):
     assert sum("measuring the page failed" in f for f in failures) == len(out)
 
 
+def test_a_length_failure_that_appears_after_a_recheck_is_measured_again(monkeypatch):
+    # CI (message_menu, Liquid 3D): a 506 ms first short reading failed the appearance check, so only
+    # the short page was measured again (99, 90 ms). That made the length check fail for the first
+    # time, on a long reading (354 ms) nobody had measured again.
+    cell = lambda cpu, main: {
+        "elements": 10,
+        "layout_objects": 0,
+        "cpu_ms": cpu,
+        "main_ms": main,
+        "paint_ms": 5,
+    }
+    pages = {
+        (am.SHORT, "default"): _page({"type": cell(100, 90)}),
+        (am.SHORT, "frosted"): _page({"type": cell(2000, 506)}),
+        (am.LONG, "default"): _page({"type": cell(110, 100)}),
+        (am.LONG, "frosted"): _page({"type": cell(400, 354)}),
+    }
+    fake = {
+        "pages": pages,
+        "modes": {m["name"]: m for m in am.app_modes()},
+        "areas": ["type"],
+        "seconds": 0.0,
+    }
+    monkeypatch.setattr(am, "measure", lambda *a, **k: fake)
+    calls = []
+
+    def remeasure(result, items, log):
+        calls.append(sorted(items))
+        for turns, mode, area in items:
+            reading = {"status": "OK", "elements": 10, "layout_objects": 0, "paint_ms": 5}
+            reading.update(
+                {"cpu_ms": 200, "main_ms": 95}
+                if turns == am.SHORT
+                else {"cpu_ms": 220, "main_ms": 120}
+            )
+            result["pages"][(turns, mode)]["cells"][area].setdefault("again", []).extend(
+                [reading] * am.RECHECKS
+            )
+
+    monkeypatch.setattr(am, "remeasure", remeasure)
+    _, failures, _, _ = am.run(Path("unused"), [], log = lambda *a, **k: None)
+    assert calls[0] == [(am.SHORT, "frosted", "type")]
+    assert calls[1] == [(am.LONG, "frosted", "type")]
+    assert not [f for f in failures if "costs more as the chat grows" in f]
+
+
 def test_every_area_opened_by_a_shortcut_or_toggle_proves_it_happened():
     # A key press always "succeeds"; only a visible change shows the app acted on it.
     for name, spec in am.AREAS.items():
