@@ -2099,7 +2099,6 @@ _SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_repl
 
 
 def _shared_state_values(sub: Any) -> list:
-    """The per-step state objects (``_SHARED_STATE_TYPES``) one submodule holds; the replica shares them."""
     return [value for value in sub.__dict__.values() if type(value).__name__ in _SHARED_STATE_TYPES]
 
 
@@ -2807,8 +2806,7 @@ class CfgParallelRouter:
         self.probe_index: dict = {}
         self.probed_this_render = False
         self.pairs: list = []
-        # Shared per-step state objects (``_SHARED_STATE_TYPES``) of both sides: their compile guards join every
-        # warm-call signature.
+        # Shared per-step states' compile guards join every warm-call signature.
         self.shared_states: tuple = ()
         # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
@@ -2898,8 +2896,7 @@ class CfgParallelRouter:
         return False
 
     def _signature(self, args: tuple, kwargs: dict) -> tuple:
-        """``_call_signature`` plus the model-side state compiled forwards guard on: a step that flips the NVFP4
-        protect schedule recompiles both branches under arguments already seen, so it must count as new."""
+        """``_call_signature`` plus guarded model state: an NVFP4 protect flip recompiles under seen args."""
         return (*_call_signature(args, kwargs), _shared_state_key(self.shared_states))
 
     def _primary(self, *args: Any, **kwargs: Any) -> Any:
