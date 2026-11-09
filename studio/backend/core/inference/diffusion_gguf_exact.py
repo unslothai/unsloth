@@ -28,6 +28,11 @@ def _scale(blocks: Any, word: int) -> Any:
     return blocks[:, 2 * word : 2 * word + 2].view(torch.float16).to(torch.float32)
 
 
+def _half(blocks: Any) -> Any:
+    import torch
+    return blocks[:, :2].view(torch.float16)
+
+
 def _field(blocks: Any, start: int, stop: int, shape: tuple) -> Any:
     return blocks[:, start:stop].unflatten(1, shape)
 
@@ -37,7 +42,16 @@ def _shifts(like: Any, start: int, stop: int, step: int, shape: tuple) -> Any:
     return torch.arange(start, stop, step, device = like.device, dtype = torch.uint8).reshape(shape)
 
 
-def _emit(scale: Any, q: Any, m: Any, op: str, n: int, block_size: int, dtype: Any) -> Any:
+def _emit(
+    scale: Any,
+    q: Any,
+    m: Any,
+    op: str,
+    n: int,
+    block_size: int,
+    dtype: Any,
+    half: Any = None,
+) -> Any:
     """``scale * q`` then ``+ m`` / ``- m`` as ``(n, block_size)``, rounded once to ``dtype`` (fp32 when None).
 
     Inputs broadcast in output order so the only reshape is of the contiguous result (a reshape of a strided
@@ -46,6 +60,9 @@ def _emit(scale: Any, q: Any, m: Any, op: str, n: int, block_size: int, dtype: A
     ``(scale * q) - m``, not ``addcmul(-m, ...)``: Triton lowers that negation as ``0 - m`` (``-0 - +0`` -> ``+0``)."""
     import torch
 
+    if half is not None and dtype == torch.float16 and not op and not torch.compiler.is_compiling():
+        # ``half`` is the fp16 scale itself: fp16 math (fp32 opmath, one rounding) gives the same bits, vectorised
+        return (half * q).reshape(n, block_size)
     if (
         not torch.compiler.is_compiling()
         and dtype is not None
@@ -85,7 +102,7 @@ def dequantize_blocks_Q4_0(
     n = blocks.shape[0]
     d = _scale(blocks, 0).reshape(n, 1, 1, 1)
     q = _q4_codes(blocks, 2).to(torch.int8) - 8
-    return _emit(d, q, None, "", n, 32, dtype)
+    return _emit(d, q, None, "", n, 32, dtype, _half(blocks).reshape(n, 1, 1, 1))
 
 
 def dequantize_blocks_Q4_1(
@@ -117,7 +134,7 @@ def dequantize_blocks_Q5_0(
     n = blocks.shape[0]
     d = _scale(blocks, 0).reshape(n, 1, 1, 1)
     q = _q5_codes(blocks, 2).to(torch.int8) - 16
-    return _emit(d, q, None, "", n, 32, dtype)
+    return _emit(d, q, None, "", n, 32, dtype, _half(blocks).reshape(n, 1, 1, 1))
 
 
 def dequantize_blocks_Q5_1(
@@ -142,7 +159,7 @@ def dequantize_blocks_Q8_0(
 
     n = blocks.shape[0]
     d = _scale(blocks, 0)
-    return _emit(d, blocks[:, 2:].view(torch.int8), None, "", n, 32, dtype)
+    return _emit(d, blocks[:, 2:].view(torch.int8), None, "", n, 32, dtype, _half(blocks))
 
 
 def _k_codes(blocks: Any, at: int) -> Any:
