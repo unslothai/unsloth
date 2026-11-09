@@ -1661,6 +1661,13 @@ export const ar = {
         audioUploadCancel: "إلغاء التفريغ النصي",
         audioUploadTranscribing: "جارٍ التفريغ النصي للصوت…",
         sectionTitle: "الإملاء",
+        micTargetLabel: "زر الميكروفون",
+        micTargetAsr: "النسخ باستخدام ASR",
+        micTargetModel: "إرسال الصوت إلى النموذج",
+        micTargetAsrDescription: "يكتب زر الميكروفون ما تقوله في مربع الرسالة.",
+        micTargetModelDescription: "عند تحميل نموذج يقبل إدخال الصوت، يسجّل الميكروفون مقطعًا ويرفقه برسالتك. تحصل النماذج الأخرى على الإملاء كالمعتاد.",
+        micTargetModelUnavailable: "حمّل نموذجًا يقبل إدخال الصوت (مثل LFM3-Omni) لترسل إليه صوتك.",
+        micRecordForModel: "تسجيل صوت للنموذج",
         engineLabel: "محرك الإملاء",
         engineBrowser: "المتصفح",
         engineBrowserDescription:
@@ -1684,6 +1691,13 @@ export const ar = {
         sttQuantDescription:
           "اختر نموذج STT أو ابحث عنه لتشغيله محليًا، ثم اختر التكميم.",
         sttDeviceLabel: "التحميل إلى",
+        sttContextLabel: "سياق الصوت",
+        sttContextAuto: "تلقائي (موصى به)",
+        sttContextAutoDescription:
+          "يضبط حجم السياق حسب كل تسجيل، ويستخدم ذاكرة أكثر للتسجيلات الأطول. قد تحتاج بيئات التشغيل القديمة إلى حجم ثابت لتقليل استخدام الذاكرة. ينطبق على Qwen3-ASR في «الصوت» و«تفريغ نصي».",
+        sttContextFixedDescription:
+          "تستهلك الحدود الأصغر ذاكرة أقل. تحتاج التسجيلات التي تتجاوز الحد إلى حد أعلى أو الوضع التلقائي. ينطبق على Qwen3-ASR في «الصوت» و«تفريغ نصي».",
+        sttContextTokens: "{count} توكن",
         sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
         sttDeviceCpu: "ذاكرة المعالج",
         sttDeviceAutoDescription:

@@ -220,9 +220,8 @@ def test_every_spelling_the_shim_drops_is_a_pin(compat, spec):
 
 
 def test_the_shim_and_the_scanner_agree_on_the_name(compat):
-    """The two halves this item found apart. Read the shim's own canonicaliser rather
-    than restating its rule here, so a change on that side fails this instead of
-    drifting silently."""
+    """The shim and the scanner must agree on the canonical name; the test reads the shim's own
+    canonicaliser rather than restating its rule, so a change fails loudly."""
     shim_path = REPO_ROOT / "docker" / "unsloth_pip_shim.py"
     spec = importlib.util.spec_from_file_location("unsloth_pip_shim_names", shim_path)
     shim = importlib.util.module_from_spec(spec)

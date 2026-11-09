@@ -769,9 +769,8 @@ def test_run_attention_sdpa_ignores_a_zero_window(monkeypatch):
 
 
 def test_the_window_mask_is_built_once_per_shape(monkeypatch):
-    """Every layer asks for the identical mask, and at 32K that tensor is 1 GiB with two more
-    alive while it is built. Rebuilding it per layer is how this SDPA fallback OOMs a run that
-    xFormers or flash would have carried."""
+    """Every layer asks for the same mask (1 GiB at 32K, two more alive while built); rebuilding it
+    per layer makes the SDPA fallback OOM where xFormers or flash would not."""
     attention_dispatch._WINDOW_MASK_CACHE.clear()
     built = []
     real_arange = torch.arange

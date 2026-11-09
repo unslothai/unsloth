@@ -1663,6 +1663,13 @@ export const ru = {
         audioUploadCancel: "Отменить расшифровку",
         audioUploadTranscribing: "Расшифровка аудио…",
         sectionTitle: "Диктовка",
+        micTargetLabel: "Кнопка микрофона",
+        micTargetAsr: "Распознавать через ASR",
+        micTargetModel: "Отправлять аудио модели",
+        micTargetAsrDescription: "Кнопка микрофона вводит сказанное в поле сообщения.",
+        micTargetModelDescription: "Если загружена модель со звуковым вводом, микрофон записывает клип и прикрепляет его к сообщению. Для остальных моделей по-прежнему работает диктовка.",
+        micTargetModelUnavailable: "Загрузите модель со звуковым вводом (например, LFM3-Omni), чтобы отправлять ей свой голос.",
+        micRecordForModel: "Записать аудио для модели",
         engineLabel: "Движок диктовки",
         engineBrowser: "Браузер",
         engineBrowserDescription:
@@ -1688,6 +1695,13 @@ export const ru = {
         sttQuantDescription:
           "Выберите или найдите модель STT для локального запуска, затем её квантизацию.",
         sttDeviceLabel: "Загружать в",
+        sttContextLabel: "Голосовой контекст",
+        sttContextAuto: "Авто (рекомендуется)",
+        sttContextAutoDescription:
+          "Подбирает размер для каждой записи: чем длиннее аудио, тем больше памяти требуется. В старых версиях среды выполнения для снижения расхода памяти может потребоваться фиксированный размер. Применяется к Qwen3-ASR в разделах «Голос» и «Транскрибировать».",
+        sttContextFixedDescription:
+          "Чем меньше лимит, тем меньше расход памяти. Для записей, которые не укладываются в лимит, увеличьте его или выберите «Авто». Применяется к Qwen3-ASR в разделах «Голос» и «Транскрибировать».",
+        sttContextTokens: "Токенов: {count}",
         sttDeviceAuto: "GPU, если доступен",
         sttDeviceCpu: "ОЗУ процессора",
         sttDeviceAutoDescription:

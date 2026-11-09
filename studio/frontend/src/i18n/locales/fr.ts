@@ -1665,6 +1665,13 @@ export const fr = {
         audioUploadCancel: "Annuler la transcription",
         audioUploadTranscribing: "Transcription audio en cours…",
         sectionTitle: "Dictée",
+        micTargetLabel: "Bouton du micro",
+        micTargetAsr: "Transcrire avec l'ASR",
+        micTargetModel: "Envoyer l'audio au modèle",
+        micTargetAsrDescription: "Le bouton du micro écrit ce que vous dites dans la zone de message.",
+        micTargetModelDescription: "Avec un modèle à entrée audio chargé, le micro enregistre un extrait et le joint à votre message. Les autres modèles utilisent toujours la dictée.",
+        micTargetModelUnavailable: "Chargez un modèle qui accepte l'entrée audio (par exemple LFM3-Omni) pour lui envoyer votre voix.",
+        micRecordForModel: "Enregistrer l'audio pour le modèle",
         engineLabel: "Moteur de dictée",
         engineBrowser: "Navigateur",
         engineBrowserDescription:
@@ -1690,6 +1697,13 @@ export const fr = {
         sttQuantDescription:
           "Choisissez ou recherchez un modèle STT à exécuter en local, puis sa quantification.",
         sttDeviceLabel: "Charger dans",
+        sttContextLabel: "Contexte vocal",
+        sttContextAuto: "Auto (recommandé)",
+        sttContextAutoDescription:
+          "S’adapte à chaque enregistrement et utilise davantage de mémoire pour les fichiers audio plus longs. Les anciens environnements d’exécution peuvent nécessiter une taille fixe pour réduire l’utilisation de mémoire. S’applique à Qwen3-ASR dans Voix et Transcrire.",
+        sttContextFixedDescription:
+          "Les limites plus petites utilisent moins de mémoire. Les enregistrements qui dépassent la limite nécessitent une limite plus élevée ou le mode Auto. S’applique à Qwen3-ASR dans Voix et Transcrire.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU si disponible",
         sttDeviceCpu: "RAM du CPU",
         sttDeviceAutoDescription:

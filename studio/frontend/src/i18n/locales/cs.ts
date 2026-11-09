@@ -1834,6 +1834,13 @@ export const cs = {
         audioUploadCancel: "Zrušit přepis",
         audioUploadTranscribing: "Přepisování zvuku…",
         sectionTitle: "Diktování",
+        micTargetLabel: "Tlačítko mikrofonu",
+        micTargetAsr: "Přepsat pomocí ASR",
+        micTargetModel: "Odeslat zvuk modelu",
+        micTargetAsrDescription: "Tlačítko mikrofonu zapíše, co řeknete, do pole zprávy.",
+        micTargetModelDescription: "Když je načten model se zvukovým vstupem, mikrofon nahraje klip a připojí ho ke zprávě. Ostatní modely dál používají diktování.",
+        micTargetModelUnavailable: "Načtěte model, který přijímá zvukový vstup (například LFM3-Omni), abyste mu mohli poslat svůj hlas.",
+        micRecordForModel: "Nahrát zvuk pro model",
         engineLabel: "Modul diktování",
         engineBrowser: "Prohlížeč",
         engineBrowserDescription:
@@ -1859,6 +1866,13 @@ export const cs = {
         sttQuantDescription:
           "Vyberte nebo vyhledejte model STT, který se má spouštět místně, a potom jeho kvantizaci.",
         sttDeviceLabel: "Načíst do",
+        sttContextLabel: "Kontext hlasu",
+        sttContextAuto: "Automaticky (doporučeno)",
+        sttContextAutoDescription:
+          "Přizpůsobí se každé nahrávce a pro delší zvuk použije více paměti. Starší běhová prostředí mohou ke snížení paměti potřebovat pevnou velikost. Platí pro Qwen3-ASR v sekcích Hlas a Přepis.",
+        sttContextFixedDescription:
+          "Menší limity používají méně paměti. Nahrávky, které se nevejdou, potřebují vyšší limit nebo Automaticky. Platí pro Qwen3-ASR v sekcích Hlas a Přepis.",
+        sttContextTokens: "tokeny: {count}",
         sttDeviceAuto: "GPU, pokud je k dispozici",
         sttDeviceCpu: "RAM procesoru",
         sttDeviceAutoDescription:

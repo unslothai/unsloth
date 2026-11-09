@@ -75,11 +75,9 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "lumina-2": (5.2, 5.2, 0.2),
     # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
     "hunyuanimage-2.1": (32.5, 16.3, 0.8),
-    # 17B MoE DiT (34.2 GB bf16) + FOUR text encoders: CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5, plus Llama-3.1-8B (~16 GB
-    # bf16) from the open mirror at load time.
+    # HiDream bf16 sizes: 17B MoE DiT, four text encoders incl. Llama-3.1-8B from an open mirror.
     "hidream-i1": (34.2, 28.8, 0.2),
-    # Two ~9.3B DiTs (Ideogram's dual-branch CFG), both resident, plus a Qwen3-VL encoder. The vendor stores raw float8,
-    # so each doubles at bf16.
+    # Ideogram: two ~9.3B DiTs both resident; the vendor stores raw float8, so sizes double at bf16.
     "ideogram-4": (37.2, 16.3, 0.2),
 }
 
@@ -219,8 +217,7 @@ def base_repo_bf16_components_gb(base_repo: Optional[str]) -> Optional[tuple[flo
 def family_bf16_components_gb(
     fam: Any, base_repo: Optional[str] = None
 ) -> Optional[tuple[float, float, float]]:
-    """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the family isn't
-    in the table (callers fall back to file-size estimates)."""
+    """Transformer, text encoder, VAE bf16 sizes in GB; None when the family is missing from the table."""
     override = base_repo_bf16_components_gb(base_repo)
     if override is not None:
         return override
@@ -263,8 +260,7 @@ def estimate_dense_quant(
     base_repo: Optional[str] = None,
     prequant_available: bool = False,
 ) -> Optional[DenseQuantEstimate]:
-    """Estimate the candidate's footprint from the family table, or None when the
-    family (or scheme factor) is unknown."""
+    """Footprint estimate from the family table; None when the family or scheme factor is unknown."""
     from .diffusion_nvfp4_flag import nvfp4_blocked
 
     if nvfp4_blocked(scheme):
@@ -287,8 +283,7 @@ def estimate_dense_quant(
         companions_mib = companions,
         prequant = prequant_available,
         download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
-        # Same conversion as `companions`, of which this is the text-encoder half, so the planner's `companions -
-        # text_encoders` is the VAE and nothing else.
+        # Text-encoder half of the companions conversion; companions minus this leaves just the VAE.
         text_encoders_mib = int(text_encoders_gb * _MIB_PER_GB),
     )
 
@@ -361,8 +356,7 @@ def resolve_dense_quant_candidate(
         return None
     prequant_available = False
     prequant_cached = False
-    # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake), so size the candidate for the dense
-    # build.
+    # force_dense skips the prequant shortcut (e.g. a LoRA bake), so size the candidate as dense.
     if not force_dense:
         try:
             from .diffusion_prequant import prequant_checkpoint_cached, usable_prequant_source
