@@ -2805,6 +2805,9 @@ if _SLOT_SAVE_HTTP_TIMEOUT <= 0:
     _SLOT_SAVE_HTTP_TIMEOUT = 30.0
 
 
+_SLOT_RESUME_STRICT_FLAGS = frozenset({"--override-kv", "--kv-unified-per-slot"})
+
+
 class _SlotLaunchFingerprint(NamedTuple):
     """Compared whole, except by ``slot_resume_fits``, which lets the context fields differ."""
 
@@ -35548,6 +35551,11 @@ class LlamaCppBackend:
         capacity = self._slot_context_capacity()
         slots = manifest.get("slots") or []
         if capacity is None or not slots:
+            return False
+        # These flags can move the RoPE threshold or n_ctx_seq away from what is checked below.
+        if any(
+            str(arg).split("=", 1)[0] in _SLOT_RESUME_STRICT_FLAGS for arg in current.extra_args
+        ):
             return False
         # llama.cpp picks LongRoPE long/short factors by whether n_ctx_seq exceeds this threshold.
         threshold = self._rope_original_context_length or self._context_length

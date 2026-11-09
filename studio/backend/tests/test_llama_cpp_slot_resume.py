@@ -666,6 +666,16 @@ def test_a_context_change_across_the_rope_switch_point_refuses(tmp_path):
     assert widened.slot_resume_fits(_manifest_from(plain, n_saved = 100)) is False
 
 
+def test_a_context_change_with_metadata_or_slot_size_overrides_refuses(tmp_path):
+    for extra in (
+        ["--override-kv", "phi3.rope.scaling.original_context_length=int:8192"],
+        ["--kv-unified-per-slot=4096"],
+    ):
+        small, large = _ctx_backend(tmp_path, n_ctx = 8192), _ctx_backend(tmp_path, n_ctx = 16384)
+        small._extra_args = large._extra_args = extra
+        assert large.slot_resume_fits(_manifest_from(small, n_saved = 100)) is False
+
+
 def test_the_context_is_the_only_field_allowed_to_differ(tmp_path):
     saved = _manifest_from(_ctx_backend(tmp_path, n_ctx = 8192), n_saved = 100)
     backend = _ctx_backend(tmp_path, n_ctx = 32768)
