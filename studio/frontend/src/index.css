@@ -3952,7 +3952,8 @@ html[data-chat-font] .aui-root {
 		white-space: nowrap;
 	}
 
-	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
+	/* data-artifact-layout-instant (chat-page.tsx): a long chat takes the new width in one step. */
+	.chat-artifact-split[data-artifact-layout-animating="true"]:not([data-artifact-layout-instant]) > [data-panel] {
 		transition:
 			flex-basis 260ms var(--ease-out-cubic),
 			flex-grow 260ms var(--ease-out-cubic),
