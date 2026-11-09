@@ -158,6 +158,7 @@ async def video_download_plan(
     from routes.inference import (
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
+        _route_nvfp4_request,
     )
 
     _refuse_disabled_nvfp4_request(request)
@@ -173,6 +174,7 @@ async def video_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, _ = await _route_nvfp4_request(request, "video")
     from core.inference.diffusion import split_local_checkpoint_path
     from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.video import (
@@ -307,8 +309,10 @@ async def load_video_model_gated(
     route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
     from routes.inference import (
+        _nvfp4_route_kwarg,
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
+        _route_nvfp4_request,
     )
 
     _refuse_disabled_nvfp4_request(request)
@@ -325,6 +329,9 @@ async def load_video_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, nvfp4_route = await _route_nvfp4_request(
+        request, "video", user_initiated = user_initiated
+    )
     # Tested at entry (begin_load returns early) and written at launch (validation may 400 first).
     from routes.inference import (
         _note_load_fetched_with_a_request_token,
@@ -460,6 +467,7 @@ async def load_video_model_gated(
                 # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
                 allow_oversized_load = request.allow_oversized_load,
+                **_nvfp4_route_kwarg(backend.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("video", backend, request.load_token, prior)
             return started

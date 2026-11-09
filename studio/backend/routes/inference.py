@@ -48398,6 +48398,45 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
     )
 
 
+async def _route_nvfp4_request(
+    request: Any,
+    media: str = "image",
+    *,
+    user_initiated: bool = True,
+) -> tuple:
+    """Runs after authorization, before any check or download plan reads the request."""
+    from core.inference.diffusion_nvfp4_route import route_load_request
+
+    # Before the training interlock: cards are then read without a CUDA context.
+    routed, route = await asyncio.to_thread(
+        route_load_request,
+        request,
+        media = media,
+        replace_checkpoint = user_initiated,
+        allow_cuda_init = lambda: not _training_is_active(),
+    )
+    if (
+        route is not None
+        and routed.model_path != request.model_path
+        and account_access.managed_account()
+    ):
+        await asyncio.to_thread(account_access.require_model_access, routed.model_path)
+    return routed, route
+
+
+def _nvfp4_route_kwarg(begin_load: Any, route: Any) -> dict:
+    """Unchanged decisions are passed too so the backend does not re-decide; native engines take no such argument."""
+    from core.inference.diffusion_nvfp4_route import ROUTE_UNCHANGED
+
+    try:
+        import inspect
+        if "nvfp4_route" in inspect.signature(begin_load).parameters:
+            return {"nvfp4_route": route if route is not None else ROUTE_UNCHANGED}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _refuse_disabled_nvfp4_request(request: Any) -> None:
     """Refuses NVFP4 with 400 while UNSLOTH_NVFP4_DIFFUSION is off, ahead of any precision fallback."""
     from core.inference.diffusion_nvfp4_flag import refuse_disabled_nvfp4
@@ -48498,6 +48537,7 @@ async def diffusion_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, _ = await _route_nvfp4_request(request, "image")
     from core.inference.diffusion import (
         get_diffusion_backend,
         split_local_checkpoint_path,
@@ -48790,6 +48830,9 @@ async def load_diffusion_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, nvfp4_route = await _route_nvfp4_request(
+        request, "image", user_initiated = user_initiated
+    )
     # Tested at ENTRY since begin_load returns early; the write waits, as validation can 400 first
     _media_repos_to_record = [
         ref
@@ -49194,6 +49237,7 @@ async def load_diffusion_model_gated(
                     engine.begin_load,
                     _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode),
                 ),
+                **_nvfp4_route_kwarg(engine.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("diffusion", engine, request.load_token, prior_load)
             # A warm start that took the generation slot between the stop above and begin_load publishing the load would

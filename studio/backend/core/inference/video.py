@@ -201,6 +201,7 @@ from .diffusion_auto_policy import (
     precision_refusal_message,
 )
 from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+from .diffusion_nvfp4_route import with_route_scope
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
@@ -5688,9 +5689,37 @@ class VideoBackend:
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
         allow_oversized_load: bool = False,
+        nvfp4_route: Any = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
+
+        if nvfp4_route is ROUTE_UNCHANGED:
+            nvfp4_route = None
+        elif nvfp4_route is None:
+            nvfp4_route = plan_nvfp4_route(
+                media = "video",
+                model_path = repo_id,
+                gguf_filename = gguf_filename,
+                model_kind = model_kind,
+                base_repo = base_repo,
+                family_override = family_override,
+                transformer_quant = transformer_quant,
+                text_encoder_quant = text_encoder_quant,
+                gpu_ordinal = gpu_ordinal,
+                gpu_ids = gpu_ids,
+            )
+            if nvfp4_route is not None:
+                updates = nvfp4_route.updates
+                repo_id = updates.get("model_path", repo_id)
+                display_repo_id = updates.get("display_repo_id", display_repo_id)
+                gguf_filename = updates.get("gguf_filename", gguf_filename)
+                model_kind = updates.get("model_kind", model_kind)
+                base_repo = updates.get("base_repo", base_repo)
+                family_override = updates.get("family_override", family_override)
+                transformer_quant = updates.get("transformer_quant", transformer_quant)
+                text_encoder_quant = updates.get("text_encoder_quant", text_encoder_quant)
         # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a load
         # that dies tens of GB later, and only once so free VRAM cannot re-rank the choice after the weights land. Gated
         # on the resolved backend, since XPU / MPS / CPU ignore physical ids and would otherwise 400 a selection the
@@ -5810,11 +5839,14 @@ class VideoBackend:
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
+                _nvfp4_route = nvfp4_route,
             ),
             daemon = True,
         ).start()
         return self.status()
 
+    # Outermost, so the resolved record reports the NVFP4 ask it replaced.
+    @with_route_scope
     @scoped_allow_oversized_load
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection

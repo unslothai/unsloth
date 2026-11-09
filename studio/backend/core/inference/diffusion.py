@@ -515,6 +515,7 @@ from .diffusion_auto_policy import (
     resolve_dense_quant_candidate,
 )
 from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+from .diffusion_nvfp4_route import with_route_scope
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
@@ -5517,11 +5518,44 @@ class DiffusionBackend:
         vae_file: Optional[str] = None,
         allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
+        nvfp4_route: Any = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         with self._load_cancel_lock:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
+        from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
+
+        if nvfp4_route is ROUTE_UNCHANGED:
+            nvfp4_route = None
+        elif nvfp4_route is None:
+            nvfp4_route = plan_nvfp4_route(
+                media = "image",
+                model_path = repo_id,
+                gguf_filename = gguf_filename,
+                model_kind = model_kind,
+                base_repo = base_repo,
+                family_override = family_override,
+                transformer_quant = transformer_quant,
+                text_encoder_quant = text_encoder_quant,
+                transformer_prequant_path = transformer_prequant_path,
+                gpu_ordinal = gpu_ordinal,
+                gpu_ids = gpu_ids,
+                component_files = bool(text_encoder_files or vae_file),
+            )
+            if nvfp4_route is not None:
+                updates = nvfp4_route.updates
+                repo_id = updates.get("model_path", repo_id)
+                display_repo_id = updates.get("display_repo_id", display_repo_id)
+                gguf_filename = updates.get("gguf_filename", gguf_filename)
+                model_kind = updates.get("model_kind", model_kind)
+                base_repo = updates.get("base_repo", base_repo)
+                family_override = updates.get("family_override", family_override)
+                transformer_quant = updates.get("transformer_quant", transformer_quant)
+                text_encoder_quant = updates.get("text_encoder_quant", text_encoder_quant)
+                transformer_prequant_path = updates.get(
+                    "transformer_prequant_path", transformer_prequant_path
+                )
         # The probes this load adds read the Hub directly; they keep a managed account's False (anonymous) sentinel.
         hub_token = normalize_token(hf_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -5634,11 +5668,14 @@ class DiffusionBackend:
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
                 _hub_token = hub_token,
+                _nvfp4_route = nvfp4_route,
             ),
             daemon = True,
         ).start()
         return self.status()
 
+    # Outermost, so the resolved record reports the NVFP4 ask it replaced.
+    @with_route_scope
     @scoped_allow_oversized_load
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
