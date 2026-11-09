@@ -21,7 +21,6 @@ export function micClipFilename(now: Date = new Date()): string {
   return `recording-${stamp}.wav`;
 }
 
-// One second at 16 kHz.
 export const MIN_MIC_CLIP_BYTES = 44 + 16_000 * 2;
 
 export type MicClipRoom = { maxBytes: number } | { reason: string };
@@ -47,7 +46,6 @@ export function micClipRoom(
   return reason ? { reason } : { maxBytes: MAX_AUDIO_SIZE - totalSize };
 }
 
-/** Without a usable mic (plain HTTP), "send audio to the model" picks a recording file to attach. */
 export function pickAudioForModel(
   add: (file: File) => Promise<unknown>,
   doc: Document = document,

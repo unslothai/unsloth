@@ -219,7 +219,6 @@ export function discardClipWhenModelChanges(
   session.onEnd?.(unsubscribe);
 }
 
-/** Its composer went away (chat switch, unmount): never attach the clip to another chat. */
 export function discardClipOnRelease(
   session: StudioDictationSession,
   onRelease: Set<() => void>,
