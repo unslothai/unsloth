@@ -121,7 +121,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       history: [],
       downloads: [],
       icons: {},
-      // No-op calls skip set(): persist would rewrite the whole history JSON for an unchanged state.
+      // No-op calls skip set(): persist rewrites storage on every set().
       recordIcon: (host, icon, temporary = false) => {
         const { icons } = get();
         if (!host || icon.length > MAX_URL_CHARS || icons[host] === icon) return;

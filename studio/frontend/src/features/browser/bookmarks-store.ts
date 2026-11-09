@@ -72,7 +72,7 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
           ),
           lastFolder: patch.folder ?? state.lastFolder,
         })),
-      // No-op calls skip set(): persist would rewrite every bookmark to localStorage for an unchanged state.
+      // No-op calls skip set(): persist rewrites storage on every set().
       setBookmarkIcon: (id, icon) => {
         if (!icon.startsWith("data:image/") || icon.length > MAX_ICON_CHARS) return;
         const { bookmarks } = get();
