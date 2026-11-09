@@ -24,6 +24,7 @@ import time
 from typing import Any, Optional
 
 SOL_VAE_ENV = "UNSLOTH_H3_SOL_VAE"
+SOL_LEAN_WINDOWS_ENV = "UNSLOTH_H3_SOL_VAE_LEAN_WINDOWS"
 SOL_VAE_REPO = "Efficient-Large-Model/Sol-H3-VAE"
 SOL_VAE_FILE = "sol_h3_vae.safetensors"
 SOL_LAYER = "h3_sol_vae"
@@ -48,6 +49,15 @@ _TRUE = ("1", "true", "yes", "on")
 
 def h3_sol_vae_requested() -> bool:
     return os.environ.get(SOL_VAE_ENV, "").strip().lower() in _TRUE
+
+
+def _lean_windows() -> bool:
+    return os.environ.get(SOL_LEAN_WINDOWS_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def sol_num_frames(latents: int) -> int:
@@ -233,12 +243,25 @@ def _build_module_classes():
             cdt = self.compute_dtype
             h = fused._add_rmsnorm(x[t0:t1], None, None, blk.norm1, cdt).reshape(-1, D)
             q, k, v = blk.to_q(h), blk.to_k(h), blk.to_v(h)
-            cos, sin = self._rope(t0, t1 - t0, H, W, s, st, x.device)
-            cos, sin = cos.to(cdt).contiguous(), sin.to(cdt).contiguous()
+            cos, sin = self._slot_rope(t0, t1 - t0, H, W, s, st, x.device)
             fused._qk_norm_rope_(q, cos, sin, self.heads, self.eps)
             fused._qk_norm_rope_(k, cos, sin, self.heads, self.eps)
             n = t1 - t0
             return q.view(n, H, W, D), k.view(n, H, W, D), v.view(n, H, W, D)
+
+        def _slot_rope(
+            self, t0: int, n: int, H: int, W: int, s: int, st: int, device: Any
+        ) -> tuple:
+            """``_rope`` in the compute dtype, cached per decode: with t0 a multiple of block it does not depend on t0."""
+            cache = getattr(self, "_rope_tables", None)
+            key = (n, H, W, s, st, str(device))
+            if cache is not None and key in cache:
+                return cache[key]
+            cos, sin = self._rope(t0, n, H, W, s, st, device)
+            hit = (cos.to(self.compute_dtype).contiguous(), sin.to(self.compute_dtype).contiguous())
+            if cache is not None:
+                cache[key] = hit
+            return hit
 
         def _global_attn(self, qg: Any, kg: Any, vg: Any, k: Any, v: Any) -> Any:
             """A block's S global tokens over its own tokens + its global tokens: (S, D)."""
@@ -255,7 +278,8 @@ def _build_module_classes():
             self, q: Any, k: Any, v: Any, kgw: Any, vgw: Any, gvalid: Any, k0: int, s: int
         ) -> Any:
             """Attention over every spatial window of one temporal window. q/k/v (n, H, W, D) start ``k0`` latents into
-            the padded window; kgw / vgw (G, D) are the global tokens of the blocks it overlaps, gvalid (G,) bool."""
+            the padded window; kgw / vgw (G, D) are the global tokens of the blocks it overlaps, gvalid (G,) bool or
+            None when all are valid."""
             n, H, W, D = q.shape
             ws, tb, hd, dh = self.window, self.block, self.heads, self.dh
             Hp = -(-(H + s) // ws) * ws
@@ -269,20 +293,26 @@ def _build_module_classes():
                 buf = buf.view(tb, nh, ws, nw, ws, hd, dh).permute(1, 3, 5, 0, 2, 4, 6)
                 return buf.reshape(nW, hd, L, dh)
 
-            valid = torch.zeros(tb, Hp, Wp, dtype = torch.bool, device = q.device)
-            valid[k0 : k0 + n, s : s + H, s : s + W] = True
-            valid = valid.view(tb, nh, ws, nw, ws).permute(1, 3, 0, 2, 4).reshape(nW, L)
             G = kgw.shape[0]
             kg = kgw.view(G, hd, dh).transpose(0, 1)[None].expand(nW, hd, G, dh)
             vg = vgw.view(G, hd, dh).transpose(0, 1)[None].expand(nW, hd, G, dh)
             keys = torch.cat([part(k), kg], 2)
             vals = torch.cat([part(v), vg], 2)
-            kmask = torch.cat([valid, gvalid[None].expand(nW, G)], 1)
             mask = None
-            if not bool(kmask.all()):
-                mask = torch.zeros(kmask.shape, dtype = q.dtype, device = q.device)
-                mask.masked_fill_(~kmask, float("-inf"))
-                mask = mask[:, None, None, :]
+            # every padded slot holds a token iff the window starts at 0, is full, unshifted and unpadded
+            lean = gvalid is None and _lean_windows()
+            full = k0 == 0 and n == tb and s == 0 and Hp == H and Wp == W
+            if not (lean and full):
+                valid = torch.zeros(tb, Hp, Wp, dtype = torch.bool, device = q.device)
+                valid[k0 : k0 + n, s : s + H, s : s + W] = True
+                valid = valid.view(tb, nh, ws, nw, ws).permute(1, 3, 0, 2, 4).reshape(nW, L)
+                if gvalid is None:
+                    gvalid = torch.ones(G, dtype = torch.bool, device = q.device)
+                kmask = torch.cat([valid, gvalid[None].expand(nW, G)], 1)
+                if lean or not bool(kmask.all()):
+                    mask = torch.zeros(kmask.shape, dtype = q.dtype, device = q.device)
+                    mask.masked_fill_(~kmask, float("-inf"))
+                    mask = mask[:, None, None, :]
             out = torch.nn.functional.scaled_dot_product_attention(
                 part(q), keys, vals, attn_mask = mask
             )
@@ -336,12 +366,10 @@ def _build_module_classes():
                 )
                 if b1 != b0:
                     kgw, vgw = kg[[b0, b1]].reshape(-1, D), vg[[b0, b1]].reshape(-1, D)
-                    gvalid = torch.ones(2 * S, dtype = torch.bool, device = x.device)
                 else:
                     # the reference pads the second block slot and masks it; leaving it out is the same softmax
                     kgw, vgw = kg[b0], vg[b0]
-                    gvalid = torch.ones(S, dtype = torch.bool, device = x.device)
-                o = self._window_attn(q, k, v, kgw, vgw, gvalid, lo - (j * tb - st), s)
+                o = self._window_attn(q, k, v, kgw, vgw, None, lo - (j * tb - st), s)
                 del q, k, v, parts
                 xw = x[lo : hi + 1].view(-1, D)
                 normed = fused._add_rmsnorm(
@@ -380,8 +408,12 @@ def _build_module_classes():
                 return self._decode_one(z.expand(C, self.block, H, W))[:, :1]
             x = self._embed(z)
             g = self._globals(-(-T // self.block), x.device)
-            for li, blk in enumerate(self.blocks):
-                self._layer_(li, blk, x, g)
+            self._rope_tables = {} if _lean_windows() else None
+            try:
+                for li, blk in enumerate(self.blocks):
+                    self._layer_(li, blk, x, g)
+            finally:
+                self._rope_tables = None
             out = torch.empty(
                 OUT_CH,
                 sol_num_frames(T),

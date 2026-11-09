@@ -20,6 +20,10 @@ H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
 H3_VAE_TILE_BATCH_ENV = "UNSLOTH_H3_VAE_TILE_BATCH"
 H3_VAE_INT8_FUSED_ENV = "UNSLOTH_H3_VAE_INT8_FUSED"
+# "0": batched tile decode keeps every tile for diffusers' _stitch_tiles.
+H3_VAE_STREAM_STITCH_ENV = "UNSLOTH_H3_VAE_STREAM_STITCH"
+# sha256[:16] of the mirrored AutoencoderKLMiniMaxH3._stitch_tiles source (0.42.1).
+_STITCH_TILES_SHA = frozenset({"ae481626afa30528"})
 FP16_ACCUM_DISABLE_ENV = "UNSLOTH_DISABLE_FP16_ACCUM"
 
 LEVER_FUSED_ENCODER = "fused_encoder"
@@ -1047,6 +1051,10 @@ def _batched_decode_clip(self: Any, z: Any) -> Any:
     ]
     per = z.shape[0]
     batch = _tile_batch_size(z)
+    cols = len(x_indices)
+    stitch = None
+    if _stream_stitch(self) and all(o > 0 for o in (*y_overlaps, *x_overlaps)):
+        stitch = _TileStitcher(self, len(y_indices), cols, y_overlaps, x_overlaps)
     decoded: list = []
     start = 0
     while start < len(tiles):
@@ -1062,11 +1070,105 @@ def _batched_decode_clip(self: Any, z: Any) -> Any:
             torch.cuda.empty_cache()
             batch = 1
             continue
-        decoded.extend(out.split(per) if len(group) > 1 else [out])
+        parts = out.split(per) if len(group) > 1 else [out]
+        del out
+        if stitch is None:
+            decoded.extend(parts)
+        else:
+            for k in range(len(parts)):
+                stitch.add(start + k, parts[k])
+        del parts  # a live view pins its whole decoder batch
         start += len(group)
-    cols = len(x_indices)
+    if stitch is not None:
+        return stitch.result()
     rows = [decoded[r * cols : (r + 1) * cols] for r in range(len(y_indices))]
     return self._stitch_tiles(rows, y_overlaps, x_overlaps)
+
+
+def _stream_stitch(vae: Any) -> bool:
+    if _env(H3_VAE_STREAM_STITCH_ENV) in _FALSE:
+        return False
+    cls = type(vae)
+    known = _STITCH_KNOWN.get(cls)
+    if known is None:
+        import hashlib
+        import inspect
+
+        try:
+            sha = hashlib.sha256(inspect.getsource(cls._stitch_tiles).encode()).hexdigest()[:16]
+        except Exception:  # noqa: BLE001
+            sha = None
+        known = _STITCH_KNOWN[cls] = sha in _STITCH_TILES_SHA
+    return known and "_stitch_tiles" not in getattr(vae, "__dict__", {})
+
+
+_STITCH_KNOWN: dict = {}
+
+
+class _TileStitcher:
+    """``_stitch_tiles`` one tile at a time: keeps only the ORIGINAL neighbour strips the stock blend reads (copies,
+    so each decoder batch is freed), fills one row buffer at a time and joins the rows at the end; bit-identical."""
+
+    __slots__ = (
+        "vae",
+        "rows",
+        "cols",
+        "y_overlaps",
+        "x_overlaps",
+        "below",
+        "left",
+        "done",
+        "row",
+        "x0",
+    )
+
+    def __init__(self, vae: Any, rows: int, cols: int, y_overlaps: list, x_overlaps: list) -> None:
+        self.vae, self.rows, self.cols = vae, rows, cols
+        self.y_overlaps, self.x_overlaps = y_overlaps, x_overlaps
+        self.below: list = [None] * cols
+        self.left = None
+        self.done: list = []
+        self.row = None
+        self.x0 = 0
+
+    def add(self, index: int, tile: Any) -> None:
+        import torch
+
+        i, j = divmod(index, self.cols)
+        out = tile
+        if i > 0:
+            out = self.vae._blend(self.below[j], out, self.y_overlaps[i - 1], dim = -2)
+        if j > 0:
+            out = self.vae._blend(self.left, out, self.x_overlaps[j - 1], dim = -1)
+        if i < self.rows - 1:
+            ov = self.y_overlaps[i]
+            self.below[j] = tile[..., -min(tile.shape[-2], ov) :, :].clone()
+            out = out[..., :-ov, :]
+        else:
+            self.below[j] = None
+        if j < self.cols - 1:
+            ov = self.x_overlaps[j]
+            self.left = tile[..., :, -min(tile.shape[-1], ov) :].clone()
+            out = out[..., :, :-ov]
+        else:
+            self.left = None
+        if j == 0:
+            width = sum(
+                tile.shape[-1] - self.x_overlaps[c] if c < self.cols - 1 else tile.shape[-1]
+                for c in range(self.cols)
+            )
+            self.row = torch.empty((*out.shape[:-1], width), dtype = out.dtype, device = out.device)
+            self.x0 = 0
+        self.row[..., self.x0 : self.x0 + out.shape[-1]].copy_(out)
+        self.x0 += out.shape[-1]
+        if j == self.cols - 1:
+            self.done.append(self.row)
+            self.row = None
+
+    def result(self) -> Any:
+        import torch
+        rows, self.done = self.done, []
+        return rows[0] if len(rows) == 1 else torch.cat(rows, dim = -2)
 
 
 def _install_tile_batch(vae: Any) -> bool:

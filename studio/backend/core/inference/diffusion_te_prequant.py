@@ -1218,6 +1218,7 @@ def load_prequant_text_encoder(
                 encoder_cls, config, state_dict, dtype = dtype, trim = trim
             )
             setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "int8")
+            _tag_weight_files(encoder, path)
             if logger is not None:
                 logger.info(
                     "diffusion.te_prequant: loaded %s int8 ConvRot weight-only checkpoint (%s)",
@@ -1264,6 +1265,7 @@ def load_prequant_text_encoder(
         target.dtype = dtype
         _cast_fp8(encoder, target)
         setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "fp8")
+        _tag_weight_files(encoder, path)
         if logger is not None:
             # The FILE's scheme, not the request's (an fp8 fallback used to log int8).
             logger.info(
@@ -1736,6 +1738,13 @@ def _build_int8_convrot_encoder(
     encoder.requires_grad_(False)
     encoder.eval()
     return encoder
+
+
+def _tag_weight_files(encoder: Any, path: Any) -> None:
+    """Record the source file so a release reloads matching tensors from it instead of snapshotting."""
+    from .diffusion_te_release import WEIGHT_FILES_ATTR
+    if str(path).endswith(".safetensors"):
+        setattr(encoder, WEIGHT_FILES_ATTR, (str(path),))
 
 
 def _fill_tied_aliases(encoder: Any, state_dict: dict) -> None:

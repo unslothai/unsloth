@@ -29,7 +29,6 @@ from utils.upload_limits import (
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
 )
 
-LOAD_VIDEO_HINT = "Load a video model with load_model(kind='video') first."
 # /v1/videos takes a reference audio of at most 24 MB.
 MAX_REFERENCE_AUDIO_BYTES = 24 * 1024 * 1024
 # /v1/videos takes at most this many frames (MAX_VIDEO_NUM_FRAMES).
@@ -44,7 +43,7 @@ TOO_MANY_IMAGE_BYTES = (
 def _refuse_large_audio(caller: Any, audio: AudioInput) -> None:
     """Refuse audio over the video cap before audio_ref reads and stores it."""
     size = None
-    if audio.path is not None and caller.direct_local:
+    if audio.path is not None and caller.reads_host_files:
         try:
             size = Path(audio.path).expanduser().stat().st_size
         except OSError:
@@ -122,7 +121,7 @@ async def generate_video(
         Field(ge = 1, le = 120, description = "Playback frame rate; left out, the model's default."),
     ] = None,
 ) -> VideoJobRef:
-    """Start a video with the video model loaded in Unsloth Studio (load_model(kind="video") first) and return its job at once.
+    """Start a video with the video model loaded in Unsloth Studio (<<load_model: load_model(kind="video") first | the user loads one on the Video page, or name one in ``model``>>) and return its job at once.
     Poll get_job(kind="video", id=...) until it is completed, which returns a thumbnail and the video's URL.
     Unsloth Studio renders one video at a time: while one runs, another call is refused with HTTP 409, so wait for the first to finish.
     ``seconds`` is a number or a string and ``size`` is "WIDTHxHEIGHT" from studio_status video.size_presets; leave them out to use the model's defaults.
@@ -189,7 +188,7 @@ async def generate_video(
         raise ToolError(TOO_MANY_IMAGE_BYTES)
     if reference_audios:
         body["reference_audios"] = [await audio_ref(caller, audio) for audio in reference_audios]
-    job = await video_queue.post_or_queue(caller, body, hints = {503: LOAD_VIDEO_HINT})
+    job = await video_queue.post_or_queue(caller, body)
     return job if isinstance(job, VideoJobRef) else job_ref(job)
 
 

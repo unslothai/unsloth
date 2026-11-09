@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 from fastmcp.exceptions import ToolError
 
+from studio_mcp import profile
 from studio_mcp import checkpoints as named
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_status_field
@@ -308,7 +309,7 @@ async def list_training_runs(
     limit: int = 50,
     offset: int = 0,
 ) -> TrainingRuns:
-    """Training runs, newest first, with each run's folder; with ``run_id``, that run's saved settings and loss curve too. ``include_checkpoints`` lists every checkpoint by the name export_model takes: "<run folder>" for the final weights or "<run folder>/checkpoint-N". ``limit`` is 1 to 200."""
+    """Training runs, newest first, with each run's folder; with ``run_id``, that run's saved settings and loss curve too. ``include_checkpoints`` lists every checkpoint by the name <<export_model: export_model takes | Unsloth Studio exports it under>>: "<run folder>" for the final weights or "<run folder>/checkpoint-N". ``limit`` is 1 to 200."""
     caller = current_caller()
     checkpoints, folders_by_ref = await _folders_by_ref(caller)
     limit, offset = max(1, min(limit, 200)), max(0, offset)
@@ -348,5 +349,8 @@ async def list_training_runs(
         else None,
     )
 
+
+# A run outlives the call that started it and keeps using its key.
+FACTS = {"start_training": {profile.OUTLIVES_CALL}}
 
 TOOLS = ((start_training, WRITES), (list_training_runs, READ_ONLY))

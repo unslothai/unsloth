@@ -249,7 +249,7 @@ def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda timeout = 30, include_windows = False: {"x": "y", "cuda_version": "12.8"},
+        lambda timeout = 30, include_windows = False, **_: {"x": "y", "cuda_version": "12.8"},
     )
     seen = {}
     monkeypatch.setattr(
@@ -292,7 +292,7 @@ def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
+        lambda timeout = 30, include_windows = False, **_: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(
         ssm_runtime,
@@ -349,7 +349,7 @@ def test_install_kernel_heartbeats_through_the_import_check(monkeypatch):
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
+        lambda timeout = 30, include_windows = False, **_: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(
         ssm_runtime,
@@ -420,7 +420,7 @@ def test_install_kernel_falls_back_to_source(monkeypatch):
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
+        lambda timeout = 30, include_windows = False, **_: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
     pip_cmds = []
@@ -596,7 +596,7 @@ def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
+        lambda timeout = 30, include_windows = False, **_: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: "https://x/w.whl")
     monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: True)
@@ -623,7 +623,7 @@ def test_hip_source_build_requires_hipcc(monkeypatch):
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda timeout = 30, include_windows = False: {"hip_version": "6.2"},
+        lambda timeout = 30, include_windows = False, **_: {"hip_version": "6.2"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
     monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)
@@ -650,7 +650,7 @@ def test_source_build_reinstalls_to_replace_broken_wheel(monkeypatch):
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
+        lambda timeout = 30, include_windows = False, **_: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
     cmds = []
@@ -674,7 +674,7 @@ def test_hip_uv_source_build_uses_no_cache(monkeypatch):
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda timeout = 30, include_windows = False: {"hip_version": "6.2"},
+        lambda timeout = 30, include_windows = False, **_: {"hip_version": "6.2"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
     monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: "/usr/bin/" + name)

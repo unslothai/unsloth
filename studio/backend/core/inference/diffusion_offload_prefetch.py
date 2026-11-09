@@ -440,11 +440,9 @@ class GroupPrefetcher:
                     _copy_into(buffers[i], src)
                     _point_at(t, buffers[i], is_torchao(t), swap)
                     continue
-                moved = _to_device(src, self.device)
-                if is_torchao(t) and swap is not None:
-                    swap(t, moved)
-                else:
-                    t.data = moved
+                # a wrapper already on the device takes the new inner tensors: swap_tensors would refuse a weight a
+                # compile traced (its fake-mode memo keeps a weakref to it after the compile)
+                _point_at(t, _to_device(src, self.device), is_torchao(t), swap)
         if buffers is not None:
             self.slot_owner[where] = id(group)
             self.stats["slot_fills"] = self.stats.get("slot_fills", 0) + 1
@@ -1121,6 +1119,31 @@ def install_group_prefetch(
 
 def module_prefetcher(module: Any) -> Optional[GroupPrefetcher]:
     return getattr(module, PREFETCHER_ATTR, None)
+
+
+def match_skipped_order(module: Any, skipped: list, *, skipping: bool) -> None:
+    """Call after ``begin``: drop (``skipping``) or restore the groups wholly inside ``skipped`` in the order."""
+    pf = module_prefetcher(module)
+    if pf is None or not pf.active or pf.seen or pf.pos or not pf.order:
+        return
+    inside = {id(m) for block in skipped for m in block.modules()}
+    ids = {
+        gid
+        for gid, group in pf.by_id.items()
+        if getattr(group, "modules", None) and all(id(m) in inside for m in group.modules)
+    }
+    if not ids:
+        return
+    kept = [gid for gid in pf.order if gid not in ids]
+    if skipping:
+        if len(kept) != len(pf.order):
+            pf.__dict__["_unsloth_full_order"] = list(pf.order)
+            pf.order = kept
+    else:
+        full = pf.__dict__.get("_unsloth_full_order")
+        if full and len(kept) == len(pf.order) and [g for g in full if g not in ids] == kept:
+            pf.order = list(full)
+    pf.on_order = bool(pf.order)
 
 
 def _pinned_done(pinner: Any, group: Any) -> bool:

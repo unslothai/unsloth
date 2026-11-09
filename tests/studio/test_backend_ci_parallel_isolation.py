@@ -342,8 +342,8 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 13, (
-        f"expected thirteen parallel pytest runs, three shards of the backend matrix and ten "
+    assert len(parallel) == 14, (
+        f"expected fourteen parallel pytest runs, four shards of the backend matrix and ten "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
@@ -354,8 +354,8 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]
-    assert len(backend) == 3, (
-        f"expected the three backend shards, got {backend}. Same reason: the backend "
+    assert len(backend) == 4, (
+        f"expected the four backend shards, got {backend}. Same reason: the backend "
         f"isolation checks apply to those."
     )
     # The two jobs' sets must be disjoint or each job's isolation rules apply to the other.
@@ -370,7 +370,7 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     assert all("${{" not in command for command in root + backend)
     assert any("--ignore=" in command for command in root)
     assert {command for command in root} == set(root), "a shard selection appears twice"
-    assert len(set(backend)) == 3, "a backend shard selection appears twice"
+    assert len(set(backend)) == 4, "a backend shard selection appears twice"
     # Non-vacuous for the backend side too.
     assert any(_collects(command, "tests/test_account_contract.py") for command in backend)
     # Non-vacuous for the repo root too.

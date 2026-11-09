@@ -89,6 +89,19 @@ def test_anything_the_render_sees_misses(monkeypatch, change):
     assert paths.count("/tokenize") == before + 1
 
 
+def test_a_new_day_renders_again(monkeypatch):
+    from core.inference import llama_cpp
+
+    backend, paths = _setup(monkeypatch)
+    day = ["2026-03-31"]
+    monkeypatch.setattr(llama_cpp.time, "strftime", lambda fmt, *a: day[0])
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    day[0] = "2026-04-01"
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    assert paths == ["/apply-template", "/tokenize"] * 2
+
+
 def test_a_failed_render_is_not_remembered(monkeypatch):
     backend, paths = _setup(monkeypatch, status = 503)
     with pytest.raises(RuntimeError):

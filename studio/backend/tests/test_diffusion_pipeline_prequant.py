@@ -13,7 +13,11 @@ import types
 
 import pytest
 
-from ._torchao_installed import needs_torchao
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
 
 from core.inference import diffusion as dmod
 from core.inference import diffusion_prequant as pqmod
@@ -861,7 +865,7 @@ def _load_backend(
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
     )
-    monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe: None)
+    monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe, **_kw: None)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "stored_denoiser_precision", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "denoiser_modules", lambda pipe: [("transformer", object())])

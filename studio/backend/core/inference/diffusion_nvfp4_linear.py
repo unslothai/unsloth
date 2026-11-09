@@ -97,9 +97,7 @@ def nvfp4_linear_class():
                     *shape[:-1], self.out_features
                 )
             if self.protect.armed and self.protect.protected:
-                weight = dequantize_nvfp4_weight(
-                    self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16
-                )
+                weight = dequantize_nvfp4_weight(self.wq, self.w_sf, self.w_scale, dtype = flat.dtype)
                 out = F.linear(flat, weight)
             else:
                 with _device_guard(flat):
