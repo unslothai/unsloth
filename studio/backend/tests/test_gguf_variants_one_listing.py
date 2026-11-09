@@ -137,7 +137,6 @@ def test_a_failed_listing_is_not_reused(monkeypatch, tmp_path):
         asyncio.run(gguf_variants.get_gguf_variants_answer(repo))
     except Exception:
         pass
-    # The listing never reached the Hub, so nothing was there to reuse.
     assert all(call[2] is True for call in calls)
 
 
@@ -165,5 +164,4 @@ def test_list_gguf_variants_hands_back_its_model_info(monkeypatch, tmp_path):
         HUB_MODEL_INFO_SINK.reset(reset)
     assert variants == [] and len(sink) == 1 and len(calls) == 1
     assert [s.rfilename for s in sink[0].siblings] == [s.rfilename for s in siblings]
-    # Without a sink set nothing is collected.
     assert list_gguf_variants(repo, hf_token = "hf_x")[0] == [] and len(sink) == 1
