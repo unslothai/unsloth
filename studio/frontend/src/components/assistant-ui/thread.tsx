@@ -4050,10 +4050,9 @@ const Composer: FC<{
 
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
-  const draftThreadId = referenceThreadId ?? NEW_CHAT_DRAFT_ID;
+  const draftThreadId = referenceThreadId ?? threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
   const restoredDraftScopeRef = useRef<string | undefined>(undefined);
   const previousDraftIdentityRef = useRef({
-    referenceThreadId,
     draftThreadId,
     threadListItemId,
     incognito,
@@ -4080,7 +4079,6 @@ const Composer: FC<{
   useEffect(() => {
     const previous = previousDraftIdentityRef.current;
     previousDraftIdentityRef.current = {
-      referenceThreadId,
       draftThreadId,
       threadListItemId,
       incognito,
@@ -4097,9 +4095,8 @@ const Composer: FC<{
       !incognito &&
       !previous.incognito &&
       !shareDraft &&
-      previous.referenceThreadId === null &&
-      referenceThreadId !== null &&
-      aui.threadListItem().getState().remoteId === referenceThreadId &&
+      previous.draftThreadId === NEW_CHAT_DRAFT_ID &&
+      aui.threadListItem().getState().remoteId === draftThreadId &&
       previous.threadListItemId === threadListItemId &&
       previous.draftThreadId !== draftThreadId
     ) {
@@ -4140,7 +4137,6 @@ const Composer: FC<{
     draftKey,
     pasteDraftKey,
     shareDraft,
-    referenceThreadId,
     draftThreadId,
     threadListItemId,
     incognito,

@@ -621,6 +621,8 @@ async function waitForBackendLoadToSettle(): Promise<void> {
 export function SharedComposer({
   draftId,
   pairSaved,
+  pairSubmitted,
+  onPairSubmitted,
   handlesRef,
   model1,
   model2,
@@ -633,6 +635,8 @@ export function SharedComposer({
 }: {
   draftId: string;
   pairSaved?: boolean;
+  pairSubmitted: boolean;
+  onPairSubmitted: () => void;
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
@@ -657,8 +661,7 @@ export function SharedComposer({
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
   const syncDraft = shareDraft && !incognito;
-  const [sentPairId, setSentPairId] = useState<string | null>(null);
-  const unsentPair = pairSaved === false && sentPairId !== draftId;
+  const unsentPair = pairSaved === false && !pairSubmitted;
   const draftKey = composerDraftKey(unsentPair ? NEW_COMPARE_DRAFT_ID : draftId, shareDraft);
   const draftScope = incognito ? null : draftKey;
   const [text, setText] = useState(() =>
@@ -1571,8 +1574,8 @@ export function SharedComposer({
       if (unsentPair) {
         unsavedDraftRef.current = null;
         if (!shareDraft) writeComposerDraft(draftKey, "");
-        setSentPairId(draftId);
       }
+      onPairSubmitted();
       setCurrentText("");
       setIsWritingExpanded(false);
       setPendingImages([]);

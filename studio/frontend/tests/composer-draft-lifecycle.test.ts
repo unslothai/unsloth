@@ -339,3 +339,21 @@ test("switching temporary conversations still clears the old temporary draft", a
   await h.update({ runtimeId: "another-temporary-thread" });
   assert.equal(h.props.text, "");
 });
+
+test("a saved New chat keeps its follow-up through Compare backgrounding", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.type("first message");
+  await h.send();
+  await h.update({ threadId: "saved", remoteId: "saved" });
+  await h.type("follow-up");
+  await h.paste("follow-up paste");
+  await h.update({ threadId: null });
+  await h.update({ threadId: "saved" });
+  assert.equal(h.props.text, "follow-up");
+  assert.equal(h.props.attachments[0]?.file.paste, "follow-up paste");
+  assert.equal(
+    h.drafts.latestDraft(h.drafts.composerDraftKey("saved")),
+    "follow-up",
+  );
+});

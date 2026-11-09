@@ -1379,6 +1379,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const [pairLoraModelId, setPairLoraModelId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
   const [pairSaved, setPairSaved] = useState<boolean>();
+  const [submittedPairId, setSubmittedPairId] = useState<string | null>(null);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1454,6 +1455,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
           <SharedComposer
             draftId={pairId}
             pairSaved={pairSaved}
+            pairSubmitted={submittedPairId === pairId}
+            onPairSubmitted={() => setSubmittedPairId(pairId)}
             handlesRef={handlesRef}
             onExitCompare={onExitCompare}
             model1ThreadId={baseThreadId}
@@ -1640,6 +1643,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const [model2ThreadId, setModel2ThreadId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
   const [pairSaved, setPairSaved] = useState<boolean>();
+  const [submittedPairId, setSubmittedPairId] = useState<string | null>(null);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1775,6 +1779,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           <SharedComposer
             draftId={pairId}
             pairSaved={pairSaved}
+            pairSubmitted={submittedPairId === pairId}
+            onPairSubmitted={() => setSubmittedPairId(pairId)}
             handlesRef={handlesRef}
             model1={model1}
             model2={model2}

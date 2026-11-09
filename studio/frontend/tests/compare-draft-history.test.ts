@@ -169,6 +169,7 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
           pairSaved,
           draftId: "saved-pair",
           sentPairId: null,
+          pairSubmitted: false,
           shareDraft: false,
           composerDraftKey,
           NEW_COMPARE_DRAFT_ID,
