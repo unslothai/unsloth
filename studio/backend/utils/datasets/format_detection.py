@@ -856,19 +856,32 @@ def video_sample(
             return not video_parts(value)
         return value is None or (isinstance(value, str) and not value.strip())
 
-    if not any(_missing(k, v) for k, v in sample.items()):
+    missing = [k for k, v in sample.items() if _missing(k, v)]
+    if not missing:
         return sample
-    filled = dict(sample)
-    try:
-        for row in itertools.islice(iter(dataset), 1, rows):
+
+    def _fill(source):
+        filled = dict(sample)
+        for row in itertools.islice(iter(source), 1, rows):
             for key, value in row.items():
                 if _missing(key, filled.get(key)) and not _missing(key, value):
                     filled[key] = value
             if not any(_missing(k, v) for k, v in filled.items()):
                 break
+        return filled
+
+    # Only the missing columns can change the answer, so read just those: reading whole rows decodes every
+    # image / audio cell of up to 31 rows. Anything unexpected falls back to the full-row scan.
+    select_columns = getattr(dataset, "select_columns", None)
+    if callable(select_columns) and len(missing) < len(sample):
+        try:
+            return _fill(select_columns(missing))
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        return _fill(dataset)
     except Exception:  # noqa: BLE001 -- unreadable rows: detect from the first one
         return sample
-    return filled
 
 
 def video_parts(messages) -> list:
