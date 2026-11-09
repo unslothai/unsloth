@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 import types
 
@@ -183,6 +184,57 @@ def test_w8a8_default_differs_by_route(monkeypatch, env, expect_amd, expect_nvid
     assert tq.native_int8_act(_target()) is expect_amd
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
     assert tq.native_int8_act(_target()) is expect_nvidia
+
+
+def test_explicit_int8_keeps_its_weight_only_default_on_rdna(rocm, monkeypatch):
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    assert tq.native_int8_act(_target()) is False
+
+
+def test_rdna_auto_w8a8_reason_is_per_family_with_a_kill_switch(rocm, monkeypatch):
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq._sys, "platform", "linux")
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") == "measured"
+    assert tq.rdna_auto_w8a8_reason(_target(), "Toy-Family ") == "measured"
+    assert tq.rdna_auto_w8a8_reason(_target(), "other-family") is None
+    assert tq.rdna_auto_w8a8_reason(_target(dtype = torch.float16), "toy-family") is None
+    assert tq.rdna_auto_w8a8_reason(_target("cpu"), "toy-family") is None
+    monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, "0")
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: False)
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setitem(tq._FAMILY_SCHEME_DENY, "toy-family", frozenset({tq.TQ_INT8}))
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
+
+
+def test_rdna_auto_w8a8_ships_only_for_the_measured_families():
+    # Wan, small DiTs, edit / layered stay bf16.
+    assert set(tq._FAMILY_RDNA_AUTO_W8A8) == {"qwen-image", "qwen-image-2.1"}
+
+
+def test_rdna_auto_w8a8_reason_is_linux_only(rocm, monkeypatch):
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
+    monkeypatch.setattr(tq._sys, "platform", "win32")
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
+
+
+def test_rdna_auto_w8a8_reason_is_rocm_only(nvidia, monkeypatch):
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
+
+
+def test_rocm_rdna_w8a8_ready_is_false_without_a_rocm_gpu(monkeypatch):
+    monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
+    monkeypatch.setenv(nq.NATIVE_INT8_FUSED_ENV, "0")
+    assert nq.rocm_rdna_w8a8_ready() is False
 
 
 def test_family_deny_list_still_applies(rocm, monkeypatch):
@@ -1266,6 +1318,11 @@ def test_fp8_codes_layer_matches_the_dequant_formula_eager_and_compiled(fmt):
     torch._dynamo.reset()
     explained = torch._dynamo.explain(layer)(x)
     assert explained.graph_break_count == 0
+    if sys.platform == "win32" and shutil.which("cl") is None:
+        # Inductor's CPU backend builds C++ with MSVC, which a plain Windows runner does not have on PATH.
+        pytest.skip(
+            "compiled half needs MSVC (cl) on Windows; the eager and graph-break checks above ran"
+        )
     compiled = torch.compile(layer, fullgraph = True)
     assert torch.equal(compiled(x), layer(x))
 
@@ -1283,3 +1340,47 @@ def test_blocked_torchao_holds_after_peft_cached_it_available(monkeypatch):
     )  # newer peft's dispatcher imports this one instead
     model = _toy()
     peft.inject_adapter_in_model(peft.LoraConfig(r = 4, target_modules = ["to_q"]), model)
+
+
+@pytest.mark.parametrize("scheme", [nq.NATIVE_FP8, nq.NATIVE_INT8])
+def test_the_eager_stored_widen_allocates_no_full_float32_matrix(scheme):
+    """A stored fp8 / int8 layer's eager widen: the same bf16 weight, with no float32 temporary the size of the
+    whole layer (the old widen held two)."""
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    rows, cols = 2048, 4096
+    gen = torch.Generator().manual_seed(0)
+    codes = torch.randint(-127, 128, (rows, cols), dtype = torch.int8, generator = gen)
+    if scheme == nq.NATIVE_FP8:
+        codes = torch.randint(0, 0x7F, (rows, cols), dtype = torch.uint8, generator = gen).view(
+            torch.float8_e4m3fn
+        )
+    scale = torch.rand(rows, generator = gen) * 1e-2
+    lin = torch.nn.Linear(cols, rows, bias = False, dtype = torch.bfloat16)
+    layer = nq.native_linear_class()(lin, scheme, codes = codes, scale = scale)
+    want = (codes.to(torch.float32) * scale.reshape(-1, 1)).to(torch.bfloat16)
+
+    class FullFloat32(TorchDispatchMode):
+        count = 0
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            if (
+                torch.is_tensor(out)
+                and out.dtype == torch.float32
+                and out.numel() >= rows * cols
+                and func is not torch.ops.aten.view.default
+            ):
+                FullFloat32.count += 1
+            return out
+
+    with torch.no_grad(), FullFloat32():
+        got = layer._stored_weight(torch.bfloat16)
+    assert torch.equal(got.view(torch.int16), want.view(torch.int16))
+    assert FullFloat32.count == 0, FullFloat32.count

@@ -110,15 +110,10 @@ export function useIsThreadAtBottom(): boolean {
 
 export function useIntentAwareAutoScroll(): {
   ref: RefCallback<HTMLElement>;
-  markerRef: RefCallback<HTMLElement>;
   context: AutoScrollContextValue;
 } {
   const aui = useAui();
   const cleanupRef = useRef<(() => void) | null>(null);
-  const markerElRef = useRef<HTMLElement | null>(null);
-  const markerRef = useCallback<RefCallback<HTMLElement>>((node) => {
-    markerElRef.current = node;
-  }, []);
 
   const userDetachedRef = useRef(false);
   const followUntilRef = useRef(0);
@@ -204,7 +199,11 @@ export function useIntentAwareAutoScroll(): {
       const atBottomStrict = (): boolean =>
         distanceFromBottom() <= AT_BOTTOM_THRESHOLD_PX;
 
-      const marker = (): HTMLElement => markerElRef.current ?? el;
+      // On the viewport itself, matched as the subject: reaching it through the hidden host made
+      // WebKit restyle the whole thread on every flip (40-70 ms each at 150 turns).
+      const setFollowing = (on: boolean): void => {
+        el.toggleAttribute("data-aui-following", on);
+      };
 
       // Room to scroll upward. Guards wheel/touch detach: a gesture on a viewport with nothing
       // above can't express intent to leave the bottom and must not flip userDetachedRef, else
@@ -368,7 +367,7 @@ export function useIntentAwareAutoScroll(): {
           (settling || performance.now() < followUntilRef.current);
 
         if (following) {
-          marker().toggleAttribute("data-aui-following", true);
+          setFollowing(true);
           const scrollHeight = stabilize();
           const pinned = atBottomStrict();
           if (!pinned && scrollHeight > el.clientHeight) {
@@ -384,7 +383,7 @@ export function useIntentAwareAutoScroll(): {
           return;
         }
 
-        marker().toggleAttribute("data-aui-following", false);
+        setFollowing(false);
         setIsAtBottom(atBottomStrict());
       };
 
@@ -691,7 +690,7 @@ export function useIntentAwareAutoScroll(): {
           rafId = null;
         }
         clearSettleCheck();
-        marker().removeAttribute("data-aui-following");
+        setFollowing(false);
         resizeObserver.disconnect();
         mutationObserver.disconnect();
         el.removeEventListener("wheel", onWheel);
@@ -777,5 +776,5 @@ export function useIntentAwareAutoScroll(): {
     ],
   );
 
-  return { ref, markerRef, context };
+  return { ref, context };
 }

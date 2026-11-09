@@ -666,6 +666,7 @@ def _clear_caps_cache():
     with LlamaCppBackend._capability_cache_lock:
         LlamaCppBackend._capability_cache.clear()
         LlamaCppBackend._capability_retry_after.clear()
+        LlamaCppBackend._reasoning_budget_value_cache.clear()
 
 
 @_NEEDS_BASH
@@ -3764,3 +3765,84 @@ def test_positive_budget_probe_uses_resolved_launch_path(monkeypatch):
         reasoning_budget_message = "",
     )
     assert caps["supports_reasoning_budget_value:32"] is True
+
+
+def test_positive_budget_probe_runs_once_per_binary_and_budget(tmp_path, monkeypatch):
+    """Caps are a fresh copy on --fit-target builds: one spawn per (binary, budget, build)."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"v1")
+    monkeypatch.setattr(LlamaCppBackend, "_reasoning_budget_value_cache", {}, raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": True,
+                "supports_reasoning_budget_message": True,
+                "supports_fit_target": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda binary: {})
+    )
+    spawned = []
+
+    def _run(cmd, **kwargs):
+        spawned.append(cmd[2])
+        return _types.SimpleNamespace(returncode = 0 if cmd[2] == "512" else 1, stdout = "", stderr = "")
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", _run)
+
+    def _validate(budget):
+        return LlamaCppBackend.validate_reasoning_budget_capabilities(
+            str(binary),
+            extra_args = None,
+            reasoning_budget = budget,
+            reasoning_budget_message = "",
+        )
+
+    for _ in range(3):
+        assert _validate(512)["supports_reasoning_budget_value:512"] is True
+    assert spawned == ["512"]
+    for _ in range(2):
+        with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
+            _validate(64)
+    assert spawned == ["512", "64"]
+    binary.write_bytes(b"v2 build")
+    assert _validate(512)["supports_reasoning_budget_value:512"] is True
+    assert spawned == ["512", "64", "512"]
+
+
+def test_positive_budget_probe_error_is_not_remembered(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"v1")
+    monkeypatch.setattr(LlamaCppBackend, "_reasoning_budget_value_cache", {}, raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_reasoning_budget": True}),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda binary: {})
+    )
+    outcomes = [llama_cpp_module.subprocess.TimeoutExpired("llama-server", 10), -11, 0xC0000005, 0]
+
+    def _run(cmd, **kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return _types.SimpleNamespace(returncode = outcome, stdout = "", stderr = "")
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", _run)
+    kwargs = dict(extra_args = None, reasoning_budget = 256, reasoning_budget_message = "")
+    for _ in range(3):
+        with pytest.raises(ValueError):
+            LlamaCppBackend.validate_reasoning_budget_capabilities(str(binary), **kwargs)
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(str(binary), **kwargs)
+    assert caps["supports_reasoning_budget_value:256"] is True
+    assert outcomes == []

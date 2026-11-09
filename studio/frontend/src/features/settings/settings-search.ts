@@ -117,6 +117,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.liveMonitor.ram",
     "settings.resources.liveMonitor.vram",
     "settings.resources.liveMonitor.disk",
+    "settings.resources.liveMonitor.refreshRate",
+    "settings.resources.liveMonitor.unslothShare",
+    "settings.resources.liveMonitor.modelBreakdown",
     "settings.resources.gpu.title",
     "settings.resources.modelMemory.title",
     "settings.resources.modelMemory.keepResident",
@@ -281,6 +284,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",
     "settings.agents.dryRun.title",
+    "settings.mcp.title",
+    "settings.apiKeys.mcp.title",
   ],
   connections: [],
   voice: [

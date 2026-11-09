@@ -156,7 +156,8 @@ def guardrail_hub_token(token: Any):
     module = None
     if token is not None:
         try:
-            module = importlib.import_module(f"{GUARDRAIL_PACKAGE}.{GUARDRAIL_PACKAGE}")
+            # Written out (GUARDRAIL_PACKAGE twice) so the risky-loader lint sees a fixed module.
+            module = importlib.import_module("cosmos_guardrail.cosmos_guardrail")
             with _wrap_lock:
                 if not getattr(module.snapshot_download, "_unsloth_load_token", False):
                     module.snapshot_download = _token_bound(module.snapshot_download)

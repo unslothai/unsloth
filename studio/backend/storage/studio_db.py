@@ -4205,6 +4205,41 @@ def _mark_chat_attachment_inventory_clean(conn: sqlite3.Connection) -> None:
     )
 
 
+def insert_server_chat_message(
+    conn: sqlite3.Connection,
+    message_id: str,
+    thread_id: str,
+    parent_id: Optional[str],
+    content_json: str,
+    metadata_json: str,
+    created_at: int,
+) -> None:
+    """Insert a server-owned assistant message, indexing it in place so the insert trigger leaves a clean inventory clean."""
+    was_clean = (
+        conn.execute(
+            "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
+        ).fetchone()
+        is not None
+    )
+    conn.execute(
+        """INSERT INTO chat_messages
+           (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
+           VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
+        (message_id, thread_id, parent_id, content_json, metadata_json, created_at),
+    )
+    if not was_clean:
+        return
+    tombstones = {
+        row[0]
+        for row in conn.execute(
+            "SELECT attachment_id FROM chat_attachment_tombstones WHERE thread_id=? AND message_id=?",
+            (thread_id, message_id),
+        )
+    }
+    _replace_chat_attachment_inventory(conn, message_id, None, content_json, tombstones)
+    conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
+
+
 def _rebuild_chat_attachment_inventory(conn: sqlite3.Connection) -> None:
     """Rebuild after schema upgrade or a write from an older Unsloth build."""
     conn.execute("DELETE FROM chat_attachment_inventory")
@@ -4997,6 +5032,20 @@ def fork_counts_for_thread(thread_id: str) -> dict[str, int]:
             (thread_id,),
         ).fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
+    finally:
+        conn.close()
+
+
+def chat_thread_has_context_truncation(thread_id: str) -> bool:
+    """Whether any message in the thread records a context fit (metadata `contextTruncation`), without loading the transcript."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM chat_messages WHERE thread_id = ? "
+            "AND instr(metadata_json, 'contextTruncation') > 0 LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        return row is not None
     finally:
         conn.close()
 

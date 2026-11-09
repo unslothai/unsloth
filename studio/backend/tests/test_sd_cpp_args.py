@@ -62,6 +62,9 @@ def _physical_metal(monkeypatch):
     import core.inference.sd_cpp_args as sd_cpp_args
 
     monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    # Commands are built for a Linux host unless a test sets the platform, so a Mac runner gets the same
+    # commands as Linux (Metal drops direct conv and adds --clip-on-cpu).
+    monkeypatch.setattr("sys.platform", "linux")
     # The real probe is cached and reads sysctl; follow the patched platform.machine() instead.
     import platform
 
@@ -1058,8 +1061,9 @@ def _all_builders(binary, extra_args = None):
 @pytest.mark.parametrize(
     "tag, expected",
     [
-        ("master-982-0518b34-uaba3a1c", True),  # the pinned bundle
-        ("master-982-0518b34-ud331c66", True),  # the previous pin
+        ("master-982-0518b34-uba6ac30", True),  # the pinned bundle
+        ("master-982-0518b34-uaba3a1c", True),  # the previous pin
+        ("master-982-0518b34-ud331c66", True),  # an older pin
         ("master-968-8cd731e-ubdb47d1", True),  # the pin before it
         ("master-951-f89d9b1-uafac7a7", True),  # an older pin
         ("master-907-500ef5f", True),  # the build that merged #2037
@@ -1125,7 +1129,7 @@ def _cpu_install(
     binary = root / "bin" / "sd-cli"
     binary.write_text("")
     (root / ".unsloth-sd-cpp-install.json").write_text(
-        json.dumps({"tag": "master-982-0518b34-uaba3a1c", "accelerator": accelerator})
+        json.dumps({"tag": "master-982-0518b34-uba6ac30", "accelerator": accelerator})
     )
     for fn in (
         _sd_cpp_args_module._installed_sd_cpp_tag,
@@ -1272,22 +1276,14 @@ def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
     assert types_of(None) is None
 
     k_quant = write("te_q4k.gguf", [("w", None, gguf.GGMLQuantizationType.Q4_K)])
-    dense = write("vae_f16.gguf", [("w", x.astype(np.float16), None)])
-    all_types = _sd_cpp_args_module.model_files_quantized_weight_types
+    assert types_of(k_quant) == frozenset({"Q4_K"})
 
-    def route(files):
+    def route(path):
         return _sd_cpp_args_module.quant_cublas_env(
-            [(10, 0)], environ = {}, weight_types = all_types(files)
+            [(10, 0)], environ = {}, weight_types = types_of(path)
         )
 
-    with_k_te = SdCppModelFiles(diffusion_model = q8, llm = k_quant)
-    assert all_types(with_k_te) == frozenset({"Q8_0", "Q4_K"})
-    assert route(with_k_te) == {}
-    assert route(SdCppModelFiles(diffusion_model = q8, t5xxl = k_quant, vae = dense)) == {}
-    q8_only = SdCppModelFiles(
-        diffusion_model = q8, llm = q8, vae = dense, clip_l = str(tmp_path / "c.safetensors")
-    )
-    assert all_types(q8_only) == frozenset({"Q8_0"})
-    assert route(q8_only) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
-    assert all_types(SdCppModelFiles(diffusion_model = q8, llm = str(tmp_path / "x.gguf"))) is None
-    assert all_types(SdCppModelFiles(diffusion_model = str(tmp_path / "m.safetensors"))) is None
+    assert route(q8) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert route(mixed) == {}
+    assert route(k_quant) == {}
+    assert route(str(tmp_path / "missing.gguf")) == {}

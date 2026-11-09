@@ -216,6 +216,24 @@ def _override_lookup_candidates(*args, **kwargs) -> list[str]:
         _pytest.skip(f"needs the studio backend environment: {missing.name} is not installed")
 
 
+def _override_load_kwargs(*args, **kwargs) -> dict:
+    """The real stored-override to load-kwargs builder, imported like the lookup ladder above:
+    #16927 refactored its flag stripping without changing what it strips."""
+    import sys
+
+    backend = str(WORKDIR / "studio" / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    try:
+        from utils.openai_auto_switch_settings import model_override_load_kwargs
+        return model_override_load_kwargs(*args, **kwargs)
+    except ModuleNotFoundError as missing:
+        if (missing.name or "").split(".")[0] in {"hub", "loggers", "utils", "core", "models"}:
+            raise
+        import pytest as _pytest
+        _pytest.skip(f"needs the studio backend environment: {missing.name} is not installed")
+
+
 def test_models_api_sends_token_via_header_not_query():
     """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF
     token through hubTokenHeader, never as a ?hf_token= query param (which leaks
@@ -2458,9 +2476,18 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     gguf_block = store.split("    if is_gguf:", 1)[1]
     assert 'kwargs["n_batch"] = override["n_batch"]' in gguf_block
     assert 'kwargs["n_ubatch"] = override["n_ubatch"]' in gguf_block
-    # A stored pass-through -b / -ub must not outrank the first-class field.
-    assert 'strip_batch = "n_batch" in kwargs,' in store
-    assert 'strip_ubatch = "n_ubatch" in kwargs,' in store
+    # A stored pass-through -b / -ub must not outrank the first-class field, and survives without one.
+    build = _override_load_kwargs
+    stored = ["-b", "512", "-ub", "256", "--threads", "4"]
+    assert build({"n_batch": 1024, "llama_extra_args": stored}, is_gguf = True) == {
+        "n_batch": 1024,
+        "llama_extra_args": ["-ub", "256", "--threads", "4"],
+    }
+    assert build({"n_ubatch": 128, "llama_extra_args": stored}, is_gguf = True) == {
+        "n_ubatch": 128,
+        "llama_extra_args": ["-b", "512", "--threads", "4"],
+    }
+    assert build({"llama_extra_args": stored}, is_gguf = True) == {"llama_extra_args": stored}
 
 
 def test_hydration_clears_the_batch_baselines_for_a_batchless_model():

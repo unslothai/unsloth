@@ -440,3 +440,58 @@ def test_a_collected_layer_takes_its_cached_weights_and_their_vram_with_it():
     torch.cuda.empty_cache()
     freed = before - torch.cuda.memory_allocated(device)
     assert freed >= weight_bytes, f"{freed} bytes released, expected at least {weight_bytes}"
+
+
+def _sig_066(
+    input,
+    global_scale = None,
+    sf_vec_size = 16,
+    sf_use_ue8m0 = False,
+    is_sf_swizzled_layout = True,
+    is_sf_8x4_layout = False,
+    enable_pdl = None,
+):
+    return {
+        "inversed": False,
+        "pdl": enable_pdl,
+        "vec": sf_vec_size,
+        "swizzled": is_sf_swizzled_layout,
+    }
+
+
+def _sig_073(
+    input,
+    global_scale = None,
+    sf_vec_size = 16,
+    sf_use_ue8m0 = False,
+    is_sf_swizzled_layout = True,
+    is_sf_8x4_layout = False,
+    is_global_scale_inversed = False,
+    enable_pdl = None,
+    nvfp4_4over6_code = -1,
+):
+    return {
+        "inversed": is_global_scale_inversed,
+        "pdl": enable_pdl,
+        "vec": sf_vec_size,
+        "swizzled": is_sf_swizzled_layout,
+    }
+
+
+@pytest.mark.parametrize("fn", [_sig_066, _sig_073], ids = ["0.6.6", "0.7.3"])
+def test_fast_quantize_passes_pdl_by_keyword_on_both_layouts(monkeypatch, fn):
+    seen = {}
+
+    def _quant(x, gsf, *args, **kw):
+        seen.update(fn(x, gsf, *args, **kw))
+        return x, types.SimpleNamespace(reshape = lambda shape: "sf")
+
+    monkeypatch.setattr(dispatch, "quant_fn", lambda device, force = False: (_quant, True))
+    x = types.SimpleNamespace(is_contiguous = lambda: True, device = "cuda:0", shape = (4, 32))
+    dispatch._fast_quantize(x, None)
+    assert seen == {"inversed": False, "pdl": True, "vec": 16, "swizzled": True}
+
+
+def test_the_dispatch_allowlist_covers_every_release_studio_installs():
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSIONS
+    assert set(FLASHINFER_VERSIONS) <= set(dispatch._SUPPORTED)

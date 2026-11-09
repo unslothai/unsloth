@@ -1518,6 +1518,33 @@ def is_vision_model(
     )
 
 
+def audio_vlm_multimodal_lm_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[bool, bool]:
+    """(loads through AutoModelForMultimodalLM, config.json readable): no vision tower and a class registered there,
+    natively or by auto_map. AudioFlamingo3 has none and keeps FastModel's resolver. Raw config: no repo code runs."""
+    vision = _raw_config_has_vision_config(model_name, hf_token, local_files_only, revision)
+    if vision is None:
+        return False, False
+    if vision:
+        return False, True
+    try:
+        config = _read_raw_config_json(model_name, hf_token, local_files_only, revision) or {}
+    except Exception:
+        return False, False
+    auto_map = config.get("auto_map")
+    if isinstance(auto_map, dict) and "AutoModelForMultimodalLM" in auto_map:
+        return True, True
+    try:
+        from transformers.models.auto.modeling_auto import MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES
+    except ImportError:
+        return False, True
+    return config.get("model_type") in MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES, True
+
+
 def is_vision_model_checked(
     model_name: str,
     hf_token: Optional[str] = None,

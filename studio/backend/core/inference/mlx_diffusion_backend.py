@@ -26,6 +26,7 @@ from core.inference.diffusion_families import (
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
     DiffusionModelReplacedError,
+    require_pinned_checkpoint,
     LoadIdentity,
     _is_local_path,
     canonical_base,
@@ -1379,6 +1380,7 @@ class MlxDiffusionBackend:
                 loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                 if expected_load is not None and expected_load != loaded_id:
                     raise DiffusionModelReplacedError(expected_load, loaded_id)
+                require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                 self._active_generate_cancel = cancel
                 self._active_generate_account = current_account_id()
                 self._gen = _MlxGen(total_steps = steps * batch)
