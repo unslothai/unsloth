@@ -921,8 +921,16 @@ _GEMMA4_CASES = {
     "lora": "moe_cp2_lora",
     "lora+experts": "moe_cp2_lora_experts|moe_cp2_lora_experts_eager_checkpoint",
 }
+# gpt-oss: eager only (no SDPA path honours the sinks); HF checkpointing only.
+_GPT_OSS = "tests/test_ulysses_gpt_oss.py::test_gpt_oss_cp_matches_fp64_reference"
+_GPT_OSS_EAGER = "eager: block compile not measured for this family"
+_GPT_OSS_CASES = {
+    "full": "cp2|cp2_window9_prompt_masked|cp4|dp2cp2|cp2_checkpoint|cp2_zoo_forward",
+    "lora": "cp2_lora|cp4_lora",
+    "lora+experts": "cp2_lora_experts|cp2_lora_experts_checkpoint|cp4_lora_experts|cp2_lora_experts_zoo_forward",
+}
 # Attention implementations a family's evidence ran (default: _MOE_COMMON's sdpa and eager).
-_MOE_ATTENTION = {"deepseek_v4": ("eager",)}
+_MOE_ATTENTION = {"deepseek_v4": ("eager",), "gpt_oss": ("eager",)}
 _MOE_TEXT_ONLY = {
     "gemma4": "multimodal Gemma 4 refuses under Ulysses (its vision attention is bidirectional); only the "
     "text-only Gemma4ForCausalLM ran",
@@ -1005,6 +1013,10 @@ _MOE_EVIDENCE = {
     **{
         ("gemma4", precision, False, "cp"): (f"{_GEMMA4}[{ids}]",) * 2 + (_GEMMA4_EAGER,)
         for precision, ids in _GEMMA4_CASES.items()
+    },
+    **{
+        ("gpt_oss", precision, False, "cp"): (f"{_GPT_OSS}[{ids}]",) * 2 + (_GPT_OSS_EAGER,)
+        for precision, ids in _GPT_OSS_CASES.items()
     },
 }
 
