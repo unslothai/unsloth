@@ -52,6 +52,21 @@ def multigpu_mode() -> str:
     return "auto"
 
 
+MULTIGPU_ALL_ENV = "UNSLOTH_DIFFUSION_MULTIGPU_ALL"
+
+
+def multigpu_all_enabled() -> bool:
+    """The multi-GPU paths added for the remaining families and formats; ``0`` keeps the earlier one-card choices."""
+    if multigpu_mode() == "off":
+        return False
+    return (os.environ.get(MULTIGPU_ALL_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 UNET_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET"
 # Automatic (no gpu_ids) arms CFG-parallel on an idle card of the same model; 0 keeps the replica to explicit picks.
 AUTO_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_AUTO"
@@ -2215,6 +2230,15 @@ def _latent_arg(args: tuple, kwargs: dict) -> Any:
         value = kwargs.get(key)
         if isinstance(value, torch.Tensor):
             return value
+    # Cosmos 3 passes its noisy tokens as ``vision_tokens=[t]``: a new list each call around the same tensor
+    vision = kwargs.get("vision_tokens")
+    if (
+        isinstance(vision, (list, tuple))
+        and len(vision) == 1
+        and isinstance(vision[0], torch.Tensor)
+        and multigpu_all_enabled()
+    ):
+        return vision[0]
     for value in args:
         if isinstance(value, torch.Tensor):
             return value
@@ -2980,11 +3004,12 @@ class CfgParallelRouter:
     def _batch_split(self, latent: Any, args: tuple, kwargs: dict) -> Any:
         """A step without guidance branches (a distilled model, or both branches batched into one call) whose batch is
         even: the first half runs on the source, the second on the replica at the same time. Only for denoiser classes
-        whose every batched input is known (``_DIT_BATCH_SPLIT_KWARGS``); anything else, an odd batch, or the kill
+        whose every batched input is known (``_DIT_BATCH_SPLIT_KWARGS``, plus ``_DIT_BATCH_SPLIT_KWARGS_ALL`` unless
+        ``UNSLOTH_DIFFUSION_MULTIGPU_ALL=0``); anything else, an odd batch, or the kill
         switch keeps the call whole. None = not split (the caller runs it whole)."""
         torch = _torch()
         module = self.module_ref()
-        allowed = _DIT_BATCH_SPLIT_KWARGS.get(type(module).__name__) if module is not None else None
+        allowed, joins_all = _batch_split_kwargs(module)
         if allowed is None or _batch_split_disabled() or torch.compiler.is_compiling():
             return None
         if getattr(module, "_compiled_call_impl", None) is not None:
@@ -2999,7 +3024,7 @@ class CfgParallelRouter:
         )
         if extra:
             return self._skip_split(f"unknown inputs {extra}")
-        if kwargs.get("joint_attention_kwargs"):
+        if kwargs.get("joint_attention_kwargs") or (joins_all and kwargs.get("attention_kwargs")):
             return self._skip_split("attention kwargs")
         if self._split_scaled is None:
             from .diffusion_cfg_batch import per_call_scaled
@@ -3025,9 +3050,16 @@ class CfgParallelRouter:
         first, second = res
         if second is None:
             second = self._primary(*a1, **k1)
+        if joins_all:
+            try:
+                joined = _join_outputs(first, second)
+            except TypeError as exc:
+                return self._skip_split(f"unjoinable output ({exc})")
+        else:
+            joined = None
         self.stats["primary_calls"] += 1
         self.stats["batch_splits"] += 1
-        return _join_batch(first, second)
+        return joined if joins_all else _join_batch(first, second)
 
     def _skip_split(self, reason: str) -> None:
         self.stats["batch_split_skip"] = reason
@@ -3601,7 +3633,131 @@ _DIT_BATCH_SPLIT_KWARGS = {
         }
     ),
 }
+# Further DiT classes, checked against diffusers' forwards and their pipelines' calls: every tensor input is per sample
+# on dim 0 or unbatched (ids / position ids / padding masks whose leading size is never the batch), every list is
+# per-render (Qwen-Image's equal img_shapes). LTX-2 and HiDream-style pipelines batch cond + uncond into ONE call, which
+# the split cuts back into the two branches. LTX-2 returns (video, audio): both halves are joined.
+# Left out: HiDream (its llama states are layers x batch, batched on dim 1), MOSS-Image (positional inputs), FLUX.3 /
+# Qwen-Image 2.1 (a per-branch prefix KV cache object), and an attention_kwargs that is not empty.
+_DIT_BATCH_SPLIT_KWARGS_ALL = {
+    "LTX2VideoTransformer3DModel": frozenset(
+        {
+            "hidden_states",
+            "audio_hidden_states",
+            "encoder_hidden_states",
+            "audio_encoder_hidden_states",
+            "timestep",
+            "audio_timestep",
+            "sigma",
+            "audio_sigma",
+            "encoder_attention_mask",
+            "audio_encoder_attention_mask",
+            "num_frames",
+            "height",
+            "width",
+            "fps",
+            "audio_num_frames",
+            "video_coords",
+            "audio_coords",
+            "isolate_modalities",
+            "use_cross_timestep",
+            "attention_kwargs",
+            "return_dict",
+        }
+    ),
+    "ChromaTransformer2DModel": frozenset(
+        {
+            "hidden_states",
+            "encoder_hidden_states",
+            "timestep",
+            "img_ids",
+            "txt_ids",
+            "attention_mask",
+            "joint_attention_kwargs",
+            "return_dict",
+        }
+    ),
+    "QwenImageTransformer2DModel": frozenset(
+        {
+            "hidden_states",
+            "encoder_hidden_states",
+            "encoder_hidden_states_mask",
+            "timestep",
+            "img_shapes",
+            "guidance",
+            "attention_kwargs",
+            "return_dict",
+        }
+    ),
+    "HunyuanImageTransformer2DModel": frozenset(
+        {
+            "hidden_states",
+            "timestep",
+            "timestep_r",
+            "encoder_hidden_states",
+            "encoder_attention_mask",
+            "encoder_hidden_states_2",
+            "encoder_attention_mask_2",
+            "guidance",
+            "attention_kwargs",
+            "return_dict",
+        }
+    ),
+    "Krea2Transformer2DModel": frozenset(
+        {
+            "hidden_states",
+            "encoder_hidden_states",
+            "timestep",
+            "position_ids",
+            "encoder_attention_mask",
+            "attention_kwargs",
+            "return_dict",
+        }
+    ),
+    # Anima
+    "CosmosTransformer3DModel": frozenset(
+        {"hidden_states", "timestep", "encoder_hidden_states", "padding_mask", "return_dict"}
+    ),
+}
 BATCH_SPLIT_ENV = "UNSLOTH_DIFFUSION_BATCH_SPLIT"
+
+
+def _batch_split_kwargs(module: Any) -> tuple[Optional[frozenset], bool]:
+    """(the inputs a batch split of ``module`` may carry, or None; whether every output tensor is joined)."""
+    name = type(module).__name__ if module is not None else None
+    allowed = _DIT_BATCH_SPLIT_KWARGS.get(name)
+    if allowed is not None:
+        return allowed, False
+    if name in _DIT_BATCH_SPLIT_KWARGS_ALL and multigpu_all_enabled():
+        return _DIT_BATCH_SPLIT_KWARGS_ALL[name], True
+    return None, False
+
+
+def _join_outputs(
+    a: Any,
+    b: Any,
+    depth: int = 0,
+) -> Any:
+    """Two halves' outputs joined along dim 0: every tensor of a tuple / list / output dict, not only the first."""
+    torch = _torch()
+    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+        return torch.cat([a, b.to(a.device)], dim = 0)
+    if (
+        depth < 4
+        and isinstance(a, (tuple, list))
+        and isinstance(b, (tuple, list))
+        and len(a) == len(b)
+    ):
+        joined = [_join_outputs(x, y, depth + 1) for x, y in zip(a, b)]
+        return tuple(joined) if isinstance(a, tuple) else joined
+    if depth < 4 and isinstance(a, dict) and isinstance(b, dict) and a.keys() == b.keys():
+        return type(a)(**{k: _join_outputs(a[k], b[k], depth + 1) for k in a})
+    if a is None and b is None:
+        return None
+    sample_a, sample_b = getattr(a, "sample", None), getattr(b, "sample", None)
+    if isinstance(sample_a, torch.Tensor) and isinstance(sample_b, torch.Tensor):
+        return type(a)(sample = torch.cat([sample_a, sample_b.to(sample_a.device)], dim = 0))
+    raise TypeError(f"unexpected denoiser output {type(a).__name__}")
 
 
 def _batch_split_disabled() -> bool:
