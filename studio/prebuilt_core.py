@@ -1027,11 +1027,29 @@ def release_asset_download_url(repo: str, release_tag: str, asset_name: str) -> 
     )
 
 
+# Per process: the "already current" check and the release resolve that follows it
+# (and the whisper installer's llama-side check) all ask the same HEAD. Only a resolved
+# tag is kept, so a failure or a None answer is asked again. Keyed on the opener too, so
+# a swapped opener (tests, a reloaded module) never reads another opener's answer.
+_DOWNLOAD_HOST_LATEST_TAG_MEMO: dict[tuple[str, Any], str] = {}
+
+
 def download_host_latest_release_tag(ops: ModuleOps, repo: str) -> str | None:
     """Latest release tag from github.com/<repo>/releases/latest via its redirect
     target (no api.github.com call). None on 404 so the caller falls back to the
     API. /releases/latest resolves by created_at/make_latest, which can lag the
     published_at newest the freshness check uses -- acceptable for install."""
+    key = (repo, ops._URL_OPENER)
+    cached = _DOWNLOAD_HOST_LATEST_TAG_MEMO.get(key)
+    if cached is not None:
+        return cached
+    tag = _download_host_latest_release_tag_uncached(ops, repo)
+    if tag:
+        _DOWNLOAD_HOST_LATEST_TAG_MEMO[key] = tag
+    return tag
+
+
+def _download_host_latest_release_tag_uncached(ops: ModuleOps, repo: str) -> str | None:
     url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
     request = urllib.request.Request(
         url,
