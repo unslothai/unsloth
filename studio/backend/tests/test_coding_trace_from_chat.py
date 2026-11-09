@@ -167,6 +167,7 @@ def test_native_thread_follows_the_newest_branch_unless_a_head_is_given():
 
 def test_rows_from_a_service_need_no_database():
     thread = {"id": "t9", "title": "Rows", "modelId": "", "createdAt": 1, "updatedAt": 1}
+    raw = {"_raw": "{x"}
     messages = [
         _row("u1", "user", _text("Run it") + [{"type": "image", "image": "x"}], None, 1),
         _row(
@@ -174,8 +175,8 @@ def test_rows_from_a_service_need_no_database():
             "assistant",
             [
                 {"type": "reasoning", "text": "plan"},
-                _call("k", result = {"text": "ok"}, isError = True),
-                _call("k", result = {"text": "again"}),
+                _call("k", result = {"text": "ok"}, isError = True, args = raw, argsText = "{x"),
+                _call("k", result = {"text": "again"}, args = raw, argsText = "{y"),
             ],
             "u1",
             2,
@@ -187,7 +188,7 @@ def test_rows_from_a_service_need_no_database():
 
     assistant, tool = trace.messages[1], trace.messages[2]
     assert assistant.reasoning == "plan"
-    assert [c.id for c in assistant.tool_calls] == ["k", "k#2"]
+    assert [(c.id, c.arguments) for c in assistant.tool_calls] == [("k", {}), ("k#2", raw)]
     # Byte-exact JSON.stringify, as the UI replays a non-sandbox tool result.
     assert (tool.tool_call_id, tool.text, tool.is_error) == ("k", '{"text":"ok"}', True)
     assert set(_codes(trace)) == {"unsupported_part", "duplicate_tool_call_id", "unknown_role"}
@@ -326,6 +327,7 @@ def test_assistant_rows_replay_like_the_ui(parts, text, codes, note):
     "part, text",
     [
         (_call("A", "python", {"text": "ok", "sessionId": "s", "images": []}), "ok"),
+        (_call("A", "mcp__s__ui", {"text": "", "ui": {"resourceUri": "u"}}), '{"result":""}'),
         (_call("A", "search_knowledge_base", "Hit\n__RAG_SOURCES__:[1]"), "Hit"),
         (_call("A", "python", "Error: boom"), "Error: boom" + TOOL_ERROR_NUDGE),
         (_call("A", result = "out", provenance = {"model_suffix": " [2 left]"}), "out [2 left]"),

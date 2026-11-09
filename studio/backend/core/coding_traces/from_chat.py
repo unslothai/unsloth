@@ -208,7 +208,9 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     warnings.append(TraceWarning("duplicate_tool_call_id", note, message_id))
                     call_id = renamed
                 call_ids.add(call_id)
-                args = part.get("args")
+                args, raw = part.get("args"), part.get("argsText")
+                if isinstance(raw, str) and raw and args == {"_raw": raw}:
+                    args = {}  # toolCallReplayArguments replays the {_raw: argsText} marker as {}
                 name = str(part.get("toolName") or "")
                 current.tool_calls.append(
                     ToolCall(
@@ -218,7 +220,11 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     )
                 )
                 wire = {"role": "tool", "name": name}
-                wire["content"] = _tool_result_content(part["result"], name)
+                result = part["result"]  # isMcpUiToolResult: an MCP App result replays as its text
+                ui = _as_dict(result.get("ui")) if isinstance(result, dict) else {}
+                if name.startswith("mcp__") and isinstance(ui.get("resourceUri"), str):
+                    result = result["text"] if isinstance(result.get("text"), str) else result
+                wire["content"] = _tool_result_content(result, name)
                 suffix = _as_dict(part.get("provenance")).get("model_suffix")
                 if isinstance(suffix, str) and suffix:
                     wire["extra_content"] = {TOOL_MODEL_SUFFIX_KEY: suffix}
@@ -285,7 +291,8 @@ def _skipped_call(part: dict, message_id: str, position: int) -> Optional[TraceW
 
 def _prune(chain: list[dict]) -> list[dict]:
     """Drop refused and abandoned turns as pruneOutboundHistory (chat-adapter.ts) does, and give an
-    empty stopped turn its label, as fillStoppedAssistantReplay does."""
+    empty stopped turn its label, as fillStoppedAssistantReplay does. An unsettled run's row gets no
+    "Response interrupted" label: the UI asks the server if the run is live, and rows lack that."""
 
     def custom(message):
         # The UI stores message.metadata.custom as the row's metadata (runtime-provider.tsx).
