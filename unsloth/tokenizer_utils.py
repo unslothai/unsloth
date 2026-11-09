@@ -1032,15 +1032,14 @@ def fix_sentencepiece_gguf(saved_location):
 
 
 def _sync_add_special_tokens(fast_tokenizer, slow_tokenizer):
-    # On v5 the setters also rebuild the post_processor, so they run even when the values match.
+    # On v5 the setters rebuild the post_processor, so run them even when values match.
     if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
         fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
     if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
         fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
 
 
-# transformers 5 drops use_fast and never reads from_slow, so the "slow" load rebuilds the fast
-# tokenizer from the same files with only legacy = False added. These classes never read legacy.
+# v5 ignores use_fast/from_slow: the "slow" load is the fast one plus legacy = False, unread by these classes.
 _TRANSFORMERS_V5 = int(transformers_version.split(".")[0]) >= 5
 _V5_LEGACY_FREE_TOKENIZERS = frozenset(
     ("TokenizersBackend", "Qwen2Tokenizer", "GemmaTokenizer", "GPT2Tokenizer", "CohereTokenizer")
@@ -1058,14 +1057,12 @@ def _slow_load_copies_fast(fast_tokenizer):
 
 
 def _same_tokenization_as_own_copy(fast_tokenizer):
-    # assert_same_tokenization(copy, fast) after the add_bos / add_eos sync, the copy being fast as loaded.
     try:
         string = _same_tokenization_text(_same_tokenization_special_tokens(fast_tokenizer))
         before = fast_tokenizer(string).input_ids
     except Exception:
         return False
-    # The setters rebuild the post_processor in place. When the ids move, undo them, so the slow load
-    # path (and its fast-only fallback when that load fails) starts from the tokenizer as loaded.
+    # The setters rebuild the post_processor in place; undo them if ids move so the slow path starts as loaded.
     backend = getattr(fast_tokenizer, "_tokenizer", None)
     saved_post_processor = getattr(backend, "post_processor", None)
     saved_flags = {
@@ -1138,7 +1135,6 @@ def _load_correct_tokenizer(
             tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
         )
         _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
-        # A slow load would only rebuild this tokenizer and compare it with itself, so skip it.
         if _slow_load_copies_fast(fast_tokenizer) and _same_tokenization_as_own_copy(
             fast_tokenizer
         ):

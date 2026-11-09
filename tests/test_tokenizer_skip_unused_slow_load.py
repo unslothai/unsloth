@@ -65,7 +65,6 @@ def test_early_return_skips_slow_tokenizer(name, fix_tokenizer):
 @pytest.mark.parametrize("same", [True, False])
 def test_compared_path_still_loads_slow_tokenizer(same):
     result, calls, repaired = _run("unsloth/Llama-3.2-1B-Instruct", True, same)
-    # transformers 5 loads the fast tokenizer first to see whether the slow load is a copy of it.
     assert sorted(calls) == ["fast", "slow"]
     assert repaired.count("slow") == 1
     assert result.kind == ("fast" if same else "converted")
@@ -149,7 +148,6 @@ def test_v5_skips_slow_load_that_copies_the_fast_tokenizer(name, monkeypatch):
         "fast"
     ], f"{name}: transformers 5 slow load only rebuilt the fast tokenizer ({calls})"
     assert result.kind == "fast"
-    # The add_bos / add_eos sync still runs: on v5 it rebuilds the post_processor.
     assert result.rebuilds == 2
 
 
@@ -162,7 +160,6 @@ def test_v5_llama_skips_only_at_legacy_false(monkeypatch):
 
 
 def test_v5_sync_changing_ids_returns_the_slow_copy(monkeypatch):
-    # Dropping BOS on sync fails the comparison, so the slow copy is returned as before.
     result, calls = _run_v5(_v5_class("GemmaTokenizer"), monkeypatch, sync_changes_ids = True)
     assert calls == ["fast", "slow"]
     assert result.kind == "slow"
@@ -218,8 +215,7 @@ def test_v5_real_qwen2_tokenizer_constructed_once(tmp_path):
 
 
 def test_v5_failed_slow_load_keeps_the_tokenizer_as_loaded(tmp_path):
-    # tokenizer.json adds BOS while add_bos_token reports False, so the replayed setters drop BOS and the
-    # slow load runs; when that load fails, the fast tokenizer must come back as loaded, BOS included.
+    # Replayed setters drop BOS, so the slow load runs; when it fails the fast tokenizer returns as loaded.
     transformers = pytest.importorskip("transformers")
     if int(transformers.__version__.split(".")[0]) < 5:
         pytest.skip("transformers 4 loads a real slow tokenizer first")
