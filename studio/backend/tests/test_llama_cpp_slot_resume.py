@@ -648,6 +648,24 @@ def test_a_launch_that_only_raised_the_context_fits_when_the_slots_hold_the_toke
     ), "unified is a fingerprint field of its own; only the context may differ"
 
 
+def test_a_context_change_across_the_rope_switch_point_refuses(tmp_path):
+    def longrope(n_ctx):
+        backend = _ctx_backend(tmp_path, n_ctx = n_ctx)
+        backend._context_length = 131072
+        backend._rope_original_context_length = 4096
+        return backend
+
+    saved = _manifest_from(longrope(4096), n_saved = 2000)
+    assert longrope(8192).slot_resume_fits(saved) is False
+    above = _manifest_from(longrope(8192), n_saved = 2000)
+    assert longrope(16384).slot_resume_fits(above) is True
+    plain = _ctx_backend(tmp_path, n_ctx = 8192)
+    plain._context_length = 8192
+    widened = _ctx_backend(tmp_path, n_ctx = 16384)
+    widened._context_length = 8192
+    assert widened.slot_resume_fits(_manifest_from(plain, n_saved = 100)) is False
+
+
 def test_the_context_is_the_only_field_allowed_to_differ(tmp_path):
     saved = _manifest_from(_ctx_backend(tmp_path, n_ctx = 8192), n_saved = 100)
     backend = _ctx_backend(tmp_path, n_ctx = 32768)

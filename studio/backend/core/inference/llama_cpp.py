@@ -8536,6 +8536,7 @@ class LlamaCppBackend:
         self._leading_dense_block_count: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
         self._n_kv_heads_by_layer: Optional[list[int]] = None
+        self._rope_original_context_length: Optional[int] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
         # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
@@ -19043,6 +19044,7 @@ class LlamaCppBackend:
         self._leading_dense_block_count = None
         self._n_kv_heads = None
         self._n_kv_heads_by_layer = None
+        self._rope_original_context_length = None
         self._n_heads = None
         self._embedding_length = None
         self._pooling_type = None
@@ -19166,6 +19168,7 @@ class LlamaCppBackend:
                                     self._architecture = val_s
                                     arch_keys = {
                                         f"{arch}.context_length": "context_length",
+                                        f"{arch}.rope.scaling.original_context_length": "rope_original_context_length",
                                         f"{arch}.block_count": "n_layers",
                                         f"{arch}.expert_count": "n_experts",
                                         f"{arch}.leading_dense_block_count": "leading_dense_block_count",
@@ -34320,6 +34323,7 @@ class LlamaCppBackend:
             self._leading_dense_block_count = None
             self._n_kv_heads = None
             self._n_kv_heads_by_layer = None
+            self._rope_original_context_length = None
             self._n_heads = None
             self._embedding_length = None
             self._pooling_type = None
@@ -35544,6 +35548,12 @@ class LlamaCppBackend:
         capacity = self._slot_context_capacity()
         slots = manifest.get("slots") or []
         if capacity is None or not slots:
+            return False
+        # llama.cpp picks LongRoPE long/short factors by whether n_ctx_seq exceeds this threshold.
+        threshold = self._rope_original_context_length or self._context_length
+        if threshold and (int(saved.effective_context_length or 0) > threshold) != (
+            capacity > threshold
+        ):
             return False
         try:
             return all(0 < int(entry.get("n_saved") or 0) <= capacity for entry in slots)
