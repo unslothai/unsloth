@@ -686,7 +686,32 @@ FIND = """(spec) => {
     el = a ? [...a.querySelectorAll(spec.slice(5))].filter(vis).pop() : null; }
   else el = [...document.querySelectorAll(spec)].filter(vis).pop();
   if (!el) return false;
-  el.setAttribute('data-gate-target', ''); el.scrollIntoView({block: 'nearest'}); return true;
+  // Instant: the thread viewport is scroll-smooth, so a plain scrollIntoView animates and returns while the
+  // target is still moving; a trusted pointer action then lands wherever the target has got to.
+  el.setAttribute('data-gate-target', ''); el.scrollIntoView({block: 'nearest', behavior: 'instant'});
+  return true;
+}"""
+# Before a trusted pointer action: the target must hold still and be the element under its own centre. In
+# the viewport is not enough: the composer floats over the thread's bottom edge, so a target scrolled in
+# from below (block: nearest) can sit under it and the pointer lands on the composer. Only an occluded
+# target is moved (centred), so a target already clear adds no scroll to the area's window.
+STEADY = """async () => {
+  const el = document.querySelector('[data-gate-target]');
+  if (!el) return false;
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+  const still = async () => {
+    let last = '', same = 0;
+    for (let i = 0; i < 120 && same < 3; i++) {
+      await frame();
+      const r = el.getBoundingClientRect();
+      const k = `${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)},${Math.round(r.height)}`;
+      same = k === last ? same + 1 : 0; last = k;
+    }
+  };
+  const hit = () => { const r = el.getBoundingClientRect(); const t = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!t && (t === el || el.contains(t)); };
+  await still();
+  if (!hit()) { el.scrollIntoView({block: 'center', behavior: 'instant'}); await still(); }
+  return hit();
 }"""
 CLICK = """(right) => {
   const el = document.querySelector('[data-gate-target]'); const r = el.getBoundingClientRect();
@@ -836,6 +861,9 @@ class Page:
             self.last_error = "; ".join(problems)
             return not problems
         if not page.evaluate(FIND, arg):
+            return False
+        if kind in ("hover", "pclick") and not page.evaluate(STEADY):
+            self.last_error = "target never held still and clear of overlays under its centre"
             return False
         if kind == "hover":
             page.locator("[data-gate-target]").first.hover(timeout = 3_000, force = True)
