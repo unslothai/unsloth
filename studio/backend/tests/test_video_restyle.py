@@ -577,3 +577,98 @@ def test_gpu_acquire_keeps_a_running_restyle_server(weights, monkeypatch):
     monkeypatch.setattr(arb, "_owner", None)
     arb.acquire_for(arb.CHAT)
     assert runner._server is server
+
+
+def _route_client(monkeypatch, runner):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import video_restyle as route
+
+    monkeypatch.setattr(vr, "runner", runner)
+    app = FastAPI()
+    app.include_router(route.router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_route_enforces_the_model_allowlist(weights, monkeypatch, allowed):
+    from hub.services.models import account_access
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    client = _route_client(monkeypatch, runner)
+    decoded = []
+    monkeypatch.setattr(vr, "frames_from_video", lambda data: decoded.append(data) or _frames(5))
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "model_allowlist", lambda: {"some/other-model"})
+    monkeypatch.setattr(account_access, "model_allowed", lambda repo_id: allowed)
+    files = [("video", ("a.mp4", b"x", "video/mp4"))]
+    res = client.post("/api/inference/video/restyle", data = {"prompt": ""}, files = files)
+    if allowed:
+        assert res.status_code == 400 and len(decoded) == 1
+    else:
+        assert res.status_code == 403 and decoded == []
+
+
+def test_route_cancel_runs_off_the_event_loop(weights, monkeypatch):
+    import asyncio
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    client = _route_client(monkeypatch, runner)
+    loops = []
+
+    def cancel(owner = None):
+        try:
+            loops.append(asyncio.get_running_loop())
+        except RuntimeError:
+            loops.append(None)
+        return True
+
+    monkeypatch.setattr(runner, "cancel", cancel)
+    assert client.post("/api/inference/video/restyle/cancel").json() == {"cancelled": True}
+    assert loops == [None]
+
+
+def test_training_teardown_releases_an_idle_restyle_server(weights, monkeypatch):
+    from routes import training
+
+    stopped = []
+
+    class _Server(_FakeServer):
+        def stop(self):
+            stopped.append(True)
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _Server(b"AVI"))
+    runner._ensure_server(vr.model_files())
+    monkeypatch.setattr(vr, "runner", runner)
+    training._free_restyle_for_training()
+    assert stopped == [True] and runner._server is None
+
+
+def test_training_teardown_refuses_while_a_restyle_runs(weights, monkeypatch):
+    from routes import training
+    from routes.training_vram import ManagedEngineStillRunning
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    server = runner._ensure_server(vr.model_files())
+    runner.start(prompt = "x", frames = _frames(5))
+    monkeypatch.setattr(vr, "runner", runner)
+    with pytest.raises(ManagedEngineStillRunning):
+        training._free_restyle_for_training()
+    assert runner._server is server
+
+
+def test_diffusion_training_teardown_includes_the_restyle_server(monkeypatch):
+    from routes import training
+
+    class _Called(Exception):
+        pass
+
+    def called():
+        raise _Called
+
+    monkeypatch.setattr(training, "_free_restyle_for_training", called)
+    with pytest.raises(_Called):
+        training._free_gpu_for_diffusion_training()

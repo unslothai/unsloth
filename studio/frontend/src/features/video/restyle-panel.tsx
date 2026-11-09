@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
   cancelVideoRestyle,
   fetchVideoRestyleClip,
@@ -87,6 +88,8 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const players = useRef<Record<string, HTMLVideoElement | null>>({});
   const loadedFor = useRef<string | null>(null);
   const previewFor = useRef(0);
+  // Bumped whenever the shown clips are cleared, so an older download cannot repopulate them.
+  const clipsFor = useRef(0);
 
   const running = progress?.active === true;
   if (!running && cancelling) setCancelling(false);
@@ -101,9 +104,12 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       }
       if (next.phase === "done" && next.id && loadedFor.current !== next.id) {
         loadedFor.current = next.id;
+        if (next.video) notifyGalleryChanged("videos");
+        const ticket = clipsFor.current;
         const [input, control, output] = await Promise.all(
           CLIPS.map((clip) => fetchVideoRestyleClip(next.id as string, clip.kind)),
         );
+        if (ticket !== clipsFor.current) return;
         setInputClip(input);
         setControlClip(control);
         setOutputClip(output);
@@ -129,6 +135,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     setError(null);
     // The last result belongs to the previous clip; don't show it beside a new one.
     setOutcomeStale(true);
+    clipsFor.current += 1;
     setInputClip(null);
     setControlClip(null);
     setOutputClip(null);
@@ -164,6 +171,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     setSubmitting(true);
     setOutcomeStale(false);
     setError(null);
+    clipsFor.current += 1;
     setInputClip(null);
     setControlClip(null);
     setOutputClip(null);

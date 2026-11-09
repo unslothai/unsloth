@@ -15,6 +15,7 @@ from starlette.datastructures import UploadFile
 from auth.authentication import get_current_subject
 from core.inference import video_restyle
 from core.inference.video_restyle import RestyleBusy, RestyleError
+from hub.services.models import account_access
 from utils.account_context import account_thread, current_account_id
 from utils.upload_limits import VIDEO_RESTYLE_UPLOAD_MAX_BYTES
 
@@ -80,6 +81,8 @@ async def preview_restyle(request: Request, current_subject: str = Depends(get_c
 
 @router.post("/video/restyle")
 async def start_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
     try:
         reservation = video_restyle.runner.reserve()
     except RestyleBusy as exc:
@@ -128,7 +131,8 @@ async def restyle_progress(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/video/restyle/cancel")
 async def cancel_restyle(current_subject: str = Depends(get_current_subject)):
-    return {"cancelled": video_restyle.runner.cancel(current_account_id())}
+    # cancel() stops a loading sd-server, which can block for seconds.
+    return {"cancelled": await asyncio.to_thread(video_restyle.runner.cancel, current_account_id())}
 
 
 @router.post("/video/restyle/unload")
