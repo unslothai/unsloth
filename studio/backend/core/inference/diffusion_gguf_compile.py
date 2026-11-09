@@ -11,7 +11,8 @@ linear per forward. The fused kernel keeps the fp16 rounding of ``d * q`` before
 so the weight it produces is bit-identical to the stock one.
 
 Other fp16-dequantised types under a bf16 compute dtype are cast in the dequant's own buffer, bit-identical to the stock
-cast (UNSLOTH_DIFFUSION_GGUF_FUSED_CAST=0 disables); a compiled-in cast was not bit-identical for Q4_K / Q5_K."""
+cast (UNSLOTH_DIFFUSION_GGUF_FUSED_CAST=0 disables); a compiled-in cast was not bit-identical for Q4_K / Q5_K.
+diffusion_gguf_exact types compile its dequant per type, cast inside the kernel."""
 
 from __future__ import annotations
 
@@ -136,6 +137,9 @@ def install_compiled_dequant(logger: Any = None) -> bool:
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             _compile_error = None
+            from . import diffusion_gguf_exact  # noqa: PLC0415
+
+            diffusion_gguf_exact.set_compiled_dequant(True)
             _install_fused_q8_0(gguf_utils, logger)
             return True
         return False
@@ -194,8 +198,12 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
 
         if not _torch_supports_fused_q8_0(torch.__version__):
             return False
+        from . import diffusion_gguf_exact as gguf_exact  # noqa: PLC0415
+
         compiled = torch.compile(_q8_0_blocks_dequant_cast, dynamic = True)
         blocks_fn = _guard(compiled, _q8_0_blocks_dequant_cast, logger)
+        # one compile per type, so no type evicts another
+        exact_fns = {fn: _guard(torch.compile(fn), fn, logger) for fn in gguf_exact.EXACT_FUNCTIONS}
         stock_forward = getattr(linear_cls, _FORWARD_ATTR)
         F = torch.nn.functional
 
@@ -206,7 +214,16 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
             quant_type = getattr(weight, "quant_type", None)
             if dtype is None or weight.dim() != 2:
                 return stock_forward(self, inputs)
-            if quant_type == _Q8_0:
+            exact_fn = gguf_exact.exact_function(quant_type) if quant_type is not None else None
+            if exact_fn is not None:
+                if not (q8_0 if quant_type == _Q8_0 else fused_cast) or not gguf_exact.row_aligned(
+                    weight, quant_type
+                ):
+                    return (gguf_exact.stock_forward() or stock_forward)(self, inputs)
+                dense = gguf_exact.dequantize_cast(
+                    weight.as_tensor(), quant_type, dtype, exact_fns[exact_fn]
+                )
+            elif quant_type == _Q8_0:
                 if not q8_0 or weight.shape[-1] % _Q8_0_TYPE_SIZE:
                     return stock_forward(self, inputs)
                 dense = _q8_0_dequant_cast(weight.as_tensor(), dtype, blocks_fn)
@@ -254,6 +271,9 @@ def uninstall_compiled_dequant() -> None:
     if gguf_utils is not None:
         revert_patch(gguf_utils, _DEQUANT_ATTR)
     _compiled_dequant_installed = False
+    from . import diffusion_gguf_exact  # noqa: PLC0415
+
+    diffusion_gguf_exact.set_compiled_dequant(False)
 
 
 def uninstall_all() -> None:
