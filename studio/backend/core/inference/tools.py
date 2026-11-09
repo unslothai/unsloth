@@ -12490,6 +12490,7 @@ _MCP_LISTING_THREAD: ContextVar = ContextVar("mcp_listing_thread", default = Non
 _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
+_MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 # (account, thread) -> (ranked tools held, every tool the last listing sent, in its order).
@@ -12506,11 +12507,13 @@ def set_mcp_listing_context_tokens(
     messages = None,
     tool_choice = None,
     mcp_image = None,
+    remember = True,
 ) -> None:
     """The local window the next MCP listing in this context is sized against; unset lists every tool in full.
     ``thread_id`` keeps the tools a chat ran listed; ``messages`` ranks the deferred ones listed up front; a
     ``tool_choice`` forcing a tool keeps that one listed, and an attached image (in the message or, sent to MCP tools
-    only, as ``mcp_image``) keeps the tools mapped to take it listed."""
+    only, as ``mcp_image``) keeps the tools mapped to take it listed. ``remember = False`` reads the thread's held
+    listing without replacing it, for a token count: only a listing sent to the model may move a later one."""
     from core.inference.chat_template_helpers import forced_tool_name, last_user_text  # noqa: PLC0415
 
     valid = isinstance(context_tokens, int) and context_tokens > 0
@@ -12519,6 +12522,7 @@ def set_mcp_listing_context_tokens(
     dicts = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages or []]
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
+    _MCP_LISTING_REMEMBER.set(bool(remember))
     last_user = next(
         (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
     )
@@ -12731,7 +12735,7 @@ def _mcp_held(by_name: dict) -> tuple[list[str], list[str]]:
 
 def _mcp_hold(ranked: list[str], listed: list[str]) -> None:
     key = _mcp_thread_key()
-    if key is None:
+    if key is None or not _MCP_LISTING_REMEMBER.get():
         return
     with _MCP_LOADED_LOCK:
         _MCP_HELD_THREADS.pop(key, None)

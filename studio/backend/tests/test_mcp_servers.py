@@ -2523,6 +2523,40 @@ def test_mcp_listing_keeps_its_order_when_a_listed_tool_runs(tmp_path, monkeypat
     assert _names(_thread_listing(tools_mod, searching, chat)) == [*_names(first), move]
 
 
+def test_mcp_listing_token_count_leaves_the_held_listing_alone(tmp_path, monkeypatch, searching):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    a, b, c = (f"mcp__srv1__{name}" for name in ("ping", "create-pages", "move-pages"))
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    rankings = {"ab": [a, b], "cb": [c, b]}
+    monkeypatch.setattr(
+        tools_mod,
+        "_mcp_ranked",
+        lambda specs, query: ([names.index(name) for name in rankings[query]], 0),
+    )
+
+    def count(messages):
+        ctx = contextvars.copy_context()
+        ctx.run(
+            tools_mod.set_mcp_listing_context_tokens,
+            searching,
+            "thread-1",
+            messages,
+            remember = False,
+        )
+        return ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0]))
+
+    chat = [{"role": "user", "content": "ab"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    assert _names(first) == ["mcp_tool_search", a, b]
+    # A count of another branch prices that branch's listing without moving the one generation holds.
+    assert count([{"role": "user", "content": "cb"}]) == ["mcp_tool_search", b, c]
+    assert _thread_listing(tools_mod, searching, chat) == first
+
+
 def test_mcp_listing_holds_when_the_best_match_cannot_fit(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 
