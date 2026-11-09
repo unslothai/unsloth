@@ -82,7 +82,6 @@ def test_streamed_conditioner_is_sized_at_its_encode_footprint(monkeypatch):
 @pytest.mark.parametrize(
     "free_gb, te_scheme, expected",
     [
-        # RTX PRO 6000: 142 GB beside a rotating conditioner, 86 GB beside a streamed one.
         (101.4, None, "pin_stream_te"),
         (101.4, "int8", "pin_stream_te"),
         (178.0, None, "pin"),
@@ -209,7 +208,6 @@ def test_a_request_past_the_pin_budget_returns_the_denoiser_to_the_rotation(monk
     added = manager.model_hooks[-1]
     assert added.model is denoiser and added.offloaded
     assert added in manager.model_hooks[0].others and manager.model_hooks[0] in added.others
-    # Idempotent: already in the rotation, nothing added.
     assert vid._h3_dense_demote(pipe, denoiser) and len(manager.model_hooks) == 2
 
 

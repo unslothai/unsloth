@@ -3099,9 +3099,8 @@ def _h3_dense_demote(
     *,
     logger: Any = None,
 ) -> bool:
-    """Hand a released denoiser pinned beside a streamed conditioner back to the CPU-offload rotation, for a request
-    whose VRAM floor only the rotation meets. True when it is in the rotation (now or already); False, with nothing
-    changed, when it cannot be (no rotation to join, or no host RAM for its copy)."""
+    """Return a denoiser pinned beside a streamed conditioner to the CPU-offload rotation. True when in the rotation;
+    False, nothing changed, when there is no rotation to join or no host RAM for its copy."""
     try:
         manager = getattr(pipe, "_components_manager", None)
         hooks = list(getattr(manager, "model_hooks", None) or ())
@@ -11664,8 +11663,7 @@ class VideoBackend:
                         if pin_plan == "pin_stream_te":
                             from .video_minimax_h3_te import stream_h3_text_encoder
 
-                            # Denoiser first: pinning the conditioner's 67 GB host copy first evicts the denoiser's
-                            # cached pages, so its move would re-read 66 GB from disk.
+                            # Denoiser first: pinning the conditioner first evicts its cached pages (66 GB re-read).
                             denoiser_pinned = pin_prequantized_module(
                                 manager,
                                 denoiser,
@@ -11682,8 +11680,7 @@ class VideoBackend:
                             if te_streamed:
                                 sizes = streamed_sizes
                             else:
-                                # The sizing assumed the stream: a resident denoiser beside a rotating
-                                # conditioner OOMs at the encode, so it goes back into the rotation.
+                                # Sized for the stream: beside a rotating conditioner it OOMs at the encode.
                                 _h3_dense_unpin(manager, denoiser, device, logger = logger)
                                 denoiser_pinned = False
                                 pin_plan = None
@@ -12843,8 +12840,7 @@ class VideoBackend:
                             and state.transformer_quant is None
                             and state.offload_policy != "none"
                         ):
-                            # A released denoiser pinned beside the streamed conditioner was sized for the default
-                            # clip; a longer one the rotation fits must not be refused.
+                            # Pin was sized for the default clip; a longer one the rotation fits must not be refused.
                             rotation_gb = estimate_h3_diffusers_vram_gb(
                                 width,
                                 height,
