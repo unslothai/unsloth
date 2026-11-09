@@ -147,18 +147,15 @@ def _plain_swiglu(act: Any, cls_name: str) -> bool:
     """``act`` is the stock FLUX SwiGLU (``silu(x[:half]) * x[half:]``) with an unhooked ``nn.SiLU``."""
     return (
         act is not None
-        and type(act).forward is _STOCK_SWIGLU.get(cls_name)
+        and type(act) is _CLS.get(cls_name)
         and not _gemm._hooked(act)
         and _gemm._plain_silu(getattr(act, "gate_fn", None))
     )
 
 
-_STOCK_SWIGLU: dict = {}  # class name -> fingerprinted stock forward
-_FF_FORWARDS: list = []  # FeedForward forwards _ff_tail mirrors (stock and ours)
-
-
-def _ff_forward_known(fn: Any) -> bool:
-    return any(fn is known for known in _FF_FORWARDS)
+# Class name -> the diffusers class whose body the replacements mirror (fingerprinted at install). The traced gates
+# compare classes, never functions: dynamo resolves function identity (``f.__func__ is g``) to False.
+_CLS: dict = {}
 
 
 def _ff_ready(ff: Any, act_cls: str) -> bool:
@@ -320,10 +317,10 @@ def _f3_block_ready(block: Any) -> bool:
         return False
     proc = getattr(attn, "processor", None)
     return (
-        type(proc).__call__ is _STOCK.get(("Flux3AttnProcessor", "__call__"))
-        and type(attn).forward is _STOCK.get(("Flux3Attention", "forward"))
+        type(proc) is _CLS.get("Flux3AttnProcessor")
+        and type(attn) is _CLS.get("Flux3Attention")
         and not _gemm._hooked(attn)
-        and _ff_forward_known(type(ff).forward)
+        and type(ff) is _CLS.get("Flux3FeedForward")
         and _ff_ready(ff, "Flux3SwiGLU")
         and _rotated(attn.to_q)
         and _rotated(attn.to_k)
@@ -450,7 +447,7 @@ def _install_patches(logger: Any = None) -> dict:
                 continue
             act = getattr(mod, swiglu, None)
             if act is not None and _has(act.forward, "swiglu"):
-                _STOCK_SWIGLU[swiglu] = act.forward
+                _CLS[swiglu] = act
             proj_key = f"{prefix}_projections"
             done[proj_key] = _patch(
                 mod,
@@ -459,19 +456,19 @@ def _install_patches(logger: Any = None) -> dict:
                 _make_f2_projections if prefix == "f2" else _make_f3_projections,
             )
             ff = getattr(mod, ff_cls, None)
-            if ff is not None and swiglu in _STOCK_SWIGLU:
+            if ff is not None and swiglu in _CLS:
                 done[f"{prefix}_ff"] = _patch(
                     ff, "forward", "ff", lambda s, c = swiglu: _make_ff_forward(s, c)
                 )
                 if done[f"{prefix}_ff"]:
-                    _FF_FORWARDS[:] = [*_FF_FORWARDS, ff.forward, _STOCK[(ff, "forward")]]
-        if f2 is not None and "Flux2SwiGLU" in _STOCK_SWIGLU:
+                    _CLS[ff_cls] = ff
+        if f2 is not None and "Flux2SwiGLU" in _CLS:
             proc = getattr(f2, "Flux2ParallelSelfAttnProcessor", None)
             if proc is not None:
                 done["f2_parallel"] = _patch(
                     proc, "__call__", "f2_parallel", lambda s: _make_f2_parallel_call(s, f2)
                 )
-        if f3 is not None and "Flux3SwiGLU" in _STOCK_SWIGLU:
+        if f3 is not None and "Flux3FeedForward" in _CLS:
             proc, attn_cls = (
                 getattr(f3, "Flux3AttnProcessor", None),
                 getattr(f3, "Flux3Attention", None),
@@ -484,8 +481,8 @@ def _install_patches(logger: Any = None) -> dict:
                 and _has(proc.__call__, "f3_attn")
                 and _has(attn_cls.forward, "f3_attn_forward")
             ):
-                _STOCK[("Flux3AttnProcessor", "__call__")] = proc.__call__
-                _STOCK[("Flux3Attention", "forward")] = attn_cls.forward
+                _CLS["Flux3AttnProcessor"] = proc
+                _CLS["Flux3Attention"] = attn_cls
                 for cls_name, key, make in (
                     ("Flux3ModeTransformerBlock", "f3_mode", _make_f3_mode_forward),
                     ("Flux3SingleTransformerBlock", "f3_single", _make_f3_single_forward),
@@ -568,8 +565,7 @@ def uninstall() -> None:
             if getattr(getattr(owner, attr, None), _MARK, False):
                 setattr(owner, attr, stock)
         _STOCK.clear()
-        _STOCK_SWIGLU.clear()
-        _FF_FORWARDS.clear()
+        _CLS.clear()
 
 
 def is_installed() -> bool:

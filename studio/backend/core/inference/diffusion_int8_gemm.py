@@ -33,6 +33,9 @@ _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_mm_dequant"
 _REC = "_unsloth_i8_gemm"
 _MARK = "_unsloth_i8_gemm_prev"
+# The bound ``_linear_forward`` the swap installed: a traced forward checks the instance ``forward`` by identity with
+# it (dynamo resolves ``forward.__func__ is _linear_forward`` to False, so the shared paths never engaged compiled).
+_FWD = "_unsloth_i8_gemm_fwd"
 # on a SwiGLU MLP whose down projection takes its codes from the gate / value halves
 _FF_MARK = "_unsloth_i8_gemm_swiglu_prev"
 _SWIGLU_FF_CLASSES = ("QwenImage21SwiGLUFeedForward",)
@@ -1111,7 +1114,11 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
     rec = d.get(_REC)
     if rec is None or _MARK not in d or "_diffusers_hook" in d or "_hf_hook" in d:
         return None
-    if getattr(d.get("forward"), "__func__", None) is not _linear_forward:
+    fwd = d.get("forward")
+    if torch.compiler.is_compiling():
+        if fwd is None or fwd is not d.get(_FWD):
+            return None
+    elif getattr(fwd, "__func__", None) is not _linear_forward:
         return None
     if d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
         return None
@@ -1588,6 +1595,7 @@ def _swap_on(
             )
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
+            module.__dict__[_FWD] = module.forward
             count += 1
         ff = (
             _install_swiglu_ff(
@@ -1701,6 +1709,7 @@ def uninstall(transformer: Any = None) -> None:
             if prev is None:
                 continue
             module.__dict__.pop(_REC, None)
+            module.__dict__.pop(_FWD, None)
             if prev is _NO_PREV:
                 module.__dict__.pop("forward", None)
             else:

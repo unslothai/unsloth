@@ -60,13 +60,32 @@ def _rope(torch, seq, dim):
     return ang.cos(), ang.sin()
 
 
-def _run_stock_vs_patched(torch, fused, build, call):
+@pytest.fixture(params = ["eager", "compiled"])
+def mode(request):
+    return request.param
+
+
+def _run_stock_vs_patched(
+    torch,
+    fused,
+    build,
+    call,
+    mode = "eager",
+):
+    """Stock, patched (eager, or traced by dynamo: the per-call gates must hold inside the regional compile) and
+    restored outputs of one block."""
     torch.manual_seed(0)
     block = build().eval()
     with torch.no_grad():
         ref = call(block)
         assert fused._install_patches()  # noqa: SLF001 - the install minus the int8 gates
-        out = call(block)
+        if mode == "compiled":
+            torch._dynamo.reset()
+            compiled = torch.compile(block, backend = "eager", fullgraph = True)
+            out = call(compiled)
+            torch._dynamo.reset()
+        else:
+            out = call(block)
     fused.uninstall()
     with torch.no_grad():
         back = call(block)
@@ -79,7 +98,7 @@ def _same(a, b):
     return a.shape == b.shape and bool((a == b).all())
 
 
-def test_flux2_double_block_matches_stock(env, monkeypatch):
+def test_flux2_double_block_matches_stock(env, monkeypatch, mode):
     torch, f2, _f3, fused, gemm = env
     calls = {"shared": 0, "producer": 0}
     _force_on(monkeypatch, torch, fused, gemm, calls)
@@ -93,13 +112,14 @@ def test_flux2_double_block_matches_stock(env, monkeypatch):
         fused,
         lambda: f2.Flux2TransformerBlock(dim, heads, hd),
         lambda b: b(hs, enc, mod_i, mod_t, image_rotary_emb = rope),
+        mode,
     )
     assert _same(ref, out) and _same(ref, back)
     assert calls["shared"] == 2  # image Q/K/V and text Q/K/V, one quant each
     assert calls["producer"] == 2  # ff and ff_context down projections
 
 
-def test_flux2_single_block_matches_stock(env, monkeypatch):
+def test_flux2_single_block_matches_stock(env, monkeypatch, mode):
     torch, f2, _f3, fused, gemm = env
     calls = {"shared": 0, "producer": 0}
     _force_on(monkeypatch, torch, fused, gemm, calls)
@@ -113,13 +133,14 @@ def test_flux2_single_block_matches_stock(env, monkeypatch):
         fused,
         lambda: f2.Flux2SingleTransformerBlock(dim, heads, hd),
         lambda b: b(hs, enc, mod, image_rotary_emb = rope, split_hidden_states = True),
+        mode,
     )
     assert _same(ref, out) and _same(ref, back)
     assert calls["producer"] == 1  # [attention | SwiGLU] into to_out, read from the producers
 
 
 @pytest.mark.parametrize("kind", ["mode", "single"])
-def test_flux3_blocks_match_stock(env, monkeypatch, kind):
+def test_flux3_blocks_match_stock(env, monkeypatch, kind, mode):
     torch, _f2, f3, fused, gemm = env
     calls = {"shared": 0, "producer": 0}
     _force_on(monkeypatch, torch, fused, gemm, calls)
@@ -136,7 +157,7 @@ def test_flux3_blocks_match_stock(env, monkeypatch, kind):
         rope = _rope(torch, 17, hd)
         build = lambda: f3.Flux3SingleTransformerBlock(dim, heads, hd)  # noqa: E731
         call = lambda b: b(hs, enc, mod, cmod, rope)  # noqa: E731
-    ref, out, back = _run_stock_vs_patched(torch, fused, build, call)
+    ref, out, back = _run_stock_vs_patched(torch, fused, build, call, mode)
     assert _same(ref, out) and _same(ref, back)
     assert calls["shared"] == 1  # Q, K, V and the MLP input: one quant
     assert calls["producer"] == 1
@@ -372,3 +393,42 @@ def test_producer_kill_switch(producer_armed, monkeypatch):
     monkeypatch.delenv(cq.INT8_ROTQUANT_PRODUCER_ENV)
     assert cq._arm_producer(index) is True  # the probe verdict was kept: no second probe
     assert cq.convrot_producer_act_quant(prefix, gate, value, 256, True) is not None
+
+
+def test_swapped_record_is_seen_inside_a_compiled_block():
+    """The shared / producer paths read ``_swapped_rec`` inside the regional compile. Dynamo resolves
+    ``forward.__func__ is _linear_forward`` to False, so the traced check compares the instance forward with the bound
+    method the swap stored: a swapped Linear is seen, a forward replaced after the swap is not."""
+    import types
+
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_int8_gemm as g8
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, x):
+            return x + 1 if g8._swapped_rec(self.proj) is not None else x - 1
+
+    def swapped():
+        block = Block()
+        lin = block.proj
+        lin.__dict__[g8._REC] = ("v2", 256, True, lin.weight, True)
+        lin.__dict__[g8._MARK] = g8._NO_PREV
+        lin.forward = types.MethodType(g8._linear_forward, lin)
+        lin.__dict__[g8._FWD] = lin.forward
+        return block
+
+    x = torch.zeros(1)
+    torch._dynamo.reset()
+    assert torch.compile(swapped(), backend = "eager", fullgraph = True)(x).item() == 1
+    replaced = swapped()
+    replaced.proj.forward = types.MethodType(lambda self, t: t, replaced.proj)
+    torch._dynamo.reset()
+    assert torch.compile(replaced, backend = "eager", fullgraph = True)(x).item() == -1
+    unmarked = swapped()
+    del unmarked.proj.__dict__[g8._FWD]
+    torch._dynamo.reset()
+    assert torch.compile(unmarked, backend = "eager", fullgraph = True)(x).item() == -1
