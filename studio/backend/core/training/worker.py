@@ -2594,7 +2594,8 @@ def _mlx_audio_rows(
         raise ValueError(
             f"Audio dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
         )
-    if image_col is _RESOLVE_IMAGE_COLUMN:
+    train_split = image_col is _RESOLVE_IMAGE_COLUMN
+    if train_split:
         image_col = resolve_audio_vlm_image_column(
             dataset, custom_format_mapping, audio_col, text_col, columns["speaker_col"]
         )
@@ -2619,7 +2620,7 @@ def _mlx_audio_rows(
         if images:
             item["images"] = images
         rows.append(item)
-    if not rows:
+    if not rows and train_split:
         raise ValueError(f"Every transcript in the '{text_col}' column is blank.")
     if blank:
         logger.warning("Skipped %d audio rows with a blank transcript", blank)
@@ -3567,6 +3568,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 eval_dataset, _ = _mlx_audio_rows(
                     eval_dataset, tokenizer, custom_format_mapping, audio_image_col
                 )
+                if not eval_dataset:
+                    _send(
+                        "warning",
+                        message = "The eval dataset is empty after preprocessing, so this run has no evaluation.",
+                    )
+                    eval_dataset = None
+                    eval_enabled = False
             if audio_image_col:
                 image_layout = (
                     _mlx_vlm_resized_image_layout(tokenizer)

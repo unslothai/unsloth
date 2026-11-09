@@ -1046,6 +1046,32 @@ def test_mlx_audio_rows_skip_blank_transcripts(monkeypatch):
     assert [row["messages"][2]["content"][0]["text"] for row in rows] == ["hi"]
     with pytest.raises(ValueError, match = "blank"):
         _worker._mlx_audio_rows(dataset([None, ""]), "processor")
+    assert _worker._mlx_audio_rows(dataset([None, ""]), "processor", None, None) == ([], None)
+
+
+def test_mlx_blank_audio_eval_split_disables_eval_not_training():
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    branch = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If) and ast.unparse(n.test) == "is_dataset_audio"
+    )
+    events = []
+    namespace = {
+        "is_dataset_audio": True,
+        "_send": lambda kind, **kw: events.append((kind, kw)),
+        "_mlx_audio_rows": lambda ds, *a: (ds, None),
+        "tokenizer": None,
+        "custom_format_mapping": None,
+        "dataset": [{"messages": []}],
+        "eval_dataset": [],
+        "eval_enabled": True,
+    }
+    exec(compile(ast.Module(body = [branch], type_ignores = []), "<audio>", "exec"), namespace)
+
+    assert namespace["eval_dataset"] is None and namespace["eval_enabled"] is False
+    assert namespace["dataset"] == [{"messages": []}]
+    assert [kind for kind, _ in events].count("warning") == 1
 
 
 @pytest.mark.parametrize("is_dataset_audio", [True, False])
