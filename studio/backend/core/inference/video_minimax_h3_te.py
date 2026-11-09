@@ -1032,6 +1032,14 @@ def h3_te_read_capture_enabled() -> bool:
     )
 
 
+def _is_compiling() -> bool:
+    try:
+        import torch
+        return bool(torch.compiler.is_compiling())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def install_h3_te_read_capture(
     text_encoder: Any,
     *,
@@ -1062,7 +1070,12 @@ def install_h3_te_read_capture(
 
     @functools.wraps(stock)
     def forward(*args: Any, **kwargs: Any) -> Any:
-        if not kwargs.get("output_hidden_states") or not h3_te_read_capture_enabled():
+        # Hook registration is untraceable: a compiled caller takes the stock forward (same states, no graph break).
+        if (
+            not kwargs.get("output_hidden_states")
+            or _is_compiling()
+            or not h3_te_read_capture_enabled()
+        ):
             return stock(*args, **kwargs)
         captured: list = []
 

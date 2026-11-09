@@ -1091,6 +1091,11 @@ def _stream_stitch(vae: Any) -> bool:
     cls = type(vae)
     known = _STITCH_KNOWN.get(cls)
     if known is None:
+        import torch
+
+        # inspect.getsource is untraceable; _install_tile_batch fills the verdict eagerly, so this is a fallback.
+        if torch.compiler.is_compiling():
+            return False
         import hashlib
         import inspect
 
@@ -1178,6 +1183,7 @@ def _install_tile_batch(vae: Any) -> bool:
     ):
         return False
     vae._decode_clip = types.MethodType(_batched_decode_clip, vae)
+    _stream_stitch(vae)
     return True
 
 
