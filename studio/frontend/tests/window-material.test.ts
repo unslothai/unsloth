@@ -73,7 +73,7 @@ test("turning the wallpaper fade off drops the band behind the composer", () => 
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(
 		css,
-		/\.chat-wallpaper-image\[data-fade="false"\]\) \.thread-bottom-fade \{\n  display: none;/,
+		/\[data-wallpaper-frame-flat\] \.thread-bottom-fade \{\n  display: none;/,
 	);
 });
 
@@ -89,8 +89,8 @@ test("glass strength repairs malformed persisted data", () => {
 
 test("composer outline off also drops the glass ring and bevel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] [^{]*\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\),[^{]*\{\n  --composer-shadow: none;/);
-	assert.match(css, /\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\)::before,[^{]*\{\n  content: none;/);
+	assert.match(css, /html\[data-glass\] [^{]*\[data-wallpaper-outline-off\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel\),[^{]*\{\n  --composer-shadow: none;/);
+	assert.match(css, /\[data-wallpaper-outline-off\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel\)::before,[^{]*\{\n  content: none;/);
 });
 
 test("glass adds no outer shadows, only inset light", () => {
@@ -137,7 +137,7 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	assert.ok(LENS_SCALE.magnify > 1 && LENS_SCALE.shrink < 1);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
-	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
+	assert.match(css, /\[data-wallpaper-outline-off\] \.glass-lens \.glass-lens-rim,/);
 });
 
 test("a glass lens set to off draws no wallpaper copies", () => {
@@ -201,8 +201,8 @@ test("the glass preference survives an account switch, and sign-in waits for the
 
 test("glass over an open conversation dims the image and thickens the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	// Welcome comes from a root flag (welcome.ts), not a :has() walk over the whole thread.
-	const conversation = String.raw`html\[data-glass\]:not\(\[data-chat-welcome\]\) :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\)`;
+	// Welcome comes from a root flag (welcome.ts) and the image from a host flag (host-flags.ts), not a :has().
+	const conversation = String.raw`html\[data-glass\]:not\(\[data-chat-welcome\]\) :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]:not\(\[data-wallpaper-route="page"\]\)`;
 	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
 	assert.match(css, new RegExp(`${conversation} :is\\(\\.unsloth-composer-surface, \\.unsloth-files-panel\\),[^{]*\\{\\n  --glass-composer-boost: 9%;`));
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);

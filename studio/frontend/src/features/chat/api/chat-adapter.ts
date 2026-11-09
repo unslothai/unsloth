@@ -6443,6 +6443,8 @@ export function createOpenAIStreamAdapter(
         if (usageThreadKey !== null) {
           store.setThreadContextUsage(usageThreadKey, usage);
         }
+        // The realtime meter shows this exact count from here until the next pass starts.
+        store.settleLiveGeneration(usageKey);
         if (
           store.activeThreadId === (usageThreadKey ?? activeThreadIdAtRunStart) &&
           store.params.checkpoint === params.checkpoint

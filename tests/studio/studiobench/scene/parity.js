@@ -25,10 +25,10 @@
   const ID_ATTR_RE = /^data-[a-z0-9-]+-id$/;
   const isVolatile = (name) => VOLATILE_ATTRS.has(name) || ID_ATTR_RE.test(name);
 
-  // data-reply-paint is a paint-containment hint toggled by an IntersectionObserver on replies
-  // that are far from the viewport: it carries no content and its presence depends on scroll
-  // position, so it is not thread structure.
-  const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot", "data-reply-paint"]);
+  // data-reply-paint and data-row-distant are containment hints toggled by IntersectionObservers on
+  // messages far from the viewport: they carry no content and their presence depends on scroll
+  // position, so they are not thread structure.
+  const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot", "data-reply-paint", "data-row-distant"]);
 
   // Dropped only from the visible-region digest; see parityVisible.capture().
   const VIRTUALIZATION_ATTRS = new Set(["aria-posinset", "aria-setsize"]);

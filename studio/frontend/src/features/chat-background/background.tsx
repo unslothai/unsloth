@@ -18,6 +18,7 @@ import {
 } from "./model";
 import { useAppliedMaterial } from "./material";
 import { ComposerGlassLenses } from "./lens";
+import { useWallpaperHostFlags } from "./host-flags";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
 
 type Frame = { url: string; value: ChatBackgroundValue };
@@ -282,6 +283,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			setAppWallpaper(null);
 		};
 	}, [shownReady]);
+	useWallpaperHostFlags(host);
 	if (!value || !active) return null;
 	return (
 		<div

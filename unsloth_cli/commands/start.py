@@ -5029,9 +5029,11 @@ def _connect(
     requested = model
     explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
+    unsplit = None
     if model and not explicit_connection:
         repo, variant = _split_repo_variant(model)
         if variant:
+            unsplit = (model, load)
             model = repo
             if not load.gguf_variant:
                 load = load._replace(gguf_variant = variant)
@@ -5054,6 +5056,19 @@ def _connect(
             model = os.path.abspath(os.path.expanduser(model))
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
+        # Studio's own ids can carry a tag (ollama/qwen3:8b), so a loaded model of that exact id wins over the split.
+        if (
+            unsplit
+            and server is None
+            and any(
+                entry.get("loaded") is not False
+                and _model_id_matches(
+                    entry.get("id"), requested, allow_casefold = is_loopback_url(base)
+                )
+                for entry in _loaded_models(base, key)
+            )
+        ):
+            model, load = unsplit
         connection = None if server is not None else _connection_entry(base, key, requested)
         if connection is not None:
             if not connections:

@@ -4651,6 +4651,18 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 
+def test_connect_loaded_ollama_model_keeps_its_tag(fake_studio):
+    fake_studio.state["models"] = [{"id": "ollama/qwen3:8b", "context_length": 40960}]
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "ollama/qwen3:8b"]
+    )
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == []
+    assert "Reusing loaded model: ollama/qwen3:8b\n" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", "ollama/qwen3:8b")
+
+
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
     result = CliRunner().invoke(
         start.start_app, ["claude", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"]

@@ -63,6 +63,7 @@ import {
   WINDOW_CAP_LINES,
 } from "./code-fence-window";
 import { planPrintTokenization } from "./code-fence-print";
+import { ROW_DISTANT_ATTRIBUTE } from "./distant-rows";
 import { createFenceSpeculator } from "./fence-speculation";
 import { highlightWorkerState, streamActive } from "./use-reasoning-highlight";
 import { inputQuietIn, scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
@@ -389,6 +390,7 @@ const scheduleGrammarWarm = (): void => {
 
 const rankGates = (gates: readonly FenceGate[]): number[] => {
   const boxes = new Map<HTMLElement | null, DOMRect>();
+  const rows = new Map<Element, DOMRect>();
   return gates.map((gate) => {
     let box = boxes.get(gate.outer);
     if (box === undefined) {
@@ -397,7 +399,15 @@ const rankGates = (gates: readonly FenceGate[]): number[] => {
         : new DOMRect(0, 0, window.innerWidth, window.innerHeight);
       boxes.set(gate.outer, box);
     }
-    const rect = gate.node.getBoundingClientRect();
+    // Inside a skipped message row the fence has no box: reading it would lay out that row in
+    // every idle pass (Chromium, one forced update per fence). The row's own box ranks it as well.
+    const row = gate.node.closest(`[${ROW_DISTANT_ATTRIBUTE}]`);
+    let rect = row ? rows.get(row) : undefined;
+    if (row && !rect) {
+      rect = row.getBoundingClientRect();
+      rows.set(row, rect);
+    }
+    rect ??= gate.node.getBoundingClientRect();
     if (rect.bottom < box.top) return box.top - rect.bottom;
     if (rect.top > box.bottom) return rect.top - box.bottom;
     return 0;

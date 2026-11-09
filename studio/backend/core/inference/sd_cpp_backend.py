@@ -1332,7 +1332,8 @@ def _note_failed_upgrade(accelerator: str) -> None:
 # fails it. Linux: exits 0 listing CPU only (caught by the device probe). Windows: exits 0xC0000135
 # with no output (caught by exit status). One-way and one-deep; CUDA needs no rung. Vulkan falls
 # to CPU: a CPU-torch host is routed to it, and one that cannot start it must not lose sd.cpp.
-_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu"}
+# "cuda" -> "cpu" is the CPU-torch route's rung only (_cuda_cpu_rung_applies): a CUDA torch has diffusers.
+_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu", "cuda": "cpu"}
 
 
 def _vulkan_cpu_rung_applies() -> bool:
@@ -1343,6 +1344,15 @@ def _vulkan_cpu_rung_applies() -> bool:
         return get_device() == DeviceType.CPU
     except Exception:  # noqa: BLE001
         return True
+
+
+def _cuda_cpu_rung_applies() -> bool:
+    """Only a CPU torch (routed to CUDA beside llama.cpp's) may step a CUDA build down to CPU."""
+    try:
+        from utils.hardware.hardware import DeviceType, get_device
+        return get_device() == DeviceType.CPU
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # The sonames the upstream ROCm archive imports and does not ship.
@@ -1492,6 +1502,9 @@ def sd_cpp_listed_device(
 def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:
     """A CPU-only probe is decisive only if the ROCm runtime is proven absent; else two strikes apply."""
     klass = _accelerator_class_of(accelerator)
+    if klass == "cuda":
+        # llama.cpp's CUDA build already proved the driver, so the sd.cpp build is at fault.
+        return fallback_accelerator_for(klass) == "cpu"
     if klass != "rocm" or not fallback_accelerator_for(klass):
         return False
     return rocm_runtime_resolvable() is False
@@ -1509,6 +1522,8 @@ def fallback_accelerator_for(accelerator: Optional[str]) -> Optional[str]:
         want = _installer_module().accelerator_class(accelerator)
     except Exception:  # noqa: BLE001
         want = (accelerator or "").strip().lower()
+    if want == "cuda" and not _cuda_cpu_rung_applies():
+        return None
     nxt = _ACCELERATOR_FALLBACK.get(want)
     return nxt if nxt and nxt != want else None
 
@@ -1845,6 +1860,8 @@ def note_accelerator_runtime_failure(
     klass = _accelerator_class_of(accelerator)
     if not klass or klass not in _ACCELERATOR_FALLBACK:
         return
+    if klass == "cuda" and not _cuda_cpu_rung_applies():
+        return
     fingerprint = dict(fingerprint) if isinstance(fingerprint, dict) else _accelerator_fingerprint()
     records = _stored_accelerator_runtime_failures()
     records.update({k: v for k, v in _accelerator_runtime_failures.items() if k not in records})
@@ -1965,6 +1982,8 @@ def _applicable_record(klass: str, record: Optional[dict]) -> Optional[dict]:
     record = _record_under_current_rule(klass, record)
     if klass == "vulkan" and not _vulkan_cpu_rung_applies():
         return _decisive_evidence_only(record)
+    if klass == "cuda" and not _cuda_cpu_rung_applies():
+        return None
     return record
 
 
@@ -3738,10 +3757,12 @@ class SdCppDiffusionBackend:
                 if run_accelerator is None and binary:
                     run_accelerator = sd_cpp_listed_device(binary)[0]
                 klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
-                # A CPU torch running the Vulkan build renders on a card torch never measured, so
+                # A CPU torch running a GPU build renders on a card torch never measured, so
                 # auto offloads.
-                vulkan = torch_device == "cpu" and off_torch is None and klass == "vulkan"
-                placed = "vulkan" if vulkan else torch_device
+                unmeasured = (
+                    torch_device == "cpu" and off_torch is None and klass in ("vulkan", "cuda")
+                )
+                placed = klass if unmeasured else torch_device
                 # The fallback ladder can leave a CUDA / XPU torch running the CPU build. Not
                 # MPS: the macOS bundle is recorded as cpu and still renders on Metal.
                 if klass == "cpu" and off_torch is None and torch_device in ("cuda", "xpu"):
@@ -3750,7 +3771,7 @@ class SdCppDiffusionBackend:
                 if placed == "cpu":
                     return placed, ()
                 return placed, tuple(
-                    offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan))
+                    offload_flags(_memory_policy(memory_mode, cpu_offload or unmeasured))
                 )
 
             device, offload = _placement(*_running())

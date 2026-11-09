@@ -229,9 +229,13 @@ test("the checklist shows the official install command for the backend's OS", ()
   assert.equal(claudeAgent.claudeAgentInstallCommand(undefined), claudeAgent.claudeAgentInstallCommand("unix"));
   assert.equal(
     claudeAgent.claudeAgentInstallCommand("windows"),
+    // lint-allow: AV005 asserts the displayed install command
     "irm https://claude.ai/install.ps1 | iex",
   );
   assert.equal(claudeAgent.CLAUDE_CODE_NPM_INSTALL, "npm install -g @anthropic-ai/claude-code");
+  assert.equal(claudeAgent.claudeAgentNpmInstall("unix"), claudeAgent.CLAUDE_CODE_NPM_INSTALL);
+  // npm's claude.cmd shim is refused by the Agent SDK on Windows.
+  assert.equal(claudeAgent.claudeAgentNpmInstall("windows"), null);
   assert.equal(
     claudeAgent.claudeAgentSdkCommand(
       'Install the Claude Agent SDK in the Unsloth environment: uv pip install --python "C:/py" "claude-agent-sdk>=0.2.178"',

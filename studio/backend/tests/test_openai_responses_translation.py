@@ -265,6 +265,60 @@ def test_responses_translates_image_parts(monkeypatch):
     assert "max_output_tokens" not in captured["body"]
 
 
+def test_responses_assistant_list_content_is_sent_as_output_text(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_openai_responses(
+            messages = [
+                {"role": "user", "content": "Pick a colour."},
+                {"role": "assistant", "content": [{"type": "text", "text": "Blue."}, image]},
+                {"role": "user", "content": "Check the weather."},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Looking it up."}, image],
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "Sunny"},
+                {"role": "user", "content": "Thanks."},
+            ],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = None,
+            enable_thinking = None,
+            reasoning_effort = None,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    assistant_items = [i for i in captured["body"]["input"] if i.get("role") == "assistant"]
+    assert [i["content"] for i in assistant_items] == [
+        [{"type": "output_text", "text": "Blue."}],
+        [{"type": "output_text", "text": "Looking it up."}],
+    ]
+
+
 def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         events = [

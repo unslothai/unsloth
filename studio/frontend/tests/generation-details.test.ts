@@ -413,7 +413,7 @@ test("the live line follows the branch picker, so its growing text never moves t
 test("the live line gates on the preference before any assistant-ui selector", () => {
   const line = readSrc("components/assistant-ui/live-generation-line.tsx");
   const gate = line.slice(line.indexOf("export const LiveGenerationLine"), line.indexOf("const RunningGate"));
-  assert.match(gate, /return enabled \? <RunningGate \/> : null;/);
+  assert.match(gate, /return details \|\| realtime \? <RunningGate realtime=\{realtime\} \/> : null;/);
   assert.doesNotMatch(gate, /useAuiState/);
 });
 

@@ -629,7 +629,7 @@ export function ClosingScreen() {
     // would make this overlay click-through onto the hidden dialog.
     <div
       data-blocking-screen=""
-      className="pointer-events-auto fixed inset-0 z-[9999]"
+      className="pointer-events-auto modal-pe-live fixed inset-0 z-[9999]"
     >
       <StartupSurface>
         <div className="flex h-full w-full flex-col items-center justify-center text-center">

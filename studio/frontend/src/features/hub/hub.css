@@ -1131,23 +1131,24 @@
     display: none;
   }
 
-  .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) {
+  /* data-badge-row: a p/div holding two or more linked images, set by lib/badge-rows.ts. */
+  .hub-readme-prose :is(p, div)[data-badge-row] {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: calc(0.5rem * var(--ui-space-scale, 1));
   }
 
-  .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br {
+  .hub-readme-prose :is(p, div)[data-badge-row] > br {
     display: none;
   }
 
-  .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > a {
+  .hub-readme-prose :is(p, div)[data-badge-row] > a {
     display: inline-flex;
     align-items: center;
   }
 
-  .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) img {
+  .hub-readme-prose :is(p, div)[data-badge-row] img {
     margin-block: 0;
   }
 

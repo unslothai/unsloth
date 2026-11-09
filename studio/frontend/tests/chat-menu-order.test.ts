@@ -13,6 +13,7 @@ const {
   PLUS_MENU_PINS_STORAGE_KEY,
   keepSavedSlot,
   normalizePlusMenuOrder,
+  plusMenuAtDefaults,
   splitPlusMenuItems,
   usePlusMenuPrefsStore,
 } = await import("../src/features/chat/stores/plus-menu-prefs-store.ts");
@@ -121,4 +122,11 @@ test("moving another row keeps Deep research where it was in More, not at the to
   // A saved slot past the end of the list lands at its end; an order without it puts it first.
   assert.deepEqual(keepSavedSlot(["mcp"], ["mcp", "skills", "deepResearch"], "deepResearch"), ["mcp", "deepResearch"]);
   assert.deepEqual(keepSavedSlot(["mcp"], ["mcp"], "deepResearch"), ["deepResearch", "mcp"]);
+});
+
+test("Reset to default greys out only while the menu is at its defaults", () => {
+  const initial = usePlusMenuPrefsStore.getInitialState();
+  assert.equal(plusMenuAtDefaults(initial.pins, initial.order), true);
+  assert.equal(plusMenuAtDefaults({ ...initial.pins, mcp: !initial.pins.mcp }, initial.order), false);
+  assert.equal(plusMenuAtDefaults(initial.pins, [...initial.order].reverse()), false);
 });

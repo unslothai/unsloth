@@ -30,8 +30,6 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** Owner-only. Experimental video generation on a CPU-only host (enabling asks first, with the host's
- *  RAM against the minimum), and the experimental Claude Agent connection. */
 export function DeveloperModeSection() {
   const t = useT();
   const [settings, setSettings] = useState<DeveloperModeSettings | null>(null);
@@ -67,12 +65,10 @@ export function DeveloperModeSection() {
       const next = await updateDeveloperModeSettings(patch);
       setSettings(next);
       if (patch.videoCpu !== undefined) {
-        // Both gates are cached: the sidebar's Video row reads the /api/health verdict and the Video
-        // page /api/system/hardware. Update the one and re-read the other, so neither needs a reload.
+        // Sidebar reads /api/health, Video page /api/system/hardware: update one, re-read the other.
         usePlatformStore.setState({ videoCpuOptIn: next.videoCpu });
         void refreshHardwareInfo();
       }
-      // Saved Claude Agent connections leave or rejoin the pickers.
       if (patch.claudeAgent !== undefined) void bootstrapPersistedCredentials();
     } catch (err) {
       setError(

@@ -44,6 +44,11 @@ on:
       - 'tests/studio/playwright_long_thread_gate.py'
       - 'tests/studio/_css_culprit.py'
       - 'tests/studio/test_css_culprit.py'
+      - 'tests/studio/_area_matrix.py'
+      - 'tests/studio/test_area_matrix.py'
+      - 'tests/studio/_has_lint.py'
+      - 'tests/studio/test_has_lint.py'
+      - 'tests/studio/has_subject_allowlist.txt'
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
@@ -96,6 +101,11 @@ on:
       - 'tests/studio/playwright_long_thread_gate.py'
       - 'tests/studio/_css_culprit.py'
       - 'tests/studio/test_css_culprit.py'
+      - 'tests/studio/_area_matrix.py'
+      - 'tests/studio/test_area_matrix.py'
+      - 'tests/studio/_has_lint.py'
+      - 'tests/studio/test_has_lint.py'
+      - 'tests/studio/has_subject_allowlist.txt'
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
@@ -212,6 +222,13 @@ jobs:
             bash .github/scripts/retry-with-apt-lock.sh python3 -m playwright install-deps chromium
           fi
 
+      # Also runs the area matrix (Linux only, tests/studio/_area_matrix.py): the real chat page from
+      # the same build with its API answered in-process, every interactive area (menus, dialogs,
+      # pickers, panes, sidebar, message controls, typing, scrolling) under the default appearance and
+      # every appearance mode, at 40 and 200 turns. Fails when an area restyles more as the chat grows
+      # or a mode makes an area cost over 4x the default, and when a popup trigger is not measured.
+      # First, a static lint of the built CSS fails on a new non-subject :has() rule (`X:has(...) Y`),
+      # which restyles the whole thread whenever an ancestor of it changes (tests/studio/_has_lint.py).
       - name: Browser gate for long-chat typing cost
         working-directory: ${{ github.workspace }}
         shell: bash
@@ -404,7 +421,9 @@ jobs:
             tests/studio/test_heavy_thread_measurement_integrity.py \
             tests/studio/test_heavy_thread_gap_contract.py \
             tests/studio/test_code_block_flicker_contract.py \
-            tests/studio/test_css_culprit.py -q
+            tests/studio/test_css_culprit.py \
+            tests/studio/test_area_matrix.py \
+            tests/studio/test_has_lint.py -q
 
       # Keep data settings separate from the shorter checks. Each group owns its cache.
       # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a

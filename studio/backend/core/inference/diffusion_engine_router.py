@@ -351,15 +351,41 @@ def _nvidia_adapter_present() -> bool:
     return False
 
 
+_CUDA_SD_CPP_PLATFORMS = frozenset({("linux", "x86_64"), ("win32", "amd64")})
+
+
+def _cuda_gpu_for_cpu_torch() -> bool:
+    """No GPU torch beside an NVIDIA card llama.cpp's CUDA build runs on (proves the driver, #16803)."""
+    # Gated with the Vulkan route: the CPU rung below a failed CUDA build is the same ladder.
+    if not sd_cpp_vulkan_fallback_enabled():
+        return False
+    if (sys.platform, platform.machine().lower()) not in _CUDA_SD_CPP_PLATFORMS:
+        return False
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if mask is not None and mask.strip() in ("", "-1"):
+        return False
+    from core.inference.sd_cpp_engine import llama_cpp_cuda_major
+
+    if not llama_cpp_cuda_major():
+        return False
+    inventory = _physical_inventory()
+    return any(
+        isinstance(device, dict) and device.get("vendor") == "nvidia"
+        for device in inventory.get("devices") or ()
+    )
+
+
 def image_install_accelerator(backend: str) -> str:
     """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's,
-    else Vulkan for a CPU torch beside an AMD or Arc GPU. Video keeps ``_install_accelerator_for``,
-    since torch places its loads."""
+    else Vulkan for a CPU torch beside an AMD or Arc GPU, or CUDA beside an NVIDIA card llama.cpp
+    already renders on. Video keeps ``_install_accelerator_for``, since torch places its loads."""
     off_torch = off_torch_sd_cpp_device(backend)
     if off_torch is not None:
         return off_torch.accelerator
     if backend == "cpu" and _vulkan_gpu_for_cpu_torch():
         return "vulkan"
+    if backend == "cpu" and _cuda_gpu_for_cpu_torch():
+        return "cuda"
     return _install_accelerator_for(backend)
 
 
@@ -903,37 +929,58 @@ def select_and_activate_engine(
                 return None
             return usable_or_recorded_failure(candidate, install_accelerator, selected_card)
 
-        server_binary = _accept(
-            ensure_sd_server_binary(
-                allow_install = _install_allowed(),
-                accelerator = install_accelerator,
+        # A CPU torch has nothing else on the card: a GPU build that cannot start steps down now.
+        for _rung in range(2):
+            server_binary = _accept(
+                ensure_sd_server_binary(
+                    allow_install = _install_allowed(),
+                    accelerator = install_accelerator,
+                )
             )
-        )
-        unlaunchable_server: Optional[str] = None
-        if server_binary and not _server_binary_runnable(server_binary):
-            logger.warning(
-                "sd-server at %s is present but not runnable; not using it", server_binary
+            unlaunchable_server: Optional[str] = None
+            if server_binary and not _server_binary_runnable(server_binary):
+                logger.warning(
+                    "sd-server at %s is present but not runnable; not using it", server_binary
+                )
+                # Held for the single recorder below.
+                unlaunchable_server = server_binary
+                server_binary = None
+            # Probe runnability first, else a non-runnable binary fails inside the background load.
+            binary = _accept(
+                ensure_sd_cpp_binary(
+                    allow_install = _install_allowed() and server_binary is None,
+                    accelerator = install_accelerator,
+                )
             )
-            # Held for the single recorder below.
-            unlaunchable_server = server_binary
-            server_binary = None
-        # Probe runnability first, else a non-runnable binary fails inside the background load.
-        binary = _accept(
-            ensure_sd_cpp_binary(
-                allow_install = _install_allowed() and server_binary is None,
-                accelerator = install_accelerator,
-            )
-        )
-        unlaunchable_cli: Optional[str] = None
-        if binary and SdCppEngine(binary = binary).version() is None:
-            logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
-            unlaunchable_cli = binary
-            binary = None
-        if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):
-            # One strike per bundle, only when neither executable runs.
-            note_unlaunchable_accelerator_build(
-                unlaunchable_cli or unlaunchable_server, card = selected_card
-            )
+            unlaunchable_cli: Optional[str] = None
+            if binary and SdCppEngine(binary = binary).version() is None:
+                logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
+                unlaunchable_cli = binary
+                binary = None
+            if (
+                binary is None
+                and server_binary is None
+                and (unlaunchable_cli or unlaunchable_server)
+            ):
+                # One strike per bundle, only when neither executable runs.
+                note_unlaunchable_accelerator_build(
+                    unlaunchable_cli or unlaunchable_server, card = selected_card
+                )
+                stepped = preferred_accelerator(image_install_accelerator(backend), selected_card)
+                if (
+                    backend == "cpu"
+                    and off_torch is None
+                    and _rung == 0
+                    and stepped != install_accelerator
+                ):
+                    logger.warning(
+                        "the %s sd.cpp build cannot start here; using the %s build",
+                        install_accelerator,
+                        stepped,
+                    )
+                    install_accelerator = stepped
+                    continue
+            break
         # Runnable is not capable: an old build is never upgraded and fails late on new families.
         for name, candidate in (("sd-server", server_binary), ("sd-cli", binary)):
             if candidate and not sd_cpp_binary_runs_family(candidate, fam):

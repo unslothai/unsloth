@@ -593,6 +593,11 @@ def begin(
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = inductor_dir
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
+    try:
+        from .diffusion_aot_cache import pin_autotune_key
+        pin_autotune_key(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, f"compile-cache: autotune key not pinned: {exc}")
 
     # The manifest is the commit point and only names a fully written bundle.
     published = _read_manifest(ctx.manifest_path)

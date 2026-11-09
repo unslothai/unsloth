@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A ToolLoopTransport holding one live Claude Code session for the whole loop. Studio's tools are an
-in-process MCP server whose handlers wait until the loop has run each call and sent its result back."""
+"""One live Claude Code session per tool loop; Studio's tools are an in-process MCP server whose handlers wait for the loop's result."""
 
 from __future__ import annotations
 
@@ -11,7 +10,6 @@ import contextlib
 import hashlib
 import json
 import re
-import shutil
 import threading
 import time
 import uuid
@@ -32,9 +30,12 @@ from core.inference.claude_agent import (
     _user_blocks,
     build_prompt,
     clamp_effort,
+    cli_version,
     ensure_catalog,
     failure,
+    find_cli,
     image_url,
+    outdated_message,
     remember_models,
     thinking_config,
 )
@@ -226,9 +227,13 @@ class ClaudeAgentTransport:
         if sdk is None:
             yield _error_sse_line(503, SDK_MISSING, PROVIDER_TYPE)
             return
-        cli = shutil.which("claude")
+        cli = find_cli()
         if cli is None:
             yield _error_sse_line(503, CLI_MISSING, PROVIDER_TYPE)
+            return
+        outdated = outdated_message(await cli_version(cli))
+        if outdated:
+            yield _error_sse_line(503, outdated, PROVIDER_TYPE)
             return
         max_tokens = self._max_tokens
         if self._fitter is not None:

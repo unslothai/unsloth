@@ -2537,7 +2537,7 @@ export const BrowserPanel = memo(function BrowserPanel({
         }
       }}
       className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted",
+        "side-pane-lock-cover relative flex h-full min-h-0 flex-col overflow-hidden bg-muted",
         floating ? "rounded-[inherit]" : "pt-[var(--studio-content-top-inset,0px)]",
         documentShown
           ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"

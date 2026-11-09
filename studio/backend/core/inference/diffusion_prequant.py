@@ -2565,6 +2565,7 @@ def load_prequantized_transformer(
             scheme,
             metadata.get("family") or family,
             min_features = int(metadata.get("min_features") or min_features or 512),
+            device = device,
             logger = logger,
         )
 

@@ -99,7 +99,9 @@ permissions:
 jobs:
   ui-smoke:
     name: Chat UI Tests (${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not ubuntu-latest: on the ubuntu-26.04 image ubuntu-latest now resolves to, Playwright's WebKit
+    # exits at launch (TargetClosedError) even after install-deps. Move back once it starts there.
+    runs-on: ubuntu-24.04
     # Do not tighten: a timeout is for hangs, and runner stalls would turn into red builds.
     timeout-minutes: 30
     strategy:
@@ -787,7 +789,9 @@ jobs:
 
   ui-indicator:
     name: Loaded-models indicator (cross-browser)
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not ubuntu-latest: on the ubuntu-26.04 image ubuntu-latest now resolves to, Playwright's WebKit
+    # exits at launch (TargetClosedError) even after install-deps. Move back once it starts there.
+    runs-on: ubuntu-24.04
     env:
       # A release published mid-run puts an update card over the controls the scripts click.
       UNSLOTH_DISABLE_UPDATE_CHECK: '1'

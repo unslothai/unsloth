@@ -6,13 +6,18 @@
 import asyncio
 import importlib
 import json
+import os
+import re
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 from utils.paths.storage_roots import cache_root
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 PROVIDER_TYPE = "claude_agent"
 SDK_MISSING = (
@@ -21,6 +26,12 @@ SDK_MISSING = (
 )
 CLI_MISSING = "Install Claude Code, then run `claude` in a terminal and sign in."
 SIGN_IN = "Run `claude` in a terminal and sign in."
+# verbatim_prompts needs it: older CLIs only log a warning, then run "/" commands typed in chat.
+MIN_CLI_VERSION = (2, 1, 248)
+CLI_OUTDATED = (
+    "Claude Code {} is too old for Studio. Run `claude update` to get 2.1.248 or later, "
+    "then check again."
+)
 TOOL_SERVER = "studio"
 TOOL_PREFIX = f"mcp__{TOOL_SERVER}__"
 # Used when Claude Code cannot report a model's window; every current Claude model has at least this.
@@ -35,7 +46,6 @@ _RUNTIME_NOTE_TOOLS = (
     "Your only tools are Unsloth Studio's, named mcp__studio__*; Studio may ask the user "
     "before one runs. Mention this only when asked.</runtime_info>"
 )
-# Claude Code features Studio does not show or control.
 _ISOLATION_ENV = {
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
@@ -55,6 +65,55 @@ _IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 _SIGNED_OUT = ("not logged in", "/login", "oauth token has expired", "invalid api key")
 
 _catalog: dict[str, Any] = {"version": None, "models": {}}
+_cli_versions: dict[tuple[str, float], Optional[str]] = {}
+
+
+def _read_cli_version(cli: str) -> Optional[str]:
+    try:
+        key = (cli, os.path.getmtime(cli))
+    except OSError:
+        key = (cli, 0.0)
+    if key not in _cli_versions:
+        try:
+            out = subprocess.run(
+                [cli, "-v"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 15,
+                **windows_hidden_subprocess_kwargs(),
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        match = re.match(r"\s*(\d+\.\d+\.\d+)", out or "")
+        _cli_versions[key] = match.group(1) if match else None
+    return _cli_versions[key]
+
+
+def find_cli() -> Optional[str]:
+    cli = shutil.which("claude")
+    if cli is None or sys.platform != "win32" or not cli.lower().endswith((".cmd", ".bat")):
+        return cli
+    # The SDK refuses .cmd/.bat shims on Windows, so run the claude.exe behind npm's shim or the native install.
+    for exe in (
+        Path(cli).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe",
+        Path.home() / ".local" / "bin" / "claude.exe",
+    ):
+        if exe.is_file():
+            return str(exe)
+    return cli
+
+
+async def cli_version(cli: str) -> Optional[str]:
+    # Initialize reports claude_code_version only on newer CLIs, so ask `claude -v`.
+    return await asyncio.to_thread(_read_cli_version, cli)
+
+
+def outdated_message(version: Optional[str]) -> Optional[str]:
+    if version and tuple(int(part) for part in version.split(".")) < MIN_CLI_VERSION:
+        return CLI_OUTDATED.format(version)
+    return None
 
 
 def _sdk():
@@ -213,9 +272,14 @@ async def claude_agent_status() -> dict[str, Any]:
     if sdk is None:
         status.update(message = SDK_MISSING, problem = "sdk_missing")
         return status
-    cli = shutil.which("claude")
+    cli = find_cli()
     if cli is None:
         status.update(message = CLI_MISSING, problem = "cli_missing")
+        return status
+    version = await cli_version(cli)
+    outdated = outdated_message(version)
+    if outdated:
+        status.update(version = version, message = outdated, problem = "failed")
         return status
     try:
         info = await _probe(sdk, cli, discover = [])
@@ -223,7 +287,7 @@ async def claude_agent_status() -> dict[str, Any]:
         status.update(message = f"Claude Code did not start: {exc or 'timed out'}", problem = "failed")
         return status
     account = info.get("account") or {}
-    status["version"] = info.get("claude_code_version")
+    status["version"] = info.get("claude_code_version") or version
     status["models"] = [_model_object(entry) for entry in _catalog["models"].values()]
     status["ready"] = account.get("tokenSource", "none") != "none" or bool(
         account.get("apiKeySource") or account.get("subscriptionType")
@@ -245,7 +309,7 @@ async def claude_agent_context_window(model: str) -> int:
     entry = _model_entry(model)
     if entry is None or entry.get("context_window") is None:
         sdk = _sdk()
-        cli = shutil.which("claude")
+        cli = find_cli()
         if sdk is not None and cli is not None:
             try:
                 await _probe(sdk, cli, discover = [model])
@@ -352,11 +416,24 @@ def build_prompt(
     if not blocks:
         return "\n\n".join(system), None
     history = []
+    earlier_images = []
     for message in turns[:last]:
         text = _history_text(message)
         if text:
             role = message["role"]
             history.append(text if role == "tool" else f"<{role}>\n{text}\n</{role}>")
+        content = message.get("content")
+        for part in content if isinstance(content, list) else []:
+            if (url := image_url(part)) is not None:
+                earlier_images.append(image_block(url))
+    if earlier_images:
+        # Each request is a new Claude Code session, so earlier images ride in this turn.
+        blocks = [
+            {"type": "text", "text": "Images attached earlier in this conversation, oldest first:"},
+            *earlier_images,
+            {"type": "text", "text": "The new message:"},
+            *blocks,
+        ]
     if history:
         body = "\n".join(history)
         system.append(

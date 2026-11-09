@@ -173,10 +173,27 @@ def test_mlx_repo_lists_its_precision_folders_as_variants(monkeypatch):
     assert answer.cache_authorized is False
 
 
+@pytest.mark.parametrize(
+    "repo, tags, library",
+    [
+        (_REPO, ("safetensors",), None),
+        ("mlx-community/Qwen3.8-27B-4bit", ("safetensors",), None),
+        ("org/Qwen3.8-27B-4bit", ("safetensors", "mlx"), "transformers"),
+        ("org/Qwen3.8-27B-4bit", ("safetensors",), "mlx"),
+    ],
+)
+def test_a_repo_named_or_tagged_mlx_lists_its_precision_folders(monkeypatch, repo, tags, library):
+    _no_gguf_rows(monkeypatch)
+    _fake_hub(monkeypatch, tags = tags, library = library)
+    answer = asyncio.run(gguf_variants.get_gguf_variants_answer(repo))
+    assert answer.response.variant_format == "mlx"
+
+
 def test_non_mlx_repo_and_repo_without_folders_get_no_mlx_listing(monkeypatch):
     empty = _no_gguf_rows(monkeypatch)
     _fake_hub(monkeypatch, tags = ("safetensors",), library = "transformers")
-    assert asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)) is empty
+    plain = "orcarouter/Qwen3.8-27B-Uncensored"
+    assert asyncio.run(gguf_variants.get_gguf_variants_answer(plain)) is empty
     _fake_hub(monkeypatch, sizes = _folder("", [GB]))
     assert asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)) is empty
 

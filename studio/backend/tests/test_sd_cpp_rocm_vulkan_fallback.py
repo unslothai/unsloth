@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import threading
 import types
 from pathlib import Path
@@ -316,8 +317,12 @@ def test_clearing_the_note_restores_the_host_accelerator(fake_settings):
     "accelerator,expected",
     [("rocm", "vulkan"), ("vulkan", "cpu"), ("cuda", None), ("cpu", None), ("auto", None)],
 )
-def test_only_rocm_and_vulkan_have_a_rung_below_them(accelerator, expected):
+def test_only_rocm_and_vulkan_have_a_rung_below_them(accelerator, expected, monkeypatch):
+    from core.inference import sd_cpp_backend
     from core.inference.sd_cpp_backend import fallback_accelerator_for
+
+    # A CUDA torch: CUDA's CPU rung belongs to the CPU-torch route only (#16803).
+    monkeypatch.setattr(sd_cpp_backend, "_cuda_cpu_rung_applies", lambda: False, raising = False)
     assert fallback_accelerator_for(accelerator) == expected
 
 
@@ -2538,8 +2543,12 @@ class TestRocmRuntimePreflight:
         monkeypatch.setattr(
             sd_backend, "rocm_runtime_resolvable", lambda: called.append(1) or False
         )
+        monkeypatch.setattr(sd_backend, "_cuda_cpu_rung_applies", lambda: False)
         assert sd_backend.accelerator_probe_failure_is_decisive("cuda") is False
         assert sd_backend.accelerator_probe_failure_is_decisive("vulkan") is False
+        # The CPU-torch CUDA route (#16803) is decided without the ROCm preflight too.
+        monkeypatch.setattr(sd_backend, "_cuda_cpu_rung_applies", lambda: True)
+        assert sd_backend.accelerator_probe_failure_is_decisive("cuda") is True
         assert called == []
 
     def test_the_off_switch_beats_the_preflight(self, monkeypatch):
@@ -2840,10 +2849,11 @@ class TestTheRouterRecordsTheBundleNotTheServer:
         )
 
     def test_a_bundle_where_nothing_runs_is_still_recorded(self):
-        source = self._selection_source()
-        assert (
-            "if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):"
-            in source
+        source = " ".join(self._selection_source().split())
+        assert re.search(
+            r"if \(? ?binary is None and server_binary is None and "
+            r"\(unlaunchable_cli or unlaunchable_server\)",
+            source,
         )
 
 

@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Claude Agent inside Studio: the Developer mode toggle, the SDK installer, owner-only access,
-hidden connections while off, ignored routing fields, media pickers and scheduled tasks."""
-
 import asyncio
 import subprocess
 import sys
@@ -126,9 +123,6 @@ def _create(client, **extra):
     )
 
 
-# -- 1. Developer mode toggle -----------------------------------------------------------------
-
-
 def test_the_saved_setting_turns_claude_agent_on(store):
     assert claude_agent_enabled() is False
     with settings_client(OWNER) as client:
@@ -173,9 +167,6 @@ def test_toggling_one_switch_leaves_the_other(store):
 
 def test_the_off_message_points_at_the_toggle():
     assert "Developer mode" in CLAUDE_AGENT_OFF and ENV in CLAUDE_AGENT_OFF
-
-
-# -- 2. SDK installer ---------------------------------------------------------------------------
 
 
 def test_the_installer_targets_studio_python_with_constraints(monkeypatch, tmp_path):
@@ -323,9 +314,6 @@ def test_the_install_route_is_owner_only(monkeypatch, isolated):
         assert client.post("/providers/claude-agent/install-sdk").status_code == 403
 
 
-# -- 3. managed accounts --------------------------------------------------------------------------
-
-
 def test_a_managed_account_never_sees_or_creates_claude_agent(isolated):
     with providers_client(ALICE) as client:
         registry = client.get("/providers/registry").json()
@@ -366,9 +354,6 @@ def test_a_managed_account_never_sees_it_even_while_off(monkeypatch, isolated):
     assert "claude_agent" not in {row["provider_type"] for row in registry}
 
 
-# -- 4. hidden while off ----------------------------------------------------------------------------
-
-
 def test_the_owner_is_offered_it_while_off_but_cannot_use_it(monkeypatch, isolated):
     monkeypatch.setenv(ENV, "0")
     with providers_client(OWNER) as client:
@@ -404,9 +389,6 @@ def test_saved_connections_hide_while_off_and_come_back(monkeypatch, isolated):
         shown = client.get("/providers/").json()
     assert [row["provider_type"] for row in hidden] == []
     assert [row["id"] for row in shown] == [created.json()["id"]]
-
-
-# -- 5. unused routing fields ------------------------------------------------------------------------
 
 
 def test_create_and_update_drop_endpoint_key_and_headers(isolated):
@@ -447,9 +429,6 @@ def test_models_route_lists_claude_agent_models_with_display_names(monkeypatch, 
     assert listed.status_code == 200, listed.text
     assert listed.json()[0]["display_name"] == "Opus 5.5"
     assert listed.json()[0]["context_length"] == 1_000_000
-
-
-# -- 6. voice and image pickers -------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -495,7 +474,87 @@ def test_transcription_refuses_a_claude_agent_connection(claude_agent_row):
     assert "chat only" in refused.value.detail
 
 
-# -- 11. scheduled tasks -------------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "account, key_name, status",
+    [
+        (OWNER, "deep-research workflow", 400),
+        (OWNER, "data-recipe workflow", 403),
+        (ALICE, "deep-research workflow", 403),
+    ],
+)
+def test_only_the_owners_deep_research_key_passes_the_owner_gate(
+    monkeypatch, claude_agent_row, account, key_name, status
+):
+    from models.inference import ChatCompletionRequest
+
+    inference = claude_agent_row
+    monkeypatch.setenv(ENV, "1")
+    monkeypatch.setattr(inference.auth_storage, "is_internal_api_key", lambda raw: True)
+    monkeypatch.setattr(inference.auth_storage, "internal_api_key_name", lambda raw: key_name)
+    request = SimpleNamespace(
+        headers = {"authorization": "Bearer sk-unsloth-deadbeefdeadbeef"},
+        state = SimpleNamespace(skip_api_monitor = True),
+    )
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        provider_id = "c" * 16,
+        external_model = "opus",
+        stream = False,
+    )
+    token = bind_account(account)
+    try:
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(
+                inference._proxy_to_external_provider(payload, request, current_subject = "t")
+            )
+    finally:
+        reset_account(token)
+    # Past the owner gate, the next refusal is the stream=true check.
+    assert refused.value.status_code == status, refused.value.detail
+
+
+@pytest.mark.parametrize("via_api_key, refused", [(True, True), (False, False)])
+def test_deep_research_on_claude_agent_cannot_start_from_an_api_key(
+    monkeypatch, via_api_key, refused
+):
+    # Else the worker's own Deep Research key carries an API caller past the owner gate.
+    from routes import inference
+    from routes import research_runs as research_routes
+
+    monkeypatch.setattr(inference, "_request_has_api_key", lambda request: via_api_key)
+    monkeypatch.setattr(
+        research_routes.providers_db,
+        "get_provider",
+        lambda _id: {"provider_type": "claude_agent", "is_enabled": True, "api_type": None},
+    )
+    monkeypatch.setattr(
+        research_routes.account_access, "require_connection_model_allowed", lambda *a: None
+    )
+    payload = research_routes.CreateResearchRun(
+        threadId = "t1",
+        userMessageId = "u1",
+        inferenceRequest = {
+            "model": "opus",
+            "providerId": "c" * 16,
+            "providerType": "claude_agent",
+            "externalModel": "opus",
+        },
+    )
+    request = SimpleNamespace(headers = {}, state = SimpleNamespace())
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            research_routes._sanitize_config(payload, {"modelId": "opus"}, request)
+        assert error.value.status_code == 403
+        run = {"config": {"inferenceRequest": {"providerType": "claude_agent"}}}
+        with pytest.raises(HTTPException):
+            research_routes._refuse_claude_agent_via_api_key(
+                request, research_routes._run_provider_type(run)
+            )
+    else:
+        try:
+            research_routes._sanitize_config(payload, {"modelId": "opus"}, request)
+        except HTTPException as error:
+            assert error.status_code != 403, error.detail
 
 
 def test_a_scheduled_run_with_claude_agent_off_fails_with_the_reason(monkeypatch):
