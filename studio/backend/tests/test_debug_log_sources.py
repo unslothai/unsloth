@@ -118,9 +118,8 @@ def test_the_running_session_is_marked_current():
 
 
 def test_a_retained_log_whose_pid_merely_starts_with_ours_is_not_current():
-    """Retention keeps the newest 20 session logs, so a file from pid 12345 can
-    still be sitting there while we are pid 1234. A substring test called both
-    of them the running session and could hand the picker the wrong default."""
+    """Retention keeps 20 session logs, so pid 12345 can sit beside our pid 1234; a substring match
+    wrongly marks both as current."""
     ours = _seed("server", f"server-20260813-101012-pid{os.getpid()}.log")
     other = _seed("server", f"server-20260101-090000-pid{os.getpid()}9.log")
     current = {s.label: s.is_current for s in debug_log_sources.list_sources()}
@@ -138,9 +137,8 @@ def test_only_the_newest_files_per_family_are_offered():
 
 
 def test_a_runtime_log_under_the_other_root_is_still_found(monkeypatch, tmp_path):
-    """studio_root() infers a root from the installer venv and the llama runner
-    does not, so on such an install the two disagree. Scanning one root only
-    would lose exactly the logs a failed model load writes."""
+    """studio_root() infers a root from the installer venv but the llama runner does not, so the two
+    can disagree; scanning one root loses failed-load logs."""
     other_home = tmp_path / "legacy-home"
     (other_home / "logs" / "llama-server").mkdir(parents = True)
     stray = other_home / "logs" / "llama-server" / "llama-1765009999-port-9099.log"
@@ -165,8 +163,7 @@ def test_the_default_source_prefers_the_running_session():
 
 
 def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
-    """Windows extended-length prefixes can differ between directory and file, so pathlib sees two
-    drives."""
+    """Extended-length prefixes can differ between dir and file, so pathlib sees two drives."""
     import ntpath
 
     monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
@@ -181,8 +178,7 @@ def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
 
 
 def test_a_case_insensitive_volume_does_not_list_a_file_twice(monkeypatch):
-    """On APFS or NTFS a home reached as /Users/Bob and as /Users/bob is one
-    directory. Case-sensitive dedup offered every log twice, under two ids."""
+    """On APFS/NTFS, /Users/Bob equals /Users/bob; case-sensitive dedup listed each log twice."""
     import ntpath
 
     monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
@@ -214,9 +210,8 @@ DESKTOP_FIXTURES = [
     "family,subdir,name", DESKTOP_FIXTURES, ids = [f[2] for f in DESKTOP_FIXTURES]
 )
 def test_the_desktop_shell_logs_are_offered(family, subdir, name):
-    """The Tauri shell writes these beside the Python logs, and backend-*.log is
-    the ONLY record when the backend dies before its own file logging starts.
-    Without them a user whose app failed to start is told nothing was logged."""
+    """Tauri shell logs sit beside the Python logs; backend-*.log is the only record if the backend
+    dies before file logging starts, so a failed app start is otherwise silent."""
     directory = _home() / subdir if subdir else _home()
     directory.mkdir(parents = True, exist_ok = True)
     (directory / name).write_text("desktop output\n", encoding = "utf-8")
@@ -236,8 +231,7 @@ def test_a_desktop_log_resolves_and_reads_back():
 
 
 def test_a_python_log_is_not_claimed_by_a_desktop_family():
-    """logs/ now has both flat desktop files and the per-family subdirectories,
-    so the globs must not overlap."""
+    """logs/ mixes flat desktop files with family subdirectories; the globs must not overlap."""
     _seed("server", f"server-20260813-101015-pid{os.getpid()}.log")
     (_home() / "logs").mkdir(parents = True, exist_ok = True)
     (_home() / "logs" / "backend-backend-1-2-s01.log").write_text("x\n", encoding = "utf-8")
@@ -249,8 +243,7 @@ def test_a_python_log_is_not_claimed_by_a_desktop_family():
 
 
 def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
-    """logs/llama-server is never pruned and reaches five figures on a real
-    install, while this endpoint is polled once a second."""
+    """Never-pruned llama-server logs reach five figures; this endpoint is polled each second."""
     directory = _home() / "logs" / "llama-server"
     directory.mkdir(parents = True, exist_ok = True)
     for i in range(400):
@@ -275,8 +268,7 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
 
 
 def test_a_literal_tilde_home_is_scanned_both_ways(tmp_path, monkeypatch):
-    """A literal ~ home makes runners write to a dir named ~, so scan both spellings or llama logs
-    vanish."""
+    """Runners may write to a literal ~ dir, so scan both spellings or llama logs vanish."""
     monkeypatch.chdir(tmp_path)
     literal = tmp_path / "~" / "studio"
     (literal / "logs" / "llama-server").mkdir(parents = True)

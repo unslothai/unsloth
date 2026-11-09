@@ -10,6 +10,7 @@ import contextlib
 import contextvars
 import os
 import re
+import threading
 import time
 from functools import lru_cache
 from typing import Any, Callable, Optional
@@ -106,9 +107,7 @@ def mps_int8pack_forced() -> bool:
 
 
 def mps_int8pack_selected(dtype: Any, layer: Any = None) -> bool:
-    """Whether ``dtype`` forwards of ``layer`` may take the Metal kernel: the env override, else the verdict its
-    transformer's probe stamped on it (no probe yet = dequantise, which is deterministic). Without ``layer``: whether
-    any probe this process chose the kernel for ``dtype``."""
+    """Metal int8pack use: env override, else the layer's probe verdict; with no probe, dequantise."""
     if mps_int8pack_disabled():
         return False
     if mps_int8pack_forced():
@@ -471,6 +470,22 @@ def fused_w8a8_state() -> dict:
     }
 
 
+# Per-thread fp32 widen buffer: a fresh one per call costs ~4x the widen in page faults.
+_CPU_WIDEN = threading.local()
+
+
+def _cpu_widen_scratch(numel: int) -> Any:
+    import torch
+
+    buf = getattr(_CPU_WIDEN, "buf", None)
+    if buf is None or buf.numel() < numel:
+        _CPU_WIDEN.buf = None
+        # Not an inference tensor: those are read-only outside inference_mode.
+        with torch.inference_mode(False):
+            buf = _CPU_WIDEN.buf = torch.empty(numel, dtype = torch.float32)
+    return buf[:numel]
+
+
 @lru_cache(maxsize = 1)
 def native_linear_class():
     """``NativeWeightOnlyLinear``, defined on first use so this module imports torch-free."""
@@ -611,6 +626,21 @@ def native_linear_class():
             else:
                 wide = self.weight_q.view(getattr(torch, self.fp8_format)).to(torch.float32)
             return (wide * scale[:, None]).to(dtype)
+
+        def _forward_weight(self, x: Any) -> Any:
+            # Not under autograd: a graph would save the buffer the next layer overwrites.
+            if (
+                self.scheme == NATIVE_INT8
+                and x.dtype is torch.float32
+                and x.device.type == "cpu"
+                and self.weight_q.device.type == "cpu"
+                and not torch.compiler.is_compiling()
+                and not (torch.is_grad_enabled() and x.requires_grad)
+            ):
+                out = _cpu_widen_scratch(self.weight_q.numel()).view(self.weight_q.shape)
+                out.copy_(self.weight_q)
+                return out.mul_(self.weight_scale.view(torch.float32)[:, None])
+            return self._stored_weight(x.dtype)
 
         def _rotate(self, x: Any) -> Any:
             g = self.rot_group
@@ -813,7 +843,7 @@ def native_linear_class():
                 and self._int_mm_ok(x.numel() // max(1, self.in_features))
             ):
                 return self._forward_int_mm(x)
-            return F.linear(x, self._stored_weight(x.dtype), self.bias)
+            return F.linear(x, self._forward_weight(x), self.bias)
 
         def extra_repr(self) -> str:
             return (

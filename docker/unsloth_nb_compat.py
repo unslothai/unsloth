@@ -107,10 +107,9 @@ def tier_for_model(model_name: str):
 
 
 def sidecar_for(version: str):
-    """FLOOR then CEILING: a sidecar the baked vLLM cannot import is never eligible
-    whatever the notebook pinned, so a request below the floor clamps UP; among the
-    eligible ones take the smallest >= the request, since a model added in X needs at
-    least X. Above every eligible sidecar returns None, i.e. the base venv."""
+    """Sidecars the baked vLLM cannot import are never eligible and a request below the floor clamps
+    up; the smallest eligible one >= the request wins (a model added in X needs at least X), else
+    None."""
     if not version:
         return None
     rows = _eligible()
@@ -258,12 +257,9 @@ def _install_lines(src):
 
 
 def pin_in_cell(source):
-    """transformers version pinned by an install command IN this cell, else None.
-
-    Same scan unsloth_run runs over a whole notebook, applied to one cell. Anything
-    that installs nothing has to lose: once transformers is imported the sidecar
-    choice is frozen for the life of the kernel, so a wrong guess is unrecoverable
-    while no guess merely leaves the base venv."""
+    """Returns the transformers version pinned by an install in this cell (same scan as
+    unsloth_run), else None; a wrong guess is unrecoverable since transformers freezes the
+    sidecar choice on import, while no guess just uses the base venv."""
     if not source:
         return None
     return pin_from(_live_source(source))
