@@ -4054,6 +4054,14 @@ const Composer: FC<{
   const shareDraftBeforeRef = useRef(shareDraft);
   const newChatDraftId = useContext(NewChatDraftIdContext);
   const draftThreadId = referenceThreadId ?? newChatDraftId ?? threadListItemId;
+  const restoredDraftScopeRef = useRef<string | undefined>(undefined);
+  const previousDraftIdentityRef = useRef({
+    referenceThreadId,
+    draftThreadId,
+    threadListItemId,
+    newChatDraftId,
+    incognito,
+  });
   const draftKey = composerDraftKey(draftThreadId, shareDraft);
   const draftScope = incognito
     ? INCOGNITO_DRAFT_SCOPE
@@ -4075,8 +4083,38 @@ const Composer: FC<{
   // the composer still shows the previous chat's text and saving it would file it under this key.
   const awaitingRestoreRef = useRef<{ scope: string; stale: string; text: string } | null>(null);
   useEffect(() => {
+    const previous = previousDraftIdentityRef.current;
+    previousDraftIdentityRef.current = {
+      referenceThreadId,
+      draftThreadId,
+      threadListItemId,
+      newChatDraftId,
+      incognito,
+    };
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
+    if (restoredDraftScopeRef.current === draftScope) return;
+    restoredDraftScopeRef.current = draftScope;
+    // First persistence names the same conversation; navigation must still restore its own draft.
+    if (
+      !incognito &&
+      !previous.incognito &&
+      !shareDraft &&
+      previous.referenceThreadId === null &&
+      referenceThreadId !== null &&
+      aui.threadListItem().getState().remoteId === referenceThreadId &&
+      previous.threadListItemId === threadListItemId &&
+      previous.newChatDraftId === newChatDraftId &&
+      previous.draftThreadId !== draftThreadId
+    ) {
+      const previousKey = composerDraftKey(previous.draftThreadId);
+      const previousPasteKey = composerPasteDraftKey(previous.draftThreadId);
+      writeComposerDraft(draftKey, latestDraft(previousKey));
+      writePasteDraft(pasteDraftKey, latestPasteDraft(previousPasteKey));
+      writeComposerDraft(previousKey, "");
+      writePasteDraft(previousPasteKey, []);
+      pasteKeyShownRef.current = draftKey;
+    }
     if (draftScope === INCOGNITO_DRAFT_SCOPE) {
       composer.setText("");
       return;
@@ -4086,7 +4124,7 @@ const Composer: FC<{
     // Otherwise an old per-chat copy could resurrect a prompt already sent from the shared slot.
     const enableSharing = shareDraft && !shareDraftBeforeRef.current;
     shareDraftBeforeRef.current = shareDraft;
-    const draft = enableSharing && adoptLegacyDraft(referenceThreadId)
+    const draft = enableSharing && adoptLegacyDraft(draftThreadId)
       ? (readComposerDraft(draftKey) ?? "")
       : latestDraft(draftKey);
     // A save that raced the send still holds the sent text, so restoring it
@@ -4105,7 +4143,18 @@ const Composer: FC<{
     }
     awaitingRestoreRef.current = { scope: draftScope, stale: composer.getState().text, text: draft };
     composer.setText(draft);
-  }, [draftScope, draftKey, shareDraft, referenceThreadId, aui]);
+  }, [
+    draftScope,
+    draftKey,
+    pasteDraftKey,
+    shareDraft,
+    referenceThreadId,
+    draftThreadId,
+    threadListItemId,
+    newChatDraftId,
+    incognito,
+    aui,
+  ]);
   // Compare's composer, so whichever is on screen shows the latest draft.
   useEffect(() => {
     if (!shareDraft || draftScope === INCOGNITO_DRAFT_SCOPE) return;
