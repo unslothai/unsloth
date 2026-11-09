@@ -354,6 +354,7 @@ _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 _WHITESPACE_RUN = re.compile(r"\s+")
 # browsers keep U+00A0 (&nbsp;), so text indented with it keeps its indent
 _COLLAPSIBLE_RUN = re.compile(r"[^\S\xa0]+")
+_NBSP_RUN = re.compile(r"\xa0[^\S\n]*")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -2362,6 +2363,8 @@ def _render_main_document(
 
 def _visible_chars(text: str) -> int:
     """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
+    if "\xa0" in text:
+        text = _NBSP_RUN.sub(" ", text)
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 

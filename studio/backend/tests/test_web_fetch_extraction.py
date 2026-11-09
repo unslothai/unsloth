@@ -1597,6 +1597,13 @@ def test_kept_no_break_spaces_do_not_dilute_a_link_header(nbsp):
     assert html_to_markdown(html, main_content = True) == prose.strip()
 
 
+@pytest.mark.parametrize("nbsp", ["&nbsp;", "\xa0"])
+def test_no_break_space_padding_does_not_make_a_stub_the_main_content(nbsp):
+    body = "Body prose that the page is about. " * 20
+    html = f"<main><article><p>a{nbsp * 220}b</p></article><p>{body}</p></main>"
+    assert body.strip() in html_to_markdown(html, main_content = True)
+
+
 @pytest.mark.parametrize("main_content", [False, True])
 def test_a_decimal_reference_past_the_int_digit_limit_still_renders(main_content):
     ones, zeros = "1" * 5000, "0" * 5000
