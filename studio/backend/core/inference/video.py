@@ -154,6 +154,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_keeps_transformer_resident,
+    prequant_seed_device,
     raise_on_unified_memory_shortfall,
     scoped_allow_oversized_load,
     unified_memory_refusal_code,
@@ -9833,7 +9834,14 @@ class VideoBackend:
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(
                 settled_te_scale, log = False, denoiser_gb = denoiser_seed_gb
             )
-            if denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
+            seed_streamed = (
+                _video_torchao_seed_placement(fam, denoiser_seed_scheme, target, plan)
+                if seed_streamed is not None
+                else None
+            )
+            if seed_streamed is not None:
+                plan = seed_streamed
+            elif denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
                 denoiser_seed_scheme = None
                 denoiser_seed_gb = None
                 plan, bf16_plan, quant_replanned = _plan_for_te_scale(settled_te_scale, log = False)
@@ -9851,6 +9859,12 @@ class VideoBackend:
                 scheme = denoiser_seed_scheme,
                 dtype = dtype,
                 device = device,
+                # a streamed seed is built on the host: on the card first it OOMs a 16 GiB budget
+                placement_device = (
+                    prequant_seed_device(plan, device, denoiser_seed_scheme)
+                    if seed_streamed is not None
+                    else None
+                ),
                 hf_token = hf_token,
                 target = target,
                 local_files_only = local_files_only,

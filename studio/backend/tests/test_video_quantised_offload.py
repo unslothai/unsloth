@@ -122,12 +122,13 @@ def _spoof(
     monkeypatch.setattr(tq, "native_quant_host", lambda t: False)
     monkeypatch.setattr(tq, "native_offload_host", lambda t: True)
     monkeypatch.setattr(V, "stored_denoiser_precision", lambda *a, **k: None)
-    spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [])
+    spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [], seed_kw = [])
 
     import core.inference.video_denoiser_prequant as vdp
 
     def _seed(fam, base, *, scheme, **kw):
         spy.seeded.append(scheme)
+        spy.seed_kw.append(kw)
         return {"transformer": object()}
 
     monkeypatch.setattr(vdp, "denoiser_prequant_pipe_kwargs", _seed)
@@ -272,6 +273,14 @@ def test_explicit_fp8_streams_the_hosted_torchao_dit_when_the_dit_must_move(
     assert spy.seeded == ["fp8"]
     assert not spy.quant
     assert spy.plans[-1].offload_policy in ("group", "streaming")
+    # built on the host: the offload hooks move it block by block (on the card first it OOMed a 16 GiB budget)
+    assert spy.seed_kw[0]["placement_device"] == "cpu"
+
+
+def test_resident_fp8_seed_is_built_on_the_card(fake_runtime, monkeypatch):
+    spy = _spoof(monkeypatch, tier_gib = 24)
+    VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+    assert spy.seed_kw[0]["placement_device"] is None
 
 
 def test_explicit_int8_under_streamed_dit_is_torchao_free(fake_runtime, monkeypatch):
