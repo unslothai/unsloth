@@ -586,7 +586,12 @@ class RestyleRunner:
         return True
 
     def is_alive(self) -> bool:
-        return self._server is not None or self._loading is not None or self._stopping > 0
+        server = self._server
+        return (
+            (server is not None and server.is_alive())
+            or self._loading is not None
+            or self._stopping > 0
+        )
 
     def _tree_lease(self) -> Any:
         # No install may replace the binaries while a job starts or runs the server.

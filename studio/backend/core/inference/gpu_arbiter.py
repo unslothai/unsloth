@@ -291,9 +291,13 @@ def _release_idle_restyle_server() -> None:
     if module is None:
         return
     try:
-        module.runner.unload_if_idle()
+        released = module.runner.unload_if_idle()
     except Exception as exc:  # noqa: BLE001 - never block an acquire on this
         logger.warning("gpu_arbiter: could not release the idle restyle sd-server: %s", exc)
+        return
+    if not released and not restyle_handoff.get():
+        # A restyle reserved the server after the refusal check: its VRAM is not coming back.
+        raise RestyleRunningError()
 
 
 def _release_idle_decision_worker() -> None:

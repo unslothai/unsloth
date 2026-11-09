@@ -1094,3 +1094,42 @@ def test_a_new_server_waits_for_the_previous_one_to_stop(weights):
     unloading.join(5)
     launching.join(5)
     assert started == [True]
+
+
+def test_a_dead_resident_server_does_not_pin_the_tree(weights):
+    class _Dead(_FakeServer):
+        def is_alive(self):
+            return False
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _Dead(b"AVI"))
+    runner._ensure_server(vr.model_files())
+    assert runner._server is not None and not runner.is_alive()
+
+
+def test_an_unload_refused_mid_acquire_refuses_the_acquire(weights, monkeypatch):
+    import core.inference.gpu_arbiter as arb
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    monkeypatch.setattr(vr, "runner", runner)
+    monkeypatch.setattr(runner, "holds_gpu", lambda: False)
+    monkeypatch.setattr(runner, "unload_if_idle", lambda owner = None: False)
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_release_idle_video_servers", lambda reason: None)
+    with pytest.raises(arb.RestyleRunningError):
+        arb.acquire_for(arb.CHAT)
+
+
+def test_the_worker_starts_inside_the_shielded_start(weights, monkeypatch):
+    import threading
+
+    from routes import video_restyle as route
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    monkeypatch.setattr(vr, "runner", runner)
+    monkeypatch.setattr(route, "_take_the_gpu", lambda mode = None: None)
+    ran = threading.Event()
+    monkeypatch.setattr(runner, "run", lambda job, save = None: ran.set())
+    job = route._admit_and_start(
+        prompt = "x", frames = _frames(5), seed = 1, owner = None, reservation = None
+    )
+    assert job["id"] and ran.wait(5)

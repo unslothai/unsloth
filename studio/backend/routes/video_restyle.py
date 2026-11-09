@@ -110,9 +110,18 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
         with _diffusion_training_admission():
             _guard_video_load_against_training()
             _take_the_gpu(mode)
-            return video_restyle.runner.start(**kwargs)
+            job = video_restyle.runner.start(**kwargs)
     except TrainingActiveError as exc:
         raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
+    # Launched here, inside the shielded call: a request cancelled after start() must not leave
+    # an active runner with no worker.
+    account_thread(
+        target = video_restyle.runner.run,
+        args = (job, _save_to_gallery),
+        daemon = True,
+        name = "video-restyle",
+    ).start()
+    return job
 
 
 def _take_the_gpu(mode: Optional[str] = None) -> None:
@@ -191,12 +200,6 @@ async def _start_reserved(request: Request, reservation: str):
         raise HTTPException(status_code = 409, detail = str(exc))
     except RestyleError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
-    account_thread(
-        target = video_restyle.runner.run,
-        args = (job, _save_to_gallery),
-        daemon = True,
-        name = "video-restyle",
-    ).start()
     return video_restyle.runner.progress(current_account_id())
 
 
