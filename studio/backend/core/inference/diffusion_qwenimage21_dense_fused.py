@@ -243,6 +243,25 @@ def _fuse_qkv(attn: Any, qkv_attr: str) -> bool:
     return True
 
 
+def _release_parts(root: Any) -> None:
+    """Hand the parts' old buffers (now replaced by row views of the fused weights) back to the device: the caching
+    allocator would otherwise keep them reserved (+2.7 GiB peak device memory for a native int8 Qwen-Image-2.1)."""
+    try:
+        import gc
+
+        import torch
+
+        device = _resident_device(root)
+        if device is None or device.type != "cuda" or not torch.cuda.is_available():
+            return
+        gc.collect()
+        with torch.cuda.device(device):
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - only a memory hint
+        pass
+
+
 def install_modules(root: Any, logger: Any = None) -> dict:
     result = {"gate_up": 0, "qkv": 0}
     if disabled() or _resident_device(root) is None:
@@ -250,15 +269,24 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     from . import diffusion_qwenimage21_fused as q21f
 
     qkv_ok = not q21f.q21_convrot_fused_disabled() and q21f._patch_prepare(logger)
+    fused_now = 0
     with _LOCK:
         for module in root.modules():
             name = type(module).__name__
             if name == _FF_CLASS:
-                if _intact(module) is not None or _fuse(module):
+                if _intact(module) is not None:
                     result["gate_up"] += 1
+                elif _fuse(module):
+                    result["gate_up"] += 1
+                    fused_now += 1
             elif name == _ATTN_CLASS and qkv_ok:
-                if q21f._qkv_intact(module) is not None or _fuse_qkv(module, q21f._QKV_ATTR):
+                if q21f._qkv_intact(module) is not None:
                     result["qkv"] += 1
+                elif _fuse_qkv(module, q21f._QKV_ATTR):
+                    result["qkv"] += 1
+                    fused_now += 1
+    if fused_now:
+        _release_parts(root)
     if logger is not None and (result["gate_up"] or result["qkv"]):
         logger.info(
             "diffusion.q21_dense_fused: one GEMM for gate + value in %d MLP(s), for Q / K / V in %d attention(s)",
