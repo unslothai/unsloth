@@ -504,6 +504,17 @@ def test_the_hosted_scheme_gate(nvidia, monkeypatch, scheme, target, env, act, e
     assert V._video_native_hosted_scheme(_family(), scheme, target) == expect
 
 
+def test_convrot_off_keeps_the_unrotated_pickle_read_but_not_ltx(nvidia, monkeypatch):
+    from core.inference.diffusion_native_quant import NATIVE_INT8_ROT_ENV
+
+    monkeypatch.setenv(NATIVE_INT8_ROT_ENV, "0")
+    assert V._video_native_hosted_scheme(_family(), "int8", CUDA_BF16) == "int8"
+    ltx = detect_video_family("Lightricks/LTX-2.5-Diffusers", override = "ltx-2.5")
+    assert V._video_native_hosted_scheme(ltx, "int8", CUDA_BF16) is None
+    monkeypatch.delenv(NATIVE_INT8_ROT_ENV)
+    assert V._video_native_hosted_scheme(ltx, "int8", CUDA_BF16) == "int8"
+
+
 @pytest.mark.parametrize("rocm, stubbed", [(True, False), (False, True)])
 @pytest.mark.parametrize("act", [None, "1"])
 def test_rocm_and_stubbed_torchao_do_not_read_the_pickle(monkeypatch, rocm, stubbed, act):

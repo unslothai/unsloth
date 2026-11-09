@@ -4546,7 +4546,10 @@ def _video_native_hosted_scheme(fam: Any, scheme: Optional[str], target: Any) ->
             return None
         if native_quant_scheme(target, TQ_INT8, family = fam.name, offload = True) != TQ_INT8:
             return None
-        if not native_int8_act(target) or int(int8_rotation_group() or 0) <= 0:
+        if not native_int8_act(target):
+            return None
+        # A ConvRot file only matches a rotated runtime build; a pickle is read unrotated, so ConvRot off keeps it.
+        if not native_hosted_pickle(fam) and int(int8_rotation_group() or 0) <= 0:
             return None
         return TQ_INT8
     except Exception:  # noqa: BLE001 -- unanswerable: the dense shards and runtime build, as before
