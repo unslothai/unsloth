@@ -38,6 +38,7 @@ import http.server
 import json
 import os
 import re
+import statistics
 import threading
 import time
 from pathlib import Path
@@ -57,7 +58,8 @@ GLASS = "liquid-3d"
 LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_LENGTH_RATIO", "2.0"))
 # Counts below this many elements / layout objects at LONG turns never fail the length check.
 COUNT_FLOOR = int(os.environ.get("LONG_THREAD_AREAS_COUNT_FLOOR", "3000"))
-# Paint and main-thread CPU, long over short chat (the cheapest of the first reading and its rechecks):
+# Paint and main-thread CPU, long over short chat (the cheapest long reading over the median short one,
+# each from the first reading and its rechecks):
 # fails over TIME_LENGTH_RATIO AND over TIME_LENGTH_FLOOR_MS more. A short reading below
 # TIME_BASE_FLOOR_MS counts as that, so a near-free area cannot make a large ratio.
 TIME_LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_RATIO", "2.5"))
@@ -1452,6 +1454,15 @@ def cheapest(cell: dict, key: str) -> float:
     return min(vals)
 
 
+def typical(cell: dict, key: str) -> float:
+    """Median of the first reading and its rechecks: the yardstick a length ratio divides by. The
+    cheapest short reading would let one unusually quiet sample inflate every ratio taken over it."""
+    vals = [cell.get(key, 0.0)] + [
+        c.get(key, 0.0) for c in cell.get("again", []) if c.get("status") == "OK"
+    ]
+    return statistics.median(vals)
+
+
 def judge(result: dict, known: str | None = None) -> list[dict]:
     """Verdict rows: kind length / appearance / broken; `fail` set on the failing ones."""
     limits = known_limits(KNOWN if known is None else known)
@@ -1557,9 +1568,10 @@ def judge(result: dict, known: str | None = None) -> list[dict]:
             if lc.get("status") != "OK" or sc.get("status") != "OK":
                 continue
             # Time grows where counts may not (paint behind an overlay grows with the thread while style
-            # and layout stay flat): paint and main-thread CPU, the cheapest reading of each length.
+            # and layout stay flat): paint and main-thread CPU, the cheapest long reading over the
+            # median short one (a single quiet short sample cannot inflate the ratio).
             for metric, key in (("paint_ms", "paint"), ("main_ms", "cpu")):
-                lv, sv = cheapest(lc, metric), cheapest(sc, metric)
+                lv, sv = cheapest(lc, metric), typical(sc, metric)
                 ratio = lv / max(sv, TIME_BASE_FLOOR_MS)
                 tlimit = limits.get(
                     (f"{key}@{mode}", area), limits.get((key, area), TIME_LENGTH_RATIO)

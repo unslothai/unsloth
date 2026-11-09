@@ -510,6 +510,48 @@ def test_paint_length_check_keeps_the_cheapest_reading():
     assert not [v for v in am.judge(_result(pages), known = "") if v["fail"]]
 
 
+@pytest.mark.parametrize("metric", ["paint_ms", "main_ms"])
+def test_length_ratio_divides_by_the_median_short_reading(metric):
+    # CI, reasoning_toggle (Liquid 3D): short readings 23 / 34 / 49 ms, long 76 ms. The cheapest short
+    # reading (23) made it 3.3x; over the median (34) it is 2.2x and passes.
+    short_cell = {
+        "elements": 10,
+        "layout_objects": 0,
+        metric: 23,
+        "again": [{"status": "OK", metric: 49}, {"status": "OK", metric: 34}],
+    }
+    long_cell = {
+        "elements": 10,
+        "layout_objects": 0,
+        metric: 90,
+        "again": [{"status": "OK", metric: 76}],
+    }
+    pages = {
+        (am.SHORT, "default"): _page({"a": short_cell}),
+        (am.LONG, "default"): _page({"a": long_cell}),
+    }
+    rows = [
+        v
+        for v in am.judge(_result(pages), known = "")
+        if v["metric"] == metric and v["kind"] == "length"
+    ]
+    assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(76, 34, False)]
+    # A real growth still fails over the same median: 34 -> 160 ms is 4.7x and 126 ms more.
+    long_cell = {
+        "elements": 10,
+        "layout_objects": 0,
+        metric: 170,
+        "again": [{"status": "OK", metric: 160}],
+    }
+    pages[(am.LONG, "default")] = _page({"a": long_cell})
+    rows = [
+        v
+        for v in am.judge(_result(pages), known = "")
+        if v["metric"] == metric and v["kind"] == "length"
+    ]
+    assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(160, 34, True)]
+
+
 def test_cpu_length_check():
     pages = {
         (am.SHORT, "default"): _page(
