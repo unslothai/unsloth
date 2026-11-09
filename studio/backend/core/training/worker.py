@@ -2674,18 +2674,24 @@ def _adapt_for_mlx_vlm(
             out["videos"] = _own_mlx_video_values(item["videos"])
         elif "video" in item:
             out["videos"] = _own_mlx_video_values(item["video"])
-        placeholders = sum(
-            1
-            for msg in messages
-            for part in (msg.get("content") or [])
-            if isinstance(part, dict) and part.get("type") == "video"
-        ) if any(isinstance(msg.get("content"), list) for msg in messages) else 0
+        placeholders = (
+            sum(
+                1
+                for msg in messages
+                for part in (msg.get("content") or [])
+                if isinstance(part, dict) and part.get("type") == "video"
+            )
+            if any(isinstance(msg.get("content"), list) for msg in messages)
+            else 0
+        )
         hoisted = out.get("videos")
-        hoisted_count = len(hoisted) if isinstance(hoisted, list) else (1 if hoisted is not None else 0)
+        hoisted_count = (
+            len(hoisted) if isinstance(hoisted, list) else (1 if hoisted is not None else 0)
+        )
         if placeholders > hoisted_count:
             raise ValueError(
                 "A message references a video but no clip was provided for it; "
-                "every {\"type\": \"video\"} part needs a clip in the same message "
+                'every {"type": "video"} part needs a clip in the same message '
                 "or a video in the row's video column."
             )
         adapted.append(out)
@@ -3583,15 +3589,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     eval_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
+
         def _fmt_progress(status_message = "", **_kw):
             _send("status", status_message = status_message)
 
         from utils.datasets.format_detection import detect_video_columns, video_sample
 
         first_row = next(iter(dataset), None)
-        if isinstance(first_row, dict) and detect_video_columns(
-            video_sample(dataset, first_row)
-        ):
+        if isinstance(first_row, dict) and detect_video_columns(video_sample(dataset, first_row)):
             if not is_vlm:
                 raise ValueError(
                     "This dataset has a video column but the model is not a vision model. "
@@ -3601,9 +3606,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
             from unsloth_zoo.mlx import utils as _mlx_utils
 
-            if "all_videos" not in inspect.signature(
-                _mlx_utils._processor_vlm_inputs
-            ).parameters:
+            if "all_videos" not in inspect.signature(_mlx_utils._processor_vlm_inputs).parameters:
                 raise ValueError(
                     "Training on video needs a newer unsloth-zoo; update it and retry."
                 )

@@ -595,14 +595,13 @@ def test_mlx_video_refusal_only_lives_in_the_residual_routing_guard():
     video_probes = [
         node.func.id
         for node in ast.walk(run)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
         and node.func.id == "detect_video_columns"
     ]
     assert len(video_probes) == 1
     assert "_MLX_VIDEO_UNSUPPORTED" not in {
-        node.id
-        for node in ast.walk(run)
-        if isinstance(node, ast.Name)
+        node.id for node in ast.walk(run) if isinstance(node, ast.Name)
     }
 
 
