@@ -35221,6 +35221,23 @@ async def produce_openai_chat_completions(
         if _sf_heal
         else None
     )
+    _sf_call_prefix = ""
+    if _sf_heal and payload.tool_choice not in (None, "auto") and not _sf_continue:
+        from core.inference.chat_template_helpers import _template_strings
+        from core.inference.engine_adapters import tool_parser_for_template
+
+        _sf_bodies = _template_strings(
+            [
+                _sf_image_tpl,
+                (_sf_model_info.get("chat_template_info") or {}).get("template"),
+                *(getattr(target, "chat_template", None) for target in _sf_chat_targets),
+            ]
+        )
+        # In-process engines have no grammar to force a call, so open the model's own call markup.
+        if any(tool_parser_for_template(body, "vllm") == "hermes" for body in _sf_bodies):
+            _sf_call_prefix = '<tool_call>\n{"name":'
+            if len(_sf_heal) == 1:
+                _sf_call_prefix += f' {json.dumps(next(iter(_sf_heal)))}, "arguments":'
     if _sf_client_tools:
         # Re-derive from messages to keep tool history; fold system and developer into one system message; tool_choice none drops tools or markup leaks as prose
         _sf_tc = payload.tool_choice
@@ -35297,6 +35314,12 @@ async def produce_openai_chat_completions(
                 )
         gen_kwargs["system_prompt"] = ""
         gen_kwargs["tools"] = _sf_client_catalog
+        if _sf_call_prefix:
+            gen_kwargs["messages"] = [
+                *gen_kwargs["messages"],
+                {"role": "assistant", "content": _sf_call_prefix},
+            ]
+            gen_kwargs["continue_final_message"] = True
     elif _sf_renders_image and not sf_mcp_images:
         # Only when nothing was replayed: a marker added here is counted as replayed history and binds the pixels to the wrong turns
         _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
@@ -35311,6 +35334,8 @@ async def produce_openai_chat_completions(
         template = _sf_image_tpl,
         prefer_tool_use = _sf_image_tpl is None,
     )
+    if _sf_call_prefix:
+        _sf_reasoning_prefilled = False
     if gen_kwargs.get("response_format") is not None:
         gen_kwargs["reasoning_is_extracted"] = bool(_sf_parse_think)
 
@@ -35506,6 +35531,7 @@ async def produce_openai_chat_completions(
                         mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
+                    cumulative = _sf_call_prefix + cumulative
                     new_text = cumulative[len(prev_text) :]
                     prev_text = cumulative
                     if not new_text:
@@ -35784,6 +35810,7 @@ async def produce_openai_chat_completions(
                             ),
                         )
                     raise HTTPException(status_code = 500, detail = _msg)
+                full_text = _sf_call_prefix + full_text
 
                 # Heal only visible text so tool markup inside reasoning is never promoted.
                 _reasoning_text, _visible_text = _extract_responses_reasoning(
@@ -35815,7 +35842,7 @@ async def produce_openai_chat_completions(
                     ):
                         if _finish != "length":
                             _finish = "tool_calls"
-                    elif nudge_enabled(
+                    elif not _sf_call_prefix and nudge_enabled(
                         payload.nudge_tool_calls,
                         response_format = _sf_response_format,
                     ):
