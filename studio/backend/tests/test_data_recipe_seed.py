@@ -1990,3 +1990,29 @@ def test_a_cancelled_extracted_text_write_leaves_no_file(monkeypatch, tmp_path):
     asyncio.run(cancel_mid_write())
     time.sleep(0.4)
     assert _block_files(seed_route) == []
+
+
+@pytest.mark.parametrize("slow", ["write_bytes", "write_text"])
+def test_an_anyio_cancel_scope_leaves_no_file(monkeypatch, tmp_path, slow):
+    import time
+
+    import anyio
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    real = getattr(Path, slow)
+
+    def slow_write(self, *args, **kwargs):
+        time.sleep(0.3)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, slow, slow_write)
+
+    async def cancel_by_scope():
+        with anyio.move_on_after(0.1):
+            await seed_route.upload_unstructured_file(
+                _FakeUpload("notes.txt", b"text to keep"), "block"
+            )
+
+    asyncio.run(cancel_by_scope())
+    time.sleep(0.4)
+    assert _block_files(seed_route) == []

@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from anyio import CapacityLimiter, Lock as _AnyioLock, to_process, to_thread
+from anyio import CancelScope, CapacityLimiter, Lock as _AnyioLock, to_process, to_thread
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 from auth.authentication import allow_ambient_hf_token
@@ -1217,7 +1217,13 @@ async def _write_to_completion(write_fn, *args) -> None:
     try:
         await asyncio.shield(write)
     except BaseException:
-        await asyncio.wait([write])
+        # Neither a repeated task cancel nor an AnyIO cancel scope may run cleanup before the thread ends.
+        with CancelScope(shield = True):
+            while not write.done():
+                try:
+                    await asyncio.wait([write])
+                except asyncio.CancelledError:
+                    continue
         raise
 
 
