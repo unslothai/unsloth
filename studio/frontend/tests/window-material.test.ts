@@ -32,7 +32,7 @@ test("the glass Show on setting keeps old records on every page and maps routes 
 	assert.match(material, /scope: sanitizeScope\(stored\?\.scope, "all"\)/);
 	// Out of scope the page draws solid: no glass attribute, no glass menus, no lens or plain backdrop.
 	assert.match(material, /const applied = shown === "solid" \|\| !here \? null : shown;/);
-	assert.match(material, /menus && material !== "solid" && material !== "transparent" && here,/);
+	assert.match(material, /menus && material !== "solid" && here,/);
 	for (const file of ["lens.tsx", "mount.tsx", "background.tsx"]) {
 		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
 		assert.match(source, /useAppliedMaterial\(\)/, file);
@@ -64,9 +64,9 @@ test("glass keeps the unprefixed backdrop-filter that Chromium reads", () => {
 
 test("glass menus only apply on top of an applied material", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const rules = [...css.matchAll(/^([^\n{]*\[data-glass-menus\][^\n{]*)\{/gm)].map((m) => m[1]);
+	const rules = [...css.matchAll(/^([^\n{]*\[data-glass-menus\][^\n{]*)\{/gm)].map((m) => m[1].trim());
 	assert.ok(rules.length > 0);
-	for (const rule of rules) assert.match(rule, /^html\[data-glass(\^?="[a-z0-9-]+")?\]\[data-glass-menus\]/);
+	for (const rule of rules) assert.match(rule, /^html(?:\[data-glass(?:\^?="[a-z0-9-]+")?\]|\.tauri\.client-windows\[data-glass-clear\])\[data-glass-menus\]/);
 });
 
 test("turning the wallpaper fade off drops the band behind the composer", () => {
@@ -117,6 +117,20 @@ test("glass adds no outer shadows, only inset light", () => {
 			assert.ok(/^(inset\b|var\(|none$)/.test(part), `${prop}: ${part}`);
 		}
 	}
+});
+
+test("the pinned Windows glass frame rounds the corner with either an image or a plain backdrop", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const titlebarRules = css.split("\n").filter((line) =>
+		line.startsWith("html[data-chat-wallpaper-ready]") && line.includes('[data-slot="window-titlebar'),
+	);
+	assert.ok(titlebarRules.length > 0);
+	for (const selector of titlebarRules) {
+		assert.ok(selector.includes("[data-glass-clear]"), selector);
+	}
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]';
+	assert.ok(css.includes(glassFrame + ' [data-slot="sidebar-container"][data-windows-glass-frame]::before'));
+	assert.ok(css.includes(glassFrame + ' [data-windows-glass-frame] > [data-slot="sidebar-inner"] {\n  position: relative;\n  z-index: 1;\n  background: transparent;'));
 });
 
 test("other pages under glass read over one tinted pane with the sidebar's floor", () => {
@@ -389,7 +403,7 @@ test("transparent glass keeps each surface's colour at the strength's opacity, w
 	assert.match(material, /root\.style\.setProperty\("--glass-fill-alpha", `\$\{strength\}%`\);/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const block = css.slice(css.indexOf("/* Transparent glass: the plain theme"));
-	// On #root from the html copies: a token cannot mix itself, and portalled overlays stay solid.
+	// Shared surface tokens resolve from the opaque html palette.
 	for (const [token, copy] of [["background", "bg"], ["card", "card"], ["popover", "popover"], ["muted", "muted"], ["secondary", "secondary"], ["sidebar", "sidebar"]]) {
 		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root,\\nhtml\\[data-glass-clear\\] #root \\[data-sonner-toaster\\] \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
 	}
@@ -400,6 +414,20 @@ test("transparent glass keeps each surface's colour at the strength's opacity, w
 	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\][^)]*\)\) \{\n\s*background-color: transparent;/);
 	assert.match(block, /@layer base \{\n\s*html\[data-glass-clear\] body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
 	assert.match(block, /html\[data-glass-clear\] #root \* \{\n\s*-webkit-backdrop-filter: none !important;\n\s*backdrop-filter: none !important;/);
+});
+
+test("Windows Transparent glass shares its palette with opted-in popups and paints panel headers once", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const clear = css.slice(css.indexOf("/* Transparent glass: the plain theme"));
+	const palette = clear.slice(0, clear.indexOf("--clear-alpha:"));
+	assert.ok(palette.includes("html.tauri.client-windows[data-glass-clear][data-glass-menus]"));
+	for (const slot of ['[data-slot$="menu-content"]', '[data-slot="dialog-content"]']) {
+		assert.ok(palette.includes(slot), slot);
+	}
+	for (const target of ['[data-slot="chat-settings-panel"] .bg-panel-surface', '[data-settings-dialog]']) {
+		const rule = clear.split(target + " {")[1]?.split("}")[0];
+		assert.ok(rule?.includes("background-color: transparent;"), target);
+	}
 });
 
 test("the model page's Back to Hub bar paints no strip over a background image until content scrolls under it", () => {
