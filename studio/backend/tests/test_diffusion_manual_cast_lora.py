@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LoRA on a manual-cast (bf16 stored, fp32 compute) denoiser: adapters keep fp32 values and fp32 GEMMs, and are never
-folded into the bf16 storage. UNSLOTH_STUDIO_MANUAL_CAST_LORA=0 restores the stored-dtype adapters."""
+"""LoRA on a manual-cast (bf16 stored, fp32 compute) denoiser keeps fp32 adapters and is never fused."""
 
 from __future__ import annotations
 
@@ -97,12 +96,10 @@ def test_adapter_keeps_fp32_values_and_gemms(monkeypatch, low_cpu_mem_usage):
     ref, head = _models()
     ref_layer, _, _ = _inject(ref, low_cpu_mem_usage)
     layer, a, b = _inject(head, low_cpu_mem_usage)
-    assert layer.base_layer.weight.dtype == torch.bfloat16  # storage stays as #17173 kept it
+    assert layer.base_layer.weight.dtype == torch.bfloat16
     assert layer.lora_A["px"].weight.dtype == torch.float32
     assert layer.lora_B["px"].weight.dtype == torch.float32
-    assert torch.equal(
-        layer.lora_A["px"].weight.detach(), a
-    )  # fp32 file values not rounded through bf16
+    assert torch.equal(layer.lora_A["px"].weight.detach(), a)
     assert torch.equal(layer.lora_B["px"].weight.detach(), b)
     x = torch.randn(2, 5, 32, generator = torch.Generator().manual_seed(2))
     cap = _MatmulDtypes()

@@ -2,8 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Linear / Embedding weights stay at stored half dtype and upcast exactly per call. UNSLOTH_STUDIO_MANUAL_CAST=0
-disables. LoRA adapters PEFT injects on a manual-cast layer are kept at its compute dtype, not the stored dtype, and are
-never folded into the half weights; UNSLOTH_STUDIO_MANUAL_CAST_LORA=0 restores the stored-dtype adapters."""
+disables. LoRA adapters on them stay at compute dtype, unfused (UNSLOTH_STUDIO_MANUAL_CAST_LORA=0 disables)."""
 
 from __future__ import annotations
 
@@ -32,7 +31,6 @@ def manual_cast_lora_disabled() -> bool:
 
 
 def lora_compute_dtype(base: Any) -> Any:
-    """Compute dtype of a manual-cast base layer whose stored weight is narrower, else None."""
     if not _CLASSES or type(base) not in (_CLASSES["linear"], _CLASSES["embedding"]):
         return None
     dtype = getattr(base, "_unsloth_compute_dtype", None)
@@ -43,9 +41,7 @@ def lora_compute_dtype(base: Any) -> Any:
 
 
 def _patch_peft_adapter_dtype() -> None:
-    """PEFT moves each injected adapter to its base layer's weight dtype (bf16 here), so the adapter GEMMs would run in
-    bf16 on the fp16-only cards manual cast exists for, and fp32 LoRA files would round on load. On a manual-cast base
-    the adapter goes to the compute dtype instead; every other layer keeps PEFT's own placement."""
+    """PEFT casts adapters to the base weight dtype (bf16 GEMMs, rounded fp32 files); use compute dtype instead."""
     try:
         from peft.tuners.tuners_utils import BaseTunerLayer
     except Exception:  # noqa: BLE001 -- no PEFT, no adapters to place

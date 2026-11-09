@@ -67,7 +67,7 @@ def _plan(denoisers: list) -> Optional[list]:
                 return None  # DoRA / LoRA bias change more than the weight
             base = layer.get_base_layer()
             if lora_compute_dtype(base) is not None:
-                return None  # manual cast: a fold into the bf16 storage would round away the fp32-computed update
+                return None  # manual cast: folding into bf16 storage would round the fp32 update
             weight = getattr(base, "weight", None)
             if (
                 not isinstance(weight, torch.Tensor)
