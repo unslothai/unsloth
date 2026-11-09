@@ -374,8 +374,7 @@ def _load_native_from_pickle(
         from .diffusion_native_quant import native_linear_class
         from .diffusion_transformer_quant import make_filter_fn
 
-        # Mapped on Linux (file-backed pages, as the safetensors read): a full read would hold both 14 GB experts
-        # as anonymous memory before offload pins its own copies.
+        # mmap: a full read holds both 14 GB experts as anonymous memory before offload pins its copies.
         ckpt = pq._read_prequant_for(str(path), "cpu", logger, host_copy_follows = True)
         if not pq._validate_checkpoint(
             ckpt,
@@ -403,7 +402,6 @@ def _load_native_from_pickle(
         config = transformer_cls.load_config(
             config_source, subfolder = component, **(config_kwargs or {})
         )
-        # Buffers stay real: non-persistent ones (rope tables) are built by __init__.
         with init_empty_weights(include_buffers = False):
             model = transformer_cls.from_config(config)
         filter_fn = make_filter_fn(int(spec["min_features"]), tuple(spec["exclude_name_tokens"]))
@@ -457,8 +455,7 @@ def _load_native_from_pickle(
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
             _log(logger, "warning", "hosted int8 checkpoint left meta tensors; not used")
             return None
-        # The torchao export keeps the class's fp32 modules (Wan: time_embedder, scale_shift_table, norm2) in fp32,
-        # as diffusers does at load; any other non-bf16 dense tensor is refused.
+        # The class's fp32 modules (Wan: time_embedder, scale_shift_table, norm2) stay fp32; other non-bf16 is refused.
         keep_fp32 = set(getattr(transformer_cls, "_keep_in_fp32_modules", None) or ())
         stray = [
             name
