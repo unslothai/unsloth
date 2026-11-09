@@ -439,6 +439,7 @@ from datetime import datetime
 
 from routes import (
     auth_router,
+    chat_export_router,
     chat_history_router,
     data_recipe_router,
     datasets_router,
@@ -2090,6 +2091,7 @@ app.include_router(
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(chat_export_router, prefix = "/api/chat-export", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(
     chat_generation_runs_router,

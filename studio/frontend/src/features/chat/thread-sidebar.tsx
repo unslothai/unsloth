@@ -53,6 +53,10 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html";
+import {
   deleteChatItem,
   renameChatItem,
   useChatSidebarItems,
@@ -64,6 +68,8 @@ import {
   exportConversationCsv,
   exportConversationShareGPT,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   COMBINED_EXPORT_FORMATS_LIST,
@@ -80,6 +86,8 @@ const EXPORT_FORMATS = [
   { label: "CSV", fn: exportConversationCsv },
   { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
   { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
+  { label: CONVERSATION_HTML_LABEL, fn: exportConversationHtml },
+  { label: CONVERSATION_PDF_LABEL, fn: exportConversationPdf },
 ] as const;
 
 async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {

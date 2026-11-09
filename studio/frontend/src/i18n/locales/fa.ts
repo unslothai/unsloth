@@ -3422,7 +3422,7 @@ export const fa = {
       exportingAction: "در حال خروجی گرفتن...",
       exportConversations: "خروجی گرفتن از «اخیر» و «پروژه‌ها»",
       exportConversationsDescription:
-        "«اخیر» یا «اخیر» به‌همراه گفتگوهای پروژه را به‌صورت Training JSONL، CSV، ShareGPT JSONL یا Markdown، ترکیبی یا جداگانه برای هر گفتگو دانلود کنید. Message JSONL فقط به‌صورت جداگانه برای هر گفتگو در دسترس است.",
+        "«اخیر» یا «اخیر» به‌همراه گفتگوهای پروژه را به‌صورت Training JSONL، CSV، ShareGPT JSONL، Markdown، HTML یا PDF، ترکیبی یا جداگانه برای هر گفتگو دانلود کنید. Message JSONL فقط به‌صورت جداگانه برای هر گفتگو در دسترس است.",
       exportConversationsAction: "خروجی گرفتن",
       exportScopeRecents: "اخیر",
       exportScopeAll: "اخیر + پروژه‌ها",

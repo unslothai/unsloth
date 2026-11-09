@@ -191,6 +191,8 @@ import {
   exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import {
   listPromptEntries,
@@ -326,6 +328,8 @@ import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   splitPlusMenuItems,
   CONVERSATION_MARKDOWN_LABEL,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
   chatHistoryClearBoundary,
@@ -7212,6 +7216,26 @@ const ComposerToolsMenu: FC<{
             }}
           >
             {CONVERSATION_MARKDOWN_LABEL}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationHtml(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          >
+            {CONVERSATION_HTML_LABEL}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationPdf(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          >
+            {CONVERSATION_PDF_LABEL}
           </DropdownMenuItem>
         </DropdownMenuSubContent>
       </DropdownMenuSub>

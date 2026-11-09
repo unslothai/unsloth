@@ -24,7 +24,7 @@ const ROLE_LABELS: Readonly<Record<string, string>> = {
   user: "User",
 };
 
-function roleLabel(role: string): string {
+export function roleLabel(role: string): string {
   const knownLabel = ROLE_LABELS[role];
   if (knownLabel) {
     return knownLabel;

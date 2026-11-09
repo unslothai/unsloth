@@ -3435,7 +3435,7 @@ export const vi = {
       exportingAction: "Đang xuất...",
       exportConversations: "Xuất Gần đây và Dự án",
       exportConversationsDescription:
-        "Tải xuống Gần đây, hoặc Gần đây cùng cuộc trò chuyện trong dự án, dưới dạng Training JSONL, CSV, ShareGPT JSONL hoặc Markdown, gộp chung hoặc theo từng cuộc trò chuyện. Message JSONL chỉ có theo từng cuộc trò chuyện.",
+        "Tải xuống Gần đây, hoặc Gần đây cùng cuộc trò chuyện trong dự án, dưới dạng Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML hoặc PDF, gộp chung hoặc theo từng cuộc trò chuyện. Message JSONL chỉ có theo từng cuộc trò chuyện.",
       exportConversationsAction: "Xuất",
       exportScopeRecents: "Gần đây",
       exportScopeAll: "Gần đây + Dự án",

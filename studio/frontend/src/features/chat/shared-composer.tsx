@@ -94,6 +94,10 @@ import {
 } from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
@@ -143,6 +147,8 @@ import {
   exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
 } from "./prompt-storage/prompt-storage-dialog";
 import {
   listPromptEntries,
@@ -2639,6 +2645,8 @@ export function SharedComposer({
               label: CONVERSATION_MARKDOWN_LABEL,
               fn: exportConversationMarkdown,
             },
+            { label: CONVERSATION_HTML_LABEL, fn: exportConversationHtml },
+            { label: CONVERSATION_PDF_LABEL, fn: exportConversationPdf },
           ].map(({ label, fn }) => (
             <DropdownMenuItem
               key={label}
