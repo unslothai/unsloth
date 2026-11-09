@@ -72,12 +72,17 @@ def _probe_device_profile() -> DeviceProfile:
     except Exception:  # noqa: BLE001 -- no torch is a CPU host for this purpose
         return DeviceProfile(CPU)
     try:
-        if torch.cuda.is_available():
-            # ROCm reports gfx versions through the same call (RDNA 3 is 11.x), so it must never read as Blackwell.
-            from .rocm_bf16 import is_rocm_torch
+        from .rocm_bf16 import is_rocm_torch
 
-            # The backend's own detector: AMD SDK / Radeon wheels leave ``torch.version.hip`` unset.
-            kind = ROCM if is_rocm_torch(torch) else NVIDIA
+        # The backend's own detector: AMD SDK / Radeon wheels leave ``torch.version.hip`` unset. ROCm reports gfx
+        # versions through the CUDA capability call (RDNA 3 is 11.x), so it must never read as Blackwell.
+        rocm = is_rocm_torch(torch)
+        if not rocm:
+            caps = _smi_visible_capabilities(torch)
+            if caps:
+                return DeviceProfile(NVIDIA, caps)
+        if torch.cuda.is_available():
+            kind = ROCM if rocm else NVIDIA
             caps = tuple(
                 tuple(int(v) for v in torch.cuda.get_device_capability(index))
                 for index in range(torch.cuda.device_count())
@@ -92,6 +97,28 @@ def _probe_device_profile() -> DeviceProfile:
     except Exception:  # noqa: BLE001 -- an unreadable device is treated as no GPU
         pass
     return DeviceProfile(CPU)
+
+
+def _smi_visible_capabilities(torch: Any) -> tuple:
+    """The visible NVIDIA cards' capabilities from nvidia-smi, without initialising CUDA in this process (a download
+    plan previewed during training must not take a context beside the trainer). Only when every visible card is on
+    the same side of Blackwell, since nvidia-smi rows are not torch ordinals; () sends the caller to torch."""
+    try:
+        if torch.cuda.is_initialized():
+            return ()
+        from utils.hardware import nvidia
+        from utils.hardware.hardware import get_parent_visible_gpu_ids
+
+        by_row = nvidia.get_compute_capabilities()
+        visible = get_parent_visible_gpu_ids()
+        if not by_row or not visible or any(i not in by_row for i in visible):
+            return ()
+        caps = tuple(sorted(by_row[i] for i in visible))
+    except Exception:  # noqa: BLE001 -- no reading: torch answers instead
+        return ()
+    if len({c[0] >= BLACKWELL_MAJOR for c in caps}) != 1:
+        return ()
+    return caps
 
 
 def device_profile() -> DeviceProfile:
@@ -348,19 +375,7 @@ def plan_nvfp4_route(
     enabled = nvfp4_diffusion_enabled()
     dit_pick = enabled and is_nvfp4(transformer_quant)
     te_pick = enabled and is_nvfp4(text_encoder_quant)
-    if not (dit_pick or te_pick or transformer_prequant_path or model_path):
-        return None
-    # The device first (read once, cached): on Blackwell nothing below runs, not even a checkpoint header probe.
-    profile = profile or device_profile()
-    capability = None
-    if profile.kind == NVIDIA:
-        capability, routes = load_capability(profile, gpu_ordinal, gpu_ids)
-        if not routes:
-            return None
-        dit_target = INT8 if capability is not None and capability >= INT8_MIN_CAPABILITY else AUTO
-        te_target = INT8 if capability is not None and capability[0] >= TE_INT8_MIN_MAJOR else AUTO
-    else:
-        dit_target = te_target = AUTO
+    # Picks first (names and local headers only): an ordinary request never reads the device at all.
     prequant_pick = (
         enabled
         and bool(transformer_prequant_path)
@@ -371,6 +386,16 @@ def plan_nvfp4_route(
         ckpt_pick = False
     if not (dit_pick or te_pick or prequant_pick or ckpt_pick):
         return None
+    profile = profile or device_profile()
+    capability = None
+    if profile.kind == NVIDIA:
+        capability, routes = load_capability(profile, gpu_ordinal, gpu_ids)
+        if not routes:
+            return None
+        dit_target = INT8 if capability is not None and capability >= INT8_MIN_CAPABILITY else AUTO
+        te_target = INT8 if capability is not None and capability[0] >= TE_INT8_MIN_MAJOR else AUTO
+    else:
+        dit_target = te_target = AUTO
 
     updates: dict = {}
     requested: dict = {}

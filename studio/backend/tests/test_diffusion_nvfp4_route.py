@@ -278,11 +278,53 @@ def test_mixed_boxes_follow_the_card_the_load_uses(caps, ordinal, routes):
     assert (got is not None) is routes
 
 
+def test_an_ordinary_request_never_reads_the_device(monkeypatch):
+    monkeypatch.setattr(route, "device_profile", lambda: pytest.fail("read the device"))
+    for kwargs in (
+        dict(model_path = "Tongyi-MAI/Z-Image-Turbo"),
+        dict(
+            model_path = "Tongyi-MAI/Z-Image-Turbo",
+            transformer_quant = "auto",
+            text_encoder_quant = "int8",
+        ),
+        dict(model_path = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_M.gguf"),
+    ):
+        assert route.plan_nvfp4_route(**kwargs) is None
+
+
+def test_nvidia_smi_answers_without_initialising_cuda(monkeypatch):
+    """A cold process reads the cards from nvidia-smi, never torch.cuda (training may be running beside it)."""
+    import torch
+
+    from utils.hardware import hardware, nvidia
+
+    route._probe_device_profile.cache_clear()
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: False)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_capability", lambda *a: pytest.fail("initialised CUDA")
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: pytest.fail("asked torch"))
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+cu130")
+    monkeypatch.setattr(
+        nvidia, "get_compute_capabilities", lambda: {0: (8, 9), 1: (8, 9), 2: (12, 0)}
+    )
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0, 1])
+    try:
+        assert route.device_profile() == DeviceProfile("nvidia", ((8, 9), (8, 9)))
+    finally:
+        route._probe_device_profile.cache_clear()
+    # A visible mix of both sides needs torch ordinals, so nvidia-smi does not answer.
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0, 2])
+    assert route._smi_visible_capabilities(torch) == ()
+
+
 def test_the_device_is_read_once(monkeypatch):
     import torch
 
     calls = []
     route._probe_device_profile.cache_clear()
+    monkeypatch.setattr(route, "_smi_visible_capabilities", lambda torch: ())
     monkeypatch.setattr(torch.cuda, "is_available", lambda: calls.append("avail") or True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = None: (8, 9))
@@ -581,10 +623,6 @@ def test_auto_never_orders_nvfp4_below_blackwell(monkeypatch, cap):
 
 
 def test_blackwell_requests_are_returned_untouched(monkeypatch, tmp_path):
-    # Nothing past the device read runs on Blackwell, not even a checkpoint header probe.
-    monkeypatch.setattr(
-        route, "checkpoint_is_nvfp4", lambda *a, **k: pytest.fail("probed a checkpoint")
-    )
     for cap in ((10, 0), (10, 3), (11, 0), (12, 0), (12, 1)):
         _fake_device(monkeypatch, "cuda", cap)
         for kind in PICKS:
