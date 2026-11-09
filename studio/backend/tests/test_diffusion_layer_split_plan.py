@@ -1183,3 +1183,234 @@ def test_rocm_second_expert_moves_only_to_a_card_that_runs_the_attention_backend
     monkeypatch.setattr(da, "sdpa_math_only", lambda t: t.torch_device == "cuda:1")
     rocm, _ = _refine(_plan(), pipe = pipe)
     assert "transformer_2" not in (rocm.secondary_components or ())
+
+
+@pytest.fixture
+def _real_rocm_sdpa_probe(monkeypatch):
+    """Real probe + guard + switches; only ROCm detection and child answers faked (cuda:0 fused, cuda:1 math-only)."""
+    from core import _torchao_stub
+    from core.inference import diffusion_attention as da
+
+    switches = (
+        (torch.backends.cuda.flash_sdp_enabled, torch.backends.cuda.enable_flash_sdp),
+        (
+            torch.backends.cuda.mem_efficient_sdp_enabled,
+            torch.backends.cuda.enable_mem_efficient_sdp,
+        ),
+    )
+    before = [read() for read, _ in switches]
+    for _, write in switches:
+        write(True)
+    caches = (da._SDPA_PROBE_CACHE, da._ROCM_GUARD_DISABLED, da._ROCM_PROBE_INCOMPLETE)
+    for cache in caches:
+        cache.clear()
+    monkeypatch.delenv(da.ROCM_FUSED_SDPA_ALLOW_ENV, raising = False)
+    monkeypatch.setattr(_torchao_stub, "_module_is_rocm", lambda t: True)
+    monkeypatch.setattr(
+        da,
+        "_run_rocm_sdpa_children",
+        lambda device, dtype: (
+            (da.SDPA_MATH, da.SDPA_FLASH, da.SDPA_MEM_EFFICIENT)
+            if device == "cuda:0"
+            else (da.SDPA_MATH,)
+        ),
+    )
+    yield lambda: tuple(read() for read, _ in switches)
+    for (_, write), value in zip(switches, before):
+        write(value)
+    for cache in caches:
+        cache.clear()
+
+
+def test_rocm_secondary_probe_leaves_the_primary_sdpa_switches_alone(_real_rocm_sdpa_probe):
+    # A rejected math-only secondary must not turn fused SDPA off process-wide.
+    from types import SimpleNamespace
+
+    from core.inference import diffusion_attention as da
+
+    flags = _real_rocm_sdpa_probe
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == ()
+    assert flags() == (True, True)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == ()
+    assert flags() == (True, True)
+    assert not da.sdpa_math_only(
+        SimpleNamespace(device = "cuda", torch_device = "cuda:0", dtype = torch.bfloat16)
+    )
+    assert da.guard_rocm_fused_sdpa(
+        SimpleNamespace(device = "cuda", torch_device = "cuda:1", dtype = torch.bfloat16)
+    ) == (da.SDPA_FLASH, da.SDPA_MEM_EFFICIENT)
+    assert flags() == (False, False)
+
+
+def test_rocm_kept_secondary_still_gets_the_fused_sdpa_guard(_real_rocm_sdpa_probe, monkeypatch):
+    # cuda:1 is kept despite a failed flash launch, so flash goes off process-wide.
+    from core.inference import diffusion_attention as da
+
+    flags = _real_rocm_sdpa_probe
+    monkeypatch.setattr(
+        da,
+        "_run_rocm_sdpa_children",
+        lambda device, dtype: (
+            (da.SDPA_MATH, da.SDPA_FLASH, da.SDPA_MEM_EFFICIENT)
+            if device == "cuda:0"
+            else (da.SDPA_MATH, da.SDPA_MEM_EFFICIENT)
+        ),
+    )
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == (1,)
+    assert flags() == (False, True)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == (1,)
+    assert flags() == (False, True)
+
+
+def test_rocm_kept_secondaries_share_a_fused_sdpa_kernel(_real_rocm_sdpa_probe, monkeypatch):
+    # Keeping both would leave only math in common; cuda:2 goes.
+    from core.inference import diffusion_attention as da
+
+    flags = _real_rocm_sdpa_probe
+    answers = {
+        "cuda:0": (da.SDPA_MATH, da.SDPA_FLASH, da.SDPA_MEM_EFFICIENT),
+        "cuda:1": (da.SDPA_MATH, da.SDPA_FLASH),
+        "cuda:2": (da.SDPA_MATH, da.SDPA_MEM_EFFICIENT),
+    }
+    monkeypatch.setattr(da, "_run_rocm_sdpa_children", lambda device, dtype: answers[device])
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1, 2)) == (1,)
+    assert flags() == (True, False)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1, 2)) == (1,)
+    assert flags() == (True, False)
+
+
+class _MixedPrecisionDiT(torch.nn.Module):
+    """MiniMax-H3: fp32 input stem before bf16 attention blocks."""
+
+    def __init__(self):
+        super().__init__()
+        self.proj_in = torch.nn.Linear(2, 4)
+        attn = torch.nn.Module()
+        attn.to_q = torch.nn.Linear(4, 4).to(torch.bfloat16)
+        self.blocks = torch.nn.ModuleList([torch.nn.ModuleDict({"attn": attn})])
+
+
+def test_rocm_probe_runs_at_the_attention_dtype_not_an_fp32_stem(monkeypatch):
+    from core.inference import diffusion_attention as da
+
+    pipe = _Pipe()
+    pipe.transformer = _MixedPrecisionDiT()
+    assert next(pipe.transformer.parameters()).dtype == torch.float32
+    assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16
+    probed = []
+    monkeypatch.setattr(
+        da,
+        "sdpa_math_only",
+        lambda t: probed.append(t.dtype) or t.dtype == torch.float32 or t.torch_device == "cuda:1",
+    )
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == ()
+    assert set(probed) == {torch.bfloat16}
+
+
+class _PackedLinear(torch.nn.Linear):
+    """diffusers' GGUFLinear surface: packed uint8 weight, ``compute_dtype``, no bias."""
+
+    def __init__(
+        self,
+        fin,
+        fout,
+        compute_dtype = None,
+    ):
+        super().__init__(fin, fout, bias = False)
+        self.compute_dtype = compute_dtype
+        self.weight = torch.nn.Parameter(
+            torch.zeros(fout, fin, dtype = torch.uint8), requires_grad = False
+        )
+
+
+def _pack_attention(model, compute_dtype):
+    for module in list(model.modules()):
+        for attr in ("to_q", "to_k", "to_v", "to_gate", "to_qkv"):
+            linear = getattr(module, attr, None)
+            if isinstance(linear, torch.nn.Linear):
+                packed = _PackedLinear(linear.in_features, linear.out_features, compute_dtype)
+                setattr(module, attr, packed)
+    return model
+
+
+def _math_at_fp32_and_on_cuda1(monkeypatch):
+    from core.inference import diffusion_attention as da
+
+    probed = []
+    monkeypatch.setattr(
+        da,
+        "sdpa_math_only",
+        lambda t: probed.append(t.dtype) or t.dtype == torch.float32 or t.torch_device == "cuda:1",
+    )
+    return probed
+
+
+@pytest.fixture(scope = "session")
+def krea2():
+    # Must import before the 8-card fixture: xformers / torchao device checks fail against it.
+    return pytest.importorskip("diffusers.models.transformers.transformer_krea2")
+
+
+def _tiny_krea2(krea2):
+    model = krea2.Krea2Transformer2DModel(
+        in_channels = 4,
+        num_layers = 2,
+        attention_head_dim = 16,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        intermediate_size = 32,
+        timestep_embed_dim = 8,
+        text_hidden_dim = 8,
+        num_text_layers = 2,
+        text_num_attention_heads = 2,
+        text_num_key_value_heads = 2,
+        text_intermediate_size = 16,
+        num_layerwise_text_blocks = 1,
+        num_refiner_text_blocks = 1,
+        axes_dims_rope = (4, 6, 6),
+    ).to(torch.bfloat16)
+    for name, module in model.named_modules():
+        if name and any(k in name.split(".")[-1] for k in model._keep_in_fp32_modules):
+            module.to(torch.float32)
+    return model
+
+
+def test_rocm_probe_reads_a_quantized_projection_not_its_fp32_qk_norm(monkeypatch, krea2):
+    model = _tiny_krea2(krea2)
+    attn = next(m for m in model.modules() if getattr(m, "to_q", None) is not None)
+    assert attn.norm_q.weight.dtype == torch.float32
+    pipe = _Pipe()
+    pipe.transformer = _pack_attention(model, torch.bfloat16)
+    assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16
+    probed = _math_at_fp32_and_on_cuda1(monkeypatch)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == ()
+    assert set(probed) == {torch.bfloat16}
+
+
+def test_rocm_probe_dtype_skips_fp32_pinned_modules_when_projections_carry_no_dtype(
+    monkeypatch, krea2
+):
+    pipe = _Pipe()
+    pipe.transformer = _pack_attention(_tiny_krea2(krea2), None)
+    assert lsp._attention_dtype(pipe.transformer) is None
+    assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16
+    probed = _math_at_fp32_and_on_cuda1(monkeypatch)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == ()
+    assert set(probed) == {torch.bfloat16}
+
+
+def test_rocm_probe_dtype_packed_projection_with_fp32_norm_synthetic():
+    attn = torch.nn.Module()
+    attn.norm_q = torch.nn.RMSNorm(4)
+    attn.to_q = _PackedLinear(4, 4, torch.bfloat16)
+    dit = torch.nn.Module()
+    dit.attn = attn
+    pipe = _Pipe()
+    pipe.transformer = dit
+    assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16

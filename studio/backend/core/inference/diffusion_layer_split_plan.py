@@ -701,6 +701,61 @@ def _denoiser_dtype(module: Any) -> Any:
         return None
 
 
+def _probe_dtype(dtype: Any) -> Any:
+    return dtype if str(dtype) in _PROBE_DTYPES else None
+
+
+def _projection_dtype(proj: Any) -> Any:
+    registry = getattr(proj, "_diffusers_hook", None)
+    get_hook = getattr(registry, "get_hook", None)
+    if callable(get_hook):
+        with contextlib.suppress(Exception):
+            dtype = _probe_dtype(getattr(get_hook("layerwise_casting"), "compute_dtype", None))
+            if dtype is not None:
+                return dtype
+    for dtype in (
+        getattr(proj, "compute_dtype", None),
+        getattr(getattr(proj, "weight", None), "dtype", None),
+        getattr(getattr(proj, "bias", None), "dtype", None),
+    ):
+        dtype = _probe_dtype(dtype)
+        if dtype is not None:
+            return dtype
+    return None
+
+
+def _attention_dtype(module: Any) -> Any:
+    # Only to_q / to_qkv: MiniMax-H3 proj_in and Krea-2 / FLUX.3 norm_q/norm_k stay fp32 under bf16 attention.
+    with contextlib.suppress(Exception):
+        for sub in module.modules():
+            proj = getattr(sub, "to_q", None)
+            if proj is None:
+                proj = getattr(sub, "to_qkv", None)
+            if proj is None:
+                continue
+            dtype = _projection_dtype(proj)
+            if dtype is not None:
+                return dtype
+    return None
+
+
+def _unpinned_param_dtype(module: Any) -> Any:
+    # diffusers' ModelMixin.dtype rule: skip _keep_in_fp32_modules.
+    keep = tuple(getattr(module, "_keep_in_fp32_modules", None) or ())
+    with contextlib.suppress(Exception):
+        for name, param in module.named_parameters():
+            if keep and any(k in name for k in keep):
+                continue
+            dtype = _probe_dtype(param.dtype)
+            if dtype is not None:
+                return dtype
+    return None
+
+
+def _module_compute_dtype(module: Any) -> Any:
+    return _attention_dtype(module) or _unpinned_param_dtype(module)
+
+
 def _rocm_flash_runs_on(ordinal: int, dtype: Any) -> bool:
     try:
         from types import SimpleNamespace
@@ -720,34 +775,68 @@ _PROBE_DTYPES = ("torch.float16", "torch.bfloat16", "torch.float32")
 
 
 def _rocm_attention_dtype(pipe: Any) -> Any:
-    """The compute dtype the SDPA probe should run at: the denoiser's, else the pipeline's; None (the probe's fp16
-    default) when only a quantized storage dtype is readable."""
     from . import diffusion_multigpu as mg
 
-    for name in mg.DENOISER_ATTRS:
-        module = getattr(pipe, name, None)
-        if module is not None:
-            dtype = _denoiser_dtype(module)
-            if str(dtype) in _PROBE_DTYPES:
-                return dtype
-    dtype = getattr(pipe, "dtype", None)
-    return dtype if str(dtype) in _PROBE_DTYPES else None
+    modules = [m for m in (getattr(pipe, n, None) for n in mg.DENOISER_ATTRS) if m is not None]
+    for module in modules:
+        dtype = _module_compute_dtype(module)
+        if dtype is not None:
+            return dtype
+    dtype = _probe_dtype(getattr(pipe, "dtype", None))
+    if dtype is not None:
+        return dtype
+    for module in modules:
+        dtype = _probe_dtype(_denoiser_dtype(module))
+        if dtype is not None:
+            return dtype
+    return None
 
 
-def _rocm_sdpa_math_only(ordinal: int, dtype: Any) -> bool:
+def _rocm_sdpa_math_only(
+    ordinal: int,
+    dtype: Any,
+    *,
+    read_only: bool = False,
+) -> bool:
     """diffusion_attention's per-device SDPA probe: True only when math ran and every fused kernel refused on this
-    card at this dtype (an unanswered probe is False)."""
+    card at this dtype (an unanswered probe is False). ``read_only``: do not flip the primary's process-wide switches."""
     try:
         from types import SimpleNamespace
 
-        from .diffusion_attention import sdpa_math_only
-        return bool(
-            sdpa_math_only(
-                SimpleNamespace(device = "cuda", torch_device = f"cuda:{int(ordinal)}", dtype = dtype)
+        from .diffusion_attention import read_only_sdpa_probe, sdpa_math_only
+        with read_only_sdpa_probe() if read_only else contextlib.nullcontext():
+            return bool(
+                sdpa_math_only(
+                    SimpleNamespace(device = "cuda", torch_device = f"cuda:{int(ordinal)}", dtype = dtype)
+                )
             )
-        )
     except Exception:  # noqa: BLE001
         return False
+
+
+def _rocm_fused_sdpa_kernels(ordinal: int, dtype: Any) -> Optional[tuple[str, ...]]:
+    try:
+        from types import SimpleNamespace
+
+        from .diffusion_attention import (
+            _SDPA_SUBQUADRATIC,
+            _is_cuda_rocm,
+            _rocm_guard_allowed,
+            _sdpa_capability,
+            read_only_sdpa_probe,
+        )
+
+        if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
+            return None
+        with read_only_sdpa_probe():
+            available = _sdpa_capability(
+                SimpleNamespace(device = f"cuda:{int(ordinal)}", dtype = dtype)
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    if not available:
+        return None
+    return tuple(k for k in available if k in _SDPA_SUBQUADRATIC)
 
 
 def _rocm_drop_math_only(
@@ -758,29 +847,49 @@ def _rocm_drop_math_only(
 ) -> tuple[int, ...]:
     """Drop a secondary whose native SDPA is math-only when the primary's is not: the plan's activation figures were
     priced for the primary's fused kernel, and math SDPA materialises the full score matrix on the card running the
-    block. A math-only primary priced that peak already, so cards matching it are kept."""
+    block. A math-only primary priced that peak already, so cards matching it are kept. A secondary sharing no fused
+    kernel with the cards kept so far is dropped too (the guard keeps only common kernels)."""
     if not cards:
         return cards
     dtype = _rocm_attention_dtype(pipe)
     if _rocm_sdpa_math_only(primary, dtype):
         return cards
-    dropped = tuple(o for o in cards if _rocm_sdpa_math_only(o, dtype))
+    dropped = tuple(o for o in cards if _rocm_sdpa_math_only(o, dtype, read_only = True))
+    mismatched: list[int] = []
+    common = _rocm_fused_sdpa_kernels(primary, dtype)
+    if common:
+        for o in cards:
+            if o in dropped:
+                continue
+            fused = _rocm_fused_sdpa_kernels(o, dtype)
+            if fused is None:
+                continue
+            if any(k in fused for k in common):
+                common = tuple(k for k in common if k in fused)
+            else:
+                mismatched.append(o)
+        dropped = tuple(o for o in cards if o in dropped or o in mismatched)
     if dropped and logger is not None:
         logger.info(
             "diffusion.multigpu: layer split skips %s (%s at %s)",
             ", ".join(f"cuda:{o}" for o in dropped),
-            MATH_ONLY_DECLINE,
+            "no fused SDPA kernel shared with the primary" if mismatched else MATH_ONLY_DECLINE,
             dtype,
         )
-    return tuple(o for o in cards if o not in dropped)
+    kept = tuple(o for o in cards if o not in dropped)
+    if kept:
+        with contextlib.suppress(Exception):
+            from .diffusion_attention import guard_rocm_fused_sdpa_cards
+            guard_rocm_fused_sdpa_cards([f"cuda:{int(o)}" for o in (primary, *kept)], dtype, logger)
+    return kept
 
 
 def _math_only_reason(primary: int, cards: Sequence[int]) -> str:
     names = ", ".join(f"cuda:{int(o)}" for o in cards)
     has = "has" if len(cards) == 1 else "have"
     return (
-        f"{MATH_ONLY_DECLINE}: {names} {has} no fused SDPA kernel at the model dtype (cuda:{int(primary)} does), so its "
-        "attention would materialise the full score matrix"
+        f"{MATH_ONLY_DECLINE}: {names} {has} no fused SDPA kernel shared with cuda:{int(primary)} at the model dtype, so "
+        "its attention would materialise the full score matrix"
     )
 
 
@@ -813,7 +922,7 @@ def _rocm_backend_cards(
         return (), backend
     kept = tuple(o for o in cards if _rocm_gfx(o) == need)
     if backend == "flash":
-        dtype = _denoiser_dtype(module)
+        dtype = _module_compute_dtype(module) or _denoiser_dtype(module)
         kept = tuple(o for o in kept if _rocm_flash_runs_on(o, dtype))
     return kept, backend
 
