@@ -395,7 +395,6 @@ def auto_te_fetch_failure(
 
 
 def auto_te_outcome_log(scheme: str, family: str, failure: Optional[str], injected: bool) -> tuple:
-    """The log line for an automatic text-encoder pick, once the load has (re)tried its hosted pre-cast encoder."""
     if failure and not injected:
         return (
             "video.text_encoder_quant: the automatic '%s' for %s is not available (hosted pre-cast encoder "
