@@ -329,6 +329,7 @@ export async function deleteChatItems(
 
   // clear composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
+  for (const item of items) if (item.type !== "single") clearComposerDraft(item.id);
 
   // Quiet until the delete lands: a failed one restores the chats, browser tabs and all.
   markChatThreadsDeleted(threadIds, { quiet: true });

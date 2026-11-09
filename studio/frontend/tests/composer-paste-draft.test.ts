@@ -330,3 +330,19 @@ test("switching sharing on adopts the slot this tab last typed into, even with i
   assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "typed in Compare");
   assert.equal(tab.latestDraft(tab.composerDraftKey("older-chat")), "older");
 });
+
+test("a paste-only draft is what switching sharing on adopts", async () => {
+  const tab = await openTab();
+  tab.writeComposerDraft(tab.composerDraftKey("typed-earlier"), "older text");
+  tab.writePasteDraft(tab.composerPasteDraftKey("paste-only"), ["a long document"]);
+  assert.equal(tab.adoptCurrentDraft(), true);
+  assert.deepEqual(tab.latestPasteDraft(tab.composerPasteDraftKey("", true)), ["a long document"]);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("typed-earlier")), "older text");
+});
+
+test("deleting a comparison also clears its pair-scoped draft", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/features/chat/hooks/use-chat-sidebar-items.ts", import.meta.url), "utf8");
+  const del = src.slice(src.indexOf("export async function deleteChatItems("));
+  assert.match(del, /if \(item\.type !== "single"\) clearComposerDraft\(item\.id\)/);
+});

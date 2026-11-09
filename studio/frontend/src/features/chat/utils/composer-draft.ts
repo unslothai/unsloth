@@ -52,7 +52,10 @@ export function latestPasteDraft(key = PASTE_DRAFT_KEY): string[] {
 // A quota error here leaves the text draft untouched, hence separate slots.
 export function writePasteDraft(key: string, pastes: readonly string[]): void {
   if (key === PASTE_DRAFT_KEY) latestPastes = [...pastes];
-  else perChatPastes.set(key, [...pastes]);
+  else {
+    perChatPastes.set(key, [...pastes]);
+    if (pastes.length > 0) lastTypedDraftId = key.slice(LEGACY_PASTE_DRAFT_PREFIX.length);
+  }
   try {
     if (pastes.length > 0) {
       window.localStorage.setItem(key, JSON.stringify(pastes));
