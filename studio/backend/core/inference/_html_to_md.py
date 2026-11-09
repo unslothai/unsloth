@@ -1390,6 +1390,8 @@ class _MarkdownRenderer(HTMLParser):
         if not self._header_stack or self._heading_marks:
             return
         frame = self._header_stack[-1]
+        if "\xa0" in text:
+            text = _WHITESPACE_RUN.sub(" ", text)
         chars = len(text.strip())
         frame.text_chars += chars
         # anchors without usable hrefs render as prose
@@ -2033,8 +2035,8 @@ class _MarkdownRenderer(HTMLParser):
             return
         # Collapse whitespace (including newlines) per HTML rules, which keep U+00A0.
         text = _COLLAPSIBLE_RUN.sub(" ", data)
-        # Count with U+00A0 collapsed too: raw spaces in a link inflated it past the floor.
-        self._count_header_text(_WHITESPACE_RUN.sub(" ", text) if "\xa0" in text else text)
+        # Count after collapsing: raw spaces in a link inflated it past the floor.
+        self._count_header_text(text)
         # Suppress whitespace-only nodes between table elements (source indentation, a lone &nbsp;),
         # but keep a caption's &nbsp;, which separates Javadoc's method-summary tabs.
         if (
