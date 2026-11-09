@@ -206,7 +206,7 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                 args, raw = part.get("args"), part.get("argsText")
                 try:  # toolCallReplayArguments sends argsText as is when it is one JSON object
                     exact = json.loads(raw, parse_constant = _reject_constant)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, RecursionError):
                     exact = None
                 marker = isinstance(raw, str) and raw and args == {"_raw": raw}  # replays as {}
                 args = exact if isinstance(exact, dict) else {} if marker else args
