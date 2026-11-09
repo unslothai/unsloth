@@ -569,9 +569,14 @@ class RestyleRunner:
             from core.inference.video import get_video_backend
 
             video = get_video_backend()
-            if self.holds_gpu() or video.loading_repo_ids() or video.status().get("loaded"):
-                return
-            gpu_arbiter.release(gpu_arbiter.VIDEO)
+
+            def idle() -> bool:
+                return not (
+                    self.holds_gpu() or video.loading_repo_ids() or video.status().get("loaded")
+                )
+
+            # Checked under the arbiter lock, so a Create load registering meanwhile keeps its claim.
+            gpu_arbiter.release_if(gpu_arbiter.VIDEO, idle)
         except Exception as exc:  # noqa: BLE001 -- the job's outcome is already recorded
             logger.warning("restyle: could not release the VIDEO claim: %s", exc)
 

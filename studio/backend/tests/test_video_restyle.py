@@ -1227,8 +1227,28 @@ def test_finishing_releases_the_video_claim_unless_create_holds_it(
     import core.inference.video as video_module
 
     released = []
-    monkeypatch.setattr(arb, "release", lambda owner: released.append(owner))
+    monkeypatch.setattr(
+        arb, "release_if", lambda owner, idle: idle() and released.append(owner) is None
+    )
     monkeypatch.setattr(video_module, "get_video_backend", lambda: _Video(loaded = create_loaded))
     runner = vr.RestyleRunner()
     runner._finish(phase = "done")
     assert released == ([] if create_loaded else [arb.VIDEO])
+
+
+def test_the_video_claim_idle_check_runs_under_the_arbiter_lock(weights, monkeypatch):
+    import core.inference.gpu_arbiter as arb
+    import core.inference.video as video_module
+
+    held = []
+
+    class _Probe(_Video):
+        def status(self):
+            held.append(arb._lock.locked())
+            return {"loaded": False}
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Probe(False))
+    monkeypatch.setattr(arb, "_view", lambda: {arb.VIDEO})
+    monkeypatch.setattr(arb, "_drop_resident", lambda owner: None)
+    vr.RestyleRunner()._release_video_claim()
+    assert held == [True]
