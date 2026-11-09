@@ -381,6 +381,11 @@ _INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset(
     name for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.default_on
 )
 
+# Families whose hosted int8 files are unrotated (``ConvRotSpec.hosted_plain``).
+_INT8_FAMILY_CONVROT_HOSTED_PLAIN: frozenset[str] = frozenset(
+    name for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.hosted_plain
+)
+
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
 
@@ -393,6 +398,15 @@ def int8_convrot_enabled(family: Optional[str] = None) -> bool:
     if raw in ("0", "off", "false", "no"):
         return False
     return str(family or "").strip().lower() in _INT8_FAMILY_CONVROT_DEFAULT_ON
+
+
+def convrot_drops_plain_hosted(scheme: str, family: Optional[str] = None) -> bool:
+    """Whether an int8 load reads only the family's rotated hosted file: its older hosted int8 files are unrotated
+    (``ConvRotSpec.hosted_plain``), so without the rotated one the load rotates at load. False with the kill switch."""
+    if scheme != TQ_INT8:
+        return False
+    key = str(family or "").strip().lower()
+    return key in _INT8_FAMILY_CONVROT_HOSTED_PLAIN and int8_convrot_enabled(key)
 
 
 def convrot_spec_for_scheme(

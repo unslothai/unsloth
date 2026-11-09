@@ -1732,7 +1732,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1748,11 +1748,27 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/FLUX.2-klein-4B-FP8",
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "context_embedder",
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "attn.add_q_proj",
+      "attn.add_k_proj",
+      "attn.add_v_proj",
+      "attn.to_add_out",
+      "ff.linear_in",
+      "ff.linear_out",
+      "ff_context.linear_in",
+      "ff_context.linear_out",
+      "attn.to_qkv_mlp_proj",
+      "attn.to_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -1844,7 +1860,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1866,11 +1882,18 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "flux-3-image-klein-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/flux-3-image-klein-FP8",
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "ff.linear_in",
+      "ff.linear_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -1979,7 +2002,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -2004,8 +2027,15 @@
     "convrot_filename": null,
     "convrot_repo": null,
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "ff.linear_in",
+      "ff.linear_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -4592,6 +4622,48 @@
    "time_embed"
   ],
   "int8_family_convrot": {
+   "flux.2-klein": [
+    256,
+    [
+     "context_embedder",
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "attn.add_q_proj",
+     "attn.add_k_proj",
+     "attn.add_v_proj",
+     "attn.to_add_out",
+     "ff.linear_in",
+     "ff.linear_out",
+     "ff_context.linear_in",
+     "ff_context.linear_out",
+     "attn.to_qkv_mlp_proj",
+     "attn.to_out"
+    ]
+   ],
+   "flux.3-klein": [
+    256,
+    [
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "ff.linear_in",
+     "ff.linear_out"
+    ]
+   ],
+   "flux.3-klein-base": [
+    256,
+    [
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "ff.linear_in",
+     "ff.linear_out"
+    ]
+   ],
    "moss-image": [
     256,
     [
@@ -4641,6 +4713,9 @@
    ]
   },
   "int8_family_convrot_default_on": [
+   "flux.2-klein",
+   "flux.3-klein",
+   "flux.3-klein-base",
    "ltx-2.5",
    "moss-image",
    "moss-image-base",
@@ -4648,12 +4723,16 @@
    "z-image"
   ],
   "int8_family_convrot_filename": {
+   "flux.2-klein": "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+   "flux.3-klein": "flux-3-image-klein-INT8-ConvRot.safetensors",
    "moss-image": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
    "moss-image-base": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors"
   },
   "int8_family_convrot_repo": {
+   "flux.2-klein": "unsloth/FLUX.2-klein-4B-FP8",
+   "flux.3-klein": "unsloth/flux-3-image-klein-FP8",
    "moss-image": "unsloth/MOSS-Image-SFT-FP8",
    "moss-image-base": "unsloth/MOSS-Image-SFT-FP8",
    "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
