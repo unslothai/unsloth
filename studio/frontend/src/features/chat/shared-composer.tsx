@@ -676,10 +676,11 @@ export function SharedComposer({
       const before = draftOwnerBeforeRef.current;
       draftOwnerBeforeRef.current = { draftId, shareDraft, draftKey };
       let next = incognito ? "" : latestDraft(draftKey);
-      if (!incognito && before.draftId === draftId && before.shareDraft === shareDraft && text && !next) {
-        // Same pair, slot decided by its history: keep what was typed while it loaded.
+      if (!incognito && before.draftId === draftId && before.shareDraft === shareDraft && text) {
+        // Same pair, slot decided by its history: what was typed while it loaded wins.
         writeComposerDraft(before.draftKey, "");
         writeComposerDraft(draftKey, text);
+        stageComposerDraft(draftKey, text);
         next = text;
       }
       remoteDraftRef.current = next;

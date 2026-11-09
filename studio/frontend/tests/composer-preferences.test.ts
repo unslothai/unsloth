@@ -232,7 +232,7 @@ test("sharing switched on by another window's rehydrate still adopts this tab's 
   const drafts = await import("../src/features/chat/utils/composer-draft.ts");
   store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft: false } }));
   await prefs.persist.rehydrate();
-  drafts.writeComposerDraft(drafts.composerDraftKey("rehydrated-chat"), "typed here");
+  drafts.stageComposerDraft(drafts.composerDraftKey("rehydrated-chat"), "typed here");
   store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft: true } }));
   await prefs.persist.rehydrate();
   assert.equal(prefs.getState().shareComposerDraft, true);

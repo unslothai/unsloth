@@ -324,8 +324,9 @@ test("an unsent Compare pair's draft is adopted from its own slot", async () => 
 
 test("switching sharing on adopts the slot this tab last typed into, even with its composer unmounted", async () => {
   const tab = await openTab();
+  tab.stageComposerDraft(tab.composerDraftKey("older-chat"), "older");
   tab.writeComposerDraft(tab.composerDraftKey("older-chat"), "older");
-  tab.writeComposerDraft(tab.composerDraftKey(tab.NEW_COMPARE_DRAFT_ID), "typed in Compare");
+  tab.stageComposerDraft(tab.composerDraftKey(tab.NEW_COMPARE_DRAFT_ID), "typed in Compare");
   assert.equal(tab.adoptCurrentDraft(), true);
   assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "typed in Compare");
   assert.equal(tab.latestDraft(tab.composerDraftKey("older-chat")), "older");
@@ -352,6 +353,7 @@ test("deleting a comparison clears its pair-scoped draft once the delete holds, 
 test("a pending autosave landing after its chat was deleted is dropped", async () => {
   const tab = await openTab();
   const key = tab.composerDraftKey("deleted-chat");
+  tab.stageComposerDraft(key, "typed");
   tab.writeComposerDraft(key, "typed");
   tab.clearComposerDraft("deleted-chat");
   tab.writeComposerDraft(key, "late flush");
@@ -363,7 +365,7 @@ test("a pending autosave landing after its chat was deleted is dropped", async (
 
 test("what this tab just typed replaces a shared draft another window left", async () => {
   const tab = await openTab();
-  tab.writeComposerDraft(tab.composerDraftKey("mine-only"), "this window");
+  tab.stageComposerDraft(tab.composerDraftKey("mine-only"), "this window");
   store.set(composerDraftKey("", true), "other window");
   assert.equal(tab.adoptCurrentDraft(), true);
   assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "this window");
@@ -373,6 +375,7 @@ test("what this tab just typed replaces a shared draft another window left", asy
 test("a shared copy that does not fit keeps the saved per-chat draft and the old shared one", async () => {
   const tab = await openTab();
   const key = tab.composerDraftKey("quota-chat");
+  tab.stageComposerDraft(key, "saved prompt");
   tab.writeComposerDraft(key, "saved prompt");
   store.set(composerDraftKey("", true), "older shared");
   failWrites = true;
@@ -407,11 +410,20 @@ test("typing still inside the save debounce is what sharing adopts, and its late
 
 test("an adoption keeps its own text when another window adopts right after", async () => {
   const tab = await openTab();
-  tab.writeComposerDraft(tab.composerDraftKey("window-a"), "window A draft");
+  tab.stageComposerDraft(tab.composerDraftKey("window-a"), "window A draft");
   tab.writePasteDraft(tab.composerPasteDraftKey("window-a"), ["A paste"]);
   assert.equal(tab.adoptCurrentDraft(), true);
   store.set(composerDraftKey("", true), "window B draft");
   store.set(composerPasteDraftKey("", true), '["B paste"]');
   assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "window A draft");
   assert.deepEqual(tab.latestPasteDraft(tab.composerPasteDraftKey("", true)), ["A paste"]);
+});
+
+test("a delayed save of another slot does not take adoption away from the latest edit", async () => {
+  const tab = await openTab();
+  tab.stageComposerDraft(tab.composerDraftKey("hidden-chat"), "chat text");
+  tab.stageComposerDraft(tab.composerDraftKey(tab.NEW_COMPARE_DRAFT_ID), "compare text");
+  tab.writeComposerDraft(tab.composerDraftKey("hidden-chat"), "chat text");
+  assert.equal(tab.adoptCurrentDraft(), true);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "compare text");
 });

@@ -98,7 +98,6 @@ export function writeComposerDraft(key: string, text: string): void {
   if (key !== DRAFT_KEY) {
     if (deletedDraftIds.has(key.slice(LEGACY_DRAFT_PREFIX.length))) return;
     perChatDrafts.set(key, text);
-    if (text) lastTypedDraftId = key.slice(LEGACY_DRAFT_PREFIX.length);
   }
   try {
     if (text.length > 0) window.localStorage.setItem(key, text);
