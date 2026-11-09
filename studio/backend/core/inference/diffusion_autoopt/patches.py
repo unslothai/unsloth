@@ -432,7 +432,9 @@ def _builtin_specs() -> list[PatchSpec]:
 
     def flux3_fp16_attn(ctx: PatchContext) -> bool:
         from ..diffusion_flux3_half_attn import install_for_pipe
-        return install_for_pipe(ctx.pipe, ctx.device, ctx.speed_mode, ctx.logger)
+        return install_for_pipe(
+            ctx.pipe, ctx.device, ctx.speed_mode, ctx.logger, explicit_off = ctx.explicit_off
+        )
 
     def flux3_fp16_attn_uninstall() -> None:
         from ..diffusion_flux3_half_attn import uninstall
@@ -567,7 +569,6 @@ def _builtin_specs() -> list[PatchSpec]:
             flux3_fp16_attn_uninstall,
             group = GROUP_FUSED_DIT,
             backends = ("image",),
-            speed_only = True,
             env = "UNSLOTH_DIFFUSION_FLUX3_FP16_ATTN",
         ),
         PatchSpec(

@@ -13,8 +13,8 @@ SIMT kernel (memory-efficient SDPA, 42 s of a 210 s T4 render):
 - V is unbounded, so each (batch, head) slice is divided by a power of two that puts its largest entry in [2^13, 2^14]
   (exact in float32), and the output, a convex combination of V rows, is multiplied back in float32.
 
-Float16 keeps 10 mantissa bits, more than the 7 bf16 GPUs run this same attention at. Speed ``off`` (exact) keeps
-stock float32 attention, as does every 16-bit load and every GPU with bf16.
+Float16 keeps 10 mantissa bits, more than the 7 bf16 GPUs run this same attention at. An explicit speed ``off``
+(exact) keeps stock float32 attention, as does every 16-bit load and every GPU with bf16.
 """
 
 from __future__ import annotations
@@ -125,9 +125,11 @@ def install_for_pipe(
     device: Any = "cuda",
     speed_mode: Any = None,
     logger: Any = None,
+    explicit_off: Any = None,
 ) -> bool:
     """Idempotent. False (stock) unless: a FLUX.3 transformer on an sm70 / sm75 GPU (where FLUX.3 computes in float32;
-    each call still checks float32 inputs), a non-``off`` speed tier, the diffusers symbol is the expected one, and the
+    each call still checks float32 inputs), no explicit speed ``off`` (``explicit_off``; None reads ``speed_mode``: a
+    dense load's unset request also resolves to off and keeps this), the diffusers symbol is the expected one, and the
     RMSNorm bound proves Q / K fit."""
     import sys
 
@@ -136,7 +138,11 @@ def install_for_pipe(
         disabled()
         or transformer is None
         or type(transformer).__module__ != _MODULE
-        or str(speed_mode or "").strip().lower() == "off"
+        or (
+            str(speed_mode or "").strip().lower() == "off"
+            if explicit_off is None
+            else bool(explicit_off)
+        )
         or not fp16_only_tensor_core_gpu(device)
     ):
         uninstall()

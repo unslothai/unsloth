@@ -143,9 +143,13 @@ def test_install_gates_and_uninstall_restores(monkeypatch, fake_module):
     assert ha.install_for_pipe(pipe, "cuda", "default") is True  # idempotent
     ha.uninstall()
     assert fake_module.dispatch_attention_fn is _sdpa and not ha.is_installed()
-    # speed off is exact: stock
+    # an explicit speed off is exact: stock; an unset request that resolved to off (dense loads) still engages
     assert ha.install_for_pipe(pipe, "cuda", "off") is False
+    assert ha.install_for_pipe(pipe, "cuda", "off", explicit_off = True) is False
+    assert ha.install_for_pipe(pipe, "cuda", "default", explicit_off = True) is False
     assert fake_module.dispatch_attention_fn is _sdpa
+    assert ha.install_for_pipe(pipe, "cuda", "off", explicit_off = False) is True
+    ha.uninstall()
     # a norm weight that could push Q / K near the float16 range: stock
     loud = types.SimpleNamespace(transformer = Transformer(wmax = 2000.0))
     assert ha.install_for_pipe(loud, "cuda", "default") is False
@@ -201,10 +205,20 @@ def test_only_volta_and_turing_qualify(monkeypatch, cap, want):
     assert ha.fp16_only_tensor_core_gpu("cpu") is False
 
 
-def test_registered_as_a_speed_only_load_patch():
+def test_registered_as_a_load_patch_that_reads_explicit_off(monkeypatch):
     from core.inference.diffusion_autoopt import patches
+
     spec = {s.name: s for s in patches.specs(patches.STAGE_LOAD)}["flux3_fp16_attn"]
-    assert spec.speed_only and spec.env == ha.FLUX3_FP16_ATTN_ENV and spec.backends == ("image",)
+    assert (
+        not spec.speed_only and spec.env == ha.FLUX3_FP16_ATTN_ENV and spec.backends == ("image",)
+    )
+    seen = {}
+    monkeypatch.setattr(ha, "install_for_pipe", lambda *a, **k: seen.update(k) or True)
+    assert (
+        spec.install(patches.PatchContext(pipe = object(), speed_mode = "off", explicit_off = False))
+        is True
+    )
+    assert seen == {"explicit_off": False}
 
 
 def test_real_flux3_transformer_engages_and_matches_float32(monkeypatch):
