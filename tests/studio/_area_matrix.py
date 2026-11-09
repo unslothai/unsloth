@@ -41,11 +41,14 @@ import re
 import threading
 import time
 from pathlib import Path
+
+import _appearance_coverage as cov
 from urllib.parse import urlparse
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "studio" / "frontend" / "src"
 MODEL_TS = SRC / "features" / "chat-background" / "model.ts"
+CUSTOM_TS = SRC / "features" / "settings" / "stores" / "appearance-custom-store.ts"
 SHORTCUTS_TS = SRC / "features" / "settings" / "lib" / "keyboard-shortcuts.ts"
 SETTINGS_STORE_TS = SRC / "features" / "settings" / "stores" / "settings-dialog-store.ts"
 
@@ -118,6 +121,41 @@ def modes(materials: list[str], lens_modes: list[str]) -> list[dict]:
     out.append({"name": f"{GLASS}+menus-off", "base": GLASS, "set": {**on_glass, "menus": False}})
     out.append({"name": "solid+dark", "base": "default", "set": {**DEFAULT, "theme": "dark"}})
     out.append({"name": f"{GLASS}+dark", "base": GLASS, "set": {**on_glass, "theme": "dark"}})
+    # Every other appearance setting (_appearance_coverage.py keeps this list complete): the costliest
+    # customisation values, a palette with its own effect rules, the strongest Glass, and a wallpaper.
+    for name, base, setting in (("solid", "default", DEFAULT), (GLASS, GLASS, on_glass)):
+        out.append(
+            {
+                "name": f"{name}+custom",
+                "base": base,
+                "set": {**setting, "custom": dict(cov.CUSTOM_MEASURED)},
+                "expect": cov.CUSTOM_EXPECT,
+            }
+        )
+        out.append(
+            {
+                "name": f"{name}+wallpaper",
+                "base": base,
+                "set": {**setting, "wallpaper": dict(cov.WALLPAPER_MEASURED)},
+                "expect": cov.WALLPAPER_EXPECT,
+            }
+        )
+    out.append(
+        {
+            "name": "solid+palette",
+            "base": "default",
+            "set": {**DEFAULT, "palette": cov.PALETTE_MEASURED},
+            "expect": [f"data-palette={cov.PALETTE_MEASURED}"],
+        }
+    )
+    out.append(
+        {
+            "name": f"{GLASS}+strength-max",
+            "base": GLASS,
+            "set": {**on_glass, "strength": {"light": 100, "dark": 100}},
+            "expect": ["--glass-strength=2.000"],
+        }
+    )
     return out
 
 
@@ -747,7 +785,53 @@ def material_storage(mode: dict) -> str:
         "lens": mode["lens"],
         "scope": "all",
     }
+    if mode.get("strength"):
+        state["strength"] = mode["strength"]
     return json.dumps({"state": state, "version": 0})
+
+
+def custom_storage(custom: dict) -> str:
+    """unsloth_appearance_customization at the store's current version, so no migration rewrites it."""
+    version = int(
+        re.search(
+            r'name: "unsloth_appearance_customization",\s*version: (\d+)',
+            CUSTOM_TS.read_text(encoding = "utf-8"),
+        ).group(1)
+    )
+    return json.dumps({"state": {"customization": custom}, "version": version})
+
+
+# Seeds a generated wallpaper into the app's own chat-background database (created on the first load);
+# the page is then reloaded so the app hydrates it like a stored upload.
+SEED_WALLPAPER = """async (adjust) => {
+  const dbs = await indexedDB.databases();
+  const hit = dbs.find((d) => d.name && d.name.startsWith('unsloth-chat-background'));
+  if (!hit) return 'no chat-background database';
+  const canvas = new OffscreenCanvas(1600, 1000);
+  const ctx = canvas.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 1600, 1000);
+  g.addColorStop(0, '#3b6fd8'); g.addColorStop(0.5, '#e7a34b'); g.addColorStop(1, '#2a9d6f');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 1600, 1000);
+  for (let i = 0; i < 400; i++) {
+    ctx.fillStyle = `hsla(${(i * 37) % 360}, 70%, ${30 + (i % 50)}%, 0.5)`;
+    ctx.beginPath(); ctx.arc((i * 97) % 1600, (i * 61) % 1000, 10 + (i % 60), 0, 7); ctx.fill();
+  }
+  const blob = await canvas.convertToBlob({ type: 'image/png' });
+  const db = await new Promise((ok, no) => { const r = indexedDB.open(hit.name); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+  await new Promise((ok, no) => {
+    const tx = db.transaction('backgrounds', 'readwrite');
+    tx.objectStore('backgrounds').put({ id: 'current', value: { ...adjust, blob }, sha256: null });
+    tx.oncomplete = ok; tx.onerror = () => no(tx.error);
+  });
+  db.close();
+  return 'ok';
+}"""
+ROOT_STATE = """() => { const r = document.documentElement; const out = {};
+  for (const a of r.getAttributeNames()) out[a + (a === 'class' ? '' : '=' + r.getAttribute(a))] = 1;
+  for (const c of r.classList) out[c] = 1;
+  for (const a of r.getAttributeNames()) out[a] = 1;
+  const v = r.style.getPropertyValue('--glass-strength').trim(); if (v) out['--glass-strength=' + v] = 1;
+  return Object.keys(out); }"""
 
 
 class Page:
@@ -764,6 +848,10 @@ class Page:
             "unsloth_window_material": material_storage(mode["set"]),
             "theme": mode["set"]["theme"],
         }
+        if mode["set"].get("custom"):
+            init["unsloth_appearance_customization"] = custom_storage(mode["set"]["custom"])
+        if mode["set"].get("palette"):
+            init["palette"] = mode["set"]["palette"]
         self.ctx.add_init_script(
             "(() => { const v = %s; for (const k in v) localStorage.setItem(k, v[k]); })()"
             % json.dumps(init)
@@ -778,12 +866,40 @@ class Page:
         self.attr_before = None
         self.focusins_before = 0
         page.on("pageerror", lambda e: self.errors.append(str(e)[:200]))
-        page.goto(f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000)
-        page.wait_for_function(
-            "(n) => document.querySelectorAll('[data-role]').length >= n",
-            arg = 2 * turns,
-            timeout = 120_000,
-        )
+
+        def load():
+            page.goto(
+                f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000
+            )
+            page.wait_for_function(
+                "(n) => document.querySelectorAll('[data-role]').length >= n",
+                arg = 2 * turns,
+                timeout = 120_000,
+            )
+
+        load()
+        if mode["set"].get("wallpaper"):
+            seeded = page.evaluate(SEED_WALLPAPER, mode["set"]["wallpaper"])
+            if seeded != "ok":
+                raise RuntimeError(f"wallpaper not seeded: {seeded}")
+            load()
+        if mode.get("expect"):
+            # A setting that did not reach the page would measure the default look and pass silently.
+            want = list(mode["expect"])
+            try:
+                page.wait_for_function(
+                    "(want) => { const r = document.documentElement;"
+                    " return want.every((w) => w.startsWith('--') ? r.style.getPropertyValue(w.split('=')[0]).trim() === w.split('=')[1]"
+                    " : w.includes('=') ? r.getAttribute(w.split('=')[0]) === w.split('=')[1]"
+                    " : r.hasAttribute(w) || r.classList.contains(w)); }",
+                    arg = want,
+                    timeout = 30_000,
+                )
+            except Exception as exc:  # noqa: BLE001
+                have = page.evaluate(ROOT_STATE)
+                raise RuntimeError(
+                    f"mode {mode['name']} did not apply: want {want}, <html> has {sorted(have)}"
+                ) from exc
         page.evaluate(PROBE)
         page.wait_for_timeout(600)
         self.mac = page.evaluate(
