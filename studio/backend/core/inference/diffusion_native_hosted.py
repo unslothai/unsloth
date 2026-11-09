@@ -457,8 +457,22 @@ def _load_native_from_pickle(
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
             _log(logger, "warning", "hosted int8 checkpoint left meta tensors; not used")
             return None
-        if any(p.dtype != torch.bfloat16 for p in model.parameters() if p.is_floating_point()):
-            _log(logger, "info", "hosted int8 checkpoint not used (a non-bf16 dense tensor)")
+        # The torchao export keeps the class's fp32 modules (Wan: time_embedder, scale_shift_table, norm2) in fp32,
+        # as diffusers does at load; any other non-bf16 dense tensor is refused.
+        keep_fp32 = set(getattr(transformer_cls, "_keep_in_fp32_modules", None) or ())
+        stray = [
+            name
+            for name, p in model.named_parameters()
+            if p.is_floating_point()
+            and p.dtype != torch.bfloat16
+            and not (p.dtype == torch.float32 and keep_fp32 & set(name.split(".")))
+        ]
+        if stray:
+            _log(
+                logger,
+                "info",
+                f"hosted int8 checkpoint not used (non-bf16 dense tensor {stray[0]})",
+            )
             return None
         model.eval()
         try:

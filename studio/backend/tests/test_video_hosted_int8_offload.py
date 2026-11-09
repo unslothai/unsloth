@@ -403,6 +403,25 @@ def test_the_pickle_is_mapped_not_read_into_memory(hosted, monkeypatch):
     assert torch.equal(dict(model.named_buffers())["blocks.0.attn1.to_q.weight_q"], codes)
 
 
+@needs_decoder
+def test_the_exports_fp32_modules_are_kept_and_other_fp32_is_refused(hosted):
+    """The real hosted A14B pickle stores time_embedder, scale_shift_table and norm2 in fp32 (125 tensors)."""
+    dense = hosted.dense["transformer"]
+    path = Path(hosted.files["transformer"])
+    for name, p in dense.named_parameters():
+        if {"time_embedder", "scale_shift_table", "norm2"} & set(name.split(".")):
+            p.data = p.data.float()
+    write_hosted_v1(dense, path, component = "transformer")
+    model = _load(hosted, "transformer")
+    assert model is not None
+    assert model.scale_shift_table.dtype == torch.float32
+    assert model.condition_embedder.time_embedder.linear_1.weight.dtype == torch.float32
+    assert model.patch_embedding.weight.dtype == torch.bfloat16
+    dense.patch_embedding.weight.data = dense.patch_embedding.weight.data.float()
+    write_hosted_v1(dense, path, component = "transformer")
+    assert _load(hosted, "transformer") is None
+
+
 def test_an_unreadable_pickle_never_raises(tmp_path):
     bad = tmp_path / "x.pt"
     bad.write_bytes(b"not a checkpoint")
