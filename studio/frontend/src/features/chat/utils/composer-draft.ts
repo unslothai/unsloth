@@ -165,8 +165,7 @@ const draftListeners = new Set<DraftListener>();
 let latest: string | null = null;
 let seeded: string | null = null;
 const perChatDrafts = new Map<string, string>();
-// The per-chat slot this tab last saved text into: what switching sharing on adopts, even when
-// the composer showing it is unmounted (Settings hides the chat view).
+// This tab's last-typed per-chat slot: what sharing adopts, even unmounted (Settings hides chat).
 let lastTypedDraftId: string | null = null;
 
 export function adoptCurrentDraft(): boolean {
