@@ -356,6 +356,7 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 _COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
 # a whole space run holding a kept Unicode space; the lookbehind starts it at the run's first char
 _KEPT_SPACE_RUN = re.compile(r"(?<![^\S\n])[ \t\r\f\v]*[^\S \t\n\r\f\v][^\S\n]*")
+_KEPT_SPACE = re.compile(r"[^\S \t\n\r\f\v]")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -2376,7 +2377,9 @@ def _render_main_document(
 def _fold_kept_spaces(text: str) -> str:
     """Scoring view of *text*: a space run holding U+00A0 or another kept Unicode space is layout
     padding, so it counts as one space, while pure ASCII runs (code indentation) stay as rendered."""
-    return text if text.isascii() else _KEPT_SPACE_RUN.sub(" ", text)
+    if text.isascii() or not _KEPT_SPACE.search(text):
+        return text
+    return _KEPT_SPACE_RUN.sub(" ", text)
 
 
 def _visible_chars(text: str) -> int:
