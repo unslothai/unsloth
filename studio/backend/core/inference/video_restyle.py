@@ -392,6 +392,15 @@ def encode_mp4(frames: list[Any], fps: int = FPS) -> bytes:
     return buf.getvalue()
 
 
+def validate_request(prompt: str, frames: list[Any]) -> tuple[int, SdCppModelFiles]:
+    """Everything a start can refuse with 400, checked before the route takes the GPU."""
+    if not (prompt or "").strip():
+        raise RestyleError("A prompt is required.")
+    if not frames:
+        raise RestyleError("No frames found in the upload.")
+    return snap_frame_count(len(frames)), model_files()
+
+
 class RestyleRunner:
     def __init__(self, server_factory: Optional[Callable[[str], Any]] = None) -> None:
         self._lock = threading.Lock()
@@ -445,12 +454,7 @@ class RestyleRunner:
         reservation: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate and claim the runner; the caller runs ``run`` on a worker thread."""
-        if not (prompt or "").strip():
-            raise RestyleError("A prompt is required.")
-        if not frames:
-            raise RestyleError("No frames found in the upload.")
-        count = snap_frame_count(len(frames))
-        files = model_files()
+        count, files = validate_request(prompt, frames)
         seed = (
             int(seed) if seed is not None else int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF
         )

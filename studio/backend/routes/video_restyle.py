@@ -100,6 +100,7 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
     from routes.inference import _diffusion_training_admission
     from routes.video import _guard_video_load_against_training
 
+    video_restyle.validate_request(kwargs["prompt"], kwargs["frames"])
     try:
         with _diffusion_training_admission():
             _guard_video_load_against_training()

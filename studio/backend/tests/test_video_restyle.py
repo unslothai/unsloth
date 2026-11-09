@@ -877,3 +877,16 @@ def test_a_reserved_runner_refuses_other_loads_but_not_its_own_handoff(weights, 
     finally:
         arb.restyle_handoff.reset(token)
     assert runner._server is server
+
+
+def test_an_invalid_request_is_refused_before_the_gpu_handoff(weights, monkeypatch):
+    from routes import video_restyle as route
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    client = _route_client(monkeypatch, runner)
+    monkeypatch.setattr(vr, "frames_from_video", lambda data: _frames(5))
+    took = []
+    monkeypatch.setattr(route, "_take_the_gpu", lambda: took.append(True))
+    files = [("video", ("a.mp4", b"x", "video/mp4"))]
+    res = client.post("/api/inference/video/restyle", data = {"prompt": " "}, files = files)
+    assert res.status_code == 400 and took == []
