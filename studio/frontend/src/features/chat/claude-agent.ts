@@ -233,7 +233,6 @@ export function rememberClaudeAgentModels(
   try {
     globalThis.localStorage?.setItem(NAMES_KEY, JSON.stringify(names));
   } catch {
-    // Names still apply for this session.
   }
 }
 

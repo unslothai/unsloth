@@ -185,7 +185,6 @@ class ClaudeAgentTransport:
         self._ok = False
         self._completion_id = f"chatcmpl-{uuid.uuid4().hex}"
         self._created = int(time.time())
-        # Only a chat thread keeps a Claude session; a request without one runs in a throwaway process.
         self._thread = str(thread_id) if thread_id else None
         self._claimed = False
         self._launch: dict[str, Any] = {}

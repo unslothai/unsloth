@@ -509,7 +509,6 @@ def test_only_the_owners_deep_research_key_passes_the_owner_gate(
             )
     finally:
         reset_account(token)
-    # Past the owner gate, the next refusal is the stream=true check.
     assert refused.value.status_code == status, refused.value.detail
 
 

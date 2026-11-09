@@ -102,7 +102,6 @@ def _fake_sdk(turns, server_info, connect_error, windows):
 
     sdk.tool = tool
     sdk.create_sdk_mcp_server = lambda name, tools: {"type": "sdk", "name": name, "tools": tools}
-    # Claude Code's own session store: session id -> transcript entries.
     sdk.sessions = {}
     sdk.deleted = []
 
@@ -520,7 +519,6 @@ def test_earlier_turns_ride_in_a_checkpoint_and_the_system_prompt_holds_no_histo
     append = client.options.system_prompt["append"]
     assert "You are terse." in append
     assert "Ada" not in append
-    # Without a chat thread nothing is saved.
     assert client.options.extra_args == {"no-session-persistence": None}
     assert getattr(client.options, "session_id", None) is None
     assert not (tmp_path / "studio" / "cache" / "claude-agent" / "sessions").exists()
@@ -1540,7 +1538,6 @@ def test_tool_rounds_are_recorded_and_the_next_turn_resumes(monkeypatch, tmp_pat
         await transport.aclose()
 
     asyncio.run(run())
-    # How Studio sends the reply back: its own call id, the result as it saved it.
     replayed = messages + [
         {
             "role": "assistant",
@@ -1572,7 +1569,6 @@ def test_a_trimmed_history_still_resumes(monkeypatch, tmp_path):
     a2 = {"role": "assistant", "content": "Ada."}
     _stream([U1], thread_id = "t1")
     _stream([U1, a1, U2], thread_id = "t1")
-    # Studio's context fitter dropped the oldest exchange.
     _stream([U2, a2, U3], thread_id = "t1")
 
     three = sdk.clients[2]

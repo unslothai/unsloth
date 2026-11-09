@@ -302,7 +302,6 @@ export function ClaudeAgentSetup({
     };
   }, [off]);
 
-  // Back from the terminal: check again so the steps turn green by themselves.
   const rechecks = claudeAgentRechecksOnReturn(step);
   useEffect(() => {
     if (!rechecks || typeof window === "undefined") return;

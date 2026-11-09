@@ -29440,7 +29440,6 @@ async def _proxy_to_external_provider(
             if provider_type == "claude_agent":
                 from core.inference.claude_agent_transport import ClaudeAgentTransport
 
-                # One live Claude Code session for the whole loop; close_after below ends it.
                 _loop_transport = ClaudeAgentTransport(
                     model = model,
                     max_tokens = _external_max_tokens,

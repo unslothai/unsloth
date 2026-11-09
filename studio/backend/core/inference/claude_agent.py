@@ -55,7 +55,6 @@ _ISOLATION_ENV = {
     "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK": "1",
     # Deferred tools need ToolSearch, which is off with the other built-ins.
     "ENABLE_TOOL_SEARCH": "false",
-    # Studio already caps tool results.
     "MAX_MCP_OUTPUT_TOKENS": "200000",
     # Simple mode skips the subscription login.
     "CLAUDE_CODE_SIMPLE": "0",
