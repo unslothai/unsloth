@@ -27514,6 +27514,23 @@ class LlamaCppBackend:
                                 mtp_overhead_fn, model_size_fit, _soft_overhead, _pin_fraction = (
                                     _mtp_kept
                                 )
+                                # Still short, so --fit on places the layers and the head stands
+                                # down there. One slot and llama.cpp's own context floor let the
+                                # fitter trim KV before layers (IQ3_XXS, A100, 11.7 GB free: 66/66
+                                # layers, 48 tok/s, against 60/66 and 11 tok/s at 4 slots / 8192).
+                                if not _slots_named and n_parallel > 1:
+                                    logger.info(
+                                        "Auto: --fit on with one serving slot (asked %d) so "
+                                        "llama.cpp keeps more layers on the GPU.",
+                                        n_parallel,
+                                    )
+                                    n_parallel = (
+                                        1  # allow-slot-clamp: --fit on keeps layers over slots
+                                    )
+                                    _effective_ubatch = _ubatch_for_slots(n_parallel)
+                                    _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                                if not explicit_ctx:
+                                    effective_ctx = min(effective_ctx, _LLAMA_FIT_MIN_CTX)
                             else:
                                 logger.info(
                                     "Auto: the embedded MTP head does not fit beside every layer "

@@ -144,13 +144,36 @@ class TestHybridDropsTheHeadBeforeAnyLayer:
         assert got == ("off", 1, n_ctx, "ngram-mod")
 
     def test_named_slots_are_priced_only_as_named(self, tmp_path):
-        """Four named slots do not fit even without the head: --fit on as before."""
+        """Four named slots do not fit even without the head: --fit on keeps them."""
         got = _flags(_argv(tmp_path, weights_mib = 10_800, from_default = False))
-        assert got == ("on", 4, llama_cpp._AUTO_OFFLOAD_CTX, "none")
+        assert got == ("on", 4, llama_cpp._LLAMA_FIT_MIN_CTX, "none")
 
-    def test_short_even_without_the_head_still_offloads(self, tmp_path):
-        got = _flags(_argv(tmp_path, weights_mib = 11_400))
-        assert got == ("on", 4, llama_cpp._AUTO_OFFLOAD_CTX, "none")
+
+class TestFitOnGetsOneSlotAndTheFitFloor:
+    """Short even without the head: --fit on with one slot and llama.cpp's own context floor, so the
+    fitter trims KV before layers (IQ3_XXS, A100 11.7 GB free: 66/66 layers 48 tok/s, against 60/66 and
+    11 tok/s at 4 slots / 8192)."""
+
+    @pytest.mark.parametrize("weights_mib", [11_400, 11_600])
+    def test_default_slots_and_auto_context(self, tmp_path, weights_mib):
+        got = _flags(_argv(tmp_path, weights_mib = weights_mib))
+        assert got == ("on", 1, llama_cpp._LLAMA_FIT_MIN_CTX, "none")
+
+    def test_the_real_estimator_takes_the_same_path(self, tmp_path):
+        got = _flags(_real(tmp_path, 23_476))
+        assert got == ("on", 1, llama_cpp._LLAMA_FIT_MIN_CTX, "none")
+
+    def test_an_explicit_context_is_kept(self, tmp_path):
+        got = _flags(_argv(tmp_path, weights_mib = 11_400, n_ctx = 8192))
+        assert got == ("on", 1, 8192, "none")
+
+    def test_speculation_off_is_unchanged(self, tmp_path):
+        got = _flags(_argv(tmp_path, weights_mib = 11_400, spec = "off"))
+        assert got == ("on", 4, llama_cpp._AUTO_OFFLOAD_CTX, "-")
+
+    def test_a_dense_target_is_unchanged(self, tmp_path):
+        got = _flags(_argv(tmp_path, weights_mib = 10_800, metadata = DENSE_NEXTN))
+        assert got == ("on", 4, llama_cpp._AUTO_OFFLOAD_CTX, "draft-mtp")
 
     def test_a_forced_head_is_never_dropped(self, tmp_path):
         got = _flags(_argv(tmp_path, weights_mib = 10_800, spec = "mtp"))
@@ -709,32 +732,6 @@ _PINNED = {
             "<v>",
         ],
     ),
-    "hybrid_12g_w11400": (
-        dict(weights_mib = 11400),
-        [
-            "-m",
-            "<v>",
-            "--port",
-            "<v>",
-            "--parallel",
-            "4",
-            "--flash-attn",
-            "on",
-            "--no-context-shift",
-            "-c",
-            "8192",
-            "--alias",
-            "test",
-            "--fit",
-            "on",
-            "--kv-unified",
-            "--jinja",
-            "--spec-type",
-            "none",
-            "--api-key-file",
-            "<v>",
-        ],
-    ),
     "hybrid_12g_w10800_mtp": (
         dict(weights_mib = 10800, spec = "mtp"),
         [
@@ -987,32 +984,6 @@ _PINNED = {
             "draft-mtp",
             "--spec-draft-n-max",
             "2",
-            "--api-key-file",
-            "<v>",
-        ],
-    ),
-    "real_hybrid_24g_w23476": (
-        dict(weights_mib = 23476, vram_mib = 24576, slot_scaled_compute = False),
-        [
-            "-m",
-            "<v>",
-            "--port",
-            "<v>",
-            "--parallel",
-            "4",
-            "--flash-attn",
-            "on",
-            "--no-context-shift",
-            "-c",
-            "8192",
-            "--alias",
-            "test",
-            "--fit",
-            "on",
-            "--kv-unified",
-            "--jinja",
-            "--spec-type",
-            "none",
             "--api-key-file",
             "<v>",
         ],

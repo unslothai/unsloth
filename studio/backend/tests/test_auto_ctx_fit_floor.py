@@ -43,4 +43,6 @@ class TestAutoTriesTheFitFloorBeforeOffload:
     @pytest.mark.parametrize("spec", ["auto", "off"])
     def test_a_load_short_even_at_4096_still_offloads(self, tmp_path, spec):
         got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = spec)
-        assert (got["fit"], got["slots"], got["ctx"]) == ("on", 4, llama_cpp._AUTO_OFFLOAD_CTX)
+        # Auto's Hybrid Mamba MTP head stands down under --fit on, which then gets the fit floor.
+        ctx = llama_cpp._LLAMA_FIT_MIN_CTX if spec == "auto" else llama_cpp._AUTO_OFFLOAD_CTX
+        assert (got["fit"], got["slots"], got["ctx"]) == ("on", 4, ctx)
