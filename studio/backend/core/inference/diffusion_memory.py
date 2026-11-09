@@ -1765,9 +1765,8 @@ def calibrated_image_activation(
     )
 
 
-# Float32-compute pricing of the 16-bit activation table (fp16-only GPUs, where these families compute in float32):
-# twice each column. FLUX.3 on a Kaggle T4 at 1024^2, float32 compute, peaks measured below that (PR body table).
-# Without it the plan takes the flat 8 GiB and streams even a 3.5 GiB GGUF denoiser through pageable host memory.
+# fp16-only GPUs: price float32 compute at 2x the 16-bit table (FLUX.3 T4 peaks measured below that); without it the
+# flat 8 GiB estimate streams even a 3.5 GiB GGUF denoiser through pageable host memory.
 FP32_CALIBRATED_ENV = "UNSLOTH_DIFFUSION_FP32_CALIBRATED"
 FP32_CALIBRATED_FAMILIES = frozenset({"flux.3-klein", "flux.3-klein-base"})
 

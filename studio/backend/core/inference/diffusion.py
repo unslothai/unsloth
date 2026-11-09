@@ -2979,8 +2979,7 @@ def _calibrated_activation(
 ) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel.
     ``unpriced_references_ok``: skip the reference rule; the caller sizes references via measured_request_extra_mib.
-    ``fp32_scaled``: a float32-compute load of an ``fp32_calibrated`` family reads the 16-bit table scaled 2x (the load
-    plan); False keeps such a load unmeasured (the post-load phase seeds, which read the table unscaled)."""
+    ``fp32_scaled``: a float32 ``fp32_calibrated`` load reads the table scaled 2x; False keeps it unmeasured (post-load seeds)."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
