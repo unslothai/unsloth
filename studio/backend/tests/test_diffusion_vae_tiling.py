@@ -452,6 +452,7 @@ def test_budget_comes_from_free_vram_and_the_env_caps_it(monkeypatch):
     z = torch.zeros(1, 4, 1, 64, 64)
     assert vt.decode_tile_budget(vae, z) == vt.TILE_LATENTS**2
     monkeypatch.delenv(vt.MAX_TILE_ENV)
+    monkeypatch.setenv(vt.HOST_BUDGET_ENV, "0")
     assert vt.decode_tile_budget(vae, z) is None
     assert vt.choose_tiles(64, 64, None) == (32, 32)
 
