@@ -7538,8 +7538,8 @@ html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="m
 html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {
   --clear-alpha: 96%;
 }
-/* A popup's own blur cannot reach content scrolling under its sticky bars: they take the opaque palette. */
-html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) .sticky {
+/* A popup's own blur cannot reach content scrolling under its sticky bars (data-sticky-bar: responsive ones): they take the opaque palette. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) :is(.sticky, [data-sticky-bar]) {
   --background: var(--glass-page-bg);
   --card: var(--glass-page-card);
   --popover: var(--glass-page-popover);
