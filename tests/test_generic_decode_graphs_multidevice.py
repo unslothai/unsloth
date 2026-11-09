@@ -395,3 +395,80 @@ def test_split_model_root_hook_on_the_first_blocks_card_is_plain(monkeypatch):
     monkeypatch.setattr(GG, "_param_devices", lambda model: {torch.device("cuda", 1)})
     root.__dict__["_hf_hook"] = AlignDevicesHook(execution_device = torch.device("cuda", 0))
     assert not GG._single_device_hook(root)
+
+
+def _graph_block_mask(device = "cpu"):
+    # A BlockMask publishing the graph contract as zoo's gpt-oss flex mask does: mask_mod reads an offset
+    # and padding rows through `rebuild`, and the builder's own per-device rebuild sits on the mask.
+    from torch.nn.attention.flex_attention import BlockMask
+
+    offset = torch.full((), 3, dtype = torch.int64, device = device)
+    pad = torch.ones(1, 128, dtype = torch.bool, device = device)
+
+    def rebuild(ts):
+        off, rows = ts
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            return (kv_idx + off <= q_idx + off) & rows[b, kv_idx]
+
+        mask_mod.reads = ts
+        return mask_mod
+
+    bm = BlockMask.from_kv_blocks(
+        torch.ones(1, 1, 1, dtype = torch.int32, device = device),
+        torch.zeros(1, 1, 1, 1, dtype = torch.int32, device = device),
+        BLOCK_SIZE = 128,
+        mask_mod = rebuild((offset, pad)),
+        seq_lengths = (1, 128),
+    )
+    bm._unsloth_graph_closure = ((offset, pad), rebuild)
+    bm._unsloth_on_device = lambda target: pytest.fail(
+        "the builder's rebuild reads the unrefilled tensors"
+    )
+    return bm
+
+
+def test_graph_block_mask_moves_its_closure_tensors_to_the_layer_card(monkeypatch):
+    # Split model + flex decode: the static BlockMask is built on card 0 and accelerate moves it to card 1's
+    # layers. BlockMask.to leaves mask_mod's tensors on card 0 (the gpt-oss "Tensor device mismatch ...
+    # cuda:1 and cuda:0" at kv_idx + kv_o), so both the warm-up and the recording move them as well.
+    pytest.importorskip("torch.nn.attention.flex_attention")
+    cards = _HostCards()
+    monkeypatch.setattr(GG, "_BACKEND", cards)
+    value = _graph_block_mask()
+    leaves, cache = [], object()
+    GG._spec(value, leaves, cache)
+    static = [leaf.clone() for leaf in leaves]
+    built = GG._build(value, iter(static), cache)
+    closure = built._unsloth_graph_closure[0]
+    assert built.mask_mod.reads == closure and all(any(t is s for s in static) for t in closure)
+
+    # Eager warm-up: accelerate's .to (zoo's patched BlockMask.to calls _unsloth_on_device).
+    on_device = built.__dict__.get("_unsloth_on_device")
+    assert on_device is not None
+    moved = on_device("meta")
+    assert all(t.device.type == "meta" for t in moved.mask_mod.reads)
+    assert moved.kv_num_blocks.device.type == "meta"
+    # Same card (the root hook, the first card's layers): the mask itself, which keeps its per-device move,
+    # so the next card's hook still moves mask_mod's tensors (Kaggle T4x2: the root hook's same-card move
+    # dropped it and the cuda:1 layers read the cuda:0 offsets).
+    here = on_device("cpu")
+    assert here is built
+    later = here.__dict__["_unsloth_on_device"]("meta")
+    assert all(t.device.type == "meta" for t in later.mask_mod.reads)
+    # A moved mask moves on again.
+    assert moved.__dict__["_unsloth_on_device"]("meta") is moved
+
+    # Recording: the fields and closure tensors cross as hand-offs (refilled every replay), once per card.
+    recorder = GG._SegmentRecorder(cards, {0: "pool0", 1: "pool1"}, 0)
+    recorder.original = lambda v, device, non_blocking = False, skip_keys = None: v.to(device)
+    out = recorder.send(recorder.original, {"attention_mask": built}, "meta")["attention_mask"]
+    again = recorder.send(recorder.original, {"attention_mask": built}, "meta")["attention_mask"]
+    assert again is out
+    assert all(t.device.type == "meta" for t in out.mask_mod.reads)
+    assert out._unsloth_graph_closure[0] == out.mask_mod.reads
+    copies = [p for p in recorder.segments.parts if p[0] == "copy"]
+    sources = [p[2] for p in copies]
+    assert all(any(t is s for s in sources) for t in closure), "closure tensors not handed off"
+    assert any(s is built.kv_num_blocks for s in sources)
+    assert recorder.pending == 1
