@@ -80,8 +80,22 @@ export function propsEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
+/** Equal by identity, or one level deep: the root provides `{ clientRef, emit }` as a new literal per render. */
+export const sameContextValue = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
+  }
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every(
+    (k) => Object.prototype.hasOwnProperty.call(b, k) && Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+  );
+};
+
 const sameValues = (a: readonly unknown[], b: readonly unknown[]): boolean =>
-  a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
+  a.length === b.length && a.every((value, i) => sameContextValue(value, b[i]));
 
 /** The context each render saw, for its commit. */
 const renderedContext = new WeakMap<object, unknown[]>();

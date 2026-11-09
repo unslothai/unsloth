@@ -17,7 +17,8 @@ const {
   tapState,
   withKey,
 } = await import("../node_modules/@assistant-ui/tap/dist/index.js");
-const { propsEqual, tapResources } = await import("../src/lib/assistant-ui-tap-resources.ts");
+const { propsEqual, sameContextValue, tapResources, withContextProvider } = await import("../src/lib/assistant-ui-tap-resources.ts");
+const { createResourceContext, tap } = await import("../node_modules/@assistant-ui/tap/dist/index.js");
 
 type Probe = { renders: Map<string, number>; setters: Map<string, (v: number) => void>; unmounted: string[] };
 
@@ -120,4 +121,35 @@ test("the app and assistant-ui load tap through the stand-in, and only tapResour
   assert.match(shim, /export \* from "\.\.\/\.\.\/node_modules\/@assistant-ui\/tap\/dist\/index\.js";\nexport \{ tapResources, withContextProvider \} from "\.\/assistant-ui-tap-resources";/);
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.dependencies["@assistant-ui/tap"], "0.5.10", "the stand-in follows tap 0.5.10's tapResources; re-check it on upgrade");
+});
+
+test("context values compare by identity or one level deep, so a fresh { clientRef, emit } literal is equal", () => {
+  const clientRef = { current: null };
+  const emit = () => undefined;
+  assert.ok(sameContextValue({ clientRef, emit }, { clientRef, emit }));
+  assert.ok(!sameContextValue({ clientRef, emit }, { clientRef, emit: () => undefined }));
+  const stack = [{}];
+  assert.ok(sameContextValue(stack, [stack[0]]));
+  assert.ok(!sameContextValue([{}], [{}]));
+});
+
+test("a changed context value above the list re-renders every child; an equal fresh one re-renders none", () => {
+  const Ctx = createResourceContext({ v: 0 });
+  const renders: number[] = [];
+  const Child = resource(({ i }: { i: number }) => {
+    renders[i] = (renders[i] ?? 0) + 1;
+    return `${i}:${(tap(Ctx) as { v: number }).v}`;
+  });
+  const Parent = resource(({ v }: { v: number }) =>
+    // No deps: the list is rebuilt on every render, as the thread's message list is on every update.
+    withContextProvider(Ctx as never, { v }, () => tapResources(() => [0, 1].map((i) => withKey(String(i), Child({ i })) as never))),
+  );
+  const root = createResourceRoot();
+  const render = (v: number) => (flushResourcesSync(() => root.render(Parent({ v }) as never)) as { getValue: () => string[] }).getValue();
+  assert.deepEqual(render(1), ["0:1", "1:1"]);
+  const before = [...renders];
+  assert.deepEqual(render(1), ["0:1", "1:1"]);
+  assert.deepEqual(renders, before, "a fresh but equal context value re-renders no child");
+  assert.deepEqual(render(2), ["0:2", "1:2"]);
+  assert.ok(renders.every((n, i) => n > before[i]), "a changed context value re-renders every child");
 });
