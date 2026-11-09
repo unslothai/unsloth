@@ -1741,8 +1741,7 @@ def _build_int8_convrot_encoder(
 
 
 def _tag_weight_files(encoder: Any, path: Any) -> None:
-    """Name the file the encoder was built from, so releasing it reloads from there instead of a snapshot (only the
-    tensors whose bytes still match are taken from it)."""
+    """Record the source file so a release reloads matching tensors from it instead of snapshotting."""
     from .diffusion_te_release import WEIGHT_FILES_ATTR
     if str(path).endswith(".safetensors"):
         setattr(encoder, WEIGHT_FILES_ATTR, (str(path),))

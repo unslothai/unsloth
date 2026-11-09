@@ -369,7 +369,6 @@ def test_release_reloads_unchanged_weights_from_the_source_file(
     releaser = te_release.TextEncoderReleaser([("text_encoder", pipe.text_encoder)])
     total = releaser.releasable_bytes
     assert releaser.release() == total
-    # Every released tensor is in the file byte for byte: nothing is written.
     assert len(releaser._from_source) == len(releaser._slots) == 3
     assert _snapshot_bytes(snapshot_root) == 0
     if not os.name == "nt":

@@ -22,7 +22,6 @@ SOURCE_REUSE_ENV = "UNSLOTH_DIFFUSION_TE_RELEASE_FROM_SOURCE"
 WEIGHT_FILES_ATTR = "_unsloth_weight_files"
 # A folder with more files than this is not one encoder's checkpoint.
 _MAX_SOURCE_FILES = 64
-# Name candidates tried per tensor before it falls back to the snapshot.
 _MAX_CANDIDATES = 4
 TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
 # Tensors below this stay resident: norms, biases and rotary tables are a rounding error next to the projections.
@@ -52,7 +51,6 @@ def source_reuse_enabled() -> bool:
 
 
 def _source_files(encoder: Any) -> list[Path]:
-    """The safetensors files ``encoder``'s weights may have come from; empty when unknown."""
     tagged = getattr(encoder, WEIGHT_FILES_ATTR, None)
     if tagged:
         files = [Path(str(f)) for f in tagged]
@@ -256,8 +254,7 @@ class TextEncoderReleaser:
         return (owner._parameters if is_param else owner._buffers)[leaf]
 
     def _match_sources(self) -> None:
-        """Map every released tensor the encoder's own files hold byte for byte to that file, so the release writes
-        no copy of it. A tensor whose bytes differ (cast, merged, rotated) or whose file is unknown is snapshotted."""
+        """Map tensors whose bytes match the encoder's own files to them; the rest are snapshotted."""
         import torch
         from safetensors import safe_open
 
@@ -305,7 +302,6 @@ class TextEncoderReleaser:
                                 break
                     except Exception:  # noqa: BLE001 - unreadable: snapshot this tensor instead
                         continue
-        # Keep open only the files a tensor reloads from.
         used = sorted({index for index, _ in self._from_source.values()})
         remap = {old: new for new, old in enumerate(used)}
         self._source_handles = [self._source_handles[i] for i in used]
