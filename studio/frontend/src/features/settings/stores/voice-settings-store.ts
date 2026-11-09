@@ -77,8 +77,7 @@ export function isSttModelLanguageCompatible(
 
 export type DictationEngine = "browser" | "model" | "custom";
 
-/** What the composer mic does: "asr" transcribes into the box, "model" attaches the clip
- *  for an audio-input chat model (falls back to "asr" when the loaded model has none). */
+/** "model" attaches a clip for an audio-input model, else falls back to "asr". */
 export type MicTarget = "asr" | "model";
 
 /** Mirrors the backend `SttLoadRequest.device`; "gpu" is not offered since it adds nothing. */

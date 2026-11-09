@@ -5344,7 +5344,6 @@ const Composer: FC<{
       notifyStudioDictationUnavailable();
     }
   }, [aui, audioUpload, dictationEntryDisabled]);
-  // The runtime's dictation adapter attaches a model-bound recording to this composer.
   useEffect(
     () =>
       setMicAudioClipTarget({

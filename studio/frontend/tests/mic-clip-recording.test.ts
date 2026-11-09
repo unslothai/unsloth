@@ -182,7 +182,6 @@ test("other audio is held off while recording, and the clip is capped at the roo
   await flush();
   assert.equal(lastRecorder?.maxBytes, 500_000);
   await session.stop();
-  // The clip itself must get through the attachment adapter.
   assert.equal(recordingAtClip, false);
   assert.equal(micClipState.micClipRecording(), false);
 });

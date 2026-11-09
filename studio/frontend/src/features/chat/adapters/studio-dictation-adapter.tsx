@@ -45,13 +45,11 @@ export function cancelActiveStudioDictation(): void {
 
 type AudioClipTarget = {
   add: (file: File) => Promise<unknown> | unknown;
-  /** Files already in the composer, so a recording stops inside what is left of the audio budget. */
   attached: () => readonly { name: string; type: string; size: number }[];
 };
-// The chat composer that takes the mic's clip; Compare registers none and keeps transcribing.
+// Compare registers none, so it keeps transcribing.
 let audioClipTarget: AudioClipTarget | null = null;
 
-/** Returns an unregister that only clears its own target. */
 export function setMicAudioClipTarget(target: AudioClipTarget): () => void {
   audioClipTarget = target;
   return () => {
@@ -59,7 +57,6 @@ export function setMicAudioClipTarget(target: AudioClipTarget): () => void {
   };
 }
 
-/** Whether the next mic press records a clip for the loaded model rather than transcribing. */
 export function micRecordsForModel(chatId?: string | null): boolean {
   if (chatId === null || !audioClipTarget) return false;
   const { micTarget } = useVoiceSettingsStore.getState();

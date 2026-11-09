@@ -13,7 +13,6 @@ export function beginDictationSession(): void {
   failed = false;
 }
 
-/** The mic sent its recording to the model as an audio attachment instead. */
 export function markDictationClip(): void {
   producedClip = true;
 }

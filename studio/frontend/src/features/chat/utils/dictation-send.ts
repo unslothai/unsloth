@@ -29,8 +29,7 @@ export function dictationSendBlocked(state: {
   );
 }
 
-/** Refuse on a thread switch, a text change not from speech, or silence. An attached
- *  recording is the message itself, so it sends with whatever text is there. */
+/** Refuse on a thread switch, a text change not from speech, or silence; an attached clip always sends. */
 export function shouldSubmitDictation(input: {
   originComposer: string;
   currentComposer: string;

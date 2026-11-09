@@ -8,7 +8,6 @@ import {
   isAudioAttachmentFile,
 } from "../../../lib/audio-utils.ts";
 
-/** The mic reaches the model only while the loaded one takes audio; otherwise it transcribes. */
 export function micSendsAudioToModel(
   micTarget: MicTarget,
   modelHearsAudio: boolean,
@@ -21,12 +20,11 @@ export function micClipFilename(now: Date = new Date()): string {
   return `recording-${stamp}.wav`;
 }
 
-// One second at the recorder's preferred 16 kHz; less would hold no usable clip.
+// One second at 16 kHz.
 export const MIN_MIC_CLIP_BYTES = 44 + 16_000 * 2;
 
 export type MicClipRoom = { maxBytes: number } | { reason: string };
 
-/** What the composer can still take for one more clip, by the audio attachment adapter's own limits. */
 export function micClipRoom(
   attached: readonly { name: string; type: string; size: number }[],
   maxFiles: number,

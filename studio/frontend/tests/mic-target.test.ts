@@ -125,8 +125,7 @@ test("stop-and-send submits an attached clip with no new text", () => {
   );
 });
 
-// The gate keys on hasAudioInput alone, so every way a model reaches the store must carry it:
-// the models list row (GGUF, safetensors, MLX alike), the load response, and the status adoption.
+// Every route into the store must carry hasAudioInput: list row, load response, status adoption.
 test("the gate is family-agnostic: no model names in the routing", () => {
   const gate = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
   const routing = gate.slice(gate.indexOf("export function micRecordsForModel"));
@@ -145,7 +144,6 @@ test("every route into the chat store carries has_audio_input", () => {
 
 test("a recording gets the whole audio limit when nothing else is attached", () => {
   assert.deepEqual(micClipRoom([], 8, false), { maxBytes: MAX_AUDIO_SIZE });
-  // Images do not count against the audio budget.
   const image = { name: "a.png", type: "image/png", size: 5_000_000 };
   assert.deepEqual(micClipRoom([image], 8, false), { maxBytes: MAX_AUDIO_SIZE });
 });
