@@ -103,7 +103,10 @@ def test_index_only_never_downloads_a_single_file(monkeypatch):
         for n in ast.parse(SRC).body
         if isinstance(n, ast.FunctionDef) and n.name == "_load_fp8_weight_map"
     )
-    ns = {"os": os}
+    import contextvars
+
+    # Outside a from_pretrained the per-load memo is unset.
+    ns = {"os": os, "_LOAD_PROBE_MEMO": contextvars.ContextVar("memo", default = None)}
     exec(ast.get_source_segment(SRC, node), ns)
     fetched = []
 

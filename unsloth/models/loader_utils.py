@@ -2457,6 +2457,27 @@ def _load_fp8_weight_map(
     single_file = f"model.{variant}.safetensors" if variant else "model.safetensors"
     is_local = os.path.isdir(model_name)
 
+    # Scoped to one from_pretrained (_load_probe_memo_scope), so the next load sees a new upload.
+    memo = _LOAD_PROBE_MEMO.get()
+    memo_key = (
+        "fp8_weight_map",
+        model_name,
+        revision,
+        subfolder,
+        cache_dir,
+        variant,
+        bool(local_files_only),
+        is_local,
+    )
+    if memo is not None:
+        try:
+            cached = memo.get(memo_key)
+        except TypeError:
+            memo = None
+            cached = None
+        if cached is not None:
+            return dict(cached)
+
     if is_local and os.path.exists(_local_path(index_file)):
         index_path = _local_path(index_file)
     elif not is_local:
@@ -2469,8 +2490,14 @@ def _load_fp8_weight_map(
         index_path = None
     if index_path is not None:
         import json
+
         with open(index_path, "r", encoding = "utf-8") as f:
-            return json.load(f).get("weight_map", None)
+            weight_map = json.load(f).get("weight_map", None)
+        # backfill, scale restore and leftover dequant share one from_pretrained: parse once.
+        if memo is not None and isinstance(weight_map, dict):
+            memo[memo_key] = weight_map
+            return dict(weight_map)
+        return weight_map
 
     try:
         if is_local and os.path.exists(_local_path(single_file)):
@@ -3909,6 +3936,10 @@ def _dequantize_leftover_fp8_params(
         if not scale_by_weight_key:
             return (0, 0)
         module_by_name = dict(model.named_modules())
+        # First name in walk order, as the old identity scan picked; O(1) per scale key.
+        name_by_module = {}
+        for candidate, mod in module_by_name.items():
+            name_by_module.setdefault(id(mod), candidate)
         # Names only: holding the fp8 Parameter would defeat the OOM fallback.
         params_by_module = {}
         for name in leftover:
@@ -3925,11 +3956,7 @@ def _dequantize_leftover_fp8_params(
             module = _match_fp8_module(module_by_name, ckpt_module)
             if module is None:
                 continue
-            live_name = None
-            for candidate, mod in module_by_name.items():
-                if mod is module:
-                    live_name = candidate
-                    break
+            live_name = name_by_module.get(id(module))
             if live_name is None or live_name not in params_by_module:
                 continue
             target_of_ckpt[weight_key] = (module, live_name, ckpt_attr)
