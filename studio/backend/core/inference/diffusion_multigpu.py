@@ -2022,9 +2022,8 @@ def _copy_module(module: Any, device: Any) -> Any:
                     memo[id(hook)] = _DROP
         # Per-step precision state (the NVFP4 W4A16 protect schedule) is advanced by the source's scheduler: the copy
         # must read the same controller, or the two CFG branches of one step run different GEMMs.
-        for value in sub.__dict__.values():
-            if type(value).__name__ in _SHARED_STATE_TYPES:
-                memo[id(value)] = value
+        for value in _shared_state_values(sub):
+            memo[id(value)] = value
     guard = module.__dict__.get("_unsloth_compile_guard")
     if guard is not None:
         memo[id(guard)] = _DROP
@@ -2097,6 +2096,11 @@ _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
 _SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
+
+
+def _shared_state_values(sub: Any) -> list:
+    """The per-step state objects (``_SHARED_STATE_TYPES``) one submodule holds; the replica shares them."""
+    return [value for value in sub.__dict__.values() if type(value).__name__ in _SHARED_STATE_TYPES]
 
 
 def _rewrap_compiled(source: Any, replica: Any) -> None:
@@ -2688,9 +2692,8 @@ def _shared_states(pairs: list) -> tuple:
     found: dict = {}
     for pair in pairs:
         for sub in pair:
-            for value in sub.__dict__.values():
-                if type(value).__name__ in _SHARED_STATE_TYPES:
-                    found.setdefault(id(value), value)
+            for value in _shared_state_values(sub):
+                found.setdefault(id(value), value)
     return tuple(found.values())
 
 
