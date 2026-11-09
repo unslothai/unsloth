@@ -331,6 +331,16 @@ def test_a_diffusion_model_no_card_holds_is_cut_across_both(monkeypatch):
     assert _plan(layer_ok = False)[0].layer is False
     # both cards together too small: the companion split remains
     assert _plan(diffusion_mib = 22_000, layer_ok = True)[0].layer is False
+    # the secondary's room is what is left beside the encoders and the VAE: no blocks fit there, no block split
+    crowded, _ = _plan(
+        primary_limit_mib = 20_000,
+        secondary_limits_mib = {1: 14_000},
+        diffusion_mib = 23_000,
+        text_encoder_mib = 10_000,
+        vae_mib = 250,
+        layer_ok = True,
+    )
+    assert crowded is None or crowded.layer is False
 
 
 def test_the_block_split_pin_lists_both_cards_and_their_budgets(monkeypatch):

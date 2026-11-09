@@ -73,15 +73,23 @@ def plan_sd_cpp_split(
     if not limits:
         return None, "no second card with readable free memory"
     best = max(limits, key = lambda o: (limits[o], -o))
-    both = primary_limit_mib + limits[best]
-    pair_need = (
-        diffusion_mib
-        + text_encoder_mib
-        + vae_mib
-        + 2 * DENOISE_HEADROOM_MIB
-        + VAE_DECODE_HEADROOM_MIB
+    # each card's room for diffusion blocks: the secondary after the encoders, the VAE and their working memory
+    # (sd.cpp's proportional cut sizes each card's block range from that remaining capacity)
+    primary_room = primary_limit_mib - DENOISE_HEADROOM_MIB
+    secondary_room = (
+        limits[best]
+        - text_encoder_mib
+        - vae_mib
+        - DENOISE_HEADROOM_MIB
+        - max(ENCODER_HEADROOM_MIB, VAE_DECODE_HEADROOM_MIB)
     )
-    if layer_ok and diffusion_mib + DENOISE_HEADROOM_MIB > primary_limit_mib and pair_need <= both:
+    if (
+        layer_ok
+        and diffusion_mib + DENOISE_HEADROOM_MIB > primary_limit_mib
+        and primary_room > 0
+        and secondary_room > 0
+        and diffusion_mib <= primary_room + secondary_room
+    ):
         # no card holds the diffusion model resident: sd.cpp cuts its blocks in proportion to each card's budget
         return (
             SdCppCardSplit(
@@ -91,8 +99,8 @@ def plan_sd_cpp_split(
                 layer = True,
                 budgets_mib = (int(primary_limit_mib), int(limits[best])),
                 reason = (
-                    f"multi-GPU: diffusion model ({diffusion_mib} MiB) split across cuda:{primary} and cuda:{best} "
-                    f"({pair_need} of {both} MiB with the text encoders on cuda:{best}); one card needs {whole} MiB"
+                    f"multi-GPU: diffusion model ({diffusion_mib} MiB) split across cuda:{primary} ({primary_room} MiB "
+                    f"room) and cuda:{best} ({secondary_room} MiB beside the text encoders); one card needs {whole} MiB"
                 ),
             ),
             "",
