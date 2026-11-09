@@ -871,9 +871,18 @@ def video_sample(
         return filled
 
     # Only the missing columns can change the answer, so read just those: reading whole rows decodes every
-    # image / audio cell of up to 31 rows. Anything unexpected falls back to the full-row scan.
+    # image / audio cell of up to 31 rows. Only when the rows hold exactly the known columns (no custom
+    # transform, no unknown streaming schema); anything unexpected falls back to the full-row scan.
     select_columns = getattr(dataset, "select_columns", None)
-    if callable(select_columns) and len(missing) < len(sample):
+    columns = getattr(dataset, "column_names", None)
+    fmt = getattr(dataset, "format", None)
+    if (
+        callable(select_columns)
+        and len(missing) < len(sample)
+        and isinstance(columns, list)
+        and set(columns) == set(sample)
+        and not (isinstance(fmt, dict) and fmt.get("type") == "custom")
+    ):
         try:
             return _fill(select_columns(missing))
         except Exception:  # noqa: BLE001

@@ -6,7 +6,7 @@ image column is not decoded 31 times; the filled sample is the same as a full-ro
 
 import io
 
-from datasets import Dataset, Image as HFImage
+from datasets import Dataset, Image as HFImage, IterableDataset
 from PIL import Image
 
 from utils.datasets import format_detection as fd
@@ -93,6 +93,25 @@ def test_only_missing_columns_are_read(monkeypatch):
     monkeypatch.setattr(Dataset, "select_columns", spy)
     fd.video_sample(dataset, dataset[0])
     assert seen == [["messages"]]
+
+
+def test_a_custom_transform_and_an_unknown_stream_schema_scan_whole_rows():
+    derived = Dataset.from_dict({"src": ["", "z.mp4"], "video": [None, None], "text": ["a", "b"]})
+
+    def _derive(batch):
+        return {**batch, "video": [s or None for s in batch["src"]]}
+
+    derived.set_transform(_derive)
+    assert fd.video_sample(derived, derived[0]) == _full_scan(derived, derived[0])
+    assert fd.video_sample(derived, derived[0])["video"] == "z.mp4"
+
+    def _rows():
+        yield {"text": "a", "image": None}
+        yield {"text": "b", "image": "i.png", "video": "v.mp4"}
+
+    stream = IterableDataset.from_generator(_rows)
+    first = next(iter(stream))
+    assert fd.video_sample(stream, first) == _full_scan(stream, first)
 
 
 def test_a_complete_first_row_reads_nothing_and_lists_still_work():
