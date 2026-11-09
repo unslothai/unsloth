@@ -6050,11 +6050,8 @@ def install_encode_release(
 MEASURED_RESERVE_DENOISE_PHASE_INDEX = 13
 
 DERIVED_REFERENCE_PRICE_ENV = "UNSLOTH_DIFFUSION_DERIVED_REFERENCE_PRICE"
-# Families whose reference images the denoise-phase placement prices from the request's token count instead of the
-# flat 8192 MiB/MP allowance. Qwen-Image-2.1 edit at 1024^2 (A100 / L4, int8 ConvRot, one 1024 reference, whole
-# denoiser streamed): learned edit peak 3271-3447 MiB above the weights, of which the condition K/V cache is 2061 MiB
-# (32 layers x 2 x 4096 x bf16 x 4096 reference tokens, plus the prompt); the flat allowance charged 3014 MiB on top
-# of the 2304 MiB whole-render reserve, which streamed every resident block out for each edit.
+# Families whose references are priced from their token count, not the flat 8192 MiB/MP allowance. Qwen-Image-2.1
+# edit 1024^2 (A100 / L4, int8): learned edit peak 3271-3447 MiB, 2061 of it the condition K/V cache.
 _DERIVED_REFERENCE_FAMILIES = frozenset({"qwen-image-2.1"})
 
 
@@ -6063,7 +6060,6 @@ def derived_reference_pricing_enabled() -> bool:
 
 
 def _reference_pixels_per_token(pipe: Any) -> Optional[int]:
-    """Image pixels per denoiser token (VAE downscale x patch, squared); None when unreadable."""
     try:
         scale = int(getattr(pipe, "vae_scale_factor", 0) or 0)
         config = getattr(getattr(pipe, "transformer", None), "config", None)
@@ -6076,8 +6072,7 @@ def _reference_pixels_per_token(pipe: Any) -> Optional[int]:
 
 
 def _prefix_kv_bytes_per_token(pipe: Any, compute_bytes: int) -> Optional[int]:
-    """Bytes the condition K/V cache holds per cached token: every block's keys and values. 0 when the denoiser keeps no
-    such cache (the reference tokens then only widen each step's activations); None when unreadable."""
+    """Condition K/V cache bytes per cached token (0: no prefix cache; None: unreadable)."""
     transformer = getattr(pipe, "transformer", None)
     config = getattr(transformer, "config", None)
     if transformer is None or config is None:
@@ -6114,13 +6109,9 @@ def derived_reference_need_mib(
     compute_bytes: int = 2,
     quadratic_attention: bool = False,
 ) -> Optional[int]:
-    """MiB a reference-conditioned request needs while its steps run, margin included, derived from its token count:
-    the placement's own denoise phase (``phase_mib``, measured at 1024x1024 text-to-image, margin included) scaled by
-    the joint sequence (target plus reference tokens) over that bucket, plus the condition K/V cache the reference
-    tokens fill once and every later step reads. Both double for a request that may run classifier-free guidance
-    (``cfg`` not False: a second cache and the negative branch). None when the family was not measured against this
-    price, the kill switch is set, the attention is quadratic in the sequence, or the denoiser's shape is unreadable:
-    the caller then keeps the flat allowance."""
+    """Denoise-phase MiB of a reference request, margin included: ``phase_mib`` scaled by the joint sequence over the
+    1024^2 bucket plus the condition K/V cache, both doubled when CFG may run. None (keep the flat allowance) for an
+    unmeasured family, the kill switch, quadratic attention or an unreadable denoiser."""
     if not derived_reference_pricing_enabled() or quadratic_attention:
         return None
     name = (str(family or "").split() or [""])[0].lower()
@@ -6170,10 +6161,8 @@ def measured_request_extra_mib(
     only that phase's reserve while the steps run: a request it was sized for (text-to-image, at most the 1024x1024
     bucket, no condition images or tier peak, within the whole-render reserve) releases nothing, its encode and decode
     priced by their own hooks; any other request is priced against the denoise reserve, which first streams the blocks
-    the phase sizing added. ``reference_pixels``: the unweighted pixels of the reference images behind
-    ``condition_pixels``; for a family in ``_DERIVED_REFERENCE_FAMILIES`` such a request is otherwise the sized one, so
-    it is priced from its token count (``derived_reference_need_mib``, or the learned peak of its workflow when larger)
-    against the denoise reserve instead of the whole-render reserve plus the flat allowance."""
+    the phase sizing added. ``reference_pixels`` (unweighted): an otherwise sized reference request is priced by
+    ``derived_reference_need_mib`` (or its workflow's larger learned peak) against the denoise reserve."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
@@ -6313,8 +6302,7 @@ def measured_request_extra_mib(
         if sized_for and allowance == 0 and within and int(need) <= int(headroom):
             return 0
         if within and allowance > 0 and int(reference_pixels or 0) > 0:
-            # a reference request: its encode and decode run under their own hooks like the sized one; its steps
-            # need the joint sequence and the condition K/V cache, priced from the token count
+            # encode and decode run under their own hooks; only the steps grow with the reference
             derived = derived_reference_need_mib(
                 pipe,
                 family = family,
