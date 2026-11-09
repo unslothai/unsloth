@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Windows ROCm Get-Counter reads: display polls share one PowerShell call per TTL; fit reads stay fresh."""
 
 import types
