@@ -284,3 +284,37 @@ def test_real_tiny_qwen21_stock_vs_fused_eager_and_compiled():
         dfu.uninstall(m)
         q21f.uninstall()
     assert qmod._qwenimage21_prepare_qkv.__name__ == "_qwenimage21_prepare_qkv"
+
+
+def test_cfg_replica_drops_source_records_and_fuses_its_own(monkeypatch):
+    from core.inference import diffusion_multigpu as mg
+    from core.inference import diffusion_qwenimage21_fused as q21f
+
+    class QwenImage21Attention(nn.Module):
+        def __init__(self, dim = 32):
+            super().__init__()
+            self.to_q = nn.Linear(dim, dim, bias = False)
+            self.to_k = nn.Linear(dim, dim, bias = False)
+            self.to_v = nn.Linear(dim, dim, bias = False)
+
+    monkeypatch.setattr(q21f, "_patch_prepare", lambda logger = None: True)
+    m = _model()
+    m.attn = QwenImage21Attention()
+    assert dfu.install(m) == {"gate_up": 2, "qkv": 1}
+    src_ptrs = {b.__dict__[dfu._FF_ATTR][0].untyped_storage().data_ptr() for b in m.blocks}
+    replica = mg._copy_module(m, torch.device("cpu"))
+    for b in replica.blocks:
+        rec = b.__dict__[dfu._FF_ATTR]
+        ptr = rec[0].untyped_storage().data_ptr()
+        assert ptr not in src_ptrs  # not the source's fused copy
+        assert b.gate_layer.weight.untyped_storage().data_ptr() == ptr  # the replica's own views
+        assert dfu._intact(b) is not None
+    fused = q21f._qkv_intact(replica.attn)
+    assert fused is not None
+    assert (
+        replica.attn.to_q.weight.untyped_storage().data_ptr()
+        == fused.weight.untyped_storage().data_ptr()
+    )
+    x = torch.randn(2, 3, 32)
+    with torch.no_grad():
+        torch.testing.assert_close(replica(x), m(x), rtol = 1e-5, atol = 1e-5)

@@ -192,5 +192,25 @@ def uninstall(transformer: Any = None) -> None:
                     module.__dict__.pop("forward", None)
 
 
+def is_replica_record(key: str, value: Any) -> bool:
+    """A record this module wrote: its fused weight lives outside the module tree, so a deep copy (a CFG replica)
+    would duplicate it on the source card. Replicas drop it and ``rebuild_replica`` fuses their own parameters."""
+    if key == _FF_ATTR:
+        return True
+    from .diffusion_qwenimage21_fused import _QKV_ATTR
+
+    try:
+        return key == _QKV_ATTR and isinstance(value, tuple) and _plain_dense(value[0])
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def rebuild_replica(source: Any, replica: Any) -> dict:
+    """Fuse ``replica``'s own (copied, destination-card) parameters when ``source`` carried dense fused records."""
+    if not any(is_replica_record(k, v) for m in source.modules() for k, v in m.__dict__.items()):
+        return {"gate_up": 0, "qkv": 0}
+    return install_modules(replica)
+
+
 def is_installed(module: Any) -> bool:
     return _FF_ATTR in getattr(module, "__dict__", {})
