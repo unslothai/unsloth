@@ -2094,7 +2094,13 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
             logger.info("diffusion.speed: fuse_qkv skipped (quantised projections stay unfused)")
         return False
     from . import diffusion_lora_quant_merge as lora_quant_merge
+    from .diffusion_manual_cast import manual_cast_info
 
+    # A fused to_qkv is a plain Linear at the stored dtype, which a manual-cast (float32) forward cannot feed.
+    if any(manual_cast_info(m) for m in _denoiser_dits(pipe)):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (manual-cast weights stay unfused)")
+        return False
     # A fused to_qkv copy would miss in-place re-merges of merged adapter weights.
     if lora_quant_merge.merged(pipe):
         if logger is not None:
