@@ -422,6 +422,14 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_flux2_rope import uninstall
         uninstall()
 
+    def flux3_rope(ctx: PatchContext) -> bool:
+        from ..diffusion_flux3_rope import install_for_pipe
+        return install_for_pipe(ctx.pipe, ctx.device, ctx.logger)
+
+    def flux3_rope_uninstall() -> None:
+        from ..diffusion_flux3_rope import uninstall
+        uninstall()
+
     def rocm_fused(ctx: PatchContext) -> dict:
         from ..diffusion_rocm_fused import install_for_pipe
 
@@ -534,6 +542,15 @@ def _builtin_specs() -> list[PatchSpec]:
             group = GROUP_FUSED_DIT,
             backends = ("image",),
             env = "UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE",
+        ),
+        PatchSpec(
+            "flux3_rope",
+            STAGE_LOAD,
+            flux3_rope,
+            flux3_rope_uninstall,
+            group = GROUP_FUSED_DIT,
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_FLUX3_FUSED_ROPE",
         ),
         PatchSpec(
             "rocm_fused",

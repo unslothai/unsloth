@@ -66,6 +66,9 @@ def load_whole_pipeline_gguf(
     import diffusers.loaders.single_file as single_file_mod
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
 
+    from .diffusion_gguf_lowbit import install_lowbit_iq
+
+    install_lowbit_iq()  # diffusers' reader refuses unknown types, so before the read
     checkpoint = load_single_file_checkpoint(
         path,
         local_files_only = pipe_kwargs.get("local_files_only"),

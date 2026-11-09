@@ -15,6 +15,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
 from state.tool_policy import tools_force_disabled
+from studio_mcp import profile
 from studio_mcp.caller import current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
@@ -32,8 +33,6 @@ from studio_mcp.tools import READ_ONLY, WRITES, integer, number, opt_text, prese
 
 MAX_EMBED_INPUTS = 2048
 DEFAULT_TOP_K = 10
-LOAD_CHAT_HINT = "Load a chat model with load_model first; list_models shows the downloaded ones."
-NOT_LOADED = "No model loaded"
 # The chat route takes 128 MiB of base64 images per request.
 MAX_CHAT_IMAGE_BYTES = 128 * 1024 * 1024 * 3 // 4
 EMBED_DOWNLOAD_HINT = (
@@ -146,12 +145,7 @@ async def chat(
     }
     # Beats a CLI --enable-tools too; forward's task copies this context into the route.
     with tools_force_disabled():
-        payload = await route_json(
-            "POST",
-            "/v1/chat/completions",
-            json_body = body,
-            hint_if = (NOT_LOADED, {400: LOAD_CHAT_HINT}),
-        )
+        payload = await route_json("POST", "/v1/chat/completions", json_body = body)
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise ToolError("Unsloth Studio returned no reply")
@@ -320,5 +314,7 @@ async def system_one(
         request_id = opt_text(response.headers.get("x-typesafe-request-id")),
     )
 
+
+FACTS = {"chat": {profile.REENTERS_CHAT}}
 
 TOOLS = ((chat, WRITES), (embed, READ_ONLY), (system_one, READ_ONLY))

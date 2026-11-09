@@ -906,3 +906,78 @@ def _copy_host_tensors_(entries: list, undo: Optional[list] = None) -> int:
                 undo.append((group, tensor, host, new))
             copied += new.numel() * new.element_size()
     return copied
+
+
+# "0": the H3 conditioner records every hidden state again.
+H3_TE_READ_CAPTURE_ENV = "UNSLOTH_H3_TE_READ_CAPTURE"
+
+
+def h3_te_read_capture_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_TE_READ_CAPTURE_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def install_h3_te_read_capture(
+    text_encoder: Any,
+    *,
+    layer: int = H3_TE_READ_LAYER,
+    logger: Any = None,
+) -> bool:
+    """H3 reads only ``hidden_states[layer]``: run without recording and keep layer ``layer``'s input via a pre-hook.
+    Past the DeepStack layers that input equals ``hidden_states[layer]`` in transformers 4.x and 5.x (5.x records
+    those layers before the visual merge), so DeepStack layers are refused. Idempotent; never raises."""
+    try:
+        model = getattr(text_encoder, "model", None)
+        layers = getattr(getattr(model, "language_model", None), "layers", None)
+        if model is None or layers is None or not isinstance(layer, int):
+            return False
+        if getattr(model, "_unsloth_h3_read_capture", None) is not None:
+            return True
+        config = getattr(text_encoder, "config", None)
+        deepstack = getattr(
+            getattr(config, "vision_config", None), "deepstack_visual_indexes", None
+        )
+        deepstack_layers = len(deepstack) if deepstack is not None else None
+        if deepstack_layers is None or not (deepstack_layers < layer < len(layers)):
+            return False
+        stock = model.forward
+        target = layers[layer]
+    except Exception:  # noqa: BLE001 - optimisation only
+        return False
+
+    @functools.wraps(stock)
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        if not kwargs.get("output_hidden_states") or not h3_te_read_capture_enabled():
+            return stock(*args, **kwargs)
+        captured: list = []
+
+        def _keep(_module: Any, hook_args: tuple, hook_kwargs: dict) -> None:
+            captured.append(hook_args[0] if hook_args else hook_kwargs.get("hidden_states"))
+
+        handle = target.register_forward_pre_hook(_keep, with_kwargs = True)
+        try:
+            out = stock(*args, **{**kwargs, "output_hidden_states": False})
+        finally:
+            handle.remove()
+        if len(captured) != 1 or captured[0] is None:
+            del out, captured
+            return stock(*args, **kwargs)
+        states = [None] * (len(layers) + 1)
+        states[layer] = captured[0]
+        out.hidden_states = tuple(states)
+        return out
+
+    forward.__wrapped__ = stock
+    try:
+        model.forward = forward
+        model._unsloth_h3_read_capture = layer
+    except Exception:  # noqa: BLE001
+        return False
+    if logger is not None:
+        logger.info("video.h3_te_read_capture: on (keeps hidden_states[%d] only)", layer)
+    return True

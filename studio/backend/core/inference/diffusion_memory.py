@@ -2458,12 +2458,14 @@ def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
 
 
 def _holds_fp8_stored(module: Any) -> bool:
-    """Whether ``module`` holds fp8-STORED Linears; codes and scales are buffers, so a parameter scan reads it dense."""
+    """Whether ``module`` holds fp8-STORED or packed nvfp4 / mxfp8 Linears; codes and scales are buffers, so a
+    parameter scan reads it dense."""
     if module is None:
         return False
     try:
         from .diffusion_comfy_quant import fp8_stored_layers
-        return fp8_stored_layers(module) > 0
+        from .diffusion_packed_block import packed_block_layers
+        return fp8_stored_layers(module) > 0 or packed_block_layers(module) > 0
     except Exception:  # noqa: BLE001 - unreadable: today's parameter verdict stands
         return False
 

@@ -241,3 +241,47 @@ def test_prompts_over_http(stubbed, monkeypatch):
     assert "JSON string" not in json.dumps(listed)
     text = got["messages"][0]["content"]["text"]
     assert "unsloth/LTX-small (12.0 GB)" in text and "GPU 0 21.5 GB free" in text
+
+
+@pytest.fixture
+def list_models_off():
+    from utils import mcp_access
+    from utils.mcp_access import set_mcp_settings
+
+    mcp_access._reset_cache()
+    set_mcp_settings(disabled_tools = ["list_models"])
+    yield
+    mcp_access._reset_cache()
+
+
+def test_every_prompt_names_the_tools_it_reads():
+    assert set(prompts.PROMPT_REQUIRES) == {prompt.__name__ for prompt, _title in prompts.PROMPTS}
+    assert all(required <= _tool_names() for required in prompts.PROMPT_REQUIRES.values())
+
+
+@pytest.mark.parametrize(
+    "name, args", [("make_short_film", {"idea": "x"}), ("build_dataset_and_train", {"goal": "x"})]
+)
+def test_a_prompt_is_hidden_while_a_tool_it_reads_is_off(stubbed, list_models_off, name, args):
+    from fastmcp.exceptions import PromptError
+
+    assert asyncio.run(create_studio_mcp().list_prompts()) == []
+    with pytest.raises(PromptError, match = r"^\[tool_disabled\] The \w+ prompt needs list_models"):
+        _render(name, args)
+    assert stubbed == []
+
+
+def test_a_hidden_prompt_over_http(stubbed, list_models_off, monkeypatch):
+    with TestClient(served(create_studio_mcp(), fake_studio(), monkeypatch = monkeypatch)) as http:
+        assert _rpc(http, "prompts/list", {})["prompts"] == []
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "prompts/get",
+            "params": {"name": "make_short_film", "arguments": {"idea": "a fox"}},
+        }
+        headers = {**MCP_HEADERS, "Authorization": f"Bearer {TEST_TOKEN}"}
+        response = http.post("/mcp/", json = body, headers = headers)
+    data = [json.loads(line[5:]) for line in response.text.splitlines() if line.startswith("data:")]
+    assert "result" not in data[-1]
+    assert "[tool_disabled]" in data[-1]["error"]["message"]

@@ -11,7 +11,11 @@ import sys
 
 import pytest
 
-from ._torchao_installed import needs_torchao
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
 
 import core.inference.diffusion_prequant as pq
 import core.inference.prequant_safetensors as ps

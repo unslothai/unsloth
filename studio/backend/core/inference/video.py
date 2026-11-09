@@ -61,6 +61,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
+from .diffusion_init_buffers import install_single_file_fp32_buffers
 from .diffusion_component_sizes import video_family_has_no_text_encoder
 from . import hub_reachability
 from .diffusion_comfy_quant import (
@@ -394,6 +395,22 @@ def auto_te_fetch_failure(
     return None
 
 
+def auto_te_outcome_log(scheme: str, family: str, failure: Optional[str], injected: bool) -> tuple:
+    if failure and not injected:
+        return (
+            "video.text_encoder_quant: the automatic '%s' for %s is not available (hosted pre-cast encoder "
+            "unreachable: %s); the dense bf16 text encoder loads",
+            scheme,
+            family,
+            failure,
+        )
+    return (
+        "video.text_encoder_quant: '%s' selected automatically for %s (unset request)",
+        scheme,
+        family,
+    )
+
+
 def video_te_quant_request(
     fam: Any,
     text_encoder_quant: Optional[str],
@@ -532,11 +549,14 @@ def _video_comfy_backends(
     resident only; else fp8 storage under offload or a tight MPS plan). ``priced_offload``: the plan was sized with the
     offloaded backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the
     planned DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
-    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
+    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything. nvfp4 / mxfp8 layers take the image
+    path's native runtimes where their flag, device and family allow; without one, fp8 storage keeps them packed."""
     if not keep:
         return {
             "int8_backend": None,
             "fp8_backend": None,
+            "nvfp4_backend": None,
+            "mxfp8_backend": None,
             "fp8_storage": False,
             "fp8_widen_chosen": False,
         }
@@ -547,9 +567,21 @@ def _video_comfy_backends(
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
+        **_video_block_backends(target, name),
         "fp8_storage": storage,
         "fp8_widen_chosen": not storage
         and _video_fp8_storage(fam, target, store_pays, widened_mib = widened_mib, widen_chosen = True),
+    }
+
+
+def _video_block_backends(target: Any, family: Optional[str]) -> dict:
+    """``comfy_block_backend`` per block format (None = no native runtime here)."""
+    from .diffusion_comfy_block import MXFP8, NVFP4, comfy_block_backend
+
+    dtype = getattr(target, "dtype", None)
+    return {
+        f"{fmt}_backend": comfy_block_backend(fmt, target, family, dtype = dtype)[0]
+        for fmt in (NVFP4, MXFP8)
     }
 
 
@@ -614,10 +646,13 @@ def _video_comfy_resident_mib(
     keep_int8 = keep_fp8 = fp8_stored = False
     exclude: tuple = ()
     filters: dict = {}
+    keep_block: dict = {}
     if keep:
         try:
             from .diffusion_transformer_quant import (
                 DEFAULT_MIN_LINEAR_FEATURES,
+                TQ_MXFP8,
+                TQ_NVFP4,
                 divisible_for_scheme,
                 exclude_tokens_for_scheme,
             )
@@ -625,6 +660,10 @@ def _video_comfy_resident_mib(
             filters = {
                 "min_features": DEFAULT_MIN_LINEAR_FEATURES,
                 "fp8_divisible": divisible_for_scheme(TQ_FP8),
+                "block_divisible": {
+                    "nvfp4": divisible_for_scheme(TQ_NVFP4),
+                    "mxfp8": divisible_for_scheme(TQ_MXFP8),
+                },
             }
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
@@ -632,12 +671,19 @@ def _video_comfy_resident_mib(
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
         fp8_stored = _video_fp8_storage(fam, target, offload)
+        blocks = _video_block_backends(target, name)
+        keep_block = {
+            "keep_nvfp4": blocks["nvfp4_backend"] is not None,
+            "keep_mxfp8": blocks["mxfp8_backend"] is not None,
+        }
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
         fp8_stored = fp8_stored,
+        **keep_block,
+        target = target,
         keep_key = keep_key,
         exclude_tokens = exclude,
         key_map = _video_comfy_key_map(fam),
@@ -4361,6 +4407,19 @@ def _auto_offload_scheme(requested: Optional[str]) -> Optional[str]:
     """auto takes int8 for an offloaded DiT: its torchao-free build rides every offload hook."""
     scheme = normalize_transformer_quant(requested)
     return TQ_INT8 if scheme == TQ_AUTO else scheme
+
+
+# "0" disables reading the hosted native file when the load's own plan offloads a seeded denoiser.
+OFFLOAD_HOSTED_READ_ENV = "UNSLOTH_VIDEO_OFFLOAD_HOSTED_READ"
+
+
+def _offload_hosted_read_enabled() -> bool:
+    return (os.environ.get(OFFLOAD_HOSTED_READ_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def _video_native_hosted_scheme(fam: Any, scheme: Optional[str], target: Any) -> Optional[str]:
@@ -8937,6 +8996,7 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
         )
+        install_single_file_fp32_buffers(logger)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native
 
@@ -9022,20 +9082,12 @@ class VideoBackend:
             from . import diffusion_precision as _precision
             if not _precision.te_quant_supported(target, text_encoder_quant):
                 text_encoder_quant = None
-            elif te_auto_unavailable:
-                logger.info(
-                    "video.text_encoder_quant: the automatic '%s' for %s is not available (hosted pre-cast encoder "
-                    "unreachable: %s); the dense bf16 text encoder loads",
-                    text_encoder_quant,
-                    fam.name,
-                    te_auto_unavailable,
-                )
-            else:
-                logger.info(
-                    "video.text_encoder_quant: '%s' selected automatically for %s (unset request)",
-                    text_encoder_quant,
-                    fam.name,
-                )
+            elif not te_auto_unavailable:
+                logger.info(*auto_te_outcome_log(text_encoder_quant, fam.name, None, True))
+        # A failed prefetch is retried by the load below: its outcome is logged after that.
+        te_auto_retry = (
+            text_encoder_quant if text_encoder_quant_auto and te_auto_unavailable else None
+        )
         # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
         # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
         _nvfp4_install_wanted = (
@@ -9480,6 +9532,16 @@ class VideoBackend:
                 denoiser_seed_scheme,
                 _video_plan_label(plan),
             )
+            if _video_native_hosted_planned is None and _offload_hosted_read_enabled():
+                # The probe planned a resident seed; read the hosted native build rather than quantising dense shards.
+                _video_native_hosted_planned = _video_native_hosted_scheme(
+                    fam, denoiser_seed_scheme, target
+                )
+                if _video_native_hosted_planned is not None:
+                    logger.info(
+                        "video.denoiser_prequant: the hosted %s checkpoint is read as offload-safe native Linears",
+                        _video_native_hosted_planned,
+                    )
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
@@ -9624,6 +9686,12 @@ class VideoBackend:
             local_files_only = local_files_only,
         )
         pipe_kwargs.update(te_injected)
+        if te_auto_retry:
+            logger.info(
+                *auto_te_outcome_log(
+                    te_auto_retry, fam.name, te_auto_unavailable, bool(te_injected)
+                )
+            )
         if text_encoder_quant_auto and not te_injected:
             # Nobody asked for a runtime cast: without its hosted file the automatic pick keeps the released encoder.
             text_encoder_quant = None
@@ -9836,6 +9904,8 @@ class VideoBackend:
                 "local_files_only": local_files_only,
             }
             if kind == "gguf":
+                from .diffusion_gguf_lowbit import install_lowbit_iq
+                install_lowbit_iq(logger)
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
@@ -12113,6 +12183,11 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        try:
+            from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
+            install_h3_chunked_reference_encode(logger)
+        except Exception as exc:  # noqa: BLE001 -- memory only, never fail a load
+            logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
         # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
         # its fallback; the audio VAE is untouched.
         try:
@@ -12288,7 +12363,16 @@ class VideoBackend:
         autoopt.finalize(h3_audit, speed_optims, resolved)
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
+        from .video_minimax_h3_te import install_h3_te_read_capture
 
+        try:
+            install_h3_te_read_capture(
+                pipe.text_encoder,
+                layer = getattr(pipe, "text_encoder_layer", 50),
+                logger = logger,
+            )
+        except Exception:  # noqa: BLE001 - a lazy component that is not loaded
+            pass
         diffusion_prompt_cache.install(
             pipe,
             identity = {
@@ -12510,6 +12594,10 @@ class VideoBackend:
                 "input_reference cannot be combined with explicit conditioning inputs."
             )
         cancel = threading.Event()
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        # A chat tools call that is stopped cancels this job too.
+        bind_generation_cancel(cancel)
         job_token = object()  # this reservation's identity; only its own worker may finalise it
         while True:
             with self._lock:
