@@ -206,10 +206,22 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
 _JSONL_SCHEMA_BYTES = 10 << 20
 
 
+def _first_significant_byte(f) -> bytes:
+    """First byte that ``bytes.strip`` would keep, or ``b""`` for an empty / all-whitespace file."""
+    while chunk := f.read(1 << 16):
+        if stripped := chunk.lstrip():
+            return stripped[:1]
+    return b""
+
+
 def _jsonl_head(path: Path, preview_size: int) -> tuple[list[dict], bytes] | None:
     """First ``preview_size`` JSON Lines objects and the bytes of the loader's first batch. ``None`` if not JSON Lines."""
     rows, keys, window, scanned = [], {}, [], 0
     with path.open("rb") as f:
+        # Only an object decodes to a dict: a minified JSON array is one huge line, so don't read or parse it here.
+        if preview_size > 0 and _first_significant_byte(f) not in (b"", b"{"):
+            return None
+        f.seek(0)
         for line in f:
             if line.strip():
                 try:
