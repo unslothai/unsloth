@@ -443,6 +443,33 @@ _MOSS_IMAGE_CONVROT_SUFFIXES = (
     "proj.ffn_down",
 )
 
+# All 101 int8 Linear widths are 256-divisible.
+_FLUX2_KLEIN_CONVROT_SUFFIXES = (
+    "context_embedder",
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "attn.add_q_proj",
+    "attn.add_k_proj",
+    "attn.add_v_proj",
+    "attn.to_add_out",
+    "ff.linear_in",
+    "ff.linear_out",
+    "ff_context.linear_in",
+    "ff_context.linear_out",
+    "attn.to_qkv_mlp_proj",
+    "attn.to_out",
+)
+_FLUX3_CONVROT_SUFFIXES = (
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "ff.linear_in",
+    "ff.linear_out",
+)
+
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
@@ -520,6 +547,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            # LPIPS vs fp16 (4B, T4 W8A8, 16 renders): plain 0.103 -> ConvRot 0.037; A100 0.092 -> 0.034.
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _FLUX2_KLEIN_CONVROT_SUFFIXES,
+                filename = "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+                repo = "unsloth/FLUX.2-klein-4B-FP8",
+                default_on = True,
+                hosted_plain = True,
+            ),
             preview_factors = "flux2",
             auto_static_skip = (
                 (
@@ -612,6 +648,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            int8_convrot = ConvRotSpec(group = 256, suffixes = _FLUX3_CONVROT_SUFFIXES, default_on = True),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -670,6 +707,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _FLUX3_CONVROT_SUFFIXES,
+                filename = "flux-3-image-klein-INT8-ConvRot.safetensors",
+                repo = "unsloth/flux-3-image-klein-FP8",
+                default_on = True,
+                hosted_plain = True,
+            ),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8

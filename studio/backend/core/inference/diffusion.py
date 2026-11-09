@@ -323,6 +323,7 @@ from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
+from .diffusion_gguf_exact import install_exact_dequant
 from .diffusion_gguf_lowbit import install_lowbit_iq
 from .diffusion_attention import (
     apply_attention_backend,
@@ -2600,6 +2601,7 @@ def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
         _geometry,
         decode_mib_per_latent,
         decode_platform_cap,
+        strips_decode_mib,
     )
     try:
         cap = decode_platform_cap(vae, z)
@@ -2613,6 +2615,9 @@ def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
         batch = 1 if bool(getattr(vae, "use_slicing", False)) else int(z.shape[0])
         per_latent = decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__)
         need = batch * frames * int(z.shape[-2]) * int(z.shape[-1]) * per_latent * scale
+        strips = strips_decode_mib(vae, z, z.shape[-2], z.shape[-1])
+        if strips is not None:  # one sample at a time
+            need = min(need, strips)
         return int(-(-(need / FREE_FRACTION - mib) // 1))
     except Exception:  # noqa: BLE001 - unknown figures: decode as planned (tiled)
         return None
@@ -9943,6 +9948,7 @@ class DiffusionBackend:
                             if kind == "gguf":
                                 # IQ1 / IQ2 / IQ3 tensors diffusers' table lacks would refuse the file
                                 install_lowbit_iq(logger)
+                                install_exact_dequant(logger)
                                 # Dequantise the GGUF transformer on-device at the compute dtype.
                                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                                     compute_dtype = dtype

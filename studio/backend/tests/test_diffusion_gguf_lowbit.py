@@ -20,10 +20,15 @@ TYPES = ["IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S"]
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
+    from core.inference import diffusion_gguf_exact as ex
+
     monkeypatch.delenv(lb.LOWBIT_IQ_ENV, raising = False)
     lb.uninstall_lowbit_iq()
+    ex.uninstall_exact_dequant()
     yield
     lb.uninstall_lowbit_iq()
+    # the loaders under test also install the exact dequant
+    ex.uninstall_exact_dequant()
 
 
 def _blocks(

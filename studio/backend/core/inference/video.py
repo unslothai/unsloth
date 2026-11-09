@@ -4409,6 +4409,19 @@ def _auto_offload_scheme(requested: Optional[str]) -> Optional[str]:
     return TQ_INT8 if scheme == TQ_AUTO else scheme
 
 
+# "0" disables reading the hosted native file when the load's own plan offloads a seeded denoiser.
+OFFLOAD_HOSTED_READ_ENV = "UNSLOTH_VIDEO_OFFLOAD_HOSTED_READ"
+
+
+def _offload_hosted_read_enabled() -> bool:
+    return (os.environ.get(OFFLOAD_HOSTED_READ_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 def _video_native_hosted_scheme(fam: Any, scheme: Optional[str], target: Any) -> Optional[str]:
     """``int8`` when an offloaded load of ``scheme`` builds the W8A8 ConvRot native DiT that the family's hosted int8
     checkpoint already holds (``diffusion_native_hosted``), else None. The load re-checks the file; never raises."""
@@ -9519,6 +9532,16 @@ class VideoBackend:
                 denoiser_seed_scheme,
                 _video_plan_label(plan),
             )
+            if _video_native_hosted_planned is None and _offload_hosted_read_enabled():
+                # The probe planned a resident seed; read the hosted native build rather than quantising dense shards.
+                _video_native_hosted_planned = _video_native_hosted_scheme(
+                    fam, denoiser_seed_scheme, target
+                )
+                if _video_native_hosted_planned is not None:
+                    logger.info(
+                        "video.denoiser_prequant: the hosted %s checkpoint is read as offload-safe native Linears",
+                        _video_native_hosted_planned,
+                    )
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
@@ -9881,8 +9904,11 @@ class VideoBackend:
                 "local_files_only": local_files_only,
             }
             if kind == "gguf":
+                from .diffusion_gguf_exact import install_exact_dequant
                 from .diffusion_gguf_lowbit import install_lowbit_iq
+
                 install_lowbit_iq(logger)
+                install_exact_dequant(logger)
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
@@ -11691,6 +11717,10 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
+        # Before any offload hook wraps the denoiser's forward (the hooks then wrap this one).
+        from .video_minimax_h3_forward import install_h3_forward_on_pipe
+
+        install_h3_forward_on_pipe(pipe, logger = logger)
         # Pre-cast the decoder: fp32 VAE under fp16 autocast keeps both copies; encoder stays for keyframes.
 
         from .video_minimax_h3 import trim_h3_video_vae
@@ -13588,6 +13618,11 @@ class VideoBackend:
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
+                        if fam.name == "minimax-h3":
+                            from .video_minimax_h3_forward import h3_render_scope
+
+                            # H3's text stream runs once inside this render, dropped after it.
+                            stack.enter_context(h3_render_scope(pipe, logger))
                         if float_seeds is not None:
                             stack.enter_context(_seed_before_first_forward(float_seeds))
                         # No video family has a denoise-to-decode callback, so the decoder itself reports the decode phase.
