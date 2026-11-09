@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""DPO / GRPO get their context parallel patch whichever module is imported first. Importing
-unsloth.context_parallel first pulls in the models through unsloth.utils, which patches the TRL trainers while
-context_parallel is still half imported; the patch must still land once it finishes."""
+"""DPO / GRPO keep their context parallel patch when unsloth.context_parallel is imported before the models."""
 
 import os
 import subprocess

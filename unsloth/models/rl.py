@@ -4140,8 +4140,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             trainer_cls = getattr(created_module, f"Unsloth{RLTrainer_name}")
             cp_module = sys.modules.get(__name__.rsplit(".", 2)[0] + ".context_parallel")
             if cp_module is not None and not hasattr(cp_module, "patch_rl_trainer"):
-                # Reached from context_parallel's own imports (unsloth.utils pulls in the models): it patches
-                # these at the end of its import.
+                # context_parallel is mid-import (its unsloth.utils import loaded us); it patches these at its end.
                 cp_module.__dict__.setdefault("_DEFERRED_RL_TRAINERS", []).append(
                     (trainer_cls, trainer_file)
                 )
