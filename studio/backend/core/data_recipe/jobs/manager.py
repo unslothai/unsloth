@@ -409,20 +409,21 @@ class JobManager:
         *,
         limit: int,
         offset: int = 0,
+        raw: bool = False,
     ) -> dict[str, Any] | None:
-        """Load dataset page (offset + limit) and include total rows."""
+        """Load dataset page (offset + limit) and include total rows. Image cells are thumbnails unless *raw*."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
             in_memory_dataset = self._job.dataset
             artifact_path = self._job.artifact_path
             job_status = self._job.status
-            image_columns = list(self._job.image_columns)
+            image_columns = [] if raw else list(self._job.image_columns)
 
         if in_memory_dataset is not None:
             total = len(in_memory_dataset)
             rows = in_memory_dataset[offset : offset + limit]
-            return {"dataset": rows, "total": total}
+            return {"dataset": render_image_columns(rows, image_columns), "total": total}
         if not artifact_path:
             if job_status in {"completed", "error", "cancelled"}:
                 return {"error": "artifact path missing"}
@@ -442,8 +443,10 @@ class JobManager:
                 )
             else:
                 page = self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
-            if page is not None and image_columns:
-                render_image_columns(page["dataset"], image_columns, dataset_dir = base_dataset_path)
+            if page is not None:
+                page["dataset"] = render_image_columns(
+                    page["dataset"], image_columns, dataset_dir = base_dataset_path
+                )
             return page
         except Exception as exc:
             return {"error": f"dataset load failed: {exc}"}
@@ -689,6 +692,12 @@ class JobManager:
                 self._job.artifact_path = event.get("artifact_path")
                 self._job.execution_type = event.get("execution_type")
                 self._job.dataset = event.get("dataset")
+                # Subscribers get thumbnails; the job keeps the original cells for the download.
+                if isinstance(self._job.dataset, list):
+                    event = {
+                        **event,
+                        "dataset": render_image_columns(self._job.dataset, self._job.image_columns),
+                    }
                 self._job.processor_artifacts = event.get("processor_artifacts")
                 if self._job.progress.total and self._job.progress.total > 0:
                     self._job.progress.done = self._job.progress.total

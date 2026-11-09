@@ -243,13 +243,15 @@ def render_image_columns(
     *,
     dataset_dir: Path | None = None,
 ) -> list[Any]:
-    """In place."""
+    """Copies of *rows* with thumbnails in *columns*; the rows themselves keep the original cells."""
     if not columns:
         return rows
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        for column in columns:
-            if column in row:
-                row[column] = image_cell_to_preview(row[column], dataset_dir = dataset_dir)
-    return rows
+    return [
+        {
+            key: image_cell_to_preview(value, dataset_dir = dataset_dir) if key in columns else value
+            for key, value in row.items()
+        }
+        if isinstance(row, dict)
+        else row
+        for row in rows
+    ]

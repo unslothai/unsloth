@@ -778,6 +778,7 @@ def _build_in_memory_job_dataset_download(
                     job_id,
                     limit = _IN_MEMORY_DOWNLOAD_PAGE_SIZE,
                     offset = offset,
+                    raw = True,
                 )
                 if result is None:
                     raise HTTPException(status_code = 404, detail = "dataset not ready")

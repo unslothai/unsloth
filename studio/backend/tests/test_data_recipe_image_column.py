@@ -207,8 +207,8 @@ def test_a_full_run_writes_images_that_dataset_pages_show(tmp_path, provider, mo
     )
     raw = [row["photo"] for row in page["dataset"]]
     assert all(cell[0].startswith("images/") for cell in raw)
-    render_image_columns(page["dataset"], ["photo"], dataset_dir = dataset_dir)
-    assert [row["photo"]["type"] for row in page["dataset"]] == ["image"] * 3
+    rendered = render_image_columns(page["dataset"], ["photo"], dataset_dir = dataset_dir)
+    assert [row["photo"]["type"] for row in rendered] == ["image"] * 3
 
     monkeypatch.setattr(export, "_resolve_recipe_artifact_path", lambda path: Path(path))
     for export_format in ("jsonl", "parquet"):
@@ -256,11 +256,11 @@ def test_several_images_in_one_cell_show_the_first_with_a_count():
 def test_only_declared_image_columns_are_read_as_images():
     rows = [{"photo": [_png()], "note": _png(), "broken": ["not base64!"]}]
 
-    render_image_columns(rows, ["photo", "broken"])
+    rendered = render_image_columns(rows, ["photo", "broken"])
 
-    assert rows[0]["photo"]["type"] == "image"
-    assert rows[0]["note"] == _png()
-    assert rows[0]["broken"] == ["not base64!"]
+    assert rendered[0]["photo"]["type"] == "image"
+    assert rendered[0]["note"] == _png()
+    assert rendered[0]["broken"] == ["not base64!"]
 
 
 def test_an_image_only_recipe_without_a_provider_gets_the_provider_error(tmp_path):
@@ -395,3 +395,43 @@ def test_image_columns_count_toward_column_progress(monkeypatch):
     started["image_columns"] = manager._job.image_columns
 
     assert started == {"total": 2, "image_columns": ["photo"]}
+
+
+def test_a_preview_shows_thumbnails_but_downloads_the_original_images(monkeypatch):
+    from core.data_recipe.jobs import manager as manager_module
+    from core.data_recipe.jobs.constants import EVENT_JOB_COMPLETED
+
+    class _Proc:
+        pid = 1
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(manager_module._CTX, "Process", lambda **kwargs: _Proc())
+    monkeypatch.setattr(
+        manager_module, "account_thread", lambda **kwargs: SimpleNamespace(start = lambda: None)
+    )
+    manager = manager_module.JobManager()
+    job_id = manager.start(recipe = _local_recipe(), run = {})
+    cell = [_png((0, 0, 255), (900, 600)), _png()]
+    manager._handle_event(
+        manager._job,
+        {"type": EVENT_JOB_COMPLETED, "dataset": [{"photo": cell, "subject": "mug"}]},
+    )
+
+    streamed = manager._events[-1]["dataset"][0]["photo"]
+    page = manager.get_dataset(job_id, limit = 10)["dataset"][0]["photo"]
+    assert streamed == page
+    assert (page["type"], page["width"], page["count"]) == ("image", 384, 2)
+
+    path, _, _ = route._build_in_memory_job_dataset_download(
+        manager, job_id, filename_stem = "preview"
+    )
+    try:
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+    finally:
+        path.unlink()
+    assert rows == [{"photo": cell, "subject": "mug"}]

@@ -17,12 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from ..jsonable import (
-    image_column_names,
-    render_image_columns,
-    to_jsonable,
-    to_preview_jsonable_row,
-)
+from ..jsonable import to_jsonable, to_preview_jsonable_row
 from ..local_callable_validators import oxc_validator_session
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import (
@@ -177,10 +172,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             dataset = (
                 []
                 if results.dataset is None
-                else render_image_columns(
-                    to_preview_jsonable_row(results.dataset.to_dict(orient = "records")),
-                    image_column_names(recipe),
-                )
+                else to_preview_jsonable_row(results.dataset.to_dict(orient = "records"))
             )
             processor_artifacts = (
                 None
