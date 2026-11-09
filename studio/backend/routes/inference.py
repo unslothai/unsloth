@@ -28865,7 +28865,8 @@ def _fit_external_context(
         _fit_with_instruction_pins,
         _keeps_compaction_boundary,
         _records_boundary,
-        _sticky_compaction_state,
+        _sticky_compaction_details,
+        _can_reset_epoch,
     )
 
     tool_tokens = _openai_llama_admission_injected_tool_tokens(tools)
@@ -28897,17 +28898,18 @@ def _fit_external_context(
             max_tokens = min(max_tokens, window - room - margin)
             # The largest context whose prompt_budget stays within room.
             context_length = min(context_length, room + max_tokens, room * 4 // 3)
-    if prompt_tokens <= prompt_budget(context_length, max_tokens):
-        return messages, None, max_tokens
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
-    # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
-    sticky, sticky_is_checkpoint = _sticky_compaction_state(
+    recall_offered = any(
+        (t.get("function") or {}).get("name") == "search_conversation" for t in (tools or [])
+    )
+    can_reset = _can_reset_epoch(thread_id, recall_offered)
+    sticky, sticky_is_checkpoint, sticky_manual = _sticky_compaction_details(
         thread_id,
         messages,
         context_policy = policy,
-        can_reset = False,
+        can_reset = can_reset,
         compaction_headroom_ratio = ratio,
     )
     fitted, truncation = _fit_with_instruction_pins(
@@ -28916,8 +28918,11 @@ def _fit_external_context(
         max_tokens = max_tokens,
         count_tokens = _count,
         keeps_boundary = _keeps_compaction_boundary(thread_id),
-        recall_offered = False,
-        reserve_tokens = _conversation_recall_reserve(thread_id),
+        recall_offered = recall_offered,
+        can_reset = can_reset,
+        force_reset = bool(payload.compact_context),
+        sticky_manual = sticky_manual,
+        reserve_tokens = max(_conversation_recall_reserve(thread_id), 512 if can_reset else 0),
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
         estimate_message = estimate_message_tokens_without_unpriced_media,
@@ -28940,6 +28945,7 @@ def _fit_external_context(
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
             recall_done = not truncation.get("fits", True),
+            force_recall = bool(truncation.get("checkpoint_started", True)),
             recall_budget_tokens = retrieval_budget(
                 context_length,
                 max_tokens,
@@ -29644,6 +29650,27 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
             ui_events = _ui_events,
         )
+    if payload.compact_context:
+        from core.inference.llama_cpp import _can_reset_epoch
+        from core.inference.tools import SEARCH_CONVERSATION_TOOL
+
+        if (
+            not studio_tool_loop
+            or not payload.thread_id
+            or _tool_calls_are_disabled(payload)
+            or not external_studio_tools
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Remote compaction requires a saved chat with local tools enabled.",
+            )
+        if not _can_reset_epoch(payload.thread_id, True):
+            raise HTTPException(
+                status_code = 400,
+                detail = "The conversation archive is unavailable; remote compaction was not performed.",
+            )
+        if "search_conversation" not in _catalog_names(external_studio_tools):
+            external_studio_tools = [*external_studio_tools, SEARCH_CONVERSATION_TOOL]
     run_studio_tool_loop = bool(external_studio_tools)
     _external_fit_tools = external_studio_tools if run_studio_tool_loop else payload.tools
     _refuse_unused_mcp_image(_mcp_image, _catalog_names(external_studio_tools))
@@ -29718,19 +29745,26 @@ async def _proxy_to_external_provider(
     _external_max_tokens = _effective_max_tokens(payload)
     _external_context_fitter = None
     _compaction_fallback = None
+    if payload.compact_context and not payload.compaction_threshold and not _provider_compacts:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Remote compaction needs the backend context window. Configure context size or expose /props.",
+        )
+    _external_manual_compact_pending = bool(payload.compact_context)
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
         _request_branch = chat_messages
 
         async def _external_context_fitter(messages):
-            nonlocal _external_truncation
+            nonlocal _external_truncation, _external_manual_compact_pending
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 _fit_external_context,
                 messages,
-                payload,
+                payload.model_copy(update = {"compact_context": _external_manual_compact_pending}),
                 tools = _external_fit_tools,
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            _external_manual_compact_pending = False
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation

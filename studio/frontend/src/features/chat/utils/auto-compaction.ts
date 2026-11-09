@@ -39,17 +39,21 @@ const API_COMPACTION_THRESHOLD_MAX = 2_000_000;
 export function apiCompactionRequestFields(options: {
   autoCompactEnabled: boolean;
   contextLength: number | null | undefined;
+  // /compact: explicit user request, so it applies even when auto-compaction is off
+  compactNow?: boolean;
 }): {
   context_overflow?: "truncate_oldest";
+  compact_context?: true;
   compaction_threshold?: number;
   context_window?: number;
 } {
-  const { autoCompactEnabled, contextLength } = options;
-  if (!autoCompactEnabled) return {};
+  const { autoCompactEnabled, contextLength, compactNow = false } = options;
+  if (!autoCompactEnabled && !compactNow) return {};
   // without a catalogued window, the backend reads the self-hosted server's reported window
-  if (!contextLength || contextLength <= 0) return { context_overflow: "truncate_oldest" };
+  if (!contextLength || contextLength <= 0) return { context_overflow: "truncate_oldest", ...(compactNow ? { compact_context: true } : {}) };
   return {
     context_overflow: "truncate_oldest",
+    ...(compactNow ? { compact_context: true } : {}),
     compaction_threshold: Math.min(
       API_COMPACTION_THRESHOLD_MAX,
       Math.floor(contextLength * (1 - API_COMPACTION_HEADROOM)),

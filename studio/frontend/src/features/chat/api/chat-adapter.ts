@@ -176,6 +176,7 @@ import {
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
+  externalModelSupportsStudioTools,
   isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -5610,7 +5611,10 @@ export function createOpenAIStreamAdapter(
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
-        (isGgufForCompaction || isMlxForCompaction);
+        (isGgufForCompaction ||
+          isMlxForCompaction ||
+          (isExternalModelId(params.checkpoint) &&
+            externalModelSupportsStudioTools(params.checkpoint)));
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -6888,6 +6892,7 @@ export function createOpenAIStreamAdapter(
                   externalProvider.providerType,
                   externalModelId,
                 )?.contextLength,
+                compactNow,
               }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),

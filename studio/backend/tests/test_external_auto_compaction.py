@@ -322,8 +322,8 @@ def test_a_tool_enabled_chat_starts_from_the_saved_boundary(monkeypatch):
 
     monkeypatch.setattr(
         llama_cpp,
-        "_sticky_compaction_state",
-        lambda thread_id, *a, **k: (20 if thread_id else 0, False),
+        "_sticky_compaction_details",
+        lambda thread_id, *a, **k: (20 if thread_id else 0, False, False),
     )
     monkeypatch.setattr(llama_cpp, "_keeps_compaction_boundary", lambda thread_id: False)
 

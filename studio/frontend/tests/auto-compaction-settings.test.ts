@@ -180,6 +180,17 @@ test("a window past the request ceiling still sends a threshold the server accep
   );
 });
 
+test("an explicit external /compact request bypasses the automatic-compaction setting", () => {
+  assert.deepEqual(
+    apiCompactionRequestFields({
+      autoCompactEnabled: false,
+      contextLength: 8192,
+      compactNow: true,
+    }),
+    { context_overflow: "truncate_oldest", compact_context: true, compaction_threshold: 6144, context_window: 8192 },
+  );
+});
+
 test("an API model sends nothing with auto-compact off", () => {
   assert.deepEqual(
     apiCompactionRequestFields({ autoCompactEnabled: false, contextLength: 200_000 }),

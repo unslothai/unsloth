@@ -239,6 +239,7 @@ import {
 } from "@/features/chat/stores/research-run-store";
 import { researchReplyOwnsRun } from "@/features/chat/utils/research-run-binding";
 import {
+  externalModelSupportsStudioTools,
   isExternalModelId,
   parseExternalModelId,
   providerModelSupportsStudioTools,
@@ -5610,15 +5611,17 @@ const Composer: FC<{
           return;
         }
         // The compacted turns stay reachable only through search_conversation, so no tools, no reset.
+        const externalTools = externalModelSupportsStudioTools(runtime.params.checkpoint);
         if (
-          !runtime.supportsTools ||
+          (!runtime.supportsTools && !externalTools) ||
+          (!externalTools &&
           !resumesThought({
             loadedIsGguf: runtime.loadedIsGguf,
             loadedIsMlx: runtime.loadedIsMlx,
             activeGgufVariant: runtime.activeGgufVariant,
             activeNativePathToken: runtime.activeNativePathToken,
             checkpoint: runtime.params.checkpoint,
-          })
+          }))
         ) {
           toast.info("/compact works with GGUF and MLX models that support tools");
           return;

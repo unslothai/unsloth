@@ -7562,7 +7562,9 @@ class ExternalProviderClient:
         if window is None and isinstance(parent, str) and parent in by_id:
             # vLLM and SGLang LoRA adapters use their base model's context window.
             window = _reported_window(by_id[parent])
-        if window is not None or entry.get("owned_by") != "llamacpp":
+        if window is not None or (
+            entry.get("owned_by") != "llamacpp" and self.provider_type != "custom"
+        ):
             return window
         # before b9500 added meta.n_ctx, /props reports n_ctx; ?model= routes only in router mode.
         entry_id = entry.get("id")

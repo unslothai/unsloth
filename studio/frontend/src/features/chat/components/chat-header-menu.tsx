@@ -51,6 +51,10 @@ import { ForkIcon } from "@/lib/fork-icon";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
+  externalModelSupportsStudioTools,
+  isExternalModelId,
+} from "../external-providers";
+import {
   type ActiveChatMenu,
   useActiveChatMenuStore,
 } from "../stores/active-chat-menu-store";
@@ -194,13 +198,20 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       toast.info(t("chatMenu.compactEmpty"));
       return;
     }
-    if (!runtime.supportsTools || !resumesThought({
-      loadedIsGguf: runtime.loadedIsGguf,
-      loadedIsMlx: runtime.loadedIsMlx,
-      activeGgufVariant: runtime.activeGgufVariant,
-      activeNativePathToken: runtime.activeNativePathToken,
-      checkpoint: runtime.params.checkpoint,
-    })) {
+    const externalTools =
+      isExternalModelId(runtime.params.checkpoint) &&
+      externalModelSupportsStudioTools(runtime.params.checkpoint);
+    if (
+      (!runtime.supportsTools && !externalTools) ||
+      (!externalTools &&
+        !resumesThought({
+          loadedIsGguf: runtime.loadedIsGguf,
+          loadedIsMlx: runtime.loadedIsMlx,
+          activeGgufVariant: runtime.activeGgufVariant,
+          activeNativePathToken: runtime.activeNativePathToken,
+          checkpoint: runtime.params.checkpoint,
+        }))
+    ) {
       toast.info(t("chatMenu.compactUnsupported"));
       return;
     }
