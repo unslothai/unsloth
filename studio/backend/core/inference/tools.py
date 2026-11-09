@@ -17463,6 +17463,9 @@ def _check_signal_escape_patterns(code: str):
             "subprocess.Popen",
             "subprocess.getoutput",
             "subprocess.getstatusoutput",
+            "asyncio.create_subprocess_shell",
+            "asyncio.create_subprocess_exec",
+            "pty.spawn",
         }
     )
 
@@ -17688,7 +17691,7 @@ def _check_signal_escape_patterns(code: str):
                     name = _folded_str_literal(value.slice)
                 # __import__("os.path") returns the top-level os package.
                 top = (name or "").split(".")[0]
-                if top in ("os", "subprocess"):
+                if top in ("os", "subprocess", "asyncio", "pty"):
                     modules.add(top)
                 elif top in ("posix", "nt") and not isinstance(value, ast.Name):
                     modules.add("os")
