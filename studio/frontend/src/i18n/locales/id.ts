@@ -2765,7 +2765,22 @@ export const id = {
           "Lihat apa yang dikirim aplikasi lain ke API server ini saat tiba.",
         summary: "Permintaan, kesalahan, dan penggunaan token secara langsung",
         status: "{active} aktif · {recent} terbaru · {model}",
-        noModelLoaded: "tidak ada model yang dimuat",
+        noModelLoaded: "Tidak ada model yang dimuat",
+        memory: "Memori",
+        gpuInUse: "GPU terpakai",
+        availableForModels: "Tersedia untuk model",
+        refreshRate: "Laju penyegaran",
+        refreshRateDescription: "Seberapa sering monitor mengambang membaca penggunaan memori dan GPU saat terbuka.",
+        refreshEvery: "Setiap {seconds} dtk",
+        unsloth: "Unsloth",
+        otherApps: "Aplikasi lain",
+        otherInUse: "Penggunaan lain",
+        freeLabel: "Kosong",
+        unslothApp: "Aplikasi Unsloth",
+        unslothShare: "Tampilkan bagian Unsloth",
+        unslothShareDescription: "Bagi memori menjadi yang dipakai Unsloth, yang dipakai aplikasi lain, dan yang kosong.",
+        modelBreakdown: "Rinci per model",
+        modelBreakdownDescription: "Bagi bagian Unsloth di bilah memori menjadi tiap model yang dimuat dan sisa aplikasi.",
         autoOpen: "Pemantau mengambang terbuka otomatis",
         autoOpenDescription: "Membuka panel kecil saat ada lalu lintas API.",
         cpu: "CPU",
@@ -2782,8 +2797,7 @@ export const id = {
           "Terdeteksi, tetapi PyTorch tidak dapat menggunakannya",
         detailedView: "Tampilan terperinci",
         detailedViewDescription:
-          "Tampilkan beban CPU serta beban, suhu, dan daya setiap GPU di jendela mengambang.",
-        cpuLoad: "Beban CPU",
+          "Tampilkan beban, suhu, dan daya setiap GPU di jendela mengambang.",
         gpuLoad: "Beban GPU",
         temperature: "Suhu",
         power: "Daya",
@@ -2800,7 +2814,7 @@ export const id = {
         detecting: "Memeriksa GPU...",
         unreadable: "Tidak dapat membaca perangkat keras server ini.",
         noGpu:
-          "Tidak ada GPU yang terdeteksi. Sumber daya khusus CPU ditampilkan di atas.",
+          "Tidak ada GPU khusus yang terdeteksi.",
         noUsableGpu:
           "Tidak ada GPU di mesin ini yang dapat digunakan oleh PyTorch.",
         mismatchCpuBuild:
@@ -2889,7 +2903,7 @@ export const id = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary inferensi akselerator alihkan kustom jalur direktori",
       },
       modelMemory: {
-        title: "Memori model",
+        title: "Pemuatan model",
         keepResident: "Simpan model di memori GPU",
         keepResidentDescription: "Tetap di VRAM di antara prompt.",
         keepResidentHint:
@@ -3088,7 +3102,7 @@ export const id = {
       configurationDocs: "dokumentasi",
       configurationFlagsSuffix: "untuk flag.",
       modelNote:
-        "Codex memerlukan model GGUF yang dilayani oleh llama-server. Agen lain juga dapat menggunakan model berbasis transformer; hapus --model untuk menggunakan model yang sudah dimuat di Unsloth.",
+        "Claude Code dan Codex memerlukan model GGUF yang dilayani oleh llama-server, atau model MLX. Agen lain juga dapat menggunakan model berbasis transformer; hapus --model untuk menggunakan model yang sudah dimuat di Unsloth.",
       subagent: {
         title: "Gunakan model lokal sebagai subagen",
         description:
@@ -3162,6 +3176,8 @@ export const id = {
     },
     chat: {
       groups: {
+        replies: { title: "Balasan" },
+        thinkingTools: { title: "Penalaran dan alat" },
         conversations: {
           title: "Percakapan",
         },
@@ -3260,11 +3276,20 @@ export const id = {
         "Tampilkan kapan setiap balasan selesai, di bawah balasan.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message waktu jam tanggal balasan pesan",
-      showGenerationDetails: "Detail pembuatan",
+      showGenerationDetails: "Info kecepatan dan pemuatan terperinci",
       showGenerationDetailsDescription:
-        "Tampilkan kecepatan prompt dan balasan secara langsung beserta jumlah token, serta tempat lapisan model dimuat.",
+        "Menambahkan kecepatan membaca prompt, jumlah token, dan penerimaan draf ke tampilan langsung, serta menunjukkan tempat lapisan model dimuat.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts statistik kecepatan lapisan",
+      generationStatsUpdates: "Statistik kecepatan dan konteks",
+      generationStatsUpdatesDescription:
+        "Waktu nyata menghitung token per detik dan penggunaan konteks saat balasan sedang dialirkan. Setelah selesai memperbaruinya saat setiap balasan selesai.",
+      generationStatsUpdatesHint:
+        "Waktu nyata menyegarkan penunjuk token per detik di bawah balasan dan bilah konteks di atas chat beberapa kali per detik saat balasan ditulis. Setelah selesai memperbaruinya sekali, setelah setiap balasan selesai. Waktu nyata dapat menyebabkan lag atau kinerja lebih lambat, terutama pada perangkat lama atau sibuk.",
+      generationStatsUpdatesSettled: "Setelah selesai",
+      generationStatsUpdatesRealtime: "Waktu nyata",
+      generationStatsUpdatesKeywords:
+        "waktu nyata langsung perbarui kecepatan konteks statistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit respons pada respons",
       inlineEditResponseDescription:
         "Tampilkan Edit respons di setiap respons, alih-alih di menu Lainnya.",
@@ -3844,7 +3869,7 @@ export const id = {
       mcp: {
         title: "Akses agen (MCP)",
         description:
-          "Izinkan agen coding seperti Claude Code dan Codex menggunakan Unsloth melalui MCP. Agen masuk dengan kunci API Unsloth dari halaman ini.",
+          "Izinkan agen coding seperti Claude Code dan Codex menggunakan Unsloth melalui MCP.",
         enable: "Izinkan koneksi agen",
         enableDescription:
           "Melayani /mcp/ untuk permintaan yang membawa kunci API Unsloth.",
@@ -3853,10 +3878,93 @@ export const id = {
         saveError: "Tidak dapat menyimpan pengaturan akses agen.",
         agent: "Agen",
         exportKeyHint:
-          "Atur {name} ke kunci API Unsloth dari halaman ini sebelum Anda memulai agen.",
+          "Atur {name} ke kunci API Unsloth sebelum Anda memulai agen.",
         configFileHint: "Tambahkan ini ke {path}.",
         keywords:
           "mcp model context protocol agents claude codex tools agen alat",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Agen masuk dengan kunci API Unsloth.",
+      createKey: "Buat kunci API",
+      tools: {
+        title: "Alat",
+        count: "{on} dari {total} aktif",
+        choose: "Pilih alat",
+        dialogTitle: "Alat Unsloth MCP",
+        allTools: "Semua alat",
+        selectAll: "Pilih semua",
+        selectNone: "Jangan pilih apa pun",
+        description:
+          "Setiap alat yang aktif menambah apa yang dibaca agen sebelum mulai, jadi nonaktifkan yang tidak Anda perlukan. Agen tidak pernah melihat alat yang nonaktif, dan panggilan ke alat itu ditolak. Agen yang sudah terhubung melihat perubahannya saat terhubung ulang.",
+        saveError: "Tidak dapat menyimpan pengaturan alat Unsloth MCP.",
+        chatNote: "Chat tidak pernah mendapatkan {tools}.",
+        groups: {
+          models: "Model",
+          generate: "Hasilkan",
+          training: "Pelatihan dan ekspor",
+          library: "Data dan pustaka",
+          jobs: "Tugas",
+          other: "Lainnya",
+        },
+      },
+      status: {
+        on: "Aktif",
+        off: "Nonaktif",
+      },
+      apiKeysRow: {
+        open: "Buka di Agen",
+      },
+      toolLabels: {
+        studioStatus: "Status",
+        listModels: "Daftar model",
+        loadModel: "Muat model",
+        unloadModel: "Lepas model",
+        planLoad: "Rencanakan pemuatan",
+        downloadModel: "Unduh model",
+        chat: "Chat",
+        embed: "Sematkan teks",
+        systemOne: "Model keputusan",
+        generateImage: "Hasilkan gambar",
+        generateAudio: "Hasilkan audio",
+        transcribe: "Transkripsikan",
+        analyzeAudio: "Analisis audio",
+        generateVideo: "Hasilkan video",
+        runRecipe: "Jalankan Data Recipe",
+        getJob: "Status tugas",
+        datasets: "Dataset",
+        startTraining: "Mulai pelatihan",
+        listTrainingRuns: "Riwayat pelatihan",
+        exportModel: "Ekspor model",
+        listMedia: "Media tersimpan",
+        voices: "Suara",
+        cancel: "Batalkan pekerjaan",
+      },
+      toolDescriptions: {
+        studioStatus: "Lihat apa yang dimuat, berjalan, dan kosong di komputer ini.",
+        listModels: "Tampilkan model yang bisa dimuat agen.",
+        loadModel: "Muat model agar agen bisa chat atau membuat konten dengannya.",
+        unloadModel: "Lepas model untuk mengosongkan memori.",
+        planLoad: "Lihat ukuran unduhan dan memori sebelum memuat.",
+        downloadModel: "Unduh model dari Hugging Face.",
+        chat: "Chat dengan model yang dimuat.",
+        embed: "Ubah teks menjadi vektor, atau urutkan teks berdasarkan kemiripan.",
+        systemOne: "Ajukan pertanyaan ya/tidak, pilihan, atau skor ke model keputusan.",
+        generateImage: "Buat gambar dan simpan ke galeri.",
+        generateAudio: "Buat suara atau audio lain.",
+        transcribe: "Ubah ucapan menjadi teks.",
+        analyzeAudio: "Periksa pembicara, waktu, dan kecocokan klip dengan naskah.",
+        generateVideo: "Buat video.",
+        runRecipe: "Jalankan Data Recipe untuk membuat dataset.",
+        getJob: "Ikuti pekerjaan panjang sampai selesai.",
+        datasets: "Tampilkan dan unggah dataset.",
+        startTraining: "Mulai fine-tuning.",
+        listTrainingRuns: "Tampilkan proses pelatihan dan hasilnya.",
+        exportModel: "Ekspor model terlatih, misalnya ke GGUF.",
+        listMedia: "Jelajahi gambar, audio, dan video yang tersimpan.",
+        voices: "Tampilkan, simpan, ganti nama, atau hapus suara.",
+        cancel: "Hentikan pekerjaan yang berjalan, seperti pelatihan atau ekspor.",
       },
     },
     about: {
@@ -5588,6 +5696,7 @@ export const id = {
     monitor: {
       dragHandleLabel:
         "Pindahkan pemantau langsung. Tombol panah menggesernya sedikit, klik dua kali untuk mengatur ulang.",
+      resizeHint: "Seret sisi atau sudut untuk mengubah lebar. Klik dua kali untuk mengatur ulang.",
       reconnecting: "Menyambungkan kembali...",
     },
   },

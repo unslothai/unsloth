@@ -1038,19 +1038,28 @@ def resolve_prequant_source(
         for name in declared + derived:
             if name and name not in names:
                 names.append(name)
+        from .diffusion_transformer_quant import convrot_drops_plain_hosted
+
+        if rotated and convrot_drops_plain_hosted(scheme, fam_name):
+            # Hosted plain int8 files are unrotated: rotated file or rotate at load.
+            names = (
+                [rotated] if str(repo_id).strip().lower() == str(rotated_repo or "").lower() else []
+            )
+            declared = tuple(names)
         names = with_declared_safetensors_twins(names, declared, scheme = scheme)
         if comfy_prequant_enabled() and _comfy_prequant_family(fam):
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         names = without_nvfp4_pickles(scheme, names)
-        if not names:
+        if names:
+            return PrequantSource(
+                kind = "repo",
+                location = repo_id,
+                filename = names[0],
+                fallback_filenames = tuple(names[1:]),
+                declared_filenames = declared,
+            )
+        if not (rotated and convrot_drops_plain_hosted(scheme, fam_name)):
             return None
-        return PrequantSource(
-            kind = "repo",
-            location = repo_id,
-            filename = names[0],
-            fallback_filenames = tuple(names[1:]),
-            declared_filenames = declared,
-        )
     # Nothing hosted: try this machine's cache of an earlier build; task names the component (MoE transformer_2).
     try:
         from .diffusion_prequant_cache import lookup
@@ -2565,6 +2574,7 @@ def load_prequantized_transformer(
             scheme,
             metadata.get("family") or family,
             min_features = int(metadata.get("min_features") or min_features or 512),
+            device = device,
             logger = logger,
         )
 

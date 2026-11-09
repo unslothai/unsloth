@@ -225,6 +225,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
+import { videoFailureToast } from "./generation-failure";
 import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
@@ -283,6 +284,28 @@ function useVideoModels(
     () => catalogToModelOptions(VIDEO_CATALOG, host, denseQuantSchemes),
     [host, denseQuantSchemes],
   );
+}
+
+const FAILURE_WITH_REASON_TOAST_MS = 10_000;
+
+/** False for the user's own Cancel, which is not an error. */
+function showVideoFailureToast(error: string | null | undefined): boolean {
+  const failure = videoFailureToast(error);
+  if (!failure) return false;
+  const { title, errorType, detail } = failure;
+  const hasReason = Boolean(errorType || detail);
+  toast.error(title, {
+    description: hasReason ? (
+      <span className="[overflow-wrap:anywhere]">
+        {errorType && <code className="font-mono">{errorType}</code>}
+        {errorType && detail ? ": " : null}
+        {detail}
+      </span>
+    ) : undefined,
+    duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
+    action: generationFailureLogsAction(title),
+  });
+  return true;
 }
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
@@ -2636,10 +2659,8 @@ function VideoGenerator({
               void ensureSrc(clip);
             }
           } else if (p.phase === "failed") {
-            const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+            showVideoFailureToast(p.error);
           }
           return;
         }
@@ -2698,9 +2719,7 @@ function VideoGenerator({
           }
         } else if (g.phase === "failed") {
           // Kept until the next job, so a reload still shows the failure.
-          const msg = g.error || "Video generation failed";
-          if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+          showVideoFailureToast(g.error);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3675,8 +3694,9 @@ function VideoGenerator({
       });
     } catch (err) {
       if (!isMounted.current) return;
-      const refusal = err instanceof Error ? err.message : "Video generation failed";
-      toast.error(refusal, { action: generationFailureLogsAction(refusal) });
+      const refusal = err instanceof Error ? err.message : null;
+      // A refusal is never the user's own Cancel, so one that mentions "cancelled" still shows.
+      if (!showVideoFailureToast(refusal) && refusal) toast.error(refusal);
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded"; re-read status.

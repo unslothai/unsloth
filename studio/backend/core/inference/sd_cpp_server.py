@@ -167,6 +167,7 @@ class SdCppServer:
         self._resident_params_vram_gb: Optional[float] = None
         # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
         self._tail: deque[str] = deque(maxlen = 200)
+        self._lines_seen = 0
         self._stdout_thread: Optional[threading.Thread] = None
         self._lifecycle_lock = threading.Lock()
         # Set lock-free by stop() so a blocking start()/readiness wait bails promptly.
@@ -444,6 +445,7 @@ class SdCppServer:
                 if not line:
                     continue
                 self._tail.append(line)
+                self._lines_seen += 1
                 match = _TOTAL_PARAMS_VRAM_RE.search(line)
                 if match is not None:
                     value = float(match.group(1)) / 1024.0
@@ -600,6 +602,7 @@ class SdCppServer:
             raise RuntimeError("sd-server is not running.")
 
         self._step_listener = on_step
+        job_mark = self._lines_seen
         job_id: Optional[str] = None
         # Before submit, so a line logged while the POST is in flight already counts.
         pacer = _LogPacedWait(getattr(self, "_log_wake", None), poll_interval)
@@ -688,11 +691,13 @@ class SdCppServer:
                         "sd-server generation failed: "
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
-                    if kind == "vid_gen":
-                        # The job error is generic; the cause (OOM, abort) is only in the log.
-                        tail = _diagnostic_tail(self._tail)
-                        if tail:
-                            message += "\nLast output:\n" + tail[:1500]
+                    # The cause is only in this job's output; an earlier job's stale OOM would mislabel it.
+                    lines = list(self._tail)
+                    tail = _diagnostic_tail(
+                        lines[max(0, len(lines) - (self._lines_seen - job_mark)) :]
+                    )
+                    if tail:
+                        message += "\nLast output:\n" + tail[:1500]
                     raise RuntimeError(message)
                 if status == _TERMINAL_CANCELLED:
                     raise SdCppCancelled("sd-server generation was cancelled.")

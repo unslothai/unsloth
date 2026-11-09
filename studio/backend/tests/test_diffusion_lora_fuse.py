@@ -16,6 +16,7 @@ pytest.importorskip("peft")
 from core.inference import diffusion as dmod  # noqa: E402
 
 FUSE_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE"
+HOST_GUARD_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_HOST_GUARD"
 
 
 def _unet_with_lora():
@@ -73,6 +74,13 @@ class _Pipe(types.SimpleNamespace):
 @pytest.fixture
 def engine(monkeypatch):
     monkeypatch.delenv(FUSE_ENV, raising = False)
+    from core.inference import diffusion_memory
+    from core.inference.diffusion_small_host import HOST_RAM_LIMIT_ENV
+
+    monkeypatch.delenv(HOST_GUARD_ENV, raising = False)
+    monkeypatch.delenv(HOST_RAM_LIMIT_ENV, raising = False)
+    # CI runners can sit below the reserve; the RAM tests cap it explicitly.
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
     monkeypatch.setattr(dmod, "_refuse_lora_without_loader", lambda *a, **k: None)
     monkeypatch.setattr(dmod, "_lora_load_block_reason", lambda pipe: None)
     monkeypatch.setattr(dmod, "invalidate_cfg_replica", lambda *a, **k: None)
@@ -238,3 +246,57 @@ def test_fold_and_restore_on_the_gpu_in_bf16(engine, monkeypatch, backup):
     assert _merged_layers(engine.unet) == 0
     after = _base_weights(engine.unet)
     assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+def test_a_host_backup_that_cuts_into_the_ram_reserve_stays_unfused(engine, monkeypatch):
+    from core.inference import diffusion_lora_fuse as lf
+    from core.inference.diffusion_small_host import HOST_RAM_LIMIT_ENV
+
+    monkeypatch.setenv(HOST_RAM_LIMIT_ENV, "2048")  # below the 3 GiB reserve alone
+    before = _base_weights(engine.unet)
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) == 0
+    assert not lf.fused(engine.pipe)
+    assert all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
+    monkeypatch.setenv(HOST_GUARD_ENV, "0")
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) > 0
+
+
+@pytest.mark.parametrize(
+    "available_mib, nbytes_mib, fits",
+    [
+        (1 << 20, 4 << 10, True),
+        (4 << 10, 512, True),
+        (4 << 10, 2 << 10, False),
+        (None, 8 << 10, True),  # unreadable host: the allocation decides
+    ],
+)
+def test_the_host_backup_keeps_the_small_host_reserve(monkeypatch, available_mib, nbytes_mib, fits):
+    from core.inference import diffusion_lora_fuse as lf
+    from core.inference import diffusion_small_host
+
+    monkeypatch.delenv(lf.HOST_GUARD_ENV, raising = False)
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (16 << 10, available_mib))
+    assert lf._host_backup_fits(nbytes_mib << 20) is fits
+    monkeypatch.setenv(lf.HOST_GUARD_ENV, "0")
+    assert lf._host_backup_fits(nbytes_mib << 20) is True
+
+
+@pytest.mark.parametrize("integrated", [True, False])
+def test_the_host_backup_is_pageable_on_an_integrated_gpu(monkeypatch, integrated):
+    from core.inference import diffusion_lora_fuse as lf
+    from core.inference import host_pinning
+
+    monkeypatch.delenv(lf.HOST_GUARD_ENV, raising = False)
+    asked = []
+    monkeypatch.setattr(
+        host_pinning, "device_is_integrated", lambda device = None: asked.append(device) or integrated
+    )
+    assert lf.HOST_GUARD_ENV == HOST_GUARD_ENV
+    cuda = torch.device("cuda", 1)
+    assert lf._host_backup_pinned(cuda) is (not integrated)
+    assert asked == [cuda]  # the weights' card, not the current device
+    assert lf._host_backup_pinned(torch.device("cpu")) is False
+    monkeypatch.setenv(lf.HOST_GUARD_ENV, "0")
+    assert lf._host_backup_pinned(cuda) is True

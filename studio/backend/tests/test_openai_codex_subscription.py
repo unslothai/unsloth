@@ -406,6 +406,105 @@ def test_browser_state_mismatch_does_not_consume_flow(monkeypatch):
         )
 
 
+def _persisted_browser_flow(monkeypatch, flow_id):
+    record = {
+        "marker": "marker",
+        "flow_id": flow_id,
+        "method": "browser",
+        "created_at": time.time(),
+        "expires_at": time.time() + 60,
+        "state": "expected-state",
+        "verifier": "secret-verifier",
+        "redirect_uri": "http://localhost:1455/auth/callback",
+        "status": "pending",
+        "message": "",
+    }
+
+    @asynccontextmanager
+    async def oauth_guard(_provider_id):
+        yield
+
+    def upsert(_kind, _provider_id, value):
+        record.clear()
+        record.update(json.loads(value))
+
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", oauth_guard)
+    monkeypatch.setattr(codex_auth, "_oauth_flow_record", lambda _provider: record.copy())
+    monkeypatch.setattr(codex_auth.credential_secrets, "upsert_secret", upsert)
+    flow = OAuthFlow(
+        id = flow_id,
+        provider_id = "provider",
+        method = "browser",
+        created_at = record["created_at"],
+        expires_at = record["expires_at"],
+        state = "expected-state",
+        verifier = "secret-verifier",
+        redirect_uri = record["redirect_uri"],
+        marker = "marker",
+        persist_bundle = lambda *_args: None,
+    )
+    return flow, record
+
+
+def test_denied_browser_callback_fails_the_flow(monkeypatch):
+    flow, record = _persisted_browser_flow(monkeypatch, "browser-denied")
+
+    async def deny():
+        server = await asyncio.start_server(
+            lambda r, w: codex_auth._loopback_handler(flow, r, w), "127.0.0.1", 0
+        )
+        flow.server = server
+        port = server.sockets[0].getsockname()[1]
+        try:
+            async with httpx.AsyncClient(trust_env = False) as client:
+                response = await client.get(
+                    f"http://127.0.0.1:{port}/auth/callback",
+                    params = {
+                        "state": "expected-state",
+                        "error": "access_denied",
+                        "error_description": "The user denied the request",
+                    },
+                )
+            rebound = await asyncio.start_server(lambda r, w: None, "127.0.0.1", port)
+            rebound.close()
+            await rebound.wait_closed()
+            return response
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    response = asyncio.run(deny())
+
+    assert flow.server is None
+
+    assert "Authorization failed" in response.text
+    assert flow.status == "error"
+    assert "denied" in flow.message
+    persisted = codex_auth._load_persisted_oauth_flow("provider", flow.id)
+    assert persisted is not None
+    assert persisted.status == "error"
+    assert persisted.message == flow.message
+    assert not record["state"] and not record["verifier"]
+
+
+def test_pasted_denied_callback_fails_the_flow(monkeypatch):
+    flow, record = _persisted_browser_flow(monkeypatch, "pasted-denied")
+    monkeypatch.setitem(codex_auth._flows, flow.id, flow)
+
+    with pytest.raises(codex_auth.CodexAuthError, match = "denied"):
+        asyncio.run(
+            codex_auth.complete_browser_flow(
+                "provider",
+                flow.id,
+                "http://localhost:1455/auth/callback?error=access_denied&state=expected-state",
+            )
+        )
+
+    assert flow.status == "error"
+    assert record["status"] == "error"
+    assert record["message"] == flow.message
+
+
 def _patch_poll_sleep(monkeypatch, record = None):
     """Make the device poll's asyncio.sleep instant, for this test's thread only.
 
@@ -1150,6 +1249,57 @@ def test_permanent_refresh_rejection_sets_only_sanitized_reconnect_marker(monkey
     assert saved and saved[-1]["reauthorization_required"] is True
     assert "secret-access" not in str(error.value)
     assert "secret-refresh" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "status, body, permanent",
+    [
+        (401, {"error": {"code": "refresh_token_reused"}}, True),
+        (400, {"error": {"code": "refresh_token_reused"}}, True),
+        (401, {"error": {"code": "refresh_token_invalidated"}}, True),
+        (401, {"error": {"message": "unknown"}}, True),
+        (400, {"code": "refresh_token_reused"}, True),
+        (400, {"error": "REFRESH_TOKEN_INVALIDATED"}, True),
+        (400, {"error": {"code": "server_error"}}, False),
+        (503, {"error": {"code": "server_error"}}, False),
+    ],
+)
+def test_refresh_rejections_the_codex_cli_treats_as_permanent_ask_to_reconnect(
+    monkeypatch, status, body, permanent
+):
+    bundle = {
+        "access_token": "secret-access",
+        "refresh_token": "secret-refresh",
+        "expires_at": time.time() - 10,
+        "account_id": "secret-account",
+    }
+    saved = []
+
+    class Lock:
+        def acquire(self):
+            return None
+
+        def release(self):
+            return None
+
+    real_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda _request: httpx.Response(status, json = body))
+    monkeypatch.setattr(
+        codex_auth.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport = transport, **kwargs),
+    )
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _provider: bundle.copy())
+    monkeypatch.setattr(
+        codex_auth, "save_oauth_bundle", lambda _provider, value: saved.append(value)
+    )
+    monkeypatch.setattr(codex_auth, "FileLock", lambda *_args, **_kwargs: Lock())
+    codex_auth._refresh_locks.clear()
+
+    with pytest.raises(codex_auth.CodexAuthError) as error:
+        asyncio.run(codex_auth.resolve_access("provider"))
+    assert isinstance(error.value, codex_auth.CodexReauthorizationRequired) is permanent
+    assert bool(saved and saved[-1].get("reauthorization_required")) is permanent
 
 
 def test_stale_unauthorized_response_does_not_poison_reconnected_bundle(monkeypatch):

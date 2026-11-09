@@ -73,7 +73,7 @@ test("turning the wallpaper fade off drops the band behind the composer", () => 
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(
 		css,
-		/\.chat-wallpaper-image\[data-fade="false"\]\) \.thread-bottom-fade \{\n  display: none;/,
+		/\[data-wallpaper-frame-flat\] \.thread-bottom-fade \{\n  display: none;/,
 	);
 });
 
@@ -89,8 +89,8 @@ test("glass strength repairs malformed persisted data", () => {
 
 test("composer outline off also drops the glass ring and bevel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] [^{]*\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\),[^{]*\{\n  --composer-shadow: none;/);
-	assert.match(css, /\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\)::before,[^{]*\{\n  content: none;/);
+	assert.match(css, /html\[data-glass\] [^{]*\[data-wallpaper-outline-off\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel\),[^{]*\{\n  --composer-shadow: none;/);
+	assert.match(css, /\[data-wallpaper-outline-off\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel\)::before,[^{]*\{\n  content: none;/);
 });
 
 test("glass adds no outer shadows, only inset light", () => {
@@ -151,7 +151,7 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	assert.ok(LENS_SCALE.magnify > 1 && LENS_SCALE.shrink < 1);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
-	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
+	assert.match(css, /\[data-wallpaper-outline-off\] \.glass-lens \.glass-lens-rim,/);
 });
 
 test("a glass lens set to off draws no wallpaper copies", () => {
@@ -215,8 +215,8 @@ test("the glass preference survives an account switch, and sign-in waits for the
 
 test("glass over an open conversation dims the image and thickens the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	// Welcome comes from a root flag (welcome.ts), not a :has() walk over the whole thread.
-	const conversation = String.raw`html\[data-glass\]:not\(\[data-chat-welcome\]\) :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\)`;
+	// Welcome comes from a root flag (welcome.ts) and the image from a host flag (host-flags.ts), not a :has().
+	const conversation = String.raw`html\[data-glass\]:not\(\[data-chat-welcome\]\) :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]:not\(\[data-wallpaper-route="page"\]\)`;
 	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
 	assert.match(css, new RegExp(`${conversation} :is\\(\\.unsloth-composer-surface, \\.unsloth-files-panel\\),[^{]*\\{\\n  --glass-composer-boost: 9%;`));
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
@@ -262,7 +262,7 @@ test("glass dims the wallpaper on other pages like an open chat, and blurs it no
 
 test("glass leaves the unstuck library header clear", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
+	assert.match(css, /:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\][^)]*\)\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
 	assert.match(css, /\[data-page-model-header\] \[data-slot="api-toolbar-fade"\] \{\n  display: none;/);
 	const api = readFileSync(new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url), "utf8");
 	assert.match(api, /data-page-model-header=""\n\s*className=\{cn\(\n\s*"pointer-events-none sticky top-0/);
@@ -411,7 +411,7 @@ test("transparent glass keeps each surface's colour at the strength's opacity, w
 	assert.match(block, /html\[data-glass-clear\] #root \[data-sonner-toaster\] \{\n  --clear-alpha: 100%;\n\}/);
 	assert.match(block, /html\[data-glass-clear\] #root \[class\*="text-background"\] \{\n  --background: var\(--glass-page-bg\);\n  --color-background: var\(--glass-page-bg\);\n\}/);
 	assert.match(css, /--glass-page-sidebar: var\(--sidebar\);/);
-	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n\s*background-color: transparent;/);
+	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\][^)]*\)\) \{\n\s*background-color: transparent;/);
 	assert.match(block, /@layer base \{\n\s*html\[data-glass-clear\] body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
 	assert.match(block, /html\[data-glass-clear\] #root \* \{\n\s*-webkit-backdrop-filter: none !important;\n\s*backdrop-filter: none !important;/);
 });
@@ -428,4 +428,19 @@ test("Windows Transparent glass shares its palette with opted-in popups and pain
 		const rule = clear.split(target + " {")[1]?.split("}")[0];
 		assert.ok(rule?.includes("background-color: transparent;"), target);
 	}
+});
+
+test("the model page's Back to Hub bar paints no strip over a background image until content scrolls under it", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const resting = String.raw`\.hub-detail-bar:not\(\[data-scrolled\]\)`;
+	assert.match(css, new RegExp(String.raw`\[data-wallpaper-workspace\]\[data-wallpaper-ready\]\[data-wallpaper-ready\] :is\([^)]*\.hub-page \.hub-canvas[^{]*${resting}\) \{ background: transparent; \}`));
+	assert.match(css, new RegExp(String.raw`:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], ${resting}\) \{\n\s*-webkit-backdrop-filter: none;`));
+	assert.match(css, new RegExp(String.raw`html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], ${resting}\) \{\n\s*background-color: transparent;`));
+});
+
+test("macOS glass and a plain background image leave the resting page headers clear", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const block = css.slice(css.indexOf("/* macOS glass sees the window through every page"));
+	assert.match(block, /^\/\*[^]*?\*\/\nhtml\[data-glass="macos"\] \[data-slot="sidebar-inset"\] :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], \.hub-page \.hub-detail-bar:not\(\[data-scrolled\]\)\),\nhtml:not\(\[data-glass\]\) \[data-wallpaper-workspace\]\[data-wallpaper-ready\]\[data-wallpaper-ready\] > \[data-slot="sidebar-inset"\] :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  background-color: transparent;/);
+	assert.match(block, /html\[data-glass="macos"\] \[data-page-model-header\] \[data-slot="api-toolbar-fade"\],\nhtml:not\(\[data-glass\]\) [^{]*\[data-page-model-header\] \[data-slot="api-toolbar-fade"\] \{\n  display: none;/);
 });

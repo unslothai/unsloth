@@ -3463,6 +3463,50 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert len(payloads[1]["messages"]) == 1
 
 
+@pytest.fixture
+def fresh_cut_memory():
+    from core.inference import prefix_boundary
+
+    prefix_boundary.clear()
+    yield
+    prefix_boundary.clear()
+
+
+def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(monkeypatch, fresh_cut_memory):
+    from core.inference import checkpoint
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    rounds = 16
+    streams = [
+        _structured_tool_call("python", {"code": f"print(open('f{i}').read())"}, f"call_{i}")
+        for i in range(rounds)
+    ] + [[_sse({"content": "Done."}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    backend._effective_context_length = 8192
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(len(str(m.get("content") or "")) for m in candidate),
+    )
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "x" * 1200
+    )
+
+    _run_tool_loop(
+        backend,
+        [{"role": "system", "content": "agent"}, {"role": "user", "content": "read every file"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = rounds,
+        max_tokens = 512,
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+    )
+
+    heads = [json.dumps(payload["messages"][:3]) for payload in payloads]
+    moves = sum(before != after for before, after in zip(heads, heads[1:]))
+    assert moves < len(payloads) // 2, moves
+
+
 def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
     """Unpriced media must not disable compaction that the text alone requires."""
     backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])
@@ -5409,6 +5453,35 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     )
 
     assert len(calls) == 1, [c[0] for c in calls]
+
+
+def test_gguf_textual_fallback_keeps_two_identical_unseeded_studio_generations(monkeypatch):
+    from core.inference import tool_facts
+
+    name = "mcp__unsloth__generate_image"
+    tool_facts.note_mcp_tool(name, {"name": "generate_image"}, studio = True)
+    blocks = '<tool_call>{"name":"%s","arguments":{"prompt":"a cat"}}</tool_call>' % name * 2
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
+    )
+    try:
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "two cats"}],
+                tools = [{"type": "function", "function": {"name": name}}],
+                max_tool_iterations = 1,
+            )
+        )
+    finally:
+        tool_facts.note_mcp_tool(name, {"name": "generate_image"})
+
+    assert calls == [(name, {"prompt": "a cat"})] * 2
 
 
 @pytest.mark.parametrize("deduplicate", [True, False])
@@ -7358,3 +7431,20 @@ def test_appended_notice_keeps_an_image_part_an_image():
         {"type": "text", "text": "\n\nStop."},
     ]
     assert _with_appended_text("Over the cap.", "\n\nStop.") == "Over the cap.\n\nStop."
+
+
+def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
+    """The tool said to ask the user and the model asked; that reply is the answer."""
+    streams = [
+        [_tool_call_sse("web_search", {"query": "music"}, "call_first"), _done()],
+        [_sse({"content": "Load the music model and I will make the song."}), _done()],
+        [_sse({"content": "unreachable"}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "Error: [needs_user_load kind=audio page=Audio] Not loaded.")
+    messages = [{"role": "user", "content": "Make a song."}]
+    events = _run_tool_loop(
+        backend, messages, [_WEB_SEARCH_TOOL], max_tool_iterations = 3, nudge_tool_calls = True
+    )
+    content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
+    assert len(payloads) == 2 and "I will make the song" in content

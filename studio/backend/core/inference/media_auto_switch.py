@@ -328,6 +328,12 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
+            # Again under the gates: a chat model can have loaded since the precheck.
+            from core.inference.ensure_model import ensure_media_load
+
+            await asyncio.to_thread(
+                functools.partial(ensure_media_load, owner, kind, name, openai_errors = openai_errors)
+            )
             # Ranked once: the check below and the load it starts both use this card.
             planned = media_locality.pin_planned_gpu_ordinal(
                 await bounded(
@@ -372,7 +378,8 @@ async def _gated_start_load(
                             openai_errors = openai_errors,
                             code = "multi_model_always",
                         )
-                        refusal.headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
+                        # The arbiter's code header names the kind it would unload.
+                        refusal.headers = dict(exc.headers or MULTI_MODEL_REFUSAL_HEADERS)
                         raise refusal from exc
                     raise
             return False
@@ -446,6 +453,13 @@ async def maybe_auto_switch_media_model(
     # re-read: the index build can run for the whole budget, and an idle unload can land in it
     if satisfied_by(await asyncio.to_thread(backend_for(owner).status), name, pick):
         return
+
+    from core.inference.ensure_model import ensure_media_load
+
+    # Before before_switch and the locks: a refused switch must not touch anything.
+    await asyncio.to_thread(
+        functools.partial(ensure_media_load, owner, kind, name, openai_errors = openai_errors)
+    )
 
     if before_switch is not None:
         await bounded(

@@ -135,6 +135,8 @@ class SdCppUpscaleParams:
 
 # Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
 # Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
+# Read from the diffusion GGUF only (A100, Q8_0 DiT + Q4_K_M encoder: 1.57x); the env is process-wide, but prompt rows
+# stay below it. Drop the env once the pin carries fork patch 0016, the build's own Q8_0-only default.
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -162,36 +164,12 @@ def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]
         return None
 
 
-def model_files_quantized_weight_types(files: "SdCppModelFiles") -> Optional[frozenset[str]]:
-    """Quantized types across every loaded file (the env override is process-wide), or None if any GGUF is unreadable."""
-    types = gguf_quantized_weight_types(files.diffusion_model)
-    if types is None:
-        return None
-    for path in (
-        files.vae,
-        files.audio_vae,
-        files.clip_l,
-        files.clip_g,
-        files.t5xxl,
-        files.llm,
-        files.llm_vision,
-        files.qwen2vl,
-    ):
-        if not path or not str(path).lower().endswith(".gguf"):
-            continue
-        extra = gguf_quantized_weight_types(path)
-        if extra is None:
-            return None
-        types |= extra
-    return types
-
-
 def quant_cublas_env(
     cuda_ccs: Sequence[tuple[int, int]],
     environ: Optional[dict] = None,
     weight_types: Optional[frozenset[str]] = None,
 ) -> dict[str, str]:
-    """Set only if every card sd.cpp may pick agrees and all quantized tensors are Q8_0; a user value wins."""
+    """Set only if every card sd.cpp may pick agrees and the diffusion GGUF is all Q8_0; a user value wins."""
     import os
 
     environ = os.environ if environ is None else environ

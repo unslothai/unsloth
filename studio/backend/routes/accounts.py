@@ -82,6 +82,9 @@ def retire_account_roots(account: AccountContext):
     video_active = generation_account_in_flight() == account.account_id
     if video_active:
         get_video_backend().cancel_generate(expected_account = account.account_id)
+    from routes.inference import retire_account_image_jobs
+
+    retire_account_image_jobs(account.account_id)
     image_active = cancel_generation_for_account(account.account_id)
     if video_active or image_active:
         raise AccountRetirementError("Media generation is still active; retry deletion")
@@ -217,6 +220,9 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             # Fence first, so a request registering after the sweep is cancelled too.
             active_generations.fence(account_id)
             active_generations.cancel_all(account_id)
+            from routes.inference import retire_account_image_jobs
+
+            retire_account_image_jobs(account_id)
             # A scheduled run still waiting for the model gate has not registered yet.
             cancel_account_runs(account_id)
             retire_account_loads(account_id)

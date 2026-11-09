@@ -108,6 +108,7 @@ test("settled WebKitGTK fences only line-window themselves while code wrapping i
     "line windows map offsets with one unwrapped row per source line; wrapped lines would highlight a window ahead of the reader, "
       + "and a fence under the cap has no line window, so forcing windowing there would only drop the batched highlight path",
   );
-  assert.match(defer, /const useCodeWrap = \(\): boolean => useSyncExternalStore\(subscribeCodeWrap, codeWrapOn, \(\) => false\);/);
-  assert.match(defer, /attributeFilter: \["data-code-wrap"\]/);
+  // A block's own wrap button counts too (data-wrap on its wrapper), not only the global setting.
+  assert.match(defer, /const useCodeWrap = \(node: RefObject<Element \| null>\): boolean =>\s*useSyncExternalStore\(subscribeCodeWrap, \(\) => codeWrapOn\(node\.current\), \(\) => false\);/);
+  assert.match(defer, /attributeFilter: \["data-code-wrap", "data-wrap"\]/);
 });

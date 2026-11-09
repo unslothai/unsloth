@@ -742,34 +742,36 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
 
     if kwargs.get("llama_extra_args"):
         # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand the load the stale flag, so the /load stripper (_resolve_inherited_extra_args) is imported, not mirrored. The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the allow-list this module stays out of is validate_extra_args.
-        from core.inference.llama_server_args import (
-            matches_explicit_ctx_override,
-            strip_shadowing_flags,
-        )
-
-        # Context's load-time value is a VRAM-fit target. A MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold and survives, while stale and malformed flags are still stripped; /props then publishes what was really allocated.
-        matching_explicit_ctx = matches_explicit_ctx_override(
-            kwargs["llama_extra_args"], kwargs.get("max_seq_length")
-        )
-
-        kwargs["llama_extra_args"] = strip_shadowing_flags(
-            kwargs["llama_extra_args"],
-            # Only the groups this override actually supplies, as the route gates on its request's set fields: a flag with no first-class field behind it is the user's only way to set that knob and still passes through.
-            strip_context = "max_seq_length" in kwargs and not matching_explicit_ctx,
-            strip_cache = "cache_type_kv" in kwargs,
-            strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
-            strip_template = "chat_template_override" in kwargs,
-            strip_reasoning_budget = "reasoning_budget" in kwargs,
-            strip_reasoning_budget_message = "reasoning_budget_message" in kwargs,
-            # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
-            strip_split_mode = bool(kwargs.get("tensor_parallel")),
-            strip_batch = "n_batch" in kwargs,
-            strip_ubatch = "n_ubatch" in kwargs,
-            strip_ctx_checkpoints = "ctx_checkpoints" in kwargs,
-            strip_cache_ram = "cache_ram" in kwargs,
-            strip_spec_draft_cache = "spec_draft_cache_type" in kwargs,
-        )
+        kwargs["llama_extra_args"] = strip_args_shadowed_by(kwargs["llama_extra_args"], kwargs)
     return kwargs
+
+
+def strip_args_shadowed_by(args, fields: dict[str, Any], **extra_strips) -> list[str]:
+    from core.inference.llama_server_args import (
+        matches_explicit_ctx_override,
+        strip_shadowing_flags,
+    )
+
+    # Context's load-time value is a VRAM-fit target. A MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold and survives, while stale and malformed flags are still stripped; /props then publishes what was really allocated.
+    matching_explicit_ctx = matches_explicit_ctx_override(args, fields.get("max_seq_length"))
+    return strip_shadowing_flags(
+        args,
+        # Only the groups these fields actually supply, as the route gates on its request's set fields: a flag with no first-class field behind it is the user's only way to set that knob and still passes through.
+        strip_context = "max_seq_length" in fields and not matching_explicit_ctx,
+        strip_cache = "cache_type_kv" in fields,
+        strip_spec = "speculative_type" in fields or "spec_draft_n_max" in fields,
+        strip_template = "chat_template_override" in fields,
+        strip_reasoning_budget = "reasoning_budget" in fields,
+        strip_reasoning_budget_message = "reasoning_budget_message" in fields,
+        # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
+        strip_split_mode = bool(fields.get("tensor_parallel")),
+        strip_batch = "n_batch" in fields,
+        strip_ubatch = "n_ubatch" in fields,
+        strip_ctx_checkpoints = "ctx_checkpoints" in fields,
+        strip_cache_ram = "cache_ram" in fields,
+        strip_spec_draft_cache = "spec_draft_cache_type" in fields,
+        **extra_strips,
+    )
 
 
 def _looks_like_filesystem_path(model_id: str) -> bool:

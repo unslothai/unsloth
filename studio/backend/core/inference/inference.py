@@ -34,11 +34,13 @@ from utils.hardware import (
 from core.inference.audio_codecs import AudioCodecManager
 from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.runtime_context import (
+    UNSET_GENERATION_BUDGET,
     generation_budget_within_context,
     runtime_context_length,
 )
 from core.inference.message_content import content_to_text, named_turn
 from core.inference.model_ids import is_deepseek_ocr
+from core.inference.lfm3_conv_fallback import disable_lfm3_triton_conv_where_unsupported
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -801,6 +803,72 @@ def _audio_chat_auto_model(config):
     return getattr(transformers, "AutoModelForMultimodalLM", None)
 
 
+# Audio sampling stays with each checkpoint's generation_config: LFM3-Audio and -Omni differ.
+_SPEECH_REPLY_SYSTEM_PROMPT = "Respond with interleaved text and audio."
+_TTS_LOCALES = {
+    "ar": "Arabic",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "American English",
+    "en-us": "American English",
+    "en-gb": "British English",
+    "fi": "Finnish",
+    "fr": "French",
+    "he": "Hebrew",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "sv": "Swedish",
+    "tr": "Turkish",
+    "zh": "Chinese",
+}
+
+
+def _speech_codec(model, processor):
+    """The processor's bundled codec when the model speaks (LFM3-Audio / -Omni), else None."""
+    codec = getattr(processor, "audio_tokenizer", None)
+    if codec is None or not isinstance(
+        getattr(getattr(model, "config", None), "interleaved_n_audio", None), int
+    ):
+        return None
+    return codec
+
+
+def _tts_system_prompt(language: Optional[str], audio_options: Optional[dict]) -> str:
+    """The model card's TTS prompt; an unknown language falls back to American English."""
+    lang = str(language or "").strip()
+    locale = _TTS_LOCALES.get(lang.lower().replace("_", "-")) or next(
+        (name for name in _TTS_LOCALES.values() if name.lower() == lang.lower()),
+        "American English",
+    )
+    voice = str((audio_options or {}).get("voice") or "").strip().lower()
+    return f"Perform TTS in {locale} using a {'male' if voice == 'male' else 'female'} voice."
+
+
+class _SpeechStopped(Exception):
+    pass
+
+
+def _speech_stop_streamer(cancel_event):
+    """LFM3's generate refuses stopping_criteria; a streamer raising on put ends it."""
+    from transformers.generation.streamers import BaseStreamer
+
+    class _StopOnCancel(BaseStreamer):
+        def put(self, value):
+            if cancel_event.is_set():
+                raise _SpeechStopped
+
+        def end(self):
+            pass
+
+    return _StopOnCancel()
+
+
 def _processor_takes_text_first(processor) -> bool:
     """LFM3-Omni's processor is (text, audio, ..., images); the usual VLM order is (images, text)."""
     # unsloth_zoo wraps __call__ as (*args, **kwargs); read the first class that names its arguments.
@@ -1310,6 +1378,9 @@ class InferenceBackend:
                     )
 
                 raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
+                disable_lfm3_triton_conv_where_unsupported(
+                    self.models[model_name]["model"], torch, logger
+                )
                 self.models[model_name]["context_length"] = runtime_context_length(
                     self.models[model_name].get("model"),
                     max_seq_length,
@@ -1489,7 +1560,19 @@ class InferenceBackend:
                 else:
                     _refuse_without_generate(model, model_name)
 
+            if self.models[model_name].get("audio_type") == "audio_vlm":
+                self.models[model_name]["speaks"] = (
+                    _speech_codec(
+                        self.models[model_name].get("model"),
+                        self.models[model_name].get("processor"),
+                    )
+                    is not None
+                )
+
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
+            disable_lfm3_triton_conv_where_unsupported(
+                self.models[model_name]["model"], torch, logger
+            )
             self.models[model_name]["context_length"] = runtime_context_length(
                 self.models[model_name].get("model"),
                 max_seq_length,
@@ -2605,15 +2688,25 @@ class InferenceBackend:
         cancel_event = None,
         extra_audio_arrays: Optional[list] = None,
         tools: Optional[list] = None,
+        speak: bool = False,
     ) -> Generator[str, None, None]:
         """Audio goes into the chat messages via processor.apply_chat_template (Gemma 3n pattern).
         ``tools`` (a list, empty for tool history alone) renders the catalogue and keeps
-        ``messages`` as sent."""
+        ``messages`` as sent. ``speak`` answers in the model's own voice, as the MLX backend
+        does: the reply text, then one ``{"speech": <base64 wav>, "sample_rate"}`` item."""
         import threading
         import numpy as np
 
         # Reset so a failed or uncountable run cannot surface stale stats.
         self.last_generation_stats = None
+
+        if speak:
+            if extra_audio_arrays:
+                raise RuntimeError("A spoken reply answers one audio clip.")
+            yield from self._speak_audio_reply(
+                messages, system_prompt, audio_array, max_new_tokens, use_adapter, cancel_event
+            )
+            return
 
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
@@ -2760,6 +2853,118 @@ class InferenceBackend:
         except Exception as e:
             logger.error(f"Audio input generation error: {e}")
             raise
+
+    def _speak_audio_reply(
+        self, messages, system_prompt, audio_array, max_new_tokens, use_adapter, cancel_event
+    ):
+        import base64
+
+        system = "\n\n".join(p for p in (_SPEECH_REPLY_SYSTEM_PROMPT, system_prompt) if p)
+        conversation = messages_with_attached_image(
+            alternating_turns(messages),
+            system_prompt = system,
+            structured_content = True,
+            image = 0,
+            audio = audio_array,
+        )
+        result = self._generate_speech(
+            conversation, "<|mixed_start|>", max_new_tokens, use_adapter, cancel_event
+        )
+        if result is None:
+            return
+        text, wav, sample_rate = result
+        if text:
+            yield text
+        if wav:
+            yield {"speech": base64.b64encode(wav).decode("ascii"), "sample_rate": sample_rate}
+
+    def _speak_text(self, text, max_new_tokens, use_adapter, cancel_event, language, audio_options):
+        """The loaded LFM3 model reads ``text`` aloud in its TTS mode: ``(wav_bytes, sample_rate)``."""
+        from core.inference.audio_errors import AudioGenerationCancelledError
+
+        conversation = [
+            {"role": "system", "content": _tts_system_prompt(language, audio_options)},
+            {"role": "user", "content": text},
+        ]
+        result = self._generate_speech(
+            conversation, "<|audio_start|>", max_new_tokens, use_adapter, cancel_event
+        )
+        if result is None:
+            raise AudioGenerationCancelledError("Audio generation cancelled")
+        _, wav, sample_rate = result
+        if not wav:
+            raise RuntimeError("The model returned no speech.")
+        return wav, sample_rate
+
+    def _generate_speech(self, conversation, prefill, max_new_tokens, use_adapter, cancel_event):
+        """Render ``conversation`` with the assistant turn opened by ``prefill`` and generate.
+        Returns ``(text, wav_bytes or None, sample_rate)``, or None once stopped."""
+        from core.inference.audio_codecs import _numpy_to_wav_bytes
+        from core.inference.chat_template_helpers import neutralize_for_render
+
+        model_info = self.models[self.active_model_name]
+        model = model_info["model"]
+        processor = model_info.get("processor") or model_info.get("tokenizer")
+        codec = _speech_codec(model, processor)
+        if codec is None:
+            raise RuntimeError("The loaded model cannot answer in speech.")
+        # Neutralize before the prefill, which is itself control markup (#7066).
+        conversation, _, _ = neutralize_for_render(processor, conversation, None)
+        conversation = [*conversation, {"role": "assistant", "content": prefill}]
+        inputs = processor.apply_chat_template(
+            conversation,
+            continue_final_message = True,
+            tokenize = True,
+            return_dict = True,
+            return_tensors = "pt",
+            truncation = False,
+        ).to(model.device)
+        prompt_len = int(inputs["input_ids"].shape[1])
+        budget = generation_budget_within_context(model, prompt_len, max_new_tokens)
+        # Unset: the free window, capped as the MLX path caps it.
+        max_new_tokens = budget if max_new_tokens else min(budget, UNSET_GENERATION_BUDGET)
+        kwargs = dict(
+            **inputs,
+            max_new_tokens = max_new_tokens,
+            do_sample = False,
+            return_dict_in_generate = True,
+        )
+        if cancel_event is not None:
+            stopper = _speech_stop_streamer(cancel_event)
+            kwargs.update(streamer = stopper, audio_streamer = stopper)
+        timer = GenerationTimer()
+        with self._generation_lock:
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            self._apply_adapter_state(use_adapter)
+            timer.start()
+            try:
+                out = model.generate(**kwargs)
+            except _SpeechStopped:
+                return None
+            finally:
+                timer.finish()
+            lengths = getattr(out, "audio_lengths", None)
+            frames = int(lengths[0]) if lengths is not None else 0
+            wav, sample_rate = None, int(getattr(codec.config, "sampling_rate", None) or 24000)
+            if frames > 0:
+                device = next(model.parameters()).device
+                if next(codec.parameters()).device != device:
+                    codec.to(device = device)
+                with torch.inference_mode():
+                    waveform = codec.decode(out.audio_codes[:1, :, :frames]).audio_values[0]
+                wav = _numpy_to_wav_bytes(waveform.float().cpu().numpy(), sample_rate)
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        raw_tokenizer = getattr(processor, "tokenizer", processor)
+        text = raw_tokenizer.decode(out.sequences[0, prompt_len:], skip_special_tokens = True)
+        self._record_generation_stats(
+            prompt_tokens = prompt_len,
+            completion_tokens = int(out.sequences.shape[1]) - prompt_len,
+            max_new_tokens = max_new_tokens,
+            timer = timer,
+        )
+        return text.strip(), wav, sample_rate
 
     def generate_whisper_response(
         self,
@@ -3204,8 +3409,9 @@ class InferenceBackend:
         seed: Optional[int] = None,
         audio_options: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
-        """Args unused: reserved for native audio models; codec TTS has no instructions, language or seed."""
-        del instructions, language, seed
+        """Args unused: reserved for native audio models; codec TTS has no instructions, language or seed.
+        A chat model that speaks (LFM3) reads the text aloud in its TTS mode, in ``language``."""
+        del instructions, seed
         if not self.active_model_name:
             raise RuntimeError("No active model")
 
@@ -3216,6 +3422,10 @@ class InferenceBackend:
 
         if not audio_type:
             raise RuntimeError(f"Model {self.active_model_name} is not an audio model")
+        if audio_type == "audio_vlm" and model_info.get("speaks"):
+            return self._speak_text(
+                text, max_new_tokens, use_adapter, cancel_event, language, audio_options
+            )
 
         top_k = self._normalize_top_k(top_k)
         # Every codec below concatenates its prompt instead of templating it, so this

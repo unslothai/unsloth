@@ -14,8 +14,10 @@ import os
 import random
 import re
 import shutil
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Iterable
@@ -1277,15 +1279,69 @@ _UNRESUMABLE_STATUS = {
 }
 
 
+# Listing-only memo of passing _assert_loadable verdicts, keyed on the stat of every state file.
+# Files touched within the settle window are not kept: a coarse mtime can hide a same-size rewrite.
+_LOADABLE_PASSES: "OrderedDict[str, tuple]" = OrderedDict()
+_LOADABLE_PASSES_MAX = 512
+_LOADABLE_SETTLE_NS = 2_000_000_000
+_LOADABLE_PASSES_LOCK = threading.Lock()
+
+
+def _loadable_key(path: Path, manifest: dict[str, Any]) -> Optional[tuple]:
+    """Identity of every file _assert_loadable reads, or None when one cannot be stat'ed."""
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        return None
+    entries = []
+    try:
+        for role in sorted(files, key = str):
+            name = files[role]
+            if not isinstance(name, str) or not name or Path(name).name != name:
+                return None
+            st = os.stat(path / name)
+            entries.append(
+                (str(role), name, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            )
+    except (OSError, TypeError):
+        return None
+    return tuple(entries)
+
+
+def _assert_loadable_cached(path: Path, manifest: dict[str, Any]) -> bool:
+    cache_id = str(path)
+    key = _loadable_key(path, manifest)
+    if key is not None:
+        with _LOADABLE_PASSES_LOCK:
+            if _LOADABLE_PASSES.get(cache_id) == key:
+                _LOADABLE_PASSES.move_to_end(cache_id)
+                return True
+    try:
+        _assert_loadable(path, manifest)
+    except ResumeError:
+        # Never kept: a refusal can be transient (MemoryError, EMFILE).
+        return False
+    now = time.time_ns()
+    if (
+        key is not None
+        and all(now - max(entry[5], entry[6]) > _LOADABLE_SETTLE_NS for entry in key)
+        and _loadable_key(path, manifest) == key
+    ):
+        with _LOADABLE_PASSES_LOCK:
+            _LOADABLE_PASSES[cache_id] = key
+            _LOADABLE_PASSES.move_to_end(cache_id)
+            while len(_LOADABLE_PASSES) > _LOADABLE_PASSES_MAX:
+                _LOADABLE_PASSES.popitem(last = False)
+    return True
+
+
 def _fully_loadable(path: Path, manifest: dict[str, Any]) -> bool:
     """Header scan is not enough; the required state and a real torch.load must also succeed."""
     try:
         _assert_required_state(path, manifest)
         _assert_optimizer_buildable(path, manifest)
-        _assert_loadable(path, manifest)
     except ResumeError:
         return False
-    return True
+    return _assert_loadable_cached(path, manifest)
 
 
 def _source_checkpoint_bundle(

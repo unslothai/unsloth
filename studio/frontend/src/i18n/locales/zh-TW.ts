@@ -2641,6 +2641,21 @@ export const zhTW = {
         summary: "即時請求、錯誤和 token 用量",
         status: "{active} 個進行中 · {recent} 個最近 · {model}",
         noModelLoaded: "未載入模型",
+        memory: "記憶體",
+        gpuInUse: "GPU 使用中",
+        availableForModels: "可供模型使用",
+        refreshRate: "重新整理頻率",
+        refreshRateDescription: "浮動監視器開啟時讀取記憶體與 GPU 使用量的頻率。",
+        refreshEvery: "每 {seconds} 秒",
+        unsloth: "Unsloth",
+        otherApps: "其他應用程式",
+        otherInUse: "其他使用",
+        freeLabel: "可用",
+        unslothApp: "Unsloth 應用程式",
+        unslothShare: "顯示 Unsloth 的占用",
+        unslothShareDescription: "將記憶體分成 Unsloth 使用的、其他應用程式使用的，以及可用的部分。",
+        modelBreakdown: "依模型細分",
+        modelBreakdownDescription: "將記憶體條中 Unsloth 的部分細分為每個已載入的模型與應用程式其餘部分。",
         autoOpen: "自動開啟浮動監控",
         autoOpenDescription: "收到 API 流量時開啟一個小面板。",
         cpu: "CPU",
@@ -2656,8 +2671,7 @@ export const zhTW = {
         gpuUnusableDetail: "已偵測到，但 PyTorch 無法使用",
         detailedView: "詳細檢視",
         detailedViewDescription:
-          "在浮動視窗中顯示 CPU 負載，以及每個 GPU 的負載、溫度和功耗。",
-        cpuLoad: "CPU 負載",
+          "在浮動視窗中顯示每個 GPU 的負載、溫度和功耗。",
         gpuLoad: "GPU 負載",
         temperature: "溫度",
         power: "功耗",
@@ -2672,7 +2686,7 @@ export const zhTW = {
         unavailable: "無法使用",
         detecting: "正在檢查 GPU...",
         unreadable: "無法讀取此伺服器的硬體資訊。",
-        noGpu: "未偵測到可見的 GPU。上方顯示的是僅 CPU 的資源。",
+        noGpu: "未偵測到獨立 GPU。",
         noUsableGpu: "這台電腦上沒有 PyTorch 可使用的 GPU。",
         mismatchCpuBuild:
           "PyTorch 是僅支援 CPU 的版本（{version}），因此無法使用下列 GPU。請修復安裝以恢復 GPU 支援。",
@@ -2752,7 +2766,7 @@ export const zhTW = {
           "llama.cpp 後端 推論 引擎 加速器 預先建置 切換 自訂 路徑 資料夾 目錄 執行檔 backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "模型記憶體",
+        title: "模型載入",
         keepResident: "將模型保留在 GPU 記憶體中",
         keepResidentDescription: "在提示詞之間持續保留在 VRAM 中。",
         keepResidentHint:
@@ -2942,7 +2956,7 @@ export const zhTW = {
       configurationDocs: "說明文件",
       configurationFlagsSuffix: "以了解可用旗標。",
       modelNote:
-        "Codex 需要由 llama-server 提供的 GGUF 模型。其他代理程式也可以使用以 Transformers 為後端的模型；移除 --model 即可使用 Unsloth 中已載入的模型。",
+        "Claude Code 和 Codex 需要由 llama-server 提供的 GGUF 模型，或 MLX 模型。其他代理程式也可以使用以 Transformers 為後端的模型；移除 --model 即可使用 Unsloth 中已載入的模型。",
       subagent: {
         title: "將本機模型用作子代理程式",
         description:
@@ -3013,6 +3027,8 @@ export const zhTW = {
     },
     chat: {
       groups: {
+        replies: { title: "回覆" },
+        thinkingTools: { title: "思考與工具" },
         conversations: {
           title: "對話",
         },
@@ -3106,11 +3122,20 @@ export const zhTW = {
       showReplyTimesDescription: "在每則回覆下方顯示其完成時間。",
       showReplyTimesKeywords:
         "時間戳記 時間 時鐘 日期 小時 完成 抵達 回覆 回應 訊息 timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "生成詳細資料",
+      showGenerationDetails: "詳細速度與載入資訊",
       showGenerationDetailsDescription:
-        "即時顯示提示詞和回覆的速度及 token 數，以及模型各層的載入位置。",
+        "在即時讀數中加入提示詞讀取速度、token 數和草稿採用率，並顯示模型各層載入在哪裡。",
       showGenerationDetailsKeywords:
         "詳細 開發人員 統計 速度 預填 解碼 層 卸載 專家 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度與上下文統計",
+      generationStatsUpdatesDescription:
+        "即時模式在回覆串流輸出時統計每秒 token 數和上下文用量。完成後模式在每則回覆結束時更新。",
+      generationStatsUpdatesHint:
+        "即時模式會在回覆產生期間，每秒數次重新整理回覆下方的每秒 token 數讀數和聊天頂端的上下文列。完成後模式會在每則回覆結束後更新一次。即時模式可能造成卡頓或效能下降，在較舊或忙碌的電腦上尤其明顯。",
+      generationStatsUpdatesSettled: "完成後",
+      generationStatsUpdatesRealtime: "即時",
+      generationStatsUpdatesKeywords:
+        "即時 動態 更新 速度 上下文 統計 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "在回應上顯示「編輯回應」",
       inlineEditResponseDescription:
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
@@ -3657,7 +3682,7 @@ export const zhTW = {
       mcp: {
         title: "代理程式存取（MCP）",
         description:
-          "讓 Claude Code 和 Codex 等程式設計代理程式透過 MCP 使用 Unsloth。代理程式會使用此頁面中的 Unsloth API 金鑰登入。",
+          "讓 Claude Code 和 Codex 等程式設計代理程式透過 MCP 使用 Unsloth。",
         enable: "允許代理程式連線",
         enableDescription: "為帶有 Unsloth API 金鑰的請求提供 /mcp/ 服務。",
         lockedByEnv: "由 {name} 設定。",
@@ -3665,10 +3690,93 @@ export const zhTW = {
         saveError: "無法儲存代理程式存取設定。",
         agent: "代理程式",
         exportKeyHint:
-          "啟動代理程式前，請將 {name} 設為此頁面中的 Unsloth API 金鑰。",
+          "啟動代理程式前，請將 {name} 設為 Unsloth API 金鑰。",
         configFileHint: "將此內容加入 {path}。",
         keywords:
           "mcp model context protocol 模型上下文協定 agents 代理程式 claude codex tools 工具",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "代理程式使用 Unsloth API 金鑰登入。",
+      createKey: "建立 API 金鑰",
+      tools: {
+        title: "工具",
+        count: "已開啟 {on}/{total}",
+        choose: "選擇工具",
+        dialogTitle: "Unsloth MCP 工具",
+        allTools: "所有工具",
+        selectAll: "全選",
+        selectNone: "全不選",
+        description:
+          "每個開啟的工具都會增加代理程式開始前要讀取的內容，所以請關閉不需要的工具。代理程式永遠看不到已關閉的工具，對它的呼叫會被拒絕。已連線的代理程式在重新連線後才會看到變更。",
+        saveError: "無法儲存 Unsloth MCP 工具設定。",
+        chatNote: "聊天永遠不會取得 {tools}。",
+        groups: {
+          models: "模型",
+          generate: "生成",
+          training: "訓練與匯出",
+          library: "資料與媒體庫",
+          jobs: "工作",
+          other: "其他",
+        },
+      },
+      status: {
+        on: "開啟",
+        off: "關閉",
+      },
+      apiKeysRow: {
+        open: "在「代理程式」中開啟",
+      },
+      toolLabels: {
+        studioStatus: "狀態",
+        listModels: "列出模型",
+        loadModel: "載入模型",
+        unloadModel: "卸載模型",
+        planLoad: "規劃載入",
+        downloadModel: "下載模型",
+        chat: "聊天",
+        embed: "文字嵌入",
+        systemOne: "決策模型",
+        generateImage: "生成圖片",
+        generateAudio: "生成音訊",
+        transcribe: "轉錄",
+        analyzeAudio: "分析音訊",
+        generateVideo: "生成影片",
+        runRecipe: "執行 Data Recipe",
+        getJob: "工作狀態",
+        datasets: "資料集",
+        startTraining: "開始訓練",
+        listTrainingRuns: "訓練紀錄",
+        exportModel: "匯出模型",
+        listMedia: "已儲存的媒體",
+        voices: "語音",
+        cancel: "取消工作",
+      },
+      toolDescriptions: {
+        studioStatus: "查看這台電腦上已載入、正在執行和閒置的內容。",
+        listModels: "列出代理程式可載入的模型。",
+        loadModel: "載入模型，讓代理程式用它聊天或生成內容。",
+        unloadModel: "卸載模型以釋放記憶體。",
+        planLoad: "不載入即可預覽下載大小和記憶體用量。",
+        downloadModel: "從 Hugging Face 下載模型。",
+        chat: "與已載入的模型聊天。",
+        embed: "把文字轉換為向量，或依相似度排序文字。",
+        systemOne: "向決策模型提出是非、選擇或評分問題。",
+        generateImage: "生成圖片並儲存到圖庫。",
+        generateAudio: "生成語音或其他音訊。",
+        transcribe: "將語音轉為文字。",
+        analyzeAudio: "檢查片段的說話者、時間以及與腳本的吻合度。",
+        generateVideo: "生成影片。",
+        runRecipe: "執行 Data Recipe 來建立資料集。",
+        getJob: "追蹤一個長工作直到完成。",
+        datasets: "列出並上傳資料集。",
+        startTraining: "開始一次微調。",
+        listTrainingRuns: "列出訓練執行及其結果。",
+        exportModel: "匯出訓練好的模型，例如匯出為 GGUF。",
+        listMedia: "瀏覽已儲存的圖片、音訊和影片。",
+        voices: "列出、儲存、重新命名或刪除聲音。",
+        cancel: "停止正在進行的工作，例如訓練或匯出。",
       },
     },
     about: {
@@ -5278,6 +5386,7 @@ export const zhTW = {
     },
     monitor: {
       dragHandleLabel: "移動即時監視器。可用方向鍵微調位置，按兩下可重設位置。",
+      resizeHint: "拖曳邊緣或角落以變更寬度。按兩下可重設。",
       reconnecting: "正在重新連線…",
     },
   },

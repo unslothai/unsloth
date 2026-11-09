@@ -823,6 +823,10 @@ def _archive_turns(
     positions = _transcript_positions(thread_id, branch or live)
     live_positions = _live_positions(live)
     written = 0
+    # Only an embedder failure falls back to keyword copies; a failing store would refuse those too.
+    dense_failed = False
+    embedded = False
+    embed_error = None
     conn = None
     try:
         if cancel_check is not None and cancel_check():
@@ -942,6 +946,7 @@ def _archive_turns(
         )
         if not vectors:
             return 0
+        embedded = True
 
         # Only fully embedded groups; a partial one is left for the next request.
         complete: list = []
@@ -1058,10 +1063,12 @@ def _archive_turns(
             raise embed_error
     except embeddings.EmbeddingModelDownloadRequiredError as exc:
         globals()["_INGEST_FAILED"] = True
+        dense_failed = True
         _log_embedder_pending(model, exc)
-    except Exception:
+    except Exception as exc:
         # Failing to archive must not raise; what was written before the failure stays searchable.
         globals()["_INGEST_FAILED"] = True
+        dense_failed = not embedded or exc is embed_error
         logger.warning("conversation_archive.ingest_failed thread_id=%s", thread_id, exc_info = True)
     finally:
         if conn is not None:
@@ -1070,12 +1077,115 @@ def _archive_turns(
             except Exception:
                 pass
 
+    if dense_failed and not (cancel_check is not None and cancel_check()):
+        # Without any copy there is no archive, so search_conversation is never offered (#16706).
+        # degraded() stays set: dense recall is still down.
+        written += _archive_turns_lexically(
+            thread_id, scope, groups, positions, live_positions, cancel_check
+        )
+
     # Re-check after commit: a concurrent delete sweep could strand deleted content. Delete drops rows first, sweeps archives last, so either order converges.
     if written and not can_archive(thread_id):
         logger.info("conversation_archive.thread_deleted_mid_ingest thread_id=%s", thread_id)
         delete_for_thread(thread_id)
         return 0
     return written
+
+
+# Matches no embedder, so `_stale_document` re-embeds the copy in place once one works.
+LEXICAL_ONLY_IDENTITY = rag_db.VECTORS_DROPPED + "none"
+
+
+def _rough_token_count(text: str) -> int:
+    return max(1, len(text or "") // 4)
+
+
+@_writes
+def _archive_turns_lexically(
+    thread_id: str,
+    scope: str,
+    groups: list,
+    positions: Optional[list[list[str]]],
+    live_positions: Optional[list[list[str]]],
+    cancel_check: Optional[Callable[[], bool]],
+) -> int:
+    """Keyword-only copies of evicted turns, one per evicted occurrence (``_write_budget``); returns how many were written."""
+    written = 0
+    conn = None
+    try:
+        conn = rag_db.get_connection()
+        for group, span in groups:
+            if cancel_check is not None and cancel_check():
+                break
+            text = render_turn(group)
+            if not text:
+                continue
+            digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
+            seats = _occurrences(positions, group)
+            budget = _write_budget(positions, seats, live_positions, group)
+            if len(store.documents_by_hash(conn, scope, digest)) >= budget:
+                # As the dense pre-check: re-seat, retire surplus copies after a rewind, widen the span.
+                _restamp(conn, scope, digest, seats[:budget], commit = True)
+                _widen_span(conn, scope, digest, span)
+                continue
+            chunks = _turn_chunks(text, max(1, int(config.CHUNK_TOKENS)), _rough_token_count)
+            if not chunks:
+                continue
+            roles = " + ".join(
+                dict.fromkeys(str(message.get("role") or "message") for message in group)
+            )
+            _write_lock = False
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                _write_lock = True
+            except Exception:
+                logger.debug("conversation_archive.no_write_lock", exc_info = True)
+            # Re-counted under the lock: a concurrent compaction may have written some.
+            have = len(store.documents_by_hash(conn, scope, digest))
+            if have >= budget:
+                if _write_lock:
+                    conn.rollback()
+                continue
+            try:
+                for n in range(have, budget):
+                    document_id = store.create_document(
+                        conn,
+                        scope = scope,
+                        thread_id = thread_id,
+                        filename = f"earlier turn ({roles})",
+                        sha256 = digest,
+                        status = "completed",
+                        embedding_model = LEXICAL_ONLY_IDENTITY,
+                        archive_messages = span,
+                        archive_ordinal = seats[n]
+                        if n < len(seats)
+                        else _fallback_ordinal(conn, scope, positions),
+                        commit = False,
+                    )
+                    store.add_lexical_chunks(conn, scope, document_id, chunks)
+            except Exception:
+                conn.rollback()
+                raise
+            conn.commit()
+            written += budget - have
+        if written:
+            logger.info(
+                "conversation_archive.archived_without_vectors thread_id=%s turns=%s",
+                thread_id,
+                written,
+            )
+        return written
+    except Exception:
+        logger.warning(
+            "conversation_archive.lexical_ingest_failed thread_id=%s", thread_id, exc_info = True
+        )
+        return written
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # A Settings pick whose download has not finished is not a fault; logged once, not per compaction.

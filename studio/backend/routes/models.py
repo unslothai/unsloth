@@ -196,6 +196,7 @@ from hub.utils.host_paths import (
     resolve_host_path_reference,
     scrub_paths,
 )
+from hub.utils.mlx_variants import looks_like_mlx_repo
 from utils.utils import anonymous_and_offline
 
 
@@ -2097,15 +2098,6 @@ def browse_folders(
     )
 
 
-def _looks_like_mlx_repo(model_id: str) -> bool:
-    """Name heuristic for unloaded models (mirrors the -GGUF suffix check);
-    tokenized so MLX only matches as a whole name segment."""
-    if model_id.lower().startswith("mlx-community/"):
-        return True
-    tail = model_id.split("/")[-1]
-    return "MLX" in _re.split(r"[-_.]", tail.upper())
-
-
 @router.get("/list")
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
@@ -2192,7 +2184,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     id = model_id,
                     name = display_model_name(model_id),
                     is_gguf = model_id.upper().endswith("-GGUF"),
-                    is_mlx = _looks_like_mlx_repo(model_id),
+                    is_mlx = looks_like_mlx_repo(model_id),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)

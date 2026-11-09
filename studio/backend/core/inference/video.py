@@ -61,6 +61,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
+from .diffusion_init_buffers import install_single_file_fp32_buffers
 from .diffusion_component_sizes import video_family_has_no_text_encoder
 from . import hub_reachability
 from .diffusion_comfy_quant import (
@@ -394,6 +395,22 @@ def auto_te_fetch_failure(
     return None
 
 
+def auto_te_outcome_log(scheme: str, family: str, failure: Optional[str], injected: bool) -> tuple:
+    if failure and not injected:
+        return (
+            "video.text_encoder_quant: the automatic '%s' for %s is not available (hosted pre-cast encoder "
+            "unreachable: %s); the dense bf16 text encoder loads",
+            scheme,
+            family,
+            failure,
+        )
+    return (
+        "video.text_encoder_quant: '%s' selected automatically for %s (unset request)",
+        scheme,
+        family,
+    )
+
+
 def video_te_quant_request(
     fam: Any,
     text_encoder_quant: Optional[str],
@@ -408,7 +425,7 @@ def video_te_quant_request(
     that cannot run it (fp8 below cc 8.9, a hosted file that is not there) gets the dense encoder, never a refusal.
 
     Two limits on the automatic pick, never on an explicit scheme: Speed="off" is bit-exact, so it keeps the released
-    encoder (LTX-2.5's raw unset included, which takes int8 under UNSLOTH_LTX25_TE_INT8=1); and only an exactly identified official
+    encoder (LTX-2.5's raw unset included, which otherwise takes the hosted int8 encoder); and only an exactly identified official
     ``base`` takes the hosted file, so a custom pack that merely shares the folder name keeps its own weights."""
     unset = text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto")
     auto_scheme = getattr(fam, "te_quant_auto", None)
@@ -532,11 +549,14 @@ def _video_comfy_backends(
     resident only; else fp8 storage under offload or a tight MPS plan). ``priced_offload``: the plan was sized with the
     offloaded backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the
     planned DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
-    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
+    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything. nvfp4 / mxfp8 layers take the image
+    path's native runtimes where their flag, device and family allow; without one, fp8 storage keeps them packed."""
     if not keep:
         return {
             "int8_backend": None,
             "fp8_backend": None,
+            "nvfp4_backend": None,
+            "mxfp8_backend": None,
             "fp8_storage": False,
             "fp8_widen_chosen": False,
         }
@@ -547,9 +567,21 @@ def _video_comfy_backends(
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
+        **_video_block_backends(target, name),
         "fp8_storage": storage,
         "fp8_widen_chosen": not storage
         and _video_fp8_storage(fam, target, store_pays, widened_mib = widened_mib, widen_chosen = True),
+    }
+
+
+def _video_block_backends(target: Any, family: Optional[str]) -> dict:
+    """``comfy_block_backend`` per block format (None = no native runtime here)."""
+    from .diffusion_comfy_block import MXFP8, NVFP4, comfy_block_backend
+
+    dtype = getattr(target, "dtype", None)
+    return {
+        f"{fmt}_backend": comfy_block_backend(fmt, target, family, dtype = dtype)[0]
+        for fmt in (NVFP4, MXFP8)
     }
 
 
@@ -583,10 +615,11 @@ def _video_fp8_storage(
     widen_chosen: bool = False,
 ) -> bool:
     """``fp8_storage_wanted`` for a video DiT, with the host RAM the load would widen into when ``widened_mib`` is
-    known. H3 is excluded: its pin / stream / residency path is built on torchao weights. ``widen_chosen``: answer
-    ``fp8_widen_chosen`` instead (the rule had the choice and widened)."""
+    known. H3 stores fp8 only where no fp8 runtime runs (``h3_comfy_backends``): widened it would be the 40 GB
+    bfloat16 model. ``widen_chosen``: answer ``fp8_widen_chosen`` instead (the rule had the choice and widened)."""
     if getattr(fam, "name", None) == "minimax-h3":
-        return False
+        from .video_minimax_h3_native_quant import h3_fp8_storage
+        return False if widen_chosen else h3_fp8_storage(target)
     available = None
     if widened_mib is not None and not offload:
         from .diffusion_small_host import host_ram_mib
@@ -613,10 +646,13 @@ def _video_comfy_resident_mib(
     keep_int8 = keep_fp8 = fp8_stored = False
     exclude: tuple = ()
     filters: dict = {}
+    keep_block: dict = {}
     if keep:
         try:
             from .diffusion_transformer_quant import (
                 DEFAULT_MIN_LINEAR_FEATURES,
+                TQ_MXFP8,
+                TQ_NVFP4,
                 divisible_for_scheme,
                 exclude_tokens_for_scheme,
             )
@@ -624,6 +660,10 @@ def _video_comfy_resident_mib(
             filters = {
                 "min_features": DEFAULT_MIN_LINEAR_FEATURES,
                 "fp8_divisible": divisible_for_scheme(TQ_FP8),
+                "block_divisible": {
+                    "nvfp4": divisible_for_scheme(TQ_NVFP4),
+                    "mxfp8": divisible_for_scheme(TQ_MXFP8),
+                },
             }
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
@@ -631,12 +671,19 @@ def _video_comfy_resident_mib(
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
         fp8_stored = _video_fp8_storage(fam, target, offload)
+        blocks = _video_block_backends(target, name)
+        keep_block = {
+            "keep_nvfp4": blocks["nvfp4_backend"] is not None,
+            "keep_mxfp8": blocks["mxfp8_backend"] is not None,
+        }
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
         fp8_stored = fp8_stored,
+        **keep_block,
+        target = target,
         keep_key = keep_key,
         exclude_tokens = exclude,
         key_map = _video_comfy_key_map(fam),
@@ -783,6 +830,15 @@ def _ltx23_prequant_serves_on_card(
         return True
 
 
+def _h3_hosted_fp8_native(fam: Any, target: Any, scheme: Optional[str]) -> bool:
+    """An explicit fp8 H3 denoiser on a card without torchao's fp8 GEMM: the hosted codes run stored (1 byte)."""
+    if getattr(fam, "name", None) != "minimax-h3" or scheme != TQ_FP8:
+        return False
+    from .video_minimax_h3_native_quant import h3_hosted_fp8_native
+
+    return h3_hosted_fp8_native(target)
+
+
 def _assert_video_precision_for_target(
     fam: Any,
     target: Any,
@@ -852,16 +908,13 @@ def _assert_video_precision_for_target(
                 f"'{normalize_memory_mode(memory_mode)}' memory places the DiT under CPU "
                 "offload, and torchao quantised tensors cannot be moved by the offload hooks"
             )
-        elif (
-            select_transformer_quant_scheme(
-                target,
-                pinned,
-                family = getattr(fam, "name", None),
-                # Pre-eviction: an OOM in the smoke probe is the resident model, not the scheme.
-                unproven_ok = True,
-            )
-            is None
-        ):
+        elif select_transformer_quant_scheme(
+            target,
+            pinned,
+            family = getattr(fam, "name", None),
+            # Pre-eviction: an OOM in the smoke probe is the resident model, not the scheme.
+            unproven_ok = True,
+        ) is None and not _h3_hosted_fp8_native(fam, target, pinned):
             # None means a deny-listed family, unusable torchao, or no GPU kernels; each needs a different fix.
             reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         if reason is not None:
@@ -1263,6 +1316,39 @@ def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
 
 # Shared with the image backend's first compiled render.
 _float_seed_dits = diffusion_bg_compile.float_seed_dits
+_COMPILE_PREWARM_LOCK = threading.Lock()
+_COMPILE_PREWARM_STARTED = False
+
+
+def _start_compile_prewarm(logger: Any = None) -> bool:
+    """Once per process, on a side thread: inductor's compile workers, Triton's and inductor's keys (1.5 s of Triton
+    install hashing landed in a returning LTX-2.5 first clip on an L4). Never raises; False when already started."""
+    global _COMPILE_PREWARM_STARTED
+    if not diffusion_bg_compile.prewarm_enabled():
+        return False
+    with _COMPILE_PREWARM_LOCK:
+        if _COMPILE_PREWARM_STARTED:
+            return False
+        _COMPILE_PREWARM_STARTED = True
+
+    def run() -> None:
+        for warm in (
+            diffusion_bg_compile.warm_compile_pool,
+            diffusion_bg_compile.warm_triton_key,
+            diffusion_bg_compile.warm_inductor_key,
+        ):
+            try:
+                warm(logger)
+            except Exception:  # noqa: BLE001 - the first compile does it inline as before
+                pass
+
+    try:
+        threading.Thread(target = run, name = "unsloth-video-compile-prewarm", daemon = True).start()
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 _seed_before_first_forward = diffusion_bg_compile.seed_before_first_forward
 
 
@@ -3386,20 +3472,146 @@ def _discard_resident_quant_write(owner: Any, token: Any = None) -> None:
         pass
 
 
-def _start_resident_quant_write(owner: Any, pipe: Any, token: Any) -> None:
+def _take_resident_quant_write(owner: Any, token: Any) -> Any:
+    """This load's pending resident write, now owned by the caller (None if another load replaced it)."""
     slot = getattr(owner, "_resident_quant_write", None)
     if slot is None or slot[0] != token:
-        return
+        return None
     owner._resident_quant_write = None
+    return slot[1]
+
+
+def _start_resident_quant_write(owner: Any, pipe: Any, token: Any) -> None:
+    _start_taken_resident_write(pipe, _take_resident_quant_write(owner, token))
+
+
+def _start_taken_resident_write(pipe: Any, write: Any) -> None:
+    if write is None:
+        return
     try:
-        setattr(pipe, _RESIDENT_QUANT_WRITE_ATTR, slot[1])
-        slot[1].start()
+        setattr(pipe, _RESIDENT_QUANT_WRITE_ATTR, write)
+        write.start()
     except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
         logger.warning("diffusion.prequant_cache: resident background write skipped (%s)", exc)
         try:
-            slot[1].discard()
+            write.discard()
         except Exception:  # noqa: BLE001
             pass
+
+
+# "0": a first load's cache writes start as soon as it is published, beside its first render.
+VIDEO_CACHE_WRITES_AFTER_RENDER_ENV = "UNSLOTH_VIDEO_CACHE_WRITES_AFTER_RENDER"
+# Seconds a load with no render may sit before its held writes start anyway.
+VIDEO_CACHE_WRITE_IDLE_ENV = "UNSLOTH_VIDEO_CACHE_WRITE_IDLE_S"
+_VIDEO_CACHE_WRITE_IDLE_DEFAULT_S = 120.0
+_HELD_CACHE_WRITES_ATTR = "_unsloth_held_cache_writes"
+
+
+def _cache_writes_after_render() -> bool:
+    raw = (os.environ.get(VIDEO_CACHE_WRITES_AFTER_RENDER_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def _cache_write_idle_s() -> float:
+    raw = (os.environ.get(VIDEO_CACHE_WRITE_IDLE_ENV) or "").strip()
+    try:
+        value = float(raw) if raw else _VIDEO_CACHE_WRITE_IDLE_DEFAULT_S
+    except ValueError:
+        value = _VIDEO_CACHE_WRITE_IDLE_DEFAULT_S
+    return max(0.0, value)
+
+
+def _start_cache_writes(
+    pipe: Any, cast_writes: Any, native_writes: Any, resident_write: Any
+) -> None:
+    if cast_writes is not None:
+        pipe._unsloth_cast_writes = cast_writes
+        cast_writes.start()
+    if native_writes is not None:
+        setattr(pipe, _NATIVE_WRITES_ATTR, native_writes)
+        native_writes.start()
+    _start_taken_resident_write(pipe, resident_write)
+
+
+class _HeldCacheWrites:
+    """A first load's cache writes, held until its first render ends or ``idle_s`` idle: beside that render they
+    contend with its compile and denoise for CPU, disk and host RAM."""
+
+    def __init__(self, pipe: Any, writes: tuple, busy: Callable[[], bool], idle_s: float):
+        import weakref
+
+        self._pipe = weakref.ref(pipe)
+        self._writes: Optional[tuple] = writes
+        self._busy = busy
+        self._lock = threading.Lock()
+        self._timer: Optional[threading.Timer] = None
+        if idle_s > 0:
+            self._timer = threading.Timer(idle_s, self._on_idle)
+            self._timer.daemon = True
+            self._timer.name = "video-cache-write-idle"
+
+    def arm(self) -> None:
+        if self._timer is not None:
+            self._timer.start()
+
+    def _take(self) -> Optional[tuple]:
+        # Caller holds self._lock.
+        writes, self._writes = self._writes, None
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+        return writes
+
+    def _on_idle(self) -> None:
+        # A render in flight releases them when it ends.
+        try:
+            if self._busy():
+                return
+        except Exception:  # noqa: BLE001 - unreadable: start them
+            pass
+        self.release("the backend sat idle after the load")
+
+    def release(self, why: str) -> None:
+        # Started and registered on the pipe under the lock: a concurrent discard either cancels them first or runs
+        # after, so the teardown's finish calls see every started writer.
+        with self._lock:
+            writes = self._take()
+            pipe = self._pipe()
+            if writes is None or pipe is None:
+                return
+            logger.info("diffusion.prequant_cache: first-load cache writes start now (%s)", why)
+            try:
+                _start_cache_writes(pipe, *writes)
+            except Exception as exc:  # noqa: BLE001 - a cache write never fails a render
+                logger.warning("diffusion.prequant_cache: held cache writes skipped (%s)", exc)
+
+    def discard(self) -> None:
+        with self._lock:
+            writes = self._take()
+        for write in writes or ():
+            if write is None:
+                continue
+            try:
+                write.discard() if hasattr(write, "discard") else write.finish(0.0)
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
+
+
+def _release_held_cache_writes(pipe: Any, why: str) -> None:
+    held = getattr(pipe, _HELD_CACHE_WRITES_ATTR, None) if pipe is not None else None
+    if held is not None:
+        held.release(why)
+
+
+def _discard_held_cache_writes(pipe: Any) -> None:
+    held = getattr(pipe, _HELD_CACHE_WRITES_ATTR, None) if pipe is not None else None
+    if held is None:
+        return
+    try:
+        setattr(pipe, _HELD_CACHE_WRITES_ATTR, None)
+    except Exception:  # noqa: BLE001
+        pass
+    held.discard()
 
 
 def _finish_resident_quant_write(pipe: Any) -> None:
@@ -4197,6 +4409,19 @@ def _auto_offload_scheme(requested: Optional[str]) -> Optional[str]:
     return TQ_INT8 if scheme == TQ_AUTO else scheme
 
 
+# "0" disables reading the hosted native file when the load's own plan offloads a seeded denoiser.
+OFFLOAD_HOSTED_READ_ENV = "UNSLOTH_VIDEO_OFFLOAD_HOSTED_READ"
+
+
+def _offload_hosted_read_enabled() -> bool:
+    return (os.environ.get(OFFLOAD_HOSTED_READ_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 def _video_native_hosted_scheme(fam: Any, scheme: Optional[str], target: Any) -> Optional[str]:
     """``int8`` when an offloaded load of ``scheme`` builds the W8A8 ConvRot native DiT that the family's hosted int8
     checkpoint already holds (``diffusion_native_hosted``), else None. The load re-checks the file; never raises."""
@@ -4921,8 +5146,34 @@ _NATIVE_CRASH_NEEDLES = (
 )
 
 
+_FAILURE_REASON_MAX_CHARS = 120
+_PATH_START = r"(?:file://)?(?:~[\\/]|/|[A-Za-z]:[\\/]|\\\\)"
+# Absolute paths (quoted ones may hold spaces); URLs are left for redact_log_text.
+_FAILURE_PATH_RE = re.compile(
+    r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
+    rf"|(?P<q>['\"`]){_PATH_START}[^\n]*?(?P=q)"
+    rf"|(?<![\w/~]){_PATH_START}[^\s\"'`,;]+"
+)
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """Exception class and first message line, without credentials or filesystem paths."""
+    from utils.log_redaction import redact_log_text
+
+    lines = str(exc).strip().splitlines()
+    text = redact_log_text(lines[0] if lines else "")
+    text = _FAILURE_PATH_RE.sub(lambda m: m["url"] or f"{m['q'] or ''}<path>{m['q'] or ''}", text)
+    text = " ".join(text.split())
+    reason = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+    if len(reason) > _FAILURE_REASON_MAX_CHARS:
+        cut = reason[: _FAILURE_REASON_MAX_CHARS - 3]
+        reason = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:") + "..."
+    return reason
+
+
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
-    """A user-facing reason for a failed generation, built only from fixed text."""
+    """A user-facing reason for a failed generation: fixed text for known classes, else the
+    redacted exception class and first line."""
     try:
         from .video_minimax_h3 import H3NativeMemoryRefusal
 
@@ -4941,17 +5192,18 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
                     _probe_target(request_shape), request_shape.get("attention_head_dims")
                 )
             ):
-                return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
+                return (
+                    f"{VIDEO_GENERATION_FAILED_MSG} Out of memory: this device has no fused attention "
+                    "kernel. Lower the resolution or frame count."
+                )
             return (
-                f"{VIDEO_GENERATION_FAILED_MSG} The device ran out of memory. Try a smaller "
-                "resolution, fewer frames, or fewer steps."
+                f"{VIDEO_GENERATION_FAILED_MSG} Out of memory. Try a smaller resolution, fewer "
+                "frames or fewer steps."
             )
         text = str(exc).lower()
         if any(needle in text for needle in _NATIVE_CRASH_NEEDLES):
-            return (
-                f"{VIDEO_GENERATION_FAILED_MSG} The renderer stopped unexpectedly. See the "
-                "server log in Settings > Logs for its output."
-            )
+            return f"{VIDEO_GENERATION_FAILED_MSG} The renderer crashed. See Settings > Logs."
+        return f"{VIDEO_GENERATION_FAILED_MSG} {_failure_reason(exc)}"
     except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
         pass
     return VIDEO_GENERATION_FAILED_MSG
@@ -8744,6 +8996,7 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
         )
+        install_single_file_fp32_buffers(logger)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native
 
@@ -8821,6 +9074,14 @@ class VideoBackend:
             base = repo_id if kind == "pipeline" else base,
             speed_mode = speed_mode,
         )
+        if fam.name == "ltx-2.5":
+            # Settle auto once so the memory plan and the encoder worker read one decision.
+            from .video_ltx25 import ltx25_resolve_te_request
+            text_encoder_quant = ltx25_resolve_te_request(
+                text_encoder_quant,
+                repo_id if kind == "pipeline" else base,
+                _te_prequant_failed,
+            )
         # An automatic pick whose hosted pre-cast encoder could not be fetched loads the dense encoder: say so.
         te_auto_unavailable = auto_te_fetch_failure(
             fam, text_encoder_quant if text_encoder_quant_auto else None, _te_prequant_failed
@@ -8829,20 +9090,12 @@ class VideoBackend:
             from . import diffusion_precision as _precision
             if not _precision.te_quant_supported(target, text_encoder_quant):
                 text_encoder_quant = None
-            elif te_auto_unavailable:
-                logger.info(
-                    "video.text_encoder_quant: the automatic '%s' for %s is not available (hosted pre-cast encoder "
-                    "unreachable: %s); the dense bf16 text encoder loads",
-                    text_encoder_quant,
-                    fam.name,
-                    te_auto_unavailable,
-                )
-            else:
-                logger.info(
-                    "video.text_encoder_quant: '%s' selected automatically for %s (unset request)",
-                    text_encoder_quant,
-                    fam.name,
-                )
+            elif not te_auto_unavailable:
+                logger.info(*auto_te_outcome_log(text_encoder_quant, fam.name, None, True))
+        # A failed prefetch is retried by the load below: its outcome is logged after that.
+        te_auto_retry = (
+            text_encoder_quant if text_encoder_quant_auto and te_auto_unavailable else None
+        )
         # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
         # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
         _nvfp4_install_wanted = (
@@ -9287,6 +9540,16 @@ class VideoBackend:
                 denoiser_seed_scheme,
                 _video_plan_label(plan),
             )
+            if _video_native_hosted_planned is None and _offload_hosted_read_enabled():
+                # The probe planned a resident seed; read the hosted native build rather than quantising dense shards.
+                _video_native_hosted_planned = _video_native_hosted_scheme(
+                    fam, denoiser_seed_scheme, target
+                )
+                if _video_native_hosted_planned is not None:
+                    logger.info(
+                        "video.denoiser_prequant: the hosted %s checkpoint is read as offload-safe native Linears",
+                        _video_native_hosted_planned,
+                    )
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
@@ -9431,6 +9694,12 @@ class VideoBackend:
             local_files_only = local_files_only,
         )
         pipe_kwargs.update(te_injected)
+        if te_auto_retry:
+            logger.info(
+                *auto_te_outcome_log(
+                    te_auto_retry, fam.name, te_auto_unavailable, bool(te_injected)
+                )
+            )
         if text_encoder_quant_auto and not te_injected:
             # Nobody asked for a runtime cast: without its hosted file the automatic pick keeps the released encoder.
             text_encoder_quant = None
@@ -9596,11 +9865,28 @@ class VideoBackend:
                 device = target.torch_device if target.device == "cuda" else None,
             )
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
-            pipe = pipeline_cls.from_pretrained(
-                _base_local_dir or fetch_base,
-                **_pinned_base_kwargs(),
-                **pipe_kwargs,
-            )
+            if fam.name in COSMOS3_FAMILIES:
+                from .video_cosmos3 import guardrail_access_refusal, guardrail_hub_token
+                hub_token_scope = guardrail_hub_token(hf_token)
+            else:
+                hub_token_scope = contextlib.nullcontext()
+            try:
+                with hub_token_scope:
+                    pipe = pipeline_cls.from_pretrained(
+                        _base_local_dir or fetch_base,
+                        **_pinned_base_kwargs(),
+                        **pipe_kwargs,
+                    )
+            except Exception as exc:
+                refusal = (
+                    guardrail_access_refusal(str(repo_id), exc)
+                    if fam.name in COSMOS3_FAMILIES
+                    else None
+                )
+                if refusal is None:
+                    raise
+                logger.warning("video.cosmos3: guardrail download refused: %s", exc)
+                raise ValueError(refusal) from exc
             if cast_missed:
                 from .diffusion_cast_cache import defer_writes
 
@@ -9626,6 +9912,11 @@ class VideoBackend:
                 "local_files_only": local_files_only,
             }
             if kind == "gguf":
+                from .diffusion_gguf_exact import install_exact_dequant
+                from .diffusion_gguf_lowbit import install_lowbit_iq
+
+                install_lowbit_iq(logger)
+                install_exact_dequant(logger)
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
@@ -10517,6 +10808,9 @@ class VideoBackend:
                     speed_optims += ("hv15_vae_vector_mask",)
                 if wan_fused_engaged:
                     speed_optims += ("wan_fused_adaln",)
+        if "compiled" in speed_optims and getattr(target, "device", None) == "cuda":
+            # The first clip compiles inline: start the workers and hash the keys while the load finishes.
+            _start_compile_prewarm(logger)
         with self._generate_lock:
             # A cancelled load must not place weights on a GPU the arbiter may have reassigned.
             if _load_token is not None and _load_token != self._load_token:
@@ -10928,13 +11222,18 @@ class VideoBackend:
         if fam.is_moe:
             defer_late_expert_pins(pipe, (getattr(pipe, "transformer_2", None),), logger)
         start_background_pins(pipe)
-        if cast_writes is not None:
-            pipe._unsloth_cast_writes = cast_writes
-            cast_writes.start()
-        if native_writes is not None:
-            setattr(pipe, _NATIVE_WRITES_ATTR, native_writes)
-            native_writes.start()
-        _start_resident_quant_write(self, pipe, _load_token)
+        held = (cast_writes, native_writes, _take_resident_quant_write(self, _load_token))
+        if any(w is not None for w in held) and _cache_writes_after_render():
+            holder = _HeldCacheWrites(
+                pipe, held, busy = self._generate_lock.locked, idle_s = _cache_write_idle_s()
+            )
+            setattr(pipe, _HELD_CACHE_WRITES_ATTR, holder)
+            holder.arm()
+            logger.info(
+                "diffusion.prequant_cache: this first load's cache writes wait for its first render"
+            )
+        else:
+            _start_cache_writes(pipe, *held)
         return self.status()
 
     @staticmethod
@@ -11163,24 +11462,21 @@ class VideoBackend:
         if comfy_scan is not None:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
 
-            # torchao only: H3's pin / stream / residency path is built on torchao weights, like the hosted ones.
+            from .video_minimax_h3_native_quant import h3_comfy_backends
+
+            # torchao where it runs, else the torchao-free twin (fp8 stored at 1 byte where no fp8 GEMM runs).
             dense_pin = _h3_precision_pinned_dense(transformer_quant_requested)
-            h3_int8 = h3_fp8 = None
+            h3_backends = {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
             if not dense_pin:
-                h3_int8 = (
-                    "torchao"
-                    if comfy_int8_backend(umem_target, fam.name, base) == "torchao"
-                    else None
-                )
-                h3_fp8 = (
-                    "torchao"
-                    if comfy_fp8_backend(umem_target, fam.name, base) == "torchao"
-                    else None
-                )
+                h3_backends = h3_comfy_backends(umem_target, base)
             if (
                 comfy_scheme is not None
                 and not dense_pin
-                and (h3_int8 if comfy_scheme == TQ_INT8 else h3_fp8) is None
+                and not (
+                    h3_backends["int8_backend"]
+                    if comfy_scheme == TQ_INT8
+                    else h3_backends["fp8_backend"] or h3_backends["fp8_storage"]
+                )
             ):
                 raise RuntimeError(
                     f"{Path(comfy_checkpoint).name} needs Unsloth's {comfy_scheme} runtime, which this "
@@ -11197,14 +11493,17 @@ class VideoBackend:
                 hf_token = hf_token,
                 cache_dir = hub_cache_dir(),
                 local_files_only = local_files_only,
-                int8_backend = h3_int8,
-                fp8_backend = h3_fp8,
                 target = umem_target,
                 logger = logger,
+                **h3_backends,
             )
             comfy_info = getattr(transformer, "_unsloth_comfy_quant", None) or {}
             engaged = (
-                TQ_INT8 if comfy_info.get("int8") else TQ_FP8 if comfy_info.get("fp8") else None
+                TQ_INT8
+                if comfy_info.get("int8")
+                else TQ_FP8
+                if comfy_info.get("fp8") or comfy_info.get("fp8_stored")
+                else None
             )
             if engaged is None and comfy_scheme is not None and not dense_pin:
                 del transformer
@@ -11220,6 +11519,7 @@ class VideoBackend:
             transformer_quant_reason = (
                 f"ComfyUI-quantized denoiser ({Path(comfy_checkpoint).name}): "
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept, "
+                f"{comfy_info.get('fp8_stored', 0)} fp8 stored, "
                 f"{comfy_info.get('dequantized', 0)} dequantized"
                 if engaged is not None
                 else f"ComfyUI denoiser ({Path(comfy_checkpoint).name}) at bfloat16"
@@ -11274,6 +11574,9 @@ class VideoBackend:
                         + "; loaded the released bfloat16 denoiser instead"
                     )
                 else:
+                    if _h3_hosted_fp8_native(fam, umem_target, scheme):
+                        from .video_minimax_h3_native_quant import h3_hosted_fp8_to_native
+                        h3_hosted_fp8_to_native(transformer, logger = logger)
                     # Must seed before load_components, which skips set attributes (avoids the 66.3 GB fetch).
                     pipe.update_components(**{denoiser_component: transformer})
                     transformer_quant_engaged = scheme
@@ -11422,6 +11725,10 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
+        # Before any offload hook wraps the denoiser's forward (the hooks then wrap this one).
+        from .video_minimax_h3_forward import install_h3_forward_on_pipe
+
+        install_h3_forward_on_pipe(pipe, logger = logger)
         # Pre-cast the decoder: fp32 VAE under fp16 autocast keeps both copies; encoder stays for keyframes.
 
         from .video_minimax_h3 import trim_h3_video_vae
@@ -11891,6 +12198,11 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        try:
+            from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
+            install_h3_chunked_reference_encode(logger)
+        except Exception as exc:  # noqa: BLE001 -- memory only, never fail a load
+            logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
         # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
         # its fallback; the audio VAE is untouched.
         try:
@@ -12066,7 +12378,16 @@ class VideoBackend:
         autoopt.finalize(h3_audit, speed_optims, resolved)
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
+        from .video_minimax_h3_te import install_h3_te_read_capture
 
+        try:
+            install_h3_te_read_capture(
+                pipe.text_encoder,
+                layer = getattr(pipe, "text_encoder_layer", 50),
+                logger = logger,
+            )
+        except Exception:  # noqa: BLE001 - a lazy component that is not loaded
+            pass
         diffusion_prompt_cache.install(
             pipe,
             identity = {
@@ -12288,6 +12609,10 @@ class VideoBackend:
                 "input_reference cannot be combined with explicit conditioning inputs."
             )
         cancel = threading.Event()
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        # A chat tools call that is stopped cancels this job too.
+        bind_generation_cancel(cancel)
         job_token = object()  # this reservation's identity; only its own worker may finalise it
         while True:
             with self._lock:
@@ -12464,8 +12789,8 @@ class VideoBackend:
         video_id: Optional[str] = None,
         **gen_kwargs: Any,
     ) -> None:
-        """Worker for begin_generate; unexpected errors are logged, the client gets only a generic
-        message."""
+        """Worker for begin_generate; unexpected errors are logged in full, the client gets
+        video_failure_detail's redacted reason."""
         from . import video_gallery
 
         def _record_outcome(error: Optional[str] = None) -> None:
@@ -13301,6 +13626,11 @@ class VideoBackend:
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
+                        if fam.name == "minimax-h3":
+                            from .video_minimax_h3_forward import h3_render_scope
+
+                            # H3's text stream runs once inside this render, dropped after it.
+                            stack.enter_context(h3_render_scope(pipe, logger))
                         if float_seeds is not None:
                             stack.enter_context(_seed_before_first_forward(float_seeds))
                         # No video family has a denoise-to-decode callback, so the decoder itself reports the decode phase.
@@ -13545,6 +13875,7 @@ class VideoBackend:
                 # The pinned clip and stream chunks (~3x the clip) otherwise stay in torch's host cache until unload.
                 output = video_frames = None
                 release_pinned_host_memory()
+                _release_held_cache_writes(getattr(state, "pipe", None), "the first render ended")
 
     @staticmethod
     def _resolve_keyframes(
@@ -14327,7 +14658,8 @@ class VideoBackend:
                 close_encoder(getattr(state, "pipe", None))
             # A pinner still copying would hold its chunks past release_pinned_host_memory().
             stop_background_pins(getattr(state, "pipe", None))
-            # A cast cache write still reads the components the teardown frees.
+            # Cast writes still read the components the teardown frees.
+            _discard_held_cache_writes(getattr(state, "pipe", None))
             _finish_cast_writes(getattr(state, "pipe", None))
             _finish_native_writes(getattr(state, "pipe", None))
             _finish_resident_quant_write(getattr(state, "pipe", None))

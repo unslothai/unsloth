@@ -39,6 +39,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
 import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -777,6 +778,7 @@ export function SharedComposer({
   );
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerSurfaceRef = useSurfaceRef(COMPOSER_INPUT_SELECTOR, textareaRef);
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );
@@ -3080,7 +3082,7 @@ export function SharedComposer({
               <textarea
                 {...skillMentions.inputProps}
                 id={inputId}
-                ref={textareaRef}
+                ref={composerSurfaceRef}
                 data-type-to-activate="composer"
                 value={text}
                 onChange={(e) => {

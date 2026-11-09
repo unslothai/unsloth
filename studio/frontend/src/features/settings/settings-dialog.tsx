@@ -123,6 +123,19 @@ function lazyTabs<
 
 const LAZY_TABS = lazyTabs(TAB_LOADERS);
 
+/** Marks the panel that has committed, from inside Suspense: while a panel is still loading its
+ *  fallback replaces this whole subtree, so the marker is absent. A hidden empty element (no box,
+ *  no text) rather than an effect on the pane: the pane's ref is not attached yet when a child's
+ *  layout effect runs on first open. The long-chat gate's Settings sweep waits on it. */
+function PanelCommitted({ tab, children }: { tab: SettingsTab; children: ReactNode }) {
+  return (
+    <>
+      <span hidden aria-hidden="true" data-settings-panel-ready={tab} />
+      {children}
+    </>
+  );
+}
+
 interface PanelBoundaryProps {
   tab: SettingsTab;
   message: string;
@@ -162,7 +175,10 @@ class SettingsPanelBoundary extends Component<
       return this.props.children;
     }
     return (
-      <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
+      <div
+        data-settings-panel-failed=""
+        className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center"
+      >
         <p className="text-muted-foreground text-sm">{this.props.message}</p>
         <Button
           variant="outline"
@@ -716,13 +732,15 @@ export function SettingsDialog() {
                         </div>
                       }
                     >
-                      <Tab
-                        searchEntry={
-                          pendingScroll?.tab === panelTab
-                            ? pendingScroll.entry
-                            : undefined
-                        }
-                      />
+                      <PanelCommitted tab={panelTab}>
+                        <Tab
+                          searchEntry={
+                            pendingScroll?.tab === panelTab
+                              ? pendingScroll.entry
+                              : undefined
+                          }
+                        />
+                      </PanelCommitted>
                     </Suspense>
                   </SettingsPanelBoundary>
                 </div>

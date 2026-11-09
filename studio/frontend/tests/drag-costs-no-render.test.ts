@@ -52,10 +52,10 @@ test("the card hands the offset back to left/top on release", () => {
 test("the monitor paints a drag frame through a transform", () => {
   const panel = readSrc("hooks/use-floating-panel-layout.ts");
   assert.match(panel, /monitor\.style\.transform = `translate3d\(/);
-  assert.match(
-    panel,
-    /dragFrameRef\.current = requestAnimationFrame\(paintDrag\)/,
-  );
+  // Painted in the pointer handler: a rAF deferral left the card trailing a fast pointer by 30-45 px.
+  const update = panel.slice(panel.indexOf("function updateDrag("), panel.indexOf("function finishDrag("));
+  assert.match(update, /paintDrag\(\);/);
+  assert.doesNotMatch(update, /requestAnimationFrame|set[A-Z]\w*\(/);
 });
 
 test("the monitor commits its position once, on release", () => {

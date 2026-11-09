@@ -4205,6 +4205,41 @@ def _mark_chat_attachment_inventory_clean(conn: sqlite3.Connection) -> None:
     )
 
 
+def insert_server_chat_message(
+    conn: sqlite3.Connection,
+    message_id: str,
+    thread_id: str,
+    parent_id: Optional[str],
+    content_json: str,
+    metadata_json: str,
+    created_at: int,
+) -> None:
+    """Insert a server-owned assistant message, indexing it in place so the insert trigger leaves a clean inventory clean."""
+    was_clean = (
+        conn.execute(
+            "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
+        ).fetchone()
+        is not None
+    )
+    conn.execute(
+        """INSERT INTO chat_messages
+           (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
+           VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
+        (message_id, thread_id, parent_id, content_json, metadata_json, created_at),
+    )
+    if not was_clean:
+        return
+    tombstones = {
+        row[0]
+        for row in conn.execute(
+            "SELECT attachment_id FROM chat_attachment_tombstones WHERE thread_id=? AND message_id=?",
+            (thread_id, message_id),
+        )
+    }
+    _replace_chat_attachment_inventory(conn, message_id, None, content_json, tombstones)
+    conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
+
+
 def _rebuild_chat_attachment_inventory(conn: sqlite3.Connection) -> None:
     """Rebuild after schema upgrade or a write from an older Unsloth build."""
     conn.execute("DELETE FROM chat_attachment_inventory")
@@ -4424,18 +4459,27 @@ def sync_chat_messages(
         )
         # Computed before the upsert to tell forced relinks from edits; research ids are excluded since their delete is exempt, or the reseat skips a surviving parent.
         pruned: set = set()
+        unseen_ids: set = set()
         if prune_missing:
-            pruned = (
-                {
-                    str(row["id"])
-                    for row in conn.execute(
-                        "SELECT id FROM chat_messages WHERE thread_id = ?",
-                        (thread_id,),
-                    ).fetchall()
-                }
-                - requested_ids
-                - prune_protected_ids
-            )
+            stored_rows = conn.execute(
+                "SELECT id, parent_id, role FROM chat_messages WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+            unseen_ids = {str(row["id"]) for row in stored_rows} - requested_ids
+            pruned = unseen_ids - prune_protected_ids
+            if explicitly_deleted_ids:
+                # Deleting a user message also deletes its replies, including ones this window never saw.
+                deleted_user_ids = {
+                    str(row["id"]) for row in stored_rows if row["role"] == "user"
+                } & explicitly_deleted_ids
+                pruned &= explicitly_deleted_ids | (
+                    {
+                        str(row["id"])
+                        for row in stored_rows
+                        if row["role"] == "assistant" and row["parent_id"] in deleted_user_ids
+                    }
+                    - managed_ids
+                )
         protected = generation_ids if allow_research_update else managed_ids
         messages = [
             m
@@ -4448,7 +4492,7 @@ def sync_chat_messages(
         ]
         # Repair research parents the prune deletes, walking the stored chain (dangling parent breaks import).
         # Batch-written ids are excluded so an authorized reparent is not overwritten.
-        reseat_candidates = managed_ids - {str(m["id"]) for m in messages}
+        reseat_candidates = (managed_ids | unseen_ids) - pruned - {str(m["id"]) for m in messages}
         reseat_parents = {
             message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
             for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
@@ -4522,15 +4566,7 @@ def sync_chat_messages(
                 content_json,
             )
         if prune_missing:
-            existing_ids = {
-                row["id"]
-                for row in conn.execute(
-                    "SELECT id FROM chat_messages WHERE thread_id = ?",
-                    (thread_id,),
-                ).fetchall()
-            }
-            # Update permission is not delete permission: these ids are prune-exempt even for allow_research_update callers.
-            missing_ids = sorted(existing_ids - requested_ids - prune_protected_ids)
+            missing_ids = sorted(pruned)
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -4996,6 +5032,20 @@ def fork_counts_for_thread(thread_id: str) -> dict[str, int]:
             (thread_id,),
         ).fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
+    finally:
+        conn.close()
+
+
+def chat_thread_has_context_truncation(thread_id: str) -> bool:
+    """Whether any message in the thread records a context fit (metadata `contextTruncation`), without loading the transcript."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM chat_messages WHERE thread_id = ? "
+            "AND instr(metadata_json, 'contextTruncation') > 0 LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        return row is not None
     finally:
         conn.close()
 

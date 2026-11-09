@@ -659,6 +659,20 @@ def int8_act_device_ok(device: Any) -> bool:
     return ok
 
 
+def enable_int8_act_(module: Any) -> int:
+    """Let every int8-stored Linear of ``module`` run W8A8 (an explicit int8 request on an fp16-only card); returns
+    how many. The per-call gate is unchanged: float32 CUDA input on sm_75 with an exact ``_int_mm``, else dequantise.
+    ``UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT=0`` keeps them dequantised."""
+    if int8_act_disabled() or _INT8_CLS is None:
+        return 0
+    count = 0
+    for sub in module.modules():
+        if isinstance(sub, _INT8_CLS):
+            sub.act_int8 = True
+            count += 1
+    return count
+
+
 def _int8_linear_class():
     import torch
     import torch.nn.functional as F

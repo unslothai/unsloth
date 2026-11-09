@@ -2759,7 +2759,22 @@ export const tr = {
           "Diğer uygulamaların bu sunucunun API'sine gönderdiklerini geldikleri anda görün.",
         summary: "Canlı istekler, hatalar ve token kullanımı",
         status: "{active} etkin · {recent} son · {model}",
-        noModelLoaded: "yüklü model yok",
+        noModelLoaded: "Yüklü model yok",
+        memory: "Bellek",
+        gpuInUse: "Kullanımdaki GPU",
+        availableForModels: "Modeller için kullanılabilir",
+        refreshRate: "Yenileme hızı",
+        refreshRateDescription: "Kayan monitör açıkken bellek ve GPU kullanımını ne sıklıkla okur.",
+        refreshEvery: "Her {seconds} sn",
+        unsloth: "Unsloth",
+        otherApps: "Diğer uygulamalar",
+        otherInUse: "Diğer kullanım",
+        freeLabel: "Boş",
+        unslothApp: "Unsloth uygulaması",
+        unslothShare: "Unsloth'un payını göster",
+        unslothShareDescription: "Belleği Unsloth'un kullandığı, diğer uygulamaların kullandığı ve boş olan kısımlara ayırır.",
+        modelBreakdown: "Modele göre ayır",
+        modelBreakdownDescription: "Bellek çubuğundaki Unsloth payını yüklü her modele ve uygulamanın geri kalanına ayırır.",
         autoOpen: "Kayan izleyici otomatik açılır",
         autoOpenDescription: "API trafiği geldiğinde küçük bir panel açar.",
         cpu: "CPU",
@@ -2775,8 +2790,7 @@ export const tr = {
         gpuUnusableDetail: "Algılandı, ancak PyTorch kullanamıyor",
         detailedView: "Ayrıntılı görünüm",
         detailedViewDescription:
-          "Kayan pencerede CPU yükünü ve her GPU'nun yükünü, sıcaklığını ve güç tüketimini gösterin.",
-        cpuLoad: "CPU yükü",
+          "Kayan pencerede her GPU'nun yükünü, sıcaklığını ve güç tüketimini gösterin.",
         gpuLoad: "GPU yükü",
         temperature: "Sıcaklık",
         power: "Güç",
@@ -2793,7 +2807,7 @@ export const tr = {
         detecting: "GPU'lar denetleniyor...",
         unreadable: "Bu sunucunun donanımı okunamadı.",
         noGpu:
-          "Görünür GPU algılanmadı. Yukarıda yalnızca CPU kaynakları gösteriliyor.",
+          "Ayrı bir GPU algılanmadı.",
         noUsableGpu: "Bu makinede PyTorch'un kullanabileceği bir GPU yok.",
         mismatchCpuBuild:
           "PyTorch yalnızca CPU derlemesi ({version}), bu nedenle aşağıdaki GPU'lar kullanılamaz. GPU desteğini geri getirmek için kurulumu onarın.",
@@ -2883,7 +2897,7 @@ export const tr = {
           "llama.cpp arka uç gguf çıkarım cuda rocm hip vulkan metal cpu gpu hızlandırıcı hazır derleme değiştir geçiş motor özel yol klasör dizin llama-server yürütülebilir ikili dosya backend inference engine",
       },
       modelMemory: {
-        title: "Model belleği",
+        title: "Model yükleme",
         keepResident: "Modeli GPU belleğinde tut",
         keepResidentDescription: "İstemler arasında VRAM'de kalır.",
         keepResidentHint:
@@ -3083,7 +3097,7 @@ export const tr = {
       configurationDocs: "belgelere",
       configurationFlagsSuffix: "göz atın.",
       modelNote:
-        "Codex, llama-server tarafından sunulan bir GGUF modeli gerektirir. Diğer ajanlar transformer tabanlı modelleri de kullanabilir; Unsloth'ta zaten yüklü olan modeli kullanmak için --model seçeneğini kaldırın.",
+        "Claude Code ve Codex, llama-server tarafından sunulan bir GGUF modeli veya bir MLX modeli gerektirir. Diğer ajanlar transformer tabanlı modelleri de kullanabilir; Unsloth'ta zaten yüklü olan modeli kullanmak için --model seçeneğini kaldırın.",
       subagent: {
         title: "Yerel bir modeli alt ajan olarak kullanın",
         description:
@@ -3159,6 +3173,8 @@ export const tr = {
     },
     chat: {
       groups: {
+        replies: { title: "Yanıtlar" },
+        thinkingTools: { title: "Düşünme ve araçlar" },
         conversations: {
           title: "Sohbetler",
         },
@@ -3258,11 +3274,20 @@ export const tr = {
         "Her yanıtın ne zaman tamamlandığını yanıtın altında gösterin.",
       showReplyTimesKeywords:
         "zaman damgası zaman saat tarih ne zaman bitti geldi yanıt cevap mesaj timestamp",
-      showGenerationDetails: "Oluşturma ayrıntıları",
+      showGenerationDetails: "Ayrıntılı hız ve yükleme bilgisi",
       showGenerationDetailsDescription:
-        "Canlı istem ve yanıt hızlarını token sayılarıyla birlikte ve bir modelin katmanlarının nereye yüklendiğini gösterin.",
+        "Canlı göstergelere istem okuma hızını, token sayılarını ve taslak kabulünü ekler ve modelin katmanlarının nereye yüklendiğini gösterir.",
       showGenerationDetailsKeywords:
         "ayrıntılı geliştirici istatistik hız tok/s prefill decode katmanlar aktarım offload vram uzmanlar experts",
+      generationStatsUpdates: "Hız ve bağlam istatistikleri",
+      generationStatsUpdatesDescription:
+        "Gerçek zamanlı, bir yanıt akarken saniye başına token ve bağlam kullanımını sayar. Bitince, her yanıt tamamlandığında bunları günceller.",
+      generationStatsUpdatesHint:
+        "Gerçek zamanlı, yanıt yazılırken yanıtın altındaki saniye başına token göstergesini ve sohbetin üstündeki bağlam çubuğunu saniyede birkaç kez yeniler. Bitince, her yanıt tamamlandığında bunları bir kez günceller. Gerçek zamanlı mod, özellikle eski veya yoğun makinelerde takılmaya ya da daha düşük performansa yol açabilir.",
+      generationStatsUpdatesSettled: "Bitince",
+      generationStatsUpdatesRealtime: "Gerçek zamanlı",
+      generationStatsUpdatesKeywords:
+        "gerçek zamanlı canlı güncelle hız bağlam istatistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Yanıtlarda Yanıtı düzenle",
       inlineEditResponseDescription:
         "Yanıtı düzenle seçeneğini Diğer menüsü yerine her yanıtta tutun.",
@@ -3841,7 +3866,7 @@ export const tr = {
       mcp: {
         title: "Ajan erişimi (MCP)",
         description:
-          "Claude Code ve Codex gibi kodlama ajanlarının Unsloth'u MCP üzerinden kullanmasına izin verin. Ajanlar, bu sayfadaki bir Unsloth API anahtarıyla oturum açar.",
+          "Claude Code ve Codex gibi kodlama ajanlarının Unsloth'u MCP üzerinden kullanmasına izin verin.",
         enable: "Ajan bağlantılarına izin ver",
         enableDescription:
           "/mcp/ uç noktasını Unsloth API anahtarı taşıyan isteklere sunar.",
@@ -3850,10 +3875,93 @@ export const tr = {
         saveError: "Ajan erişimi ayarı kaydedilemedi.",
         agent: "Ajan",
         exportKeyHint:
-          "Ajanı başlatmadan önce {name} değişkenini bu sayfadaki bir Unsloth API anahtarına ayarlayın.",
+          "Ajanı başlatmadan önce {name} değişkenini bir Unsloth API anahtarına ayarlayın.",
         configFileHint: "Bunu şu dosyaya ekleyin: {path}",
         keywords:
           "mcp model context protocol model bağlam protokolü ajanlar agents claude codex araçlar tools",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Ajanlar bir Unsloth API anahtarıyla oturum açar.",
+      createKey: "API anahtarı oluştur",
+      tools: {
+        title: "Araçlar",
+        count: "{total} araçtan {on} tanesi açık",
+        choose: "Araçları seç",
+        dialogTitle: "Unsloth MCP araçları",
+        allTools: "Tüm araçlar",
+        selectAll: "Tümünü seç",
+        selectNone: "Hiçbirini seçme",
+        description:
+          "Açık bıraktığın her araç, ajanların başlamadan önce okuduğu şeye eklenir, bu yüzden ihtiyacın olmayanları kapat. Ajanlar kapalı bir aracı asla görmez ve ona yapılan çağrılar reddedilir. Zaten bağlı olan ajanlar değişikliği yeniden bağlandıklarında görür.",
+        saveError: "Unsloth MCP araç ayarı kaydedilemedi.",
+        chatNote: "Sohbet hiçbir zaman {tools} almaz.",
+        groups: {
+          models: "Modeller",
+          generate: "Üret",
+          training: "Eğitim ve dışa aktarma",
+          library: "Veri ve kitaplık",
+          jobs: "İşler",
+          other: "Diğer",
+        },
+      },
+      status: {
+        on: "Açık",
+        off: "Kapalı",
+      },
+      apiKeysRow: {
+        open: "Ajanlar'da aç",
+      },
+      toolLabels: {
+        studioStatus: "Durum",
+        listModels: "Modelleri listele",
+        loadModel: "Model yükle",
+        unloadModel: "Modeli kaldır",
+        planLoad: "Yüklemeyi planla",
+        downloadModel: "Model indir",
+        chat: "Sohbet",
+        embed: "Metni göm",
+        systemOne: "Karar modeli",
+        generateImage: "Görsel üret",
+        generateAudio: "Ses üret",
+        transcribe: "Yazıya dök",
+        analyzeAudio: "Sesi analiz et",
+        generateVideo: "Video üret",
+        runRecipe: "Data Recipe çalıştır",
+        getJob: "İş durumu",
+        datasets: "Veri kümeleri",
+        startTraining: "Eğitimi başlat",
+        listTrainingRuns: "Eğitim çalıştırmaları",
+        exportModel: "Modeli dışa aktar",
+        listMedia: "Kaydedilen medya",
+        voices: "Sesler",
+        cancel: "İşi iptal et",
+      },
+      toolDescriptions: {
+        studioStatus: "Bu bilgisayarda neyin yüklü, çalışır ve boş olduğunu gör.",
+        listModels: "Ajanların yükleyebileceği modelleri listele.",
+        loadModel: "Ajanların sohbet etmesi veya üretmesi için bir model yükle.",
+        unloadModel: "Bellek açmak için bir modeli kaldır.",
+        planLoad: "Yüklemeden indirme boyutunu ve bellek kullanımını önizle.",
+        downloadModel: "Hugging Face'ten bir model indir.",
+        chat: "Yüklü modelle sohbet et.",
+        embed: "Metni vektöre çevir veya metinleri benzerliğe göre sırala.",
+        systemOne: "Karar modeline evet/hayır, seçim veya puan soruları sor.",
+        generateImage: "Görsel üret ve galeriye kaydet.",
+        generateAudio: "Konuşma veya başka ses üret.",
+        transcribe: "Konuşmayı metne çevir.",
+        analyzeAudio: "Bir klibin konuşmacılarını, zamanlamasını ve senaryoya uyumunu kontrol et.",
+        generateVideo: "Video üret.",
+        runRecipe: "Veri kümesi oluşturmak için bir Data Recipe çalıştır.",
+        getJob: "Uzun bir işi bitene kadar takip et.",
+        datasets: "Veri kümelerini listele ve yükle.",
+        startTraining: "Bir ince ayar çalıştırması başlat.",
+        listTrainingRuns: "Eğitim çalıştırmalarını ve sonuçlarını listele.",
+        exportModel: "Eğitilmiş bir modeli dışa aktar, örneğin GGUF olarak.",
+        listMedia: "Kayıtlı görselleri, sesleri ve videoları gez.",
+        voices: "Sesleri listele, kaydet, yeniden adlandır veya sil.",
+        cancel: "Bir eğitim veya dışa aktarma gibi süren bir işi durdur.",
       },
     },
     about: {
@@ -5582,6 +5690,7 @@ export const tr = {
     monitor: {
       dragHandleLabel:
         "Canlı izleyiciyi taşıyın. Ok tuşları onu kaydırır, çift tıklama sıfırlar.",
+      resizeHint: "Genişliği değiştirmek için bir kenarı veya köşeyi sürükleyin. Çift tıklama sıfırlar.",
       reconnecting: "Yeniden bağlanılıyor...",
     },
   },

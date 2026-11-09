@@ -354,6 +354,29 @@ def test_nudge_retry_cut_at_length_keeps_the_cut(monkeypatch):
     assert choice["message"]["content"] == _CUT_XML
 
 
+@pytest.mark.parametrize("content", [None, ""])
+def test_call_only_turn_reaches_the_local_template_with_content(monkeypatch, content):
+    backend = _ScriptedBackend(_fixed("done"))
+    call = {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+    }
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        stream = False,
+        messages = [
+            ChatMessage(role = "user", content = "hi"),
+            ChatMessage(role = "assistant", content = content, tool_calls = [call]),
+            ChatMessage(role = "tool", content = "r", tool_call_id = "c1"),
+        ],
+    )
+    _call(payload, monkeypatch, backend)
+    (turn,) = [m for m in backend.calls[0]["messages"] if m["role"] == "assistant"]
+    assert turn["content"] == ""
+    assert turn["tool_calls"][0]["function"]["arguments"] == {"q": "x"}
+
+
 def test_undeclared_call_stays_text(monkeypatch):
     xml = '<tool_call>{"name": "other", "arguments": {}}</tool_call>'
     backend = _ScriptedBackend(_fixed(xml))
@@ -674,6 +697,30 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
         if o["choices"] and o["choices"][0].get("finish_reason")
     ]
     assert finishes == ["tool_calls"]
+
+
+_MINIMAX_CALL = (
+    '<minimax:tool_call>\n<invoke name="lookup">\n<parameter name="q">cats</parameter>\n'
+    "</invoke>\n</minimax:tool_call>"
+)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_the_models_own_call_format_is_healed(monkeypatch, stream):
+    backend = _ScriptedBackend(_fixed("Looking.\n", f"Looking.\n{_MINIMAX_CALL}"))
+    backend.models["sf-model"]["chat_template_info"]["template"] = "{{ '<minimax:tool_call>' }}"
+    response = _call(_request(tools = [LOOKUP_TOOL], stream = stream), monkeypatch, backend)
+    if stream:
+        objs = _sse_objects(_collect_sse(response))
+        deltas = [(o.get("choices") or [{}])[0].get("delta") or {} for o in objs]
+        calls = [tc["function"] for d in deltas for tc in d.get("tool_calls") or []]
+        text = "".join(d.get("content") or "" for d in deltas)
+    else:
+        message = _json_body(response)["choices"][0]["message"]
+        calls = [tc["function"] for tc in message["tool_calls"]]
+        text = message["content"]
+    assert [(c["name"], json.loads(c["arguments"])) for c in calls] == [("lookup", {"q": "cats"})]
+    assert text.strip() == "Looking."
 
 
 def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkeypatch):

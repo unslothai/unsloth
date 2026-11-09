@@ -522,3 +522,16 @@ test("the warm dedupes on the grammar, not on the spelling", async () => {
     "one definition, exported, so the two keyings cannot drift apart",
   );
 });
+
+test("code block headers name the language the way the language does, behind a code icon", async () => {
+  const { languageDisplayName } = await import("../src/components/assistant-ui/code-plugin.ts");
+  assert.equal(languageDisplayName("python"), "Python");
+  assert.equal(languageDisplayName("HTML"), "HTML");
+  assert.equal(languageDisplayName("ts"), "TypeScript");
+  assert.equal(languageDisplayName("bash"), "Bash");
+  assert.equal(languageDisplayName("text"), "Text");
+  assert.equal(languageDisplayName("mylang"), "Mylang");
+  const source = readFileSync(new URL("../src/components/assistant-ui/code-fence-defer.tsx", import.meta.url), "utf8");
+  assert.equal(source.match(/<CodeBlockLanguage language=\{language\} \/>/g)?.length, 2);
+  assert.match(source, /icon=\{CodeXmlIcon\}/);
+});
