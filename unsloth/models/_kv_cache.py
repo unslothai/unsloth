@@ -29,7 +29,9 @@ __all__ = [
     "make_growable",
     "is_growable",
     "needs_growth",
+    "fills_bucket",
     "reserve",
+    "frozen",
     "written",
     "epoch",
     "capacity",
@@ -80,9 +82,11 @@ if _StaticLayer is not None:
             self.group = group if group is not None else _Group()
 
         def _plan(self, q_len):
-            """Capacity this layer needs to take q_len more tokens; grows the group if it is short."""
+            """Capacity this layer needs to take q_len more tokens; grows the group if it is short. Never inside a
+            graph capture: the host counter there is already past the step (the warm-up ran it), and a capture
+            would record the copy into the new buffers without running it. generate reserves beforehand."""
             needed = self.cumulative_length_int + int(q_len)
-            if self.capacity is None or needed > self.capacity:
+            if (self.capacity is None or needed > self.capacity) and not _frozen():
                 _grow_group(self.group, bucket(needed, max(int(self.max_cache_len), needed)))
             return self.capacity
 
@@ -146,6 +150,30 @@ else:  # pragma: no cover
     GrowableLayer = None
 
 
+_FREEZE = [0]
+
+
+def _frozen():
+    if _FREEZE[0]:
+        return True
+    try:
+        return torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
+    except Exception:
+        return False
+
+
+class frozen:
+    """No growth while active (decode graph captures): steps use the capacity reserved before them."""
+
+    def __enter__(self):
+        _FREEZE[0] += 1
+        return self
+
+    def __exit__(self, *exc):
+        _FREEZE[0] -= 1
+        return False
+
+
 def _grow_group(group, size):
     for layer in group.members:
         layer._grow(size)
@@ -182,6 +210,15 @@ def is_growable(cache):
     return any(True for _ in _members(cache))
 
 
+def fills_bucket(cache, q_len):
+    """Whether a step writing q_len tokens fills the last slots of this cache's bucket: a graph captured there
+    can never replay (the next step grows the cache and moves its tensors)."""
+    for layer in _members(cache):
+        if layer.capacity is not None and layer.cumulative_length_int + q_len == layer.capacity:
+            return True
+    return False
+
+
 def needs_growth(cache, q_len):
     """Whether a step writing q_len tokens grows this cache (host counters only, no device read)."""
     for layer in _members(cache):
@@ -190,13 +227,25 @@ def needs_growth(cache, q_len):
     return False
 
 
-def reserve(cache, total):
+def reserve(
+    cache,
+    total,
+    written = None,
+):
     """Grows a growable cache, eagerly, so it holds `total` tokens (host ints only). generate calls it before a
-    step's mask is built, so a mask built inside compiled code reads the grown capacity."""
-    for layer in _members(cache):
-        if layer.capacity is None or int(total) > layer.capacity:
-            _grow_group(layer.group, bucket(total, max(int(layer.max_cache_len), int(total))))
+    step's mask is built, so a mask built inside compiled code reads the grown capacity. `written` (the tokens
+    the cache holds before this step, from generate's own lengths) re-syncs the host counters: a step that ran
+    update() under torch.compile or as a graph replay without the replay path advancing them leaves them behind,
+    and they must never drive a growth decision stale."""
+    members = list(_members(cache))
+    if not members:
         return
+    if written is not None and written >= 0:
+        for layer in members:
+            layer.cumulative_length_int = int(written)
+    layer = members[0]
+    if layer.capacity is None or int(total) > layer.capacity:
+        _grow_group(layer.group, bucket(total, max(int(layer.max_cache_len), int(total))))
 
 
 def written(cache):

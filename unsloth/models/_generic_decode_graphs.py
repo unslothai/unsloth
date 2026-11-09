@@ -23,6 +23,7 @@ import contextlib
 import warnings
 import copy
 import functools
+import inspect
 import os
 import traceback
 import weakref
@@ -852,6 +853,34 @@ def _kept_compatible(state, batch_size, max_cache_len, offloading):
     )
 
 
+def _reserve_step(cache, input_ids, bound):
+    """Grows a growable cache to hold this generate step, from its input lengths: the whole sequence so far
+    (prompt incl. padding plus generated tokens) and the step's new tokens (5.x `next_sequence_length`, 4.x
+    `cache_position`; the whole input on the first step of an empty cache)."""
+    total = (
+        input_ids.shape[-1] if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2 else 0
+    )
+    embeds = bound.get("inputs_embeds")
+    q = bound.get("next_sequence_length")
+    if type(q) is not int:
+        position = bound.get("cache_position")
+        q = (
+            int(position.shape[0])
+            if isinstance(position, torch.Tensor) and position.dim() == 1
+            else None
+        )
+    written = KV.written(cache)
+    if q is None and written == 0:
+        q = total
+    if written == 0 and isinstance(embeds, torch.Tensor) and embeds.dim() >= 3 and total == 0:
+        total = q = embeds.shape[1]
+    if total <= 0 or q is None or q > total:
+        # Unknown step shape: grow for one more token past the host counter (the eager fallback).
+        KV.reserve(cache, max(total, written + 1))
+        return
+    KV.reserve(cache, total, written = total - q)
+
+
 class reuse_kept_cache:
     """One graphed generate() call: transformers builds this call's StaticCache, unless a compatible kept
     one exists, which is reset and handed back (same tensors, so the kept graphs replay). 5.x builds a new
@@ -863,22 +892,23 @@ class reuse_kept_cache:
         self.prepare = None
         self.get_cache = None
         self.prepare_inputs = None
+        self.prepare_inputs_saved = None
+        self.prepare_signature = None
 
     def _prepare_inputs(self, input_ids, *args, **kwargs):
         # A growable cache grows here, eagerly, before transformers builds the step's mask (in
-        # prepare_inputs_for_generation or the forward, often inside Unsloth's compiled mask code).
-        cache = kwargs.get("past_key_values", args[0] if args else None)
+        # prepare_inputs_for_generation or the forward, often inside Unsloth's compiled mask code), and its host
+        # counters are re-synced from generate's own lengths (never from a counter a replay could leave behind).
+        try:
+            bound = self.prepare_signature.bind_partial(input_ids, *args, **kwargs).arguments
+        except (TypeError, ValueError, AttributeError):
+            bound = dict(kwargs)
+        extra = bound.get("kwargs")
+        if isinstance(extra, dict):
+            bound = {**extra, **bound}
+        cache = bound.get("past_key_values")
         if KV.is_growable(cache):
-            written = KV.written(cache)
-            total = (
-                input_ids.shape[-1]
-                if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2
-                else 0
-            )
-            embeds = kwargs.get("inputs_embeds")
-            if written == 0 and isinstance(embeds, torch.Tensor) and embeds.dim() >= 3:
-                total = max(total, embeds.shape[1])
-            KV.reserve(cache, max(total, written + 1))
+            _reserve_step(cache, input_ids, bound)
         return self.prepare_inputs(input_ids, *args, **kwargs)
 
     def _prepare(self, *args, **kwargs):
@@ -937,11 +967,22 @@ class reuse_kept_cache:
         model = self.model
         self.get_cache = None
         self.prepare_inputs = None
-        if KV.enabled() and "prepare_inputs_for_generation" not in model.__dict__:
-            self.prepare_inputs = model.prepare_inputs_for_generation
-            # wraps(): generate and Unsloth read the signature (inspect follows __wrapped__).
+        self.prepare_inputs_saved = None
+        prepare = getattr(model, "prepare_inputs_for_generation", None)
+        if KV.enabled() and prepare is not None:
+            # Wraps whatever is current (another wrapper may own the instance attribute): put back on exit.
+            self.prepare_inputs = prepare
+            self.prepare_inputs_saved = (
+                "prepare_inputs_for_generation" in model.__dict__,
+                model.__dict__.get("prepare_inputs_for_generation"),
+            )
+            try:
+                self.prepare_signature = inspect.signature(prepare)
+            except (TypeError, ValueError):
+                self.prepare_signature = None
             hook = self._prepare_inputs
-            model.prepare_inputs_for_generation = functools.wraps(self.prepare_inputs)(
+            # wraps(): generate and Unsloth read the signature (inspect follows __wrapped__).
+            model.prepare_inputs_for_generation = functools.wraps(prepare)(
                 lambda *args, **kwargs: hook(*args, **kwargs)
             )
         if "_prepare_static_cache" in model.__dict__ or not hasattr(model, "_prepare_static_cache"):
@@ -963,8 +1004,12 @@ class reuse_kept_cache:
     def __exit__(self, *exc):
         model = self.model
         if self.prepare_inputs is not None:
-            del model.prepare_inputs_for_generation
-            self.prepare_inputs = None
+            had, previous = self.prepare_inputs_saved
+            if had:
+                model.__dict__["prepare_inputs_for_generation"] = previous
+            else:
+                model.__dict__.pop("prepare_inputs_for_generation", None)
+            self.prepare_inputs = self.prepare_inputs_saved = None
         if self.get_cache is not None:
             del model._get_cache
             self.get_cache = None
@@ -1798,6 +1843,10 @@ def decode_step(
             if _window_fills(cache, 1):
                 # A filling-key graph already captured replays this step correctly; a new one would not.
                 return _refusal(state, "sliding window fills in this step")
+            if KV.fills_bucket(cache, 1):
+                # A graph first captured on the step that fills a growable cache's bucket could never replay (the
+                # next step grows the cache, or the call ends at its limit). One captured earlier replays it.
+                return _refusal(state, "kv cache fills its bucket")
             return _capture(state, key, forward, kwargs, leaves, cache)
         for buffer, leaf in zip(entry.leaves, leaves):
             buffer.copy_(_compact(leaf))
@@ -1905,14 +1954,20 @@ def _capture(state, key, forward, kwargs, leaves, cache):
             after = _snapshot(cache, rows = False)
             graph = False
             try:
-                if side:
-                    graph, static_outputs = _BACKEND.record(
-                        state.pool, lambda: forward(**static_kwargs), cache, side, state.mempools
-                    )
-                else:
-                    graph, static_outputs = _BACKEND.record(
-                        state.pool, lambda: forward(**static_kwargs), cache
-                    )
+                # A growable cache never grows inside a capture (its host counter is past the step here).
+                with KV.frozen():
+                    if side:
+                        graph, static_outputs = _BACKEND.record(
+                            state.pool,
+                            lambda: forward(**static_kwargs),
+                            cache,
+                            side,
+                            state.mempools,
+                        )
+                    else:
+                        graph, static_outputs = _BACKEND.record(
+                            state.pool, lambda: forward(**static_kwargs), cache
+                        )
             finally:
                 # Capturing ran the Python update again: put the host counters back.
                 _restore((after[0], []))

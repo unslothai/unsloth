@@ -7,6 +7,8 @@ case. Checked on the host through the stand-in CUDA graph backend of test_generi
 equal a StaticCache of the full length, growth is eager and re-captures once per bucket, a kept cache grows for a
 longer call, sliding layers stay transformers' own, left padding, and a compiled update is one graph per bucket."""
 
+import contextlib
+import functools
 import os
 import sys
 import types
@@ -25,7 +27,7 @@ from transformers import AutoModelForCausalLM, StaticCache
 from transformers import cache_utils
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_generic_decode_graphs import GEMMA3, LLAMA  # noqa: E402
+from test_generic_decode_graphs import GEMMA3, LLAMA, _FakeGraph  # noqa: E402
 from test_generic_decode_graphs_default import _DefaultHost  # noqa: E402
 
 ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
@@ -45,6 +47,28 @@ def host(monkeypatch):
     for name in (ENV, "UNSLOTH_DECODE_GENERIC_GRAPHS", "UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP"):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setenv("UNSLOTH_GROWABLE_KV_MIN", "16")
+    # As a real replay, which runs no Python: a growable layer must not grow while a step replays (the stand-in
+    # re-runs the step to fill the outputs). Every growth is logged with whether a capture or replay was running.
+    backend.growths = []
+    replaying = [False]
+    real_replay = _FakeGraph.replay
+
+    def replay(self):
+        replaying[0] = True
+        try:
+            with getattr(KV, "frozen", contextlib.nullcontext)():
+                return real_replay(self)
+        finally:
+            replaying[0] = False
+
+    monkeypatch.setattr(_FakeGraph, "replay", replay)
+    real_grow = KV._grow_group
+
+    def grow(group, size):
+        backend.growths.append((size, backend.recording, replaying[0]))
+        return real_grow(group, size)
+
+    monkeypatch.setattr(KV, "_grow_group", grow)
     return backend
 
 
@@ -86,9 +110,10 @@ def _gen(
     new = 10,
     bsz = 1,
     pad = 0,
+    length = 6,
     **kwargs,
 ):
-    ids, mask = _ids(bsz, pad = pad)
+    ids, mask = _ids(bsz, length = length, pad = pad)
     kwargs.setdefault("min_new_tokens", new)
     with torch.inference_mode():
         return model.generate(
@@ -281,3 +306,57 @@ def test_a_short_call_after_a_long_one_replays_the_kept_bucket(host, llama, monk
     assert GG.kept_cache(llama) is kept and KV.capacity(kept) == 45
     assert s3["captures"] == s2["captures"], (s2, s3)
     assert s3["replays"] - s2["replays"] == 2 * 9, (s2, s3)
+
+
+def _no_growth_in_graphs(host):
+    assert host.growths and not [g for g in host.growths if g[1] or g[2]], host.growths
+
+
+def test_no_growth_inside_a_capture(host, llama, monkeypatch):
+    # A 15-token prompt fills its 16-slot bucket on the first captured step: the capture runs after the warm-up
+    # advanced the host counter, so a growth decision there would see one token too many and grow inside the
+    # capture (on CUDA: the copy into the new buffers recorded, never run; the device counter one step ahead).
+    static, grown = _both(llama, monkeypatch, new = 30, length = 15)
+    assert torch.equal(static, grown)
+    _no_growth_in_graphs(host)
+    # That first step runs eagerly instead (a graph captured there could never replay); the next one captures.
+    assert _stats(llama)["refusals"] == {"kv cache fills its bucket": 1}, _stats(llama)
+    assert KV.capacity(GG.kept_cache(llama)) == 44
+
+
+def test_kept_cache_grows_from_a_clamped_bucket(host, llama, monkeypatch):
+    # The first call's bucket is clamped to its limit (15); the longer call grows it to 16, a step that fills it.
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "1")
+    _gen(llama, new = 10)
+    kept = GG.kept_cache(llama)
+    longer = _gen(llama, new = 30)
+    assert GG.kept_cache(llama) is kept and KV.capacity(kept) == 35
+    _no_growth_in_graphs(host)
+    monkeypatch.delenv("UNSLOTH_GROWABLE_KV")
+    GG.release(llama)
+    llama.__dict__.pop(GG._ATTR, None)
+    llama.__dict__.pop("_cache", None)
+    assert torch.equal(longer, _gen(llama, new = 30))
+
+
+def test_stale_host_counter_and_a_wrapped_prepare(host, llama, monkeypatch):
+    # A decode update that runs no Python counter code (torch.compile'd decode, a replay path that does not advance
+    # it) leaves the host counter behind, and another wrapper may own prepare_inputs_for_generation already: growth
+    # must still follow generate's own lengths, never the stale counter.
+    real_update = KV.GrowableLayer.update
+
+    def compiled_like(self, key_states, value_states, *args, **kwargs):
+        if key_states.shape[-2] != 1:
+            return real_update(self, key_states, value_states, *args, **kwargs)
+        return KV._StaticLayer.update(self, key_states, value_states, *args, **kwargs)
+
+    monkeypatch.setattr(KV.GrowableLayer, "update", compiled_like)
+    inner = llama.prepare_inputs_for_generation
+    wrapper = functools.wraps(inner)(lambda *a, **k: inner(*a, **k))
+    llama.prepare_inputs_for_generation = wrapper
+    static, grown = _both(llama, monkeypatch, new = 40)
+    assert torch.equal(static, grown)
+    cache = GG.kept_cache(llama)
+    assert KV.capacity(cache) == 45, KV.capacity(cache)
+    # The other wrapper is back in place after each call.
+    assert llama.__dict__.get("prepare_inputs_for_generation") is wrapper
