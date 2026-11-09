@@ -11122,6 +11122,8 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_dense_bf16", False),
                                 plan.estimates.get("measured_small_host_int8", False),
                                 bool(streamed_headroom),
+                                # MEASURED_RESERVE_DENOISE_PHASE_INDEX: the blocks sized from the denoise phase
+                                plan.estimates.get("measured_denoise_phase_headroom_mib"),
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 

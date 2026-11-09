@@ -4124,6 +4124,114 @@ def _streamed_dit_room_mib(memory: Any, headroom_mib: int, other_mib: int, windo
     )
 
 
+# A partially streamed denoiser sizes its resident blocks from the denoise phase alone: the prompt encode already
+# streams the surplus back out (install_encode_release) and the VAE decode borrows it (release_for_decode). The
+# whole-render peak is the encode's or the decode's on most families, so sizing from it left GiBs idle every step.
+# "0": size from the whole-render peak again.
+DENOISE_PHASE_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_DENOISE_PHASE_RESIDENCY"
+_PHASE_DENOISE_COLUMN = 1
+_PHASE_UNTILED_DECODE_COLUMN = 2
+_PHASE_TILED_DECODE_COLUMN = 3
+
+
+def denoise_phase_residency_enabled() -> bool:
+    return not _env_off(DENOISE_PHASE_RESIDENCY_ENV)
+
+
+def _top_level_group_mib(pipe: Any) -> Optional[int]:
+    """MiB of the largest denoiser's weights outside its block stacks (``ModuleList`` / ``Sequential`` children):
+    block-level group offload keeps them in one top-level group that is onloaded for the whole forward when it is not
+    resident, beside the block window. None when unreadable."""
+    try:
+        import torch
+
+        largest = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            if not isinstance(module, torch.nn.Module):
+                continue
+            blocks: set[int] = set()
+            for child in module.children():
+                if isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
+                    blocks.update(id(t) for t in (*child.parameters(), *child.buffers()))
+            seen: set[int] = set()
+            nbytes = 0
+            for t in (*module.parameters(), *module.buffers()):
+                if id(t) in seen or id(t) in blocks:
+                    continue
+                seen.add(id(t))
+                nbytes += sum(_storage_nbytes(t))
+            largest = max(largest, -(-nbytes // (1024 * 1024)))
+        return largest
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _denoise_phase_reserve(
+    pipe: Any,
+    *,
+    family: Optional[str],
+    speed_mode: Optional[str],
+    quant: Optional[str],
+    static_seed: bool,
+    window_mib: int,
+    tiled: bool,
+) -> Optional[tuple[int, tuple[int, int, bool]]]:
+    """``(denoise MiB, (decode peak MiB, bucket pixels, quadratic))`` for a 1024x1024 render, or None.
+
+    The denoise MiB is what the steps allocate above the resident weights besides the prefetch window (margin
+    included): the larger of the static denoise seed (``_MEASURED_IMAGE_ACTIVATION_MIB``, window excluded) and this
+    build's learned pre-decode peak less the part of the window it is sure to hold (learned peaks are on the streamed
+    scale, ``stream_window_pad_mib``, at the prefetch depth they were recorded with), so no window is charged twice. The decode peak (no margin) is the larger of the
+    static decode seed for the VAE savers in force and the learned unpadded decode phase. None when neither source
+    covers both phases, when a learned whole-render peak has no consistent phase split (its phases are unknown), or
+    when the switch is off."""
+    if not denoise_phase_residency_enabled() or _env_off(MEASURED_ACTIVATION_ENV):
+        return None
+    try:
+        from .diffusion_measured_peaks import (
+            PHASE_DECODE_UNPADDED,
+            PHASE_PRE_DECODE,
+            lookup_bucket,
+        )
+
+        name = str(family or "").lower()
+        denoise = decode = None
+        pixels, quadratic = DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT, False
+        phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(name)
+        if (
+            static_seed
+            and phases is not None
+            and bool(getattr(pipe, "_unsloth_phase_seeds", False))
+            and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+        ):
+            row = phases[1 if speed_mode == "max" else 0]
+            denoise = int(math.ceil(row[_PHASE_DENOISE_COLUMN] * _MEASURED_PEAK_MARGIN))
+            decode = int(row[_PHASE_TILED_DECODE_COLUMN if tiled else _PHASE_UNTILED_DECODE_COLUMN])
+        if quant is not None:
+            whole = lookup_bucket(family = family, quant = quant, speed_mode = speed_mode)
+            if whole is not None:
+                split = learned_phase_split(family, quant, speed_mode)
+                if split is None:
+                    return None
+                from .diffusion_offload_prefetch import prefetch_depth
+
+                # the sample holds the window of the depth it was recorded at, which the key does not name: credit
+                # only the smallest one (depth 1, two blocks), so a later deeper prefetch is never double-credited
+                held = max(0, int(window_mib)) * 2 // (prefetch_depth() + 1)
+                learned_pre = int(math.ceil(split[PHASE_PRE_DECODE] * _MEASURED_PEAK_MARGIN)) - held
+                denoise = max(int(denoise or 0), learned_pre, 0)
+                decode = max(int(decode or 0), int(split[PHASE_DECODE_UNPADDED]))
+                pixels, quadratic = int(split["pixels"]), bool(split["quadratic"])
+        if denoise is None or not decode:
+            return None
+        step = _MEASURED_PEAK_ROUND_MIB
+        return int(-(-int(denoise) // step) * step), (int(decode), int(pixels), bool(quadratic))
+    except Exception:  # noqa: BLE001 - unreadable: the whole-render placement
+        return None
+
+
 def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
     """Denoiser compute element size for the dense table: 2 (fp16), 4 (fp32); None for bf16 / unreadable."""
     try:
@@ -4789,6 +4897,34 @@ def _refine_plan_from_loaded_weights(
                 streamed_room = min(
                     _streamed_dit_room_mib(memory, streamed_headroom, other, window), dit
                 )
+                phase_reserve = None
+                if window >= 0:
+                    phase_reserve = _denoise_phase_reserve(
+                        pipe,
+                        family = family,
+                        speed_mode = speed_mode,
+                        quant = read_quant,
+                        static_seed = static_seed and not small_host_int8,
+                        window_mib = window,
+                        tiled = "tiled" in planned_vae_saver_tag(pipe, plan),
+                    )
+                    top = _top_level_group_mib(pipe) if phase_reserve is not None else None
+                    if top is None:
+                        phase_reserve = None
+                    if phase_reserve is not None:
+                        phase_room = min(
+                            _streamed_dit_room_mib(memory, phase_reserve[0], other, window), dit
+                        )
+                        if (
+                            phase_reserve[0] >= streamed_headroom
+                            or phase_room <= streamed_room
+                            # the top-level group goes resident first; one that misses is onloaded whole for every
+                            # forward beside the block window, which the denoise seed (measured resident) omits
+                            or phase_room < top
+                        ):
+                            phase_reserve = None
+                        else:
+                            streamed_room = phase_room
                 if streamed_room > dit_room:
                     encode_room = int(dit_room)
                     dit_room, room, wide_dit = streamed_room, streamed_room, True
@@ -4797,6 +4933,16 @@ def _refine_plan_from_loaded_weights(
                         estimates["measured_streamed_headroom_mib"] = streamed_headroom
                         # seed covers denoise only; flat encode room on top overran at 16 GiB
                         encode_room = 0
+                    if phase_reserve is not None:
+                        decode_peak, decode_pixels, decode_quadratic = phase_reserve[1]
+                        # the encode keeps the flat room, the decode streams the shortfall again
+                        estimates.update(
+                            measured_denoise_phase_headroom_mib = phase_reserve[0],
+                            decode_lend_transformer_mib = int(streamed_room),
+                            measured_decode_peak_mib = decode_peak,
+                            measured_decode_peak_pixels = decode_pixels,
+                            measured_decode_peak_quadratic = decode_quadratic,
+                        )
         te_room = (
             min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
         )
@@ -4863,8 +5009,14 @@ def _refine_plan_from_loaded_weights(
                     f" {encode_room} MiB of it while the encoders run)"
                     if whole_dit
                     else f" (free memory less a {_resident_dit_slack_mib(memory)} MiB slack and a "
-                    f"{estimates.get('stream_window_mib')} MiB prefetch window; {encode_room} MiB of it while the "
-                    "encoders run)"
+                    f"{estimates.get('stream_window_mib')} MiB prefetch window"
+                    + (
+                        f", sized from the {estimates['measured_denoise_phase_headroom_mib']} MiB denoise phase"
+                        " (the decode may stream part of it again)"
+                        if estimates.get("measured_denoise_phase_headroom_mib") is not None
+                        else ""
+                    )
+                    + f"; {encode_room} MiB of it while the encoders run)"
                     if wide_dit
                     else ""
                 ),
@@ -5248,11 +5400,14 @@ _DECODE_SLACK_MIB = 256
 
 
 def decode_lend_from_plan(plan: Any) -> Optional[tuple[int, int, int, bool]]:
-    """``(lent MiB, decode peak MiB, bucket pixels, quadratic)`` when ``plan`` lent encoder residency to the decode."""
+    """``(lent MiB, decode peak MiB, bucket pixels, quadratic)`` when ``plan`` lent encoder residency, or denoiser
+    residency sized from the denoise phase, to the decode."""
     estimates = getattr(plan, "estimates", None) or {}
     lend = estimates.get("decode_lend_text_encoder_mib")
     if not lend or not getattr(plan, "resident_text_encoder_mib", None):
-        return None
+        lend = estimates.get("decode_lend_transformer_mib")
+        if not lend or not getattr(plan, "resident_transformer_mib", None):
+            return None
     return (
         int(lend),
         int(estimates.get("measured_decode_peak_mib") or 0),
@@ -5813,6 +5968,10 @@ def install_encode_release(
         return 0
 
 
+# Index in ``_unsloth_measured_reserve`` of the denoise-phase MiB a placement sized its resident blocks from.
+MEASURED_RESERVE_DENOISE_PHASE_INDEX = 13
+
+
 def measured_request_extra_mib(
     pipe: Any,
     *,
@@ -5831,10 +5990,21 @@ def measured_request_extra_mib(
     whether the request runs classifier-free guidance (None: unknown, treated as running it). ``unpriced_references``:
     the request carries reference images whose latents join the denoiser's sequence but are not in
     ``condition_pixels`` (FLUX.2 Klein's primary reference): a placement made from a dense default / max tier seed,
-    measured on text-to-image, then sizes the request from the flat estimate."""
+    measured on text-to-image, then sizes the request from the flat estimate.
+
+    A placement that sized its resident blocks from the denoise phase (``MEASURED_RESERVE_DENOISE_PHASE_INDEX``) holds
+    only that phase's reserve while the steps run: a request it was sized for (text-to-image, at most the 1024x1024
+    bucket, no condition images or tier peak, within the whole-render reserve) releases nothing, its encode and decode
+    priced by their own hooks; any other request is priced against the denoise reserve, which first streams the blocks
+    the phase sizing added."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
+    phase = (
+        reserve[MEASURED_RESERVE_DENOISE_PHASE_INDEX]
+        if len(reserve) > MEASURED_RESERVE_DENOISE_PHASE_INDEX
+        else None
+    )
     headroom, family, speed_mode = reserve[:3]
     dense_mib = reserve[3] if len(reserve) > 3 else None
     compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2
@@ -5885,7 +6055,7 @@ def measured_request_extra_mib(
             family = family,
             condition_pixels = condition_pixels,
         )
-        return max(0, int(flat) - int(headroom))
+        return max(0, int(flat) - int(phase or headroom))
     if learned:
         # the learned peak the load reserved, scaled here (not reread from the store, which another worker may evict
         # or a failed write may leave empty while this pipeline stays loaded)
@@ -5926,9 +6096,11 @@ def measured_request_extra_mib(
     )
     if need is not None:
         need += allowance
+    sized_for = True  # the request is the one the placement was sized for (``phase`` pricing)
     if isinstance(identity, tuple) and len(identity) == 3:
         keyed = with_workflow(identity[1], workflow)
         if keyed != identity[1]:
+            sized_for = False  # another workflow: its denoise phase was never measured against the placement
             own = None
             if (
                 cfg is False
@@ -5946,6 +6118,20 @@ def measured_request_extra_mib(
                 need = own if need is None else max(need, own)
     if need is None:
         return 0
+    if phase:
+        pixels = (
+            max(64, int(width or DEFAULT_IMAGE_WIDTH))
+            * max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+            * max(1, int(batch_size or 1))
+        )
+        sized_for = (
+            sized_for
+            and allowance == 0
+            and tier_peak is None
+            and pixels <= DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
+            and int(need) <= int(headroom)
+        )
+        return 0 if sized_for else max(0, int(need) - int(phase))
     return max(0, int(need) - int(headroom))
 
 
