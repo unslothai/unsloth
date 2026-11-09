@@ -201,7 +201,6 @@ def test_reloaded_weights_and_config_encode_again():
 
 
 def test_assigned_weights_encode_again():
-    # assign=True swaps in new tensors whose version counters can equal the old ones (#17092).
     pipe = _pipe()
     image = _images(n = 1)[0]
     rc.install(pipe)

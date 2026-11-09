@@ -127,8 +127,7 @@ class _Cache:
         self.entries: "OrderedDict[tuple, Any]" = OrderedDict()
         self.bytes = 0
         self.vae_ref: Any = None
-        # Bumped by every load_state_dict on the VAE: assign=True swaps in new tensors whose version counters can
-        # match the old ones, so the revision alone cannot see it.
+        # bumped on every VAE load_state_dict: assign=True can keep version counters equal
         self.generation: Optional[int] = 0
         self.hooked: "weakref.WeakSet[Any]" = weakref.WeakSet()
         self.lock = threading.Lock()
