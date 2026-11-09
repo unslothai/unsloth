@@ -306,7 +306,6 @@ def _no_memory_reading():
         mod = _module("video_vae_untiled")
         if mod is not None and hasattr(mod, "_free_bytes"):
             stack.enter_context(mock.patch.object(mod, "_free_bytes", lambda device: None))
-        # diffusion_vae_tiling sizes CPU / MPS decode tiles from host RAM the same way.
         image = _module("diffusion_vae_tiling")
         if image is not None and hasattr(image, "_host_free_mib"):
             stack.enter_context(mock.patch.object(image, "_host_free_mib", lambda vae, z: None))

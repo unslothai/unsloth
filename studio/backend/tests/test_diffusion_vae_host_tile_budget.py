@@ -27,7 +27,6 @@ class _Decoder(torch.nn.Module):
 def _vae(dtype = torch.float32, cls_name = "AutoencoderKLQwenImage"):
     vae = type(cls_name, (), {})()
     vae.decoder = _Decoder(dtype)
-    # (ratio 8, floor tile 32, overlap 16), as install caches it
     vae._unsloth_wide_geometry = (8, 32, 16)
     vae._unsloth_wide_stock_tile = 32
     return vae
