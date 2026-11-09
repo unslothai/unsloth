@@ -174,6 +174,31 @@ def test_an_unknown_nvfp4_file_keeps_its_dit_precision_but_not_its_te_pick(
     assert any("kept" in r.getMessage() and name in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize(
+    "name,base",
+    [
+        ("FLUX.2-klein-9B-NVFP4.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-4b-nvfp4.safetensors", "black-forest-labs/FLUX.2-klein-4B"),
+        ("qwen-image-2.1-turbo-nvfp4.safetensors", "Qwen/Qwen-Image-2.1-Turbo"),
+        # Spells the family but neither its default base nor a registered variant: kept, never another model.
+        ("flux1-dev-nvfp4.safetensors", None),
+    ],
+)
+def test_a_known_family_file_keeps_its_variant(monkeypatch, tmp_path, name, base):
+    _fake_device(monkeypatch, "cuda", (8, 9))
+    folder = tmp_path / "models"
+    folder.mkdir()
+    (folder / name).write_bytes(b"\0" * 64)
+    got = route.plan_nvfp4_route(
+        model_path = str(folder), gguf_filename = name, model_kind = "single_file"
+    )
+    if base is None:
+        assert got is None
+    else:
+        assert got.updates["model_path"] == base
+        assert got.updates["transformer_quant"] == "int8"
+
+
 def test_a_family_that_denies_int8_gets_auto(monkeypatch):
     from core.inference import diffusion_transformer_quant as tq
 
@@ -512,6 +537,10 @@ def test_auto_never_orders_nvfp4_below_blackwell(monkeypatch, cap):
 
 
 def test_blackwell_requests_are_returned_untouched(monkeypatch, tmp_path):
+    # Nothing past the device read runs on Blackwell, not even a checkpoint header probe.
+    monkeypatch.setattr(
+        route, "checkpoint_is_nvfp4", lambda *a, **k: pytest.fail("probed a checkpoint")
+    )
     for cap in ((10, 0), (10, 3), (11, 0), (12, 0), (12, 1)):
         _fake_device(monkeypatch, "cuda", cap)
         for kind in PICKS:

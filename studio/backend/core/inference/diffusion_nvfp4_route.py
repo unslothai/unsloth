@@ -255,9 +255,33 @@ def _detect_family(
         return None
 
 
-def _family_int8_base(media: str, fam: Any, base_repo: Optional[str]) -> Optional[str]:
-    """The diffusers pipeline whose normal INT8 resolution replaces an NVFP4 single file of ``fam``."""
-    base = str(base_repo or "").strip() or str(getattr(fam, "base_repo", "") or "").strip()
+def _fold(text: Optional[str]) -> str:
+    return "".join(c for c in str(text or "").lower() if c.isalnum())
+
+
+def _family_int8_base(
+    media: str,
+    fam: Any,
+    base_repo: Optional[str],
+    model_path: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> Optional[str]:
+    """The diffusers pipeline whose normal INT8 resolution replaces an NVFP4 single file of ``fam``, or None when the
+    pick does not say which variant it is (a different size or distill must never load in its place)."""
+    base = str(base_repo or "").strip()
+    if not base and media != "video":
+        try:
+            from .diffusion_families import named_variant_base
+
+            # The same name rule the loader's own base resolution uses (FLUX.2 klein 9B, Qwen-Image-2.1-Turbo).
+            base = named_variant_base(fam, model_path, filename) or ""
+        except Exception:  # noqa: BLE001
+            base = ""
+        if not base:
+            plain = _fold(str(getattr(fam, "base_repo", "") or "").rsplit("/", 1)[-1])
+            if not plain or not any(plain in _fold(n) for n in (model_path, filename) if n):
+                return None
+    base = base or str(getattr(fam, "base_repo", "") or "").strip()
     if not base:
         return None
     if media == "video" and getattr(fam, "name", None) == "ltx-2.5":
@@ -305,16 +329,9 @@ def plan_nvfp4_route(
     enabled = nvfp4_diffusion_enabled()
     dit_pick = enabled and is_nvfp4(transformer_quant)
     te_pick = enabled and is_nvfp4(text_encoder_quant)
-    prequant_pick = (
-        enabled
-        and bool(transformer_prequant_path)
-        and checkpoint_is_nvfp4(transformer_prequant_path)
-    )
-    ckpt_pick = bool(model_path) and checkpoint_is_nvfp4(model_path, gguf_filename)
-    if ckpt_pick and not enabled and _switch_refuses_checkpoint(model_path, base_repo):
-        ckpt_pick = False
-    if not (dit_pick or te_pick or prequant_pick or ckpt_pick):
+    if not (dit_pick or te_pick or transformer_prequant_path or model_path):
         return None
+    # The device first (read once, cached): on Blackwell nothing below runs, not even a checkpoint header probe.
     profile = profile or device_profile()
     capability = None
     if profile.kind == NVIDIA:
@@ -325,6 +342,16 @@ def plan_nvfp4_route(
         te_target = INT8 if capability is not None and capability[0] >= TE_INT8_MIN_MAJOR else AUTO
     else:
         dit_target = te_target = AUTO
+    prequant_pick = (
+        enabled
+        and bool(transformer_prequant_path)
+        and checkpoint_is_nvfp4(transformer_prequant_path)
+    )
+    ckpt_pick = bool(model_path) and checkpoint_is_nvfp4(model_path, gguf_filename)
+    if ckpt_pick and not enabled and _switch_refuses_checkpoint(model_path, base_repo):
+        ckpt_pick = False
+    if not (dit_pick or te_pick or prequant_pick or ckpt_pick):
+        return None
 
     updates: dict = {}
     requested: dict = {}
@@ -343,7 +370,11 @@ def plan_nvfp4_route(
             fam, base = hosted
         else:
             fam = _detect_family(media, str(model_path), gguf_filename, family_override)
-            base = _family_int8_base(media, fam, base_repo) if fam is not None else None
+            base = (
+                _family_int8_base(media, fam, base_repo, str(model_path), gguf_filename)
+                if fam is not None
+                else None
+            )
         if fam is not None and base:
             target = _dit(getattr(fam, "name", None), base)
             replaced = f"nvfp4:{gguf_filename or model_path}"
