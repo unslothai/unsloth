@@ -408,7 +408,6 @@ class _Flux3KleinPipelineMixin:
             )
 
         with torch.no_grad():
-            # only the layers the helper stacks stay alive through the encoder call
             return run_selected(self.text_encoder, layers, call)
 
     def _set_guidance(self, mp, guidance_scale: Optional[float]) -> None:

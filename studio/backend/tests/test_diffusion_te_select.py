@@ -213,7 +213,6 @@ def test_hooks_are_removed_after_the_call():
         len(encoder._forward_hooks),
         sum(len(layer._forward_hooks) for layer in encoder.model.language_model.layers),
     )
-    # a later plain forward is stock again: the full tuple comes back
     with torch.no_grad():
         full = encoder(**_inputs(), output_hidden_states = True, use_cache = False)
     assert len(full.hidden_states) == LAYERS + 1
