@@ -532,6 +532,7 @@ from .diffusion_transformer_quant import (
     family_denies_scheme,
     fp16_card_int8_host,
     fp16_card_int8_scheme,
+    fp16_card_quant_storage_enabled,
     mark_source_precision,
     nvfp4_gated_base,
     native_int8_act,
@@ -9705,10 +9706,24 @@ class DiffusionBackend:
                                             transformer = pipe_kwargs.get("transformer"),
                                             family_name = fam.name,
                                             storage_dtype = flux3_storage_dtype(target, dtype),
-                                            # A transformer quant rebuilds the dense Linears it reads.
-                                            transformer_storage = transformer_quant_pinned is None
-                                            and native_scheme is None
-                                            and native_offload_scheme is None,
+                                            # fp16-card native build reads Linears as stored (bf16, manual cast).
+                                            transformer_storage = (
+                                                transformer_quant_pinned is None
+                                                and native_scheme is None
+                                                and native_offload_scheme is None
+                                            )
+                                            or (
+                                                fp16_card_quant_storage_enabled()
+                                                and native_scheme is not None
+                                                and native_offload_scheme is None
+                                                and fp16_card_int8_host(target)
+                                                and native_quant_scheme(
+                                                    target,
+                                                    transformer_quant_pinned,
+                                                    family = getattr(fam, "name", None),
+                                                )
+                                                is None
+                                            ),
                                         )
                                     finally:
                                         self._stop_load_prefetch()

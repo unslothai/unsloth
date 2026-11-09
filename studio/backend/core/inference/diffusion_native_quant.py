@@ -501,7 +501,8 @@ def native_linear_class():
             self.in_features = int(linear.in_features)
             self.out_features = int(linear.out_features)
             self.scheme = scheme
-            self.compute_dtype = linear.weight.dtype
+            cast = getattr(linear, "_unsloth_compute_dtype", None)
+            self.compute_dtype = cast if isinstance(cast, torch.dtype) else linear.weight.dtype
             self.act_int8 = bool(act_int8) and scheme == NATIVE_INT8
             self.rot_group = (
                 int(rot_group)
@@ -567,7 +568,14 @@ def native_linear_class():
             self.register_buffer(
                 "weight_scale", scale.squeeze(1).to(torch.float32).contiguous().view(torch.int32)
             )
-            self.bias = linear.bias
+            bias = linear.bias
+            if (
+                bias is not None
+                and bias.dtype != self.compute_dtype
+                and isinstance(cast, torch.dtype)
+            ):
+                bias = nn.Parameter(bias.detach().to(self.compute_dtype), requires_grad = False)
+            self.bias = bias
             # Registered here, in eager, so a compiled forward only reads the handle (see _row_major_op).
             self._row_major = _row_major_op() if self.act_int8 and not self.rot_group else None
             self._int8pack_scales: dict = {}
