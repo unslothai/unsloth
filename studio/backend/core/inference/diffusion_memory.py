@@ -3464,8 +3464,9 @@ MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAM
 # weight per Linear call): worst allocated CUDA MiB above its resident weights, one 1024x1024 image, encoder + every
 # step + VAE decode, eager and compiled alike. FLUX.3 Klein from BFL's NVFP4 file, L4: 2530 MiB resident (12.06 GiB
 # allocated over 9.59 GiB of weights); streamed at a 6 GiB cap, 1807 MiB (2669 MiB allocated with the 702 MiB prefetch
-# window and the 160 MiB VAE resident). Packed weights do not grow per call the way a dense eager table assumes, so a
-# streamed load of one keeps whole groups resident like a torchao denoiser.
+# window and the 160 MiB VAE resident; 1747 MiB with 1602 MiB of the denoiser resident). The one render that compiles
+# peaked at 2453 MiB, inside the margin plus the 1024 MiB slack. Packed weights do not grow per call the way a dense
+# eager table assumes, so a streamed load of one keeps whole groups resident like a torchao denoiser.
 _MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB: dict[str, int] = {
     "flux.3-klein": 2560,
 }
