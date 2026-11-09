@@ -7529,8 +7529,25 @@ html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="m
   --clear-alpha: min(100%, max(calc(var(--glass-fill-alpha, 50%) + 30%), var(--glass-menu-floor)));
   --dropdown-lift-surface: var(--popover);
   --browser-menu-surface: var(--popover);
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"]) {
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
+}
+/* Sheets and alerts are not blurred (as with Glass, and the motion pause does not track them): dense fill instead. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {
+  --clear-alpha: 96%;
+}
+/* A popup's own blur cannot reach content scrolling under its sticky bars: they take the opaque palette. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) .sticky {
+  --background: var(--glass-page-bg);
+  --card: var(--glass-page-card);
+  --popover: var(--glass-page-popover);
+  --sidebar: var(--glass-page-sidebar);
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-sidebar: var(--sidebar);
 }
 html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-settings-dialog] {
   /* The sidebar and main pane already provide the dialog's fill. */
