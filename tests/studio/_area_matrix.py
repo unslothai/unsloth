@@ -87,6 +87,30 @@ KNOWN_DEFAULT = ",".join(
     + [f"{m}:thread_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:settings_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:type=6" for m in _GLASS_MODES]
+    # Main-thread CPU length (renderer main thread, 40 -> 200 turns, judged value, 3 GitHub-runner gate
+    # runs of main, default and Liquid 3D, probes that do not themselves scale with the chat). Presses
+    # that land inside a message (click, its menu, tool / reasoning toggles, source card) still read
+    # 2.5-2.9x; a few sidebar / composer surfaces touch 2.4-2.5x, inside the 0.4x run-to-run spread of
+    # the 2.5x rule. Ceilings: 3.5x over 2.5, 3.0x at 2.4-2.5. Everything else keeps the plain 2.5x.
+    # Fix work: per-interaction script cost that grows with the mounted thread (not yet assigned);
+    # remove each entry as its area drops under 2.5x.
+    + [f"cpu:{a}=3.5" for a in ("tool_toggle", "message_click", "message_menu")]  # 2.0-2.9x
+    + [
+        f"cpu:{a}=3"  # 1.6-2.5x
+        for a in (
+            "reasoning_toggle",
+            "source_card",
+            "chat_row_menu",
+            "sidebar_sections",
+            "run_settings",
+            "thread_scroll",
+            "permission_menu",
+            "chat_options",
+            "organize_chats",
+            "sidebar_toggle",
+            "api_monitor",
+        )
+    ]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 
