@@ -4124,10 +4124,7 @@ def _streamed_dit_room_mib(memory: Any, headroom_mib: int, other_mib: int, windo
     )
 
 
-# A partially streamed denoiser sizes its resident blocks from the denoise phase alone: the prompt encode already
-# streams the surplus back out (install_encode_release) and the VAE decode borrows it (release_for_decode). The
-# whole-render peak is the encode's or the decode's on most families, so sizing from it left GiBs idle every step.
-# "0": size from the whole-render peak again.
+# Size a streamed denoiser's resident blocks from the denoise phase (encode/decode release around it); "0" = whole-render peak.
 DENOISE_PHASE_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_DENOISE_PHASE_RESIDENCY"
 _PHASE_DENOISE_COLUMN = 1
 _PHASE_UNTILED_DECODE_COLUMN = 2
@@ -5394,10 +5391,7 @@ def release_resident_groups(
         return restore if released else None
 
 
-# A placement sized from the denoise phase keeps more blocks resident, so an oversized request (an edit with its
-# reference, a larger canvas) streams more of them out; pinning them back after every such request only for the next
-# one to stream them out again is a host-to-device round trip per render. The restore waits for a request that needs
-# the blocks instead (``take_deferred_restore``).
+# Restoring after every oversized request costs a host-to-device round trip per render; wait for one that needs them.
 DEFERRED_RESTORE_ATTR = "_unsloth_deferred_resident_restore"
 
 
@@ -5411,8 +5405,6 @@ def _phase_placement(pipe: Any) -> bool:
 
 
 def chained_restore(first: Callable[[], None], second: Callable[[], None]) -> Callable[[], None]:
-    """Run ``first`` then ``second`` (``second`` even when ``first`` raises)."""
-
     def restore() -> None:
         try:
             first()
@@ -6055,7 +6047,6 @@ def install_encode_release(
         return 0
 
 
-# Index in ``_unsloth_measured_reserve`` of the denoise-phase MiB a placement sized its resident blocks from.
 MEASURED_RESERVE_DENOISE_PHASE_INDEX = 13
 
 
