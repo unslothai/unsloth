@@ -1548,11 +1548,10 @@ html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
   background: oklch(0.55 0 0 / 0.16);
 }
 
-/* Radix modals set body[data-scroll-locked]; re-disable the pointer-events-auto opt-ins so
- their tooltips do not fire behind the dialog. */
-body[data-scroll-locked] .hub-modal-pe-guard {
-  pointer-events: none !important;
-}
+/* The pointer-events-auto opt-ins (.hub-modal-pe-guard) go inert behind a modal through the
+ region-keyed rules in index.css (src/lib/modal-pointer-lock.ts), which never sit above the chat.
+ A body[data-scroll-locked] descendant rule here made WebKit re-match every element of a long
+ chat on each modal open and close. */
 
 /* Model filter ranges: two thumbs share a track, so smaller than a single slider. */
 .hub-range {
