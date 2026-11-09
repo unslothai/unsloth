@@ -515,6 +515,16 @@ def apply_speed_optims(
             _warn(logger, "vae attention chunks", exc)
     # Stability, not speed, so also before the `off` return.
     _enable_miopen_immediate(logger)
+    if getattr(target, "backend", None) == "rocm":
+        # GEMM solution choice is speed, not exactness: on `off` the default pick comes back.
+        try:
+            from . import diffusion_rocm_tunableop as rocm_tunableop
+            if mode == SPEED_OFF:
+                rocm_tunableop.uninstall(pipe)
+            else:
+                rocm_tunableop.install_for_pipe(pipe, getattr(target, "device", None), logger)
+        except Exception as exc:  # noqa: BLE001 - keep torch's default GEMM pick
+            _warn(logger, "rocm tunableop", exc)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
