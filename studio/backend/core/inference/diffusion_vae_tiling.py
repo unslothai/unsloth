@@ -116,6 +116,8 @@ DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
 FREE_FRACTION = 0.75
 MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
+# "0" keeps CPU / MPS decodes at the floor tile (no memory reading), as before the host budget.
+HOST_BUDGET_ENV = "UNSLOTH_DIFFUSION_VAE_HOST_BUDGET"
 
 
 def decode_mib_per_latent(
@@ -304,6 +306,31 @@ def _free_mib(
     return (free - out_bytes) / 2**20, elem / 2
 
 
+def host_budget_disabled() -> bool:
+    return (os.environ.get(HOST_BUDGET_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _host_free_mib(vae: Any, z: Any) -> Optional[tuple[float, float]]:
+    """``_free_mib`` for a CPU / MPS decode: the planner's safe budget of the live reading (MPS: available RAM and
+    Metal's working set less what Metal holds; CPU: available RAM; each less the planner reserve), after the fp32
+    output accumulator. None elsewhere, under the kill switch, or with no reading."""
+    kind = getattr(getattr(z, "device", None), "type", None)
+    if kind not in ("cpu", "mps") or host_budget_disabled():
+        return None
+    from .diffusion_memory import _safe_device_budget_mib, snapshot_device_memory
+
+    budget = _safe_device_budget_mib(
+        snapshot_device_memory(types.SimpleNamespace(device = kind, backend = kind))
+    )
+    if budget is None:
+        return None
+    ratio = _geometry(vae)[0]
+    frames = z.shape[2] if z.dim() == 5 else 1
+    out_bytes = 4 * 4 * z.shape[0] * frames * z.shape[-2] * z.shape[-1] * ratio * ratio
+    elem = next(vae.decoder.parameters()).element_size()
+    return budget - out_bytes / 2**20, elem / 2
+
+
 def _fused(vae: Any) -> bool:
     return (
         bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
@@ -328,7 +355,8 @@ def decode_platform_cap(vae: Any, z: Any) -> Optional[int]:
 
 
 def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
-    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
+    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now (CPU / MPS: of the safe
+    host budget, ``UNSLOTH_DIFFUSION_VAE_HOST_BUDGET=0`` = None); None on other devices or with no reading."""
     raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw) ** 2
@@ -342,6 +370,9 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         stock_tile = vae.__dict__.get("_unsloth_wide_stock_tile") or (stock_tiles(vae) or (0, 0))[0]
         large_stock = stock_tile >= tile > TILE_LATENTS
         free = _free_mib(vae, z, cached = not large_stock)
+        if free is None:
+            # CPU / MPS: one pool, nothing cached to stall on, so the stock-tile rule above does not apply.
+            free = _host_free_mib(vae, z)
         if free is None:
             return None
         mib, scale = free
