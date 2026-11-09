@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses CP for gpt-oss on CPU gloo ranks: fp64 parity against one process (attention sinks, sliding and
-full layers, MoE experts, router aux loss off) and controls proving the test sees the sinks and the exchange."""
+"""Ulysses CP for gpt-oss on CPU gloo: fp64 parity vs one process, plus controls that must fail."""
 
 import copy
 import inspect
@@ -37,7 +36,6 @@ def _config(window = 4, **overrides):
         head_dim = 8,
         num_local_experts = 4,
         num_experts_per_tok = 2,
-        # A window of 4 inside 13 tokens: windows cross the shard seam.
         sliding_window = window,
         layer_types = LAYER_TYPES,
         router_aux_loss_coef = 0.0,
@@ -176,11 +174,8 @@ class _UnslicedSinks(uh._HeadShard):
 
 
 def _install_zoo_attention_forward():
-    """unsloth_zoo's GptOssAttention forward, as from_pretrained installs it for a gpt-oss checkpoint: training
-    runs flex_attention_with_sink, past the attention registry. Under Ulysses the stashed Hugging Face forward
-    must run instead. Patched in the forked worker only (after the reference ran), so other tests keep HF's.
-    Without flex attention (CPU) zoo installs nothing; then a forward that must not run goes in through zoo's
-    same patch_function_past_key_values (same stash name)."""
+    """Install zoo's GptOssAttention forward (worker only); under Ulysses the stashed HF forward must run.
+    On CPU zoo installs nothing, so a must-not-run forward goes in via the same patch_function_past_key_values."""
     from unsloth_zoo.temporary_patches import gpt_oss as zoo_gpt_oss
     from unsloth_zoo.temporary_patches.utils import patch_function_past_key_values
 
@@ -281,7 +276,6 @@ def _model_case(
     text = _config()
     if control is None:
         runs = 2 if case.get("checkpoint") else 1
-        # Engagement: every layer's attention ran through Ulysses (twice under checkpointing).
         assert len(calls) == runs * text.num_hidden_layers, (len(calls), runs)
         assert set(calls) == {
             (text.num_attention_heads, text.num_key_value_heads, text.head_dim)
@@ -334,7 +328,6 @@ CASES = {
     "cp2_lora_experts": dict(cp = 2, world = 2, window = 3, lora = "experts"),
     "cp2_lora_experts_checkpoint": dict(cp = 2, world = 2, window = 3, lora = "experts", checkpoint = True),
     "cp4_lora_experts": dict(cp = 4, world = 4, window = 5, lora = "experts"),
-    # unsloth_zoo's class forward (what FastLanguageModel loads), routed to the stashed HF forward under Ulysses.
     "cp2_zoo_forward": dict(cp = 2, world = 2, window = 3, zoo_forward = True),
     "cp2_lora_experts_zoo_forward": dict(cp = 2, world = 2, window = 3, lora = "experts", zoo_forward = True),
 }
@@ -346,14 +339,12 @@ def test_gpt_oss_cp_matches_fp64_reference(name):
     _spawn(_case_worker, case["world"], case)
 
 
-# Each control and how it must fail: a wrong number, or (all heads' sinks against the local heads' logits)
-# a shape error.
+# Expected failure per control (unsliced sinks: shape error).
 CONTROLS = {
     "shard_local": AssertionError,
     "dropped_window": AssertionError,
     "first_heads_sinks": AssertionError,
     "unsliced_sinks": RuntimeError,
-    # unsloth_zoo's class forward left in place under Ulysses (no route to the stashed HF forward).
     "zoo_unrouted": AssertionError,
 }
 

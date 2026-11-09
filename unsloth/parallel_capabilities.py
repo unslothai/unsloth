@@ -921,9 +921,7 @@ _GEMMA4_CASES = {
     "lora": "moe_cp2_lora",
     "lora+experts": "moe_cp2_lora_experts|moe_cp2_lora_experts_eager_checkpoint",
 }
-# gpt-oss: GptOssForCausalLM with randomized per-head attention sinks, sliding + full layers, fused experts, right
-# padded rows, fp64 against one process (every gradient incl. the sinks, one AdamW step), also through
-# unsloth_zoo's class forward. Eager attention only (gpt-oss has no SDPA path); HF checkpointing only.
+# gpt-oss: eager only (no SDPA path honours the sinks); HF checkpointing only.
 _GPT_OSS = "tests/test_ulysses_gpt_oss.py::test_gpt_oss_cp_matches_fp64_reference"
 _GPT_OSS_EAGER = "eager: block compile not measured for this family"
 _GPT_OSS_CASES = {
