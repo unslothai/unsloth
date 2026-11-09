@@ -36,7 +36,6 @@ def disabled() -> bool:
 
 
 def _plain_dense(lin: Any) -> bool:
-    """A stock ``nn.Linear`` with a plain floating weight, no bias, no per-instance forward and no hooks."""
     import torch
     from torch import nn
 
@@ -54,7 +53,6 @@ def _plain_dense(lin: Any) -> bool:
 
 
 def _resident_device(module: Any) -> Any:
-    """The one GPU every parameter of ``module`` sits on (CUDA or ROCm), else None."""
     try:
         devices = {p.device for p in module.parameters()}
     except Exception:  # noqa: BLE001
@@ -66,7 +64,6 @@ def _resident_device(module: Any) -> Any:
 
 
 def _intact(ff: Any) -> Any:
-    """The fused weight, if the parts are still the exact modules and parameters it was built from."""
     rec = ff.__dict__.get(_FF_ATTR)
     if rec is None:
         return None
@@ -111,7 +108,6 @@ def _fuse(ff: Any) -> bool:
 
 
 def _fuse_qkv(attn: Any, qkv_attr: str) -> bool:
-    """One dense Linear over to_q / to_k / to_v (row views), recorded where the shared Q / K / V helper reads it."""
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
     parts = [getattr(attn, n, None) for n in ("to_q", "to_k", "to_v")]
@@ -127,7 +123,6 @@ def _fuse_qkv(attn: Any, qkv_attr: str) -> bool:
 
 
 def install_modules(root: Any, logger: Any = None) -> dict:
-    """Fuse every eligible SwiGLU and Q / K / V of ``root`` (already resident on one GPU)."""
     result = {"gate_up": 0, "qkv": 0}
     if disabled() or _resident_device(root) is None:
         return result
@@ -157,8 +152,7 @@ def install(
     logger: Any = None,
     offload_active: bool = False,
 ) -> Any:
-    """Before the first compile; deferred to the first forward when the weights are not on the GPU yet. Offloaded
-    loads stay stock: an offload hook moving the row views would copy each part next to the fused weight."""
+    """Offloaded loads stay stock: an offload hook moving the row views would copy each part beside the fused weight."""
     if disabled():
         uninstall(transformer)
         return {"gate_up": 0, "qkv": 0}
@@ -173,8 +167,6 @@ def install(
 
 
 def uninstall(transformer: Any = None) -> None:
-    """Restore the stock MLP forward and drop the dense Q / K / V records. The parts keep their row views, which stay
-    valid weights on their own."""
     if transformer is None:
         return
     from .diffusion_int8_fused import cancel_first_call
@@ -193,8 +185,7 @@ def uninstall(transformer: Any = None) -> None:
 
 
 def is_replica_record(key: str, value: Any) -> bool:
-    """A record this module wrote: its fused weight lives outside the module tree, so a deep copy (a CFG replica)
-    would duplicate it on the source card. Replicas drop it and ``rebuild_replica`` fuses their own parameters."""
+    """Fused weights live outside the module tree: a deep copy (CFG replica) would duplicate them on the source card."""
     if key == _FF_ATTR:
         return True
     from .diffusion_qwenimage21_fused import _QKV_ATTR
@@ -206,7 +197,6 @@ def is_replica_record(key: str, value: Any) -> bool:
 
 
 def rebuild_replica(source: Any, replica: Any) -> dict:
-    """Fuse ``replica``'s own (copied, destination-card) parameters when ``source`` carried dense fused records."""
     if not any(is_replica_record(k, v) for m in source.modules() for k, v in m.__dict__.items()):
         return {"gate_up": 0, "qkv": 0}
     return install_modules(replica)
