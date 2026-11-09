@@ -413,6 +413,7 @@ class RestyleRunner:
         self._owner: Optional[str] = None
         self._workdir: Optional[Path] = None
         self._loading: Any = None
+        self._stopping = 0
         # Set once the clip is being published; a cancel after that point is refused, not half-honoured.
         self._publishing = False
         # Held from before an upload is read until ``start``, so a second request is refused up front.
@@ -538,9 +539,24 @@ class RestyleRunner:
 
     def unload(self) -> None:
         with self._lock:
-            server, self._server, self._server_files = self._server, None, None
+            server = self._detach_locked()
+        self._stop(server)
+
+    def _detach_locked(self) -> Any:
+        server, self._server, self._server_files = self._server, None, None
         if server is not None:
+            self._stopping += 1
+        return server
+
+    def _stop(self, server: Any) -> None:
+        # Counted until stop() returns, so the managed tree stays pinned (is_alive) while the process exits.
+        if server is None:
+            return
+        try:
             server.stop()
+        finally:
+            with self._lock:
+                self._stopping -= 1
 
     def holds_gpu(self) -> bool:
         """A job runs, or a request is reserved to start one on the resident server."""
@@ -556,13 +572,12 @@ class RestyleRunner:
                 return False
             if owner is not None and self._server is not None and not self.owned_by(owner):
                 raise RestyleBusy("Another account's restyle model is loaded.")
-            server, self._server, self._server_files = self._server, None, None
-        if server is not None:
-            server.stop()
+            server = self._detach_locked()
+        self._stop(server)
         return True
 
     def is_alive(self) -> bool:
-        return self._server is not None or self._loading is not None
+        return self._server is not None or self._loading is not None or self._stopping > 0
 
     def _tree_lease(self) -> Any:
         # No install may replace the binaries while a job starts or runs the server.

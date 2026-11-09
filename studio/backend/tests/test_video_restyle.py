@@ -988,3 +988,25 @@ def test_a_resident_server_holds_the_managed_sd_cpp_tree(weights, monkeypatch):
         assert not backend._external_tree_holder_alive()
     finally:
         backend.unregister_tree_holder(runner)
+
+
+def test_a_stopping_server_still_pins_the_tree(weights):
+    import threading
+
+    release = threading.Event()
+    stopping = threading.Event()
+
+    class _Slow(_FakeServer):
+        def stop(self):
+            stopping.set()
+            assert release.wait(5)
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _Slow(b"AVI"))
+    runner._ensure_server(vr.model_files())
+    worker = threading.Thread(target = runner.unload)
+    worker.start()
+    assert stopping.wait(5)
+    assert runner._server is None and runner.is_alive()
+    release.set()
+    worker.join(5)
+    assert not runner.is_alive()
