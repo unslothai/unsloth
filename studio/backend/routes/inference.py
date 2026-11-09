@@ -41870,6 +41870,8 @@ def _llama_image_data_url(raw: bytes) -> str:
 # Chat history images are sent again on every turn and the result depends only on the payload.
 _LLAMA_IMAGE_MEMO: "collections.OrderedDict[bytes, str]" = collections.OrderedDict()
 _LLAMA_IMAGE_MEMO_MAX_CHARS = 64 * 1024 * 1024
+# Also bound the entry count: a pass-through entry stores only its short prefix.
+_LLAMA_IMAGE_MEMO_MAX_ENTRIES = 256
 _llama_image_memo_chars = 0
 _llama_image_memo_lock = threading.Lock()
 
@@ -41892,7 +41894,10 @@ def _llama_image_data_url_from_b64(b64data: str) -> str:
         if key not in _LLAMA_IMAGE_MEMO and len(kept) <= _LLAMA_IMAGE_MEMO_MAX_CHARS:
             _LLAMA_IMAGE_MEMO[key] = kept
             _llama_image_memo_chars += len(kept)
-            while _llama_image_memo_chars > _LLAMA_IMAGE_MEMO_MAX_CHARS:
+            while (
+                _llama_image_memo_chars > _LLAMA_IMAGE_MEMO_MAX_CHARS
+                or len(_LLAMA_IMAGE_MEMO) > _LLAMA_IMAGE_MEMO_MAX_ENTRIES
+            ):
                 _, dropped = _LLAMA_IMAGE_MEMO.popitem(last = False)
                 _llama_image_memo_chars -= len(dropped)
     return data_url

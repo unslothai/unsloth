@@ -91,3 +91,12 @@ def test_the_memo_stays_within_its_budget(monkeypatch):
         assert inf._llama_image_data_url_from_b64(p) == inf._llama_image_data_url(
             base64.b64decode(p)
         )
+
+
+def test_the_memo_keeps_a_bounded_number_of_entries(monkeypatch):
+    monkeypatch.setattr(inf, "_LLAMA_IMAGE_MEMO_MAX_ENTRIES", 3)
+    payloads = [_b64(Image.new("RGB", (4, 4), (i, 0, 0)), "PNG") for i in range(10)]
+    for p in payloads:
+        inf._llama_image_data_url_from_b64(p)
+    assert len(inf._LLAMA_IMAGE_MEMO) == 3
+    assert inf._llama_image_memo_chars == sum(len(v) for v in inf._LLAMA_IMAGE_MEMO.values())
