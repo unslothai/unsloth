@@ -321,6 +321,14 @@ def test_real_capture_matches_eager_hybrid(which, monkeypatch):
     s = GG.stats(model)
     assert torch.equal(eager, graphed), s
     assert s["captures"] == 1 and s["replays"] == 46 and not s["refusals"], s
+    # The first replay matched its own eager step bitwise.
+    assert s["check"]["mismatches"] == 0, s
     for a, b in zip(eager_trace, graph_trace):
         for x, y in zip(a, b):
-            assert torch.equal(x, y), s
+            if which:
+                # A graph-planned call routes the MoE through unsloth_zoo's routed kernels (grouped_mm copies its
+                # offsets to the host, which a capture refuses below sm80), the plain eager call through grouped_mm:
+                # the same math in another summation order.
+                assert torch.allclose(x.float(), y.float(), atol = 5e-2, rtol = 0), s
+            else:
+                assert torch.equal(x, y), s
