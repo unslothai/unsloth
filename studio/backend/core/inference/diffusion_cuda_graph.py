@@ -2622,8 +2622,7 @@ def prompt_length_reason(pipe: Any, family: Any = None) -> Optional[str]:
     )
 
 
-# torch < 2.12, sm_89: the row-wise fp8 _scaled_mm is stream-K CUTLASS whose barrier memset runs on the legacy stream,
-# outside any capture, so a replay spins forever on the stale barrier (pytorch/pytorch#177573, fixed in 2.12).
+# torch < 2.12, sm_89: row-wise fp8 _scaled_mm (stream-K) memsets its barrier outside capture, so replay hangs (pytorch/pytorch#177573).
 FP8_ROWWISE_STREAMK_CAPS = ((8, 9),)
 FP8_ROWWISE_STREAMK_FIXED = (2, 12)
 
@@ -2652,7 +2651,7 @@ def _fp8_rowwise_weight(t: Any, activation: bool = False) -> bool:
 
 
 def fp8_rowwise_capture_refusal(modules: Any, device: Any = None) -> Optional[str]:
-    """Why ``modules`` must not be graphed on ``device`` (row-wise fp8 on sm_89, torch < 2.12), else None; unreadable = None."""
+    """Why ``modules`` must not be graphed on ``device``, else None (also None when unreadable)."""
     if sys.platform == "win32":
         return None  # not built on Windows
     try:

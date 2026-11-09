@@ -1233,7 +1233,6 @@ def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
 
 
 def test_the_streamk_fp8_refusal_outranks_the_prompt_length_reason(monkeypatch):
-    """The status names the fp8 replay hang, not the (forceable) prompt-length reason."""
     monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
     monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
     why = "the row-wise fp8 GEMM on this sm_89 card cannot replay in a CUDA graph"

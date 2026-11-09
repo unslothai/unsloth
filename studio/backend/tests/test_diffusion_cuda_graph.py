@@ -857,7 +857,6 @@ def _hazard_torch(
 def test_graph_eligible_refuses_row_wise_fp8_on_sm89_under_torch_without_the_streamk_fix(
     stub_torch, monkeypatch
 ):
-    """FLUX.3 klein fp8 on an L4 (torch 2.10) hung on the first replay; the load must stay eager."""
     _hazard_torch(stub_torch, monkeypatch)
     ok, reason = _eligible(
         monkeypatch, pipe = types.SimpleNamespace(transformer = _QuantDiT(_fp8_weight()))
