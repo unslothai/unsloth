@@ -43,8 +43,7 @@ def _ref_block_mask(
     # mask_function is transformers' (causal / causal + sliding overlay), the 2D mask adds per-slot padding.
     from torch.nn.attention.flex_attention import create_block_mask
 
-    # Copies, as zoo's: a hybrid StaticLayer passes its live cumulative_length, bumped in place by update() before
-    # attention reads the mask.
+    # Copies: a hybrid StaticLayer's cumulative_length is bumped in place before attention reads the mask.
     q_o = q_offset.clone() if isinstance(q_offset, torch.Tensor) else torch.tensor(q_offset)
     kv_o = kv_offset.clone() if isinstance(kv_offset, torch.Tensor) else torch.tensor(kv_offset)
     pad = None
@@ -141,7 +140,6 @@ def _gemma4(kind, window = None):
         **kw,
     )
     model = Gemma4ForCausalLM(config).eval().double()
-    # Larger weights: random tiny weights give near-uniform logits and greedy ties.
     with torch.no_grad():
         for p in model.parameters():
             p.mul_(4.0)
@@ -180,7 +178,6 @@ _SLOW = pytest.mark.slow
 @pytest.mark.parametrize(
     "kind,window,prompt,batch,new",
     [
-        # Real head dims, GQA, KV sharing / k_eq_v, a 32-token window: decodes past it in seconds.
         ("e2b", 32, 40, 4, 40),
         ("26b", 32, 40, 4, 40),
         # The checkpoints' windows (512 / 1024): minutes on CPU.
@@ -234,8 +231,6 @@ def test_gemma4_unsupported_full_layers_stay_on_sdpa(flex, monkeypatch):
 
 
 def test_gemma4_with_zoo_decode_block_mask(flex, monkeypatch):
-    # zoo's own refillable BlockMask (from_kv_blocks over offset / padding tensors) in the same routing: equal
-    # to SDPA past the window with a ragged batch.
     zoo = pytest.importorskip("unsloth_zoo.flex_attention.decode")
     monkeypatch.setattr(FD, "decode_block_mask", zoo.decode_block_mask)
     model = _gemma4("e2b", 32)

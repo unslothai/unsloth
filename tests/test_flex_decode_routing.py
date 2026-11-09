@@ -216,8 +216,6 @@ def test_routable_excludes_gpt_oss_and_chunked_layers(monkeypatch):
 
 
 def test_unavailable_flex_decode_shape_falls_back_to_sdpa(monkeypatch):
-    # zoo raises FlexDecodeUnavailable for a layer shape flex_decoding cannot compile: the step then runs SDPA over
-    # the BlockMask's own visibility (padding + causal), counted as a fallback, not an error.
     decode = pytest.importorskip("unsloth_zoo.flex_attention.decode")
     if FD.FlexDecodeUnavailable is None:
         pytest.skip("unsloth_zoo without FlexDecodeUnavailable")
@@ -267,8 +265,7 @@ def test_other_flex_decode_errors_propagate(monkeypatch):
 
 @pytest.mark.parametrize("path", ["dense_mask", "unavailable", "elided_causal"])
 def test_softcapped_fallback_keeps_the_softcap(monkeypatch, path):
-    # A step that falls back from flex decode (an unsupported shape's dense mask, or a shape zoo cannot compile) must
-    # keep the model's attention logit softcap: SDPA drops it silently. Reference: eager softcapped attention.
+    # Fallback must keep the logit softcap (SDPA drops it silently).
     torch.manual_seed(0)
     heads, kv_heads, dim, kv_len = 4, 2, 16, 12
     q_len = 3 if path == "elided_causal" else 1

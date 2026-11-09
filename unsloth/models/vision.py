@@ -1631,9 +1631,7 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
 
 
 # One-token decode on stock flex is slower than SDPA, but prefill must stay on flex (its block mask skips tiles a
-# dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built: a
-# StaticCache decode step runs Unsloth's flex decode (_flex_decode: graph-refillable BlockMask, flex_decoding)
-# where it is wanted and supported, else the non-flex path; prefill keeps the model's attention.
+# dense mask computes). StaticCache decode steps use _flex_decode where supported, else the non-flex path.
 _FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
 _FLEX_GENERATE_LOCK = threading.Lock()
 
@@ -1758,8 +1756,7 @@ class _NonFlexGenerate:
             decode = True
         for c, prefill, decode_impl in state.get("_unsloth_non_flex_generate_configs", ()):
             value = decode_impl if decode else prefill
-            # Flex decode needs fixed mask / KV shapes (a dynamic cache decodes on the non-flex path instead), and
-            # pays off only when the step is replayed from a CUDA graph (eager flex decode is slower than SDPA).
+            # Needs fixed shapes (StaticCache); pays off only under CUDA graphs.
             if value == _flex_decode.ATTN_KEY and not (
                 static
                 and _flex_decode.batch_ok(batch)

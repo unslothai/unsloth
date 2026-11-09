@@ -1,22 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""One-token decode on flex attention (flex_decoding) for FastModel generate().
+"""One-token flex decode (zoo flex_decoding) for FastModel generate() over a StaticCache.
 
-generate() keeps its prefill attention. During one-token steps over a StaticCache, the text attention configs are
-switched to "unsloth_flex_decode_routed": a transformers attention + mask interface pair registered here (zoo owns
-the plain "unsloth_flex_decode" key). The mask side
-builds, per layer type (full / sliding), unsloth_zoo's decode BlockMask (graph-refillable: fixed shapes, offsets
-and padding as tensors) when every layer of that type has a shape zoo's flex decode supports, and transformers'
-SDPA mask otherwise. The attention side runs zoo's flex decode on a BlockMask and transformers' SDPA on a dense
-mask, so a model can mix both (Gemma 4's head_dim 512 full layers below sm80 stay on SDPA while its sliding
-layers decode on flex). Prefill, dynamic caches and custom mask functions are untouched.
-
-UNSLOTH_FLEX_DECODE: auto (default: compute capability 8.0 and newer, model types in MODEL_TYPES, and only in a
-generate() call that decodes through CUDA graphs: measured on an L4, graphed flex decode is 1-10% faster than
-graphed SDPA while eager flex decode is 6-9% slower than eager SDPA), 1 (any GPU, any text model with a StaticCache,
-graphs or not), 0 (off). Needs unsloth_zoo.flex_attention.decode and the transformers 5.x
-mask interface (q_length / q_offset); without them nothing changes."""
+Per layer type, builds zoo's graph-refillable decode BlockMask when every layer's shape is supported, else
+transformers' SDPA mask, so a model can mix both. Prefill, dynamic caches and custom masks are untouched.
+UNSLOTH_FLEX_DECODE: auto (sm80+, MODEL_TYPES, CUDA-graphed decode only: eager flex decode is slower than SDPA),
+1 (always), 0 (off)."""
 
 import inspect
 import os
@@ -39,8 +29,7 @@ __all__ = [
 
 ATTN_KEY = "unsloth_flex_decode_routed"
 ENV = "UNSLOTH_FLEX_DECODE"
-# Model types whose decode attention is a plain transformers attention-interface call over StaticCache tensors and
-# whose flex decode was checked against eager attention (the attention core only; norms, gates and RoPE stay).
+# Model types whose flex decode was checked against eager attention.
 MODEL_TYPES = frozenset(
     (
         "gemma4",
@@ -64,7 +53,6 @@ try:
 except Exception:
     decode_block_mask = flex_decode_attention = flex_decode_supported = None
 try:
-    # Newer zoo: one compile per layer shape with errors raised; a shape flex_decoding cannot compile raises this.
     from unsloth_zoo.flex_attention.decode import FlexDecodeUnavailable, dense_decode_mask
 except Exception:
     FlexDecodeUnavailable = dense_decode_mask = None
@@ -89,8 +77,7 @@ def _unwrap(config):
 
 
 class _ConfigMap:
-    """Per-config values without touching the config (its __dict__ is serialised by save_pretrained) and without
-    hashing it (transformers 5.x configs are unhashable dataclasses): keyed by id, checked by weakref."""
+    """Keyed by id + weakref: configs are unhashable in 5.x and their __dict__ is saved by save_pretrained."""
 
     def __init__(self):
         self.items = {}
@@ -123,9 +110,7 @@ class _ConfigMap:
 
 _LOCK = threading.Lock()
 _REGISTERED = False
-# text config -> {"full": {(head_dim, n_q, n_kv), ...}, "sliding": {...}}, filled from the model's attention modules.
 _LAYERS = _ConfigMap()
-# text config -> {kind: reason or None} of the last mask built per kind (why a layer type stayed on SDPA).
 _MASK_REASONS = _ConfigMap()
 _SUPPORT_CACHE = {}
 
@@ -157,8 +142,7 @@ def register():
             from transformers.modeling_utils import AttentionInterface
         except Exception:
             return False
-        # transformers 5.21+ generate() calls .contiguous() on every mask it prepares (zoo's gpt-oss patch adds
-        # the same class-level no-op; an instance attribute would become a BlockMask field in the graph key).
+        # generate() calls .contiguous() on masks; class-level so it is not a BlockMask field in the graph key.
         if not hasattr(BlockMask, "contiguous"):
             BlockMask.contiguous = lambda self, *args, **kwargs: self
         AttentionInterface.register(ATTN_KEY, _attention)
@@ -180,8 +164,7 @@ MAX_BATCH_ENV = "UNSLOTH_FLEX_DECODE_MAX_BATCH"
 
 
 def batch_ok(batch):
-    """auto: batches up to UNSLOTH_FLEX_DECODE_MAX_BATCH (default 4). Graphed on an A100, gemma-4-E2B decodes 1-22%
-    faster on flex at batch 1-4 and 2-4% slower at batch 8; gemma-4-26B-A4B 16-25% faster at batch 1-4."""
+    """auto: batch <= UNSLOTH_FLEX_DECODE_MAX_BATCH (default 4); A100 graphed flex is slower at batch 8."""
     if forced() or batch is None:
         return True
     try:
@@ -228,8 +211,7 @@ def _layer_types(config):
 
 
 def routable(model, config):
-    """Whether this text attention config may decode on flex: allowed model type (any but the excluded ones under
-    UNSLOTH_FLEX_DECODE=1), an SDPA / eager / flex attention, no chunked layers. Records its layer shapes."""
+    """Allowed model type, SDPA / eager / flex attention, no chunked layers. Records its layer shapes."""
     model_type = _model_type(config)
     if model_type in EXCLUDED_MODEL_TYPES or any(
         model_type.startswith(t) for t in EXCLUDED_MODEL_TYPES
@@ -362,8 +344,6 @@ def _mask(
     _note(config, kind, reason)
     if reason is not None:
         return ALL_MASK_ATTENTION_FUNCTIONS["sdpa"](**args)
-    # transformers' own mask_function (causal, or causal + its sliding overlay): zoo builds the BlockMask over
-    # refillable offset / padding tensors and names the function in the graph key.
     return decode_block_mask(
         batch_size,
         kv_length,
@@ -386,8 +366,7 @@ def _count(module, reason):
 
 
 def _default_stance():
-    """A context that compiles a new flex decode shape even when the process switched torch.compile to
-    eager_on_recompile after its first inference run (an eager flex_attention would run the dense fallback)."""
+    """Compiles new flex decode shapes even under eager_on_recompile (eager flex_attention runs dense)."""
     try:
         from torch._dynamo.eval_frame import _stance
         if getattr(_stance, "stance", "default") == "eager_on_recompile" and hasattr(
@@ -400,8 +379,7 @@ def _default_stance():
 
 
 def _dense_attention(module, query, key, value, attention_mask, dropout, scaling, softcap, kwargs):
-    """The dense fallback of a step flex decode does not serve: transformers' SDPA, or, with an attention logit
-    softcap (which SDPA would silently drop), the eager softcapped attention the model computes itself."""
+    """Dense fallback: SDPA, or eager attention when a logit softcap is set (SDPA silently drops it)."""
     if softcap is None:
         from transformers.integrations.sdpa_attention import sdpa_attention_forward
         return sdpa_attention_forward(
@@ -479,23 +457,19 @@ def _attention(
                     query, key, value, attention_mask, scaling, softcap = softcap
                 )
     except Exception as error:
-        # zoo raises FlexDecodeUnavailable once for a layer shape flex_decoding cannot compile (it then serves that
-        # shape densely): the same visibility as a dense mask through SDPA.
         if FlexDecodeUnavailable is None or not isinstance(error, FlexDecodeUnavailable):
             raise
         _count(module, "flex_decoding unavailable for this shape")
         dense = dense_decode_mask(attention_mask, key.shape[-2], query.device)
         return _dense_attention(module, query, key, value, dense, dropout, scaling, softcap, kwargs)
     _count(module, None)
-    # flex returns [B, H, Q, D]; transformers attention functions return [B, Q, H, D].
     if out.dim() == 4 and out.shape[1] == query.shape[1] and out.shape[2] == query.shape[2]:
         out = out.transpose(1, 2)
     return out.contiguous(), None
 
 
 def stats(model):
-    """{layer_idx: {"kind", "flex", "fallback": {reason: n}}} for attention modules that ran under ATTN_KEY. Counts
-    Python executions: eager steps, CUDA graph warm-ups and captures (a replay runs no Python)."""
+    """{layer_idx: {"kind", "flex", "fallback"}}; counts Python executions (graph replays run none)."""
     out = {}
     for name, module in model.named_modules():
         s = module.__dict__.get("_unsloth_flex_decode_stats")

@@ -69,8 +69,7 @@ def _qwen(moe):
 @pytest.mark.parametrize("moe", [False, True], ids = ["qwen3_5", "qwen3_5_moe"])
 @pytest.mark.parametrize("batch", [1, 4])
 def test_qwen35_flex_decode_matches_sdpa(flex, monkeypatch, moe, batch, zoo_mask):
-    # Batch 1 has no padding: the mask's offsets are then the full-attention StaticLayer's live counter, which
-    # update() bumps in place before attention reads the mask (a mask that kept a reference saw one slot too many).
+    # Regression: a mask keeping a reference to the live counter saw one slot too many.
     if zoo_mask:
         zoo = pytest.importorskip("unsloth_zoo.flex_attention.decode")
         monkeypatch.setattr(FD, "decode_block_mask", zoo.decode_block_mask)
@@ -84,7 +83,6 @@ def test_qwen35_flex_decode_matches_sdpa(flex, monkeypatch, moe, batch, zoo_mask
             seq, logits = _generate(model, ids, mask, 24)
     assert model.config._attn_implementation == "sdpa"
     stats = FD.stats(model)
-    # The one full-attention layer ran every decode step on flex; the Gated DeltaNet layers are not attention calls.
     assert len(stats) == 1 and all(
         s["flex"] == 23 and not s["fallback"] for s in stats.values()
     ), stats
