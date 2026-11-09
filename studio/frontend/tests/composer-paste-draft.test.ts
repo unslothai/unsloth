@@ -346,3 +346,24 @@ test("deleting a comparison also clears its pair-scoped draft", async () => {
   const del = src.slice(src.indexOf("export async function deleteChatItems("));
   assert.match(del, /if \(item\.type !== "single"\) clearComposerDraft\(item\.id\)/);
 });
+
+test("a pending autosave landing after its chat was deleted is dropped", async () => {
+  const tab = await openTab();
+  const key = tab.composerDraftKey("deleted-chat");
+  tab.writeComposerDraft(key, "typed");
+  tab.clearComposerDraft("deleted-chat");
+  tab.writeComposerDraft(key, "late flush");
+  tab.writePasteDraft(tab.composerPasteDraftKey("deleted-chat"), ["late paste"]);
+  assert.equal(store.has(key), false);
+  assert.equal(store.has(tab.composerPasteDraftKey("deleted-chat")), false);
+  assert.equal(tab.adoptCurrentDraft(), false);
+});
+
+test("with the shared slot taken by another window, this tab keeps showing its own draft", async () => {
+  const tab = await openTab();
+  tab.writeComposerDraft(tab.composerDraftKey("mine-only"), "this window");
+  store.set(composerDraftKey("", true), "other window");
+  assert.equal(tab.adoptCurrentDraft(), true);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "this window");
+  assert.equal(store.get(composerDraftKey("", true)), "other window");
+});

@@ -99,10 +99,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     (set) => ({
       ...normalizeComposerPreferences(null),
       shareComposerDraft: false,
-      setShareComposerDraft: (shareComposerDraft) => {
-        if (shareComposerDraft) adoptCurrentDraft();
-        set({ shareComposerDraft });
-      },
+      setShareComposerDraft: (shareComposerDraft) => set({ shareComposerDraft }),
       setPlainTextComposer: (plainTextComposer) => set({ plainTextComposer }),
       setShowContextWindowUsage: (showContextWindowUsage) =>
         set({ showContextWindowUsage }),
@@ -220,3 +217,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
 );
 
 syncAcrossWindows(useChatPreferencesStore);
+// Here, not in the setter: another window's switch arrives as a rehydrate, which skips setters.
+useChatPreferencesStore.subscribe((state, prev) => {
+  if (state.shareComposerDraft && !prev.shareComposerDraft) adoptCurrentDraft();
+});

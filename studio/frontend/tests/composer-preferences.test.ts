@@ -223,3 +223,18 @@ test("draft sharing is opt-in for existing preferences and survives an explicit 
   await prefs.persist.rehydrate();
   assert.equal(prefs.getState().shareComposerDraft, true);
 });
+
+test("sharing switched on by another window's rehydrate still adopts this tab's draft", async () => {
+  const { store } = preferenceStorage;
+  const { useChatPreferencesStore: prefs } = await import(
+    "../src/features/chat/stores/chat-preferences-store.ts"
+  );
+  const drafts = await import("../src/features/chat/utils/composer-draft.ts");
+  store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft: false } }));
+  await prefs.persist.rehydrate();
+  drafts.writeComposerDraft(drafts.composerDraftKey("rehydrated-chat"), "typed here");
+  store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft: true } }));
+  await prefs.persist.rehydrate();
+  assert.equal(prefs.getState().shareComposerDraft, true);
+  assert.equal(drafts.latestDraft(drafts.composerDraftKey("", true)), "typed here");
+});

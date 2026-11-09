@@ -53,6 +53,7 @@ export function latestPasteDraft(key = PASTE_DRAFT_KEY): string[] {
 export function writePasteDraft(key: string, pastes: readonly string[]): void {
   if (key === PASTE_DRAFT_KEY) latestPastes = [...pastes];
   else {
+    if (deletedDraftIds.has(key.slice(LEGACY_PASTE_DRAFT_PREFIX.length))) return;
     perChatPastes.set(key, [...pastes]);
     if (pastes.length > 0) lastTypedDraftId = key.slice(LEGACY_PASTE_DRAFT_PREFIX.length);
   }
@@ -78,6 +79,7 @@ export function readComposerDraft(key: string): string | null {
 
 export function writeComposerDraft(key: string, text: string): void {
   if (key !== DRAFT_KEY) {
+    if (deletedDraftIds.has(key.slice(LEGACY_DRAFT_PREFIX.length))) return;
     perChatDrafts.set(key, text);
     if (text) lastTypedDraftId = key.slice(LEGACY_DRAFT_PREFIX.length);
   }
@@ -123,7 +125,7 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
       seeded = null;
       latestPastes = null;
       // Moved, not copied: a copy left behind would return a prompt sent from the shared slot.
-      clearComposerDraft(id);
+      dropPerChatDraft(id);
     }
     return adopted;
   } catch {
@@ -144,7 +146,17 @@ const perChatDrafts = new Map<string, string>();
 let lastTypedDraftId: string | null = null;
 
 export function adoptCurrentDraft(): boolean {
-  return lastTypedDraftId !== null && adoptLegacyDraft(lastTypedDraftId);
+  const id = lastTypedDraftId;
+  if (id === null) return false;
+  if (adoptLegacyDraft(id)) return true;
+  // Another window filled the shared slot first: this tab keeps showing its own draft (#15782).
+  const text = perChatDrafts.get(composerDraftKey(id)) ?? "";
+  const pastes = perChatPastes.get(composerPasteDraftKey(id)) ?? [];
+  if (!text && pastes.length === 0) return false;
+  latest = text;
+  latestPastes = [...pastes];
+  dropPerChatDraft(id);
+  return true;
 }
 
 export function latestDraft(key = DRAFT_KEY): string {
@@ -171,7 +183,15 @@ export function subscribeDraft(source: symbol, listener: (text: string) => void)
   return () => draftListeners.delete(wrapped);
 }
 
+// A deleted chat's pending autosave can land after the delete; its slot stays closed.
+const deletedDraftIds = new Set<string>();
+
 export function clearComposerDraft(threadId: string): void {
+  deletedDraftIds.add(threadId);
+  dropPerChatDraft(threadId);
+}
+
+function dropPerChatDraft(threadId: string): void {
   if (lastTypedDraftId === threadId) lastTypedDraftId = null;
   perChatDrafts.delete(composerDraftKey(threadId));
   perChatPastes.delete(composerPasteDraftKey(threadId));
