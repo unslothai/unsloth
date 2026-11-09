@@ -17,8 +17,7 @@ import core.inference.diffusion_memory as mem  # noqa: E402
 
 
 class GGUFParameter(torch.nn.Parameter):
-    """Stand-in for diffusers' GGUFParameter (packed bytes + a quant type on the Parameter). The real module is never
-    imported here: ``_gguf_parameter_class`` reads it from ``sys.modules``, so importing it would leak into other tests."""
+    """Stand-in for GGUFParameter; importing the real one would leak via ``sys.modules`` into other tests."""
 
     def __new__(
         cls,
@@ -132,7 +131,6 @@ def test_kill_switch_keeps_diffusers_path_for_gguf(monkeypatch):
     module, group, _ = _top_group(monkeypatch)
     assert mem._skip_top_level_copy_back(module) is False
     assert group.onload_ == "diffusers" and group.offload_ == "diffusers"
-    # plain tensors are unaffected by this switch
     module, group, _ = _top_group(monkeypatch, gguf_weight = False)
     assert mem._skip_top_level_copy_back(module) is True
 
@@ -148,8 +146,7 @@ def test_the_kill_switch_name_matches_the_module():
 
 
 def test_a_pinned_gguf_top_group_keeps_streamed_graphs_off(monkeypatch):
-    """Base never captured a block-streamed graph over a GGUF denoiser (its top group was not pinned). A pinned GGUF
-    top group must not change that: a recorded streamed graph held the VRAM a 6 GiB T4 decode needed."""
+    """A pinned GGUF top group must still refuse streamed graph capture (VRAM for a 6 GiB T4 decode)."""
     import core.inference.diffusion_offload_prefetch as op
 
     module, group, _ = _top_group(monkeypatch)
@@ -162,7 +159,6 @@ def test_a_pinned_gguf_top_group_keeps_streamed_graphs_off(monkeypatch):
     monkeypatch.setattr(op, "module_prefetcher", lambda m: object())
     monkeypatch.setattr(mem, "_offload_groups", lambda m: [group])
     assert "GGUF top-level group" in (op.capture_refusal(module) or "")
-    # a plain pinned top group still lets the graph through (unchanged)
     plain, plain_group, _ = _top_group(monkeypatch, gguf_weight = False)
     assert mem._pin_top_level_group(plain) is True and plain_group._unsloth_top_gguf is False
     monkeypatch.setattr(mem, "_offload_groups", lambda m: [plain_group])

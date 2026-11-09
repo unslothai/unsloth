@@ -7554,9 +7554,7 @@ TOP_GROUP_GGUF_ENV = "UNSLOTH_DIFFUSION_TOP_GROUP_GGUF"
 
 
 def _top_group_tensor_ok(t: Any) -> bool:
-    """Plain tensors, and GGUF packed weights (``GGUFParameter``: bytes + a quant type on the Parameter, which a
-    ``.data`` re-point keeps, as the block groups' stream path does). Any other subclass keeps diffusers' path.
-    ``UNSLOTH_DIFFUSION_TOP_GROUP_GGUF=0``: GGUF top-level weights copy back on every offload again."""
+    """Plain tensors and GGUFParameter (a ``.data`` re-point keeps its quant type); other subclasses keep diffusers' path."""
     import torch
 
     if type(t) in (torch.Tensor, torch.nn.Parameter):
@@ -7659,8 +7657,7 @@ def _pin_top_level_group(
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_pinned_top = True
-        # GGUF top groups pinned here keep block-streamed CUDA graphs off, as before (capture_refusal): a recorded
-        # streamed graph's pool held the VRAM a 6 GiB T4 decode needed.
+        # capture_refusal keeps streamed CUDA graphs off for GGUF: their pool starved a 6 GiB T4 decode
         gguf = _gguf_parameter_class()
         group._unsloth_top_gguf = gguf is not None and any(type(t) is gguf for t in tensors)
         setattr(group, TOP_GROUP_HOST_ATTR, host)
