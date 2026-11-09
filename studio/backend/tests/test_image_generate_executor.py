@@ -92,7 +92,6 @@ def test_results_and_errors_pass_through(monkeypatch, raises):
 
 
 def _render_slot_dispatches(name: str) -> list[str]:
-    """How the image route hands ``name`` to a thread: the awaited callee of each dispatch."""
     tree = ast.parse(open(inference.__file__, encoding = "utf-8").read())
     callees = []
     for node in ast.walk(tree):
@@ -105,6 +104,5 @@ def _render_slot_dispatches(name: str) -> list[str]:
 
 
 def test_detailer_inpaints_wait_on_the_image_pool():
-    """The Detailer's crop inpaints call backend.generate and wait on the render slot too."""
     callees = _render_slot_dispatches("_run_detailer")
     assert callees == ["_image_generate_in_thread"], callees
