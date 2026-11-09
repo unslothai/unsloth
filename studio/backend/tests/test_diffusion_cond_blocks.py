@@ -525,7 +525,14 @@ def _joint_mod_shapes(model):
     seen = []
 
     def spy(m, args, kwargs):
-        seen.append((tuple(kwargs["temb_mod"].shape), kwargs.get(cb.SPAN_KWARG) is not None))
+        span = kwargs.get(cb.SPAN_KWARG)
+        if span is not None:
+            assert tuple(span.shape[1:2]) == (1,) and kwargs[cb.SPAN_LEN_KWARG].numel() == 0
+            # a block graph copies every input into a static buffer of the same strides: none may overlap itself
+            from core.inference.diffusion_block_graph import _static_like
+            for t in (kwargs["temb_mod"], span, kwargs[cb.SPAN_LEN_KWARG]):
+                _static_like(t).copy_(t)
+        seen.append((tuple(kwargs["temb_mod"].shape), span is not None))
 
     handles = [
         b.register_forward_pre_hook(spy, with_kwargs = True) for b in model.single_transformer_blocks

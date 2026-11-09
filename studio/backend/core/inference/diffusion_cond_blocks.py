@@ -24,6 +24,7 @@ OFFLOAD_COND_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE"
 COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
 SPAN_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD"
 SPAN_KWARG = "unsloth_cond_mod"
+SPAN_LEN_KWARG = "unsloth_cond_span"
 COND_KWARG = "unsloth_cond"
 _COMPACT_ATTR = "_unsloth_compact_mod"
 _SPAN_ATTR = "_unsloth_span_mod"
@@ -342,10 +343,11 @@ def _flux3_cached_forward(
             and image_single_mod.shape[1] == 1
             and cond_single_mod.shape[1] == 1
         ):
-            # one row per span: the image row as temb_mod, the reference row as a stride-0 view whose length marks
-            # the reference span (no per-token copy)
+            # one row per span: the image row as temb_mod, the reference row beside it, and an empty
+            # [reference_tokens, 0] tensor marking the span length (no storage, so a block graph can copy every input)
             content_mod = image_single_mod
-            block_kwargs[SPAN_KWARG] = cond_single_mod.expand(batch_size, cond_states.shape[1], -1)
+            block_kwargs[SPAN_KWARG] = cond_single_mod
+            block_kwargs[SPAN_LEN_KWARG] = cond_states.new_empty((cond_states.shape[1], 0))
         else:
             # image and reference spans carry different timesteps: per token here
             content_mod = torch.cat(
@@ -394,11 +396,13 @@ def _flux3_span_single_forward(
     temb_mod_context: Any,
     image_rotary_emb: Any,
     unsloth_cond_mod: Any = None,
+    unsloth_cond_span: Any = None,
 ) -> Any:
-    """Stock joint block, op for op. ``unsloth_cond_mod``: the reference span's modulation as a ``[B, refs, 3D]``
-    view (its length is the reference span), ``temb_mod`` the image span's ``[B, 1, 3D]`` row; each span is modulated
-    and gated by its own row, element for element what the per-token rows compute."""
-    if unsloth_cond_mod is None:
+    """Stock joint block, op for op. ``unsloth_cond_mod``: the reference span's ``[B, 1, 3D]`` modulation row,
+    ``unsloth_cond_span``: a ``[reference_tokens, 0]`` tensor whose length is the reference span, ``temb_mod``: the
+    image span's ``[B, 1, 3D]`` row. Each span is modulated and gated by its own row, element for element what the
+    per-token rows compute."""
+    if unsloth_cond_mod is None or unsloth_cond_span is None:
         return _stock_single_forward(self)(
             self,
             hidden_states = hidden_states,
@@ -409,10 +413,10 @@ def _flux3_span_single_forward(
         )
     import torch
 
-    n_cond = unsloth_cond_mod.shape[1]
+    n_cond = unsloth_cond_span.shape[0]
     n_image = hidden_states.shape[1] - n_cond
     mod_shift, mod_scale, mod_gate = torch.chunk(temb_mod, 3, dim = -1)
-    r_shift, r_scale, r_gate = torch.chunk(unsloth_cond_mod[:, :1], 3, dim = -1)
+    r_shift, r_scale, r_gate = torch.chunk(unsloth_cond_mod, 3, dim = -1)
     c_mod_shift, c_mod_scale, c_mod_gate = torch.chunk(temb_mod_context, 3, dim = -1)
 
     norm_hidden_states = self.norm(hidden_states)
