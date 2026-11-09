@@ -25,8 +25,6 @@ import torch
 from . import diffusion_int8_gemm as _gemm
 
 FLUX_CONVROT_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED"
-_F2 = "diffusers.models.transformers.transformer_flux2"
-_F3 = "diffusers.models.transformers.transformer_flux3"
 _MARK = "__unsloth_flux_convrot_fused__"
 _LOCK = threading.Lock()
 _STOCK: dict = {}  # (owner, attr) -> original
@@ -112,12 +110,16 @@ def flux_convrot_fused_disabled() -> bool:
     )
 
 
-def _module(name: str) -> Any:
-    import importlib
+def _flux_modules() -> tuple:
     try:
-        return importlib.import_module(name)
+        from diffusers.models.transformers import transformer_flux2 as f2
     except Exception:  # noqa: BLE001 - diffusers without this family
-        return None
+        f2 = None
+    try:
+        from diffusers.models.transformers import transformer_flux3 as f3
+    except Exception:  # noqa: BLE001
+        f3 = None
+    return f2, f3
 
 
 def _count(kind: str) -> None:
@@ -433,7 +435,7 @@ def _patch(owner: Any, attr: str, key: str, make: Any) -> bool:
 
 def _install_patches(logger: Any = None) -> dict:
     done = {}
-    f2, f3 = _module(_F2), _module(_F3)
+    f2, f3 = _flux_modules()
     with _LOCK:
         for mod, prefix, swiglu, ff_cls in (
             (f2, "f2", "Flux2SwiGLU", "Flux2FeedForward"),
