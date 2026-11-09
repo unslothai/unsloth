@@ -246,30 +246,26 @@ def _is_image_model_config(model_config: dict[str, Any]) -> bool:
 def _loaded_local_image_model() -> str | None:
     """The name /v1/images/generations serves with the loaded image model, or None."""
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
 
     status = get_active_diffusion_engine().status()
     if not status.get("loaded"):
         return None
-    repo_id = str(status.get("repo_id") or status.get("display_repo_id") or "local-image-model")
-    return _resident_image_request_name(status, repo_id)
-
-
-def _resident_image_request_name(status: dict[str, Any], repo_id: str) -> str:
-    from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
-
     # With media auto-switch off the request's model is informational.
     if not get_media_auto_switch_enabled():
-        return repo_id
+        return str(status.get("repo_id") or status.get("display_repo_id") or "local-image-model")
     from core.inference.gpu_arbiter import DIFFUSION
-    from core.inference.media_auto_switch import resident_answers_media_request
+    from core.inference.media_auto_switch import resident_request_name
 
-    # A bare GGUF repo id means its preferred quant, so name the loaded build when the switch can.
-    suffixes = (status.get("gguf_filename"), status.get("gguf_variant"))
-    candidates = [f"{repo_id}:{suffix}" for suffix in suffixes if suffix] + [repo_id]
-    for name in candidates:
-        if resident_answers_media_request(status, name, owner = DIFFUSION):
-            return name
-    return repo_id
+    name = resident_request_name(status, owner = DIFFUSION)
+    if name is None:
+        # Any other name would make the switch replace the loaded model or refuse every row.
+        raise ValueError(
+            "Media auto-switch can't keep the loaded image model, since it isn't in the model list. "
+            "Load one from the Images page list, or turn off media auto-switch in Settings, then "
+            "run the recipe."
+        )
+    return name
 
 
 def _used_local_model_selections(
