@@ -176,6 +176,49 @@ def test_diffusers_fp16_functions_are_not_exact():
     assert not torch.equal(stock.to(torch.bfloat16)[fin], ours.to(torch.bfloat16)[fin])
 
 
+def _gguf_py(raw, qtype):
+    return torch.from_numpy(
+        np.ascontiguousarray(gguf.quants.dequantize(raw.numpy(), qtype), np.float32)
+    )
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_q8_0_bf16_is_not_rounded_through_fp16(compiled):
+    # d = 1371 / 4096, q = 3: fp16 d * q = 1 + 2**-8 (a bf16 tie, to 1); ggml's fp32 1 + 2**-8 + 2**-12 -> 1 + 2**-7
+    raw = torch.zeros(1, 34, dtype = torch.uint8)
+    raw[0, :2] = torch.tensor([np.float16(1371 / 4096)]).view(torch.uint8)
+    raw[0, 2:] = 3
+    fn = (
+        torch.compile(ex.dequantize_blocks_Q8_0, fullgraph = True)
+        if compiled
+        else ex.dequantize_blocks_Q8_0
+    )
+    got = fn(raw, 32, 34, torch.bfloat16)
+    assert torch.equal(got, torch.full_like(got, 1 + 2**-7))
+    assert torch.equal(
+        got.float(), _gguf_py(raw, T.Q8_0).to(torch.bfloat16).float().reshape(got.shape)
+    )
+    stock = gguf_utils.dequantize_functions[T.Q8_0]
+    if stock is not ex.dequantize_blocks_Q8_0:
+        assert float(stock(raw, 32, 34).to(torch.bfloat16)[0, 0]) == 1.0
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_iq4_xs_large_scale_does_not_overflow_in_fp16(compiled):
+    # d = 4096, ls - 32 = -32: ggml's fp32 dl = -131072 (fp16 would be -inf); * kvalue -127 is finite in fp32
+    bs, sz = gguf.GGML_QUANT_SIZES[T.IQ4_XS]
+    raw = torch.zeros(1, sz, dtype = torch.uint8)
+    raw[0, :2] = torch.tensor([np.float16(4096)]).view(torch.uint8)
+    fn = (
+        torch.compile(ex.dequantize_blocks_IQ4_XS, fullgraph = True)
+        if compiled
+        else ex.dequantize_blocks_IQ4_XS
+    )
+    got = fn(raw, bs, sz).reshape(-1)
+    assert torch.equal(got, _gguf_py(raw, T.IQ4_XS).reshape(-1))
+    assert torch.equal(got, torch.full_like(got, 4096.0 * 32 * 127))
+
+
 @pytest.mark.parametrize("name", TYPES)
 @pytest.mark.parametrize("rows", [1, 3, 5])
 def test_dequantize_cast_keeps_rows_of_whole_blocks(name, rows):
