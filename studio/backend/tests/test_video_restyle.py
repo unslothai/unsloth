@@ -808,10 +808,12 @@ def _gpu_handoff(
 
     def acquire(
         owner,
+        register = None,
         admit = None,
         **kw,
     ):
         admit()
+        register()
         acquired.append((owner, kw))
 
     monkeypatch.setattr(arb, "acquire_for_request", acquire)
@@ -940,3 +942,49 @@ def test_unload_refuses_another_accounts_server(weights):
         runner.unload_if_idle("bob")
     assert runner._server is not None
     assert runner.unload_if_idle("alice") and runner._server is None
+
+
+def test_a_refused_handoff_keeps_the_create_model(weights, monkeypatch):
+    import core.inference.gpu_arbiter as arb
+    import core.inference.video as video_module
+    import utils.multi_model_settings as mms
+    from fastapi import HTTPException
+
+    from routes import video_restyle as route
+
+    video = _Video(loaded = True)
+    monkeypatch.setattr(mms, "get_multi_model_mode", lambda: "fit")
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: video)
+    monkeypatch.setattr(video_module, "generation_account_in_flight", lambda: None)
+
+    def acquire(
+        owner,
+        register = None,
+        admit = None,
+        **kw,
+    ):
+        admit()
+        raise HTTPException(status_code = 409, detail = "another account is generating")
+
+    monkeypatch.setattr(arb, "acquire_for_request", acquire)
+    with pytest.raises(HTTPException):
+        route._take_the_gpu()
+    assert video.unloaded == 0
+
+
+def test_a_resident_server_holds_the_managed_sd_cpp_tree(weights, monkeypatch):
+    import core.inference.sd_cpp_backend as backend
+    import core.inference.sd_cpp_engine as engine
+    import core.inference.sd_cpp_server as server_module
+
+    monkeypatch.setattr(engine, "find_sd_server_binary", lambda: "/managed/sd-server")
+    monkeypatch.setattr(engine, "is_managed_binary", lambda binary: True)
+    monkeypatch.setattr(server_module, "SdCppServer", lambda binary: _FakeServer(b"AVI"))
+    runner = vr.RestyleRunner()
+    try:
+        runner._ensure_server(vr.model_files())
+        assert backend._external_tree_holder_alive()
+        runner.unload()
+        assert not backend._external_tree_holder_alive()
+    finally:
+        backend.unregister_tree_holder(runner)

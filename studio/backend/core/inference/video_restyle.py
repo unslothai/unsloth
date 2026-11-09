@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import os
 import re
@@ -560,6 +561,18 @@ class RestyleRunner:
             server.stop()
         return True
 
+    def is_alive(self) -> bool:
+        return self._server is not None or self._loading is not None
+
+    def _tree_lease(self) -> Any:
+        # No install may replace the binaries while a job starts or runs the server.
+        if self._server_factory is not None:
+            return contextlib.nullcontext()
+        from core.inference.sd_cpp_backend import _tree_reader
+        from core.inference.sd_cpp_engine import find_sd_server_binary
+
+        return _tree_reader(find_sd_server_binary(), self._cancel, "cancelled")
+
     def _ensure_server(self, files: SdCppModelFiles) -> Any:
         if self._server is not None and self._server_files == files and self._server.is_alive():
             return self._server
@@ -577,6 +590,12 @@ class RestyleRunner:
                     "build with Cosmos3 support."
                 )
             server = SdCppServer(binary)
+            from core.inference.sd_cpp_backend import register_tree_holder
+            from core.inference.sd_cpp_engine import is_managed_binary
+
+            if is_managed_binary(binary):
+                # A resident server pins Studio's managed sd.cpp tree: an upgrade waits (is_alive).
+                register_tree_holder(self)
         self._update(phase = "loading")
         self._loading = server
         try:
@@ -601,6 +620,7 @@ class RestyleRunner:
 
         workdir = self._workdir
         frames = job["frames"]
+        lease = contextlib.ExitStack()
         try:
             assert workdir is not None
             (workdir / "input.mp4").write_bytes(encode_mp4(frames))
@@ -612,6 +632,7 @@ class RestyleRunner:
             payload = build_restyle_request(
                 prompt = job["prompt"], control_frames = control, seed = job["seed"]
             )
+            lease.enter_context(self._tree_lease())
             server = self._ensure_server(job["files"])
             self._update(phase = "generate")
             # Rate from the first latent frame on: before it, the control video is still being encoded.
@@ -630,6 +651,7 @@ class RestyleRunner:
                     self._update(phase = "decode", eta_seconds = None)
 
             avi = server.vid_gen(payload, on_step = on_line, cancel_event = self._cancel)
+            lease.close()
             self._update(phase = "export", eta_seconds = None)
             raw = workdir / "output.avi"
             raw.write_bytes(avi)
@@ -672,6 +694,8 @@ class RestyleRunner:
             else:
                 logger.warning("restyle failed: %s", exc)
                 self._update(active = False, phase = "error", error = str(exc))
+        finally:
+            lease.close()
 
 
 runner = RestyleRunner()
