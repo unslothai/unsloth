@@ -4,7 +4,8 @@
 """One-token decode on flex attention (flex_decoding) for FastModel generate().
 
 generate() keeps its prefill attention. During one-token steps over a StaticCache, the text attention configs are
-switched to "unsloth_flex_decode": a transformers attention + mask interface pair registered here. The mask side
+switched to "unsloth_flex_decode_routed": a transformers attention + mask interface pair registered here (zoo owns
+the plain "unsloth_flex_decode" key). The mask side
 builds, per layer type (full / sliding), unsloth_zoo's decode BlockMask (graph-refillable: fixed shapes, offsets
 and padding as tensors) when every layer of that type has a shape zoo's flex decode supports, and transformers'
 SDPA mask otherwise. The attention side runs zoo's flex decode on a BlockMask and transformers' SDPA on a dense
@@ -36,7 +37,7 @@ __all__ = [
     "reset_stats",
 ]
 
-ATTN_KEY = "unsloth_flex_decode"
+ATTN_KEY = "unsloth_flex_decode_routed"
 ENV = "UNSLOTH_FLEX_DECODE"
 # Model types whose decode attention is a plain transformers attention-interface call over StaticCache tensors and
 # whose flex decode was checked against eager attention (the attention core only; norms, gates and RoPE stay).
@@ -62,6 +63,11 @@ try:
     )
 except Exception:
     decode_block_mask = flex_decode_attention = flex_decode_supported = None
+try:
+    # Newer zoo: one compile per layer shape with errors raised; a shape flex_decoding cannot compile raises this.
+    from unsloth_zoo.flex_attention.decode import FlexDecodeUnavailable, dense_decode_mask
+except Exception:
+    FlexDecodeUnavailable = dense_decode_mask = None
 
 try:
     from torch.nn.attention.flex_attention import BlockMask
@@ -434,11 +440,29 @@ def _attention(
     if scaling is None:
         scaling = query.shape[-1] ** -0.5
     stance = None if torch.compiler.is_compiling() else _default_stance()
-    if stance is None:
-        out = flex_decode_attention(query, key, value, attention_mask, scaling, softcap = softcap)
-    else:
-        with stance:
+    try:
+        if stance is None:
             out = flex_decode_attention(query, key, value, attention_mask, scaling, softcap = softcap)
+        else:
+            with stance:
+                out = flex_decode_attention(
+                    query, key, value, attention_mask, scaling, softcap = softcap
+                )
+    except Exception as error:
+        # zoo raises FlexDecodeUnavailable once for a layer shape flex_decoding cannot compile (it then serves that
+        # shape densely): the same visibility as a dense mask through SDPA.
+        if FlexDecodeUnavailable is None or not isinstance(error, FlexDecodeUnavailable):
+            raise
+        _count(module, "flex_decoding unavailable for this shape")
+        from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+        dense = dense_decode_mask(attention_mask, key.shape[-2], query.device)
+        extra = dict(kwargs)
+        if softcap is not None:
+            extra["softcap"] = softcap
+        return sdpa_attention_forward(
+            module, query, key, value, dense, dropout = dropout, scaling = scaling, **extra
+        )
     _count(module, None)
     # flex returns [B, H, Q, D]; transformers attention functions return [B, Q, H, D].
     if out.dim() == 4 and out.shape[1] == query.shape[1] and out.shape[2] == query.shape[2]:

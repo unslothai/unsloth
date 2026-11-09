@@ -213,3 +213,53 @@ def test_routable_excludes_gpt_oss_and_chunked_layers(monkeypatch):
     assert FD.routable(None, config) is True
     config.model_type = "gpt_oss"
     assert FD.routable(None, config) is False
+
+
+def test_unavailable_flex_decode_shape_falls_back_to_sdpa(monkeypatch):
+    # zoo raises FlexDecodeUnavailable for a layer shape flex_decoding cannot compile: the step then runs SDPA over
+    # the BlockMask's own visibility (padding + causal), counted as a fallback, not an error.
+    decode = pytest.importorskip("unsloth_zoo.flex_attention.decode")
+    if FD.FlexDecodeUnavailable is None:
+        pytest.skip("unsloth_zoo without FlexDecodeUnavailable")
+
+    def unavailable(*args, **kwargs):
+        raise decode.FlexDecodeUnavailable("no tile fits")
+
+    monkeypatch.setattr(FD, "flex_decode_attention", unavailable)
+    torch.manual_seed(0)
+    batch, heads, kv_heads, dim, kv_length, position = 2, 4, 2, 16, 32, 9
+    pad = torch.ones(batch, kv_length, dtype = torch.long)
+    pad[1, :3] = 0
+    mask = decode.decode_block_mask(batch, kv_length, torch.tensor(position), attention_mask = pad)
+    q = torch.randn(batch, heads, 1, dim, dtype = torch.float64)
+    k = torch.randn(batch, kv_heads, kv_length, dim, dtype = torch.float64)
+    v = torch.randn(batch, kv_heads, kv_length, dim, dtype = torch.float64)
+    module = torch.nn.Module()
+    module.num_key_value_groups = heads // kv_heads
+    module.is_causal = True
+    out, _ = FD._attention(module, q, k, v, mask, scaling = 0.25)
+
+    visible = (torch.arange(kv_length) <= position).view(1, kv_length) & pad.bool()
+    rep = lambda x: x.repeat_interleave(heads // kv_heads, dim = 1)
+    ref = torch.nn.functional.scaled_dot_product_attention(
+        q, rep(k), rep(v), attn_mask = visible[:, None, None, :], scale = 0.25
+    )
+    torch.testing.assert_close(out, ref.transpose(1, 2), rtol = 0, atol = 1e-12)
+    assert module._unsloth_flex_decode_stats == {
+        "flex": 0,
+        "fallback": {"flex_decoding unavailable for this shape": 1},
+    }
+
+
+def test_other_flex_decode_errors_propagate(monkeypatch):
+    decode = pytest.importorskip("unsloth_zoo.flex_attention.decode")
+
+    def broken(*args, **kwargs):
+        raise ValueError("bad shapes")
+
+    monkeypatch.setattr(FD, "flex_decode_attention", broken)
+    mask = decode.decode_block_mask(1, 16, torch.tensor(3))
+    q = torch.randn(1, 2, 1, 8)
+    k = v = torch.randn(1, 2, 16, 8)
+    with pytest.raises(ValueError, match = "bad shapes"):
+        FD._attention(torch.nn.Module(), q, k, v, mask)
