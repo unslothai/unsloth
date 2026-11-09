@@ -1191,9 +1191,7 @@ class CfgBatchRouter:
         return mine
 
     def _pair_key(self, shape: _Shape, second: tuple) -> tuple:
-        """The first branch's request shape, the second branch's tensor shapes, the step's cache mode and whether the
-        denoiser runs compiled: the prefill and decode steps, a negative prompt of another length and a compile that
-        a deferred speed profile turned on after an eager render each compile graphs of their own."""
+        """Request shape, second-branch shapes, cache mode and compiled flag: each combination compiles its own graphs."""
         mg = _mg()
         branch_cache = getattr(self.paired, "branch_cache", None)
         mode = None if branch_cache is None else second[1].get(branch_cache[2])

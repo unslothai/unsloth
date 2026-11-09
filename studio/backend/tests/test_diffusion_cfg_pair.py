@@ -393,7 +393,7 @@ def test_q21_a_graph_after_the_warm_up_render_still_turns_pairing_off(monkeypatc
     pipe = _Pipe(model)
     cb.install_cfg_batch(pipe, offload_policy = "group")
     router = cb.router_for(pipe)
-    _q21_loop(model, steps = 4)  # render 1 compiles (first block call)
+    _q21_loop(model, steps = 4)
     cb.end_cfg_batch_render(pipe)
     assert router.disabled is None
     graphs["churn"] = True  # render 2: every block call compiles again
@@ -420,4 +420,4 @@ def test_q21_pair_warm_up_key_separates_cache_mode_and_negative_length():
     eager = key(5, "cached")
     assert len({eager, key(7, "cached"), key(5, "extract")}) == 3
     router.render_compiled = "the denoiser runs a compiled forward below its hooks"
-    assert key(5, "cached") != eager  # a deferred compile warms up again
+    assert key(5, "cached") != eager
