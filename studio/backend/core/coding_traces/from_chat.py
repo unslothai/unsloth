@@ -11,6 +11,7 @@ import json
 import re
 from typing import Optional
 
+from core.agents_md import agents_md_enabled
 from core.coding_traces.schema import (
     ChatTrace,
     ChatTraceError,
@@ -18,7 +19,6 @@ from core.coding_traces.schema import (
     TraceMessage,
     TraceWarning,
 )
-from core.agents_md import agents_md_enabled
 from core.inference.tool_loop_controller import (
     TOOL_MODEL_SUFFIX_KEY,
     restore_replayed_tool_results,
@@ -270,9 +270,7 @@ def _skipped_call(part: dict, message_id: str, position: int) -> Optional[TraceW
         # A native part would be a call with no tool message; the provider ran it either way.
         detail = "; the UI replays its code and output to Gemini" if native else ""
         return TraceWarning(
-            "server_tool_skipped",
-            f"Skipped provider-run tool {name!r}{detail}",
-            message_id,
+            "server_tool_skipped", f"Skipped provider-run tool {name!r}{detail}", message_id
         )
     if part.get("result") is None:
         # serializeToolResultPart (chat-adapter.ts) and conversation_archive._replayable drop it.
@@ -290,7 +288,8 @@ def _prune(chain: list[dict]) -> list[dict]:
     empty stopped turn its label, as fillStoppedAssistantReplay does."""
 
     def custom(message):
-        return _as_dict(_as_dict(message.get("metadata")).get("custom"))
+        # The UI stores message.metadata.custom as the row's metadata (runtime-provider.tsx).
+        return _as_dict(message.get("metadata"))
 
     def replayed(message, reasoning):
         # The UI sends a native Gemini builtin as a tool call (serializeAssistantToolCallPart),
@@ -301,7 +300,10 @@ def _prune(chain: list[dict]) -> list[dict]:
         ):
             return True
         converted = _convert([message], [])
-        return any(m.text.strip() or m.tool_calls or (reasoning and m.reasoning) for m in converted)
+        return any(
+            m.text.strip() or m.tool_calls or (m.reasoning and (reasoning or m.text))
+            for m in converted
+        )
 
     def abandoned(message):
         # assistantTurnCarriesPayload reads the raw parts, before the replay sanitiser, and

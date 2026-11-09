@@ -339,7 +339,7 @@ def test_tool_results_match_the_ui_wire_text(part, text):
 def _turn(custom, content):
     rows = [
         _row("u", "user", _text("go"), None, 1),
-        _row("a", "assistant", content, "u", 2, metadata = {"custom": custom}),
+        _row("a", "assistant", content, "u", 2, metadata = custom),
         _row("u2", "user", _text("again"), "a", 3),
         _row("a2", "assistant", _text("fine"), "u2", 4),
     ]
@@ -374,6 +374,12 @@ _STOPPED = {"incomplete": {"reason": "cancelled"}}
 )
 def test_refused_and_abandoned_turns_are_pruned(custom, content, before):
     assert _shape(_turn(custom, content)) == before + [("user", "again"), ("assistant", "fine")]
+
+
+def test_stopped_whitespace_turn_keeps_its_reasoning():
+    # The UI's text check does not trim, so it replays the reasoning and adds no stop label.
+    trace = _turn(_STOPPED, [{"type": "reasoning", "text": "think"}, *_text("   ")])
+    assert (trace.messages[1].text, trace.messages[1].reasoning) == ("   ", "think")
 
 
 @pytest.mark.parametrize("custom", [{}, _STOPPED])
