@@ -5410,7 +5410,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	padding-left: calc(var(--spacing) * 5 + var(--thread-gutter-shift));
 }
 
-.aui-thread-host[data-aui-following] + .aui-thread-root .aui-thread-viewport {
+/* Subject match only (use-intent-aware-autoscroll.tsx): reaching the viewport through a sibling of an
+   ancestor makes WebKit restyle the whole thread whenever the flag flips. */
+.aui-thread-viewport[data-aui-following] {
 	overflow-anchor: none;
 }
 
