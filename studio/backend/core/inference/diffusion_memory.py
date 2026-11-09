@@ -1744,15 +1744,35 @@ def _resident_only_hint(family: Optional[str]) -> bool:
 
 
 def calibrated_image_activation(
-    family: Optional[str], *, max_speed: bool = True
+    family: Optional[str],
+    *,
+    max_speed: bool = True,
+    compute_bytes: int = 2,
 ) -> Optional[CalibratedImageActivation]:
+    """``compute_bytes`` 4 (float32 compute) scales every column 2x, only for ``FP32_CALIBRATED_FAMILIES``: the
+    tables were measured at 16-bit, and every other fp32-promoted family keeps the flat estimate (None)."""
     measured = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or ""))
     if measured is None:
         return None
+    widen = 1.0
+    if int(compute_bytes or 2) > 2:
+        if not fp32_calibrated(family):
+            return None
+        widen = int(compute_bytes) / 2.0
     return CalibratedImageActivation(
-        *(int(v * _ACTIVATION_MARGIN) for v in measured[1 if max_speed else 0]),
+        *(int(v * _ACTIVATION_MARGIN * widen) for v in measured[1 if max_speed else 0]),
         resident_only = str(family or "") in _RESIDENT_ONLY_CALIBRATED,
     )
+
+
+# fp16-only GPUs: price float32 compute at 2x the 16-bit table (FLUX.3 T4 peaks measured below that); without it the
+# flat 8 GiB estimate streams even a 3.5 GiB GGUF denoiser through pageable host memory.
+FP32_CALIBRATED_ENV = "UNSLOTH_DIFFUSION_FP32_CALIBRATED"
+FP32_CALIBRATED_FAMILIES = frozenset({"flux.3-klein", "flux.3-klein-base"})
+
+
+def fp32_calibrated(family: Optional[str]) -> bool:
+    return str(family or "") in FP32_CALIBRATED_FAMILIES and not _env_off(FP32_CALIBRATED_ENV)
 
 
 # ComfyUI's minimum_inference_memory() (comfy/model_management.py); activations are priced separately here.

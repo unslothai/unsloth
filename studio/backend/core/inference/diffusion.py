@@ -214,6 +214,7 @@ from .diffusion_memory import (
     OFFLOAD_STREAMING,
     apply_memory_plan,
     calibrated_image_activation,
+    fp32_calibrated,
     engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
@@ -2983,25 +2984,30 @@ def _calibrated_activation(
     target: Any,
     *,
     unpriced_references_ok: bool = False,
+    fp32_scaled: bool = False,
 ) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel.
-    ``unpriced_references_ok``: skip the reference rule; the caller sizes references via measured_request_extra_mib."""
+    ``unpriced_references_ok``: skip the reference rule; the caller sizes references via measured_request_extra_mib.
+    ``fp32_scaled``: a float32 ``fp32_calibrated`` load reads the table scaled 2x; False keeps it unmeasured (post-load seeds)."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
     # FLUX.3 can: every reference is resized to 1 MP and the request guard charges those pixels on top.
     if not unpriced_references_ok and _references_unpriced(fam):
         return None
-    # Measured at 16-bit only; fp32-promoted families (Z-Image pre-Ampere) do not qualify.
+    # Measured at 16-bit; fp32-promoted families (Z-Image pre-Ampere) do not qualify, except the scaled FLUX.3 table.
     compute = _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
-    if (_float_load_itemsize(compute) or 2) > 2:
+    compute_bytes = _float_load_itemsize(compute) or 2
+    if compute_bytes > 2 and not (fp32_scaled and fp32_calibrated(getattr(fam, "name", None))):
         return None
     requested = _PLANNED_SPEED_MODE.get(_SPEED_UNKNOWN)
     try:
         max_speed = requested is _SPEED_UNKNOWN or normalize_speed_mode(requested) == SPEED_MAX
     except ValueError:
         max_speed = True
-    activation = calibrated_image_activation(getattr(fam, "name", None), max_speed = max_speed)
+    activation = calibrated_image_activation(
+        getattr(fam, "name", None), max_speed = max_speed, compute_bytes = compute_bytes
+    )
     if activation is None:
         return None
     try:
@@ -13413,12 +13419,21 @@ class DiffusionBackend:
                 runtime_headroom_mib = runtime_headroom,
                 requested_mode = memory_mode,
                 explicit_offload = cpu_offload,
-                calibrated_activation = _calibrated_activation(fam, target)
+                calibrated_activation = _calibrated_activation(fam, target, fp32_scaled = True)
                 if probe_calibration
                 else activation,
             )
 
         if resident_replan:
+            # Float32 compute widens only the scaled FLUX.3 tiers; other families keep the 16-bit tiers here.
+            replan_compute_bytes = (
+                _float_load_itemsize(
+                    _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
+                )
+                or 2
+                if fp32_calibrated(fam.name)
+                else 2
+            )
 
             def can_stop(memory: DeviceMemory) -> bool:
                 if (
@@ -13430,8 +13445,12 @@ class DiffusionBackend:
                 # Check flat and both measured tiers without running the allocating SDPA probe during sampling.
                 for activation in (
                     None,
-                    calibrated_image_activation(fam.name, max_speed = False),
-                    calibrated_image_activation(fam.name, max_speed = True),
+                    calibrated_image_activation(
+                        fam.name, max_speed = False, compute_bytes = replan_compute_bytes
+                    ),
+                    calibrated_image_activation(
+                        fam.name, max_speed = True, compute_bytes = replan_compute_bytes
+                    ),
                 ):
                     candidate = _plan(
                         model_dense_mib, memory, probe_calibration = False, activation = activation
