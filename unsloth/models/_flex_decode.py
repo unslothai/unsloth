@@ -1,0 +1,446 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""One-token decode on flex attention (flex_decoding) for FastModel generate().
+
+generate() keeps its prefill attention. During one-token steps over a StaticCache, the text attention configs are
+switched to "unsloth_flex_decode": a transformers attention + mask interface pair registered here. The mask side
+builds, per layer type (full / sliding), unsloth_zoo's decode BlockMask (graph-refillable: fixed shapes, offsets
+and padding as tensors) when every layer of that type has a shape zoo's flex decode supports, and transformers'
+SDPA mask otherwise. The attention side runs zoo's flex decode on a BlockMask and transformers' SDPA on a dense
+mask, so a model can mix both (Gemma 4's head_dim 512 full layers below sm80 stay on SDPA while its sliding
+layers decode on flex). Prefill, dynamic caches and custom mask functions are untouched.
+
+UNSLOTH_FLEX_DECODE: auto (default: compute capability 8.0 and newer, model types in MODEL_TYPES), 1 (any GPU,
+any text model with a StaticCache), 0 (off). Needs unsloth_zoo.flex_attention.decode and the transformers 5.x
+mask interface (q_length / q_offset); without them nothing changes."""
+
+import inspect
+import os
+import threading
+import weakref
+
+import torch
+
+__all__ = [
+    "ATTN_KEY",
+    "ENV",
+    "MODEL_TYPES",
+    "available",
+    "register",
+    "wanted",
+    "routable",
+    "stats",
+    "reset_stats",
+]
+
+ATTN_KEY = "unsloth_flex_decode"
+ENV = "UNSLOTH_FLEX_DECODE"
+# Model types whose decode attention is a plain transformers attention-interface call over StaticCache tensors and
+# whose flex decode was checked against eager attention (the attention core only; norms, gates and RoPE stay).
+MODEL_TYPES = frozenset(
+    (
+        "gemma4",
+        "gemma4_text",
+        "qwen3_5",
+        "qwen3_5_text",
+        "qwen3_5_moe",
+        "qwen3_5_moe_text",
+    )
+)
+# zoo owns these models' decode attention (gpt-oss: sinks and its own graph modes).
+EXCLUDED_MODEL_TYPES = frozenset(("gpt_oss",))
+_KINDS = {"full_attention": "full", "sliding_attention": "sliding"}
+
+try:
+    from unsloth_zoo.flex_attention.decode import (
+        decode_block_mask,
+        flex_decode_attention,
+        flex_decode_supported,
+    )
+except Exception:
+    decode_block_mask = flex_decode_attention = flex_decode_supported = None
+
+try:
+    from torch.nn.attention.flex_attention import BlockMask
+except Exception:
+    BlockMask = None
+
+
+def _unwrap(config):
+    """The config behind a forwarding proxy (zoo's Gemma 4 _Gemma4KVSharedSafeProxy keeps it in `_real`)."""
+    for _ in range(4):
+        try:
+            real = object.__getattribute__(config, "_real")
+        except Exception:
+            return config
+        if real is None or real is config:
+            return config
+        config = real
+    return config
+
+
+class _ConfigMap:
+    """Per-config values without touching the config (its __dict__ is serialised by save_pretrained) and without
+    hashing it (transformers 5.x configs are unhashable dataclasses): keyed by id, checked by weakref."""
+
+    def __init__(self):
+        self.items = {}
+
+    def get(
+        self,
+        config,
+        default = None,
+    ):
+        config = _unwrap(config)
+        entry = self.items.get(id(config))
+        if entry is None or entry[0]() is not config:
+            return default
+        return entry[1]
+
+    def set(self, config, value):
+        config = _unwrap(config)
+        key = id(config)
+        try:
+            ref = weakref.ref(config, lambda _, key = key, items = self.items: items.pop(key, None))
+        except TypeError:
+            return value
+        self.items[key] = (ref, value)
+        return value
+
+    def setdefault(self, config, value):
+        current = self.get(config, None)
+        return current if current is not None else self.set(config, value)
+
+
+_LOCK = threading.Lock()
+_REGISTERED = False
+# text config -> {"full": {(head_dim, n_q, n_kv), ...}, "sliding": {...}}, filled from the model's attention modules.
+_LAYERS = _ConfigMap()
+# text config -> {kind: reason or None} of the last mask built per kind (why a layer type stayed on SDPA).
+_MASK_REASONS = _ConfigMap()
+_SUPPORT_CACHE = {}
+
+
+def available():
+    """zoo's flex decode API and a transformers mask interface taking q_length / q_offset (5.x)."""
+    if decode_block_mask is None or BlockMask is None:
+        return False
+    try:
+        from transformers.masking_utils import sdpa_mask
+    except Exception:
+        return False
+    params = inspect.signature(sdpa_mask).parameters
+    return "q_length" in params and "q_offset" in params
+
+
+def register():
+    """Registers the attention + mask interface pair under ATTN_KEY (idempotent). False when unavailable."""
+    global _REGISTERED
+    if _REGISTERED:
+        return True
+    if not available():
+        return False
+    with _LOCK:
+        if _REGISTERED:
+            return True
+        try:
+            from transformers.masking_utils import AttentionMaskInterface
+            from transformers.modeling_utils import AttentionInterface
+        except Exception:
+            return False
+        # transformers 5.21+ generate() calls .contiguous() on every mask it prepares (zoo's gpt-oss patch adds
+        # the same class-level no-op; an instance attribute would become a BlockMask field in the graph key).
+        if not hasattr(BlockMask, "contiguous"):
+            BlockMask.contiguous = lambda self, *args, **kwargs: self
+        AttentionInterface.register(ATTN_KEY, _attention)
+        AttentionMaskInterface.register(ATTN_KEY, _mask)
+        _REGISTERED = True
+    return True
+
+
+def _mode():
+    return os.environ.get(ENV, "auto").strip().lower()
+
+
+def wanted(device):
+    """Whether one-token steps on `device` should decode on flex (policy only; shapes are checked per layer)."""
+    mode = _mode()
+    if mode in ("0", "false", "off", "no"):
+        return False
+    if not register():
+        return False
+    if mode in ("1", "true", "on", "yes", "force"):
+        return True
+    try:
+        device = torch.device(device)
+    except Exception:
+        return False
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return False
+    try:
+        major = torch.cuda.get_device_capability(device)[0]
+    except Exception:
+        return False
+    return major >= 8
+
+
+def _model_type(config):
+    try:
+        return str(getattr(config, "model_type", "") or "").lower()
+    except Exception:
+        return ""
+
+
+def _layer_types(config):
+    try:
+        return list(getattr(config, "layer_types", None) or ())
+    except Exception:
+        return []
+
+
+def routable(model, config):
+    """Whether this text attention config may decode on flex: allowed model type (any but the excluded ones under
+    UNSLOTH_FLEX_DECODE=1), an SDPA / eager / flex attention, no chunked layers. Records its layer shapes."""
+    model_type = _model_type(config)
+    if model_type in EXCLUDED_MODEL_TYPES or any(
+        model_type.startswith(t) for t in EXCLUDED_MODEL_TYPES
+    ):
+        return False
+    if _mode() not in ("1", "true", "on", "yes", "force") and model_type not in MODEL_TYPES:
+        return False
+    try:
+        impl = getattr(config, "_attn_implementation", None)
+    except Exception:
+        impl = None
+    if impl not in ("sdpa", "eager", "flex_attention", ATTN_KEY):
+        return False
+    if any(t not in _KINDS and t not in ("linear_attention",) for t in _layer_types(config)):
+        return False
+    layers = _describe(model, config)
+    return bool(layers)
+
+
+def _describe(model, config):
+    """{kind: {(head_dim, n_q, n_kv)}} over the attention modules that read `config`."""
+    cached = _LAYERS.get(config)
+    if cached is not None:
+        return cached
+    layers = {}
+    types = _layer_types(config)
+    real = _unwrap(config)
+    for module in model.modules():
+        owner = getattr(module, "config", None)
+        if owner is None or _unwrap(owner) is not real:
+            continue
+        head_dim = getattr(module, "head_dim", None)
+        groups = getattr(module, "num_key_value_groups", None)
+        layer_idx = getattr(module, "layer_idx", None)
+        if not isinstance(head_dim, int) or not isinstance(groups, int) or groups <= 0:
+            continue
+        layer_type = getattr(module, "layer_type", None)
+        if layer_type is None and isinstance(layer_idx, int) and layer_idx < len(types):
+            layer_type = types[layer_idx]
+        kind = _KINDS.get(layer_type or "full_attention")
+        if kind is None:
+            continue
+        try:
+            n_q = int(config.num_attention_heads)
+        except Exception:
+            continue
+        layers.setdefault(kind, set()).add((head_dim, n_q, n_q // groups))
+        module.__dict__["_unsloth_flex_decode_kind"] = kind
+    _LAYERS.set(config, layers)
+    return layers
+
+
+def _supported(config, kind, dtype, device):
+    layers = _LAYERS.get(config, {}).get(kind)
+    if not layers:
+        return False, f"no {kind} attention layers recorded"
+    try:
+        device = torch.device(device)
+    except Exception:
+        return False, "unknown device"
+    for head_dim, n_q, n_kv in layers:
+        key = (head_dim, n_q, n_kv, dtype, str(device))
+        ok = _SUPPORT_CACHE.get(key)
+        if ok is None:
+            try:
+                ok = bool(flex_decode_supported(head_dim, n_q, n_kv, dtype, device))
+            except Exception:
+                ok = False
+            _SUPPORT_CACHE[key] = ok
+        if not ok:
+            return (
+                False,
+                f"flex decode unsupported for head_dim {head_dim}, {n_q} / {n_kv} heads, {dtype}",
+            )
+    return True, None
+
+
+def _note(config, kind, reason):
+    if config is None:
+        return
+    reasons = _MASK_REASONS.setdefault(config, {})
+    reasons[kind] = reason
+
+
+def _mask(
+    batch_size,
+    q_length = None,
+    kv_length = None,
+    q_offset = 0,
+    kv_offset = 0,
+    mask_function = None,
+    attention_mask = None,
+    local_size = None,
+    config = None,
+    use_vmap = False,
+    device = "cpu",
+    dtype = None,
+    **kwargs,
+):
+    from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, causal_mask_function
+
+    args = dict(
+        batch_size = batch_size,
+        q_length = q_length,
+        kv_length = kv_length,
+        q_offset = q_offset,
+        kv_offset = kv_offset,
+        mask_function = mask_function,
+        attention_mask = attention_mask,
+        config = config,
+        use_vmap = use_vmap,
+        device = device,
+        dtype = dtype,
+        **kwargs,
+    )
+    if local_size is not None:
+        args["local_size"] = local_size
+    kind = "sliding" if local_size else "full"
+    reason = None
+    if q_length != 1:
+        reason = "not a one-token step"
+    elif use_vmap:
+        reason = "custom mask function"
+    elif kind == "full" and mask_function is not causal_mask_function:
+        reason = "not a causal mask"
+    elif kwargs.get("allow_is_bidirectional_skip") is not None:
+        reason = "bidirectional mask"
+    else:
+        ok, reason = _supported(config, kind, dtype, device)
+    _note(config, kind, reason)
+    if reason is not None:
+        return ALL_MASK_ATTENTION_FUNCTIONS["sdpa"](**args)
+    # transformers' own mask_function (causal, or causal + its sliding overlay): zoo builds the BlockMask over
+    # refillable offset / padding tensors and names the function in the graph key.
+    return decode_block_mask(
+        batch_size,
+        kv_length,
+        q_offset,
+        kv_offset,
+        mask_function = mask_function,
+        attention_mask = attention_mask,
+        device = device,
+    )
+
+
+def _count(module, reason):
+    stats = module.__dict__.get("_unsloth_flex_decode_stats")
+    if stats is None:
+        stats = module.__dict__["_unsloth_flex_decode_stats"] = {"flex": 0, "fallback": {}}
+    if reason is None:
+        stats["flex"] += 1
+    else:
+        stats["fallback"][reason] = stats["fallback"].get(reason, 0) + 1
+
+
+def _default_stance():
+    """A context that compiles a new flex decode shape even when the process switched torch.compile to
+    eager_on_recompile after its first inference run (an eager flex_attention would run the dense fallback)."""
+    try:
+        from torch._dynamo.eval_frame import _stance
+        if getattr(_stance, "stance", "default") == "eager_on_recompile" and hasattr(
+            torch.compiler, "set_stance"
+        ):
+            return torch.compiler.set_stance("default")
+    except Exception:
+        pass
+    return None
+
+
+def _attention(
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    dropout = 0.0,
+    scaling = None,
+    sliding_window = None,
+    softcap = None,
+    **kwargs,
+):
+    reason = None
+    if not isinstance(attention_mask, BlockMask):
+        config = getattr(module, "config", None)
+        kind = module.__dict__.get("_unsloth_flex_decode_kind", "full")
+        reason = _MASK_REASONS.get(config, {}).get(kind) if config is not None else None
+        reason = reason or "dense mask"
+    elif query.shape[-2] != 1:
+        reason = "not a one-token step"
+    elif dropout:
+        reason = "dropout"
+    elif kwargs.get("s_aux") is not None:
+        reason = "attention sinks"
+    if reason is not None:
+        _count(module, reason)
+        if isinstance(attention_mask, BlockMask):
+            raise RuntimeError(f"Unsloth: flex decode got a BlockMask it cannot run ({reason}).")
+        from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+        extra = dict(kwargs)
+        if softcap is not None:
+            extra["softcap"] = softcap
+        return sdpa_attention_forward(
+            module, query, key, value, attention_mask, dropout = dropout, scaling = scaling, **extra
+        )
+    if scaling is None:
+        scaling = getattr(module, "scaling", None)
+    if scaling is None:
+        scaling = query.shape[-1] ** -0.5
+    stance = None if torch.compiler.is_compiling() else _default_stance()
+    if stance is None:
+        out = flex_decode_attention(query, key, value, attention_mask, scaling, softcap = softcap)
+    else:
+        with stance:
+            out = flex_decode_attention(query, key, value, attention_mask, scaling, softcap = softcap)
+    _count(module, None)
+    # flex returns [B, H, Q, D]; transformers attention functions return [B, Q, H, D].
+    if out.dim() == 4 and out.shape[1] == query.shape[1] and out.shape[2] == query.shape[2]:
+        out = out.transpose(1, 2)
+    return out.contiguous(), None
+
+
+def stats(model):
+    """{layer_idx: {"kind", "flex", "fallback": {reason: n}}} for attention modules that ran under ATTN_KEY. Counts
+    Python executions: eager steps, CUDA graph warm-ups and captures (a replay runs no Python)."""
+    out = {}
+    for name, module in model.named_modules():
+        s = module.__dict__.get("_unsloth_flex_decode_stats")
+        if s is None:
+            continue
+        idx = getattr(module, "layer_idx", name)
+        out[idx] = {
+            "kind": module.__dict__.get("_unsloth_flex_decode_kind"),
+            "flex": s["flex"],
+            "fallback": dict(s["fallback"]),
+        }
+    return out
+
+
+def reset_stats(model):
+    for module in model.modules():
+        module.__dict__.pop("_unsloth_flex_decode_stats", None)

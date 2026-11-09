@@ -292,7 +292,7 @@ from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_cust
 from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
-from . import _decode_graphs, _generic_decode_graphs
+from . import _decode_graphs, _generic_decode_graphs, _flex_decode
 from .loader_utils import (
     _bnb_bits_requested,
     vlm_gradient_checkpointing_reentrant,
@@ -1630,8 +1630,10 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
             _generic_decode_graphs.end(self.model, keep = self.keep and exc[0] is None)
 
 
-# One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
-# dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built.
+# One-token decode on stock flex is slower than SDPA, but prefill must stay on flex (its block mask skips tiles a
+# dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built: a
+# StaticCache decode step runs Unsloth's flex decode (_flex_decode: graph-refillable BlockMask, flex_decoding)
+# where it is wanted and supported, else the non-flex path; prefill keeps the model's attention.
 _FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
 _FLEX_GENERATE_LOCK = threading.Lock()
 
@@ -1686,6 +1688,46 @@ def _flex_generate_configs(model):
     ]
 
 
+def _model_device(model):
+    device = getattr(model, "device", None)
+    if isinstance(device, torch.device):
+        return device
+    try:
+        return next(model.parameters()).device
+    except Exception:
+        return None
+
+
+def _generate_routes(model):
+    """(config, prefill attention, decode attention) per text attention config the generate call switches.
+    Flex-preferred configs prefill on flex and decode on flex decode or the non-flex path; other configs of a
+    flex-decode model keep their attention for prefill and decode on flex decode."""
+    routes = [(c, "flex_attention", _NON_FLEX_DECODE) for c in _flex_generate_configs(model)]
+    config = getattr(model, "config", None)
+    if config is None or not _flex_decode.wanted(_model_device(model)):
+        return routes
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
+        return routes
+    seen = {id(c) for c, _, _ in routes}
+    out = []
+    for c, prefill, decode in routes:
+        if _flex_decode.routable(base, c):
+            decode = _flex_decode.ATTN_KEY
+        out.append((c, prefill, decode))
+    for c in _text_attention_configs(config):
+        if id(c) in seen:
+            continue
+        impl = _config_get(c, "_attn_implementation", None)
+        if impl in ("sdpa", "eager") and _flex_decode.routable(base, c):
+            out.append((c, impl, _flex_decode.ATTN_KEY))
+    return out
+
+
+def _static_cache(cache):
+    return cache is not None and bool(getattr(cache, "is_compileable", False))
+
+
 def _step_query_length(model_inputs):
     if not isinstance(model_inputs, dict):
         return None
@@ -1705,12 +1747,19 @@ class _NonFlexGenerate:
         self.serial = None
         self.base = model.get_base_model() if hasattr(model, "get_base_model") else model
 
-    def _set(self, decode):
+    def _set(
+        self,
+        decode,
+        static = False,
+    ):
         state = self.model.__dict__
         if state.get("_unsloth_non_flex_generate_pinned", False):
             decode = True
-        value = _NON_FLEX_DECODE if decode else "flex_attention"
-        for c in state.get("_unsloth_non_flex_generate_configs", ()):
+        for c, prefill, decode_impl in state.get("_unsloth_non_flex_generate_configs", ()):
+            value = decode_impl if decode else prefill
+            # Flex decode needs fixed mask / KV shapes: a dynamic cache decodes on the non-flex path instead.
+            if value == _flex_decode.ATTN_KEY and not static:
+                value = _NON_FLEX_DECODE if prefill == "flex_attention" else prefill
             if _config_get(c, "_attn_implementation", None) != value:
                 _config_set(c, "_attn_implementation", value)
 
@@ -1725,11 +1774,12 @@ class _NonFlexGenerate:
             else:
                 decode = scope.steps > 0
             scope.steps += 1
-            scope._set(decode)
+            static = _static_cache(kwargs.get("past_key_values"))
+            scope._set(decode, static)
             model_inputs = prepare(*args, **kwargs)
             q_len = _step_query_length(model_inputs)
             if q_len is not None and (q_len == 1) != decode:
-                scope._set(q_len == 1)
+                scope._set(q_len == 1, static)
                 model_inputs = prepare(*args, **kwargs)
             return model_inputs
 
@@ -1739,7 +1789,7 @@ class _NonFlexGenerate:
         state = self.model.__dict__
         with _FLEX_GENERATE_LOCK:
             routed = _FLEX_GENERATE_ROUTING.get(self.base, 0) > 0 or bool(
-                _flex_generate_configs(self.model)
+                _generate_routes(self.model)
             )
             serial = None
             if routed:
@@ -1753,7 +1803,7 @@ class _NonFlexGenerate:
         with _FLEX_GENERATE_LOCK:
             depth = state.get("_unsloth_non_flex_generate", 0)
             if depth == 0:
-                configs = _flex_generate_configs(self.model)
+                configs = _generate_routes(self.model)
                 if not configs:
                     self._release()
                     return self
