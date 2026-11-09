@@ -43,8 +43,10 @@ def _ref_block_mask(
     # mask_function is transformers' (causal / causal + sliding overlay), the 2D mask adds per-slot padding.
     from torch.nn.attention.flex_attention import create_block_mask
 
-    q_o = q_offset if isinstance(q_offset, torch.Tensor) else torch.tensor(q_offset)
-    kv_o = kv_offset if isinstance(kv_offset, torch.Tensor) else torch.tensor(kv_offset)
+    # Copies, as zoo's: a hybrid StaticLayer passes its live cumulative_length, bumped in place by update() before
+    # attention reads the mask.
+    q_o = q_offset.clone() if isinstance(q_offset, torch.Tensor) else torch.tensor(q_offset)
+    kv_o = kv_offset.clone() if isinstance(kv_offset, torch.Tensor) else torch.tensor(kv_offset)
     pad = None
     if attention_mask is not None:
         full = attention_mask.to(torch.bool)
