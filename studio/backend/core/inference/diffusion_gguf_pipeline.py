@@ -70,7 +70,7 @@ def load_whole_pipeline_gguf(
     from .diffusion_gguf_lowbit import install_lowbit_iq
 
     install_lowbit_iq()  # diffusers' reader refuses unknown types, so before the read
-    install_exact_dequant()  # before the split dequantises the text encoders and VAE
+    install_exact_dequant()
     checkpoint = load_single_file_checkpoint(
         path,
         local_files_only = pipe_kwargs.get("local_files_only"),

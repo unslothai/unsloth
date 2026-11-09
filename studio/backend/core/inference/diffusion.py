@@ -9944,7 +9944,6 @@ class DiffusionBackend:
                             if kind == "gguf":
                                 # IQ1 / IQ2 / IQ3 tensors diffusers' table lacks would refuse the file
                                 install_lowbit_iq(logger)
-                                # fp32 dequant rounded once to the compute dtype, bit-identical to llama.cpp
                                 install_exact_dequant(logger)
                                 # Dequantise the GGUF transformer on-device at the compute dtype.
                                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
