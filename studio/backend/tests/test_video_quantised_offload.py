@@ -246,9 +246,32 @@ def test_auto_seeds_the_hosted_artifact_only_where_it_would_quantise(
 
 
 def test_explicit_fp8_refused_with_reason_when_the_dit_must_move(fake_runtime, monkeypatch):
+    """UNSLOTH_VIDEO_FP8_STREAM=0 restores the refusal of an fp8 DiT the plan moves."""
+    monkeypatch.setenv("UNSLOTH_VIDEO_FP8_STREAM", "0")
     _spoof(monkeypatch, tier_gib = 16)
     with pytest.raises(RuntimeError, match = r"moves the DiT .*int8 runs torchao-free"):
         VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+
+
+def test_explicit_fp8_refused_where_the_card_has_no_fp8_gemm(fake_runtime, monkeypatch):
+    """Without Studio's fp8 GEMM (sm_80) a moved DiT cannot stream torchao fp8 weights: still refused."""
+    monkeypatch.setitem(SUPPORTED, (8, 0), {"int8"})
+    _spoof(monkeypatch, tier_gib = 16, cap = (8, 0))
+    with pytest.raises(RuntimeError):
+        VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+
+
+def test_explicit_fp8_streams_the_hosted_torchao_dit_when_the_dit_must_move(
+    fake_runtime, monkeypatch
+):
+    """sm_89+: the hosted fp8 checkpoint is seeded and streamed (torchao_offload_plan), not refused, and the dense
+    shards are not quantised at load."""
+    spy = _spoof(monkeypatch, tier_gib = 16, cap = (8, 9))
+    status = VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+    assert status["transformer_quant"] == "fp8"
+    assert spy.seeded == ["fp8"]
+    assert not spy.quant
+    assert spy.plans[-1].offload_policy in ("group", "streaming")
 
 
 def test_explicit_int8_under_streamed_dit_is_torchao_free(fake_runtime, monkeypatch):

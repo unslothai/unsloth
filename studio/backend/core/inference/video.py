@@ -4175,17 +4175,55 @@ def _video_seed_stays_resident(
     hf_token: Optional[str] = None,
     ltx25_dev: bool = False,
     device_memory_reader: Optional[Callable[[], Any]] = None,
+    plan_out: Optional[list] = None,
 ) -> bool:
     """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream).
 
     ``scheme=None`` sizes the released bf16 DiT instead, and then also requires a measured budget (see
     ``_auto_keeps_resident_bf16``). ``device_memory_reader`` lets one planner call settle the card once
-    for both checks; it must return the raw settled snapshot (reclaimable is applied here)."""
+    for both checks; it must return the raw settled snapshot (reclaimable is applied here). ``plan_out`` (a
+    list) receives the plan judged, so a caller can place an offloaded seed on it without a second settle."""
+    planned = _video_seed_plan(
+        fam,
+        target = target,
+        scheme = scheme,
+        memory_mode = memory_mode,
+        text_encoder_quant = text_encoder_quant,
+        base_repo = base_repo,
+        reclaimable_mib = reclaimable_mib,
+        hf_token = hf_token,
+        ltx25_dev = ltx25_dev,
+        device_memory_reader = device_memory_reader,
+    )
+    if planned is None:
+        return scheme is not None
+    if plan_out is not None:
+        plan_out.append(planned)
+    if scheme is None:
+        return _auto_keeps_resident_bf16(planned, target)
+    return plan_keeps_transformer_resident(planned)
+
+
+def _video_seed_plan(
+    fam: Any,
+    *,
+    target: Any,
+    scheme: Optional[str],
+    memory_mode: Optional[str],
+    text_encoder_quant: Optional[str],
+    base_repo: Optional[str],
+    reclaimable_mib: int = 0,
+    hf_token: Optional[str] = None,
+    ltx25_dev: bool = False,
+    device_memory_reader: Optional[Callable[[], Any]] = None,
+) -> Any:
+    """The artifact-sized plan ``_video_seed_stays_resident`` judges, or None (no component sizes, or a
+    scheme with no steady size: both answered by the caller)."""
     from .diffusion_component_sizes import video_components_gb
 
     components = video_components_gb(fam, base_repo, allow_hub = True, token = hf_token, dev = ltx25_dev)
     if not components:
-        return scheme is not None
+        return None
     import torch
 
     dtype = getattr(target, "dtype", None)
@@ -4201,7 +4239,7 @@ def _video_seed_stays_resident(
         elif factor is not None:
             denoiser_gb = components[0] * factor
         else:
-            return True
+            return None
 
     from .diffusion_te_prequant import te_prequant_budget_scale
 
@@ -4245,9 +4283,67 @@ def _video_seed_stays_resident(
         text_encoder_dense_mib = int(text_encoder_gb * mib_per_gb),
         requested_mode = normalize_memory_mode(memory_mode),
     )
-    if scheme is None:
-        return _auto_keeps_resident_bf16(planned, target)
-    return plan_keeps_transformer_resident(planned)
+    return planned
+
+
+# 0 restores the refusal: an explicit fp8 pipeline load whose plan moves the DiT keeps the dense shards and is declined.
+VIDEO_FP8_STREAM_ENV = "UNSLOTH_VIDEO_FP8_STREAM"
+# Schemes whose hosted torchao denoiser streams under group offload; int8 has its torchao-free twin there instead.
+_VIDEO_TORCHAO_STREAM_SCHEMES = (TQ_FP8,)
+
+
+def video_fp8_stream_enabled() -> bool:
+    raw = (os.environ.get(VIDEO_FP8_STREAM_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _video_torchao_seed_placement(fam: Any, scheme: Optional[str], target: Any, plan: Any) -> Any:
+    """The streaming placement a hosted torchao ``scheme`` denoiser takes under an offloaded ``plan``, else None.
+
+    The rule the image path's seeded and single-file fp8 loads follow (``torchao_offload_plan``): group or
+    streaming offload keep their placement, a whole-module plan becomes the streaming plan, sequential offload
+    and a torchao, diffusers or pin budget that cannot stream it return None. Only fp8 on a card whose fp8
+    GEMM passes Studio's probe (sm_89+), on a conventional pipeline load; int8 keeps its torchao-free twin."""
+    if not video_fp8_stream_enabled() or scheme not in _VIDEO_TORCHAO_STREAM_SCHEMES:
+        return None
+    if plan is None or plan_keeps_transformer_resident(plan):
+        return None
+    if getattr(fam, "modular_workflow", None):
+        return None
+    try:
+        import torch
+
+        from .diffusion_memory import torchao_offload_plan, torchao_streaming_plan
+
+        if (
+            getattr(target, "device", None) != "cuda"
+            or getattr(target, "dtype", None) is not torch.bfloat16
+        ):
+            return None
+        if (
+            select_transformer_quant_scheme(
+                target, scheme, family = getattr(fam, "name", None), unproven_ok = True
+            )
+            != scheme
+        ):
+            return None
+        placed = torchao_offload_plan(plan, scheme)
+        if placed is not None and getattr(placed, "offload_policy", None) == OFFLOAD_MODEL:
+            # Whole-module hooks move a Float8Tensor by storage swap, which it does not survive: stream instead.
+            from .diffusion_memory import _torchao_stream_pinnable, torchao_scheme_streams
+            placed = (
+                torchao_streaming_plan(placed)
+                if torchao_scheme_streams(scheme) and _torchao_stream_pinnable(placed)
+                else None
+            )
+    except Exception:  # noqa: BLE001 -- an unanswerable probe keeps today's decline
+        return None
+    if placed is None or getattr(placed, "offload_policy", None) not in (
+        OFFLOAD_GROUP,
+        OFFLOAD_STREAMING,
+    ):
+        return None
+    return placed
 
 
 def _h3_carry_by_scheduler(fam: Any, state: Any, has_step_callback: bool) -> bool:
@@ -7429,6 +7525,7 @@ class VideoBackend:
                 ):
                     # auto keeps a resident bf16 DiT, so the dense shards are what this load runs.
                     return None
+                seed_plans: list = []
                 if not _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -7440,7 +7537,20 @@ class VideoBackend:
                     hf_token = hf_token,
                     ltx25_dev = ltx25_dev,
                     device_memory_reader = _settled_once,
+                    plan_out = seed_plans,
                 ):
+                    seed_plan = seed_plans[0] if seed_plans else None
+                    streamed = _video_torchao_seed_placement(fam, scheme, target, seed_plan)
+                    if streamed is not None:
+                        logger.info(
+                            "video.denoiser_prequant: an artifact-sized plan for %s offloads on this "
+                            "card ('%s'), and its torchao weights stream there, so the hosted "
+                            "checkpoint is seeded and streamed ('%s')",
+                            scheme,
+                            _video_plan_label(seed_plan),
+                            _video_plan_label(streamed),
+                        )
+                        return scheme
                     hosted = _video_native_hosted_scheme(fam, scheme, target)
                     if native_hosted is not None and hosted is not None:
                         native_hosted.append(hosted)
@@ -9525,7 +9635,21 @@ class VideoBackend:
         plan, bf16_plan, quant_replanned = _plan_for_te_scale(
             te_scale, log = True, denoiser_gb = denoiser_seed_gb
         )
-        if denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
+        seed_streamed = (
+            _video_torchao_seed_placement(fam, denoiser_seed_scheme, target, plan)
+            if denoiser_seed_scheme is not None
+            else None
+        )
+        if seed_streamed is not None:
+            logger.info(
+                "video.denoiser_prequant: the %s denoiser is offloaded ('%s') on this card, and its "
+                "torchao weights stream there, so the hosted checkpoint is seeded as '%s'",
+                denoiser_seed_scheme,
+                _video_plan_label(plan),
+                _video_plan_label(seed_streamed),
+            )
+            plan = seed_streamed
+        elif denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
             logger.info(
                 "video.denoiser_prequant: the %s denoiser would have to be offloaded ('%s') on this "
                 "card, so the hosted checkpoint is not seeded",
