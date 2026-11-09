@@ -1112,7 +1112,6 @@ def test_a_callable_instance_helper_reading_the_denoiser_keeps_the_full_key(monk
 
 
 def test_the_text_encoder_module_is_not_an_opaque_helper(monkeypatch):
-    # nn.Module encoders stay followable: the Qwen-style pipe above reads self.text_encoder(...)
     monkeypatch.delenv(SCOPED_ENV, raising = False)
     pipe = _Qwen21LikePipe({"transformer": ["style"]})
     assert prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
