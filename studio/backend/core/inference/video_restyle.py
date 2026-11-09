@@ -601,6 +601,9 @@ class RestyleRunner:
         if self._server is not None and self._server_files == files and self._server.is_alive():
             return self._server
         self.unload()
+        # A server another caller detached may still hold its VRAM: never launch beside it.
+        with self._lock:
+            self._stopped.wait_for(lambda: self._stopping == 0, timeout = 120)
         if self._server_factory is not None:
             server = self._server_factory(files.diffusion_model)
         else:

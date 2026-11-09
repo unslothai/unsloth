@@ -201,6 +201,8 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
         }),
       );
     } catch (err) {
+      // The start may have been accepted with its response lost: poll until progress answers.
+      setRetrying(true);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);

@@ -1063,3 +1063,34 @@ def test_start_saves_the_chat_kv_around_the_handoff(weights, monkeypatch):
     res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
     assert res.status_code == 200
     assert calls == [("save", "video", "video", "off"), ("take", "off"), "close"]
+
+
+def test_a_new_server_waits_for_the_previous_one_to_stop(weights):
+    import threading
+
+    release = threading.Event()
+    stopping = threading.Event()
+    started = []
+
+    class _Slow(_FakeServer):
+        def stop(self):
+            stopping.set()
+            assert release.wait(5)
+
+        def start(self, files):
+            started.append(release.is_set())
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _Slow(b"AVI"))
+    runner._ensure_server(vr.model_files())
+    started.clear()
+    unloading = threading.Thread(target = runner.unload)
+    unloading.start()
+    assert stopping.wait(5)
+    launching = threading.Thread(target = runner._ensure_server, args = (vr.model_files(),))
+    launching.start()
+    launching.join(0.3)
+    assert started == []
+    release.set()
+    unloading.join(5)
+    launching.join(5)
+    assert started == [True]
