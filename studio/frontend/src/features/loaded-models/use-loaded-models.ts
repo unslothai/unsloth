@@ -175,7 +175,6 @@ export function useLoadedModels(
       if (document.hidden) return;
       refresh();
     }, POLL_INTERVAL_MS);
-    // One tab return fires focus and visibilitychange; the second would queue a rerun.
     const isFreshWake = createWakeDedupe();
     const onWake = () => {
       if (!document.hidden && isFreshWake()) refresh();
