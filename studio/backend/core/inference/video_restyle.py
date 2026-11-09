@@ -533,9 +533,10 @@ class RestyleRunner:
             server.stop()
 
     def unload_if_idle(self) -> bool:
-        """Detach the server under the same lock ``start`` claims, so a restyle can't begin in between."""
+        """Detach the server under the same lock ``start`` claims, so a restyle can't begin in between.
+        A reservation counts as busy: that request is about to reuse the server."""
         with self._lock:
-            if self._state.get("active"):
+            if self._state.get("active") or self._reservation is not None:
                 return False
             server, self._server, self._server_files = self._server, None, None
         if server is not None:

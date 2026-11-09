@@ -761,3 +761,65 @@ def test_frames_from_video_holds_the_last_frame_of_a_slow_source():
     assert len(frames) == 120
     # The 4th second shows the 4th source frame, not the 3rd.
     assert frames[-1].getpixel((0, 0)) != frames[60].getpixel((0, 0))
+
+
+def test_a_reserved_runner_keeps_its_server(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    server = runner._ensure_server(vr.model_files())
+    token = runner.reserve()
+    assert not runner.unload_if_idle() and runner._server is server
+    runner.release(token)
+    assert runner.unload_if_idle() and runner._server is None
+
+
+class _Video:
+    def __init__(self, loaded):
+        self.loaded, self.unloaded = loaded, 0
+
+    def status(self):
+        return {"loaded": self.loaded}
+
+    def unload(self):
+        self.unloaded += 1
+
+
+def _gpu_handoff(
+    monkeypatch,
+    mode,
+    video,
+    generating = None,
+):
+    import core.inference.gpu_arbiter as arb
+    import core.inference.video as video_module
+    import utils.multi_model_settings as mms
+
+    acquired = []
+    monkeypatch.setattr(mms, "get_multi_model_mode", lambda: mode)
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: video)
+    monkeypatch.setattr(video_module, "generation_account_in_flight", lambda: generating)
+    monkeypatch.setattr(
+        arb, "acquire_for_request", lambda owner, **kw: acquired.append((owner, kw))
+    )
+    return acquired
+
+
+def test_start_takes_the_gpu_as_video_and_unloads_the_create_model(weights, monkeypatch):
+    from routes import video_restyle as route
+
+    video = _Video(loaded = True)
+    acquired = _gpu_handoff(monkeypatch, "off", video)
+    route._take_the_gpu()
+    assert video.unloaded == 1 and acquired == [("video", {"policy": "off"})]
+
+
+@pytest.mark.parametrize("mode, generating", [("always", None), ("off", "alice")])
+def test_start_refuses_to_drop_a_create_model_it_must_keep(weights, monkeypatch, mode, generating):
+    from fastapi import HTTPException
+
+    from routes import video_restyle as route
+
+    video = _Video(loaded = True)
+    acquired = _gpu_handoff(monkeypatch, mode, video, generating)
+    with pytest.raises(HTTPException) as exc:
+        route._take_the_gpu()
+    assert exc.value.status_code == 409 and video.unloaded == 0 and acquired == []

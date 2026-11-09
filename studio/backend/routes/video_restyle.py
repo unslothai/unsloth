@@ -103,9 +103,36 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
     try:
         with _diffusion_training_admission():
             _guard_video_load_against_training()
+            _take_the_gpu()
             return video_restyle.runner.start(**kwargs)
     except TrainingActiveError as exc:
         raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
+
+
+def _take_the_gpu() -> None:
+    # The restyle sd-server (~30 GB) is a video workload: chat and image models go through the
+    # arbiter's eviction, and the Create video model, which shares the VIDEO owner, is unloaded here.
+    from core.inference import gpu_arbiter
+    from core.inference.video import generation_account_in_flight, get_video_backend
+    from utils.multi_model_settings import get_multi_model_mode
+
+    mode = get_multi_model_mode()
+    video = get_video_backend()
+    if video.status().get("loaded"):
+        if generation_account_in_flight() is not None:
+            raise HTTPException(
+                status_code = 409, detail = "A video is generating. Try again when it finishes."
+            )
+        if mode == "always":
+            raise HTTPException(
+                status_code = 409,
+                detail = "Unload the Create video model first: Keep multiple models loaded is set to Always.",
+            )
+        video.unload()
+    try:
+        gpu_arbiter.acquire_for_request(gpu_arbiter.VIDEO, policy = mode)
+    except gpu_arbiter.MultiModelAlwaysRefusal as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
 async def _start_reserved(request: Request, reservation: str):

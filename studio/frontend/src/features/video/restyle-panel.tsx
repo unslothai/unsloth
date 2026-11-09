@@ -80,7 +80,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const [inputClip, setInputClip] = useState<Blob | null>(null);
   const [controlClip, setControlClip] = useState<Blob | null>(null);
   const [outputClip, setOutputClip] = useState<Blob | null>(null);
-  const [clipsFailed, setClipsFailed] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const urls = {
     input: useObjectUrl(inputClip),
     control: useObjectUrl(controlClip),
@@ -113,19 +113,19 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             CLIPS.map((clip) => fetchVideoRestyleClip(next.id as string, clip.kind)),
           );
         } catch (err) {
-          // Keep polling so the downloads are retried.
           if (loadedFor.current === next.id) loadedFor.current = null;
-          setClipsFailed(true);
           throw err;
         }
-        setClipsFailed(false);
         const [input, control, output] = clips;
         if (ticket !== clipsFor.current) return;
         setInputClip(input);
         setControlClip(control);
         setOutputClip(output);
       }
+      setRetrying(false);
     } catch (err) {
+      // Keep polling: a job may be running, or a result waiting to download.
+      setRetrying(true);
       setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
@@ -172,12 +172,12 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     }
     const kick = window.setTimeout(() => void refresh(), 0);
     const timer =
-      running || clipsFailed ? window.setInterval(() => void refresh(), POLL_MS) : undefined;
+      running || retrying ? window.setInterval(() => void refresh(), POLL_MS) : undefined;
     return () => {
       window.clearTimeout(kick);
       window.clearInterval(timer);
     };
-  }, [active, running, clipsFailed, refresh]);
+  }, [active, running, retrying, refresh]);
 
   const submit = async () => {
     if (submitting) return;
