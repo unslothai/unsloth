@@ -183,6 +183,7 @@ from .diffusion_flux3 import REFERENCE_AREA as FLUX3_REFERENCE_AREA
 from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
     decide_small_host,
+    enable_int8_act_ as small_host_enable_int8_act,
     download_first_enabled as small_host_download_first,
     engaged_on as small_host_engaged_on,
     host_commit_mib,
@@ -196,6 +197,7 @@ from .diffusion_small_host import (
 from .model_ids import hf_cache_repo_id
 from .safetensors_pread import pread_available
 from .diffusion_memory import (
+    pipe_small_host_int8,
     commit_load_budget_fraction,
     release_load_budget_fraction,
     vram_budget_scope,
@@ -524,6 +526,8 @@ from .diffusion_transformer_quant import (
     denoiser_modules,
     explain_unusable_scheme,
     family_denies_scheme,
+    fp16_card_int8_host,
+    fp16_card_int8_scheme,
     mark_source_precision,
     nvfp4_gated_base,
     native_int8_act,
@@ -4500,6 +4504,9 @@ class DiffusionBackend:
                 and native_quant_host(target)
             ):
                 if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
+                    reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
+            elif model_kind == "pipeline" and pinned == TQ_INT8 and fp16_card_int8_host(target):
+                if fp16_card_int8_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
             elif (
                 model_kind == "pipeline"
@@ -8640,6 +8647,9 @@ class DiffusionBackend:
                         TQ_INT8 if rdna_auto_w8a8 is not None else transformer_quant_pinned,
                         family = getattr(fam, "name", None),
                     )
+                    or fp16_card_int8_scheme(
+                        target, transformer_quant_pinned, family = getattr(fam, "name", None)
+                    )
                     if kind == "pipeline"
                     else None
                 )
@@ -10226,6 +10236,26 @@ class DiffusionBackend:
                         if not hasattr(pending_cache_write, "start"):
                             pending_cache_write = None
                         self._raise_if_load_cancelled(_load_token)
+                    if (
+                        pipe is not None
+                        and kind == "pipeline"
+                        and transformer_quant_engaged is None
+                        and native_scheme == TQ_INT8
+                        and fp16_card_int8_host(target)
+                        and pipe_small_host_int8(pipe)
+                    ):
+                        # Already per-row int8 (small-host route): re-quantising would only re-round the codes.
+                        transformer_quant_engaged = TQ_INT8
+                        act_linears = sum(
+                            small_host_enable_int8_act(module)
+                            for _attr, module in denoiser_modules(pipe)
+                        )
+                        logger.info(
+                            "diffusion.transformer_quant: int8 runs on the small-host int8 weights (fp16-only "
+                            "GPU, %s compute; W8A8 armed on %d linears for float32 compute)",
+                            str(getattr(target, "dtype", None)).replace("torch.", ""),
+                            act_linears,
+                        )
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
                     # pipelines; offloaded plans stay dense unless whole-module.
                     if (
@@ -10256,7 +10286,10 @@ class DiffusionBackend:
                             None
                             if native_scheme is not None or native_offload_scheme is not None
                             else pipeline_quant_uncompilable
-                        ) or dense_quant_blocker(pipe)
+                        ) or dense_quant_blocker(
+                            pipe,
+                            allow_float16 = native_scheme is not None and fp16_card_int8_host(target),
+                        )
                         if pipeline_quant_blocker is not None:
                             logger.info(
                                 "diffusion.transformer_quant: skipped (%s)", pipeline_quant_blocker
