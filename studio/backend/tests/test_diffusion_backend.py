@@ -11875,11 +11875,13 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
     from core.inference import diffusion_nvfp4_gate as gate
-    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_RELEASES
 
-    # The gate covers only the flashinfer its record was measured on; pin the version Studio installs so the
-    # answer does not depend on this host's flashinfer (CI runners have none).
-    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: FLASHINFER_VERSION)
+    # The gate covers only the flashinfer its record was measured on; pin the covered release Studio installs so
+    # the answer does not depend on this host's flashinfer (CI runners have none).
+    monkeypatch.setattr(
+        gate, "installed_flashinfer_version", lambda: FLASHINFER_RELEASES[-1].version
+    )
 
     target = SimpleNamespace(device = "cuda", dtype = None)
     assert (
@@ -11891,7 +11893,15 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
         == "unsloth/FLUX.1-schnell-NVFP4"
     )
 
-    # An unreadable version is not covered: the plan and the load both drop the nvfp4 rung, so nothing fetches it.
+    # Nor is the newest release until its kernels are measured on the gated checkpoints, or an unreadable version:
+    # the plan and the load both drop the nvfp4 rung, so nothing fetches it.
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
+
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: FLASHINFER_VERSION)
+    assert (
+        dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
+        != "nvfp4"
+    )
     monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: None)
     assert (
         dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
