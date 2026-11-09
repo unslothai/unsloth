@@ -209,7 +209,7 @@ class DiffusionFamily:
     # Preferred filename rows; the derived name stays as fallback so older builds keep their
     # artifact.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
-    # ``(repo_id, filename)`` of a ComfyUI-format NVFP4 denoiser an EXPLICIT ``nvfp4`` pick of the base loads while the
+    # ``(repo_id, filename)`` of a single-file NVFP4 denoiser an EXPLICIT ``nvfp4`` pick of the base loads while the
     # family's NVFP4 deny stands (``nvfp4_packed_pick``): weights only, its layers kept packed and widened per call to
     # the compute dtype (``diffusion_packed_block``), activations never quantized. Auto never picks it.
     nvfp4_packed_file: Optional[tuple[str, str]] = None
