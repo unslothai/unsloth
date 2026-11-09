@@ -3,18 +3,12 @@
 
 """Row-strip decode for the FLUX.2 / FLUX.3 VAE (AutoencoderKLFlux2) on top of the fused GroupNorm kernels.
 
-The fused decode still materialises every full-resolution GroupNorm+SiLU output and every conv output of a residual
-block. Here each GroupNorm takes its statistics over the whole feature map once, then normalisation, SiLU, the edge
-padding and the 3x3 conv run on bounded row strips with a one-row halo, so a normalised activation never exists at
-full size. The decoder owns its residual stream: equal-channel blocks add into their input in place, a block that
-halves the channels writes its output into the front half of its input's storage, and the blocks of a level share
-one hidden buffer that cuDNN writes strip by strip without a copy. Upsample and the final norm/conv run in strips.
-Same math as the fused decode (fp32 statistics, one rounding per residual sum); convs see different strip shapes.
-NVIDIA CUDA only (``diffusion_vae_fused.runtime_ok``); eager only.
+GroupNorm stats are taken once over the full map; norm, SiLU, padding and the 3x3 conv then run on bounded row
+strips with a one-row halo, so no normalised activation exists at full size. Residuals are written in place (halving
+blocks into the front half of their input). Same math as the fused decode. NVIDIA CUDA only; eager only.
 
-Every decode on cards where it was measured no slower (T4 sm75, L4 sm89); elsewhere (A100 measured 4% slower) only a
-decode the fused path would not fit in the free VRAM, where the alternative is more tiles. ``UNSLOTH_FLUX_VAE_STRIPS``:
-``0`` off, ``1`` every decode on any NVIDIA card.
+Every decode on cards measured no slower (T4, L4); elsewhere (A100 4% slower) only decodes the fused path would not
+fit. ``UNSLOTH_FLUX_VAE_STRIPS``: ``0`` off, ``1`` every decode on any NVIDIA card.
 """
 
 from __future__ import annotations

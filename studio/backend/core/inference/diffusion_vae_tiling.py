@@ -112,9 +112,7 @@ DECODE_MIB_PER_LATENT_BY_CLASS = {
     "AutoencoderKLFlux2": (0.17, 0.09),
 }
 DECODE_MIB_PER_LATENT_BY_RATIO = {8: (0.27, 0.18), 16: (1.7, 0.43), 32: (1.3, 1.3)}
-# The row-strip decode (diffusion_vae_strips): 16-bit peak = slope MiB per latent + four strip buffers (its strips are
-# bounded, so the peak no longer scales like the fused one). Bounds every measured tile side 48 to 256 (L4, A100,
-# T4; real weights). Tiles whose largest pass fits in one strip keep the fused decode and its figure.
+# Strip decode 16-bit peak = slope MiB per latent + four strip buffers; bounds measured tiles 48-256 (L4, A100, T4).
 DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048}
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
