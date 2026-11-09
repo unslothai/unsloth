@@ -339,7 +339,6 @@ def test_regional_compile_still_uses_the_text_cache(monkeypatch):
 @needs_mirror
 @pytest.mark.parametrize("fullgraph", [True, False])
 def test_whole_forward_compile_one_graph_across_renders(monkeypatch, fullgraph):
-    # torch.compile(transformer) traces the outer forward: no graph break, no recompile from the render cache
     from torch._dynamo.testing import CompileCounter
     from torch._dynamo.utils import counters
 

@@ -8,8 +8,7 @@
   (``UNSLOTH_H3_REFINER_CACHE=0`` disables).
 * the packed sequence filled in place with ``index_copy_`` (``UNSLOTH_H3_INPLACE_PACK=0`` disables).
 
-Traced inside a whole-forward ``torch.compile`` it runs the stock forward (the per-block regional compile Studio uses
-leaves this outer forward eager, so both still apply there).
+Under a whole-forward ``torch.compile`` the stock forward runs (regional compile keeps this forward eager).
 """
 
 from __future__ import annotations
@@ -226,8 +225,7 @@ def _forward(
 
     extra = {}
     if _compiling():
-        # traced as part of a whole-forward torch.compile: the host-side cache key (is_inference, data_ptr) and the
-        # stats counters are not traceable (graph breaks, a guard per counter value), so run the stock forward
+        # cache key (is_inference, data_ptr) and stats counters cause graph breaks / recompiles when traced
         fn = type(self).forward
     elif torch.is_grad_enabled() or not (
         (self.__dict__.get(_SCOPE_ATTR) is not None and refiner_cache_enabled())
