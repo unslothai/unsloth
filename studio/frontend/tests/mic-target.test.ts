@@ -21,8 +21,9 @@ import {
   MIN_MIC_CLIP_BYTES,
   micClipRoom,
   micSendsAudioToModel,
+  pickAudioForModel,
 } from "../src/features/chat/utils/mic-target.ts";
-import { MAX_AUDIO_SIZE } from "../src/lib/audio-utils.ts";
+import { AUDIO_ATTACHMENT_ACCEPT, MAX_AUDIO_SIZE } from "../src/lib/audio-utils.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -225,5 +226,52 @@ test("the model clip path gates on PCM support, not MediaRecorder", () => {
   assert.match(
     source,
     /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{\s*if \(!PcmRecorder\.isSupported\(\)\)/,
+  );
+});
+
+test("over plain HTTP the model mic picks recording files and attaches them", async () => {
+  const listeners = new Map<string, () => void>();
+  const input = {
+    type: "",
+    accept: "",
+    multiple: false,
+    hidden: false,
+    files: null as File[] | null,
+    removed: false,
+    clicked: false,
+    addEventListener: (type: string, listener: () => void) => listeners.set(type, listener),
+    remove() {
+      this.removed = true;
+    },
+    click() {
+      this.clicked = true;
+    },
+  };
+  let appended: unknown = null;
+  const doc = {
+    createElement: () => input,
+    body: { append: (node: unknown) => (appended = node) },
+  } as unknown as Document;
+  const added: File[] = [];
+  const clip = new File([new Uint8Array(4)], "note.m4a", { type: "" });
+  const refused = new File([new Uint8Array(4)], "big.wav", { type: "audio/wav" });
+  pickAudioForModel(async (file) => {
+    added.push(file);
+    if (file === refused) throw new Error("too big");
+  }, doc);
+  assert.equal(input.type, "file");
+  assert.equal(input.accept, AUDIO_ATTACHMENT_ACCEPT);
+  assert.equal(appended, input);
+  assert.equal(input.clicked, true);
+  input.files = [clip, refused];
+  listeners.get("change")?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(added, [clip, refused]);
+  assert.equal(input.removed, true);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const fallback = thread.slice(thread.indexOf('currentDictationEntryMode() === "recording-file"'));
+  assert.match(
+    fallback.slice(0, 400),
+    /if \(micRecordsForModel\(\)\) \{\s*pickAudioForModel\(\(file\) => aui\.composer\(\)\.addAttachment\(file\)\);\s*\} else \{\s*audioUpload\.openDialog\(\);/,
   );
 });

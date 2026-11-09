@@ -399,7 +399,10 @@ import {
   dictationSendBlocked,
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
-import { micSendsAudioToModel } from "@/features/chat/utils/mic-target";
+import {
+  micSendsAudioToModel,
+  pickAudioForModel,
+} from "@/features/chat/utils/mic-target";
 import {
   isRagClientError,
   listProjectDocuments,
@@ -5332,7 +5335,11 @@ const Composer: FC<{
   const startDictation = useCallback(() => {
     if (audioUpload.busy || dictationEntryDisabled) return;
     if (currentDictationEntryMode() === "recording-file") {
-      audioUpload.openDialog();
+      if (micRecordsForModel()) {
+        pickAudioForModel((file) => aui.composer().addAttachment(file));
+      } else {
+        audioUpload.openDialog();
+      }
       return;
     }
     if (!micRecordsForModel() && !isStudioDictationAvailable()) {

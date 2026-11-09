@@ -3,6 +3,7 @@
 
 import type { MicTarget } from "@/features/settings/stores/voice-settings-store";
 import {
+  AUDIO_ATTACHMENT_ACCEPT,
   MAX_AUDIO_SIZE,
   getAudioAddError,
   isAudioAttachmentFile,
@@ -44,4 +45,29 @@ export function micClipRoom(
     maxFiles,
   );
   return reason ? { reason } : { maxBytes: MAX_AUDIO_SIZE - totalSize };
+}
+
+/** Without a usable mic (plain HTTP), "send audio to the model" picks a recording file to attach. */
+export function pickAudioForModel(
+  add: (file: File) => Promise<unknown>,
+  doc: Document = document,
+): void {
+  const input = doc.createElement("input");
+  input.type = "file";
+  input.accept = AUDIO_ATTACHMENT_ACCEPT;
+  input.multiple = true;
+  input.hidden = true;
+  const done = () => input.remove();
+  input.addEventListener(
+    "change",
+    () => {
+      // The attachment adapter toasts its own refusals.
+      for (const file of Array.from(input.files ?? [])) void add(file).catch(() => {});
+      done();
+    },
+    { once: true },
+  );
+  input.addEventListener("cancel", done, { once: true });
+  doc.body.append(input);
+  input.click();
 }
