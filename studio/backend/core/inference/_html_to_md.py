@@ -354,8 +354,8 @@ _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 _WHITESPACE_RUN = re.compile(r"\s+")
 # browsers collapse only ASCII whitespace, so text indented with &nbsp; or &emsp; keeps its indent
 _COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
-# U+00A0 and the other spaces kept above; they pad layout, so scoring does not count them as text
-_UNICODE_SPACE_RUN = re.compile(r"[^\S \t\n\r\f]+")
+_SPACE_RUN = re.compile(r"[^\S\n]+")
+_KEPT_SPACE = re.compile(r"[^\S \t\n\r\f\v]")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -2039,12 +2039,12 @@ class _MarkdownRenderer(HTMLParser):
         # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
         # Suppress whitespace-only nodes between table elements (source indentation, a lone &nbsp;),
-        # but keep a caption's &nbsp;, which separates Javadoc's method-summary tabs.
+        # but keep a caption's &nbsp; or &emsp;, which separates tabs such as Javadoc's method summary.
         if (
             self._in_table
             and not self._in_cell
             and not text.strip()
-            and not ("\xa0" in text and self._open_at.get("caption"))
+            and not (self._open_at.get("caption") and not text.isascii())
         ):
             return
         # Source indentation between <li> and its first block must not end the marker line.
@@ -2323,6 +2323,7 @@ def _select_main_scope_render(
         )
         if site_links is not None:
             scored = site_links.clean(scored)
+        scored = _fold_kept_spaces(scored)
         visible = _visible_chars(scored)
         prose = visible - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
@@ -2370,10 +2371,17 @@ def _render_main_document(
     return _visible_chars(scored), rendered
 
 
+def _fold_kept_spaces(text: str) -> str:
+    """Scoring view of *text*: a space run holding U+00A0 or another kept Unicode space is layout
+    padding, so it counts as one space, while pure ASCII runs (code indentation) stay as rendered."""
+    if text.isascii() or not _KEPT_SPACE.search(text):
+        return text
+    return _SPACE_RUN.sub(lambda m: m.group() if m.group().isascii() else " ", text)
+
+
 def _visible_chars(text: str) -> int:
     """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
-    if not text.isascii():
-        text = _UNICODE_SPACE_RUN.sub(" ", text)
+    text = _fold_kept_spaces(text)
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 

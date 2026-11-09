@@ -1601,22 +1601,33 @@ def test_kept_no_break_spaces_do_not_dilute_a_link_header(nbsp, tag):
     assert html_to_markdown(html, main_content = True) == prose.strip()
 
 
+@pytest.mark.parametrize("sep", ["&nbsp;", "&emsp;"])
 @pytest.mark.parametrize("main_content", [False, True])
-def test_a_caption_keeps_the_no_break_spaces_between_its_tabs(main_content):
+def test_a_caption_keeps_the_no_break_spaces_between_its_tabs(main_content, sep):
     # Javadoc 8 method summary: the caption's tabs are separated only by &nbsp;
     html = (
-        '<table><caption><span>All Methods</span><span class="tabEnd">&nbsp;</span>'
-        '<span><a href="javascript:show(1);">Static Methods</a></span><span class="tabEnd">&nbsp;</span>'
+        f'<table><caption><span>All Methods</span><span class="tabEnd">{sep}</span>'
+        f'<span><a href="javascript:show(1);">Static Methods</a></span><span class="tabEnd">{sep}</span>'
         "</caption><tr><th>Modifier</th><th>Method</th></tr><tr><td>a</td><td>b</td></tr></table>"
     )
     out = html_to_markdown(html, main_content = main_content)
-    assert out.startswith("All Methods\xa0[Static Methods](javascript:show(1);)\xa0| Modifier |")
+    kept = {"&nbsp;": "\xa0", "&emsp;": "\u2003"}[sep]
+    assert out.startswith(
+        f"All Methods{kept}[Static Methods](javascript:show(1);){kept}| Modifier |"
+    )
 
 
-@pytest.mark.parametrize("nbsp", ["&nbsp;", "\xa0"])
+@pytest.mark.parametrize("nbsp", ["&nbsp;", "\xa0", "&nbsp; ", "&emsp;"])
 def test_no_break_space_padding_does_not_make_a_stub_the_main_content(nbsp):
     body = "Body prose that the page is about. " * 20
     html = f"<main><article><p>a{nbsp * 220}b</p></article><p>{body}</p></main>"
+    assert body.strip() in html_to_markdown(html, main_content = True)
+
+
+def test_no_break_space_padding_does_not_outrank_a_longer_article():
+    teaser = "Teaser " + "&nbsp;" * 3000 + " ".join(["teaser words"] * 20)
+    body = "Body prose that the page is about. " * 60
+    html = f"<article><p>{teaser}</p></article><article><p>{body}</p></article>"
     assert body.strip() in html_to_markdown(html, main_content = True)
 
 
