@@ -387,6 +387,10 @@ def test_offline_a_snapshot_cached_only_as_bins_loads_them(hub, tmp_path, monkey
         "use_safetensors": False
     }
     assert calls == []
+    # A variant load (fp16 twins) is never pointed at the default-name .bin files.
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+    assert ds.pipeline_safetensors_kwargs(str(root), passed = {"variant": "fp16"}) == {}
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
     # Online with no matching record the library default stays.
     assert ds.pipeline_safetensors_kwargs(str(root)) == {}
 

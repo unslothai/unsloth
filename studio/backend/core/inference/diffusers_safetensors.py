@@ -275,7 +275,9 @@ def pipeline_safetensors_kwargs(
                     break
         if root is not None and local_pipeline_safetensors_complete(root, passed):
             return {"use_safetensors": True}
-        if root is not None and _snapshot_identity(root) is not None:
+        variant = passed.get("variant") if isinstance(passed, dict) else None
+        # A variant load reads ``*.<variant>.*`` files, which the default-name .bin check says nothing about.
+        if root is not None and not variant and _snapshot_identity(root) is not None:
             # Every weight component already cached as a Hub-verified .bin: reuse it, download nothing new.
             components = _manifest_components(root) or []
             skip = set(passed or ())
