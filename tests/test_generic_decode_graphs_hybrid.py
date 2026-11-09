@@ -21,12 +21,20 @@ from unsloth.models import vision
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_generic_decode_graphs import _Host  # noqa: E402
+from real_accelerator import has_real_cuda  # noqa: E402
 
 qwen3_5 = pytest.importorskip("transformers.models.qwen3_5")
 from transformers import cache_utils  # noqa: E402
 
 if getattr(cache_utils, "LinearAttentionLayer", None) is None:
     pytest.skip("transformers without LinearAttentionLayer", allow_module_level = True)
+
+
+# On a CUDA host, zoo's Triton Gated DeltaNet kernels (and vendored fla) are dispatched for these CPU tensors and
+# cannot read them: the host stand-in tests run where no GPU is visible; the real capture is the gpu test below.
+host_only = pytest.mark.skipif(
+    torch.cuda.is_available(), reason = "CPU stand-in: Triton GDN kernels on a CUDA host"
+)
 
 
 def _tiny(moe):
@@ -150,6 +158,7 @@ def _generate(
             handle.remove()
 
 
+@host_only
 @pytest.mark.parametrize("which", ["dense", "moe"])
 @pytest.mark.parametrize("bsz,pads", [(1, ()), (4, (3, 0, 5, 1))])
 def test_hybrid_decode_replays_with_eager_tokens_and_states(host, request, which, bsz, pads):
@@ -174,6 +183,7 @@ def test_hybrid_decode_replays_with_eager_tokens_and_states(host, request, which
             assert torch.equal(x, y), f"state differs after step {step}"
 
 
+@host_only
 def test_state_comparison_catches_a_double_advance(host, dense, monkeypatch):
     # The check above is not vacuous: a snapshot that skips the linear states lets the validation replay advance
     # them, and the eager step advances them again.
@@ -195,6 +205,7 @@ def test_state_comparison_catches_a_double_advance(host, dense, monkeypatch):
     )
 
 
+@host_only
 def test_linear_layer_checks(host, dense):
     from transformers import StaticCache
 
@@ -266,6 +277,7 @@ def _gen(
     )
 
 
+@host_only
 @pytest.mark.parametrize("which", [False, True])
 def test_fast_generate_graphs_hybrid_and_kept_cache_resets_state(default_host, monkeypatch, which):
     model = _fast(which)
@@ -286,3 +298,29 @@ def test_fast_generate_graphs_hybrid_and_kept_cache_resets_state(default_host, m
     s2 = GG.stats(model)
     assert s2["captures"] == 1 and s2["replays"] - s1["replays"] == 15, (s1, s2)
     assert GG.kept_cache(model) is kept
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda() or torch.version.hip is not None, reason = "NVIDIA CUDA")
+@pytest.mark.parametrize("which", [False, True])
+def test_real_capture_matches_eager_hybrid(which, monkeypatch):
+    # The real CUDA capture of a Gated DeltaNet + full-attention step: the GDN decode kernels (zoo's Triton conv
+    # update, fla's recurrent rule) are recorded, and every replay matches eager tokens and states.
+    monkeypatch.setattr(G, "ENABLED", True)
+    model = (
+        _tiny(which)
+        .to(torch.float16 if torch.cuda.get_device_capability()[0] < 8 else torch.bfloat16)
+        .cuda()
+    )
+    _fresh(model)
+    ids, mask = _ids(2, pads = (3, 0))
+    ids, mask = ids.cuda(), mask.cuda()
+    eager_trace, graph_trace = [], []
+    eager = _generate(model, ids, mask, False, 48, eager_trace)
+    graphed = _generate(model, ids, mask, True, 48, graph_trace)
+    s = GG.stats(model)
+    assert torch.equal(eager, graphed), s
+    assert s["captures"] == 1 and s["replays"] == 46 and not s["refusals"], s
+    for a, b in zip(eager_trace, graph_trace):
+        for x, y in zip(a, b):
+            assert torch.equal(x, y), s
