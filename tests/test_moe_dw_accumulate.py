@@ -616,13 +616,20 @@ def test_autotune_handles_an_empty_expert():
     then check dW against the same per-expert reference the routing tests use."""
     E, N, K, T, topk = 8, 64, 64, 64, 2
     c = _Case(E, N, K, T, topk, "permute_x", torch.bfloat16, empty = (1, 5), seed = 7)
-    assert int(c.m_sizes[1]) == 0 and int(c.m_sizes[5]) == 0, "the case must actually starve two experts"
+    assert (
+        int(c.m_sizes[1]) == 0 and int(c.m_sizes[5]) == 0
+    ), "the case must actually starve two experts"
     assert int(c.m_sizes.sum()) == T * topk
 
     W = _param(E, N, K, torch.bfloat16)
     Y = gg.grouped_gemm(
-        X = c.X, W = W, m_sizes = c.m_sizes, topk = topk, gather_indices = c.gather,
-        permute_x = True, autotune = True,
+        X = c.X,
+        W = W,
+        m_sizes = c.m_sizes,
+        topk = topk,
+        gather_indices = c.gather,
+        permute_x = True,
+        autotune = True,
     )
     Y.backward(c.G)
     err = (W.grad.double() - c.ref).abs().max()
