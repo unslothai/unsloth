@@ -1465,3 +1465,26 @@ def test_the_fused_int8_path_matches_the_unfused_int8_path_on_cuda(monkeypatch):
     rel = lambda a, b: float((a - b).norm() / b.norm())  # noqa: E731
     assert rel(unfused, dense) < 0.02 and rel(fused, dense) < 0.02
     assert rel(fused, unfused) < 0.01
+
+
+def test_cold_tile_decode_compiles_fullgraph_in_one_graph(monkeypatch):
+    monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, "2")
+    monkeypatch.setattr(H, "_STITCH_KNOWN", {})
+    vae = _tiny_vae()
+    assert H._install_tile_batch(vae)
+    z = torch.randn(1, 8, 3, 6, 9, generator = torch.Generator().manual_seed(5))
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    torch._dynamo.reset()
+    try:
+        fn = torch.compile(lambda z: vae._decode_clip(z), backend = counter, fullgraph = True)
+        with torch.no_grad():
+            got = fn(z)
+            fn(z)
+    finally:
+        torch._dynamo.reset()
+    with torch.no_grad():
+        ref = vae._decode_clip(z)
+    assert counter.frame_count == 1
+    assert torch.equal(got, ref)

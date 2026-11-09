@@ -311,6 +311,52 @@ def test_regional_compile_adds_no_graphs(monkeypatch):
     assert patched <= stock
 
 
+def _two_renders(model, fn):
+    outs = []
+    layout = _layout()
+    for seed in (3, 4):
+        enc = _enc(seed)
+        with torch.no_grad(), h3f.h3_render_scope(_Pipe(model)):
+            for i in range(3):
+                outs.append(fn(**_step_inputs(i, enc), **layout))
+    return outs
+
+
+@needs_mirror
+def test_regional_compile_still_uses_the_text_cache(monkeypatch):
+    monkeypatch.delenv(h3f.REFINER_CACHE_ENV, raising = False)
+    monkeypatch.delenv(h3f.INPLACE_PACK_ENV, raising = False)
+    stock = _two_renders(_model(), _model())
+    torch._dynamo.reset()
+    m = _model()
+    h3f.install_h3_forward(m)
+    m.compile_repeated_blocks(backend = "eager", fullgraph = True, dynamic = False)
+    _assert_same(stock, _two_renders(m, m))
+    stats = m.__dict__[h3f.STATS_ATTR]
+    assert stats["text_misses"] == 2 and stats["text_hits"] == 4 and stats["inplace_packs"] == 6
+
+
+@needs_mirror
+@pytest.mark.parametrize("fullgraph", [True, False])
+def test_whole_forward_compile_one_graph_across_renders(monkeypatch, fullgraph):
+    from torch._dynamo.testing import CompileCounter
+    from torch._dynamo.utils import counters
+
+    monkeypatch.delenv(h3f.REFINER_CACHE_ENV, raising = False)
+    monkeypatch.delenv(h3f.INPLACE_PACK_ENV, raising = False)
+    stock = _two_renders(_model(), _model())
+    torch._dynamo.reset()
+    counters.clear()
+    m = _model()
+    assert h3f.install_h3_forward(m) is True
+    cnt = CompileCounter()
+    compiled = torch.compile(m, backend = cnt, fullgraph = fullgraph, dynamic = False)
+    _assert_same(stock, _two_renders(m, compiled))
+    assert cnt.frame_count == 1
+    assert sum(counters["graph_break"].values()) == 0
+    torch._dynamo.reset()
+
+
 @needs_mirror
 def test_lora_scale_is_part_of_the_key(monkeypatch):
     monkeypatch.delenv(h3f.REFINER_CACHE_ENV, raising = False)

@@ -3439,12 +3439,10 @@ export const id = {
       exportingAction: "Mengekspor...",
       exportConversations: "Ekspor Terbaru dan Proyek",
       exportConversationsDescription:
-        "Unduh Terbaru atau Terbaru beserta chat proyek sebagai Training JSONL, CSV, ShareGPT JSONL, atau Markdown, digabung atau per chat. Message JSONL tersedia per chat.",
+        "Unduh Terbaru atau Terbaru beserta chat proyek sebagai Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML, atau PDF, digabung atau per chat. Message JSONL tersedia per chat.",
       exportConversationsAction: "Ekspor",
       exportScopeRecents: "Terbaru",
       exportScopeAll: "Terbaru + Proyek",
-      exportCombinedSuffix: "(digabung)",
-      exportPerChatSuffix: "(setiap chat)",
       importChats: "Impor chat",
       importChatsDescription:
         "Impor file JSON, JSONL, NDJSON, CSV, atau Markdown ke Terbaru.",

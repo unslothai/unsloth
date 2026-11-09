@@ -754,6 +754,8 @@ def fast_rope_embedding(
         and K.shape[0] == Q.shape[0]
         and K.shape[2] == Q.shape[2]
         and K.shape[3] == Q.shape[3]
+        # The paired backward rotates both gradients: only Q or K needing one stays per tensor.
+        and Q.requires_grad == K.requires_grad
     ):
         Q_out, K_out = torch.ops.unsloth.rope_embedding_rows_qk(
             Q.transpose(1, 2), K.transpose(1, 2), cos, sin, False

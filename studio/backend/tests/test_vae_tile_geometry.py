@@ -299,14 +299,16 @@ def _latent_channels(config: dict) -> int:
 def _no_memory_reading():
     """Probe the grid a decode takes with no free-memory reading: the smallest tiles, the same on every host.
 
-    Budgeted planners (video_ltx2_vae_tiles) widen tiles, or go untiled, when the reading says they fit; on a CPU
+    Budgeted planners (video_ltx2_vae_tiles, diffusion_vae_tiling) widen tiles, or go untiled, when the reading says they fit; on a CPU
     host that reading is host RAM, so an unpinned probe would see whatever the runner has free.
     """
-    mod = _module("video_vae_untiled")
-    if mod is None or not hasattr(mod, "_free_bytes"):
-        yield
-        return
-    with mock.patch.object(mod, "_free_bytes", lambda device: None):
+    with contextlib.ExitStack() as stack:
+        mod = _module("video_vae_untiled")
+        if mod is not None and hasattr(mod, "_free_bytes"):
+            stack.enter_context(mock.patch.object(mod, "_free_bytes", lambda device: None))
+        image = _module("diffusion_vae_tiling")
+        if image is not None and hasattr(image, "_host_free_mib"):
+            stack.enter_context(mock.patch.object(image, "_host_free_mib", lambda vae, z: None))
         yield
 
 
