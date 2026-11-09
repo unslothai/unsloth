@@ -1525,6 +1525,121 @@ def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):
     assert "1.898×10^27 kg[[12]](#cite_note-12) and a surface area of 6.1419×10^10 km^2." in out
 
 
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("<p>R&D and Q&A at AT&T.</p>", "R&D and Q&A at AT&T."),
+        # &format is no reference and &lang is one only with its ";", so both stay as written
+        (
+            "<p>See https://example.com/v1?key=abc&format=json&lang=en for details.</p>",
+            "See https://example.com/v1?key=abc&format=json&lang=en for details.",
+        ),
+        (
+            "<pre>curl 'https://example.com/v1?api=1&map_action=map&b=2'</pre>",
+            "```\ncurl 'https://example.com/v1?api=1&map_action=map&b=2'\n```",
+        ),
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_a_bare_ampersand_stays_as_written(markup, expected, main_content):
+    assert html_to_markdown(markup, main_content = main_content) == expected
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        # a decimal reference may drop its ";", even before a letter a-f
+        (
+            "<p>&#169Copyright 2026</p><h2>Next</h2><p>More &amp; text.</p>",
+            "©Copyright 2026\n\n## Next\n\nMore & text.",
+        ),
+        # "&#" without digits is text, with or without a ";" later in the page
+        (
+            "<p>Use &# here</p><h2>Next</h2><p>More text.</p>",
+            "Use &# here\n\n## Next\n\nMore text.",
+        ),
+        (
+            "<p>C&#; and C&#x; typos</p><h2>Next</h2><p>More text.</p>",
+            "C&#; and C&#x; typos\n\n## Next\n\nMore text.",
+        ),
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_a_malformed_numeric_reference_keeps_the_rest_of_the_page(markup, expected, main_content):
+    assert html_to_markdown(markup, main_content = main_content) == expected
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_references_decode_as_a_browser_shows_them(main_content):
+    # legacy names such as &amp and &not decode without their ";" in text
+    html = "<p>&lt;b&gt; &amp; &copy; &#65;&#x42; &amp x &notit; &foo;</p>"
+    assert html_to_markdown(html, main_content = main_content) == "<b> & © AB & x ¬it; &foo;"
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        # &nbsp; and a literal U+00A0 are both kept, as a browser keeps them
+        ("<p>10&nbsp;GB and 10\xa0GB</p>", "10\xa0GB and 10\xa0GB"),
+        ("<div>for x in y:<br>&nbsp;&nbsp;print(x)</div>", "for x in y:\n\xa0\xa0print(x)"),
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_no_break_spaces_are_kept(markup, expected, main_content):
+    assert html_to_markdown(markup, main_content = main_content) == expected
+
+
+@pytest.mark.parametrize("nbsp", ["&nbsp;", "\xa0"])
+def test_kept_no_break_spaces_do_not_dilute_a_link_header(nbsp):
+    links = "".join(f'<a href="/s{i}">Section {i}</a> ' for i in range(20))
+    prose = "Article prose. " * 20
+    html = f"<article><header>{links}<span>Menu{nbsp * 10}x</span></header><p>{prose}</p></article>"
+    assert html_to_markdown(html, main_content = True) == prose.strip()
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_a_decimal_reference_past_the_int_digit_limit_still_renders(main_content):
+    ones, zeros = "1" * 5000, "0" * 5000
+    html = (
+        f'<p><a href="/x?q=&#{ones};">[&#{zeros}65;] [&#{ones};] [&#{ones}a]</a></p>'
+        f"<p>[&#{ones}"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert out == "[[A] [\ufffd] [\ufffda]](/x?q=\ufffd)\n\n[\ufffd"
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        # Pygments 2.21 HtmlFormatter(linenos="table"): each <pre> sits in a table cell.
+        (
+            '<div class="highlight"><table class="highlighttable"><tr><td class="linenos">'
+            '<div class="linenodiv"><pre><span class="normal">1</span>\n'
+            '<span class="normal">2</span></pre></div></td><td class="code"><div><pre><span></span>'
+            '<span class="k">if</span> <span class="n">a</span> <span class="o">&lt;</span> '
+            '<span class="n">b</span> <span class="ow">and</span> <span class="n">c</span> '
+            '<span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>\n'
+            '    <span class="nb">print</span><span class="p">(</span>'
+            '<span class="s2">"a &amp; b"</span><span class="p">)</span>\n'
+            "</pre></div></td></tr></table></div>\n",
+            '| ``` 1 2 ``` | ``` if a < b and c > 0:     print("a & b")  ``` |\n| --- | --- |',
+        ),
+        # an RFC section link inside a <pre> keeps its &nbsp;
+        (
+            '<pre>in <a href="./rfc5741#section-2">Section&nbsp;2 of RFC 5741</a>.</pre>',
+            "```\nin Section\xa02 of RFC 5741.\n```",
+        ),
+        (
+            '<pre>fn new() -&gt; <a href="/std/vec">Vec&lt;T&gt;</a></pre>',
+            "```\nfn new() -> Vec<T>\n```",
+        ),
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_escaped_code_stays_inside_its_code_block(markup, expected, main_content):
+    assert html_to_markdown(markup, main_content = main_content) == expected
+
+
 def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
     from core.inference import tools
 
