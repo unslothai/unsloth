@@ -47,14 +47,6 @@ from .hardware import (
     apply_gpu_ids,
 )
 
-from .vram_estimation import (
-    ModelArchConfig,
-    TrainingVramConfig,
-    VramBreakdown,
-    extract_arch_config,
-    estimate_training_vram,
-)
-
 
 def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     """Pass the epoch through: dropping it raises in the warm's _run_stage and leaves detection undone."""
@@ -132,11 +124,6 @@ __all__ = [
     "get_offloaded_device_map_entries",
     "raise_if_offloaded",
     "apply_gpu_ids",
-    "ModelArchConfig",
-    "TrainingVramConfig",
-    "VramBreakdown",
-    "extract_arch_config",
-    "estimate_training_vram",
 ]
 
 

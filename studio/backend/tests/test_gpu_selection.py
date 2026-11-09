@@ -2042,7 +2042,7 @@ class TestRaiseIfOffloaded(unittest.TestCase):
 
 class TestMinGpuVram(unittest.TestCase):
     def test_min_gpu_vram_decreases_with_more_gpus(self):
-        from utils.hardware.vram_estimation import (
+        from unsloth_estimation import (
             ModelArchConfig,
             TrainingVramConfig,
             estimate_training_vram,
@@ -2070,7 +2070,7 @@ class TestMinGpuVram(unittest.TestCase):
         self.assertGreater(v4, 0)
 
     def test_total_equals_min_gpu_vram_1(self):
-        from utils.hardware.vram_estimation import (
+        from unsloth_estimation import (
             ModelArchConfig,
             TrainingVramConfig,
             estimate_training_vram,
