@@ -185,7 +185,6 @@ def test_rows_from_a_service_need_no_database():
     ]
 
     trace = chat_to_trace(thread, messages)
-
     assistant, tool = trace.messages[1], trace.messages[2]
     assert assistant.reasoning == "plan"
     assert [(c.id, c.arguments) for c in assistant.tool_calls] == [("k", {}), ("k#2", raw)]
@@ -249,13 +248,12 @@ def _local(cid, round_id = None):
 def test_tool_calls_group_like_the_ui_replay(parts, shape):
     trace = _assistant(parts)
     assert _shape(trace)[1:] == shape
-    ids = [m.id for m in trace.messages]
-    assert len(ids) == len(set(ids))
+    assert len({m.id for m in trace.messages}) == len(trace.messages)
     assert _codes(trace) == []
 
 
 def test_adjacent_rows_alternate_calls_and_results():
-    reasoning = [{"type": "reasoning", "text": "r1"}, {"type": "reasoning", "text": "r2"}]
+    reasoning = [{"type": "reasoning", "text": t} for t in ("r1", "", "r2")]
     rows = [
         _row("u", "user", _text("go"), None, 1),
         _row("a1", "assistant", [_call("A")], "u", 2),
@@ -271,13 +269,13 @@ def test_adjacent_rows_alternate_calls_and_results():
         ("tool", "B"),
         ("assistant", "done\nmore"),
     ]
-    assert trace.messages[-1].reasoning == "r1\nr2"
+    assert trace.messages[-1].reasoning == "r1\n\nr2"
 
 
 @pytest.mark.parametrize(
     "parts, text, codes, note",
     [
-        ([*_text("a"), *_text("b")], "a\nb", [], None),
+        ([*_text("a"), *_text(""), *_text("b")], "a\n\nb", [], None),
         (_text("see [[img:0123456789ab]] now"), "see  now", [], None),
         (_text("clip data:audio/wav;base64,AAAA="), "clip [audio]", [], None),
         (
@@ -378,10 +376,13 @@ def test_refused_and_abandoned_turns_are_pruned(custom, content, before):
     assert _shape(_turn(custom, content)) == before + [("user", "again"), ("assistant", "fine")]
 
 
-def test_stopped_whitespace_turn_keeps_its_reasoning():
-    # The UI's text check does not trim, so it replays the reasoning and adds no stop label.
-    trace = _turn(_STOPPED, [{"type": "reasoning", "text": "think"}, *_text("   ")])
+def test_stopped_turn_replays_reasoning_beside_text_or_calls():
+    # Untrimmed text or a call keeps a stopped group's reasoning; a completed turn always keeps it.
+    think = {"type": "reasoning", "text": "think"}
+    trace = _turn(_STOPPED, [think, *_text("   ")])
     assert (trace.messages[1].text, trace.messages[1].reasoning) == ("   ", "think")
+    assert _shape(_turn(_STOPPED, [_call("k"), think]))[2:4] == [("tool", "k"), ("user", "again")]
+    assert _turn({}, [_call("k"), think]).messages[3].reasoning == "think"
 
 
 @pytest.mark.parametrize("custom", [{}, _STOPPED])
@@ -406,7 +407,7 @@ def test_user_attachments_are_model_input():
         {**_row("u2", "user", [], "a", 3), "attachments": attachments[:1]},
     ]
     trace = chat_to_trace({"id": "t"}, rows)
-    assert [m.text for m in trace.messages] == ["Fix this\ndef f(): pass", "ok", "def f(): pass"]
+    assert [m.text for m in trace.messages] == ["Fix this\ndef f(): pass", "ok", "\ndef f(): pass"]
     assert _codes(trace).count("unsupported_part") == 1
 
 
@@ -456,11 +457,8 @@ def test_the_stored_system_prompt_comes_first(settings, project, text, codes):
     if text is None:
         assert [m.role for m in trace.messages] == ["user"]
     else:
-        assert (trace.messages[0].id, trace.messages[0].role, trace.messages[0].text) == (
-            "t:system",
-            "system",
-            text,
-        )
+        first = trace.messages[0]
+        assert (first.id, first.role, first.text) == ("t:system", "system", text)
     assert [w.code for w in trace.warnings] == codes
 
 

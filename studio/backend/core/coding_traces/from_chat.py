@@ -102,16 +102,13 @@ def _newest_leaf(head_id: str, ordered: list[dict], parents: dict[str, Optional[
 
 
 def _model_parts(message: dict) -> list:
-    """Content plus attachments, minus mcpToolOnly parts, as modelVisibleMessage (mcp-image.ts)
-    sends them."""
+    """Content and attachments minus mcpToolOnly parts, as modelVisibleMessage (mcp-image.ts)."""
     content = _with_attachments(message) or []
     return [p for p in content if not (isinstance(p, dict) and p.get("mcpToolOnly") is True)]
 
 
-def _append_text(current: str, addition: str) -> str:
-    if not addition:
-        return current
-    return f"{current}\n{addition}" if current else addition
+def _append_text(current: str, addition: str, joined: bool) -> str:
+    return f"{current}\n{addition}" if joined or (current and addition) else current or addition
 
 
 def _branch(
@@ -151,18 +148,18 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
     out: list[TraceMessage] = []
     call_ids: set[str] = set()
     for message in chain:
-        role, message_id = message.get("role"), message["id"]
+        role, message_id, start = message.get("role"), message["id"], len(out)
         if role not in ("system", "user", "assistant"):
             warnings.append(TraceWarning("unknown_role", f"Skipped role {role!r}", message_id))
             continue
         if role != "assistant":
             current = TraceMessage(id = message_id, role = role, created_at = message.get("createdAt"))
             out.append(current)
-        # Tool messages wait until their call group closes, as serializeAssistantReplayMessages
-        # (chat-adapter.ts) and conversation_archive._as_wire group one row's calls.
+        # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
         pending: list[TraceMessage] = []
-        pending_round = None
-        pieces = 0
+        pending_round = reasoned = None
+        # collectTextParts joins all text parts, even "", and toThreadMessage loads [] as one "".
+        pieces, texted = 0, (current if role == "user" and not message.get("content") else None)
         for position, part in enumerate(_model_parts(message)):
             kind = part.get("type") if isinstance(part, dict) else None
             if role == "assistant":
@@ -193,10 +190,12 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     )
                 current = out[-1]
             if kind == "text":
-                current.text = _append_text(current.text, str(part.get("text") or ""))
+                text = str(part.get("text") or "")
+                current.text, texted = _append_text(current.text, text, current is texted), current
             elif kind in ("reasoning", "thinking") and role == "assistant":
-                reasoning = part.get("text") or part.get("thinking") or ""
-                current.reasoning = _append_text(current.reasoning, str(reasoning))
+                reasoning = str(part.get("text") or part.get("thinking") or "")
+                current.reasoning = _append_text(current.reasoning, reasoning, current is reasoned)
+                reasoned = current  # pendingReasoningParts.join("\n") also keeps "" parts
             elif kind == "tool-call" and role == "assistant":
                 call_id = str(part.get("toolCallId") or f"{message_id}-{position}")
                 if call_id in call_ids:
@@ -246,6 +245,10 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
                 )
         out.extend(pending)
+        incomplete = _as_dict(_as_dict(message.get("metadata")).get("incomplete"))
+        for m in out[start:] if incomplete.get("reason") in tuple(_STOP_LABELS) else []:
+            if not (_sanitised_assistant_text(m.text) or m.tool_calls):
+                m.reasoning = ""  # shouldReplayAssistantReasoning: the text check is untrimmed
     for m in out:
         if m.role == "assistant":
             m.text = _sanitised_assistant_text(m.text)
@@ -392,8 +395,7 @@ def _system_message(
     thread: dict, project: Optional[dict], warnings: list[TraceWarning]
 ) -> Optional[TraceMessage]:
     """The system turn as composeChatInstructions (agents-md.ts) builds it from stored fields."""
-    settings = thread.get("settings")
-    settings = settings if isinstance(settings, dict) else {}
+    settings = _as_dict(thread.get("settings"))
     prompt = settings.get("systemPrompt")
     if not isinstance(prompt, str):
         # No thread snapshot means the chat ran on the browser's global prompt, which is not saved.
