@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from core.inference import sd_cpp_backend as bk
-from core.inference import sd_cpp_multigpu as M
 from core.inference.diffusion_families import detect_family
 from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
@@ -27,6 +26,13 @@ if _TESTS_DIR not in sys.path:
 from test_sd_cpp_backend import _FakeServer  # noqa: E402
 
 GIB = 1024
+
+
+def _m():
+    from core.inference import sd_cpp_multigpu
+    return sd_cpp_multigpu
+
+
 # An idle Kaggle T4: 14,900 MiB free, less the 1 GiB reserve.
 T4_LIMIT = 13_876
 
@@ -47,7 +53,7 @@ def _plan(**kw):
         secondary_limits_mib = {1: T4_LIMIT},
     )
     args.update(kw)
-    return M.plan_sd_cpp_split(**args)
+    return _m().plan_sd_cpp_split(**args)
 
 
 def test_a_load_that_does_not_fit_one_card_moves_the_encoders_to_the_second():
@@ -88,10 +94,10 @@ def test_file_sizes_count_index_shards(tmp_path):
     index.write_text(
         '{"weight_map": {"x": "a.safetensors", "y": "b.safetensors", "z": "a.safetensors"}}'
     )
-    assert M.file_mib(str(index)) == 5
-    assert M.file_mib(str(tmp_path / "a.safetensors")) == 3
-    assert M.file_mib(str(tmp_path / "missing.gguf")) == 0
-    assert M.file_mib(None) == 0
+    assert _m().file_mib(str(index)) == 5
+    assert _m().file_mib(str(tmp_path / "a.safetensors")) == 3
+    assert _m().file_mib(str(tmp_path / "missing.gguf")) == 0
+    assert _m().file_mib(None) == 0
 
 
 def _names(monkeypatch):
@@ -103,12 +109,12 @@ def _names(monkeypatch):
 
 def test_the_pin_names_a_card_per_module(monkeypatch):
     _names(monkeypatch)
-    split = M.SdCppCardSplit(primary = 0, secondary = 1, vae_on_secondary = False, reason = "r")
+    split = _m().SdCppCardSplit(primary = 0, secondary = 1, vae_on_secondary = False, reason = "r")
     assert bk._offload_with_device_pin_impl([], "/sd/sd-cli", 0, split) == [
         "--backend",
         "diffusion=CUDA0,te=CUDA1,vae=CUDA0",
     ]
-    both = M.SdCppCardSplit(primary = 0, secondary = 1, vae_on_secondary = True, reason = "r")
+    both = _m().SdCppCardSplit(primary = 0, secondary = 1, vae_on_secondary = True, reason = "r")
     assert bk._offload_with_device_pin_impl([], "/sd/sd-cli", 0, both) == [
         "--backend",
         "diffusion=CUDA0,te=CUDA1,vae=CUDA1",
@@ -117,7 +123,7 @@ def test_the_pin_names_a_card_per_module(monkeypatch):
     for extra in (
         (),
         (None,),
-        (M.SdCppCardSplit(primary = 1, secondary = 0, vae_on_secondary = False, reason = "r"),),
+        (_m().SdCppCardSplit(primary = 1, secondary = 0, vae_on_secondary = False, reason = "r"),),
     ):
         assert bk._offload_with_device_pin_impl([], "/sd/sd-cli", 0, *extra) == [
             "--backend",
@@ -191,8 +197,11 @@ def _server_load(
     limits = None,
 ):
     _names(monkeypatch)
+    # Two idle T4s as nvidia-smi reports them (free, total MiB); the split is sized from these rows.
+    cards = limits or {0: (14_900, 15_360), 1: (14_900, 15_360)}
     monkeypatch.setattr(
-        M, "card_limit_mib", lambda o: (limits or {0: T4_LIMIT, 1: T4_LIMIT}).get(int(o))
+        "core.inference.diffusion_device.smi_free_total_mib",
+        lambda o: cards.get(int(o), (None, None)),
     )
     fam = detect_family("qwen-image")
     servers: list = []
@@ -261,7 +270,7 @@ def test_every_one_card_case_keeps_main_argv(monkeypatch, tmp_path, case):
     elif case == "explicit_offload":
         memory_mode = "balanced"
     elif case == "fits_one_card":
-        limits = {0: 40_000, 1: 40_000}
+        limits = {0: (48_000, 49_152), 1: (48_000, 49_152)}
     b, servers = _server_load(
         monkeypatch, tmp_path, gpu_ordinals = ordinals, memory_mode = memory_mode, limits = limits
     )
