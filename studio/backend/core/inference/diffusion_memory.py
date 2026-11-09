@@ -3616,7 +3616,8 @@ def measured_image_runtime_mib(
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``packed_block``: the denoiser is kept as packed nvfp4 / mxfp8 blocks; seeds from
-    ``_MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB`` (whole render only, 2-byte compute only: it was measured in bf16).
+    ``_MEASURED_PACKED_BLOCK_IMAGE_PEAK_MIB`` (whole render only, 2-byte compute on the measured target, as
+    ``dense_tier_seeds`` says: it was measured in bf16 with a sub-quadratic attention kernel).
     ``streamed``: use ``_MEASURED_STREAMED_IMAGE_PEAK_MIB`` (window excluded) where present.
     ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
@@ -3650,6 +3651,9 @@ def measured_image_runtime_mib(
     elif (
         packed_block
         and phase is None
+        # measured on NVIDIA with a sub-quadratic SDPA kernel (``_measured_target``): math-only attention grows with
+        # the square of the sequence, which this linear seed does not price
+        and dense_tier_seeds
         # measured in bf16: an fp32 pipeline (FLUX.3 on an fp16-only card) doubles activations and widened weights
         and int(compute_bytes or 2) <= 2
         and not _env_off(PACKED_BLOCK_RESIDENCY_ENV)
@@ -4831,6 +4835,9 @@ def _refine_plan_from_loaded_weights(
                             quant = read_quant,
                             phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
                             static_seed = static_seed,
+                            dense_tier_seeds = bool(
+                                getattr(pipe, "_unsloth_dense_tier_seeds", False)
+                            ),
                             streamed = True,
                             packed_block = packed_block,
                         )

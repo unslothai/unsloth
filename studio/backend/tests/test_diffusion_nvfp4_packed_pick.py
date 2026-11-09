@@ -159,34 +159,62 @@ def test_backend_entry_points_rewrite_a_direct_call(monkeypatch, entry):
 def test_a_packed_block_denoiser_has_a_measured_streaming_headroom(monkeypatch):
     from core.inference import diffusion_memory as dm
 
-    whole = dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True)
+    whole = dm.measured_image_runtime_mib(
+        "flux.3-klein", "default", packed_block = True, dense_tier_seeds = True
+    )
     streamed = dm.measured_image_runtime_mib(
-        "flux.3-klein", "default", packed_block = True, streamed = True
+        "flux.3-klein", "default", packed_block = True, dense_tier_seeds = True, streamed = True
     )
     assert whole == 3072 and streamed == 2304  # seed x 1.15, rounded up to 256 MiB
     assert streamed < whole
     # deferred / eager tiers alike (the seed was measured on both), larger renders scale it
-    assert dm.measured_image_runtime_mib("flux.3-klein", "deferred", packed_block = True) == whole
     assert (
         dm.measured_image_runtime_mib(
-            "flux.3-klein", "default", packed_block = True, width = 2048, height = 1024
+            "flux.3-klein", "deferred", packed_block = True, dense_tier_seeds = True
+        )
+        == whole
+    )
+    assert (
+        dm.measured_image_runtime_mib(
+            "flux.3-klein",
+            "default",
+            packed_block = True,
+            dense_tier_seeds = True,
+            width = 2048,
+            height = 1024,
         )
         > whole
     )
     # an fp32 pipeline (FLUX.3 on an fp16-only card) was not measured: learned peak / flat fallback only
     assert (
-        dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True, compute_bytes = 4)
+        dm.measured_image_runtime_mib(
+            "flux.3-klein", "default", packed_block = True, dense_tier_seeds = True, compute_bytes = 4
+        )
         is None
     )
     assert (
-        dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True, compute_bytes = 2)
+        dm.measured_image_runtime_mib(
+            "flux.3-klein", "default", packed_block = True, dense_tier_seeds = True, compute_bytes = 2
+        )
         == whole
     )
+    # math-only / unprobed attention or not NVIDIA (``_measured_target`` False): learned peak / flat fallback only
+    assert dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True) is None
     # unmeasured family, a dense / torchao denoiser, or the switch off: no packed seed
-    assert dm.measured_image_runtime_mib("qwen-image-2.1-turbo", "off", packed_block = True) is None
+    assert (
+        dm.measured_image_runtime_mib(
+            "qwen-image-2.1-turbo", "off", packed_block = True, dense_tier_seeds = True
+        )
+        is None
+    )
     assert dm.measured_image_runtime_mib("flux.3-klein", "default", static_seed = False) is None
     monkeypatch.setenv(dm.PACKED_BLOCK_RESIDENCY_ENV, "0")
-    assert dm.measured_image_runtime_mib("flux.3-klein", "default", packed_block = True) is None
+    assert (
+        dm.measured_image_runtime_mib(
+            "flux.3-klein", "default", packed_block = True, dense_tier_seeds = True
+        )
+        is None
+    )
 
 
 def test_packed_block_holders_are_read_from_the_denoisers():
@@ -225,14 +253,23 @@ def test_request_sizing_reads_the_packed_block_seed_the_placement_reserved():
         True,
         True,
     )
-    pipe = types.SimpleNamespace(_unsloth_measured_reserve = reserve)
+    pipe = types.SimpleNamespace(_unsloth_measured_reserve = reserve, _unsloth_dense_tier_seeds = True)
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
     bigger = dm.measured_request_extra_mib(pipe, width = 2048, height = 2048)
     assert (
         bigger
         == dm.measured_image_runtime_mib(
-            "flux.3-klein", "default", width = 2048, height = 2048, packed_block = True, streamed = True
+            "flux.3-klein",
+            "default",
+            width = 2048,
+            height = 2048,
+            packed_block = True,
+            dense_tier_seeds = True,
+            streamed = True,
         )
         - 2304
     )
     assert bigger > 0
+    # off the measured target (math-only attention) the packed seed is never read: only a learned peak sizes it
+    off = types.SimpleNamespace(_unsloth_measured_reserve = reserve, _unsloth_dense_tier_seeds = False)
+    assert dm.measured_request_extra_mib(off, width = 2048, height = 2048) == 0
