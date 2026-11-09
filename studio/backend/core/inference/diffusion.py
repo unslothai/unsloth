@@ -267,6 +267,9 @@ from .diffusion_memory import (
     applied_plan,
     release_resident_groups,
     release_for_decode,
+    chained_restore,
+    defer_resident_restore,
+    take_deferred_restore,
     resident_group_mib,
     hook_resident_denoiser,
     measured_request_extra_mib,
@@ -11128,6 +11131,8 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_dense_bf16", False),
                                 plan.estimates.get("measured_small_host_int8", False),
                                 bool(streamed_headroom),
+                                # MEASURED_RESERVE_DENOISE_PHASE_INDEX: the blocks sized from the denoise phase
+                                plan.estimates.get("measured_denoise_phase_headroom_mib"),
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
@@ -14944,6 +14949,8 @@ class DiffusionBackend:
                         extra_mib = _hold_captured_release(state, extra_mib)
                         guard_release_mib = extra_mib
                         guard_capture_gen = cuda_graph.capture_generation(_peak_device_index(state))
+                    # groups an earlier oversized request streamed out stay out when this one streams them all too
+                    carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (
@@ -14953,6 +14960,12 @@ class DiffusionBackend:
                             # transformer so this request can stream part of it.
                             hook_resident_denoiser(state.pipe, guard_target.torch_device, logger)
                         restore_resident = release_resident_groups(state.pipe, extra_mib, logger)
+                    if carried_restore is not None:
+                        restore_resident = (
+                            carried_restore
+                            if restore_resident is None
+                            else chained_restore(carried_restore, restore_resident)
+                        )
                     guard_kwargs = dict(
                         # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
                         device_memory = reclaimable_snapshot_device_memory(guard_target),
@@ -15619,7 +15632,8 @@ class DiffusionBackend:
                 end_cfg_batch_render(getattr(state, "pipe", None))
                 if restore_resident is not None:
                     try:
-                        restore_resident()
+                        if kick_bg or not defer_resident_restore(state.pipe, restore_resident):
+                            restore_resident()  # a background compile kicked below needs it back first
                     except Exception as exc:  # noqa: BLE001 - the groups keep streaming
                         logger.warning("diffusion.memory: re-residency failed: %s", exc)
                 if kick_bg and bg is not None:
