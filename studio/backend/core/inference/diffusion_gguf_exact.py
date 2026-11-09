@@ -296,7 +296,8 @@ def dequantize_blocks_IQ4_XS(
     kvalues = torch.tensor(_KVALUES_IQ4NL, device = blocks.device, dtype = torch.float32)
     # sub-block ib's 16 bytes: low nibbles are elements 0..15, high nibbles 16..31
     index = (_field(blocks, 8, 136, (8, 1, 16)) >> _shifts(blocks, 0, 8, 4, (2, 1))) & 0x0F
-    return _emit(dl, kvalues[index.long()], None, "", n, _QK_K, dtype)
+    # int32 indices: half the transient of int64 in eager
+    return _emit(dl, kvalues[index.to(torch.int32)], None, "", n, _QK_K, dtype)
 
 
 _FUNCTIONS = {
