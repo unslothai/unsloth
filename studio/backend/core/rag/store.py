@@ -569,8 +569,21 @@ def delete_document(
     commit: bool = True,
 ) -> None:
     """Remove a document and all its chunks (+ fts + vec rows)."""
-    rag_db._delete_document_chunks(conn, document_id)
-    conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
+    delete_documents(conn, [document_id], commit = commit)
+
+
+def delete_documents(
+    conn: sqlite3.Connection,
+    document_ids,
+    *,
+    commit: bool = True,
+) -> None:
+    """``delete_document`` for many documents, scanning chunks_fts/chunks_vec once per id batch."""
+    ids = list(dict.fromkeys(document_ids))
+    rag_db._delete_documents_chunks(conn, ids)
+    for start in range(0, len(ids), rag_db._DOC_ID_BATCH):
+        batch = ids[start : start + rag_db._DOC_ID_BATCH]
+        conn.execute(f"DELETE FROM documents WHERE id IN ({','.join('?' * len(batch))})", batch)
     if commit:
         conn.commit()
 

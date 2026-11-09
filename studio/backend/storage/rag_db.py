@@ -605,21 +605,34 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+# One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
+_DOC_ID_BATCH = 900
+
+
 def _delete_document_chunks(conn, document_id: str) -> None:
     """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
     reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
     stay citable."""
-    if (
-        conn.execute("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (document_id,)).fetchone()
-        is None
-    ):
-        return
-    # chunk_id is unindexed in fts5 and vec0: one IN scan per table, not one scan per chunk.
-    owned = "SELECT id FROM chunks WHERE document_id=?"
-    conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", (document_id,))
-    if vec_table_exists(conn):
-        conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", (document_id,))
-    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+    _delete_documents_chunks(conn, [document_id])
+
+
+def _delete_documents_chunks(conn, document_ids) -> None:
+    """``_delete_document_chunks`` for many documents. chunk_id is unindexed in fts5 and vec0, so each
+    statement full-scans its table: one IN scan per batch of documents, not one per document or chunk."""
+    ids = list(dict.fromkeys(document_ids))
+    has_vec = None
+    for start in range(0, len(ids), _DOC_ID_BATCH):
+        batch = ids[start : start + _DOC_ID_BATCH]
+        marks = ",".join("?" * len(batch))
+        owned = f"SELECT id FROM chunks WHERE document_id IN ({marks})"
+        if conn.execute(f"{owned} LIMIT 1", batch).fetchone() is None:
+            continue
+        conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", batch)
+        if has_vec is None:
+            has_vec = vec_table_exists(conn)
+        if has_vec:
+            conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", batch)
+        conn.execute(f"DELETE FROM chunks WHERE document_id IN ({marks})", batch)
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:
