@@ -31,6 +31,8 @@ const {
   composerDraftKey,
   composerPasteDraftKey,
   latestDraft,
+  NEW_CHAT_DRAFT_ID,
+  NEW_COMPARE_DRAFT_ID,
   publishDraft,
   readComposerDraft,
   readPasteDraft,
@@ -238,11 +240,17 @@ test("draft text and pastes belong to their chat unless sharing is explicitly en
   assert.equal(composerPasteDraftKey("chat-a", true), composerPasteDraftKey("chat-b", true));
 });
 
-test("a fresh New chat nonce does not restore another unsaved chat or the old shared draft", () => {
-  writeComposerDraft(composerDraftKey("first-new-chat"), "not sent yet");
+test("every unsent New chat and Compare pair shares one slot, apart from saved chats and the shared draft", () => {
+  // Their ids are minted per navigation; per-id slots would never be read or removed again.
+  const newChat = composerDraftKey(NEW_CHAT_DRAFT_ID);
+  const newPair = composerDraftKey(NEW_COMPARE_DRAFT_ID);
+  assert.equal(newChat, "chat-draft:__new__", "the pre-sharing New chat key, so old drafts still load");
+  assert.notEqual(newPair, newChat);
+  writeComposerDraft(newChat, "left in a New chat");
   writeComposerDraft(composerDraftKey("", true), "shared before upgrade");
-  assert.equal(readComposerDraft(composerDraftKey("second-new-chat")), null);
-  assert.equal(readComposerDraft(composerDraftKey("first-new-chat")), "not sent yet");
+  assert.equal(readComposerDraft(newChat), "left in a New chat");
+  assert.equal(readComposerDraft(composerDraftKey("saved-chat")), null);
+  assert.equal(readComposerDraft(newPair), null);
   assert.equal(readComposerDraft(composerDraftKey("", true)), "shared before upgrade");
 });
 

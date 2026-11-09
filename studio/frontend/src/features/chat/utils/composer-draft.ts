@@ -8,6 +8,10 @@ const PASTE_DRAFT_KEY = "chat-draft-pastes:latest";
 // Per-chat drafts retain the pre-sharing keys.
 const LEGACY_DRAFT_PREFIX = "chat-draft:";
 const LEGACY_PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
+// One slot for every unsent New chat and one for every unsent Compare pair: their ids are minted per
+// navigation, so per-id slots would pile up unreachable (pastes run to megabytes).
+export const NEW_CHAT_DRAFT_ID = "__new__";
+export const NEW_COMPARE_DRAFT_ID = "__compare_new__";
 
 export function composerDraftKey(threadId: string, shared = false): string {
   return shared ? DRAFT_KEY : `${LEGACY_DRAFT_PREFIX}${threadId}`;

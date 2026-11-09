@@ -100,6 +100,7 @@ import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
 import {
   composerDraftKey,
   latestDraft,
+  NEW_COMPARE_DRAFT_ID,
   publishDraft,
   subscribeDraft,
   writeComposerDraft,
@@ -617,6 +618,7 @@ async function waitForBackendLoadToSettle(): Promise<void> {
 
 export function SharedComposer({
   draftId,
+  pairSaved,
   handlesRef,
   model1,
   model2,
@@ -628,6 +630,8 @@ export function SharedComposer({
   requireStableCheckpoint = false,
 }: {
   draftId: string;
+  /** False once history loaded with no stored threads; the pair then drafts in the shared new-pair slot. */
+  pairSaved?: boolean;
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
@@ -652,7 +656,9 @@ export function SharedComposer({
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
   const syncDraft = shareDraft && !incognito;
-  const draftKey = composerDraftKey(draftId, shareDraft);
+  const [sentPairId, setSentPairId] = useState<string | null>(null);
+  const unsentPair = pairSaved === false && sentPairId !== draftId;
+  const draftKey = composerDraftKey(unsentPair ? NEW_COMPARE_DRAFT_ID : draftId, shareDraft);
   const draftScope = incognito ? null : draftKey;
   const [text, setText] = useState(() =>
     incognito ? "" : latestDraft(draftKey),
@@ -1550,6 +1556,12 @@ export function SharedComposer({
       });
     };
     const clearSubmittedDraft = () => {
+      if (unsentPair) {
+        // The pair now has its own slot; the sent text must not linger for the next new pair.
+        unsavedDraftRef.current = null;
+        if (!shareDraft) writeComposerDraft(draftKey, "");
+        setSentPairId(draftId);
+      }
       setCurrentText("");
       setIsWritingExpanded(false);
       setPendingImages([]);

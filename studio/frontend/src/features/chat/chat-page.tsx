@@ -1450,6 +1450,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
         active ? (
           <SharedComposer
             draftId={pairId}
+            pairSaved={threadsSettled ? Boolean(baseThreadId || loraThreadId) : undefined}
             handlesRef={handlesRef}
             onExitCompare={onExitCompare}
             model1ThreadId={baseThreadId}
@@ -1767,6 +1768,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         active ? (
           <SharedComposer
             draftId={pairId}
+            pairSaved={threadsSettled ? Boolean(model1ThreadId || model2ThreadId) : undefined}
             handlesRef={handlesRef}
             model1={model1}
             model2={model2}

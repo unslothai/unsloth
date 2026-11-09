@@ -142,7 +142,6 @@ import {
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
   ChatComposerFocusableContext,
-  NewChatDraftIdContext,
   useChatActive,
   useChatAudioUpload,
   useInComparePane,
@@ -351,6 +350,7 @@ import {
   snapshotQueuedChatRunSettings,
   adoptLegacyDraft,
   latestDraft,
+  NEW_CHAT_DRAFT_ID,
   latestPasteDraft,
   publishDraft,
   subscribeDraft,
@@ -4048,12 +4048,10 @@ const Composer: FC<{
   const canQueueAttachmentPrompt =
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
-  // A fresh New chat gets its navigation nonce: the runtime can reuse an unsaved thread.
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
   const shareDraftBeforeRef = useRef(shareDraft);
-  const newChatDraftId = useContext(NewChatDraftIdContext);
-  const draftThreadId = referenceThreadId ?? newChatDraftId ?? threadListItemId;
+  const draftThreadId = referenceThreadId ?? NEW_CHAT_DRAFT_ID;
   const draftKey = composerDraftKey(draftThreadId, shareDraft);
   const draftScope = incognito
     ? INCOGNITO_DRAFT_SCOPE
