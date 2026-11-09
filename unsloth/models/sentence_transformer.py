@@ -3658,6 +3658,10 @@ class _PatchAfterImportLoader(importlib.abc.Loader):
     def __init__(self, loader):
         self._loader = loader
 
+    def __getattr__(self, name):
+        # Resource / is_package lookups made while the package's __init__ runs.
+        return getattr(self._loader, name)
+
     def create_module(self, spec):
         return self._loader.create_module(spec)
 
@@ -3667,7 +3671,13 @@ class _PatchAfterImportLoader(importlib.abc.Loader):
         module.__loader__ = self._loader
         if getattr(module, "__spec__", None) is not None:
             module.__spec__.loader = self._loader
-        _apply_sentence_transformers_patches()
+        try:
+            _apply_sentence_transformers_patches()
+        except Exception as error:
+            # A failed patch must not make `import sentence_transformers` itself fail.
+            logging.getLogger(__name__).warning(
+                f"Unsloth: could not patch sentence_transformers: {error}"
+            )
 
 
 class _SentenceTransformersFinder(importlib.abc.MetaPathFinder):
