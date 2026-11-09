@@ -99,6 +99,7 @@ import {
 
   useState,
 } from "react";
+import { FIND_SCOPE_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
@@ -405,6 +406,7 @@ const DEFAULT_DOCUMENT_TITLE = "Unsloth";
 
 function RootLayout() {
   const t = useT();
+  const findScopeRef = useSurfaceRef<HTMLDivElement>(FIND_SCOPE_SURFACE);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const routeOwnsReloadReadiness =
@@ -489,7 +491,8 @@ function RootLayout() {
   }
   const shouldMountAudio = isAudioRoute || audioMounted;
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
-  const nonChatTopInset = useIsMobileShell()
+  const mobileShell = useIsMobileShell();
+  const nonChatTopInset = mobileShell
     ? "pt-14"
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
@@ -692,7 +695,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <SttDeviceSyncMount />
       <InterfaceZoom />
-      <WindowMaterialMount />
+      <WindowMaterialMount route={hideNavbar ? undefined : isChatRoute ? "chat" : "page"} />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -720,12 +723,20 @@ function RootLayout() {
           data-wallpaper-workspace=""
           data-windows-wallpaper-page={windowsWallpaperPage || undefined}
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
+          data-wallpaper-media={isImagesRoute || isVideoRoute || isAudioRoute || undefined}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
-          {windowsWallpaperPage && <div data-slot="page-wallpaper-blur" aria-hidden="true" />}
+          {windowsWallpaperPage && (
+            <div
+              data-slot="page-wallpaper-blur"
+              // AppSidebar's data-windows-glass-frame, which sits under this page only off the mobile sheet.
+              data-sidebar-frame={(pinned && !mobileShell) || undefined}
+              aria-hidden="true"
+            />
+          )}
           <SidebarInset
             className={
               isChatLike
@@ -738,6 +749,7 @@ function RootLayout() {
           >
             <Navbar />
             <div
+              ref={findScopeRef}
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
             >

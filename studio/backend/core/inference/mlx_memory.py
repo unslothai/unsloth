@@ -785,9 +785,10 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     failure = ValueError("no architecture module could build this config")
     with weightless_forward():
         for build, make_prompt_cache, model_class in _probe_models(config, dtype):
-            model = build()
-            cache = make_prompt_cache(model)
             try:
+                # A tower that cannot stand alone (Raon-1 Mini's flat config) leaves the whole model to try.
+                model = build()
+                cache = make_prompt_cache(model)
                 model(mx.zeros((1, n_tokens), dtype = mx.int32), cache = cache)
             except Exception as exc:
                 failure, cache = exc, None

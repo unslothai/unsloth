@@ -28,11 +28,16 @@ from core.inference.diffusion_families import (
     upstream_is_gated,
 )
 
-# The ONLY vendor repos an image load may still fetch, each with the licence clause that forbids a mirror.
+# Vendor repos an image load may still fetch because a licence clause forbids a mirror.
 _LICENCE_BLOCKED: dict[str, str] = {
     # Tencent Hunyuan Community License: "Territory" means the worldwide territory, excluding the territory of the
     # European Union, United Kingdom and South Korea. A public Hub mirror cannot honour a territorial limit.
     "hunyuanvideo-community/hunyuanimage-2.1-diffusers": "territory-restricted licence",
+}
+# Bases fetched from upstream because no unsloth mirror of them is made.
+_UNMIRRORED: dict[str, str] = {
+    "lodestones/chroma1-hd": "Chroma",
+    "circlestone-labs/anima-base-v1.0-diffusers": "Anima",
 }
 
 # Third-party DENOISER artifacts the catalog still offers. Not a companion fetch and not licence-blocked: there is
@@ -121,7 +126,8 @@ def _fetch_id(repo: str) -> str:
 def _allowed(repo: str) -> bool:
     if _is_comfy(repo):
         return False
-    return repo.lower().startswith("unsloth/") or repo.lower() in _LICENCE_BLOCKED
+    r = repo.lower()
+    return r.startswith("unsloth/") or r in _LICENCE_BLOCKED or r in _UNMIRRORED
 
 
 def _family_fetch_ids() -> list[tuple[str, str, str, str]]:
@@ -283,6 +289,9 @@ def test_licence_allowlist_is_still_needed():
     for repo in _LICENCE_BLOCKED:
         assert repo in ids, f"{repo} is no longer fetched; drop it from _LICENCE_BLOCKED"
         assert mirror_repo(repo) is None, f"{repo} is mirrored now; drop it from _LICENCE_BLOCKED"
+    for repo in _UNMIRRORED:
+        assert repo in ids, f"{repo} is no longer fetched; drop it from _UNMIRRORED"
+        assert mirror_repo(repo) is None, f"{repo} is mirrored now; drop it from _UNMIRRORED"
     rows = {r.lower() for _h, r in _catalog_rows()}
     for repo in _THIRD_PARTY_DENOISER_ROWS:
         assert (

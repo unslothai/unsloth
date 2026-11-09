@@ -4,6 +4,7 @@
 """Chat history API; sync SQLite handlers, except mixed ones that use Starlette's threadpool."""
 
 import asyncio
+import json
 import os
 import re
 import sqlite3
@@ -1704,6 +1705,110 @@ def _search_view_attachment_part(part: Any) -> bool:
     return not isinstance(text, str) or text.startswith(_PASTED_TEXT_PREFIX)
 
 
+# Mirrors searchableText: tool output keeps only text it would index, so images and widget seeds stay home.
+# ASCII: JavaScript's /i never folds a non-ASCII letter such as "ı" onto an ASCII one.
+_SEARCH_SKIPPED_KEY = re.compile(r"b64|base64|^(?:images?|audio|video)\Z", re.IGNORECASE | re.ASCII)
+_MCP_IMAGES_MARKER = "\n__MCP_IMAGES__:"
+_IMAGES_MARKER = "\n__IMAGES__:"
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise ValueError(name)
+
+
+def _split_mcp_images(text: str) -> str:
+    """splitMcpImages: only a valid image envelope after the last marker is cut."""
+    at = text.rfind(_MCP_IMAGES_MARKER)
+    if at == -1:
+        return text
+    try:
+        # parse_int: JSON.parse takes integers past Python's digit limit.
+        images = json.loads(
+            text[at + len(_MCP_IMAGES_MARKER) :],
+            parse_constant = _reject_json_constant,
+            parse_int = float,
+        )
+    except ValueError:
+        return text
+    valid = (
+        isinstance(images, list)
+        and len(images) > 0
+        and all(
+            isinstance(image, dict)
+            and isinstance(image.get("data"), str)
+            and isinstance(image.get("mimeType"), str)
+            for image in images
+        )
+    )
+    return text[:at] if valid else text
+
+
+# JavaScript's \s, which differs from Python's (no \x1c-\x1f or \x85, adds \ufeff).
+_JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_DATA_URL = re.compile(f"data:[^;,{_JS_SPACE}]+;base64,[A-Za-z0-9+/=]+")
+
+
+def _searchable_string(text: str) -> str:
+    """searchableText on a string, minus stripBase64Runs, which is far slower in Python."""
+    text = _split_mcp_images(text)
+    at = text.find(_IMAGES_MARKER)
+    if at != -1:
+        text = text[:at]
+    return _DATA_URL.sub(" ", text)
+
+
+def _search_view_string(text: str) -> str:
+    try:
+        cut = _searchable_string(text)
+        # Sent only when the browser would read it back unchanged, else the original.
+        stable = _searchable_string(cut) == cut
+    except RecursionError:
+        # JSON.parse may still read nesting this deep, so leave the string to the browser.
+        return text
+    return cut if stable else text
+
+
+def _search_view_value(
+    value: Any,
+    depth: int = 0,
+    tool_name: Any = None,
+) -> Any:
+    if isinstance(value, str):
+        return _search_view_string(value)
+    if value is None or depth > 4:
+        return None
+    if isinstance(value, list):
+        return [_search_view_value(v, depth + 1) for v in value]
+    if isinstance(value, dict):
+        ui = value.get("ui")
+        if (
+            depth == 0
+            and isinstance(tool_name, str)
+            and tool_name.startswith("mcp__")
+            and isinstance(value.get("text"), str)
+            and isinstance(ui, dict)
+            and isinstance(ui.get("resourceUri"), str)
+        ):
+            return {"text": _search_view_string(value["text"])}
+        return {
+            k: _search_view_value(v, depth + 1)
+            for k, v in value.items()
+            if not _SEARCH_SKIPPED_KEY.search(k)
+        }
+    return value
+
+
+def _search_view_tool_call(part: dict) -> dict:
+    out = {key: part[key] for key in ("type", "toolName", "provenance") if key in part}
+    if isinstance(part.get("argsText"), str):
+        out["argsText"] = _search_view_string(part["argsText"])
+    elif "args" in part:
+        out["args"] = _search_view_value(part["args"])
+    if "result" in part:
+        out["result"] = _search_view_value(part["result"], 0, part.get("toolName"))
+    return out
+
+
 def _search_view_message(message: dict) -> dict:
     """What the search index reads of a message: no metadata, media or document bodies."""
     out = {
@@ -1716,7 +1821,7 @@ def _search_view_message(message: dict) -> dict:
         content = message["content"]
         if isinstance(content, list):
             content = [
-                part
+                _search_view_tool_call(part) if part["type"] == "tool-call" else part
                 for part in content
                 if isinstance(part, dict)
                 and isinstance(part.get("type"), str)

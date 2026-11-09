@@ -168,11 +168,29 @@ def resolve_microbatches(
     layout = getattr(stage, "env_layout", None)
     explicit = layout.microbatches if layout is not None else None
     want = int(explicit or stage.n_microbatches)
-    floor = (
-        stage.num_stages
-        if (stage.schedule == "1f1b" and train) or _gpipe_needs_stage_count()
-        else 1
-    )
+    m, pad = _plan_microbatches(want, explicit, stage.num_stages, stage.schedule, batch_size, train)
+    if m == want and not pad:
+        return m, 0
+    if train and not stage.__dict__.get("_unsloth_mb_note"):
+        stage.__dict__["_unsloth_mb_note"] = True
+        rows = batch_size + pad
+        floor = m if pad else 1
+        note = (
+            f", padded with {pad} fully masked row(s) (this schedule needs {floor} micro-batches; a "
+            f"per_device_train_batch_size of {floor} or more avoids the extra compute)"
+            if pad
+            else ""
+        )
+        _print_rank0(
+            f"Unsloth: pipeline parallel: {m} micro-batch(es) of {rows // m} row(s) per step (batch of "
+            f"{batch_size}{note}; UNSLOTH_PP_MICROBATCHES sets the count)."
+        )
+    return m, pad
+
+
+def _plan_microbatches(want, explicit, num_stages, schedule, batch_size, train):
+    """(n_microbatches, padded rows); shared with the Trainer init refusals so they predict the per-step count."""
+    floor = num_stages if (schedule == "1f1b" and train) or _gpipe_needs_stage_count() else 1
     if batch_size % want == 0:
         m = want
     elif explicit is not None and train:
@@ -187,21 +205,6 @@ def resolve_microbatches(
         # Whole micro-batches of filler rows after the real ones (the real rows keep their micro-batch shape).
         pad = (floor - m) * (batch_size // m)
         m = floor
-    if m == want and not pad:
-        return m, 0
-    if train and not stage.__dict__.get("_unsloth_mb_note"):
-        stage.__dict__["_unsloth_mb_note"] = True
-        rows = batch_size + pad
-        note = (
-            f", padded with {pad} fully masked row(s) (this schedule needs {floor} micro-batches; a "
-            f"per_device_train_batch_size of {floor} or more avoids the extra compute)"
-            if pad
-            else ""
-        )
-        _print_rank0(
-            f"Unsloth: pipeline parallel: {m} micro-batch(es) of {rows // m} row(s) per step (batch of "
-            f"{batch_size}{note}; UNSLOTH_PP_MICROBATCHES sets the count)."
-        )
     return m, pad
 
 
@@ -575,6 +578,9 @@ def pp_trainer_refusals(
     args,
     layout,
     compute_loss_func = None,
+    model = None,
+    train_dataset = None,
+    eval_dataset = None,
 ):
     """Before Trainer.__init__ splits anything: the trainers / arguments the pipeline step cannot honour."""
     hint = _hint()
@@ -640,6 +646,106 @@ def pp_trainer_refusals(
             + "."
             + hint
         )
+    _refuse_split_router_aux_at_init(trainer_cls, args, layout, model, train_dataset, eval_dataset)
+
+
+def _router_aux_coef_at_init(trainer_cls, args, model):
+    """Router aux coefficient the last stage will apply (0 = none). TRL trainers rewrite output_router_logits and
+    router_aux_loss_coef inside their own __init__ (after this check) from args.router_aux_loss_coef (None = the
+    architecture's)."""
+    from ..parallel_capabilities import _trainer_kind
+    from .pp_native import _PP_MOE_AUX_FAMILIES
+
+    if not isinstance(model, nn.Module):
+        return 0
+    owner = next((m for m in model.modules() if type(m).__name__ in _PP_MOE_AUX_FAMILIES), None)
+    config = getattr(owner, "config", None)
+    if config is None:
+        return 0  # the split refuses other MoE models
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    coef = getattr(owner, "router_aux_loss_coef", getattr(text, "router_aux_loss_coef", 0)) or 0
+    on = bool(getattr(text, "output_router_logits", False))
+    if (
+        _trainer_kind(trainer_cls) in ("sft", "dpo", "grpo", "other_rl")
+        and args is not None
+        and hasattr(args, "router_aux_loss_coef")
+        and hasattr(text, "router_aux_loss_coef")
+    ):
+        trl = args.router_aux_loss_coef
+        coef = (getattr(text, "router_aux_loss_coef", 0) or 0) if trl is None else trl
+        on = hasattr(text, "output_router_logits") and bool(coef)
+    return coef if on else 0
+
+
+def _largest_batch(dataset, batch_size, dp, packing):
+    """`batch_size` when every rank surely gets a full batch from `dataset`, else None (the step decides): no
+    dataset (train() / evaluate() cannot run on it), no len(), packing (TRL rebuilds the rows inside __init__),
+    or fewer rows than one batch per dp rank (the dataloader's sharding / padding sets the size then)."""
+    batch_size = int(batch_size or 0)
+    if dataset is None or batch_size < 1 or packing:
+        return None
+    if isinstance(dataset, dict):
+        sizes = [_largest_batch(d, batch_size, dp, packing) for d in dataset.values()]
+        return max((size for size in sizes if size), default = None)
+    try:
+        rows = len(dataset)
+    except TypeError:
+        return None
+    return batch_size if rows >= batch_size * max(int(dp or 1), 1) else None
+
+
+def _refuse_split_router_aux_at_init(
+    trainer_cls,
+    args,
+    layout,
+    model,
+    train_dataset = None,
+    eval_dataset = None,
+):
+    """_refuse_split_router_aux before the stage split; the per-step check covers what only the step knows."""
+    if args is None or not _router_aux_coef_at_init(trainer_cls, args, model):
+        return
+    try:
+        from .pp_schedules import schedule_spec
+        schedule = schedule_spec(layout.schedule).name
+    except Exception:
+        schedule = layout.schedule
+    want = int(layout.microbatches or 2 * layout.pp)
+    dp = getattr(layout, "dp", 1)
+    packing = bool(getattr(args, "packing", False))
+    eval_packing = getattr(args, "eval_packing", None)
+    batches = [
+        (
+            _largest_batch(
+                train_dataset, getattr(args, "per_device_train_batch_size", 0), dp, packing
+            ),
+            True,
+        )
+    ]
+    strategy = getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no"))
+    if str(getattr(strategy, "value", strategy) or "no").lower() != "no":
+        packed = packing if eval_packing is None else bool(eval_packing)
+        batches.append(
+            (
+                _largest_batch(
+                    eval_dataset, getattr(args, "per_device_eval_batch_size", 0), dp, packed
+                ),
+                False,
+            )
+        )
+    for batch_size, train in batches:
+        if not batch_size:
+            continue
+        try:
+            m, pad = _plan_microbatches(
+                want, layout.microbatches, layout.pp, schedule, batch_size, train
+            )
+        except ValueError:
+            continue  # the step raises its own error
+        if pad and layout.microbatches:
+            continue  # this schedule cannot run the UNSLOTH_PP_MICROBATCHES asked for; the split says so
+        if m > 1:
+            raise NotImplementedError(_split_router_aux_message(layout.env_vars, m))
 
 
 def _dp_info(stage):
@@ -682,12 +788,17 @@ def _refuse_split_router_aux(stage, n_microbatches):
         owner, "router_aux_loss_coef", 0
     ):
         return
-    raise NotImplementedError(
-        f"Unsloth: {_env_vars(stage)} (pipeline parallel) splits each Trainer batch into {n_microbatches} "
+    raise NotImplementedError(_split_router_aux_message(_env_vars(stage), n_microbatches))
+
+
+def _split_router_aux_message(env_vars, n_microbatches):
+    return (
+        f"Unsloth: {env_vars} (pipeline parallel) splits each Trainer batch into {n_microbatches} "
         "micro-batches, and the pipeline adds the router load-balancing loss per micro-batch, which is not the "
         "loss the Trainer forms over the whole batch on one GPU. Set UNSLOTH_PP_MICROBATCHES=1 with "
         "UNSLOTH_PP_SCHEDULE=gpipe (where this torch allows one micro-batch), or turn the auxiliary loss off "
-        f"(model.config.output_router_logits = False).{_hint()}"
+        "(model.config.output_router_logits = False, or router_aux_loss_coef = 0.0 in SFTConfig)."
+        f"{_hint()}"
     )
 
 
@@ -752,6 +863,23 @@ def _global_items(trainer, stage, num_items_in_batch):
     return int(count[0])
 
 
+def _cpu_chunked_ce_model(trainer, model):
+    """Model whose zoo CPU chunked CE compute_loss would arm, or None; the pipeline schedule never calls compute_loss."""
+    if not getattr(getattr(type(trainer), "compute_loss", None), "_unsloth_cpu", False):
+        return None
+    loss_type = getattr(trainer.args, "loss_type", None)
+    if str(getattr(loss_type, "value", loss_type) or "nll") != "nll":
+        return None
+    accelerator = getattr(trainer, "accelerator", None)
+    unwrapped = accelerator.unwrap_model(model) if accelerator is not None else model
+    base = getattr(unwrapped, "base_model", None)
+    for candidate in (unwrapped, base, getattr(base, "model", None)):
+        # vars(): PEFT forwards attribute reads to the inner model.
+        if candidate is not None and vars(candidate).get("_unsloth_cpu_chunked_ce", False):
+            return candidate
+    return None
+
+
 def _pp_training_step(
     self,
     model,
@@ -784,15 +912,22 @@ def _pp_training_step(
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
     _refuse_split_router_aux(stage, m)
     input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
-    loss = stage.step(
-        input_ids,
-        labels,
-        num_items_in_batch = n,
-        scaler = scaler,
-        n_microbatches = m,
-        loss_scale = scale,
-        **extra,
-    )
+    chunked = _cpu_chunked_ce_model(self, model)
+    if chunked is not None:
+        chunked._unsloth_cpu_chunked_ce_active = True
+    try:
+        loss = stage.step(
+            input_ids,
+            labels,
+            num_items_in_batch = n,
+            scaler = scaler,
+            n_microbatches = m,
+            loss_scale = scale,
+            **extra,
+        )
+    finally:
+        if chunked is not None:
+            chunked._unsloth_cpu_chunked_ce_active = False
     del inputs
     return loss.detach().to(self.args.device)
 

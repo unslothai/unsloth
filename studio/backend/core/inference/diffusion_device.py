@@ -756,6 +756,11 @@ def diffusion_device_target_from_torch_device(
             ordinal = int(index) if index.isdigit() else None,
         )
     if device == "xpu":
+        try:
+            import torch
+            xpu = getattr(torch, "xpu", None)
+        except Exception:
+            xpu = None
         return DiffusionDeviceTarget(
             device = "xpu",
             dtype = dtype,
@@ -764,6 +769,10 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = True,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            # float64_device() (VAE tiling blend weights) comes through here, not _xpu_target.
+            supports_float64 = _xpu_has_fp64(xpu, int(index) if index.isdigit() else None)
+            if xpu is not None
+            else True,
         )
     if device == "mps":
         return DiffusionDeviceTarget(
@@ -832,6 +841,21 @@ def _cuda_or_rocm_target(
     )
 
 
+# Arc A-series has no fp64 ("Required aspect fp64"); 0 skips the probe.
+XPU_FP64_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _xpu_has_fp64(xpu: Any, index: Optional[int] = None) -> bool:
+    """True when the probe is off or unanswerable."""
+    if (os.environ.get(XPU_FP64_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return True
+    try:
+        idx = xpu.current_device() if index is None else index
+        return bool(getattr(xpu.get_device_properties(idx), "has_fp64", True))
+    except Exception:
+        return True
+
+
 def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
     bf16_ok = False
     xpu = getattr(torch, "xpu", None)
@@ -847,6 +871,7 @@ def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
         supports_model_cpu_offload = True,
         supports_default_torch_compile = False,
         supports_pinned_transfer = False,
+        supports_float64 = _xpu_has_fp64(xpu) if xpu is not None else True,
     )
 
 
@@ -971,6 +996,27 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
             supports_float64 = False,
         )
     return _cpu_target(torch)
+
+
+def apply_cpu_render_threads(device: Any) -> Optional[int]:
+    """Match torch CPU threads to sd.cpp's ``_default_threads``; per thread, so call from the render thread. An explicit
+    OMP_NUM_THREADS / MKL_NUM_THREADS (torch sizes its intra-op pool from them) is kept, as configure_cpu_threads does."""
+    if str(device).split(":")[0] != "cpu":
+        return None
+    if any(os.environ.get(name, "").strip() for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS")):
+        return None
+    try:
+        import torch
+
+        from .sd_cpp_backend import _default_threads
+
+        threads = int(_default_threads())
+        if threads > 0 and torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+            return threads
+    except Exception:  # noqa: BLE001 -- a thread count is an optimisation only
+        return None
+    return None
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:

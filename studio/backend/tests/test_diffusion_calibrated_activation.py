@@ -660,3 +660,90 @@ def test_controlnet_surcharge_still_applies_to_transformer_families_named_like_s
         _guard(6 * GIB, 24 * GIB, calibrated = True, controlnet = True, **kw).action
         == dm.ACTIVATION_REFUSE
     )
+
+
+# Real Colab L4 load of Alpha-VLLM/Lumina-Image-2.0 at bf16 (transformer_quant none): the planner inputs it logged.
+LUMINA2_BF16 = dict(model_dense_mib = 10_124, companion_dense_mib = 5_149, text_encoder_dense_mib = 4_959)
+LUMINA2_INT8 = dict(LUMINA2_BF16, model_dense_mib = 7_876)
+
+
+def _l4_plan(sizes, act):
+    """A Colab L4 as Studio read it (22_563 MiB total, 20_321 MiB budget): flat bf16 needs 20_364 MiB."""
+    return plan_diffusion_memory(
+        target = _target(),
+        device_memory = DeviceMemory("cuda", "cuda", "discrete_vram", 22_369, 22_563),
+        runtime_headroom_mib = 8192,
+        calibrated_activation = act,
+        **sizes,
+    )
+
+
+def test_lumina_2_measured_activation_keeps_the_int8_transformer_resident_on_16gb():
+    """The flat 8 GiB guess streamed Lumina-2's int8 transformer every step on 16 GB cards; the measured peak fits it."""
+    act = calibrated_image_activation("lumina-2")
+    flat, plan = _plan(16, LUMINA2_INT8, None), _plan(16, LUMINA2_INT8, act)
+    assert flat.offload_policy == OFFLOAD_GROUP and flat.stream_transformer
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_transformer is False and plan.stream_text_encoders is True
+    assert not plan.vae_tiling
+
+
+def test_lumina_2_measured_activation_keeps_int8_resident_on_an_l4():
+    """On a 22.5 GB L4 the flat guess streamed the encoder every render; with an int8 DiT everything now fits. bf16
+    keeps streaming the encoder: the measured first-decode peak leaves it short of resident."""
+    act = calibrated_image_activation("lumina-2", max_speed = False)
+    for sizes in (LUMINA2_BF16, LUMINA2_INT8):
+        flat = _l4_plan(sizes, None)
+        assert flat.offload_policy == OFFLOAD_GROUP and flat.stream_text_encoders
+    plan = _l4_plan(LUMINA2_INT8, act)
+    assert plan.offload_policy == OFFLOAD_NONE and not plan.vae_tiling
+    assert _l4_plan(LUMINA2_BF16, act).offload_policy == OFFLOAD_GROUP
+
+
+def test_lumina_2_measured_activation_never_picks_a_slower_tier():
+    for sizes in (LUMINA2_BF16, LUMINA2_INT8):
+        act = calibrated_image_activation("lumina-2")
+        best = None
+        for gib in (8, 10, 12, 14, 15, 16, 18, 20, 22, 24, 32, 48):
+            flat, plan = _plan(gib, sizes, None), _plan(gib, sizes, act)
+            rank = _rank(plan, sizes)
+            assert rank <= _rank(flat, sizes), (gib, plan.reasons)
+            assert best is None or rank <= best, gib
+            best = rank
+
+
+def _whole_module(
+    monkeypatch,
+    plan,
+    *,
+    family = "lumina-2",
+    dense_bf16 = True,
+    h2d = 11.0,
+    tflops = 76.0,
+):
+    """``prefer_whole_module_offload`` on ``plan`` with the probe the L4 load logged (11 GiB/s, 76 bf16 TFLOPS)."""
+    monkeypatch.delenv(dm.WHOLE_MODULE_OFFLOAD_ENV, raising = False)
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: (h2d, tflops))
+    monkeypatch.setattr(dm, "_denoiser_is_dense_bf16", lambda pipe: dense_bf16)
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: {})
+    pipe = types.SimpleNamespace(transformer = object())
+    return pipe, dm.prefer_whole_module_offload(pipe, plan, steps = 50, family = family)
+
+
+def test_lumina_2_bf16_keeps_the_whole_module_offload_the_flat_plan_took(monkeypatch):
+    """16 GiB, plain bf16: the flat streamed plan became whole-module offload; the measured resident-transformer plan
+    (encoder streamed per prompt) was 1% slower per render on an L4, so the same whole-module plan is kept."""
+    act = calibrated_image_activation("lumina-2", max_speed = False)
+    flat, plan = _plan(16, LUMINA2_BF16, None), _plan(16, LUMINA2_BF16, act)
+    assert flat.stream_transformer and not plan.stream_transformer
+    _, flat_whole = _whole_module(monkeypatch, flat)
+    _, kept = _whole_module(monkeypatch, plan)
+    assert flat_whole.offload_policy == kept.offload_policy == OFFLOAD_MODEL
+    for field in ("stream_transformer", "stream_text_encoders", "vae_tiling", "vae_slicing"):
+        assert getattr(kept, field) == getattr(flat_whole, field), field
+    assert "calibrated_headroom_mib" not in kept.estimates
+    # int8 (not plain bf16), another family, or a card that streams cheaper: the measured plan stands
+    for kw in (dict(dense_bf16 = False), dict(family = "z-image"), dict(h2d = 200.0)):
+        pipe, other = _whole_module(monkeypatch, plan, **kw)
+        assert other is plan, kw
+        assert getattr(pipe, dm.WHOLE_TIER_ATTR, None) is None

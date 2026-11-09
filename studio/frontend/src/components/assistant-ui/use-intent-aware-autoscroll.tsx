@@ -190,6 +190,7 @@ export function useIntentAwareAutoScroll(): {
       let touchStartY = 0;
       let scrollKeyAt = Number.NEGATIVE_INFINITY;
       let pointerHeld = false;
+      let insertionRemainder = 0;
 
       const distanceFromBottom = (): number => {
         if (el.scrollHeight <= el.clientHeight) {
@@ -404,25 +405,24 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
-      // Content inserted above the viewport by a progressive-mount widening. THIS HOOK OWNS
-      // scrollTop; the progressive mount only reports the height it put above the fold, so the two
-      // never both write. While the user is FOLLOWING there is deliberately nothing to do: the
-      // MutationObserver below already requests the tick, which pins in the same frame before
-      // paint, and since widening only prepends, "pin to the bottom" and "shift by the
-      // height inserted above" are the same pixel. Correcting here too would double the forced
-      // layouts per frame and its scroll event could re-attach a user who deliberately detached
-      // within RE_ATTACH_THRESHOLD_PX of the bottom. While the user is DETACHED nothing else moves
-      // the viewport: extendFollow early-returns, stabilize only rebases its high-water mark, and
-      // pinIfFollowing returns without scrolling. So this is the only actor, and without it the
-      // page slides down under the reader every widening frame. `behavior: "instant"` is required:
-      // the viewport carries `scroll-smooth`, so an animated write would still be in flight at the
-      // next frame's write.
+      // Correct prepends before paint: a queued follow tick can run a frame late.
+      // This hook owns scrollTop and resyncs intent after either kind of correction.
+      // Use instant scrolling despite the viewport's scroll-smooth class.
       adjustImplRef.current = (deltaPx: number) => {
         if (!userDetachedRef.current) {
-          return;
-        }
-        if (deltaPx !== 0) {
-          el.scrollTo({ top: el.scrollTop + deltaPx, behavior: "instant" });
+          insertionRemainder = 0;
+          if (!parkIfHeld()) {
+            extendFollow();
+            pinIfFollowing(stabilize());
+          }
+        } else if (deltaPx !== 0) {
+          const top = Math.max(0, Math.min(
+            el.scrollTop + deltaPx + insertionRemainder,
+            el.scrollHeight - el.clientHeight,
+          ));
+          el.scrollTo({ top, behavior: "instant" });
+          // WebKit rounds scrollTop; carry the fraction across background prepends.
+          insertionRemainder = top - el.scrollTop;
         }
         // Resync lastScrollTop even with no write: native anchoring may have moved scrollTop and its
         // scroll event would otherwise read as a downward scroll that re-attaches the user.

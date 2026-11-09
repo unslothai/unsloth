@@ -112,6 +112,10 @@ from utils.helper_precache_settings import (
 )
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils import video_cpu_settings
+from utils.download_speed_limit import (
+    get_download_speed_limit_mbps,
+    set_download_speed_limit_mbps,
+)
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -186,7 +190,12 @@ from utils.keyless_api_access import (
     get_keyless_api_access_settings,
     set_keyless_api_access,
 )
-from utils.mcp_access import forced_by_env, is_mcp_enabled, set_mcp_enabled
+from utils.mcp_access import (
+    UnknownMcpToolError,
+    forced_by_env,
+    owner_record as mcp_owner_record,
+    set_mcp_settings,
+)
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
@@ -817,6 +826,14 @@ class DownloadTransportResponse(BaseModel):
     xet_unavailable_reason: Optional[str] = None
     auto_resolves_to: str
     auto_reason: Optional[str] = None
+
+
+class DownloadSpeedLimitPayload(BaseModel):
+    mbps: Optional[float] = Field(default = None, ge = 0)
+
+
+class DownloadSpeedLimitResponse(BaseModel):
+    mbps: Optional[float] = None
 
 
 class HubSettingsPayload(BaseModel):
@@ -1736,6 +1753,12 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
 
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from core.systemone.native_worker import reuse_found_binary
+    with reuse_found_binary():
+        return _systemone_answer(request)
+
+
+def _systemone_answer(request: Request) -> SystemOneSettingsResponse:
     from pathlib import Path
 
     from core.systemone import catalog, laya_runtime
@@ -1983,6 +2006,30 @@ def update_download_transport(
             log = logger,
         ) from exc
     return _download_transport_response(mode)
+
+
+@_shared_settings_router.get("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
+def get_download_speed_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> DownloadSpeedLimitResponse:
+    return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+
+
+@_owner_settings_router.put("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
+def update_download_speed_limit(
+    payload: DownloadSpeedLimitPayload, current_subject: str = Depends(get_current_subject)
+) -> DownloadSpeedLimitResponse:
+    try:
+        mbps = set_download_speed_limit_mbps(payload.mbps)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid download speed limit."),
+            event = "settings.update_download_speed_limit_failed",
+            log = logger,
+        ) from exc
+    return DownloadSpeedLimitResponse(mbps = mbps)
 
 
 def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
@@ -4127,7 +4174,29 @@ class KeylessApiAccessResponse(BaseModel):
 
 
 class McpAccessPayload(BaseModel):
-    enabled: StrictBool
+    # Either or both; a bare ``enabled`` comes from an older client.
+    enabled: Optional[StrictBool] = None
+    disabled_tools: Optional[list[StrictStr]] = None
+    # One tool's switch, merged into the stored list on the server so concurrent toggles both land.
+    tool_states: Optional[dict[StrictStr, StrictBool]] = None
+
+    @model_validator(mode = "after")
+    def at_least_one(self):
+        if not self.model_fields_set:
+            raise ValueError("Send enabled, disabled_tools or tool_states.")
+        if {"disabled_tools", "tool_states"} <= self.model_fields_set:
+            raise ValueError("Send disabled_tools or tool_states, not both.")
+        for name in self.model_fields_set:
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null.")
+        return self
+
+
+class McpToolSetting(BaseModel):
+    name: str
+    area: str
+    enabled: bool
+    chat: bool
 
 
 class McpAccessResponse(BaseModel):
@@ -4135,6 +4204,8 @@ class McpAccessResponse(BaseModel):
     forced_by_env: bool
     # Display only: where an agent should point. Agents connect to whatever address reaches this server.
     url: str
+    # Null when unreadable, so a client never saves a full list from a fake "every tool off" view.
+    tools: Optional[list[McpToolSetting]]
 
 
 class PreviewSharingPayload(BaseModel):
@@ -4625,10 +4696,27 @@ def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_ap
 
 
 def _mcp_access_response(request: Request) -> McpAccessResponse:
+    from mcp_server import tool_catalog, withheld
+
+    from_chat = withheld()
+
+    record = mcp_owner_record()
+    tools = None
+    if record is not None:
+        disabled = record[1]
+        tools = [
+            McpToolSetting(
+                **entry,
+                enabled = disabled is not None and entry["name"] not in disabled,
+                chat = entry["name"] not in from_chat,
+            )
+            for entry in tool_catalog()
+        ]
     return McpAccessResponse(
-        enabled = is_mcp_enabled(),
+        enabled = forced_by_env() or (record is not None and record[0]),
         forced_by_env = forced_by_env(),
         url = str(request.base_url).rstrip("/") + "/mcp/",
+        tools = tools,
     )
 
 
@@ -4648,12 +4736,26 @@ def update_mcp_access(
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session_for_mcp),
 ) -> McpAccessResponse:
-    """Turn agent access over MCP on or off for the whole installation."""
-    if forced_by_env():
+    """Turn agent access over MCP on or off for the whole installation, and choose which tools agents get."""
+    # The env var forces only the switch; the owner still picks tools.
+    if payload.enabled is not None and forced_by_env():
         raise HTTPException(status_code = 409, detail = "Set by UNSLOTH_STUDIO_ENABLE_MCP.")
-    enabled = set_mcp_enabled(payload.enabled)
-    logger.info("settings.mcp_access_updated subject=%s enabled=%s", current_subject, enabled)
-    return _mcp_access_response(request)
+    try:
+        set_mcp_settings(
+            enabled = payload.enabled,
+            disabled_tools = payload.disabled_tools,
+            tool_states = payload.tool_states,
+        )
+    except UnknownMcpToolError as exc:
+        raise HTTPException(status_code = 422, detail = str(exc))
+    response = _mcp_access_response(request)
+    logger.info(
+        "settings.mcp_access_updated subject=%s enabled=%s disabled=%s",
+        current_subject,
+        response.enabled,
+        None if response.tools is None else sum(not tool.enabled for tool in response.tools),
+    )
+    return response
 
 
 def _is_bundled_avatar_url(value: str) -> bool:
@@ -4889,8 +4991,9 @@ class PersonalizationCustomization(BaseModel):
     sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
     composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
+    elementOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "system"
+    reduceMotion: Literal["system", "on", "off"] = "off"
     fontSmoothing: bool = True
     codeLineNumbers: bool = False
     codeWordWrap: bool = False
@@ -5080,9 +5183,54 @@ class BrowserPrefsPayload(BaseModel):
     annotationScreenshots: Optional[Literal["always", "never"]] = None
 
 
+_DisplayVisibility = Literal["collapsed", "auto", "expanded"]
+
+
+class ChatPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    plainTextComposer: Optional[bool] = None
+    showContextWindowUsage: Optional[bool] = None
+    sendShortcut: Optional[Literal["enter", "mod-enter-multiline", "mod-enter"]] = None
+    followUpBehavior: Optional[Literal["queue", "steer"]] = None
+    confirmDeleteChats: Optional[bool] = None
+    alwaysDeleteChatFiles: Optional[bool] = None
+    showResponseModel: Optional[bool] = None
+    showLinkPreviews: Optional[bool] = None
+    showReplyTimes: Optional[bool] = None
+    showGenerationDetails: Optional[bool] = None
+    showInlineEditResponse: Optional[bool] = None
+    thinkingVisibility: Optional[_DisplayVisibility] = None
+    toolVisibility: Optional[_DisplayVisibility] = None
+    foldToolActivityIntoThinking: Optional[bool] = None
+    pastedTextMinChars: Optional[Literal[0, 2000, 4000, 8000, 16000]] = None
+    autoScrollWhileGenerating: Optional[bool] = None
+    newChatComposerPosition: Optional[int] = Field(None, ge = 0, le = 100)
+    showTurnNavigation: Optional[bool] = None
+    richTextPaste: Optional[bool] = None
+    generationStatsUpdates: Optional[Literal["settled", "realtime"]] = None
+
+
+_PlusMenuId = Annotated[str, Field(max_length = 64)]
+_PinnedId = Annotated[str, Field(max_length = 256)]
+
+
+class PlusMenuPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    pins: Optional[dict[_PlusMenuId, bool]] = Field(None, max_length = 64)
+    order: Optional[list[_PlusMenuId]] = Field(None, max_length = 64)
+    pinnedPromptIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
+    pinnedListIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
+
+
 class ClientPreferencesPayload(BaseModel):
     interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
     browser: Optional[BrowserPrefsPayload] = None
+    chat: Optional[ChatPrefsPayload] = None
+    plusMenu: Optional[PlusMenuPrefsPayload] = None
+    timeFormat: Optional[Literal["system", "12h", "24h"]] = None
+    spellcheck: Optional[bool] = None
 
 
 class ClientPreferencesResponse(ClientPreferencesPayload):
@@ -5092,7 +5240,7 @@ class ClientPreferencesResponse(ClientPreferencesPayload):
 
 def _client_preferences_response(stored: dict) -> ClientPreferencesResponse:
     response = ClientPreferencesResponse.model_validate(
-        {k: stored.get(k) for k in ("interfaceScale", "browser", "updatedAt")}
+        {k: stored.get(k) for k in (*ClientPreferencesPayload.model_fields, "updatedAt")}
     )
     response.saved = bool(stored)
     return response
@@ -5607,8 +5755,12 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
     )
     terminal_exe, shell = _sandbox_terminal_target()
     # On Windows the choice above just probed this executable.
+    terminal_force = force and not windows_refresh
+    if sys.platform in ("linux", "darwin") and python.available:
+        # Reuse a successful POSIX probe; an undecided check can leave an older cached pass.
+        terminal_force = False
     terminal = os_sandbox.capability_snapshot(
-        force = force and not windows_refresh,
+        force = terminal_force,
         execution_kind = "terminal",
         selected_executable = terminal_exe,
     )

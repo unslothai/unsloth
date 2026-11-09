@@ -188,6 +188,7 @@ def install_patches(
     backend: str = "image",
     audit: Optional[Audit] = None,
     logger: Any = None,
+    explicit_off: Optional[bool] = None,
 ) -> dict:
     """Run one load-time patch stage (``load_eager`` / ``load``) for ``pipe``."""
     ctx = patches.PatchContext(
@@ -197,6 +198,7 @@ def install_patches(
         dtype = dtype,
         device = device,
         speed_mode = speed_mode,
+        explicit_off = explicit_off,
         backend = backend,
         logger = logger,
     )

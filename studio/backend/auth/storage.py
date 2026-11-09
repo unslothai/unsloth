@@ -991,6 +991,40 @@ def set_account_model_allowlist(account_id: str, allowlist: Optional[list[str]])
     return result
 
 
+def rename_account(account_id: str, username: str) -> dict:
+    """Data keys on account_id, so nothing moves; sessions are revoked, API keys follow the account."""
+    from auth.policy import account_mutation
+
+    username = validate_account_username(username)
+    with account_mutation():
+        conn = get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = _managed_account(conn, account_id)
+                old = row["username"]
+                if old != username:
+                    if _login_alias_taken(conn, username):
+                        raise sqlite3.IntegrityError("Username is unavailable")
+                    conn.execute(
+                        "UPDATE auth_user SET username = ?, account_jwt_secret = ? WHERE account_id = ?",
+                        (username, secrets.token_urlsafe(64), account_id),
+                    )
+                    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (old,))
+                    conn.execute(
+                        "UPDATE api_keys SET username = ? WHERE username = ? AND account_id = ?",
+                        (username, old, account_id),
+                    )
+                    conn.execute(
+                        "UPDATE account_api_keys SET username = ? WHERE account_id = ?",
+                        (username, account_id),
+                    )
+                result = _public_account(_managed_account(conn, account_id))
+        finally:
+            conn.close()
+    return result
+
+
 def account_model_allowlist(account_id: str) -> Optional[tuple[str, ...]]:
     """``None`` = every model. The owner is never restricted."""
     conn = get_connection()
@@ -1767,6 +1801,9 @@ DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
 # Authority follows this mint stamp, not the name: older Studios let any caller pick the name.
 UNSLOTH_START_API_KEY_PURPOSE = "unsloth_start"
+STUDIO_CHAT_TOOLS_KEY_NAME = "Unsloth Studio chat tools"
+# The same key minted for a chat an API key started: it never gets the owner's load-beside pass.
+STUDIO_CHAT_TOOLS_API_KEY_NAME = "Unsloth Studio chat tools (API)"
 
 
 def create_api_key(
@@ -1786,6 +1823,13 @@ def create_api_key(
 
     conn = get_connection()
     try:
+        if account_id is not None:
+            # A long-lived caller (a research run) may hold a name from before a rename.
+            row = conn.execute(
+                "SELECT username FROM auth_user WHERE account_id = ?", (account_id,)
+            ).fetchone()
+            if row is not None:
+                username = row["username"]
         if expect_gen is not None:
             conn.execute("BEGIN IMMEDIATE")
             if _current_generation(conn, username) != expect_gen:
@@ -1910,6 +1954,23 @@ def revoke_internal_api_key(key_id: int) -> bool:
         conn.close()
 
 
+def delete_internal_api_key(key_id: int) -> bool:
+    """Delete an internal key row and its account copy. For keys minted per call, which would
+    otherwise leave one inactive row behind for every call."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM account_api_keys "
+            "WHERE key_hash = (SELECT key_hash FROM api_keys WHERE id = ? AND is_internal = 1)",
+            (key_id,),
+        )
+        cursor = conn.execute("DELETE FROM api_keys WHERE id = ? AND is_internal = 1", (key_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def is_internal_api_key(raw_key: str) -> bool:
     """Memoized: it runs on the event loop per API-key request, and a key's origin never changes."""
     if not raw_key.startswith(API_KEY_PREFIX):
@@ -1991,7 +2052,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
                 touch = False
         cur = conn.execute(
             f"""
-            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.expires_at,
+            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.is_internal, k.expires_at,
                    u.account_id, u.role, u.is_active AS account_active,
                    COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
@@ -2036,6 +2097,8 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "expires_at": row["expires_at"],
             "key_name": row["name"],
             "key_purpose": row["purpose"],
+            "key_internal": bool(row["is_internal"]),
+            "key_id": row["id"],
         }
         return record, secret
     finally:

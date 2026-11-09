@@ -449,7 +449,7 @@ def test_a_recovered_capacity_warning_is_not_a_capacity_failure():
     crash = (
         "sd-cli exited -11. Last output:\n" + _RECOVERED_CAPACITY_WARNING + "Segmentation fault\n"
     )
-    assert "renderer stopped unexpectedly" in video_failure_detail(RuntimeError(crash))
+    assert "renderer crashed" in video_failure_detail(RuntimeError(crash))
 
 
 def test_a_bare_device_loss_is_explained_as_likely_memory():
@@ -463,12 +463,12 @@ def test_an_unrelated_native_crash_keeps_its_old_text():
     detail = video_failure_detail(
         RuntimeError("sd-cli exited -11. Last output:\nSegmentation fault")
     )
-    assert "renderer stopped unexpectedly" in detail
+    assert "renderer crashed" in detail
 
 
 def test_a_torch_oom_keeps_its_old_text():
     detail = video_failure_detail(RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB"))
-    assert "smaller resolution, fewer frames, or fewer steps" in detail
+    assert "smaller resolution, fewer frames or fewer steps" in detail
 
 
 _V1_SWAP_ROOM = {

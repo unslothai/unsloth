@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import contextlib
 import contextvars
 import os
 import re
@@ -58,6 +59,28 @@ def load_identity(repo_id, base_repo, family) -> LoadIdentity:
     return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
 
 
+# The image queue pins the checkpoint file too: another quant of the same repo is the same LoadIdentity.
+_pinned_checkpoint: contextvars.ContextVar = contextvars.ContextVar(
+    "pinned_checkpoint", default = None
+)
+
+
+@contextlib.contextmanager
+def pin_checkpoint(filename):
+    token = _pinned_checkpoint.set((filename,))
+    try:
+        yield
+    finally:
+        _pinned_checkpoint.reset(token)
+
+
+def require_pinned_checkpoint(loaded_id: LoadIdentity, loaded_filename) -> None:
+    """Called by each engine beside its expected_load check, under the same lock."""
+    pin = _pinned_checkpoint.get()
+    if pin is not None and pin[0] != loaded_filename:
+        raise DiffusionModelReplacedError(loaded_id, loaded_id)
+
+
 class DiffusionModelReplacedError(RuntimeError):
     """Both engines' ``generate`` refusing a ``LoadIdentity`` that is no longer loaded. Keeps a
     caller's per-model steps/guidance and workflow verdict, taken from an earlier ``status()``
@@ -95,7 +118,9 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
-    # Transformer-only files (GGUF) load only via sd.cpp; diffusers has no single-file loader (MOSS-Image).
+    # False: no GGUF loader on either engine (Anima).
+    gguf_loadable: bool = True
+    # Transformer-only GGUFs load only via sd.cpp (MOSS-Image); its .safetensors single files load on diffusers.
     native_transformer_files_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
@@ -137,6 +162,8 @@ class DiffusionFamily:
     comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
+    # Scheduler config set after the static shift (Chroma's beta schedule).
+    scheduler_overrides: tuple[tuple[str, Any], ...] = field(default_factory = tuple)
     # ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*); None = no Shift control. ``_variants``: (id substring, node), first match wins.
     comfy_shift_node: Optional[str] = None
     comfy_shift_node_variants: tuple[tuple[str, Optional[str]], ...] = field(default_factory = tuple)
@@ -295,6 +322,21 @@ _QWENIMAGE_MOD_WEIGHT_ONLY = ("img_mod", "txt_mod")
 # pre-floor plain fp8 at LPIPS 0.712 with SSIM 0.016 and mean luma 0. Keeping the deny cost real speed: it pinned qwen
 # to int8 at 1.10x bf16 when compiled fp8 measures 1.21x.
 _QWENIMAGE_SCHEME_DENY = frozenset({"mxfp8", "nvfp4"})
+# rdna_auto_w8a8: gfx1151, ROCm 7.13, 1024^2, both arms compiled, LPIPS vs compiled bf16. Wan failed the 0.10 LPIPS bar.
+_QWENIMAGE21_RDNA_AUTO_W8A8 = "compiled int8 W8A8 measured 83.3 vs 95.1 s/image against compiled bf16 on gfx1151 (25 steps), LPIPS 0.020"
+_QWENIMAGE_RDNA_AUTO_W8A8 = (
+    "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
+    "LPIPS 0.014"
+)
+# FLUX.3 renders black in float16, so fp16-only cards run it in float32; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
+_FLUX3_FP16_INCOMPATIBLE = (
+    os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16") or ""
+).strip().lower() not in (
+    "1",
+    "on",
+    "true",
+    "yes",
+)
 # FLUX.3 Klein transformer-quant keep-list, every scheme (FamilyProfile.quant_exclude_tokens).
 _FLUX3_QUANT_KEEP = (
     "modulation",
@@ -323,6 +365,10 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 )
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
+)
+# Not SMALL_DIT_BF16_WHEN_RESIDENT: that reason also compiles from render 1; Anima's compile stays deferred.
+ANIMA_BF16_WHEN_RESIDENT = (
+    "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled"
 )
 # Small DiTs (<= ~6B) stay bf16 while it fits: quantising moves detail (L4 vs bf16 LPIPS: FP8 FLUX.2-klein-4B 0.065,
 # Z-Image-Turbo 0.103; FLUX.3-klein INT8 0.027). INT8 still when bf16 would offload; such loads compile from render 1.
@@ -385,6 +431,7 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
+ANIMA_FAMILY_NAME = "anima"
 # MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
 _MOSS_IMAGE_CONVROT_SUFFIXES = (
@@ -394,6 +441,33 @@ _MOSS_IMAGE_CONVROT_SUFFIXES = (
     "proj.o",
     "proj.ffn_up_gate",
     "proj.ffn_down",
+)
+
+# All 101 int8 Linear widths are 256-divisible.
+_FLUX2_KLEIN_CONVROT_SUFFIXES = (
+    "context_embedder",
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "attn.add_q_proj",
+    "attn.add_k_proj",
+    "attn.add_v_proj",
+    "attn.to_add_out",
+    "ff.linear_in",
+    "ff.linear_out",
+    "ff_context.linear_in",
+    "ff_context.linear_out",
+    "attn.to_qkv_mlp_proj",
+    "attn.to_out",
+)
+_FLUX3_CONVROT_SUFFIXES = (
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "ff.linear_in",
+    "ff.linear_out",
 )
 
 _FAMILIES: tuple[DiffusionFamily, ...] = (
@@ -473,6 +547,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            # LPIPS vs fp16 (4B, T4 W8A8, 16 renders): plain 0.103 -> ConvRot 0.037; A100 0.092 -> 0.034.
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _FLUX2_KLEIN_CONVROT_SUFFIXES,
+                filename = "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+                repo = "unsloth/FLUX.2-klein-4B-FP8",
+                default_on = True,
+                hosted_plain = True,
+            ),
             preview_factors = "flux2",
             auto_static_skip = (
                 (
@@ -561,9 +644,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.3-klein-base",
         comfy_shift_node = "flux",
+        fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            int8_convrot = ConvRotSpec(group = 256, suffixes = _FLUX3_CONVROT_SUFFIXES, default_on = True),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -618,9 +703,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.3-klein",
         comfy_shift_node = "flux",
+        fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _FLUX3_CONVROT_SUFFIXES,
+                filename = "flux-3-image-klein-INT8-ConvRot.safetensors",
+                repo = "unsloth/flux-3-image-klein-FP8",
+                default_on = True,
+                hosted_plain = True,
+            ),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -882,6 +976,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
             preview_factors = "qwen_image",
             auto_static_skip = (("qwen/qwen-image", (("default", 2), ("max", 3), ("steps", 20))),),
+            rdna_auto_w8a8 = _QWENIMAGE_RDNA_AUTO_W8A8,
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
@@ -946,6 +1041,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # 0.0642 against 0.1032 with the generic tokens alone, paired over 16 calibration prompts, -0.0390 CI95
             # [-0.0708, -0.0072], better on 14/16.
             int8_exclude_tokens = ("txt_in",),
+            rdna_auto_w8a8 = _QWENIMAGE21_RDNA_AUTO_W8A8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = (
@@ -1193,6 +1289,35 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # bit-identical): int8 ConvRot LPIPS-alex mean 0.015, SSIM 0.986, layerwise fp8 0.177; both stay one explicit
         # pick away (resident 4.87 -> 2.99 GiB, download 10.46 GB fp32 -> 3.21 GB).
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
+        fp16_incompatible = True,
+    ),
+    # Chroma: shift 1 on the beta schedule; linear spacing (shift 1 or the shipped 3) letterboxes some prompts.
+    DiffusionFamily(
+        name = "chroma",
+        comfy_shift_node = "sd3",
+        label = "Chroma",
+        # fp8 files compute in fp8 as in ComfyUI; auto never quantizes bf16 / GGUF weights, which ComfyUI runs unquantized.
+        profile = FamilyProfile(
+            scheme_deny = frozenset({"nvfp4", "mxfp8"}),
+            auto_scheme_skip = frozenset({"fp8", "int8"}),
+        ),
+        pipeline_class = "ChromaPipeline",
+        transformer_class = "ChromaTransformer2DModel",
+        base_repo = "lodestones/Chroma1-HD",
+        comfy_flow_shift = 1.0,
+        scheduler_overrides = (("use_beta_sigmas", True),),
+        aliases = ("chroma1", "chroma1-hd", "chroma-hd"),
+        fp16_incompatible = True,
+    ),
+    DiffusionFamily(
+        name = ANIMA_FAMILY_NAME,
+        label = "Anima",
+        pipeline_class = "AnimaModularPipeline",
+        transformer_class = "CosmosTransformer3DModel",
+        base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
+        aliases = ("anima-base", "anima-2.9b"),
+        profile = FamilyProfile(auto_bf16_when_resident = ANIMA_BF16_WHEN_RESIDENT),
+        gguf_loadable = False,
         fp16_incompatible = True,
     ),
     # HunyuanImage 2.1: a 17B dual-stream DiT with a Qwen2.5-VL encoder, a ByT5 glyph encoder and the 32x HunyuanImage
@@ -2135,6 +2260,9 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
+    # Keyed by base repo: a bare "anima" would match Animagine XL (SDXL) files first.
+    ("circlestone-labs/anima", 30, 4.0),
+    ("chroma", 26, 3.5),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
@@ -2328,7 +2456,7 @@ _DIFFUSERS_DROPPED_PY39 = "0.37.0"
 _DIFFUSERS_DROPPED_PY310 = "0.42.0"
 _MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
-# First diffusers release exporting each class; every probed class must be listed, since an unlisted one reads as available.
+# Minimum diffusers per class, enforced even when the class is present; an unlisted class reads as available.
 _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     # MiniMax-H3 is judged by its transformer, first available in diffusers 0.40.0.
     "MiniMaxH3Transformer3DModel": "0.40.0",
@@ -2355,6 +2483,7 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "Flux3ModularPipeline": "0.42.0",
     "Flux3DistilledModularPipeline": "0.42.0",
     "Krea2Pipeline": "0.39.0",
+    "AnimaModularPipeline": "0.39.0",
     # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
     # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has
     # existed since 0.30 is the same wrong remedy.
@@ -2363,6 +2492,7 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImageInpaintPipeline": "0.35.0",
     "FluxKontextPipeline": "0.35.0",
     "HiDreamImagePipeline": "0.34.0",
+    "ChromaPipeline": "0.34.0",
     # WanPipeline arrived with Wan2.1 in 0.33.0. The shipped Wan2.2 family wants weights only 0.35 carries, but this
     # table answers class presence, like the attribute probe before it.
     "WanPipeline": "0.33.0",
@@ -2647,6 +2777,7 @@ _DIFFUSERS_MAIN_MIN_PYTHON = (3, 11)
 _PIPELINE_PROBE_FILES: dict[str, str] = {
     "Flux3ModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
     "Flux3DistilledModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
+    "AnimaModularPipeline": "modular_pipelines/anima/modular_pipeline.py",
 }
 
 
@@ -2871,13 +3002,10 @@ def assert_pipeline_class_available(
             f"missing and install it."
         )
 
-    if present:
+    installed = getattr(diffusers, "__version__", None)
+    if present and not _present_class_below_floor(pipeline_class, installed):
         return
-    raise ValueError(
-        _too_old_message(
-            pipeline_class, family_name, str(getattr(diffusers, "__version__", "unknown"))
-        )
-    )
+    raise ValueError(_too_old_message(pipeline_class, family_name, str(installed or "unknown")))
 
 
 def _module_namespace_is_unreadable(module: Any) -> bool:
@@ -2916,6 +3044,20 @@ def _installed_at_least(installed: str, minimum: str) -> bool:
         return True
 
 
+def _present_class_below_floor(pipeline_class: str, installed: Any) -> bool:
+    """Probe-file classes and unreleased floors stay presence-judged: main builds report an older release."""
+    minimum = _PIPELINE_MIN_DIFFUSERS.get(pipeline_class)
+    if (
+        minimum is None
+        or minimum in _UNRELEASED_MIN_DIFFUSERS
+        or pipeline_class in _PIPELINE_PROBE_FILES
+        or not isinstance(installed, str)
+        or not installed.strip()
+    ):
+        return False
+    return not _installed_at_least(installed.strip(), minimum)
+
+
 def family_probe_class(fam: Any) -> str:
     """ModularPipeline is generic and predates families, so probe the transformer class; listing and both training gates must share it."""
     name = str(getattr(fam, "pipeline_class", "") or "")
@@ -2949,9 +3091,12 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
             return True
         if not _module_namespace_is_unreadable(module):
             try:
-                return hasattr(module, name)
+                if not hasattr(module, name):
+                    return False
+                installed = getattr(module, "__version__", None)
             except Exception:  # noqa: BLE001 -- a probe failure must not hide a model
                 return True
+            return not _present_class_below_floor(name, installed)
     minimum, _needs_py310 = pipeline_class_requirement(name)
     if minimum is None:
         return True
@@ -2994,7 +3139,7 @@ def pipeline_available_family_names() -> tuple[str, ...]:
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
     """A single-file-pipeline family or a multi-denoiser family has no transformer-only GGUF to load."""
-    return not fam.single_file_is_pipeline and not fam.pipeline_only
+    return not fam.single_file_is_pipeline and not fam.pipeline_only and fam.gguf_loadable
 
 
 def family_mlx_supported(fam: Optional[DiffusionFamily]) -> bool:

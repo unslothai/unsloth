@@ -127,7 +127,7 @@ ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
 # Seconds a host-RAM parked model is kept; 0 never parks.
 ENV_PARK_SECONDS = "UNSLOTH_SAM3_PARK_SECONDS"
 PARK_SECONDS = 600.0
-# "1" pins the parked copy (0.03 s unpark vs ~0.6 s); opt-in since pinning 1.7 GB took minutes on a loaded host.
+# Unset: registered host memory (torch's pinned allocator took minutes for 1.7 GB on a loaded host); "1" torch's, "0" pageable.
 ENV_PARK_PIN = "UNSLOTH_SAM3_PARK_PIN"
 
 # ── ComfyUI SAM3_Detect defaults ────────────────────────────────────────────────────────────────────────────────────
@@ -1058,8 +1058,13 @@ class _HostWeights:
 
     _ALIGN = 256
 
-    def __init__(self, pin: bool) -> None:
-        self.pin = pin
+    def __init__(
+        self,
+        pin: bool,
+        fast: bool = False,
+    ) -> None:
+        self.pin = pin or fast
+        self.fast = fast
         self.buffer: Any = None
         self.storage: Any = None
         self.total = 0
@@ -1112,7 +1117,14 @@ class _HostWeights:
             slots[key] = (storage, offset)
             offset += -(-storage.nbytes() // self._ALIGN) * self._ALIGN
         self.total = offset
-        self.buffer = torch.empty(self.total, dtype = torch.uint8, pin_memory = self.pin)
+        self.buffer = None
+        if self.fast:
+            from .diffusion_memory import registered_pinned_empty
+            self.buffer = registered_pinned_empty(self.total)
+            # No registered memory here: pageable, never torch's slow pinned allocator.
+            self.pin = self.buffer is not None
+        if self.buffer is None:
+            self.buffer = torch.empty(self.total, dtype = torch.uint8, pin_memory = self.pin)
         storages = [st for st, _off in slots.values()]
         if storages:
             torch._foreach_copy_(
@@ -1415,8 +1427,11 @@ class MaskSegmenter:
         model = self._model
         from .host_pinning import host_pinning_allowed
 
+        raw = (os.environ.get(ENV_PARK_PIN) or "").strip().lower()
+        allowed = host_pinning_allowed(device)
         host = self._host or _HostWeights(
-            pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1" and host_pinning_allowed(device)
+            pin = raw == "1" and allowed,
+            fast = raw not in ("0", "off", "false", "no", "1") and allowed,
         )
         try:
             host.park(model)

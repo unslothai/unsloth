@@ -603,8 +603,9 @@ def torch_dtype_map(decision: SmallHostDecision, compute_dtype: Any) -> Any:
 
 
 INT8_ACT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT"
-# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread); qwen-image-edit shares the DiT but is unmeasured.
-INT8_ACT_FAMILIES = frozenset({"qwen-image"})
+# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread). qwen-image-edit shares the DiT: 2.03x per step, same
+# LPIPS distance to the bf16 reference as weight-only int8.
+INT8_ACT_FAMILIES = frozenset({"qwen-image", "qwen-image-edit"})
 # torch._int_mm: rows M > 16, K and N multiples of 8.
 _INT8_ACT_MIN_ROWS = 17
 _INT8_ACT_ALIGN = 8
@@ -656,6 +657,20 @@ def int8_act_device_ok(device: Any) -> bool:
         ok = False
     _INT8_ACT_DEVICE_OK[idx] = ok
     return ok
+
+
+def enable_int8_act_(module: Any) -> int:
+    """Let every int8-stored Linear of ``module`` run W8A8 (an explicit int8 request on an fp16-only card); returns
+    how many. The per-call gate is unchanged: float32 CUDA input on sm_75 with an exact ``_int_mm``, else dequantise.
+    ``UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT=0`` keeps them dequantised."""
+    if int8_act_disabled() or _INT8_CLS is None:
+        return 0
+    count = 0
+    for sub in module.modules():
+        if isinstance(sub, _INT8_CLS):
+            sub.act_int8 = True
+            count += 1
+    return count
 
 
 def _int8_linear_class():

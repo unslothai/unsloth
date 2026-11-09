@@ -7,5 +7,9 @@ export {
 } from "./material";
 export { MATERIAL_LABELS } from "./material-labels";
 export { MATERIALS, type WindowMaterial } from "./model";
-export { useChatWelcomeShown, useMarkChatWelcome } from "./welcome";
+export {
+  useChatWelcomeShown,
+  useMarkChatCompare,
+  useMarkChatWelcome,
+} from "./welcome";
 export { resetChatBackground, useBackgroundStore } from "./storage";

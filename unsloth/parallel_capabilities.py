@@ -81,7 +81,8 @@ class Query:
     pp_schedule: Optional[str] = None  # gpipe, 1f1b, interleaved
     attention: str = "sdpa"  # sdpa, eager, flash, flash_varlen, fa3, fa4, flex, flex_sparse
     compile: str = "eager"  # eager, block (Unsloth's per decoder layer torch.compile)
-    memory: str = "none"  # none, gc (torch checkpoint), unsloth_gc, unsloth_offload, tiled_mlp
+    # none, gc, unsloth_gc, unsloth_offload (Unsloth's checkpoint), unsloth_offload_legacy (old zoo shim), tiled_mlp
+    memory: str = "none"
     kernels: bool = False  # Unsloth's fused RoPE / RMSNorm / SwiGLU / LoRA kernels
     loss: str = "standard"  # standard, fused_ce, chunked_ce, fused_rl
     moe: bool = False  # routed experts
@@ -93,6 +94,9 @@ class Query:
         ""  # UNSLOTH_MOE_BACKEND: grouped_mm, unsloth_triton, native_torch ("" = default)
     )
     optim: str = ""  # the optimizer (args.optim or the class of a prebuilt one), lower case
+    tiled: bool = False
+    # offload_layers = N or "auto" (block swap).
+    block_swap: bool = False
 
 
 @dataclasses.dataclass(frozen = True)
@@ -153,6 +157,7 @@ RULES = (
         "full finetuning under cp x tp has no parity evidence yet (tensor parallel alone trains it)",
         "use LoRA, or UNSLOTH_FSDP2=1 with cp for full finetuning",
     ),
+    # Ring carries no packed_seq_lengths and drops window / softcap (context_parallel.py).
     Rule(
         "cp backend",
         "ring context parallel with packed rows",
@@ -223,6 +228,7 @@ RULES = (
         "one stage per rank in v1",
         "pp_schedule=gpipe or 1f1b",
     ),
+    # Kept: flex backward cannot run on CPU (no parity evidence) and generic would lose block sparsity.
     Rule(
         "cp x attention",
         "context parallel with flex attention block masks",
@@ -261,6 +267,14 @@ RULES = (
         "reads the local tensors would orthogonalize the shards",
         "torch.optim.Muon (it steps DTensor shards as whole matrices), adamw_torch / adamw_8bit, or DDP "
         "(dp without fsdp) for another Muon",
+    ),
+    Rule(
+        "fsdp2 x memory",
+        "block swap (offload_layers) under native FSDP2",
+        lambda q: q.fsdp2 and q.block_swap,
+        "block swap keeps decoder layers in host RAM behind placeholders it rebinds each step, and fully_shard "
+        "would turn those into DTensors (models/fsdp2_native.py refuses it in shard_model on every rank)",
+        "offload_layers = 0 at load (and get_peft_model(offload_layers = 0)), or launch without UNSLOTH_FSDP2",
     ),
     Rule(
         "tp x model",
@@ -345,7 +359,7 @@ class Feature:
 
 
 def _gc(q):
-    return q.memory in ("gc", "unsloth_gc", "unsloth_offload")
+    return q.memory in ("gc", "unsloth_gc", "unsloth_offload", "unsloth_offload_legacy")
 
 
 FEATURES = (
@@ -414,7 +428,8 @@ FEATURES = (
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         uses = ("packed_seq_lengths",),
         produces = ("seq_shard", "shift_labels", "position_ids"),
-        hooks = ("Trainer.__init__", "attention_function"),
+        # decoder_layer.forward: a pre-hook drops the per-layer mask (context_parallel.py).
+        hooks = ("Trainer.__init__", "decoder_layer.forward", "attention_function"),
         exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     Feature(
@@ -425,7 +440,8 @@ FEATURES = (
         mesh = ("cp",),
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         produces = ("seq_shard", "shift_labels", "cp_permutation", "position_ids"),
-        hooks = ("Trainer.__init__", "attention_function"),
+        # decoder_layer.forward: a pre-hook drops the per-layer mask (context_parallel.py).
+        hooks = ("Trainer.__init__", "decoder_layer.forward", "attention_function"),
         exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     # Precision.
@@ -518,9 +534,16 @@ FEATURES = (
     Feature(
         "tiled_mlp",
         "memory",
-        "models/_tiled_mlp_ddp.py + unsloth_zoo tiled MLP",
-        lambda q: q.memory == "tiled_mlp",
+        "tiling.py (tile_mlp, unsloth_tiled_mlp) + unsloth_zoo tiling_registry",
+        lambda q: q.tiled or q.memory == "tiled_mlp",
         hooks = ("decoder_layer.forward",),
+    ),
+    Feature(
+        "block_swap",
+        "memory",
+        "models/_utils.py (offload_layers) + unsloth_zoo block_swap",
+        lambda q: q.block_swap,
+        hooks = ("from_pretrained", "get_peft_model", "decoder_layer.forward"),
     ),
     # Kernels and losses.
     Feature(
@@ -608,6 +631,8 @@ _GLOO = "tests/test_parallel_cp_compose_gloo.py::"
 # Block compile cells: their compile tests pass on torch 2.13 and 2.15; torch 2.10 recompiles more than one
 # process (6 > 1 under cp x tp, 1 > 0 for MoE under cp), so older versions run them eager.
 BLOCK_COMPILE_TORCH = (2, 13)
+_UNSLOTH_GC = "Unsloth's checkpoint (path A and path B): " + _GLOO
+_WITH_UNSLOTH_GC = ("none", "gc", "unsloth_offload")
 _CP_TP = {
     "trainer": ("sft",),
     "family": ("llama",),
@@ -619,16 +644,47 @@ _CP_TP = {
     "cp_backend": ("ulysses",),
     "pp": (1,),
     "attention": ("sdpa", "eager"),
-    "memory": ("none", "gc"),
+    "memory": _WITH_UNSLOTH_GC,
     "kernels": (False,),
     "loss": ("standard",),
     "vllm": (False,),
     "moe": (False,),
+    "block_swap": (False,),
 }
 _PARITY = _GLOO + "test_cp_x_tp_from_unsloth_parallel_matches_one_process"
-_CP_DP = {**_CP_TP, "tp": (1,), "moe": (False,)}
+_CP_DP = {k: v for k, v in _CP_TP.items() if k != "block_swap"}
+_CP_DP.update(tp = (1,), moe = (False,))
 _FSDP2_CP = _GLOO + "test_cp_with_native_fsdp2_matches_one_process"
+_HYBRID_FSDP2_CP = _GLOO + "test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process"
 _MOE_CP = _GLOO + "test_moe_without_aux_loss_under_cp_matches_one_process"
+# Packed rows under generic Ulysses (HF attention, DDP over cp).
+_PACKED_CP = {
+    "trainer": ("sft",),
+    "family": ("qwen3", "mistral", "gemma2", "gemma3"),
+    "hybrid": (False,),
+    "multimodal": (False,),
+    "windowed": (False, True),
+    "mode": ("lora", "full"),
+    "packing": (True,),
+    "cp_backend": ("ulysses",),
+    "dp": (1,),
+    "cp": (2,),
+    "tp": (1,),
+    "pp": (1,),
+    "fsdp2": (False,),
+    "attention": ("sdpa", "eager"),
+    "memory": ("none",),
+    "kernels": (False,),
+    "loss": ("standard",),
+    "vllm": (False,),
+    "moe": (False,),
+    "block_swap": (False,),
+}
+_PACKED_ULYSSES = (
+    "tests/test_cp_ulysses_generic_gloo.py::test_generic_ulysses_matches_one_process"
+    "[gemma3-eager-True|qwen3-sdpa-True]"
+)
+_PACKED_COMPILED = _GLOO + "test_block_compile_packed_rows_under_cp_match_one_process"
 CELLS = (
     Cell(
         "cp x native FSDP2 (dp_shard x cp), eager",
@@ -637,11 +693,35 @@ CELLS = (
         engagement = _FSDP2_CP
         + " (FSDP2 mesh covers the cp group, seq / cp tokens, Ulysses exchanges)",
         compile = "eager: no compiled region",
+        note = _UNSLOTH_GC
+        + "test_cp_with_native_fsdp2_and_unsloth_checkpointing_matches_one_process",
+    ),
+    Cell(
+        "hybrid (Gated DeltaNet + attention) cp x native FSDP2 (dp_shard x cp), eager",
+        {
+            **_CP_DP,
+            "family": ("qwen3_5",),
+            "hybrid": (True,),
+            "attention": ("sdpa",),
+            "memory": ("none",),
+            "fsdp2": (True,),
+            "compile": ("eager",),
+            "dp": (2,),
+            "cp": (2,),
+        },
+        parity = _HYBRID_FSDP2_CP,
+        engagement = _HYBRID_FSDP2_CP
+        + " (FSDP2 mesh covers the cp group, seq / cp tokens, Gated DeltaNet and attention Ulysses exchanges, "
+        "UNSLOTH_PARALLEL_STRICT=1)",
+        compile = "eager: no compiled region",
+        note = "cp alone: " + _GLOO + "test_hybrid_qwen3_5_under_cp_matches_one_process",
     ),
     Cell(
         "cp x tp (DDP dp), eager",
         {**_CP_TP, "fsdp2": (False,), "compile": ("eager",), "dp": (1, 2), "tp": (2,), "cp": (2,)},
         parity = _PARITY + "[cp2_tp2|dp2_cp2_tp2]",
+        note = _UNSLOTH_GC
+        + "test_cp_x_tp_with_unsloth_checkpointing_matches_one_process[cp2_tp2|dp2_cp2_tp2]",
         engagement = _PARITY
         + " (seq / cp tokens per rank, one Ulysses exchange per layer, cp group != tp group)",
         compile = "eager: no compiled region",
@@ -650,6 +730,8 @@ CELLS = (
         "cp x tp (FSDP2 dp), eager",
         {**_CP_TP, "fsdp2": (True,), "compile": ("eager",), "dp": (2,), "tp": (2,), "cp": (2,)},
         parity = _PARITY + "[fsdp2_cp2_tp2]",
+        note = _UNSLOTH_GC
+        + "test_cp_x_tp_with_unsloth_checkpointing_matches_one_process[fsdp2_cp2_tp2]",
         engagement = _PARITY
         + "[fsdp2_cp2_tp2] (as above, FSDP2 over the flattened (dp_shard, cp) mesh)",
         compile = "eager: no compiled region",
@@ -669,7 +751,56 @@ CELLS = (
         + "test_block_compile_composes_like_one_process (compiled classes, seq / cp tokens)",
         compile = _GLOO
         + "test_block_compile_composes_like_one_process (graph breaks / recompiles <= one process)",
+        note = _UNSLOTH_GC
+        + "test_block_compile_with_unsloth_checkpointing_composes_like_one_process",
         min_torch = BLOCK_COMPILE_TORCH,
+    ),
+    Cell(
+        "packed rows x cp Ulysses (DDP), eager",
+        {**_PACKED_CP, "compile": ("eager",)},
+        parity = _PACKED_ULYSSES,
+        engagement = _PACKED_ULYSSES
+        + " (one exchange per layer over the whole row, document lengths reach the attention)",
+        compile = "eager: no compiled region",
+        note = "a 2-rank CPU matrix also matched one process for TRL packing and padding-free rows on Qwen3, "
+        "Mistral (window), Gemma-2 (window, softcap) and Gemma-3 (window, replicated kv head), LoRA and full",
+    ),
+    Cell(
+        "packed rows x cp Ulysses (DDP), Unsloth block compile",
+        {
+            **_PACKED_CP,
+            "family": ("qwen3", "llama"),
+            "windowed": (False,),
+            "mode": ("lora",),
+            "attention": ("sdpa",),
+            "compile": ("block",),
+        },
+        parity = _PACKED_COMPILED
+        + " (packing and padding-free rows, ga 1 and 2: the same numbers as one process)",
+        engagement = _PACKED_COMPILED
+        + " (compiled classes, seq / cp tokens, every micro-batch's document lengths at the shard, the compiled "
+        "layers issue the all-to-alls)",
+        compile = _PACKED_COMPILED
+        + " (graph breaks incl. data-dependent ones / recompiles / graphs <= one process)",
+        note = "per-document compiled attention also: "
+        "tests/test_cp_ulysses_generic_gloo.py::test_compiled_layers_follow_each_packed_row",
+        min_torch = BLOCK_COMPILE_TORCH,
+    ),
+    # First match wins: the rest of the packed compiled rows, and the measured one on older torch.
+    Cell(
+        "packed rows x cp Ulysses (DDP), Unsloth block compile, unmeasured",
+        {
+            **_PACKED_CP,
+            "family": _PACKED_CP["family"] + ("llama",),
+            "compile": ("block",),
+        },
+        parity = "tests/test_cp_ulysses_generic_gloo.py::test_compiled_layers_follow_each_packed_row",
+        engagement = None,
+        compile = None,
+        note = "compile evidence ("
+        + _PACKED_COMPILED
+        + ") covers Qwen3 / Llama, LoRA, SDPA, no window, on "
+        "torch >= 2.13 only; eager is proven",
     ),
 )
 
@@ -681,8 +812,13 @@ MOE_FAMILIES = (
     "qwen3_moe",
     "qwen3_5_moe",
     "gpt_oss",
+    "deepseek_v2",
     "deepseek_v3",
+    "deepseek_v32",
+    "deepseek_v4",
     "kimi_linear",
+    "minimax",
+    "minimax_m2",
     "olmoe",
     "mixtral",
     "qwen2_moe",
@@ -732,10 +868,75 @@ _MOE_COMMON = {
     "packing": (False,),
     "vllm": (False,),
 }
+# Covers Unsloth's checkpoint too, so such a run stays unverified instead of falling to a single-axis layout.
+_MOE_UNVERIFIED_MEMORY = _WITH_UNSLOTH_GC
 _MOE_TEST = _GLOO + "test_moe_under_data_and_context_parallel_matches_one_process"
 _MOE_AUX_TEST = _GLOO + "test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch"
 _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
+_MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
+_MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+# Kimi-Linear (remote code): KDA + MLA layers and the hub MoE block / gate under Unsloth's shim, right padded rows,
+# fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
+_KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
+_KIMI_EAGER = "eager: remote code, no compiled region"
+# MiniMax (transformers' MiniMaxForCausalLM / MiniMaxM2ForCausalLM, fused experts): M1 Lightning + full attention
+# layers, M2 full attention through the generic route, the MoE block with routed / unrouted experts, right padded
+# rows, fp64 against one process, every gradient and one AdamW step. HF checkpointing only.
+_MINIMAX = "tests/test_ulysses_minimax_parity.py::test_minimax_model_matches_upstream"
+_MINIMAX_EAGER = "eager: block compile not measured for this family"
+# DeepSeek (transformers' DeepseekV2 / V3 / V32 / V4ForCausalLM, fused experts): V2 / V3 MLA (YaRN softmax scale,
+# narrower value heads) on the generic route, V3.2's global DSA indexer top-k and V4's sliding / CSA / HCA sink
+# attention on their own Ulysses forwards; right padded rows, fp64 against one process, every gradient (None vs
+# zero) and one AdamW step. HF checkpointing only. V4 runs eager attention only.
+_DEEPSEEK = "tests/test_ulysses_deepseek_reference.py::test_deepseek_cp_matches_fp64_reference"
+_DEEPSEEK_EAGER = "eager: block compile not measured for this family"
+_DEEPSEEK_CASES = {
+    "deepseek_v2": {
+        "full": "v2_cp2|v2_cp4|v2_dp2cp2|v2_cp2_eager_checkpoint",
+        "lora": "v2_cp2_lora",
+        "lora+experts": "v2_cp2_lora_experts",
+    },
+    "deepseek_v3": {
+        "full": "v3_cp2|v3_cp4|v3_dp2cp2|v3_cp2_eager_checkpoint",
+        "lora": "v3_cp2_lora",
+        "lora+experts": "v3_cp2_lora_experts",
+    },
+    "deepseek_v32": {
+        "full": "v32_cp2|v32_cp4_late_rank_empty|v32_dp2cp2|v32_cp2_sdpa_checkpoint",
+        "lora": "v32_cp2_lora",
+        "lora+experts": "v32_cp2_lora_experts",
+    },
+    "deepseek_v4": {
+        "full": "v4_cp2|v4_cp4_late_rank_empty|v4_dp2cp2|v4_cp2_checkpoint",
+        "lora": "v4_cp2_lora",
+        "lora+experts": "v4_cp2_lora_experts",
+    },
+}
+# Gemma 4: text-only Gemma4ForCausalLM, HF checkpointing only.
+_GEMMA4 = "tests/test_ulysses_gemma4.py::test_gemma4_cp_matches_fp64_reference"
+_GEMMA4_EAGER = "eager: block compile not measured for this family"
+_GEMMA4_CASES = {
+    "full": "moe_cp2|moe_cp2_window9_prompt_masked|moe_cp4|moe_dp2cp2|moe_cp2_eager_checkpoint",
+    "lora": "moe_cp2_lora",
+    "lora+experts": "moe_cp2_lora_experts|moe_cp2_lora_experts_eager_checkpoint",
+}
+# gpt-oss: eager only (no SDPA path honours the sinks); HF checkpointing only.
+_GPT_OSS = "tests/test_ulysses_gpt_oss.py::test_gpt_oss_cp_matches_fp64_reference"
+_GPT_OSS_EAGER = "eager: block compile not measured for this family"
+_GPT_OSS_CASES = {
+    "full": "cp2|cp2_window9_prompt_masked|cp4|dp2cp2|cp2_checkpoint|cp2_zoo_forward",
+    "lora": "cp2_lora|cp4_lora",
+    "lora+experts": "cp2_lora_experts|cp2_lora_experts_checkpoint|cp4_lora_experts|cp2_lora_experts_zoo_forward",
+}
+# Attention implementations a family's evidence ran (default: _MOE_COMMON's sdpa and eager).
+_MOE_ATTENTION = {"deepseek_v4": ("eager",), "gpt_oss": ("eager",)}
+_MOE_TEXT_ONLY = {
+    "gemma4": "multimodal Gemma 4 refuses under Ulysses (its vision attention is bidirectional); only the "
+    "text-only Gemma4ForCausalLM ran",
+}
+# Families whose cp rows also ran Unsloth's checkpoint (path A and B); the others match HF checkpointing only.
+_MOE_UNSLOTH_GC_FAMILIES = ("qwen3_moe",)
 # (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
 _MOE_EVIDENCE = {
     ("qwen3_moe", "lora+experts", False, "ddp"): (_MOE_TEST + "[lora-ddp]",) * 2
@@ -766,13 +967,66 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
     + ("eager: no compiled region",),
+    ("kimi_linear", "full", False, "cp"): (_KIMI_MOE + "[full-sdpa-cp2|full-eager-gc-dp2xcp2]",) * 2
+    + (_KIMI_EAGER,),
+    ("kimi_linear", "lora", False, "cp"): (_KIMI_MOE + "[lora-eager-gc-cp2]",) * 2 + (_KIMI_EAGER,),
+    ("kimi_linear", "lora+experts", False, "cp"): (
+        _KIMI_MOE + "[lora_experts-sdpa-gc-cp2|lora_experts-eager-cp2]",
+    )
+    * 2
+    + (_KIMI_EAGER,),
+    ("minimax", "full", False, "cp"): (
+        _MINIMAX + "[m1_cp2|m1_cp4|m1_dp2_cp2|m1_cp2_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax", "lora", False, "cp"): (
+        _MINIMAX + "[m1_cp2_lora|m1_cp2_lora_checkpoint|m1_cp2_lora_eager]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax", "lora+experts", False, "cp"): (
+        _MINIMAX + "[m1_cp2_lora_experts|m1_dp2_cp2_lora_experts_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "full", False, "cp"): (
+        _MINIMAX + "[m2_cp2|m2_cp4_gqa|m2_dp2_cp2|m2_cp2_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "lora", False, "cp"): (
+        _MINIMAX + "[m2_cp2_lora|m2_cp2_lora_reentrant|m2_cp2_lora_eager]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "lora+experts", False, "cp"): (
+        _MINIMAX + "[m2_cp2_lora_experts|m2_dp2_cp2_lora_experts_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    **{
+        (family, precision, False, "cp"): (f"{_DEEPSEEK}[{ids}]",) * 2 + (_DEEPSEEK_EAGER,)
+        for family, cases in _DEEPSEEK_CASES.items()
+        for precision, ids in cases.items()
+    },
+    **{
+        ("gemma4", precision, False, "cp"): (f"{_GEMMA4}[{ids}]",) * 2 + (_GEMMA4_EAGER,)
+        for precision, ids in _GEMMA4_CASES.items()
+    },
+    **{
+        ("gpt_oss", precision, False, "cp"): (f"{_GPT_OSS}[{ids}]",) * 2 + (_GPT_OSS_EAGER,)
+        for precision, ids in _GPT_OSS_CASES.items()
+    },
 }
 
 
 # Cells table only; a real model is read by structure (_direct_params, _tp_blocker).
 _DIRECT_PARAM_FAMILIES = ("gpt_oss",)
 _TP_BLOCKED_FAMILIES = {
+    "deepseek_v2": "multi-head latent attention (MLA, kv_lora_rank)",
     "deepseek_v3": "multi-head latent attention (MLA, kv_lora_rank)",
+    "deepseek_v32": "multi-head latent attention (MLA, kv_lora_rank)",
     "olmoe": "q_norm / k_norm normalize all heads' features, not one head",
 }
 
@@ -791,6 +1045,13 @@ def _moe_note(family, precision, aux, mode):
             return "pipeline parallel carries the router auxiliary loss for Qwen3-MoE only (refused at the split)"
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
+    if precision == "qlora" and mode == "pp" and family == "qwen3_moe" and aux:
+        # Not opened: micro-batches resolve at the first step (pp_env.resolve_microbatches), not in the layout.
+        return (
+            "with UNSLOTH_PP_MICROBATCHES=1 and gpipe it matched one process on 2 T4 (tiny and 128-wide Qwen3-MoE, "
+            "4-bit experts); more micro-batches are refused at the first step (the router loss would be summed "
+            "per micro-batch), and the registry cannot see the micro-batch count before then"
+        )
     if precision == "qlora":
         # Measured on one G4 (2 NCCL ranks sharing the card): qwen3_moe QLoRA under DDP equals one process over the
         # same micro-batches (bitsandbytes 4-bit expert path engaged); cp / FSDP2 x QLoRA have not run.
@@ -817,17 +1078,58 @@ def _moe_cells():
                     }
                     name = f"MoE {family} x {precision} x aux {'on' if aux else 'off'} x {mode}"
                     if evidence:
-                        cells.append(Cell(name, match, *evidence))
+                        if family in _MOE_ATTENTION:
+                            match = {**match, "attention": _MOE_ATTENTION[family]}
+                        if family in _MOE_TEXT_ONLY:
+                            match = {**match, "multimodal": (False,)}
+                        note = compiled_note = ""
+                        if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
+                            match = {**match, "memory": _WITH_UNSLOTH_GC}
+                            case = f"{precision.split('+')[0]}-{mode}2"  # lora-cp2, lora-fsdp2_cp2, full-cp2
+                            note = (
+                                _UNSLOTH_GC + _MOE_CP_GC + f"[{case}-unsloth|{case}-unsloth_nonre]"
+                            )
+                            compiled_note = _UNSLOTH_GC + _MOE_CP_GC_COMPILE
+                        if mode in ("pp", "tp"):
+                            # No evidence run swapped layers; block swap x tp / pp is its own cell.
+                            match = {**match, "block_swap": (False,)}
+                        cells.append(Cell(name, match, *evidence, note = note))
+                        if family in _MOE_TEXT_ONLY:
+                            cells.append(
+                                Cell(
+                                    name + ", multimodal",
+                                    {**match, "multimodal": (True,)},
+                                    None,
+                                    None,
+                                    None,
+                                    note = _MOE_TEXT_ONLY[family],
+                                )
+                            )
+                        if mode in ("cp", "fsdp2_cp") and family not in _MOE_UNSLOTH_GC_FAMILIES:
+                            cells.append(
+                                Cell(
+                                    name + ", Unsloth checkpoint",
+                                    {**match, "memory": ("unsloth_offload",)},
+                                    None,
+                                    None,
+                                    None,
+                                    note = "only HF gradient checkpointing ran under cp for this family; "
+                                    "use_gradient_checkpointing = True (not 'unsloth') runs the measured cell",
+                                )
+                            )
                         if not evidence[2].startswith("eager:"):
                             cells.append(
                                 Cell(
                                     name + ", block compile",
                                     {**match, "compile": ("block",)},
                                     *evidence,
+                                    note = compiled_note,
                                     min_torch = BLOCK_COMPILE_TORCH,
                                 )
                             )
                     else:
+                        if match["memory"] == _MOE_COMMON["memory"]:
+                            match = {**match, "memory": _MOE_UNVERIFIED_MEMORY}
                         cells.append(
                             Cell(
                                 name,
@@ -841,7 +1143,44 @@ def _moe_cells():
     return tuple(cells)
 
 
-CELLS = CELLS + _moe_cells()
+class _AboveOne:
+    """Any size above 1: parallel_env accepts any positive size, so (2, 4, 8) would miss 3 or 16."""
+
+    def __contains__(self, size):
+        return isinstance(size, int) and size > 1
+
+    def __iter__(self):
+        return iter(("2+",))
+
+
+# The refusal names the knob to turn off: dropping an axis is not the fix for a swapped model.
+_NO_BLOCK_SWAP = (
+    "; load with offload_layers = 0 (and get_peft_model(offload_layers = 0)) to run this layout"
+)
+CELLS = (
+    CELLS
+    + _moe_cells()
+    + (
+        Cell(
+            "block swap x tp",
+            {"block_swap": (True,), "tp": _AboveOne()},
+            None,
+            None,
+            None,
+            note = "models/tp_native.py has no block swap check and no run shards swapped layers yet"
+            + _NO_BLOCK_SWAP,
+        ),
+        Cell(
+            "block swap x pp",
+            {"block_swap": (True,), "pp": _AboveOne()},
+            None,
+            None,
+            None,
+            note = "models/pp_native.py has no block swap check and no run splits swapped layers yet"
+            + _NO_BLOCK_SWAP,
+        ),
+    )
+)
 
 
 def _strict() -> bool:
@@ -1073,8 +1412,10 @@ def _low_precision(model) -> Optional[str]:
         for m in model.modules():
             if "_unsloth_fp8_lora" in getattr(m, "__dict__", {}):
                 return "fp8"
-            cls = type(m)
-            if cls.__name__ == "Float8Linear" and cls.__module__.startswith("torchao."):
+            if any(
+                c.__name__ == "Float8Linear" and c.__module__.startswith("torchao.")
+                for c in type(m).__mro__
+            ):
                 return "fp8"
     except Exception:
         pass
@@ -1131,19 +1472,64 @@ def _attention(model, packing):
 def _memory(model, args):
     try:
         import torch.utils.checkpoint as checkpoint
-        name = getattr(checkpoint.checkpoint, "__name__", "")
+        fn = checkpoint.checkpoint
     except Exception:
-        name = ""
+        fn = None
+    name = getattr(fn, "__name__", "")
     gc = bool(getattr(args, "gradient_checkpointing", False)) or bool(
         getattr(model, "is_gradient_checkpointing", False)
     )
     if not gc:
         return "none"
     if name == "unsloth_offloaded_gradient_checkpoint":
+        # Legacy zoo shim: unmeasured, so it keeps its own name.
+        return "unsloth_offload_legacy"
+    try:
+        from ._gc_kwargs import _checkpoint_offloads
+        offloads = _checkpoint_offloads(fn)
+    except Exception:
+        offloads = name in ("unsloth_checkpoint", "unsloth_offloaded_gradient_checkpoint")
+    if offloads:
         return "unsloth_offload"
     if name == "unsloth_gradient_checkpoint":
         return "unsloth_gc"
     return "gc"
+
+
+def _tiled(model) -> bool:
+    if (
+        model is None
+        or isinstance(model, str)
+        or not callable(getattr(model, "named_modules", None))
+    ):
+        return False
+    try:
+        from unsloth_zoo.tiling_registry import tiled_modules
+    except Exception:
+        return False
+    try:
+        return bool(tiled_modules(model))
+    except Exception:
+        return False
+
+
+def _block_swap(model) -> bool:
+    """As fsdp2_native._refuse_block_swap: "auto" counts even on a rank that swapped none."""
+    if model is None or isinstance(model, str) or not callable(getattr(model, "modules", None)):
+        return False
+    try:
+        for module in model.modules():
+            d = getattr(module, "__dict__", {})
+            swapper = d.get("_unsloth_block_swap", None)
+            if swapper is not None and len(getattr(swapper, "indices", None) or ()) > 0:
+                return True
+            if d.get("_unsloth_offload_layers_auto_ddp", False) or (
+                d.get("_unsloth_offload_layers_auto", None) is not None
+            ):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _kernels(model):
@@ -1304,6 +1690,8 @@ def query_from(
         expert_lora = _expert_lora(model) or _pending_expert_lora(model, peft_config),
         moe_backend = __import__("os").environ.get("UNSLOTH_MOE_BACKEND", "").strip().lower(),
         optim = _optimizer_name(args, optimizer),
+        tiled = _tiled(model),
+        block_swap = _block_swap(model),
     )
 
 

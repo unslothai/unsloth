@@ -362,6 +362,26 @@ def test_head_learning_rate_and_weight_decay(checkpoint, tmp_path, lora):
             assert group["weight_decay"] == (0.0 if name in no_decay else 0.01)
 
 
+@pytest.mark.skipif(
+    not hasattr(TrainingArguments, "activation_checkpointing"),
+    reason = "transformers < 5.23 reads gradient_checkpointing",
+)
+def test_trainer_checkpoints_the_encoder_not_the_wrapper(checkpoint, tmp_path):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    trainer = DecisionTrainer(
+        model = model,
+        args = _args(tmp_path, max_steps = 1, gradient_checkpointing = True),
+        train_dataset = items,
+        processing_class = tokenizer,
+    )
+    assert trainer.args.activation_checkpointing is False
+    assert model.encoder.is_gradient_checkpointing
+    trainer.train()
+
+
 def test_length_grouping_only_with_gradient_accumulation(checkpoint, tmp_path):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False

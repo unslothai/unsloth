@@ -10,6 +10,12 @@ import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "../utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+} from "../utils/conversation-html";
 import { allRecordedSandboxSessionIds } from "../utils/recorded-sandbox-session";
 import { liveThreadBranch } from "../utils/live-thread-head";
 import {
@@ -47,7 +53,9 @@ export type ConversationExportFormat =
   | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
-  | typeof CONVERSATION_MARKDOWN_FORMAT;
+  | typeof CONVERSATION_MARKDOWN_FORMAT
+  | typeof CONVERSATION_HTML_FORMAT
+  | typeof CONVERSATION_PDF_FORMAT;
 
 /** Built on call: reading the barrel's label at module load throws on the import cycle. */
 export function chatExportOptions(): Array<{
@@ -60,6 +68,8 @@ export function chatExportOptions(): Array<{
     { label: "CSV", format: "csv" },
     { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
     { label: CONVERSATION_MARKDOWN_LABEL, format: CONVERSATION_MARKDOWN_FORMAT },
+    { label: CONVERSATION_HTML_LABEL, format: CONVERSATION_HTML_FORMAT },
+    { label: CONVERSATION_PDF_LABEL, format: CONVERSATION_PDF_FORMAT },
   ];
 }
 
@@ -70,7 +80,9 @@ export async function exportConversationByFormat(
   const liveBranch = liveThreadBranch(threadId);
   const {
     exportConversationCsv,
+    exportConversationHtml,
     exportConversationMarkdown,
+    exportConversationPdf,
     exportConversationMessagesJsonl,
     exportConversationRawJsonl,
     exportConversationShareGPT,
@@ -86,6 +98,10 @@ export async function exportConversationByFormat(
       return exportConversationShareGPT(threadId, liveBranch);
     case CONVERSATION_MARKDOWN_FORMAT:
       return exportConversationMarkdown(threadId, liveBranch);
+    case CONVERSATION_HTML_FORMAT:
+      return exportConversationHtml(threadId, liveBranch);
+    case CONVERSATION_PDF_FORMAT:
+      return exportConversationPdf(threadId, liveBranch);
     default: {
       const unhandled: never = format;
       throw new Error(`Unhandled export format: ${String(unhandled)}`);

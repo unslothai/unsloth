@@ -80,7 +80,7 @@ from models.inference import (
     VideoUnloadResponse,
 )
 from utils.account_context import current_account_id, is_owner_context
-from utils.api_errors import openai_error_body
+from utils.api_errors import openai_error_body, problem_headers
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
 
 logger = get_logger(__name__)
@@ -99,6 +99,11 @@ def _training_is_active() -> bool:
     """The non-raising half of the load guard, for callers that must not take the GPU."""
     from routes.inference import _training_is_active as _images_training_is_active
     return _images_training_is_active()
+
+
+def _video_backend():
+    from core.inference.video import get_video_backend
+    return get_video_backend()
 
 
 def _derived_h3_task(gguf_filename: Optional[str], kind: str) -> Optional[str]:
@@ -815,11 +820,13 @@ async def generate_video(
             msg = str(exc)
             if msg == VIDEO_MODEL_CHANGED_MSG and attempt == 0:
                 continue
-            if msg in (
-                VIDEO_NOT_LOADED_MSG,
-                VIDEO_GENERATION_BUSY_MSG,
-                VIDEO_MODEL_CHANGED_MSG,
-            ):
+            if msg == VIDEO_NOT_LOADED_MSG:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = msg,
+                    headers = problem_headers("not_loaded", kind = "video"),
+                )
+            if msg in (VIDEO_GENERATION_BUSY_MSG, VIDEO_MODEL_CHANGED_MSG):
                 raise HTTPException(status_code = 409, detail = msg)
             logger.error("video.generate_failed: %s", exc, exc_info = True)
             raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
@@ -930,12 +937,12 @@ async def video_status(
 ):
     if account_access.resident_hidden("video"):
         return account_access.hidden_resident_response()
-    from core.inference.video import get_video_backend
     from hub.utils.host_paths import redact_host_paths
 
     from core.inference import media_load_ids
 
-    backend = get_video_backend()
+    # Polled on page mount, so usually the first import of the video stack: keep it off the loop.
+    backend = await asyncio.to_thread(_video_backend)
     # With the load id of the same state, so an unload can name exactly what this answer shows.
     status_dict, load_id, resident_load_id = await asyncio.to_thread(
         media_load_ids.snapshot_ids, "video", backend, backend.status
@@ -2277,7 +2284,7 @@ async def _start_openai_video(
         maybe_auto_switch_media_model,
         resident_answers_media_request,
     )
-    from core.inference.video import get_video_backend
+    from core.inference.video import get_video_backend, video_failure_detail
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_MODEL_CHANGED_MSG,
@@ -2348,7 +2355,11 @@ async def _start_openai_video(
         else:
             status = await asyncio.to_thread(backend.status)
         if not status.get("loaded"):
-            raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+            raise HTTPException(
+                status_code = 503,
+                detail = _NO_VIDEO_MODEL_MSG,
+                headers = problem_headers("not_loaded", kind = "video"),
+            )
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
         defaults = status.get("defaults") or {}
@@ -2397,7 +2408,11 @@ async def _start_openai_video(
         except RuntimeError as exc:
             msg = str(exc)
             if msg == VIDEO_NOT_LOADED_MSG:
-                raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+                raise HTTPException(
+                    status_code = 503,
+                    detail = _NO_VIDEO_MODEL_MSG,
+                    headers = problem_headers("not_loaded", kind = "video"),
+                )
             if msg == VIDEO_GENERATION_BUSY_MSG:
                 raise _openai_video_error(409, msg)
             if msg == VIDEO_MODEL_CHANGED_MSG:
@@ -2405,7 +2420,7 @@ async def _start_openai_video(
                     continue
                 raise _openai_video_error(409, msg, code = "model_changed", param = "model")
             logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
-            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+            raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
         break
 
     _note_generation_account()

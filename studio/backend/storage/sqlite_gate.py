@@ -31,9 +31,11 @@ class GatedConnection(sqlite3.Connection):
 
 
 def connect(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
-    """sqlite3.connect with opens and closes serialized process-wide."""
+    """sqlite3.connect with opens and closes serialized process-wide. A ``factory`` must subclass
+    GatedConnection so its close stays gated."""
+    kwargs.setdefault("factory", GatedConnection)
     with _CONNECTION_GATE:
-        return sqlite3.connect(str(database), factory = GatedConnection, **kwargs)
+        return sqlite3.connect(str(database), **kwargs)
 
 
 def is_busy_error(exc: sqlite3.OperationalError) -> bool:

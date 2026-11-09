@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Denoise steps that run W4A16 instead of W4A4; set must be measured per model, so off unless named."""
+"""Denoise steps that run W4A16 instead of W4A4; NVFP4 models default to ``auto`` on sm_100-class cards, else off."""
 
 from __future__ import annotations
 
@@ -15,6 +15,10 @@ PROTECT_STEPS_ENV = "UNSLOTH_NVFP4_PROTECT_STEPS"
 
 AUTO = "auto"
 AUTO_HEAD_FRACTION = 0.08
+# Only per-model controllers get it: the global one stays unarmed so non-NVFP4 graph keys and logs are unchanged.
+DEFAULT_MODEL_SPEC = AUTO
+# B200 measured auto accuracy-positive for +0.7-2.6% time; sm_120 cost +2.5-17% with no LPIPS interval clear of zero.
+DEFAULT_CAPABILITY_MAJOR = 10
 
 ALL = "all"
 
@@ -24,6 +28,41 @@ _OFF_TOKENS = ("", "off", "none", "0-none", "false", "no")
 def protect_steps_env() -> str:
     raw = os.environ.get(PROTECT_STEPS_ENV, "").strip().lower()
     return "" if raw in _OFF_TOKENS else raw
+
+
+def protect_steps_explicit() -> bool:
+    return bool(os.environ.get(PROTECT_STEPS_ENV, "").strip())
+
+
+def default_model_spec(device: Any = None) -> str:
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return ""
+        major = int(torch.cuda.get_device_capability(device)[0])
+    except Exception:  # noqa: BLE001 - an unreadable card keeps the old default, off
+        return ""
+    return DEFAULT_MODEL_SPEC if major == DEFAULT_CAPABILITY_MAJOR else ""
+
+
+def _module_cuda_device(module: Any) -> Any:
+    try:
+        for tensors in (module.parameters(), module.buffers()):
+            for tensor in tensors:
+                if tensor.device.type == "cuda":
+                    return tensor.device
+    except Exception:  # noqa: BLE001 - no readable tensor: the current device decides
+        pass
+    return None
+
+
+def model_protect_spec(module: Any = None) -> str:
+    if protect_steps_explicit():
+        return protect_steps_env()
+    spec = protect_controller().spec
+    if spec:
+        return spec
+    return default_model_spec(_module_cuda_device(module) if module is not None else None)
 
 
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
@@ -282,7 +321,7 @@ def attach_controller(module: Any, controller: NVFP4StepController) -> int:
 
 def attach_own_controller(module: Any) -> Optional[NVFP4StepController]:
     """Per-model controller, so concurrent image and video renders never move each other's steps."""
-    ctl = NVFP4StepController(protect_controller().spec)
+    ctl = NVFP4StepController(model_protect_spec(module))
     return ctl if attach_controller(module, ctl) else None
 
 

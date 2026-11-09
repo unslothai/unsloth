@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { useT } from "@/i18n";
+import type { ReactNode } from "react";
 import {
   COMBINED_EXPORT_FORMATS_LIST,
   type ConvExportFormat,
@@ -10,26 +15,44 @@ import {
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
 } from "../prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "./export-format-items";
 
 export function BulkExportItems({
   onExport,
+  combinedLead,
+  subContentClassName,
 }: {
   onExport: (format: ConvExportFormat, merged: boolean) => void;
+  combinedLead?: ReactNode;
+  subContentClassName?: string;
 }) {
   const t = useT();
+  const options = (list: typeof EXPORT_FORMATS_LIST) =>
+    list.map(({ fmt, label }) => ({ key: fmt, label }));
   return (
     <>
-      {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-        <DropdownMenuItem key={`merged-${fmt}`} onSelect={() => onExport(fmt, true)}>
-          {label} {t("settings.chat.exportCombinedSuffix")}
-        </DropdownMenuItem>
-      ))}
+      <DropdownMenuGroup>
+        <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
+          {t("projectsPage.combined")}
+        </DropdownMenuLabel>
+        {combinedLead}
+        <ExportFormatItems
+          options={options(COMBINED_EXPORT_FORMATS_LIST)}
+          onSelect={(fmt) => onExport(fmt, true)}
+          subContentClassName={subContentClassName}
+        />
+      </DropdownMenuGroup>
       <DropdownMenuSeparator className="mx-3" />
-      {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-        <DropdownMenuItem key={`separate-${fmt}`} onSelect={() => onExport(fmt, false)}>
-          {label} {t("settings.chat.exportPerChatSuffix")}
-        </DropdownMenuItem>
-      ))}
+      <DropdownMenuGroup>
+        <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
+          {t("projectsPage.perChat")}
+        </DropdownMenuLabel>
+        <ExportFormatItems
+          options={options(EXPORT_FORMATS_LIST)}
+          onSelect={(fmt) => onExport(fmt, false)}
+          subContentClassName={subContentClassName}
+        />
+      </DropdownMenuGroup>
     </>
   );
 }

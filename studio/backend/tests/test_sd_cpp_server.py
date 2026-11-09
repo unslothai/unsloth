@@ -231,6 +231,73 @@ def test_img_gen_failed_job_raises(patched):
         s.img_gen({"prompt": "x"})
 
 
+def _emit(server, line):
+    server._tail.append(line)
+    server._lines_seen += 1
+
+
+def _failing_job(server, lines):
+    def post(url, json):
+        for line in lines:
+            _emit(server, line)
+        return _Resp(202, {"id": "jobF"})
+
+    return post
+
+
+_JOB_FAILED = {
+    "status": "failed",
+    "error": {"code": "generation_failed", "message": "generate_image returned no results"},
+}
+_CUDA_OOM = (
+    "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 2304.00 MiB on device 0: "
+    "cudaMalloc failed: out of memory"
+)
+
+
+def test_img_gen_failure_carries_the_log_cause(patched):
+    client = _FakeClient(post = None, get = lambda url: _Resp(200, _JOB_FAILED))
+    s = _server_with(_FakePopen(), client)
+    client._post = _failing_job(s, ["[I] generating image: 1/1 - seed 42", _CUDA_OOM])
+    with pytest.raises(RuntimeError) as info:
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    message = str(info.value)
+    assert message.startswith(
+        "sd-server generation failed: generation_failed: generate_image returned no results"
+    )
+    assert "Last output:" in message
+    assert "out of memory" in message
+
+
+def test_img_gen_failure_carries_only_its_own_output(patched):
+    client = _FakeClient(post = None, get = lambda url: _Resp(200, _JOB_FAILED))
+    s = _server_with(_FakePopen(), client)
+    client._post = _failing_job(s, [_CUDA_OOM])
+    with pytest.raises(RuntimeError):
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    client._post = _failing_job(s, ["[E] failed to encode prompt --- image.cpp:450"])
+    with pytest.raises(RuntimeError) as info:
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    message = str(info.value)
+    assert "failed to encode prompt" in message
+    assert "out of memory" not in message
+
+
+def test_img_gen_failure_without_output_keeps_the_job_error(patched):
+    s = _server_with(
+        _FakePopen(),
+        _FakeClient(
+            post = lambda url, json: _Resp(202, {"id": "jobF"}),
+            get = lambda url: _Resp(
+                200, {"status": "failed", "error": {"code": "x", "message": "boom"}}
+            ),
+        ),
+    )
+    with pytest.raises(RuntimeError) as info:
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    assert str(info.value) == "sd-server generation failed: x: boom"
+
+
 def test_img_gen_queue_full_raises(patched):
     popen = _FakePopen()
     s = _server_with(popen, _FakeClient(post = lambda url, json: _Resp(429, text = "busy")))

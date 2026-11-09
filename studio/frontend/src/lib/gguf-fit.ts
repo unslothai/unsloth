@@ -21,6 +21,8 @@ export interface GgufFitInput {
   gpuCount?: number;
   /** Apple MLX loader budget (`GpuInfo.unifiedLoadBudgetGb`): past it, `fits` becomes `marginal`. */
   unifiedLoadBudgetGb?: number | null;
+  /** `audioCppCardGb`, what audio.cpp estimates are judged on; absent means gpuGb is one card. */
+  audioCppCardGb?: number;
 }
 
 /** Shared with the memory bar; the loader's `_CTX_FIT_VRAM_FRACTION`. 0.90 was tried and
@@ -105,6 +107,50 @@ export interface GgufVariantSizes {
   download_size_bytes?: number;
   /** Lookup tables inside `size_bytes` llama.cpp reads lazily from disk; 0 on older backends. */
   lookup_table_bytes?: number;
+  /** audio.cpp only: the GiB its load check requires. It loads whole on one GPU, never offloaded. */
+  estimated_resident_gb?: number | null;
+}
+
+/** The card an audio.cpp load lands on: the largest GPU torch sees, the placement check's inventory
+ *  (llama.cpp's can add Vulkan-only cards). 0 for a CPU RAM load, left to the llama.cpp rule. */
+export function audioCppCardGb(
+  gpu: { available: boolean; maxDeviceMemoryGb: number },
+  cpuLoad = false,
+): number {
+  return gpu.available && !cpuLoad ? gpu.maxDeviceMemoryGb : 0;
+}
+
+export function audioCppResidentFit(
+  residentGb: number | null | undefined,
+  gpuGb: number,
+): GgufFitClass | null {
+  if (residentGb == null || !(residentGb > 0) || !(gpuGb > 0)) return null;
+  return residentGb <= gpuGb ? "fits" : "oom";
+}
+
+/** An audio.cpp model row fits a card when any variant does, so its smallest variant decides. */
+export function audioCppRowFit(
+  row: {
+    estimatedResidentGb?: number | null;
+    smallestResidentGb?: number | null;
+  },
+  gpuGb: number,
+): GgufFitClass | null {
+  return audioCppResidentFit(
+    row.smallestResidentGb ?? row.estimatedResidentGb,
+    gpuGb,
+  );
+}
+
+export function classifyVariantFitOnCard(
+  fitOf: (sizeBytes: number) => GgufFitClass,
+  variant: GgufVariantSizes,
+  gpuGb: number,
+): GgufFitClass {
+  return (
+    audioCppResidentFit(variant.estimated_resident_gb, gpuGb) ??
+    classifyGgufFitWithLookupTables(fitOf, variant)
+  );
 }
 
 /** The larger of `size_bytes` and `download_size_bytes` (companions like mmproj or a drafter).
@@ -135,8 +181,9 @@ export function classifyGgufVariantFit(
   variant: GgufVariantSizes,
   input: GgufFitInput,
 ): GgufFitClass {
-  return classifyGgufFitWithLookupTables(
+  return classifyVariantFitOnCard(
     (sizeBytes) => classifyGgufFit(sizeBytes, input),
     variant,
+    input.audioCppCardGb ?? input.gpuGb ?? 0,
   );
 }

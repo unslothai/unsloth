@@ -4489,6 +4489,29 @@ def test_a_text_model_only_mlx_vlm_builds_is_sized_on_mlx_vlm_and_served_as_text
     assert make_cache.__module__ == "mlx_vlm.models.cache"
 
 
+@pytest.mark.skipif(not _HAVE_MLX, reason = "runs a lazy forward")
+def test_a_tower_that_cannot_stand_alone_leaves_the_whole_model_to_size(monkeypatch):
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    class Whole:
+        def __call__(self, inputs, cache):
+            keys = mx.zeros((1, 2, inputs.shape[1], 8))
+            return cache[0].update_and_fetch(keys, keys)[0]
+
+    def tower():
+        raise ValueError("this architecture declares no text config")
+
+    monkeypatch.setattr(
+        mm,
+        "_probe_models",
+        lambda c, d: iter(
+            [(tower, lambda m: [KVCache()], Whole), (Whole, lambda m: [KVCache()], Whole)]
+        ),
+    )
+    assert len(mm._cache_plan({}, mx.bfloat16, None)[0]) == 1
+
+
 class TestKvBytes:
     def test_a_hybrid_plan_is_far_cheaper_than_charging_every_layer_as_attention(self):
         hybrid = [_RECURRENT] * 30 + [_GROWING] * 10

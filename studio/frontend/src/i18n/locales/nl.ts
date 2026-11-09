@@ -215,6 +215,7 @@ export const nl = {
     tabs: "Browsertabbladen",
     newTab: "Nieuw tabblad",
     newTabFullView: "Nieuw tabblad in volledige weergave",
+    newTabFloating: "Nieuw tabblad in zwevend venster",
     closeTab: "Tabblad sluiten",
     close: "Browser sluiten",
     show: "Browser weergeven",
@@ -434,6 +435,12 @@ export const nl = {
       openChat: "Openen in volledige weergave",
       moveLeft: "Naar linkerpaneel verplaatsen",
       moveRight: "Naar rechterpaneel verplaatsen",
+    },
+    floating: {
+      enter: "Zwevend venster",
+      dock: "Aan de zijkant vastzetten",
+      close: "Zwevend venster sluiten",
+      handle: "Venster verplaatsen. Pijltoetsen verplaatsen het; Shift en pijltoetsen wijzigen de grootte.",
     },
     annotate: {
       countOne: "1 annotatie",
@@ -895,6 +902,9 @@ export const nl = {
     unifiedTightFit: "Krap",
     unifiedTightFitHint:
       "Wordt op deze Mac mogelijk geladen met een kortere context of werkt langzamer.",
+    residentToRun: "om te draaien",
+    residentToRunHint:
+      "GPU-geheugen dat de laadcontrole tijdens het draaien vereist",
     onDevice: "Op apparaat",
     huggingFace: "Hugging Face",
     retry: "Opnieuw proberen",
@@ -1219,6 +1229,9 @@ export const nl = {
         "Eén model per regel, bijvoorbeeld unsloth/Qwen3-4B-GGUF, of unsloth/* voor een hele organisatie. Laat leeg om elk model toe te staan.",
       modelAccessSave: "Opslaan",
       modelAccessLimited: "Beperkte toegang tot modellen",
+      rename: "Naam wijzigen",
+      renameTitle: "Naam van {username} wijzigen",
+      renameDescription: "Kies de naam waarmee dit account zich aanmeldt. Chats, bestanden en API-sleutels blijven bij het account. De gebruiker wordt afgemeld en meldt zich opnieuw aan met de nieuwe naam en het huidige wachtwoord.",
       empty: "Nog geen andere accounts",
       setupCode: "Installatiecode",
       setupFor: "Installatiecode voor {username}",
@@ -2328,6 +2341,12 @@ export const nl = {
         autoCurrently: "Automatisch gebruikt {transport} op deze machine.",
         xetMissing:
           "Xet is niet beschikbaar omdat hf_xet niet is geïnstalleerd.",
+        speedLimit: "Downloadsnelheidslimiet",
+        speedLimitDescription:
+          "Geen limiet zolang er geen waarde is ingesteld. Een beperkte download gebruikt HTTPS.",
+        speedLimitNoLimit: "Geen limiet",
+        speedLimitInvalid: "Voer een getal in Mbit/s in of laat het veld leeg.",
+        speedLimitUsesHttps: "Zolang er een snelheidslimiet is ingesteld, gebruiken downloads HTTPS. Bestanden groter dan 50 GB gebruiken nog steeds Xet, zonder de limiet.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2718,6 +2737,10 @@ export const nl = {
         contrast: {
           label: "Contrast",
         },
+        elementOutline: {
+          label: "Omlijning van elementen",
+          description: "Sterkte van de randen van knoppen, velden, kaarten en menu's.",
+        },
         reduceMotion: {
           label: "Beweging beperken",
           description: "Animaties beperken of je systeem volgen.",
@@ -2778,7 +2801,22 @@ export const nl = {
           "Zie direct wat andere apps naar de API van deze server sturen.",
         summary: "Live verzoeken, fouten en tokengebruik",
         status: "{active} actief · {recent} recent · {model}",
-        noModelLoaded: "geen model geladen",
+        noModelLoaded: "Geen model geladen",
+        memory: "Geheugen",
+        gpuInUse: "GPU in gebruik",
+        availableForModels: "Beschikbaar voor modellen",
+        refreshRate: "Verversingssnelheid",
+        refreshRateDescription: "Hoe vaak de zwevende monitor geheugen- en GPU-gebruik leest terwijl hij open is.",
+        refreshEvery: "Elke {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Andere apps",
+        otherInUse: "Overig in gebruik",
+        freeLabel: "Vrij",
+        unslothApp: "Unsloth-app",
+        unslothShare: "Aandeel van Unsloth tonen",
+        unslothShareDescription: "Verdeel het geheugen in wat Unsloth gebruikt, wat andere apps gebruiken en wat vrij is.",
+        modelBreakdown: "Uitsplitsen per model",
+        modelBreakdownDescription: "Verdeel het deel van Unsloth in de geheugenbalk over elk geladen model en de rest van de app.",
         autoOpen: "Zwevende monitor opent automatisch",
         autoOpenDescription:
           "Opent een klein paneel wanneer er API-verkeer binnenkomt.",
@@ -2795,8 +2833,7 @@ export const nl = {
         gpuUnusableDetail: "Gedetecteerd, maar PyTorch kan hem niet gebruiken",
         detailedView: "Gedetailleerde weergave",
         detailedViewDescription:
-          "CPU-belasting en per GPU de belasting, temperatuur en het vermogen tonen in het zwevende venster.",
-        cpuLoad: "CPU-belasting",
+          "Per GPU de belasting, temperatuur en het vermogen tonen in het zwevende venster.",
         gpuLoad: "GPU-belasting",
         temperature: "Temperatuur",
         power: "Vermogen",
@@ -2813,7 +2850,7 @@ export const nl = {
         detecting: "Zoeken naar GPU's...",
         unreadable: "Kan de hardware van deze server niet uitlezen.",
         noGpu:
-          "Geen zichtbare GPU gedetecteerd. Hierboven worden alleen CPU-bronnen getoond.",
+          "Geen aparte GPU gedetecteerd.",
         noUsableGpu:
           "Geen enkele GPU op deze machine is bruikbaar voor PyTorch.",
         mismatchCpuBuild:
@@ -2904,7 +2941,7 @@ export const nl = {
           "llama.cpp backend gguf inferentie inference cuda rocm hip vulkan metal cpu gpu versneller accelerator prebuilt wisselen engine aangepast pad map directory llama-server uitvoerbaar bestand binary",
       },
       modelMemory: {
-        title: "Modelgeheugen",
+        title: "Model laden",
         keepResident: "Model in GPU-geheugen houden",
         keepResidentDescription: "Tussen prompts in VRAM blijven.",
         keepResidentHint:
@@ -3103,7 +3140,7 @@ export const nl = {
       configurationDocs: "documentatie",
       configurationFlagsSuffix: "voor flags.",
       modelNote:
-        "Codex vereist een GGUF-model dat door llama-server wordt aangeboden. Andere agents kunnen ook modellen op basis van Transformers gebruiken; verwijder --model om het model te gebruiken dat al in Unsloth is geladen.",
+        "Claude Code en Codex vereisen een GGUF-model dat door llama-server wordt aangeboden, of een MLX-model. Andere agents kunnen ook modellen op basis van Transformers gebruiken; verwijder --model om het model te gebruiken dat al in Unsloth is geladen.",
       subagent: {
         title: "Een lokaal model als subagent gebruiken",
         description:
@@ -3180,6 +3217,8 @@ export const nl = {
     },
     chat: {
       groups: {
+        replies: { title: "Antwoorden" },
+        thinkingTools: { title: "Denken en tools" },
         conversations: {
           title: "Gesprekken",
         },
@@ -3278,11 +3317,20 @@ export const nl = {
         "Onder elk antwoord tonen wanneer het klaar was.",
       showReplyTimesKeywords:
         "tijdstempel tijd klok datum uur wanneer voltooid aangekomen antwoord reactie bericht timestamp time",
-      showGenerationDetails: "Generatiedetails",
+      showGenerationDetails: "Gedetailleerde snelheids- en laadinfo",
       showGenerationDetailsDescription:
-        "Live prompt- en antwoordsnelheden tonen met aantallen tokens, en waar de lagen van een model zijn geladen.",
+        "Voegt promptleessnelheid, tokenaantallen en conceptacceptatie toe aan de live weergaven en toont waar de lagen van een model zijn geladen.",
       showGenerationDetailsKeywords:
         "uitgebreid ontwikkelaar statistieken snelheid tok/s prefill decode lagen offload vram experts verbose developer stats speed layers",
+      generationStatsUpdates: "Snelheids- en contextstatistieken",
+      generationStatsUpdatesDescription:
+        "Realtime telt tokens per seconde en contextgebruik terwijl een antwoord wordt gestreamd. Na afloop werkt ze bij zodra elk antwoord klaar is.",
+      generationStatsUpdatesHint:
+        "Realtime ververst de weergave van tokens per seconde onder een antwoord en de contextbalk boven in de chat een paar keer per seconde terwijl het antwoord wordt geschreven. Na afloop werkt ze één keer bij, als elk antwoord klaar is. Realtime kan vertraging of tragere prestaties veroorzaken, vooral op oudere of drukke computers.",
+      generationStatsUpdatesSettled: "Na afloop",
+      generationStatsUpdatesRealtime: "Realtime",
+      generationStatsUpdatesKeywords:
+        "realtime live bijwerken snelheid context statistieken realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Antwoord bewerken bij antwoorden",
       inlineEditResponseDescription:
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
@@ -3431,12 +3479,10 @@ export const nl = {
       exportingAction: "Exporteren...",
       exportConversations: "Recent en Projecten exporteren",
       exportConversationsDescription:
-        "Download Recent, of Recent plus projectchats, als Training JSONL, CSV, ShareGPT JSONL of Markdown, gecombineerd of per chat. Message JSONL is per chat beschikbaar.",
+        "Download Recent, of Recent plus projectchats, als Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML of PDF, gecombineerd of per chat. Message JSONL is per chat beschikbaar.",
       exportConversationsAction: "Exporteren",
       exportScopeRecents: "Recent",
       exportScopeAll: "Recent + Projecten",
-      exportCombinedSuffix: "(gecombineerd)",
-      exportPerChatSuffix: "(per chat)",
       importChats: "Chats importeren",
       importChatsDescription:
         "JSON-, JSONL-, NDJSON-, CSV- of Markdown-bestanden importeren in Recent.",
@@ -3866,7 +3912,7 @@ export const nl = {
       mcp: {
         title: "Agenttoegang (MCP)",
         description:
-          "Laat codeeragents zoals Claude Code en Codex Unsloth gebruiken via MCP. Agents loggen in met een Unsloth-API-sleutel van deze pagina.",
+          "Laat codeeragents zoals Claude Code en Codex Unsloth gebruiken via MCP.",
         enable: "Agentverbindingen toestaan",
         enableDescription:
           "Biedt /mcp/ aan voor verzoeken met een Unsloth-API-sleutel.",
@@ -3875,10 +3921,93 @@ export const nl = {
         saveError: "Kan de instelling voor agenttoegang niet opslaan.",
         agent: "Agent",
         exportKeyHint:
-          "Stel {name} in op een Unsloth-API-sleutel van deze pagina voordat je de agent start.",
+          "Stel {name} in op een Unsloth-API-sleutel voordat je de agent start.",
         configFileHint: "Voeg dit toe aan {path}.",
         keywords:
           "mcp model context protocol agents claude codex tools toegang verbinding",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Agents melden zich aan met een Unsloth-API-sleutel.",
+      createKey: "Een API-sleutel maken",
+      tools: {
+        title: "Tools",
+        count: "{on} van {total} aan",
+        choose: "Tools kiezen",
+        dialogTitle: "Unsloth MCP-tools",
+        allTools: "Alle tools",
+        selectAll: "Alles selecteren",
+        selectNone: "Niets selecteren",
+        description:
+          "Elke tool die aan staat telt mee in wat agents lezen voordat ze beginnen, dus zet uit wat je niet nodig hebt. Agents zien een uitgezette tool nooit, en aanroepen ervan worden geweigerd. Al verbonden agents zien de wijziging als ze opnieuw verbinden.",
+        saveError: "Kon de instelling voor Unsloth MCP-tools niet opslaan.",
+        chatNote: "De chat krijgt nooit {tools}.",
+        groups: {
+          models: "Modellen",
+          generate: "Genereren",
+          training: "Training en export",
+          library: "Data en bibliotheek",
+          jobs: "Taken",
+          other: "Overig",
+        },
+      },
+      status: {
+        on: "Aan",
+        off: "Uit",
+      },
+      apiKeysRow: {
+        open: "Openen in Agents",
+      },
+      toolLabels: {
+        studioStatus: "Status",
+        listModels: "Modellen weergeven",
+        loadModel: "Model laden",
+        unloadModel: "Model ontladen",
+        planLoad: "Laden plannen",
+        downloadModel: "Model downloaden",
+        chat: "Chat",
+        embed: "Tekst insluiten",
+        systemOne: "Beslissingsmodel",
+        generateImage: "Afbeeldingen genereren",
+        generateAudio: "Audio genereren",
+        transcribe: "Transcriberen",
+        analyzeAudio: "Audio analyseren",
+        generateVideo: "Video genereren",
+        runRecipe: "Data Recipe uitvoeren",
+        getJob: "Taakstatus",
+        datasets: "Datasets",
+        startTraining: "Training starten",
+        listTrainingRuns: "Trainingsruns",
+        exportModel: "Model exporteren",
+        listMedia: "Opgeslagen media",
+        voices: "Stemmen",
+        cancel: "Werk annuleren",
+      },
+      toolDescriptions: {
+        studioStatus: "Zien wat er geladen is, draait en vrij is op deze computer.",
+        listModels: "De modellen tonen die agents kunnen laden.",
+        loadModel: "Een model laden zodat agents ermee chatten of genereren.",
+        unloadModel: "Een model uit het geheugen halen om ruimte vrij te maken.",
+        planLoad: "Downloadgrootte en geheugen van een laadactie bekijken zonder te laden.",
+        downloadModel: "Een model downloaden van Hugging Face.",
+        chat: "Chatten met het geladen model.",
+        embed: "Tekst omzetten in vectoren, of teksten op gelijkenis rangschikken.",
+        systemOne: "Het beslismodel ja/nee-, keuze- of scorevragen stellen.",
+        generateImage: "Afbeeldingen genereren en in de galerij opslaan.",
+        generateAudio: "Spraak of andere audio genereren.",
+        transcribe: "Spraak omzetten in tekst.",
+        analyzeAudio: "Sprekers, timing en aansluiting op een script van een clip controleren.",
+        generateVideo: "Een video genereren.",
+        runRecipe: "Een Data Recipe uitvoeren om een dataset te maken.",
+        getJob: "Een lange taak volgen tot hij klaar is.",
+        datasets: "Datasets tonen en uploaden.",
+        startTraining: "Een fine-tuning starten.",
+        listTrainingRuns: "Trainingen en hun resultaten tonen.",
+        exportModel: "Een getraind model exporteren, bijvoorbeeld naar GGUF.",
+        listMedia: "Opgeslagen afbeeldingen, audio en video's bekijken.",
+        voices: "Stemmen tonen, opslaan, hernoemen of verwijderen.",
+        cancel: "Lopend werk stoppen, zoals een training of een export.",
       },
     },
     about: {
@@ -5618,6 +5747,7 @@ export const nl = {
     monitor: {
       dragHandleLabel:
         "De live monitor verplaatsen. Pijltoetsen verschuiven hem, dubbelklikken zet hem terug.",
+      resizeHint: "Sleep een zijkant of hoek om de breedte te wijzigen. Dubbelklik om te herstellen.",
       reconnecting: "Opnieuw verbinden...",
     },
   },
@@ -5937,7 +6067,7 @@ export const nl = {
     skippedVersion: "{component} {version} voorlopig overgeslagen",
     skippedUpdate: "De update van {component} voorlopig overgeslagen",
     skippedUpdates: "De updates van {components} voorlopig overgeslagen",
-    vulkanFaster: "Vulkan is >10% sneller dan ROCM. Opnieuw starten niet nodig",
+    vulkanFaster: "Meer dan 10% sneller",
     noRestart: "Opnieuw starten niet nodig",
     downloadSize: "{size} downloaden",
     backendChange: "Backend {change}",
@@ -5946,8 +6076,8 @@ export const nl = {
     installingPhase: "{component} installeren ({current} van {total})...",
     installingCount: "{count} updates installeren...",
     bundleTitle: "{count} runtime-updates",
-    newBackend: "Nieuwe backend voor {component}",
-    newUpdate: "Nieuwe update voor {component}",
+    newBackend: "Nieuwe runtime-backend",
+    newUpdate: "Nieuwe runtime-update",
     hideUpdate:
       "De update van {component} verbergen totdat Unsloth opnieuw wordt geopend",
     hideUpdates:

@@ -823,6 +823,20 @@ def test_chunk_size_one_keeps_the_final_eos_overflow():
         assert restored == list(range(count)) + [99]
 
 
+def test_add_structure_tokens_leaves_code_blocks_alone():
+    """A `# comment` inside a fenced block is code, not a chapter heading."""
+    text = (
+        "# Title\n\n"
+        "```python\n# install deps\n## not a section\nimport os\n```\n\n"
+        "## Section\n\n### Sub\n#### too deep\n"
+    )
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|chapter|>Title<|/chapter|>\n\n"
+        "<|code|python|># install deps\n## not a section\nimport os<|/code|>\n\n"
+        "<|section|>Section<|/section|>\n\n<|subsection|>Sub<|/subsection|>\n#### too deep\n"
+    )
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     test_clean_text_keeps_text_in_any_script()
@@ -841,4 +855,5 @@ if __name__ == "__main__":
     test_tokenized_chunks_reserve_space_for_the_final_eos()
     test_text_chunks_reserve_space_for_the_final_eos()
     test_chunk_size_one_keeps_the_final_eos_overflow()
+    test_add_structure_tokens_leaves_code_blocks_alone()
     sys.exit(0 if success else 1)

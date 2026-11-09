@@ -40,6 +40,8 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_STORED_MISSES", set(), raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_SEGMENTS_MEMO", {}, raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_TRACED_KEYS", set(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BASELINE", [None], raising = False)
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
@@ -2461,3 +2463,59 @@ def test_reapply_to_native_removes_rocm_flash_tracking(monkeypatch):
     assert state.resolved["attention_backend"] == entry
     assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
     assert att.attention_may_run_native(pipe)
+
+
+class _CompiledDitWithBreak(_CompiledDit):
+    """A traced attention call followed by a graph break in the same frame: Dynamo compiles the prefix and restarts
+    the frame's analysis, replaying it against its speculation log (diffusers' Wan blocks under regional compile)."""
+
+    def forward(self, q):
+        import torch
+
+        out = self._guarded(q, q, q, None)
+        torch._dynamo.graph_break()
+        return out * 1
+
+
+def test_traced_probe_survives_a_dynamo_restart_of_the_frame(monkeypatch):
+    # The traced call times an untimed bucket (8192) during the first analysis; the restart after the graph break
+    # must see the same segments, else SpeculationLogDivergence (Wan2.2 on gfx1151 with flash-attn, auto backend).
+    torch, dit, timed = _compiled_env(
+        monkeypatch, True, {4096: 70.0, 8192: 70.0}, _CompiledDitWithBreak
+    )
+    torch._dynamo.reset()
+    compiled = torch.compile(dit, backend = "eager")
+    q8 = torch.zeros(1, 9000, 2, 16, dtype = torch.bfloat16)
+    assert float(compiled(q8).flatten()[0]) == 1.0
+    assert timed == [4096, 8192]
+    # A later trace after an eager verdict sees it: the key moves with verdicts the traced calls did not add.
+    q16 = torch.zeros(1, 17000, 2, 16, dtype = torch.bfloat16)
+    assert float(compiled(q16).flatten()[0]) == -1.0
+    torch._dynamo.reset()
+
+
+def test_a_new_sdpa_baseline_drops_the_memoized_segments(monkeypatch):
+    # A load that changes the enabled native SDPA kernels clears the verdicts; the traced segments built from the old
+    # verdicts must go with them, or a later trace would bake the old baseline's route into its graph.
+    att._ROCM_FLASH_BUCKETS[("cuda:0", "torch.bfloat16", 32, 2, 16, 4096, 4096, 1)] = True
+    monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: "sdpa-A")
+    att._sync_rocm_flash_baseline()
+    att._ROCM_FLASH_SEGMENTS_MEMO[("stale",)] = ((8192, 4096, True, None),)
+    att._ROCM_FLASH_TRACED_KEYS.add(("cuda:0", "torch.bfloat16", 32, 2, 16, 8192, 8192, 1))
+    monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: "sdpa-B")
+    att._sync_rocm_flash_baseline()
+    assert att._ROCM_FLASH_SEGMENTS_MEMO == {} and att._ROCM_FLASH_TRACED_KEYS == set()
+    assert att._ROCM_FLASH_BUCKETS == {}
+
+
+def test_segments_memo_key_follows_eager_verdicts_not_traced_ones(monkeypatch):
+    args = ("cuda:0", "torch.bfloat16", 2, 16, ((32, 2, 16),), None, 1)
+    k0 = att._rocm_flash_segments_key(args)
+    traced = ("cuda:0", "torch.bfloat16", 32, 2, 16, 8192, 8192, 1)
+    att._ROCM_FLASH_BUCKETS[traced] = True
+    att._ROCM_FLASH_TRACED_KEYS.add(traced)
+    assert (
+        att._rocm_flash_segments_key(args) == k0
+    )  # a traced call's verdict keeps the key (Dynamo restart)
+    att._ROCM_FLASH_BUCKETS[("cuda:0", "torch.bfloat16", 32, 2, 16, 16384, 16384, 1)] = False
+    assert att._rocm_flash_segments_key(args) != k0  # an eager / stored verdict moves it

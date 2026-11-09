@@ -42,3 +42,8 @@ test("a native page's hole drops backdrop filters and masks the wallpaper layer"
   assert.match(view, /node\.hasAttribute\?\.\("data-wallpaper-workspace"\)/);
   assert.match(view, /child\.classList\.contains\("chat-wallpaper"\)/);
 });
+
+test("the docked Windows glass surface never clips the floating browser's rounded border", () => {
+  const panel = readSrc("features/browser/browser-panel.tsx");
+  assert.match(panel, /data-windows-browser=\{!floating && usesWindowsTitlebar\(\)/);
+});

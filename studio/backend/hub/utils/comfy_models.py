@@ -342,11 +342,18 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
 
 
 def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
-    """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3)."""
+    """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3, a native-only
+    family's non-safetensors file, a GGUF of a family with no GGUF loader)."""
     if image_fam is not None:
-        return not (
-            image_fam.pipeline_only or getattr(image_fam, "native_transformer_files_only", False)
-        )
+        if image_fam.pipeline_only:
+            return False
+        if str(filename or "").lower().endswith(".gguf") and not getattr(
+            image_fam, "gguf_loadable", True
+        ):
+            return False
+        if getattr(image_fam, "native_transformer_files_only", False):
+            return str(filename or "").lower().endswith(".safetensors")
+        return True
     from core.inference.video_families import PIPELINE_ONLY_VIDEO_FAMILIES
 
     if video_fam is None or video_fam.is_moe or video_fam.name in PIPELINE_ONLY_VIDEO_FAMILIES:

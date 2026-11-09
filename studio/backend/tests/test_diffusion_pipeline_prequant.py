@@ -13,6 +13,12 @@ import types
 
 import pytest
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
+
 from core.inference import diffusion as dmod
 from core.inference import diffusion_prequant as pqmod
 from core.inference import diffusion_transformer_quant as tqmod
@@ -20,7 +26,7 @@ from core.inference.diffusion import DiffusionBackend
 from core.inference.diffusion_auto_policy import DenseQuantEstimate
 from core.inference.diffusion_denoiser_prequant import PIPELINE_SEED_DECLINED
 from core.inference.diffusion_device import DiffusionDeviceTarget
-from core.inference.diffusion_families import detect_family_for_pick
+from core.inference.diffusion_families import ANIMA_BF16_WHEN_RESIDENT, detect_family_for_pick
 from core.inference.diffusion_memory import DeviceMemory
 from models.inference import DiffusionDownloadPlanResponse
 
@@ -201,6 +207,7 @@ def _plan_backend(
     return backend
 
 
+@needs_torchao
 def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
     backend = _plan_backend(monkeypatch, planned = "fp8")
     plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
@@ -235,6 +242,7 @@ def test_a_declined_plan_keeps_the_released_shards(monkeypatch, hub):
     assert all(shard in entries[Z_IMAGE_REPO]["files"] for shard in DENOISER_SHARDS)
 
 
+@needs_torchao
 def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(monkeypatch, hub):
     """The unified-memory refusal prices the denoiser from the artifact, not the dropped shards."""
     backend = _plan_backend(monkeypatch, planned = "fp8")
@@ -857,7 +865,7 @@ def _load_backend(
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
     )
-    monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe: None)
+    monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe, **_kw: None)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "stored_denoiser_precision", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "denoiser_modules", lambda pipe: [("transformer", object())])
@@ -1906,6 +1914,8 @@ def _small_dit_kept_bf16(monkeypatch, reason):
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, None, "default", False),
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, "off", "off", False),
         ("measured: no faster", None, "off", True),
+        # Anima's reason keeps the deferred compile (background, from render 3).
+        (ANIMA_BF16_WHEN_RESIDENT, None, "off", True),
     ],
 )
 def test_a_small_dit_kept_bf16_compiles_from_render_1(
@@ -1961,6 +1971,7 @@ def test_a_large_variant_of_a_small_dit_family_quantises_under_auto(fake_runtime
     assert spy.quantised == ["auto"]
 
 
+@needs_torchao
 @pytest.mark.parametrize("shared_repo", [False, True])
 def test_denoiser_is_a_checkpoint_and_encoder_only_is_an_asset(monkeypatch, hub, shared_repo):
     backend = _plan_backend(monkeypatch, planned = "fp8")

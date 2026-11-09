@@ -670,7 +670,7 @@ _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
 # In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
-_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES = ("moss-image",)
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ()
 
 
 def diffusers_lora_family_supported(family: Optional[str]) -> bool:

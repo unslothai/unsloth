@@ -481,7 +481,7 @@ def test_keep_only_keeps_the_batch_size_decode_used(G):
     assert [k[0] for k in state.graphs] == [4]
 
 
-@pytest.mark.parametrize("model_type", ["mistral", "qwen2", "gemma", "gemma2"])
+@pytest.mark.parametrize("model_type", ["mistral", "gemma", "gemma2"])
 def test_a_model_type_that_never_graphs_keeps_eager_oom_and_planning(G, model_type):
     model = _Model()
     model.config.model_type = model_type

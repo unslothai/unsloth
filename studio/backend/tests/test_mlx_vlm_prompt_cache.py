@@ -58,7 +58,7 @@ def fake_mx(monkeypatch):
     evaluated = []
     mlx_core = types.ModuleType("mlx.core")
     mlx_core.array = FakeArray
-    mlx_core.eval = lambda arrays: evaluated.append(list(arrays))
+    mlx_core.eval = mlx_core.async_eval = lambda arrays: evaluated.append(list(arrays))
     mlx_core.contiguous = lambda array: FakeArray(array.rows)
     mlx_pkg = types.ModuleType("mlx")
     mlx_pkg.core = mlx_core
@@ -627,7 +627,7 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx,
     def _fail(_arrays):
         raise MemoryError("no room for a copy")
 
-    monkeypatch.setattr(sys.modules["mlx.core"], "eval", _fail)
+    monkeypatch.setattr(sys.modules["mlx.core"], "async_eval", _fail)
     with Session(store, "m", language_model, make_cache) as session:
         assert session.find_prefix_length(ids + [1]) == 512
         run_generation(language_model, ids + [1], session.cache, 512)
@@ -807,6 +807,49 @@ def test_a_lone_batched_row_holds_its_snapshots_from_the_cache_it_hands_back(rin
     row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: True)
     prefill(row, ids[:700])
     assert len(store) == 2 and not row._skeletons
+
+
+@pytest.mark.parametrize("over_budget", (False, True))
+def test_a_batched_row_banks_a_boundary_without_waiting_on_the_gpu(monkeypatch, over_budget):
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def positions(start, n):
+        return mx.arange(start, start + n, dtype = mx.float32).reshape(1, 1, n, 1) * mx.ones(
+            (1, 2, 1, 8)
+        )
+
+    def advance(entries, start, n):
+        for entry in entries:
+            if isinstance(entry, cache.ArraysCache):
+                entry[0] = mx.full((1, 8), float(start + n))
+            else:
+                entry.update_and_fetch(positions(start, n), -positions(start, n))
+        mx.async_eval([entry.state for entry in entries])
+
+    def waited(*_args):
+        raise AssertionError("waited on the GPU")
+
+    # Within the budget the copy compacts the window; over it, the skeleton is filled at retire.
+    window = [] if over_budget else [cache.RotatingKVCache(max_size = 16)]
+    layout = lambda: [cache.KVCache(), cache.ArraysCache(size = 1), *window]
+    store = VLMPromptSnapshotStore(max_bytes = 1 if over_budget else 10**9)
+    row = VLMBatchRowCache(store, "m", layout, step = STEP, alone = lambda: True)
+    ids = list(range(STEP + 2))
+    live, _lengths = row.open(ids)
+    advance(live, 0, STEP)
+    with monkeypatch.context() as patch:
+        patch.setattr(mx, "eval", waited)
+        row.checkpoint(STEP, live)
+    advance(live, STEP, 1)
+    row.retire(lambda: live)
+
+    entries, prefix = store.lookup("m", ids, STEP)
+    assert prefix == STEP and entries[0].offset == STEP
+    assert mx.array_equal(entries[0].state[0], positions(0, STEP)).item()
+    assert entries[1][0][0, 0].item() == STEP
+    if not over_budget:
+        assert mx.array_equal(entries[2].keys, positions(STEP - 16, 16)).item()
 
 
 def _prefill_row(state, token_ids):
