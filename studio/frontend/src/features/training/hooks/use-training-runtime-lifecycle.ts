@@ -354,8 +354,7 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     };
 
-    // The full metrics history only feeds the charts: skip it while hidden, refetch on return.
-    // Status keeps polling while hidden because it drives the "training finished" notification.
+    // Status keeps polling while hidden: it drives the "training finished" notification.
     const metricsTimer = setInterval(() => {
       if (document.hidden) return;
       pollMetricsIfActive();

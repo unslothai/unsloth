@@ -329,7 +329,6 @@ export function HistoryCardGrid({
   const visibleCount = runs.length;
   useEffect(() => {
     if (!hasRunningRun) return;
-    // Like the sidebar's poll of the same list: skip while hidden, refresh on return.
     const poll = async () => {
       if (manualFetchInFlight) return;
       pollControllerRef.current?.abort();

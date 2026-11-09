@@ -61,7 +61,6 @@ export function useGpuUtilization(
         }
 
         void poll();
-        // Display only: skip ticks while the tab is hidden and catch up when it returns.
         timerRef.current = setInterval(() => {
             if (!document.hidden) void poll();
         }, intervalMs);
