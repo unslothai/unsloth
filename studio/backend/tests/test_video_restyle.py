@@ -754,3 +754,10 @@ def test_route_maps_a_diffusion_training_admission_refusal_to_409(weights, monke
     files = [("video", ("a.mp4", b"x", "video/mp4"))]
     res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
     assert res.status_code == 409 and not runner.progress().get("active")
+
+
+def test_frames_from_video_holds_the_last_frame_of_a_slow_source():
+    frames = vr.frames_from_video(_clip(1, 4))
+    assert len(frames) == 120
+    # The 4th second shows the 4th source frame, not the 3rd.
+    assert frames[-1].getpixel((0, 0)) != frames[60].getpixel((0, 0))

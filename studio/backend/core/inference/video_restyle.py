@@ -116,6 +116,7 @@ def frames_from_video(
             stream = container.streams.video[0]
             rate = float(stream.average_rate or stream.guessed_rate or fps)
             first: Optional[float] = None
+            last = 0.0
             prev = None
             fitted = None
 
@@ -136,8 +137,13 @@ def frames_from_video(
                     out.append(keep())
                 if len(out) >= limit:
                     break
-                prev, fitted = frame, None
-            if prev is not None and len(out) < limit:
+                prev, fitted, last = frame, None, t
+            # The final frame is held for its own interval too, so a slow source keeps its last scene.
+            while (
+                prev is not None
+                and len(out) < limit
+                and (not out or last + 1 / rate > len(out) / fps + 1e-6)
+            ):
                 out.append(keep())
     except RestyleError:
         raise
