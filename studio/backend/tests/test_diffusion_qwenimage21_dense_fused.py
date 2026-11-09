@@ -318,3 +318,30 @@ def test_cfg_replica_drops_source_records_and_fuses_its_own(monkeypatch):
     x = torch.randn(2, 3, 32)
     with torch.no_grad():
         torch.testing.assert_close(replica(x), m(x), rtol = 1e-5, atol = 1e-5)
+
+
+def test_cfg_replica_rebuild_frees_the_copied_parts(monkeypatch):
+    import gc
+    import weakref
+
+    from core.inference import diffusion_multigpu as mg
+
+    m = _model()
+    dfu.install(m)
+    alive_after_rebuild = []
+    orig = dfu.rebuild_replica
+
+    def spy(source, replica):
+        refs = [
+            weakref.ref(b.gate_layer.weight) for b in replica.blocks
+        ]  # the copies the deepcopy made
+        out = orig(source, replica)
+        gc.collect()
+        # still inside _copy_module: nothing but its memo could keep the replaced copies alive here
+        alive_after_rebuild.extend(r() is not None for r in refs)
+        return out
+
+    monkeypatch.setattr(dfu, "rebuild_replica", spy)
+    replica = mg._copy_module(m, torch.device("cpu"))
+    assert alive_after_rebuild == [False] * len(replica.blocks)
+    assert all(dfu._intact(b) is not None for b in replica.blocks)

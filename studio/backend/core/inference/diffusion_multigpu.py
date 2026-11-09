@@ -2037,7 +2037,13 @@ def _copy_module(module: Any, device: Any) -> Any:
                     del hooks[hook_id]
                     for other in _ROOT_HOOK_DICTS:
                         sub.__dict__.get(other, {}).pop(hook_id, None)
-    # Dense fused projections (Qwen-Image-2.1): rebuilt from the replica's own parameters on its card.
+    # Dense fused projections (Qwen-Image-2.1): rebuilt from the replica's own parameters on its card, after the
+    # deepcopy memo lets go of the copied parameters (else each replaced allocation stays alive beside the fused one).
+    memo.clear()
+    del keep
+    param = copied = new = buffer = (
+        None  # the copy loop's last parameter, still referenced by these names
+    )
     try:
         rebuild_replica(module, replica)
     except Exception:  # noqa: BLE001 - the replica keeps the stock projections
