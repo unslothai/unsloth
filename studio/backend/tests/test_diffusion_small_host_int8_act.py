@@ -172,8 +172,7 @@ def test_forward_routes_by_dtype_rows_alignment_and_device(monkeypatch):
 
 
 def test_armed_layer_compiles_once_and_still_counts_eager_calls():
-    """The per-call counters are eager-only: under a trace Dynamo guards the global int, so each increment recompiled
-    (an armed fp16 dequant layer hit the recompile limit, then fell back to eager or failed under fullgraph=True)."""
+    """Counting under a trace used to recompile per call (recompile limit, then eager fallback or fullgraph failure)."""
     from torch._dynamo.testing import CompileCounter
 
     layer, _ = _layer(k = 64, n = 64)

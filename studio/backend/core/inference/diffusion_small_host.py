@@ -712,7 +712,7 @@ def _int8_linear_class():
             return y.reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x):
-            # Eager-only diagnostics: Dynamo guards a mutated global int, so counting under a trace recompiles per call.
+            # Eager-only: mutating a global int under Dynamo recompiles every call.
             count = not torch.compiler.is_compiling()
             if self._int8_act_ok(x):
                 if count:
