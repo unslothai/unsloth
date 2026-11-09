@@ -352,9 +352,10 @@ _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 _WHITESPACE_RUN = re.compile(r"\s+")
-# browsers keep U+00A0 (&nbsp;), so text indented with it keeps its indent
-_COLLAPSIBLE_RUN = re.compile(r"[^\S\xa0]+")
-_NBSP_RUN = re.compile(r"\xa0[^\S\n]*")
+# browsers collapse only ASCII whitespace, so text indented with &nbsp; or &emsp; keeps its indent
+_COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
+# U+00A0 and the other spaces kept above; they pad layout, so scoring does not count them as text
+_UNICODE_SPACE_RUN = re.compile(r"[^\S \t\n\r\f]+")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -1390,8 +1391,8 @@ class _MarkdownRenderer(HTMLParser):
         if not self._header_stack or self._heading_marks:
             return
         frame = self._header_stack[-1]
-        if "\xa0" in text:
-            text = _WHITESPACE_RUN.sub(" ", text)
+        if not text.isascii():
+            text = _UNICODE_SPACE_RUN.sub("", text)
         chars = len(text.strip())
         frame.text_chars += chars
         # anchors without usable hrefs render as prose
@@ -2033,7 +2034,7 @@ class _MarkdownRenderer(HTMLParser):
             self._count_header_text(data)
             self._emit(data)
             return
-        # Collapse whitespace (including newlines) per HTML rules, which keep U+00A0.
+        # Collapse whitespace (including newlines) per HTML rules, which keep U+00A0 and other Unicode spaces.
         text = _COLLAPSIBLE_RUN.sub(" ", data)
         # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
@@ -2371,8 +2372,8 @@ def _render_main_document(
 
 def _visible_chars(text: str) -> int:
     """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
-    if "\xa0" in text:
-        text = _NBSP_RUN.sub(" ", text)
+    if not text.isascii():
+        text = _UNICODE_SPACE_RUN.sub(" ", text)
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 

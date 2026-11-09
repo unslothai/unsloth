@@ -1582,6 +1582,7 @@ def test_references_decode_as_a_browser_shows_them(main_content):
         # &nbsp; and a literal U+00A0 are both kept, as a browser keeps them
         ("<p>10&nbsp;GB and 10\xa0GB</p>", "10\xa0GB and 10\xa0GB"),
         ("<div>for x in y:<br>&nbsp;&nbsp;print(x)</div>", "for x in y:\n\xa0\xa0print(x)"),
+        ("<div>if x:<br>&emsp;&emsp;print(x)</div>", "if x:\n\u2003\u2003print(x)"),
     ],
 )
 @pytest.mark.parametrize("main_content", [False, True])
