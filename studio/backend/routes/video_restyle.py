@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,10 +14,14 @@ from fastapi.responses import FileResponse
 from starlette.datastructures import UploadFile
 
 from auth.authentication import get_current_subject
+from core.inference import gpu_arbiter
+from core.inference.chat_swap_kv import acquire_then_close, save_chat_kv_before_swap
 from core.inference import video_restyle
 from core.inference.video_restyle import RestyleBusy, RestyleError
 from hub.services.models import account_access
+from state import active_generations
 from utils.account_context import account_thread, current_account_id
+from utils.multi_model_settings import get_multi_model_mode
 from utils.upload_limits import VIDEO_RESTYLE_UPLOAD_MAX_BYTES
 
 router = APIRouter()
@@ -100,21 +105,17 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
     from routes.inference import _diffusion_training_admission
     from routes.video import _guard_video_load_against_training
 
-    from state import active_generations
-
-    if kwargs.get("owner") is not None and active_generations.fenced(kwargs["owner"]):
-        raise HTTPException(status_code = 403, detail = "This account is being removed.")
-    video_restyle.validate_request(kwargs["prompt"], kwargs["frames"])
+    mode = kwargs.pop("mode", None)
     try:
         with _diffusion_training_admission():
             _guard_video_load_against_training()
-            _take_the_gpu()
+            _take_the_gpu(mode)
             return video_restyle.runner.start(**kwargs)
     except TrainingActiveError as exc:
         raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
 
 
-def _take_the_gpu() -> None:
+def _take_the_gpu(mode: Optional[str] = None) -> None:
     # The restyle sd-server (~30 GB) is a video workload: chat and image models go through the
     # arbiter's eviction; the Create video model, which shares the VIDEO owner, is checked in ``admit``
     # (under the arbiter lock, so a Create load cannot register in between) and unloaded in
@@ -123,7 +124,8 @@ def _take_the_gpu() -> None:
     from core.inference.video import generation_account_in_flight, get_video_backend
     from utils.multi_model_settings import get_multi_model_mode
 
-    mode = get_multi_model_mode()
+    if mode is None:
+        mode = get_multi_model_mode()
     video = get_video_backend()
 
     def admit() -> None:
@@ -166,13 +168,24 @@ async def _start_reserved(request: Request, reservation: str):
             raise HTTPException(status_code = 400, detail = "seed must be an integer.")
     try:
         frames, _ = await _frames_from_upload(files)
-        job = await asyncio.to_thread(
-            _admit_and_start,
-            prompt = fields.get("prompt") or "",
-            frames = frames,
-            seed = seed,
-            owner = current_account_id(),
-            reservation = reservation,
+        prompt, owner = fields.get("prompt") or "", current_account_id()
+        if owner is not None and active_generations.fenced(owner):
+            raise HTTPException(status_code = 403, detail = "This account is being removed.")
+        await asyncio.to_thread(video_restyle.validate_request, prompt, frames)
+        # As a Create load: an evicted chat model gets its KV saved first (keep-KV setting).
+        mode = await asyncio.to_thread(get_multi_model_mode)
+        swap = await save_chat_kv_before_swap(gpu_arbiter.VIDEO, "video", policy = mode)
+        job = await acquire_then_close(
+            swap,
+            functools.partial(
+                _admit_and_start,
+                mode = mode,
+                prompt = prompt,
+                frames = frames,
+                seed = seed,
+                owner = owner,
+                reservation = reservation,
+            ),
         )
     except RestyleBusy as exc:
         raise HTTPException(status_code = 409, detail = str(exc))

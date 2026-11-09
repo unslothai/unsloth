@@ -1010,3 +1010,56 @@ def test_a_stopping_server_still_pins_the_tree(weights):
     release.set()
     worker.join(5)
     assert not runner.is_alive()
+
+
+def test_a_stopping_server_holds_the_gpu_and_unload_waits_for_it(weights):
+    import threading
+
+    release = threading.Event()
+    stopping = threading.Event()
+
+    class _Slow(_FakeServer):
+        def stop(self):
+            stopping.set()
+            assert release.wait(5)
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _Slow(b"AVI"))
+    runner._ensure_server(vr.model_files())
+    first = threading.Thread(target = runner.unload)
+    first.start()
+    assert stopping.wait(5) and runner.holds_gpu()
+    done = []
+    second = threading.Thread(target = lambda: done.append(runner.unload_if_idle()))
+    second.start()
+    second.join(0.3)
+    assert done == []
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert done == [True] and not runner.holds_gpu()
+
+
+def test_start_saves_the_chat_kv_around_the_handoff(weights, monkeypatch):
+    from routes import video_restyle as route
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    client = _route_client(monkeypatch, runner)
+    monkeypatch.setattr(vr, "frames_from_video", lambda data: _frames(5))
+    monkeypatch.setattr(runner, "run", lambda job, save = None: None)
+    calls = []
+
+    class _Swap:
+        def close(self):
+            calls.append("close")
+
+    async def save(owner, media, **kw):
+        calls.append(("save", owner, media, kw.get("policy")))
+        return _Swap()
+
+    monkeypatch.setattr(route, "save_chat_kv_before_swap", save)
+    monkeypatch.setattr(route, "get_multi_model_mode", lambda: "off")
+    monkeypatch.setattr(route, "_take_the_gpu", lambda mode = None: calls.append(("take", mode)))
+    files = [("video", ("a.mp4", b"x", "video/mp4"))]
+    res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
+    assert res.status_code == 200
+    assert calls == [("save", "video", "video", "off"), ("take", "off"), "close"]

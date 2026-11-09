@@ -414,6 +414,7 @@ class RestyleRunner:
         self._workdir: Optional[Path] = None
         self._loading: Any = None
         self._stopping = 0
+        self._stopped = threading.Condition(self._lock)
         # Set once the clip is being published; a cancel after that point is refused, not half-honoured.
         self._publishing = False
         # Held from before an upload is read until ``start``, so a second request is refused up front.
@@ -557,11 +558,16 @@ class RestyleRunner:
         finally:
             with self._lock:
                 self._stopping -= 1
+                self._stopped.notify_all()
 
     def holds_gpu(self) -> bool:
-        """A job runs, or a request is reserved to start one on the resident server."""
+        """A job runs, a request is reserved to start one, or a detached server is still exiting."""
         with self._lock:
-            return bool(self._state.get("active")) or self._reservation is not None
+            return (
+                bool(self._state.get("active"))
+                or self._reservation is not None
+                or self._stopping > 0
+            )
 
     def unload_if_idle(self, owner: Optional[str] = None) -> bool:
         """Detach the server under the same lock ``start`` claims, so a restyle can't begin in between.
@@ -574,6 +580,9 @@ class RestyleRunner:
                 raise RestyleBusy("Another account's restyle model is loaded.")
             server = self._detach_locked()
         self._stop(server)
+        # Report a free GPU only once every detached server, a concurrent caller's too, has exited.
+        with self._lock:
+            self._stopped.wait_for(lambda: self._stopping == 0, timeout = 120)
         return True
 
     def is_alive(self) -> bool:
