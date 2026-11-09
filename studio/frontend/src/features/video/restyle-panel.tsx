@@ -108,7 +108,11 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       if (next.phase === "error") {
         setError(next.error ?? "Restyle failed.");
       }
-      if (ticket !== clipsFor.current) return;
+      if (ticket !== clipsFor.current) {
+        // A clip was chosen meanwhile: a finished job this stale answer names was discarded with it.
+        if (next.phase === "done" && next.id) loadedFor.current = next.id;
+        return;
+      }
       if (next.phase === "done" && next.id && loadedFor.current !== next.id) {
         loadedFor.current = next.id;
         if (next.video) notifyGalleryChanged("videos");
