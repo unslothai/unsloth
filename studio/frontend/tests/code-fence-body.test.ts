@@ -408,7 +408,7 @@ test("a capped block colours only what is in view and a streaming one follows it
   const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
   assert.match(hook, /const capped = innerLineWindow\(code\.current, body\);/);
   assert.match(hook, /lineWindowColoured\(tokens, progress, capped\)/);
-  assert.match(hook, /\}, \(\) => setPrevious\(\{ tokens, parked, progress: null \}\), capped !== null && MID_SCROLL_WORK\);/);
+  assert.match(hook, /\}, \(\) => setPrevious\(\{ tokens, parked, progress: null \}\), capped !== null\);/);
   const pin = DEFER.slice(DEFER.indexOf("function usePinnedWhileStreaming("), DEFER.indexOf("export const FenceBody = memo("));
   assert.match(pin, /if \(atBottom \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
   assert.match(pin, /body\.scrollTop = body\.scrollHeight;/);
