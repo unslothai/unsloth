@@ -17,7 +17,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { routeNeedsHardware, videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
-import { DownloadApprovalDialog } from "@/features/browser";
+import { DownloadApprovalDialog } from "@/features/browser/download-approval";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
