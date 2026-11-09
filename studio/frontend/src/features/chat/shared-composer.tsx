@@ -630,7 +630,6 @@ export function SharedComposer({
   requireStableCheckpoint = false,
 }: {
   draftId: string;
-  /** False once history loaded with no stored threads; the pair then drafts in the shared new-pair slot. */
   pairSaved?: boolean;
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
@@ -691,7 +690,6 @@ export function SharedComposer({
     }, 300);
     return () => clearTimeout(timer);
   }, [text, draftScope, draftKey, incognito, shareDraft, draftSource]);
-  // Leaving Compare or changing its draft scope inside the debounce still saves what was typed.
   useEffect(
     () => () => {
       if (unsavedDraftRef.current !== null) {
@@ -1557,7 +1555,6 @@ export function SharedComposer({
     };
     const clearSubmittedDraft = () => {
       if (unsentPair) {
-        // The pair now has its own slot; the sent text must not linger for the next new pair.
         unsavedDraftRef.current = null;
         if (!shareDraft) writeComposerDraft(draftKey, "");
         setSentPairId(draftId);

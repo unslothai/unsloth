@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Sharing is opt-in. Keep its existing slots so opting out never destroys an unsent draft.
 // The chat-draft prefix is what account-transition.ts clears on account switches.
 const DRAFT_KEY = "chat-draft:latest";
 const PASTE_DRAFT_KEY = "chat-draft-pastes:latest";
-// Per-chat drafts retain the pre-sharing keys.
 const LEGACY_DRAFT_PREFIX = "chat-draft:";
 const LEGACY_PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
-// One slot for every unsent New chat and one for every unsent Compare pair: their ids are minted per
-// navigation, so per-id slots would pile up unreachable (pastes run to megabytes).
+// Unsent New chat and Compare ids are minted per navigation; per-id slots would pile up unread.
 export const NEW_CHAT_DRAFT_ID = "__new__";
 export const NEW_COMPARE_DRAFT_ID = "__compare_new__";
 
@@ -152,7 +149,6 @@ export function subscribeDraft(source: symbol, listener: (text: string) => void)
   return () => draftListeners.delete(wrapped);
 }
 
-// Deleting a chat clears only its own draft, never the shared one.
 export function clearComposerDraft(threadId: string): void {
   perChatDrafts.delete(composerDraftKey(threadId));
   perChatPastes.delete(composerPasteDraftKey(threadId));

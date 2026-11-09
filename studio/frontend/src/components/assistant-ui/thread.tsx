@@ -4069,8 +4069,7 @@ const Composer: FC<{
   const restoringPasteScopeRef = useRef<string | null | undefined>(undefined);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDraftRef = useRef<{ key: string; text: string } | null>(null);
-  // The key flips before the runtime swaps threads, so until the restored text is on screen
-  // the composer still shows the previous chat's text and saving it would file it under this key.
+  // The key flips before the runtime swaps threads: until the restore shows, the text is the last chat's.
   const awaitingRestoreRef = useRef<{ scope: string; stale: string; text: string } | null>(null);
   useEffect(() => {
     const composer = aui.composer();
@@ -4080,8 +4079,7 @@ const Composer: FC<{
       return;
     }
     remoteDraftRef.current = null;
-    // Copy a per-chat draft only when sharing is explicitly enabled, never on later navigation.
-    // Otherwise an old per-chat copy could resurrect a prompt already sent from the shared slot.
+    // Adopt only on switching sharing on: later, an old per-chat copy could resurrect a sent prompt.
     const enableSharing = shareDraft && !shareDraftBeforeRef.current;
     shareDraftBeforeRef.current = shareDraft;
     const draft = enableSharing && adoptLegacyDraft(referenceThreadId)
@@ -4182,8 +4180,7 @@ const Composer: FC<{
       if (draftScopeRef.current === draftScope) {
         restoredPasteScopeRef.current = draftScope;
       } else {
-        // An attachment adapter can finish after navigation and reinsert its file. Remove only
-        // this abandoned restore's files, leaving the destination chat's own pastes intact.
+        // An adapter finishing after navigation reinserts its file; drop only this restore's files.
         for (const attachment of composer.getState().attachments) {
           const file = (attachment as { file?: File }).file;
           if (file && restoredFiles.includes(file)) {
@@ -4236,8 +4233,6 @@ const Composer: FC<{
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
   }, [composerText, draftScope, draftKey, draftSource, shareDraft, aui]);
-  // Flush only on navigation/unmount, keeping normal typing debounced. Shared drafts already
-  // publish immediately; flushing them could overwrite a newer remote edit.
   useEffect(() => () => {
     const pending = pendingDraftRef.current;
     if (pending && !sentTextGuardBlocksDraft(justSentRef.current, pending.text, pending.key)) {
