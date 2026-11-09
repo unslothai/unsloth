@@ -346,6 +346,7 @@ import {
   getStoredChatThreadReadResult,
   getStoredChatProject,
   isThreadIncognito,
+  noteStoppedByUser,
   listStoredChatThreads,
   listStoredChatMessages,
   saveStoredChatMessage,
@@ -6482,6 +6483,7 @@ export function createOpenAIStreamAdapter(
         generationStopRequested = true;
         // Override the provisional reason so a deliberate Stop persists as cancelled.
         incompleteReason = "cancelled";
+        noteStoppedByUser(unstable_assistantMessageId);
         const stopPlan = chatGenerationStopPlan(
           generationDecision,
           generationRunId,

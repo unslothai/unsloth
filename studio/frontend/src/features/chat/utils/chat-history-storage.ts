@@ -43,6 +43,29 @@ import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator"
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { setForkBoundary } from "../stores/fork-boundary-store";
 
+const stoppedByUser = new Set<string>();
+
+/** assistant-ui drops the adapter's last yield after an abort, so a Stop's "cancelled" is applied at save time. */
+export function noteStoppedByUser(messageId: string | null | undefined): void {
+  if (messageId) stoppedByUser.add(messageId);
+}
+
+function withUserStop(
+  messageId: string,
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!stoppedByUser.has(messageId)) return metadata;
+  const reason = (metadata?.incomplete as { reason?: unknown } | undefined)?.reason;
+  if (reason !== undefined && reason !== "interrupted") return metadata;
+  return { ...metadata, incomplete: { reason: "cancelled" } };
+}
+
+function withStopReason(message: MessageRecord): MessageRecord {
+  if (message.role !== "assistant") return message;
+  const metadata = withUserStop(message.id, message.metadata as Record<string, unknown> | undefined);
+  return metadata === message.metadata ? message : { ...message, metadata } as MessageRecord;
+}
+
 // Incognito is tagged per thread at creation, never read from the live toggle, so mid-stream
 // toggling is safe.
 const incognitoThreadIds = new Set<string>();
@@ -1083,8 +1106,9 @@ function forgetChatThreads(threadIds: string[]): void {
 }
 
 export async function saveStoredChatMessage(
-  message: MessageRecord,
+  incoming: MessageRecord,
 ): Promise<MessageRecord> {
+  const message = withStopReason(incoming);
   if (isThreadIncognito(message.threadId)) return message;
   if (isChatThreadDeleted(message.threadId)) {
     throw new Error(`Thread ${message.threadId} was deleted`);
@@ -1114,7 +1138,7 @@ export async function syncStoredChatMessages(
   if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];
   await ensureStoredChatThread(threadId);
-  const synced = await syncChatMessages(threadId, messages, options);
+  const synced = await syncChatMessages(threadId, messages.map(withStopReason), options);
   // Only on actual deletions; ordinary syncs run constantly and would wipe the cache.
   if (options.pruneMissing || (options.deletedMessageIds?.length ?? 0) > 0) {
     clearServerOwnedChatMessages();
