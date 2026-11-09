@@ -34,7 +34,7 @@ def _shared_setup_1(client):
 
 
 def _nvfp4_not_rerouted(monkeypatch):
-    """A Blackwell host, where an explicit nvfp4 still reaches the precision gates (elsewhere it loads INT8 / Auto)."""
+    """Blackwell host: explicit nvfp4 still reaches the precision gates."""
     from core.inference import diffusion_nvfp4_route as nvfp4_route
     monkeypatch.setattr(
         nvfp4_route, "device_profile", lambda **kw: nvfp4_route.DeviceProfile("nvidia", ((10, 0),))

@@ -1,17 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Routes an explicit NVFP4 image / video pick to INT8 (or Auto) on GPUs without FP4 tensor cores.
+"""Routes an explicit NVFP4 image / video pick to INT8 (or Auto off NVIDIA) on pre-Blackwell GPUs.
 
-NVFP4 only has a native path on NVIDIA Blackwell (compute capability major >= 10). Below that it can only run
-weight-only (4-bit codes widened to bf16 per layer, bf16 GEMM), which measured both slower than INT8 tensor cores and
-less accurate than the INT8 ConvRot builds. So on pre-Blackwell NVIDIA an explicit NVFP4 pick loads the family's
-normal INT8 instead (hosted INT8 checkpoint where registered, else on-the-fly int8), and on ROCm / XPU / MPS / CPU it
-takes whatever Auto picks there. Blackwell is untouched.
-
-This is the one decision every entry point asks (the image / video load and download-plan routes, and the backends'
-``begin_load`` for direct callers), so a pre-Blackwell pick never plans or downloads an NVFP4 file. The device is read
-only for an NVFP4 pick, once per process; tests replace ``device_profile``. ``UNSLOTH_NVFP4_PRE_BLACKWELL_INT8=0``
+Below sm_100 NVFP4 is weight-only, measured slower than INT8 and less accurate than INT8 ConvRot. Every entry point
+(load and download-plan routes, backends' ``begin_load``) asks this one decision. ``UNSLOTH_NVFP4_PRE_BLACKWELL_INT8=0``
 turns it off.
 """
 
@@ -33,9 +26,7 @@ logger = logging.getLogger(__name__)
 ROUTE_ENV = "UNSLOTH_NVFP4_PRE_BLACKWELL_INT8"
 _FALSY = frozenset({"0", "false", "no", "off"})
 
-# NVIDIA compute capability major of the first FP4 tensor-core generation (sm_100 / sm_103 / sm_110 / sm_120 / sm_121).
 BLACKWELL_MAJOR = 10
-# Image INT8 on a Turing fp16 card is the torchao-free int8 linear (``fp16_card_int8_host``); bf16 INT8 starts at sm_80.
 TURING_CAPABILITY = (7, 5)
 BF16_INT8_CAPABILITY = (8, 0)
 
@@ -54,15 +45,12 @@ _PICKLE_SUFFIXES = (".pt", ".pth", ".bin", ".ckpt")
 
 
 def route_enabled() -> bool:
-    """False only for an explicit falsy ``UNSLOTH_NVFP4_PRE_BLACKWELL_INT8``; read at call time."""
     raw = os.environ.get(ROUTE_ENV)
     return raw is None or raw.strip().lower() not in _FALSY
 
 
 @dataclass(frozen = True)
 class DeviceProfile:
-    """``kind`` is nvidia / rocm / xpu / mps / cpu / unknown; ``capabilities`` one (major, minor) per CUDA card."""
-
     kind: str
     capabilities: tuple = ()
 
@@ -72,9 +60,8 @@ _PROFILE_LOCK = threading.Lock()
 
 
 def _smi_visible_capabilities(torch: Any) -> tuple:
-    """The visible NVIDIA cards' capabilities from nvidia-smi, without initialising CUDA in this process (a download
-    plan previewed during training must not take a context beside the trainer). Only when every visible card has the
-    same capability, since nvidia-smi rows are not torch ordinals; () sends the caller to torch."""
+    """nvidia-smi capabilities without a CUDA context (training may run beside us); () unless all cards match,
+    since nvidia-smi rows are not torch ordinals."""
     try:
         if torch.cuda.is_initialized():
             return ()
@@ -94,19 +81,18 @@ def _smi_visible_capabilities(torch: Any) -> tuple:
 
 
 class _CudaInitRefused(RuntimeError):
-    """Reading the cards would initialise CUDA in this process, which the caller does not allow right now."""
+    """Only torch could read the cards and the caller forbids a CUDA context."""
 
 
 def _probe_device_profile(allow_cuda_init: Any = True) -> DeviceProfile:
-    """Raises when the device cannot be read, so a transient failure is never cached."""
+    """Raises when unreadable, so a transient failure is never cached."""
     try:
         import torch
     except Exception:  # noqa: BLE001 -- no torch is a CPU host for this purpose
         return DeviceProfile(CPU)
     from .rocm_bf16 import is_rocm_torch
 
-    # The backend's own detector: AMD SDK / Radeon wheels leave ``torch.version.hip`` unset. ROCm reports gfx versions
-    # through the CUDA capability call (RDNA 3 is 11.x), so it must never read as Blackwell.
+    # Not torch.version.hip (unset on AMD SDK wheels); ROCm gfx caps (RDNA 3 = 11.x) must never read as Blackwell.
     rocm = is_rocm_torch(torch)
     if not rocm:
         caps = _smi_visible_capabilities(torch)
@@ -114,7 +100,6 @@ def _probe_device_profile(allow_cuda_init: Any = True) -> DeviceProfile:
             return DeviceProfile(NVIDIA, caps)
     if torch.cuda.is_available():
         if not torch.cuda.is_initialized():
-            # Asked only here, where torch is the one left to answer (callable: the training check is not free).
             allowed = allow_cuda_init() if callable(allow_cuda_init) else allow_cuda_init
             if not allowed:
                 raise _CudaInitRefused()
@@ -133,8 +118,7 @@ def _probe_device_profile(allow_cuda_init: Any = True) -> DeviceProfile:
 
 
 def device_profile(*, allow_cuda_init: Any = True) -> DeviceProfile:
-    """Read once per process (a box's capabilities do not change while it runs); ``unknown`` when unreadable, or when
-    only torch could answer and ``allow_cuda_init`` is False (training owns the GPU: no context may be taken here)."""
+    """Cached per process; ``unknown`` when unreadable or only torch could answer and ``allow_cuda_init`` is False."""
     if _PROFILE:
         return _PROFILE[0]
     with _PROFILE_LOCK:
@@ -165,8 +149,6 @@ def reset_device_profile() -> None:
 def _selected_ordinals(
     gpu_ordinal: Optional[int], gpu_ids: Optional[Iterable[int]]
 ) -> Optional[list]:
-    """Every torch ordinal this load may place work on (the ranked primary plus the rest of a ``gpu_ids`` selection),
-    or None when the backend picks the card itself."""
     selected: list = []
     if gpu_ordinal is not None:
         try:
@@ -188,10 +170,7 @@ def load_capability(
     gpu_ordinal: Optional[int] = None,
     gpu_ids: Optional[Iterable[int]] = None,
 ) -> tuple[Optional[tuple], bool]:
-    """``(lowest capability that matters, routes)`` for an NVIDIA profile.
-
-    A pinned card (or selection) routes when any selected card is pre-Blackwell; with no selection the backend may land
-    on any card, so it routes only when every visible card is pre-Blackwell (a mixed box keeps today's behaviour)."""
+    """``(lowest relevant capability, routes)``; unpinned, a mixed box routes only if every card is pre-Blackwell."""
     caps = [tuple(c) for c in profile.capabilities if c]
     if not caps:
         return None, False
@@ -207,8 +186,6 @@ def load_capability(
 
 @dataclass(frozen = True)
 class Nvfp4Route:
-    """What changed: ``updates`` holds the request fields to overwrite, ``requested`` the controls' original values."""
-
     updates: Mapping[str, Any]
     requested: Mapping[str, Any]
     reasons: Mapping[str, str]
@@ -222,8 +199,7 @@ class Nvfp4Route:
         return self.reasons.get(TRANSFORMER_QUANT) or next(iter(self.reasons.values()), "")
 
 
-# Handed to ``begin_load`` when the route decided to leave a request as it is, so the backend does not decide again on
-# a card the route never saw (the plan and the load must agree).
+# Passed to ``begin_load`` so the backend does not re-decide on a card the route never saw.
 ROUTE_UNCHANGED = Nvfp4Route(updates = {}, requested = {}, reasons = {}, device = UNKNOWN)
 
 
@@ -242,9 +218,7 @@ def _looks_local(path: str) -> bool:
 
 
 def checkpoint_is_nvfp4(model_path: Optional[str], filename: Optional[str] = None) -> bool:
-    """Whether the picked checkpoint holds NVFP4 weights: a local safetensors header's recorded scheme first (it wins
-    over the name), else the file's (or repo's) name, or a registered hosted ``*-NVFP4`` repo. A pickle is never opened
-    to ask, a local path that does not exist is not a pick, and nothing is downloaded. Never raises."""
+    """Local safetensors header wins over the name; pickles are never opened, nothing is downloaded. Never raises."""
     try:
         raw = str(model_path or "").strip()
         if not raw:
@@ -262,7 +236,6 @@ def checkpoint_is_nvfp4(model_path: Optional[str], filename: Optional[str] = Non
                     return is_nvfp4(scheme)
             return _name_says_nvfp4(path)
         if _looks_local(raw):
-            # Missing on disk: the loader's own not-found error stays the answer.
             return bool(
                 not filename and os.path.isdir(os.path.expanduser(raw)) and _dir_declares_nvfp4(raw)
             )
@@ -301,7 +274,6 @@ def _dir_declares_nvfp4(path: str) -> bool:
 
 
 def _switch_refuses_checkpoint(model_path: Optional[str], base_repo: Optional[str]) -> bool:
-    """Whether ``refuse_disabled_nvfp4_checkpoint`` 400s this pick while the NVFP4 switch is off."""
     try:
         from .diffusion_prequant import declares_nvfp4_checkpoint
         return any(declares_nvfp4_checkpoint(p) for p in (model_path, base_repo) if p)
@@ -321,7 +293,6 @@ def _families(media: str) -> tuple:
 
 
 def _known_bases(fam: Any) -> dict:
-    """Lowercased base id -> its canonical spelling, for the bases a family names in full (never a lowercase key)."""
     known: dict = {}
     for base in (
         getattr(fam, "base_repo", None),
@@ -335,7 +306,6 @@ def _known_bases(fam: Any) -> dict:
 
 
 def _all_bases(fam: Any) -> set:
-    """Every base id a family's tables mention, lowercased (variant rows and exclusions too)."""
     bases = set(_known_bases(fam))
     for row in getattr(fam, "prequant_variant_repos", ()) or ():
         if isinstance(row, tuple) and row and isinstance(row[0], str):
@@ -353,8 +323,7 @@ def hosted_nvfp4_repo_base(
     filename: Optional[str] = None,
     family_override: Optional[str] = None,
 ) -> Optional[tuple]:
-    """``(family, canonical base repo)`` a registered hosted NVFP4 prequant repo was built from; None when it is not
-    one, when several families share it and nothing tells them apart, or when the base's spelling is unknown."""
+    """``(family, canonical base)`` of a hosted NVFP4 repo; None if ambiguous across families or base spelling unknown."""
     key = str(model_path or "").strip().strip("/").lower()
     if not key or "/" not in key:
         return None
@@ -394,7 +363,6 @@ def _detect_family(
     override: Optional[str],
     model_kind: Optional[str] = None,
 ) -> Any:
-    """The family the loader itself resolves for this pick (names, headers, a local pipeline index)."""
     try:
         if media == "video":
             from .video import _detect_load_family
@@ -414,8 +382,7 @@ def _stem(repo: str) -> str:
 
 
 def _named_base(fam: Any, names: list) -> Optional[str]:
-    """The family base the names spell, most specific name first: the longest base name any table of the family lists
-    (so a Qwen-Image-2512 file never reads as Qwen-Image), returned only in its canonical spelling."""
+    """Longest matching base wins (Qwen-Image-2512 never reads as Qwen-Image); canonical spelling only."""
     known = _known_bases(fam)
     stems = [(b, _stem(b)) for b in _all_bases(fam)]
     for name in reversed(names):
@@ -433,8 +400,7 @@ def _family_int8_base(
     model_path: Optional[str] = None,
     filename: Optional[str] = None,
 ) -> Optional[str]:
-    """The diffusers pipeline whose normal INT8 resolution replaces an NVFP4 single file of ``fam``, or None when the
-    pick does not provably name it (a different size, version or distill must never load in its place)."""
+    """None unless the pick provably names it: a different size, version or distill must never load in its place."""
     names = [n for n in (model_path, filename) if n]
     if media == "video":
         return _video_int8_base(fam, base_repo, names)
@@ -451,9 +417,7 @@ def _name_tokens(names: Iterable[str]) -> set:
 
 
 def _video_int8_base(fam: Any, base_repo: Optional[str], names: list) -> Optional[str]:
-    """Video: only where the family's INT8 pipeline is provably the same model as the file. LTX-2.5's pack runs only
-    its distilled DiT, so a dev file is kept; the ``ltx-2`` family spans 2.0 to 2.3 with a 2.0 pipeline, so its files
-    are kept; anything else must spell its pipeline's name."""
+    """LTX-2.5 pack is distilled-only; ``ltx-2`` spans 2.0-2.3 on a 2.0 pipeline, so never replaced."""
     name = str(getattr(fam, "name", "") or "")
     pack = str(getattr(fam, "base_repo", "") or "").strip()
     if not pack:
@@ -485,8 +449,7 @@ def _turing_int8_enabled() -> bool:
 
 
 def _dit_target(media: str, capability: Optional[tuple]) -> str:
-    """INT8 where the family's INT8 path runs on this card, else Auto: video INT8 needs bf16 (sm_80+); image INT8 on a
-    Turing fp16 card is the torchao-free int8 linear, unless it is switched off."""
+    """Video INT8 needs bf16 (sm_80+); image INT8 also runs on Turing via the fp16 int8 linear."""
     if capability is None:
         return AUTO
     if capability >= BF16_INT8_CAPABILITY:
@@ -519,24 +482,17 @@ def plan_nvfp4_route(
     profile: Optional[DeviceProfile] = None,
     log: bool = True,
 ) -> Optional[Nvfp4Route]:
-    """The pre-Blackwell NVFP4 reroute for one load request, or None when the request is left exactly as it is.
-
-    ``component_files``: the pick names its own text-encoder / VAE files, an assembly a family pipeline cannot keep,
-    so its checkpoint is never replaced. ``replace_checkpoint=False`` (a load nobody picked by hand, whose caller tracks
-    the model by its path) reroutes precision only."""
+    """None when left as is. ``component_files`` / ``replace_checkpoint=False`` keep the checkpoint, rerouting precision only."""
     if not route_enabled():
         return None
     from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 
-    # With NVFP4 off in this build an NVFP4 scheme (and a checkpoint the switch refuses) keeps its 400 on every GPU:
-    # the master switch decides whether NVFP4 exists at all, this route only where it can run.
+    # NVFP4 disabled: its 400 stands on every GPU; this route never turns it into a load.
     enabled = nvfp4_diffusion_enabled()
     dit_pick = enabled and is_nvfp4(transformer_quant)
     te_pick = enabled and is_nvfp4(text_encoder_quant)
-    # The file the loader will open, the way the routes normalise a local pick later: a path naming one file, or a
-    # directory holding a sole checkpoint, decides the same as the (directory, file) pair it becomes.
     model_path, gguf_filename = _normalized_pick(model_path, gguf_filename)
-    # Picks first (names and local headers only): an ordinary request never reads the device at all.
+    # Picks first: an ordinary request never reads the device.
     prequant_pick = (
         enabled
         and bool(transformer_prequant_path)
@@ -558,7 +514,6 @@ def plan_nvfp4_route(
     elif profile.kind in (ROCM, XPU, MPS, CPU):
         dit_target = te_target = AUTO
     else:
-        # Unreadable device: nothing is known to be wrong with the pick.
         return None
     where = f"{profile.kind}" + (f" sm_{capability[0]}{capability[1]}" if capability else "")
 
@@ -620,7 +575,6 @@ def plan_nvfp4_route(
                     f"{REASON_INT8 if target == INT8 else REASON_AUTO} from {base} instead of {name}"
                 )
             else:
-                # The caller's own non-NVFP4 precision still applies to the family's pipeline.
                 reasons[TRANSFORMER_QUANT] = (
                     f"NVFP4 needs a Blackwell GPU; loading {base} instead of {name}"
                 )
@@ -628,7 +582,6 @@ def plan_nvfp4_route(
             if log:
                 logger.info("diffusion.nvfp4_route: %s -> %s (%s) on %s", name, base, word, where)
         else:
-            # The pick loads exactly as it did before, with the DiT precision asked.
             kept.append(name)
             dit_pick = prequant_pick = False
             if log:
@@ -644,7 +597,7 @@ def plan_nvfp4_route(
         updates[TRANSFORMER_QUANT] = target
         reasons[TRANSFORMER_QUANT] = REASON_INT8 if target == INT8 else REASON_AUTO
     if prequant_pick:
-        # Never handed to the INT8 path: an NVFP4 artifact is not an INT8 one. An explicit non-NVFP4 precision stays.
+        # An NVFP4 artifact is never handed to the INT8 path.
         updates["transformer_prequant_path"] = None
         if TRANSFORMER_QUANT not in updates and _is_auto(transformer_quant):
             target = _dit(fam_name, base_repo)
@@ -696,7 +649,6 @@ def route_load_request(
     replace_checkpoint: bool = True,
     allow_cuda_init: Any = True,
 ) -> tuple:
-    """``(request, route)``: a pydantic load request with the reroute applied (a copy), or the same object and None."""
     route = plan_nvfp4_route(
         media = media,
         model_path = getattr(request, "model_path", None),
@@ -720,15 +672,12 @@ def route_load_request(
     return request.model_copy(update = update), route
 
 
-# The route of the load running on this thread, so the resolved record reports what the caller asked for.
 _ACTIVE_ROUTE: contextvars.ContextVar = contextvars.ContextVar("unsloth_nvfp4_route", default = None)
 
 ROUTE_KWARG = "_nvfp4_route"
 
 
 def with_route_scope(fn: Callable) -> Callable:
-    """Decorator for a backend's ``_run_load(**kwargs)``: pops ``_nvfp4_route`` and makes it active for the load."""
-
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         route = kwargs.pop(ROUTE_KWARG, None)
@@ -746,8 +695,6 @@ def active_route() -> Optional[Nvfp4Route]:
 
 
 def annotate_resolved(record: Optional[dict], route: Optional[Nvfp4Route] = None) -> Optional[dict]:
-    """Marks the rerouted controls of a resolved record: the NVFP4 the caller asked for, ``fell_back``, and why; a
-    replaced checkpoint is named on ``transformer_quant`` even when the caller's own precision was kept."""
     route = route if route is not None else active_route()
     if route is None or not isinstance(record, dict):
         return record

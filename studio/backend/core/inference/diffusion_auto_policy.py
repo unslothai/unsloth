@@ -498,7 +498,6 @@ def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any
             "status": status,
             "reason": reason,
         }
-    # A pre-Blackwell NVFP4 pick rerouted to INT8 / Auto reports the NVFP4 it asked for and why it fell back.
     from .diffusion_nvfp4_route import annotate_resolved
 
     return annotate_resolved(record)

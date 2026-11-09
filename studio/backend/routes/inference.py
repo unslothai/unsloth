@@ -48404,14 +48404,10 @@ async def _route_nvfp4_request(
     *,
     user_initiated: bool = True,
 ) -> tuple:
-    """``(request, route)``: an explicit NVFP4 pick rerouted to INT8 / Auto on a pre-Blackwell host
-    (``diffusion_nvfp4_route``), after authorization and before any check or download plan reads it. A replaced
-    checkpoint's family pipeline is authorized like any pick. A load nobody picked by hand reroutes precision only:
-    its caller tracks the model by the path it asked for."""
+    """Runs after authorization, before any check or download plan reads the request."""
     from core.inference.diffusion_nvfp4_route import route_load_request
 
-    # Runs before the training interlock: while training owns the GPU the cards are read without a CUDA context (asked
-    # only when torch would be the one to read them).
+    # Before the training interlock: cards are then read without a CUDA context.
     routed, route = await asyncio.to_thread(
         route_load_request,
         request,
@@ -48429,8 +48425,7 @@ async def _route_nvfp4_request(
 
 
 def _nvfp4_route_kwarg(begin_load: Any, route: Any) -> dict:
-    """Hands the route's decision to a backend whose ``begin_load`` records it (an unchanged one too, so the backend
-    does not decide again on a card the route never saw); native engines take no such argument."""
+    """Unchanged decisions are passed too so the backend does not re-decide; native engines take no such argument."""
     from core.inference.diffusion_nvfp4_route import ROUTE_UNCHANGED
 
     try:

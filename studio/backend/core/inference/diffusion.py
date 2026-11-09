@@ -5500,7 +5500,6 @@ class DiffusionBackend:
         vae_file: Optional[str] = None,
         allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
-        # The route's pre-Blackwell NVFP4 reroute (already applied to these arguments); direct callers get it here.
         nvfp4_route: Any = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -5510,7 +5509,6 @@ class DiffusionBackend:
         from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
 
         if nvfp4_route is ROUTE_UNCHANGED:
-            # The route already decided to leave this request as it is.
             nvfp4_route = None
         elif nvfp4_route is None:
             nvfp4_route = plan_nvfp4_route(
@@ -5658,7 +5656,7 @@ class DiffusionBackend:
         ).start()
         return self.status()
 
-    # Outermost: pops ``_nvfp4_route`` so the resolved record this load builds reports the NVFP4 ask it replaced.
+    # Outermost, so the resolved record reports the NVFP4 ask it replaced.
     @with_route_scope
     @scoped_allow_oversized_load
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.

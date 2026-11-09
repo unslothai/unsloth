@@ -55,7 +55,6 @@ def _unknown_file(tmp_path):
 
 
 def _pick(kind, tmp_path):
-    """(media, request kwargs) for one pick kind."""
     if kind == "dit":
         return "image", dict(model_path = "Tongyi-MAI/Z-Image-Turbo", transformer_quant = "nvfp4")
     if kind == "te":
@@ -80,12 +79,10 @@ def _pick(kind, tmp_path):
 
 
 def _expected(device, cap, kind):
-    """``None`` (left as is) or the request fields the route must overwrite."""
     blackwell = device == "cuda" and cap[0] >= 10
     if kind in ("auto", "local_unknown") or blackwell:
         return None
     nvidia = device == "cuda"
-    # Video INT8 needs bf16 (sm_80+); image INT8 also runs on a Turing fp16 card.
     floor = (8, 0) if kind == "ltx_packed" else (7, 5)
     dit = "int8" if nvidia and cap >= floor else "auto"
     te = "int8" if nvidia and cap[0] >= 8 else "auto"
@@ -317,8 +314,7 @@ def test_nvidia_smi_answers_without_initialising_cuda(monkeypatch):
         assert route.device_profile() == DeviceProfile("nvidia", ((8, 9), (8, 9)))
     finally:
         route.reset_device_profile()
-    # Different cards need torch ordinals (rows are not ordinals), so nvidia-smi does not answer: a B200 beside an
-    # L4, and a 4090 beside a T4, where the TE target differs per card.
+    # Mixed cards: nvidia-smi rows are not torch ordinals, so it cannot answer.
     for caps in ({0: (8, 9), 1: (12, 0)}, {0: (8, 9), 1: (7, 5)}):
         monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda caps = caps: caps)
         monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0, 1])
@@ -409,9 +405,6 @@ def test_rocm_never_reads_as_blackwell(monkeypatch, hip, version):
         route.reset_device_profile()
 
 
-# --- the resolved record reports what was asked and why it fell back ---
-
-
 def test_the_resolved_record_reports_the_rerouted_ask(monkeypatch):
     from core.inference.diffusion_auto_policy import build_resolved_record
 
@@ -440,7 +433,6 @@ def test_the_resolved_record_reports_the_rerouted_ask(monkeypatch):
     assert "seeded from the hosted checkpoint" in tq["reason"]
     assert record["text_encoder_quant"]["requested"] == "nvfp4"
     assert record["memory_mode"]["status"] == "applied"
-    # No active route: the record is built exactly as before.
     plain = build_resolved_record(controls)
     assert plain["transformer_quant"]["requested"] == "int8"
     assert plain["transformer_quant"]["status"] == "applied"
@@ -459,9 +451,6 @@ def test_the_resolved_record_reports_a_replaced_checkpoint(monkeypatch, tmp_path
     assert "from Lightricks/LTX-2.5-Diffusers instead of" in record["transformer_quant"]["reason"]
 
 
-# --- every entry point reroutes before it reads the request ---
-
-
 class _Seen(Exception):
     pass
 
@@ -469,8 +458,7 @@ class _Seen(Exception):
 @pytest.mark.parametrize("field", ["transformer_quant", "text_encoder_quant"])
 @pytest.mark.parametrize("cap,want", [((8, 9), "int8"), ((10, 0), "nvfp4")])
 def test_every_load_and_plan_route_reroutes_before_its_checks(monkeypatch, field, cap, want):
-    """All four entries reroute after the disabled-NVFP4 refusal and account checks, before anything else reads the
-    request; the managed-account refusals still come first (``test_nvfp4_diffusion_flag``)."""
+    """All four entries reroute after the disabled-NVFP4 and account refusals, before anything else reads the request."""
     from models.inference import DiffusionLoadRequest, VideoLoadRequest
     from routes import inference as image_routes
     from routes import video as video_routes
@@ -694,14 +682,10 @@ def test_begin_load_reroutes_a_direct_caller(monkeypatch, backend_name, repo, ba
         Backend().begin_load(repo, transformer_quant = "nvfp4")
     assert seen["repo_id"] == base
     assert seen.get("gguf_filename") is None
-    # The kill switch hands the same call through untouched.
     monkeypatch.setenv(route.ROUTE_ENV, "0")
     with pytest.raises(_Seen):
         Backend().begin_load(repo, transformer_quant = "nvfp4")
     assert seen["repo_id"] == repo
-
-
-# --- a pre-Blackwell pick never plans an NVFP4 download ---
 
 
 _WAN_T2V = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
@@ -766,7 +750,6 @@ def test_the_rerouted_video_plan_asks_no_nvfp4_repo_but_the_kill_switch_does(mon
             "_hub_file_is_cached",
             staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kw: False),
         )
-        # The host's own selector honours whatever explicit scheme reaches it (no CUDA on this test host).
         monkeypatch.setattr(
             video_mod,
             "select_transformer_quant_scheme",
@@ -801,9 +784,6 @@ def test_the_rerouted_video_plan_asks_no_nvfp4_repo_but_the_kill_switch_does(mon
     assert "unsloth/Wan2.2-T2V-A14B-NVFP4" in asked
 
 
-# --- auto never picks NVFP4 below Blackwell, and Blackwell's own path is untouched ---
-
-
 def _all_family_names():
     from core.inference.diffusion_families import _FAMILIES as image
     from core.inference.video_families import _FAMILIES as video
@@ -815,7 +795,6 @@ def test_auto_never_orders_nvfp4_below_blackwell(monkeypatch, cap):
     from core.inference import diffusion_nvfp4_gate as gate
     from core.inference import diffusion_transformer_quant as tq
 
-    # Worst case: every gate record passes and every backend probe answers yes.
     monkeypatch.setattr(tq, "_nvfp4_gate_passed", lambda *a, **k: True)
     monkeypatch.setattr(tq, "_nvfp4_gate_backend_ok", lambda *a, **k: True)
     monkeypatch.setattr(tq, "_nvfp4_backend_is", lambda *a, **k: True)
