@@ -1269,6 +1269,51 @@ def fp16_card_int8_scheme(
     return TQ_INT8
 
 
+FP16_CARD_FP8_ENV = "UNSLOTH_DIFFUSION_FP16_CARD_FP8"
+
+
+def fp16_card_fp8_enabled() -> bool:
+    raw = (_os.environ.get(FP16_CARD_FP8_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def fp16_card_fp8_scheme(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[str]:
+    """``fp8`` for an explicit fp8 request on an ``fp16_card_int8_host``, else None. Weight-only (no fp8 matmul
+    below sm_89); ``UNSLOTH_DIFFUSION_FP16_CARD_FP8=0`` restores the refusal."""
+    if normalize_transformer_quant(requested) != TQ_FP8 or not fp16_card_fp8_enabled():
+        return None
+    if not fp16_card_int8_host(target) or _family_denied(family, TQ_FP8):
+        return None
+    try:
+        import torch
+        if not hasattr(torch, "float8_e4m3fn"):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return TQ_FP8
+
+
+def fp16_card_native_host(target: Any, requested: Optional[str]) -> bool:
+    scheme = normalize_transformer_quant(requested)
+    if scheme == TQ_FP8 and not fp16_card_fp8_enabled():
+        return False
+    return scheme in (TQ_INT8, TQ_FP8) and fp16_card_int8_host(target)
+
+
+def fp16_card_native_scheme(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[str]:
+    return fp16_card_int8_scheme(target, requested, family) or fp16_card_fp8_scheme(
+        target, requested, family
+    )
+
+
 def fp16_card_int8_act(target: Any) -> bool:
     """W8A8 for the explicit-int8 Turing build; ``int8_storage_host`` (also true there) answers only for checkpoint
     int8 storage, which stays weight-only."""
@@ -2172,11 +2217,12 @@ def quantize_transformer(
 ) -> Optional[str]:
     """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF); ``base_repo`` picks the NVFP4 policy."""
     native = native_quant_scheme(target, mode, family = family, offload = offload)
-    fp16_card = native is None and fp16_card_int8_scheme(target, mode, family) is not None
+    fp16_card_scheme = fp16_card_native_scheme(target, mode, family) if native is None else None
+    fp16_card = fp16_card_scheme is not None
     if fp16_card:
-        native = TQ_INT8
-        # native_int8_act is False on any fp16 CUDA target (int8_storage_host); this build is the W8A8 one.
-        act_int8 = fp16_card_int8_act(target)
+        native = fp16_card_scheme
+        # native_int8_act is False on fp16 CUDA targets; int8 here is W8A8, fp8 weight-only.
+        act_int8 = fp16_card_int8_act(target) if native == TQ_INT8 else False
     if native is not None:
         mps = _mps_bf16(target)
         if act_int8 is None or mps:
