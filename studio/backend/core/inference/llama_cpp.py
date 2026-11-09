@@ -8202,6 +8202,8 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
                 getattr(backend, "_model_identifier", None),
                 id(process),
                 getattr(process, "pid", None),
+                # llama.cpp renders date_string / strftime_now from its clock (Llama 3.x templates print the date)
+                time.strftime("%Y-%m-%d"),
                 *parts,
             ],
             sort_keys = True,
