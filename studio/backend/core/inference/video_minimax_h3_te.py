@@ -606,6 +606,115 @@ def _fill_arena(arena: Any, *, entries: list) -> None:
         list(pool.map(run, jobs))
 
 
+# The streamed conditioner's vocabulary table (151936 x 5120 bf16, 1.56 GB) stays on the host: the prompt's rows are
+# gathered there and only they are uploaded, not the whole table per encode. ``UNSLOTH_H3_HOST_EMBED_ROWS=0`` streams
+# the table like every other leaf.
+H3_HOST_EMBED_ROWS_ENV = "UNSLOTH_H3_HOST_EMBED_ROWS"
+_HOST_ROWS_ATTR = "_unsloth_host_rows_device"
+
+
+def h3_host_embed_rows_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_HOST_EMBED_ROWS_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _host_rows_forward(self: Any, input: Any) -> Any:
+    """``nn.Embedding.forward`` on the host table (a gather: bit-identical), the rows sent to the onload device."""
+    import torch.nn.functional as F
+
+    weight = self.weight
+    ids = input if input.device == weight.device else input.to(weight.device)
+    rows = F.embedding(
+        ids,
+        weight,
+        self.padding_idx,
+        self.max_norm,
+        self.norm_type,
+        self.scale_grad_by_freq,
+        self.sparse,
+    )
+    return rows.to(self.__dict__[_HOST_ROWS_ATTR])
+
+
+def keep_h3_embedding_on_host(target: Any, logger: Any = None) -> bool:
+    """Take the group-offloaded language embedding out of the stream, its lookup done on the host. Run right after
+    ``apply_group_offloading``; True when installed. Plain frozen bf16/fp16/fp32 tables only. Never raises."""
+    try:
+        if not h3_host_embed_rows_enabled():
+            return False
+        import types
+
+        import torch
+
+        getter = getattr(target, "get_input_embeddings", None)
+        emb = getter() if callable(getter) else None
+        if type(emb) is not torch.nn.Embedding or _HOST_ROWS_ATTR in emb.__dict__:
+            return False
+        weight = emb.weight
+        if (
+            type(weight.data) is not torch.Tensor
+            or weight.device.type != "cpu"
+            or weight.requires_grad
+            or emb.max_norm is not None
+            or emb.sparse
+            or weight.dtype not in (torch.bfloat16, torch.float16, torch.float32)
+        ):
+            return False
+        registry = getattr(emb, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) or {}
+        # a streamed (lazy prefetch) setup also tracks the leaf's first execution; anything else keeps the stock leaf
+        if "group_offloading" not in hooks or not set(hooks) <= {
+            "group_offloading",
+            "layer_execution_tracker",
+        }:
+            return False
+        group = getattr(hooks["group_offloading"], "group", None)
+        if group is None or list(getattr(group, "modules", None) or ()) != [emb]:
+            return False
+        onload = getattr(group, "onload_device", None)
+        if onload is None:
+            return False
+        name = next((n for n, m in target.named_modules() if m is emb), None)
+        lazy = (getattr(getattr(target, "_diffusers_hook", None), "hooks", None) or {}).get(
+            "lazy_prefetch_group_offloading"
+        )
+        emb.__dict__[_HOST_ROWS_ATTR] = torch.device(onload)
+        try:
+            if "layer_execution_tracker" in hooks:
+                registry.remove_hook("layer_execution_tracker", recurse = False)
+            registry.remove_hook("group_offloading", recurse = False)
+        finally:
+            # set even if a removal failed half way: the table is on the host, so the lookup must be too
+            emb.forward = types.MethodType(_host_rows_forward, emb)
+        names = getattr(lazy, "_layer_execution_tracker_module_names", None)
+        if isinstance(names, set) and name is not None:
+            names.discard(name)  # no longer streamed: the first forward must not expect it
+        # diffusers may hold the table's pinned twin; the lookup reads what the parameter points at now
+        host = getattr(group, "cpu_param_dict", None) or {}
+        pinned = host.get(weight)
+        if (
+            pinned is not None
+            and pinned.device.type == "cpu"
+            and weight.data_ptr() != pinned.data_ptr()
+        ):
+            weight.data = pinned
+    except Exception as exc:  # noqa: BLE001 -- the streamed leaf still works
+        if logger is not None:
+            logger.warning("video.h3_te_stream: embedding stays streamed: %s", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "video.h3_te_stream: vocabulary table (%.2f GB) stays on the host, prompt rows uploaded",
+            weight.numel() * weight.element_size() / 1e9,
+        )
+    return True
+
+
 def stream_h3_text_encoder(
     manager: Any,
     text_encoder: Any,
@@ -677,6 +786,7 @@ def stream_h3_text_encoder(
         install_group_offload_buffer_restore()
         install_group_offload_hooks_eager()
         apply_group_offloading(target, **kwargs)
+        keep_h3_embedding_on_host(target, logger = logger)
         # Image prompts: Qwen3-VL's position interpolation reads the offloaded embedding's CPU device (transformers 5.5).
         _pin_vision_embedding_device(target)
     except Exception as exc:  # noqa: BLE001 -- keep the rotation
