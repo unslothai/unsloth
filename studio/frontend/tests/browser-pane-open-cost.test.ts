@@ -18,10 +18,8 @@ test("the side-panel insets are found among the root's children, not by a :scope
 
 test("a long chat takes the pane's width in one step; a short one keeps the slide", () => {
   assert.match(CSS, /\.chat-artifact-split\[data-artifact-layout-animating="true"\]:not\(\[data-artifact-layout-instant\]\) > \[data-panel\] \{\s*transition:/);
-  // Taller than the rows in reach of the reader (the rest skip layout), the slide costs its most.
   assert.match(PAGE, /import \{ rowReachPx \} from "@\/components\/assistant-ui\/distant-rows";/);
   assert.match(PAGE, /split\.toggleAttribute\(\s*ARTIFACT_LAYOUT_INSTANT_ATTRIBUTE,\s*viewport !== null &&\s*viewport\.clientHeight > 0 &&\s*viewport\.scrollHeight > viewport\.clientHeight \+ 2 \* rowReachPx\(window\.innerHeight\),\s*\);/);
-  // Marked in the frame before the resize, so the transition is already off when the width changes.
   assert.match(PAGE, /const prepFrameId = window\.requestAnimationFrame\(\(\) => \{\s*markInstantLayout\(contextSurfaceRef\.current\);\s*resizeFrameId = window\.requestAnimationFrame\(\(\) => \{\s*panel\.resize\(/);
   assert.doesNotMatch(PAGE.slice(PAGE.indexOf("function markInstantLayout"), PAGE.indexOf("const SingleContent")), /:scope >/);
 });

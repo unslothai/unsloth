@@ -651,10 +651,8 @@ function browserPanelDefaultSize(split: HTMLElement | null | undefined): string 
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_LAYOUT_INSTANT_ATTRIBUTE = "data-artifact-layout-instant";
 
-/** A sliding width re-wraps every row in reach on each frame of the slide (rows further away skip
- *  layout, distant-rows.ts): about 200 ms of slow frames on macOS WebKit once the chat fills that
- *  reach. A chat taller than it takes the new width in one step; a shorter one keeps the slide.
- *  Read in the frame before the resize, when layout runs anyway. Idempotent. */
+/** A sliding width re-wraps every row in reach each frame (~200 ms on macOS WebKit in a long chat), so
+ *  a chat taller than that reach takes the new width in one step. Read the frame before the resize. */
 function markInstantLayout(surface: HTMLElement | null): void {
   const split = surface?.closest<HTMLElement>(".chat-artifact-split");
   if (!split) return;

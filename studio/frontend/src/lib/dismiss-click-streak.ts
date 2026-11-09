@@ -151,8 +151,7 @@ export function installDismissClickStreakGuard(
   const onPointerDown = (event: PointerEvent): void => {
     // Capture phase: runs before Radix closes the menu.
     const target = asElement(event.target);
-    // Wrapper first: matching the descendant selector against every node of a long chat costs
-    // about 10 ms per press, and with no menu open there is no wrapper at all.
+    // Wrapper first: the descendant selector costs ~10 ms per press over a long chat.
     pressDismisses =
       event.button === 0 &&
       doc.querySelector(FLOATING_WRAPPER) !== null &&
