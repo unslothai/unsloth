@@ -2168,7 +2168,7 @@ def test_a_krackan_point_2_with_no_arch_attrs_or_flag_is_unified_by_name(win_roc
 
 
 def test_display_polls_share_one_combined_counter_read(win_rocm_solo, monkeypatch):
-    """Back-to-back System-tab polls on a box where each Get-Counter spawn takes 2 s (the Radeon 8060S CI run): one combined spawn serves every counter, for 4x its own duration."""
+    """2 s Get-Counter spawns: one combined spawn serves every counter for 4x its duration."""
     import time
 
     from utils.hardware import gpu_query
@@ -2228,7 +2228,6 @@ def test_display_polls_share_one_combined_counter_read(win_rocm_solo, monkeypatc
         clock.now += 0.1
         assert poll() == fresh
         assert len(spawns) - per_poll == 2
-    # Fit and placement (no display scope) still run each counter's own call, every time.
     before = len(spawns)
     assert poll() == fresh
     assert len(spawns) - before == per_poll

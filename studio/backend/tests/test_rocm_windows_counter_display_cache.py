@@ -146,7 +146,6 @@ def test_fit_and_fresh_reads_always_spawn_their_own_counter(counters):
         hw._rocm_windows_perf_counter_vram_by_adapter()
         hw._rocm_windows_perf_counter_gpu_util_pct()
     assert len(counters.calls) == 6
-    # Every read outside the display scope runs the exact single-counter script it ran before.
     assert len(_combined(counters.calls)) == 1
     assert all(c.startswith("$s=(Get-Counter '") for c in counters.calls[1:])
 
@@ -176,8 +175,7 @@ def test_failed_combined_reads_fall_back_and_are_never_cached(counters, monkeypa
         assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
         assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
         assert hw._rocm_windows_perf_counter_gpu_util_pct() is None
-    # One combined attempt, then every read ran its own: nothing failed was served, and the failing
-    # host pays one spawn over base (3) instead of doubling it.
+    # One combined attempt, then own calls: nothing failed is served.
     assert len(_combined(counters.calls)) == 1
     assert len(counters.calls) == 4
     assert hw._rocm_win_counter_cache["display"][3] == {}
@@ -217,7 +215,6 @@ def test_a_counter_missing_from_the_combined_reading_reads_its_own(counters):
     combined = _combined(counters.calls)
     own_util = [c for c in counters.calls[4:] if c not in combined and "GPU Engine" in c]
     assert len(combined) == 1
-    # Two util readers per poll, two polls: utilization stays as live as before, VRAM is shared.
     assert len(own_util) == 4
     assert len(counters.calls) == 4 + 1 + 4
 

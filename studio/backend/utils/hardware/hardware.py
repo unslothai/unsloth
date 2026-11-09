@@ -3621,14 +3621,12 @@ def _engine_instance_luid(instance_name: str) -> Optional[int]:
 
 
 _rocm_win_counter_lock = threading.Lock()
-# (completed_at, gpu_memory_events generation, spawn seconds, {key: stdout}) of the last combined display reading.
+# (completed_at, gpu_memory_events generation, spawn seconds, {key: stdout})
 _rocm_win_counter_cache: dict[str, tuple[float, int, float, dict[tuple[str, str], str]]] = {}
-# Slow spawns (about 2 s each on a Strix Halo box) space display reads out, like /api/system's probe spacing in main.py.
 _ROCM_WIN_COUNTER_SPACING = 4.0
 _ROCM_WIN_COUNTER_MAX_AGE_S = 10.0
-# A combined call that answered nothing (localized counter names, a missing counter set, a hung PowerShell) is retried this often; meanwhile each counter runs its own call, exactly as before the combined read.
+# Empty combined reading (localized names, hung PowerShell): each counter runs its own call until this retry.
 _ROCM_WIN_COUNTER_EMPTY_RETRY_S = 60.0
-# The three counters display polls read, tagged so one Get-Counter call can serve each parser only its own lines, in the format its own call prints.
 _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
     ("vram", "Dedicated Usage"): (
         "D",
@@ -3676,7 +3674,7 @@ def _rocm_windows_split_combined(stdout: str) -> dict[tuple[str, str], str]:
 
 
 def _rocm_windows_counter_stdout(key: tuple[str, str], ps: str) -> Optional[str]:
-    """stdout of the ``Get-Counter`` call ``ps`` (about 2 s each on real hardware), or None on failure. Placement and fit always run ``ps`` itself. Display reads instead share ONE Get-Counter over all three display counters, reused for max(display TTL, 4x the spawn that produced it) so the reading outlives its own probe, dropped on a GPU memory event; a counter missing from that reading, or a failed one, falls back to ``ps``. A failed combined read is remembered only as an empty reading, so no failure is ever served: it only stops every read retrying the combined call before falling back, for _ROCM_WIN_COUNTER_EMPTY_RETRY_S."""
+    """stdout of ``ps`` or None. Display reads share one combined Get-Counter, kept max(TTL, 4x spawn time) until a GPU memory event; misses fall back to ``ps``, failures are never served."""
     try:
         from utils import gpu_memory_events
         from utils.hardware import gpu_query
@@ -3716,7 +3714,6 @@ def _rocm_windows_counter_stdout(key: tuple[str, str], ps: str) -> Optional[str]
                         combined = None
                     done = time.monotonic()
                     readings = _rocm_windows_split_combined(combined) if combined else {}
-                    # An empty reading is kept too, so a host whose combined call never answers does not pay it on top of every counter's own call.
                     cached = (done, generation, done - started, readings)
                     _rocm_win_counter_cache["display"] = cached
                 if cached is not None:
