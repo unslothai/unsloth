@@ -30,6 +30,7 @@ import weakref
 import torch
 
 from . import _decode_graphs as G
+from . import _kv_cache as KV
 
 __all__ = [
     "wanted",
@@ -379,7 +380,11 @@ def _static_layer_types():
         from transformers import cache_utils
     except Exception:
         return (), ()
-    full = tuple(t for t in (getattr(cache_utils, "StaticLayer", None),) if isinstance(t, type))
+    from ._kv_cache import GrowableLayer
+
+    full = tuple(
+        t for t in (getattr(cache_utils, "StaticLayer", None), GrowableLayer) if isinstance(t, type)
+    )
     sliding = tuple(
         t
         for t in (
@@ -453,7 +458,12 @@ def plan(model, args, kwargs, input_ids):
         previous = getattr(model, "_previous_max_cache_length", -1)
         if type(previous) is int:
             need = max(need, previous)
-        kept = length is not None and need <= length <= _KEEP_MAX_RATIO * max(need, 1)
+        if KV.is_growable(state.kept):
+            # It grows to what this call needs: only one far larger than the need is dropped.
+            length = KV.capacity(state.kept)
+            kept = length is not None and length <= _KEEP_MAX_RATIO * max(need, 1)
+        else:
+            kept = length is not None and need <= length <= _KEEP_MAX_RATIO * max(need, 1)
     if state is not None and state.kept is not None and not kept:
         state.clear()
     if bsz > MAX_BSZ:
@@ -827,13 +837,18 @@ def _kept_compatible(state, batch_size, max_cache_len, offloading):
     kept = state.kept
     if kept is None:
         return False
-    length = _kept_len(state)
-    if length is None:
-        return False
+    if KV.is_growable(kept):
+        length = KV.capacity(kept)
+        fits = length is not None and length <= _KEEP_MAX_RATIO * max(int(max_cache_len), 1)
+    else:
+        length = _kept_len(state)
+        fits = length is not None and max_cache_len <= length <= _KEEP_MAX_RATIO * max(
+            int(max_cache_len), 1
+        )
     return (
-        state.kept_bsz == batch_size
+        fits
+        and state.kept_bsz == batch_size
         and bool(getattr(kept, "offloading", False)) == bool(offloading)
-        and max_cache_len <= length <= _KEEP_MAX_RATIO * max(int(max_cache_len), 1)
     )
 
 
@@ -846,6 +861,25 @@ class reuse_kept_cache:
     def __init__(self, model):
         self.model = model
         self.prepare = None
+        self.get_cache = None
+        self.prepare_inputs = None
+
+    def _prepare_inputs(self, input_ids, *args, **kwargs):
+        # A growable cache grows here, eagerly, before transformers builds the step's mask (in
+        # prepare_inputs_for_generation or the forward, often inside Unsloth's compiled mask code).
+        cache = kwargs.get("past_key_values", args[0] if args else None)
+        if KV.is_growable(cache):
+            written = KV.written(cache)
+            total = (
+                input_ids.shape[-1]
+                if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2
+                else 0
+            )
+            embeds = kwargs.get("inputs_embeds")
+            if written == 0 and isinstance(embeds, torch.Tensor) and embeds.dim() >= 3:
+                total = max(total, embeds.shape[1])
+            KV.reserve(cache, max(total, written + 1))
+        return self.prepare_inputs(input_ids, *args, **kwargs)
 
     def _prepare(self, *args, **kwargs):
         model = self.model
@@ -871,12 +905,15 @@ class reuse_kept_cache:
         ):
             cache = state.kept
             cache.reset()
+            KV.raise_limit(cache, effective)
             PLANS["reused kept cache"] += 1
         else:
             if state.kept is not None:
                 # A new cache: the kept graphs address the old one.
                 state.clear()
             cache = self.prepare(*args, **kwargs)
+            if KV.enabled() and not getattr(model.config, "is_encoder_decoder", False):
+                KV.make_growable(cache)
         model.__dict__["_unsloth_generic_call_cache"] = cache
         if type(effective) is int:
             model.__dict__["_unsloth_generic_call_len"] = (
@@ -884,11 +921,40 @@ class reuse_kept_cache:
             )
         return cache
 
+    def _get_cache(self, cache_implementation, batch_size, max_cache_len, *args, **kwargs):
+        # transformers 4.x: generate reuses model._cache unless it is too short, so a kept growable cache gets this
+        # call's limit first (it grows to it); a new one is made growable.
+        model = self.model
+        kept = model.__dict__.get("_cache")
+        if KV.is_growable(kept) and type(max_cache_len) is int:
+            KV.raise_limit(kept, max_cache_len)
+        cache = self.get_cache(cache_implementation, batch_size, max_cache_len, *args, **kwargs)
+        if cache is not kept and not getattr(model.config, "is_encoder_decoder", False):
+            KV.make_growable(cache)
+        return cache
+
     def __enter__(self):
         model = self.model
+        self.get_cache = None
+        self.prepare_inputs = None
+        if KV.enabled() and "prepare_inputs_for_generation" not in model.__dict__:
+            self.prepare_inputs = model.prepare_inputs_for_generation
+            # wraps(): generate and Unsloth read the signature (inspect follows __wrapped__).
+            hook = self._prepare_inputs
+            model.prepare_inputs_for_generation = functools.wraps(self.prepare_inputs)(
+                lambda *args, **kwargs: hook(*args, **kwargs)
+            )
         if "_prepare_static_cache" in model.__dict__ or not hasattr(model, "_prepare_static_cache"):
             # 4.x (or a wrapper owns the hook): the call's cache is model._cache, read in end().
             self.prepare = None
+            if (
+                KV.enabled()
+                and "_prepare_static_cache" not in model.__dict__
+                and "_get_cache" not in model.__dict__
+                and hasattr(model, "_get_cache")
+            ):
+                self.get_cache = model._get_cache
+                model._get_cache = self._get_cache
             return self
         self.prepare = model._prepare_static_cache
         model._prepare_static_cache = self._prepare
@@ -896,6 +962,12 @@ class reuse_kept_cache:
 
     def __exit__(self, *exc):
         model = self.model
+        if self.prepare_inputs is not None:
+            del model.prepare_inputs_for_generation
+            self.prepare_inputs = None
+        if self.get_cache is not None:
+            del model._get_cache
+            self.get_cache = None
         if self.prepare is not None:
             del model._prepare_static_cache
         elif "_unsloth_generic_call_cache" not in model.__dict__:
@@ -1621,6 +1693,10 @@ def decode_step(
     reason = _cache_reason(cache)
     if reason is None:
         reason = _window_reason(cache, 1)
+    if reason is None and KV.needs_growth(cache, 1):
+        # generate() grows a growable cache before the step (reuse_kept_cache._prepare_inputs); a forward that
+        # did not would move its tensors to the next bucket inside this step: eager, the next step captures.
+        reason = "kv cache grows"
     if reason is not None:
         return _refusal(state, reason)
     device = getattr(model, "device", None)
@@ -1673,7 +1749,13 @@ def decode_step(
         # Their static buffers could not be refilled outside inference mode.
         return _refusal(state, "inference tensor outside inference mode")
     layout = tuple(
-        (type(layer).__name__, layer.max_cache_len, tuple(layer.keys.shape), layer.keys.dtype)
+        (
+            type(layer).__name__,
+            # A growable layer's limit is not part of its step (it may rise between calls); its bucket is.
+            layer.capacity if type(layer) is KV.GrowableLayer else layer.max_cache_len,
+            tuple(layer.keys.shape),
+            layer.keys.dtype,
+        )
         for layer in cache.layers
     )
     # Ambient autocast incl. cache flag (Dynamo guards on it); cached casts outlive end() in generate().
@@ -1690,11 +1772,12 @@ def decode_step(
     if refused is not None:
         return _refusal(state, refused)
     # Graphs address this cache's tensors: a new cache re-captures; one reordered in place stays eager.
-    cache_sig = (id(cache),) + tuple(
+    # A growable cache's growth epoch: tensors that moved because it grew re-capture, others refuse.
+    cache_sig = (id(cache), KV.epoch(cache)) + tuple(
         (layer.keys.data_ptr(), layer.values.data_ptr()) for layer in cache.layers
     )
     if cache_sig != state.cache_sig:
-        moved = state.cache_sig is not None and state.cache_sig[0] == id(cache)
+        moved = state.cache_sig is not None and state.cache_sig[:2] == cache_sig[:2]
         state.clear()
         if moved or state.moved == id(cache):
             state.moved = id(cache)
