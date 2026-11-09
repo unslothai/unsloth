@@ -63,13 +63,69 @@ class _TinyGemma(nn.Module):
 BASE = "Lightricks/LTX-2.5-Diffusers"
 
 
-def test_unset_request_keeps_the_dense_encoder(monkeypatch):
-    # int8 is opt-in for LTX-2.5: an unset request stages no hosted file and keeps the dense text_encoder/ shards.
+def _confirmed(monkeypatch, value):
+    from core.inference import diffusion_te_prequant as tpq
+
+    calls = []
+
+    def _fake(sources, **_kw):
+        calls.append(tuple(sorted(sources)))
+        return value
+
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", _fake)
+    return calls
+
+
+def test_unset_request_takes_the_hosted_file_only_when_confirmed(monkeypatch):
+    # Auto takes the hosted int8 file when it is on disk or listed by the Hub, else keeps the dense shards (bf16).
     monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
+    calls = _confirmed(monkeypatch, True)
+    for mode in (None, "auto", ""):
+        assert v25.ltx25_te_prequant_sources(mode, BASE)["text_encoder"].filename == (
+            v25.LTX25_TE_HOSTED_FILE
+        )
+    assert calls == [("text_encoder",)] * 3
+    _confirmed(monkeypatch, False)
     for mode in (None, "auto", ""):
         assert v25.ltx25_te_prequant_sources(mode, BASE) == {}
+    # An explicit int8 never needs the confirmation: a miss falls back to the at-load quantization.
+    assert v25.ltx25_te_prequant_sources("int8", BASE)["text_encoder"].filename == (
+        v25.LTX25_TE_HOSTED_FILE
+    )
+    # Kill switch: the bf16 auto from before the hosted file, confirmed or not.
+    calls = _confirmed(monkeypatch, True)
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
     assert v25.ltx25_te_prequant_sources(None, BASE) == {}
+    assert v25.ltx25_te_prequant_sources("auto", BASE) == {}
+    assert calls == []
+    # Auto on a custom pack / the single-file release never takes it either.
+    monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
+    assert v25.ltx25_te_prequant_sources(None, "someone/LTX-2.5-Diffusers") == {}
+    assert v25.ltx25_te_prequant_sources(None, v25.LTX25_SINGLE_FILE_REPO) == {}
+
+
+def test_resolve_settles_the_automatic_pick_per_load(monkeypatch):
+    monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
+    _confirmed(monkeypatch, True)
+    for mode in (None, "auto"):
+        resolved = v25.ltx25_resolve_te_request(mode, BASE)
+        assert resolved == "int8"
+        assert v25.ltx25_te_quant_scheme(resolved) == "int8"
+    # A pre-fetch that could not get the file keeps bf16, never the at-load quantization.
+    failed = v25.ltx25_resolve_te_request(None, BASE, {"text_encoder": "EntryNotFoundError: 404"})
+    assert failed == "none" and v25.ltx25_te_quant_scheme(failed) is None
+    assert v25.ltx25_resolve_te_request(None, BASE, {"text_encoder_2": "x"}) == "int8"
+    _confirmed(monkeypatch, False)
+    assert v25.ltx25_resolve_te_request(None, BASE) == "none"
+    assert v25.ltx25_resolve_te_request("auto", "someone/ltx25-pack") == "none"
+    # Explicit requests are untouched: int8 keeps its hosted-else-at-load path, off / none keep bf16.
+    for mode in ("int8", "none", "off", "fp8"):
+        assert v25.ltx25_resolve_te_request(mode, BASE, {"text_encoder": "x"}) == mode
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
+    assert v25.ltx25_resolve_te_request(None, BASE) is None
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
+    assert v25.ltx25_resolve_te_request(None, BASE) is None
+    assert v25.ltx25_te_quant_scheme(v25.ltx25_resolve_te_request(None, BASE)) == "int8"
 
 
 def test_int8_request_resolves_to_the_hosted_file(monkeypatch):
@@ -109,10 +165,17 @@ def test_the_video_planner_stages_the_hosted_file(monkeypatch):
     from core.inference.video_families import detect_video_family
 
     monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
+    _confirmed(monkeypatch, False)
     fam = detect_video_family(BASE)
     sources = VideoBackend._te_prequant_sources(fam, "int8", base = BASE)
     assert sources["text_encoder"].filename == v25.LTX25_TE_HOSTED_FILE
     assert VideoBackend._te_prequant_sources(fam, None, base = BASE) == {}
+    assert VideoBackend._te_prequant_sources(fam, "none", base = BASE) == {}
+    # Confirmed, the unset request stages the hosted file too (and so drops the dense text_encoder/ shards).
+    _confirmed(monkeypatch, True)
+    assert VideoBackend._te_prequant_sources(fam, None, base = BASE)["text_encoder"].filename == (
+        v25.LTX25_TE_HOSTED_FILE
+    )
     assert VideoBackend._te_prequant_sources(fam, "none", base = BASE) == {}
 
 

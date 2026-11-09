@@ -425,7 +425,7 @@ def video_te_quant_request(
     that cannot run it (fp8 below cc 8.9, a hosted file that is not there) gets the dense encoder, never a refusal.
 
     Two limits on the automatic pick, never on an explicit scheme: Speed="off" is bit-exact, so it keeps the released
-    encoder (LTX-2.5's raw unset included, which takes int8 under UNSLOTH_LTX25_TE_INT8=1); and only an exactly identified official
+    encoder (LTX-2.5's raw unset included, which otherwise takes the hosted int8 encoder); and only an exactly identified official
     ``base`` takes the hosted file, so a custom pack that merely shares the folder name keeps its own weights."""
     unset = text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto")
     auto_scheme = getattr(fam, "te_quant_auto", None)
@@ -9074,6 +9074,14 @@ class VideoBackend:
             base = repo_id if kind == "pipeline" else base,
             speed_mode = speed_mode,
         )
+        if fam.name == "ltx-2.5":
+            # Settle auto once so the memory plan and the encoder worker read one decision.
+            from .video_ltx25 import ltx25_resolve_te_request
+            text_encoder_quant = ltx25_resolve_te_request(
+                text_encoder_quant,
+                repo_id if kind == "pipeline" else base,
+                _te_prequant_failed,
+            )
         # An automatic pick whose hosted pre-cast encoder could not be fetched loads the dense encoder: say so.
         te_auto_unavailable = auto_te_fetch_failure(
             fam, text_encoder_quant if text_encoder_quant_auto else None, _te_prequant_failed

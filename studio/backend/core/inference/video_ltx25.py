@@ -71,8 +71,8 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# int8 ConvRot (ComfyUI's LTX-2.5 encoder) is opt-in: its LPIPS vs bf16 sits above the compile floor. Unset keeps
-# bf16 unless UNSLOTH_LTX25_TE_INT8=1.
+# Auto takes the hosted int8 file only when confirmed, else bf16 (never quantizes at load). A100-40 LPIPS vs bf16
+# 0.133 (bf16 encoder 0.141), peak host 71 -> 52 GiB. Env =0 keeps bf16 auto, =1 makes auto an explicit int8.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
@@ -709,13 +709,16 @@ def encoder_resident_for_plan(plan: Any) -> bool:
 
 
 def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
-    """``"int8"`` or None (bf16); any other scheme raises ValueError (the worker has only the ConvRot INT8 build)."""
-    from .diffusion_precision import normalize_te_quant, te_quant_is_auto
+    """``"int8"``, None (bf16) or ``AutoTeQuant("int8")`` for auto; other schemes raise ValueError."""
+    from .diffusion_precision import AutoTeQuant, normalize_te_quant, te_quant_is_auto
 
     if te_quant_is_auto(text_encoder_quant):
-        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in _ON:
+        env = (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower()
+        if env in _ON:
             return LTX25_TE_QUANT_DEFAULT
-        return None
+        if env in _OFF:
+            return None
+        return AutoTeQuant(LTX25_TE_QUANT_DEFAULT)
     scheme = normalize_te_quant(text_encoder_quant)
     if scheme is None or scheme == LTX25_TE_QUANT_DEFAULT:
         return scheme
@@ -733,13 +736,15 @@ def ltx25_te_prequant_sources(
     The video backend's pre-cast planner asks this for LTX-2.5, so the hosted file is fetched with the load's progress
     and cancel, and only a file that resolves drops the dense ``text_encoder/`` shards. Pack loads of the base the file
     was cut from only: the single-file release reads its text projections out of its own encoder file, and a custom
-    pack may carry other weights. Pure, never raises."""
+    pack may carry other weights. An automatic pick also needs the file confirmed. Never raises."""
     try:
-        if ltx25_te_quant_scheme(text_encoder_quant) != LTX25_TE_QUANT_DEFAULT:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+        if scheme != LTX25_TE_QUANT_DEFAULT:
             return {}
         if not base or is_ltx25_single_file_base(base):
             return {}
         from .diffusion_families import canonical_base
+        from .diffusion_precision import AutoTeQuant
         from .diffusion_te_prequant import TePrequantSource
         from .model_ids import hf_cache_repo_id
 
@@ -749,13 +754,54 @@ def ltx25_te_prequant_sources(
         identity = hf_cache_repo_id(str(base)) or str(base)
         if canonical_base(identity).lower() != canonical_base(LTX25_TE_HOSTED_BASE).lower():
             return {}
-        return {
+        sources = {
             "text_encoder": TePrequantSource(
                 kind = "repo", location = LTX25_TE_HOSTED_REPO, filename = LTX25_TE_HOSTED_FILE
             )
         }
+        if isinstance(scheme, AutoTeQuant):
+            from .diffusion_te_prequant import te_prequant_sources_confirmed
+            if not te_prequant_sources_confirmed(sources):
+                return {}
+        return sources
     except Exception:  # noqa: BLE001 -- no hosted encoder: the worker quantizes the dense one
         return {}
+
+
+def ltx25_resolve_te_request(
+    text_encoder_quant: Optional[str],
+    base: Optional[str],
+    failures: Optional[dict] = None,
+) -> Optional[str]:
+    """The request a load hands its plan and its worker: an automatic int8 pick becomes ``"int8"`` when the hosted
+    file serves this load, else ``"none"`` (bf16, never the at-load quantization). ``failures`` is the pre-fetch's
+    ``{component: reason}``: a hosted file that could not be fetched keeps bf16. Anything else comes back unchanged."""
+    from .diffusion_precision import AutoTeQuant
+
+    try:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return text_encoder_quant
+    if not isinstance(scheme, AutoTeQuant):
+        return text_encoder_quant
+    if failures and "text_encoder" in failures:
+        logger.info(
+            "video.ltx25_te: hosted int8 ConvRot encoder not fetched (%s); the bf16 text encoder loads",
+            failures["text_encoder"],
+        )
+        return "none"
+    if not ltx25_te_prequant_sources(text_encoder_quant, base):
+        logger.info(
+            "video.ltx25_te: hosted int8 ConvRot encoder not available for '%s'; the bf16 text encoder loads",
+            base,
+        )
+        return "none"
+    logger.info(
+        "video.ltx25_te: int8 ConvRot encoder selected automatically (hosted %s/%s)",
+        LTX25_TE_HOSTED_REPO,
+        LTX25_TE_HOSTED_FILE,
+    )
+    return LTX25_TE_QUANT_DEFAULT
 
 
 def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
