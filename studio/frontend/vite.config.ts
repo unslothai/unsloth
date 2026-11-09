@@ -104,6 +104,16 @@ export default defineConfig({
         find: /^react-remove-scroll$/,
         replacement: path.resolve(__dirname, "./src/lib/remove-scroll.tsx"),
       },
+      // assistant-ui's tap re-rendered every message client on each streamed token (O(messages) per
+      // token); the stand-in skips unchanged children (src/lib/assistant-ui-tap-resources.ts).
+      {
+        find: /^@assistant-ui\/tap$/,
+        replacement: path.resolve(__dirname, "./src/lib/assistant-ui-tap.ts"),
+      },
+      {
+        find: /^@assistant-ui\/tap\/react$/,
+        replacement: path.resolve(__dirname, "./src/lib/assistant-ui-tap-react.ts"),
+      },
     ],
   },
   build: {
