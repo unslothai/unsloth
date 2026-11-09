@@ -698,6 +698,8 @@ export const he = {
       "סגירת חלון זה לא עוצרת את ההגדרה. התוצאה תוצג בהגדרות > אבטחה.",
   },
   composerSettings: {
+    shareDraft: "שיתוף טיוטות בין שיחות",
+    shareDraftDescription: "שימוש בטיוטה אחת בשיחות ובהשוואה. כבוי כברירת מחדל; כל שיחה שומרת טיוטה משלה.",
     title: "עורך ההודעות",
     plainText: "עורך טקסט פשוט",
     plainTextDescription:
@@ -1730,6 +1732,13 @@ export const he = {
         audioUploadCancel: "ביטול תמלול",
         audioUploadTranscribing: "מתמלל אודיו…",
         sectionTitle: "הכתבה",
+        micTargetLabel: "כפתור המיקרופון",
+        micTargetAsr: "תמלול באמצעות ASR",
+        micTargetModel: "שליחת שמע למודל",
+        micTargetAsrDescription: "כפתור המיקרופון מקליד את מה שאתם אומרים בתיבת ההודעה.",
+        micTargetModelDescription: "כאשר טעון מודל שמקבל קלט שמע, המיקרופון מקליט קטע ומצרף אותו להודעה. מודלים אחרים ממשיכים לקבל הכתבה.",
+        micTargetModelUnavailable: "טענו מודל שמקבל קלט שמע (לדוגמה LFM3-Omni) כדי לשלוח לו את הקול שלכם.",
+        micRecordForModel: "הקלטת שמע למודל",
         engineLabel: "מנוע הכתבה",
         engineBrowser: "דפדפן",
         engineBrowserDescription:
@@ -1753,6 +1762,13 @@ export const he = {
         sttQuantDescription:
           "בחר או חפש מודל STT להרצה מקומית, ואז את הקוונטיזציה שלו.",
         sttDeviceLabel: "טען אל",
+        sttContextLabel: "הקשר קולי",
+        sttContextAuto: "אוטומטי (מומלץ)",
+        sttContextAutoDescription:
+          "מתאים את גודל ההקשר לכל הקלטה, ומשתמש ביותר זיכרון להקלטות ארוכות יותר. בסביבות ריצה ישנות ייתכן שיהיה צורך בגודל קבוע כדי להפחית את השימוש בזיכרון. חל על Qwen3-ASR ב״קול״ וב״תמלול״.",
+        sttContextFixedDescription:
+          "מגבלות קטנות יותר צורכות פחות זיכרון. להקלטות שחורגות מהמגבלה יש לבחור מגבלה גבוהה יותר או מצב אוטומטי. חל על Qwen3-ASR ב״קול״ וב״תמלול״.",
+        sttContextTokens: "{count} טוקנים",
         sttDeviceAuto: "GPU כאשר זמין",
         sttDeviceCpu: "זיכרון RAM של ה-CPU",
         sttDeviceAutoDescription: "השתמש ב-GPU כאשר קיים, וב-CPU במקרים אחרים.",
@@ -3258,12 +3274,10 @@ export const he = {
       exportingAction: "מייצא...",
       exportConversations: "ייצוא אחרונים ופרויקטים",
       exportConversationsDescription:
-        "הורד צ'אטים מ'אחרונים' או מ'אחרונים ופרויקטים' בפורמט Training JSONL, CSV, ShareGPT JSONL או Markdown, כקובץ מאוחד או לכל צ'אט בנפרד. Message JSONL זמין לכל צ'אט בנפרד.",
+        "הורד צ'אטים מ'אחרונים' או מ'אחרונים ופרויקטים' בפורמט Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML או PDF, כקובץ מאוחד או לכל צ'אט בנפרד. Message JSONL זמין לכל צ'אט בנפרד.",
       exportConversationsAction: "ייצוא",
       exportScopeRecents: "אחרונים",
       exportScopeAll: "אחרונים + פרויקטים",
-      exportCombinedSuffix: "(משולב)",
-      exportPerChatSuffix: "(לכל צ'אט)",
       importChats: "ייבוא צ'אטים",
       importChatsDescription:
         "ייבא קובצי JSON, JSONL, NDJSON, CSV או Markdown אל 'אחרונים'.",

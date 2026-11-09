@@ -365,9 +365,7 @@ class _Shared:
 
 
 def _static_like(t: Any) -> Any:
-    """A buffer the compiled block cannot tell from ``t``: same shape, stride, dtype, inference mode AND storage
-    offset (a view such as Qwen-Image-2.1's ``full[:, prefix_len:]`` is guarded on its offset; a fresh tensor at
-    offset 0 recompiles the block)."""
+    """Buffer must match t in shape, stride, dtype, inference mode and offset, or the block recompiles"""
     torch = _torch()
     shape, stride, offset = tuple(t.shape), tuple(t.stride()), int(t.storage_offset())
     extent = 0 if t.numel() == 0 else 1 + sum((n - 1) * st for n, st in zip(shape, stride) if n > 0)
@@ -724,6 +722,20 @@ def segment_graphs_disabled() -> bool:
     return (os.environ.get(SEGMENT_GRAPHS_ENV) or "").strip().lower() in _OFF
 
 
+# 0: a segment whose blocks carry an armed NVFP4 step schedule stays per block for the whole run (the old behaviour).
+SEGMENT_PROTECT_ENV = "UNSLOTH_DIFFUSION_SEGMENT_GRAPHS_PROTECT"
+
+
+def segment_protect_fallback_enabled() -> bool:
+    """Default on: only the protected (W4A16) steps leave the segment; the W4A4 steps keep replaying it."""
+    return (os.environ.get(SEGMENT_PROTECT_ENV) or "").strip().lower() not in _OFF
+
+
+def _protect_live(controller: Any) -> bool:
+    """The layers run W4A16 exactly when ``armed and protected``."""
+    return bool(getattr(controller, "armed", False) and getattr(controller, "protected", False))
+
+
 class _SegRecord:
     """One eager pass over a segment: each block's call layout, where each of its input tensors came from (an earlier
     block's output, or one of the first block's inputs), and its output layout."""
@@ -741,9 +753,7 @@ class _SegEntry:
 
 
 def _root_key_extra(root: Any) -> Any:
-    """The root's per-call branch state (``diffusion_cuda_graph.GRAPH_KEY_EXTRA_ATTR``, e.g. HunyuanVideo-1.5's
-    null-mask flag a pre-hook sets): part of every block and segment key, as of the whole-step graph's, so a recording
-    made on one branch never replays for the other. None without one."""
+    """Branch state (GRAPH_KEY_EXTRA_ATTR) keys block graphs, so branches never replay each other's."""
     from .diffusion_cuda_graph import GRAPH_KEY_EXTRA_ATTR
 
     extra = getattr(root, GRAPH_KEY_EXTRA_ATTR, None) if root is not None else None
@@ -815,6 +825,7 @@ class SegmentGraph:
             "segment_breaks": 0,
             "segment_refusals": 0,
             "segment_fallbacks": 0,
+            "segment_protected_steps": 0,
         }
         for i, g in enumerate(self.graphs):
             g.segment = self
@@ -887,14 +898,29 @@ class SegmentGraph:
             t.device.index != self.shared.device_index for t in live
         ):
             return _NOT_HANDLED
+        controller = None
         for g in self.graphs:
             if g.protect is None:
                 g.protect = g._protect_controller()
-            if g.poisoned or g.churned or g.bypassed or g.protect:
+            if g.poisoned or g.churned or g.bypassed:
                 return _NOT_HANDLED
+            if g.protect:
+                if not segment_protect_fallback_enabled():
+                    return _NOT_HANDLED
+                controller = controller or g.protect
+        if controller is not None and any(
+            _protect_live(g.protect) for g in self.graphs if g.protect
+        ):
+            # W4A16 step: per block for this forward only; it writes no state a W4A4 recording reads.
+            self.stats["segment_protected_steps"] += 1
+            return _NOT_HANDLED
         placement = self._placement()
         if placement is None:
             return _NOT_HANDLED
+        if controller is not None:
+            # Keyed by branch so a recording only replays at the branch it recorded.
+            from .diffusion_cuda_graph import protect_graph_key
+            placement = (placement, protect_graph_key(controller))
         full = (key, placement) if extra is None else (key, placement, extra)
         if full in self.refused:
             return _NOT_HANDLED
@@ -1115,8 +1141,7 @@ class SegmentGraph:
 
 
 def _segments(transformer: Any, graphs: list) -> list:
-    """Runs of at least two armed blocks a layer split keeps on one card, back to back in one block list (forward
-    order), as (graphs, shared) pairs."""
+    """Runs of two or more armed blocks on one card, in forward order, as (graphs, shared) pairs."""
     try:
         from .diffusion_layer_split import find_blocks
     except Exception:  # noqa: BLE001
@@ -1159,12 +1184,7 @@ def _is_original_forward(fn: Any, module: Any) -> bool:
 
 
 def _own_forward(fn: Any, module: Any) -> Any:
-    """``module``'s live class ``forward`` (bound) when ``fn`` is the forward a hook captured from it, else None.
-
-    A hook registered before a class-level patch of ``forward`` (the deferred profile's per-arch fusions land on
-    render 3, after group offload hooked every block at load) still holds the class's own definition-time forward.
-    That is the same callable slot, so it is matched too, and the live (patched) forward is what runs below the hook,
-    exactly as when the patch came first."""
+    """Live class forward for a hook that captured the original before a class-level patch, else None."""
     if getattr(fn, "__self__", None) is not module:
         return None
     func = getattr(fn, "__func__", None)

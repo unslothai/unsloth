@@ -439,6 +439,7 @@ from datetime import datetime
 
 from routes import (
     auth_router,
+    chat_export_router,
     chat_history_router,
     data_recipe_router,
     datasets_router,
@@ -466,6 +467,7 @@ from routes.llama import router as llama_router
 from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
+from routes.video_restyle import router as video_restyle_router
 from routes.npu import router as npu_router
 from routes.preview import router as preview_router
 from hub.routes import (
@@ -1015,9 +1017,8 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
 
     try:
-        # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
-        # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
-        # expired.
+        # Boot pass settles only orphaned runs; a wedged run is swept on an interval once its lease
+        # expires.
         from core.inference.chat_generation_runs import start_lease_sweeper
         start_lease_sweeper(app)
     except Exception as exc:
@@ -1252,8 +1253,7 @@ def _decisions_on_at_startup() -> bool:
     return systemone_settings.get_enabled()
 
 
-# Built on first request, or at startup when switched on: fastmcp is most of a second of import.
-# Mounted ahead of /mcp, which would otherwise swallow this path.
+# Built lazily since fastmcp is slow to import; mounted ahead of /mcp, which would swallow it.
 _decisions_mcp_app = LazyLifespanApp(
     _build_decisions_mcp_app, wanted_at_startup = _decisions_on_at_startup
 )
@@ -1602,6 +1602,7 @@ from utils.upload_limits import (  # noqa: E402
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
+    VIDEO_RESTYLE_UPLOAD_MAX_BYTES,
     audio_input_max_bytes,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
@@ -1654,6 +1655,10 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+_VIDEO_RESTYLE_UPLOAD_PATHS = (
+    "/api/inference/video/restyle",
+    "/api/inference/video/restyle/preview",
+)
 # RAG document uploads (knowledge base, thread, project, extract-text): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
 # spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
 _RAG_DOCUMENT_UPLOAD_RE = _re.compile(
@@ -1677,6 +1682,7 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
+    *_VIDEO_RESTYLE_UPLOAD_PATHS,
     _OPENAI_FILES_UPLOAD_PATH,
 )
 # Runs before auth, so only small bounded uploads may omit Content-Length; others keep 411.
@@ -1695,6 +1701,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         )
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_RESTYLE_UPLOAD_PATHS:
+        return upload_request_limit_bytes(VIDEO_RESTYLE_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         # None means no cap, as the route treats it.
         cap = audio_input_max_bytes()
@@ -2090,6 +2098,7 @@ app.include_router(
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(chat_export_router, prefix = "/api/chat-export", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(
     chat_generation_runs_router,
@@ -2103,6 +2112,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
 app.include_router(video_openai_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_restyle_router, prefix = "/api/inference", tags = ["inference"])
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
@@ -2264,6 +2274,7 @@ def _torch_warm_in_progress() -> bool:
 # generation_in_flight() modules: engines cover renders; routes.inference covers image persistence.
 _MEDIA_BACKEND_MODULES = (
     "core.inference.video",
+    "core.inference.video_restyle",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
     "core.inference.mlx_diffusion_backend",
@@ -2565,11 +2576,8 @@ def _schedule_shutdown(request: Request) -> dict:
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            # On its own thread, like the signal path: the cleanup waits seconds on subprocesses
-            # (llama-server alone up to 5 s SIGTERM + 5 s SIGKILL), and run on this loop it kept
-            # uvicorn from closing the port until all of it was done. The main thread still waits
-            # for it (_shutdown_event) before the process exits. One cleanup per launch: keyed by
-            # the trigger, since an embedded host's next run_server() installs a new one.
+            # Runs cleanup on its own thread so uvicorn can close the port; main thread still waits
+            # on _shutdown_event before exit; one cleanup per shutdown trigger.
             with _shutdown_thread_lock:
                 state = request.app.state
                 if getattr(state, "_shutdown_trigger", None) is not trigger:

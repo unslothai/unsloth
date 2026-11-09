@@ -745,6 +745,8 @@ export const fa = {
       "بستن این پنجره راه‌اندازی را متوقف نمی‌کند. نتیجهٔ آن در «تنظیمات > امنیت» نمایش داده می‌شود.",
   },
   composerSettings: {
+    shareDraft: "اشتراک‌گذاری پیش‌نویس‌ها بین گفتگوها",
+    shareDraftDescription: "از یک پیش‌نویس برای گفتگوها و مقایسه استفاده کنید. به‌طور پیش‌فرض خاموش است؛ هر گفتگو پیش‌نویس خودش را نگه می‌دارد.",
     title: "کادر نوشتن",
     plainText: "کادر نوشتن متن ساده",
     plainTextDescription:
@@ -1819,6 +1821,13 @@ export const fa = {
         audioUploadCancel: "لغو رونویسی",
         audioUploadTranscribing: "در حال رونویسی صدا…",
         sectionTitle: "دیکته",
+        micTargetLabel: "دکمه میکروفون",
+        micTargetAsr: "رونویسی با ASR",
+        micTargetModel: "ارسال صدا به مدل",
+        micTargetAsrDescription: "دکمه میکروفون آنچه می‌گویید را در کادر پیام تایپ می‌کند.",
+        micTargetModelDescription: "وقتی مدلی با ورودی صوتی بارگذاری شده باشد، میکروفون یک کلیپ ضبط کرده و به پیام شما پیوست می‌کند. مدل‌های دیگر همچنان دیکته دریافت می‌کنند.",
+        micTargetModelUnavailable: "برای ارسال صدای خود، مدلی را بارگذاری کنید که ورودی صوتی می‌پذیرد (برای مثال LFM3-Omni).",
+        micRecordForModel: "ضبط صدا برای مدل",
         engineLabel: "موتور دیکته",
         engineBrowser: "مرورگر",
         engineBrowserDescription:
@@ -1844,6 +1853,13 @@ export const fa = {
         sttQuantDescription:
           "یک مدل STT را برای اجرای محلی انتخاب یا جستجو کنید، سپس کوانتیزه‌سازی آن را.",
         sttDeviceLabel: "بارگذاری در",
+        sttContextLabel: "زمینهٔ صدا",
+        sttContextAuto: "خودکار (پیشنهادی)",
+        sttContextAutoDescription:
+          "با هر ضبط تنظیم می‌شود و برای صدای طولانی‌تر حافظهٔ بیشتری مصرف می‌کند. محیط‌های اجرای قدیمی‌تر ممکن است برای کاهش حافظه به اندازهٔ ثابت نیاز داشته باشند. برای Qwen3-ASR در صدا و رونویسی اعمال می‌شود.",
+        sttContextFixedDescription:
+          "محدودیت‌های کوچک‌تر حافظهٔ کمتری مصرف می‌کنند. ضبط‌هایی که جا نمی‌شوند به محدودیت بالاتر یا خودکار نیاز دارند. برای Qwen3-ASR در صدا و رونویسی اعمال می‌شود.",
+        sttContextTokens: "{count} توکن",
         sttDeviceAuto: "GPU در صورت وجود",
         sttDeviceCpu: "RAM پردازنده (CPU)",
         sttDeviceAutoDescription:
@@ -3422,12 +3438,10 @@ export const fa = {
       exportingAction: "در حال خروجی گرفتن...",
       exportConversations: "خروجی گرفتن از «اخیر» و «پروژه‌ها»",
       exportConversationsDescription:
-        "«اخیر» یا «اخیر» به‌همراه گفتگوهای پروژه را به‌صورت Training JSONL، CSV، ShareGPT JSONL یا Markdown، ترکیبی یا جداگانه برای هر گفتگو دانلود کنید. Message JSONL فقط به‌صورت جداگانه برای هر گفتگو در دسترس است.",
+        "«اخیر» یا «اخیر» به‌همراه گفتگوهای پروژه را به‌صورت Training JSONL، CSV، ShareGPT JSONL، Markdown، HTML یا PDF، ترکیبی یا جداگانه برای هر گفتگو دانلود کنید. Message JSONL فقط به‌صورت جداگانه برای هر گفتگو در دسترس است.",
       exportConversationsAction: "خروجی گرفتن",
       exportScopeRecents: "اخیر",
       exportScopeAll: "اخیر + پروژه‌ها",
-      exportCombinedSuffix: "(ترکیبی)",
-      exportPerChatSuffix: "(برای هر گفتگو)",
       importChats: "وارد کردن گفتگوها",
       importChatsDescription:
         "فایل‌های JSON، JSONL، NDJSON، CSV یا Markdown را به «اخیر» وارد کنید.",

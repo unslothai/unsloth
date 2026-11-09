@@ -306,6 +306,48 @@ class VideoGenerationPresetParams(BaseModel):
     audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
 
 
+class TrainingPresetParams(BaseModel):
+    """Image LoRA training form. Numbers carry no bounds: the form autosaves mid-edit, and
+    DiffusionTrainingStartRequest validates them on Start."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    familyName: str = Field(default = "", max_length = 80)
+    baseChoice: str = Field(default = "", max_length = 1024)
+    customBase: str = Field(default = "", max_length = 4096)
+    durationUnit: Literal["steps", "epochs"] = "steps"
+    steps: float = Field(default = 500, allow_inf_nan = False)
+    epochs: float = Field(default = 10, allow_inf_nan = False)
+    learningRate: float = Field(default = 0.0001, allow_inf_nan = False)
+    rank: float = Field(default = 16, allow_inf_nan = False)
+    resolution: float = Field(default = 768, allow_inf_nan = False)
+    batchSize: float = Field(default = 1, allow_inf_nan = False)
+    gradAccum: float = Field(default = 1, allow_inf_nan = False)
+    seed: float = Field(default = 42, allow_inf_nan = False)
+    saveSteps: float = Field(default = 0, allow_inf_nan = False)
+    sampleEvery: float = Field(default = 0, allow_inf_nan = False)
+    saveTotalLimit: float = Field(default = 2, allow_inf_nan = False)
+    lrScheduler: Literal[
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    ] = "constant"
+    lrWarmupSteps: float = Field(default = 0, allow_inf_nan = False)
+    gradCheckpoint: bool = True
+    bucketing: bool = True
+    randomFlip: bool = False
+    cfgDropout: float = Field(default = 0, allow_inf_nan = False)
+    loraDropout: float = Field(default = 0, allow_inf_nan = False)
+    flowShiftMode: Literal["default", "custom"] = "default"
+    flowShift: float = Field(default = 3, allow_inf_nan = False)
+    precision: Literal["bf16", "fp16", "no"] = "bf16"
+    basePrecision: Literal["nf4", "bf16", "int8", "fp8", "mxfp8", "auto"] = "auto"
+    compileTransformer: Literal["off", "on", "auto"] = "auto"
+
+
 class MediaGenerationPreset(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -326,6 +368,10 @@ class ImageGenerationPreset(MediaGenerationPreset):
 
 class VideoGenerationPreset(MediaGenerationPreset):
     params: VideoGenerationPresetParams
+
+
+class TrainingPreset(MediaGenerationPreset):
+    params: TrainingPresetParams
 
 
 class MediaGenerationPresetState(BaseModel):
@@ -349,6 +395,10 @@ class VideoGenerationPresetState(MediaGenerationPresetState):
     currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
 
 
+class TrainingPresetState(MediaGenerationPresetState):
+    currentParams: TrainingPresetParams = Field(default_factory = TrainingPresetParams)
+
+
 class ImageGenerationPresetSettings(ImageGenerationPresetState):
     # No cap on read: upsert_media_generation_preset owns the limit; a cap here would 500 the GET.
     customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
@@ -357,6 +407,11 @@ class ImageGenerationPresetSettings(ImageGenerationPresetState):
 
 class VideoGenerationPresetSettings(VideoGenerationPresetState):
     customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+class TrainingPresetSettings(TrainingPresetState):
+    customPresets: list[TrainingPreset] = Field(default_factory = list)
     saved: bool = False
 
 
@@ -547,8 +602,33 @@ def update_video_generation_preset_settings(
     return {"saved": True}
 
 
+@_account_settings_router.get(
+    "/generation-presets/training",
+    response_model = TrainingPresetSettings,
+)
+def get_training_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> TrainingPresetSettings:
+    return _get_generation_preset_settings("training", TrainingPresetSettings)
+
+
+@_account_settings_router.put("/generation-presets/training")
+def update_training_preset_settings(
+    payload: TrainingPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "training",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            TrainingPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
 def _upsert_custom_generation_preset(
-    kind: Literal["image", "video"], payload: ImageGenerationPreset | VideoGenerationPreset
+    kind: Literal["image", "video", "training"],
+    payload: ImageGenerationPreset | VideoGenerationPreset | TrainingPreset,
 ) -> dict[str, bool]:
     try:
         schema = type(payload)
@@ -576,9 +656,16 @@ def upsert_custom_video_generation_preset(
     return _upsert_custom_generation_preset("video", payload)
 
 
+@_account_settings_router.put("/generation-presets/training/custom")
+def upsert_custom_training_preset(
+    payload: TrainingPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("training", payload)
+
+
 @_account_settings_router.delete("/generation-presets/{kind}/custom")
 def delete_custom_generation_preset(
-    kind: Literal["image", "video"],
+    kind: Literal["image", "video", "training"],
     name: str,
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
@@ -2215,8 +2302,7 @@ def _last_local_model_key(subject: str) -> str:
 
 
 def _read_last_local_model(subject: str) -> "dict | None":
-    """The subject's record, falling back to the pre-scoping shared row so an
-    upgrade keeps the model the install already remembered."""
+    """Subject's record, else the pre-scoping shared row so upgrades keep the remembered model."""
     from storage.studio_db import get_app_setting
 
     stored = get_app_setting(_last_local_model_key(subject), None)
@@ -2662,9 +2748,7 @@ def _fallback_supplies_reasoning_flag(model_id: str, target_id: str) -> bool:
 
 
 def _owner_fallback_answers(model_id: str, target_id: str) -> bool:
-    """Whether a managed account's load for this model would fall through to the owner's row once its own
-    entry empties out. That fallback takes the owner's row whole, so a save left at the defaults has to keep
-    a row of its own or the account gets the owner's flags, context and layers back."""
+    """A defaults save keeps its own row, or the account inherits the owner's flags, context and layers."""
     from utils.openai_auto_switch_settings import cached_repo_alias_keys, get_model_override
 
     if is_owner_context():
@@ -2687,9 +2771,7 @@ def _owner_fallback_answers(model_id: str, target_id: str) -> bool:
 
 
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
-    """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
-    own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
-    forget the last one for the model"."""
+    """Whether another quant of bare_id keeps an entry; quants never read the bare fallback."""
     from utils.openai_auto_switch_settings import split_quant_suffix
 
     removed = {key.strip().lower() for key in removed_ids}
@@ -3414,9 +3496,8 @@ def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
 
 
 def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
-    """Whether a search hit names a conversion of exactly ``base``. Prefix matching is unsafe (``foo`` must
-    never resolve to ``foo-bar-GGUF``); the Hub filter already requires GGUF, so this accepts only the
-    common conversion suffix spellings and the exact model name."""
+    """Exact name or a common -gguf/_gguf/.gguf conversion suffix; prefix matching is unsafe (foo
+    must never match foo-bar-GGUF)."""
     name = hit_name.casefold()
     base = base.casefold()
     return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
@@ -3431,9 +3512,7 @@ def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
 
 
 def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
-    """``(repo, files)`` for a GGUF conversion of ``model`` published by the same owner under a name the -GGUF
-    candidates do not cover. Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
-    re-upload, and picking unsloth/X must download unsloth's own weights."""
+    """Same owner only: a third-party re-upload is unverified; unsloth/X must download its weights."""
     from core.rag import config as rag_config
 
     # Under an explicit repo override the loader cannot open a discovered mirror, so none is returned.
@@ -3548,8 +3627,7 @@ def _st_backend_available() -> bool:
 
 
 def _is_st_weight_name(basename: str) -> bool:
-    """Whether a filename is a checkpoint, not just something ending in a suffix. Shared with the loader
-    so the plan and the cache check cannot disagree."""
+    """Whether a filename is a checkpoint, not just a suffix match; shared with the loader so both agree."""
     from utils.utils import is_st_weight_name
     return is_st_weight_name(basename)
 

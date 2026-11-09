@@ -131,11 +131,15 @@ def test_appearance_check(base, mode, fails, monkeypatch):
 
 # Highest readings on the GitHub runners the gate runs on (identical code spans about 1.35x
 # between runs; 25 runs, 2026-11-07).
+# Scrolls pause the Glass blur (glass-motion.ts), so their worst readings dropped from 8.3x (thread)
+# and 14.0x (Settings) to at most 4.9x (local and runner runs of that change).
 RUNNER_READINGS = [
-    ("blurred", "thread_scroll", 8.3),
+    ("blurred", "thread_scroll", 4.9),
     (am.GLASS, "reasoning_toggle", 7.8),
-    ("blurred", "settings_scroll", 14.0),
-    ("frosted", "settings_scroll", 13.5),
+    ("blurred", "settings_scroll", 4.9),
+    ("frosted", "settings_scroll", 4.9),
+    # Before keys and presses paused the blur (main runner, Frontend CI 42610880257).
+    ("liquid", "type", 4.9),
 ]
 
 
@@ -461,3 +465,76 @@ def test_settings_ready_marker_is_set_from_inside_the_panel_suspense():
         "data-settings-panel=" not in src
     ), "a pane-level marker would read ready before the panel resolves"
     assert "data-settings-panel-ready=" in am.TABS and "data-settings-panel-failed" in am.TABS
+
+
+def _stream_result(pages):
+    return {"pages": pages, "modes": {m["name"]: m for m in am.app_modes()}, "areas": ["stream"]}
+
+
+@pytest.mark.parametrize(
+    "short, long_, fails",
+    # main reads 1.4-2.1x for a 2 s stream; 3x is the limit; a small absolute rise never fails
+    [(2500, 5200, False), (2500, 9000, True), (40, 180, False), (2500, 7400, False)],
+)
+def test_stream_is_judged_on_cpu_growth_with_the_chat(short, long_, fails):
+    cell = lambda cpu: {"elements": 1200, "layout_objects": 3000, "cpu_ms": cpu}
+    pages = {
+        (am.SHORT, "default"): _page({"stream": cell(short)}),
+        (am.LONG, "default"): _page({"stream": cell(long_)}),
+    }
+    rows = [
+        v
+        for v in am.judge(_stream_result(pages), known = "")
+        if v["kind"] == "length" and v["metric"] == "cpu_ms"
+    ]
+    assert [v["fail"] for v in rows] == [fails]
+    counts = [v for v in am.judge(_stream_result(pages), known = "") if v["metric"] == "elements"]
+    assert counts and not any(v["fail"] for v in counts), "flat counts never fail"
+
+
+def test_stream_area_is_last_sends_a_fixed_reply_and_waits_for_its_end():
+    assert list(am.AREAS)[-1] == "stream", "it adds a turn, so it runs after every other area"
+    spec = am.AREAS["stream"]
+    assert spec["setup"] == ("compose", am.STREAM_PROMPT)
+    assert spec["open"] == ("key", "Enter") and spec["ready"] == ("streamed", am.STREAM_END)
+    frames = am.stream_frames()
+    text = "".join(f["choices"][0]["delta"].get("content", "") for f in frames if "choices" in f)
+    assert text.rstrip().endswith(am.STREAM_END), "the end text is the last thing drawn"
+    assert "```python" in text and "- item 5" in text, "prose, a code fence and a list"
+    assert any(f["choices"][0]["delta"].get("reasoning_content") for f in frames if "choices" in f)
+    kinds = [f.get("type") for f in frames]
+    assert kinds.count("tool_start") == 1 and kinds.count("tool_end") == 1
+    assert frames[-1]["choices"][0]["finish_reason"] == "stop"
+    assert am.stream_frames() == frames, "deterministic"
+
+
+def test_the_stub_has_a_resident_model_and_saves_the_streamed_turn():
+    api = am.Api(2)
+    assert api.bodies["/api/inference/status"]["active_model"]
+
+    class Route:
+        def __init__(self, method, path):
+            self.request = type("R", (), {"method": method, "url": "http://x" + path})()
+            self.got = None
+
+        def fulfill(
+            self,
+            status,
+            content_type = None,
+            body = "",
+        ):
+            self.got = status
+
+    put = Route("PUT", f"/api/chat/threads/{api.rec['id']}/messages/abc")
+    api.handle(put)
+    assert put.got == 200
+    other = Route("PUT", "/api/chat/threads/other/messages")
+    api.handle(other)
+    assert other.got == 404, "only the seeded thread's saves are answered"
+
+
+def test_stream_wait_is_cheap_while_the_reply_streams():
+    # polled inside the measured window: no DOM walk until the shim has sent its last frame
+    body = am.STREAMED.split("if (!window.__gateStreamDone) return false;")
+    assert len(body) == 2 and "querySelector" not in body[0]
+    assert "__gateStreamDone = true" in am.STREAM_SHIM

@@ -176,9 +176,11 @@ def _teardown() -> None:
     for mod_name in (
         "diffusion_flux2_rope",
         "diffusion_flux3_rope",
+        "diffusion_flux3_half_attn",
         "diffusion_qwenimage_rope",
         "diffusion_zimage_fused",
         "diffusion_qwenimage21_fused",
+        "diffusion_flux_convrot_fused",
         "diffusion_rocm_fused",
         "diffusion_qwenimage21",
         "diffusion_qwenimage21_rope",
@@ -235,6 +237,9 @@ def legacy_entry(
         patches["qwenimage21_fast_step"] = _engaged(q21(pipe, None))
         patches["flux2_rope"] = _engaged(flux2(pipe, target.dtype, target.device, None))
         patches["flux3_rope"] = _engaged(flux3(pipe, target.device, None))
+        from core.inference.diffusion_flux3_half_attn import install_for_pipe as flux3_attn
+
+        patches["flux3_fp16_attn"] = _engaged(flux3_attn(pipe, target.device, speed, None))
         patches["rocm_fused"] = _engaged(rocm(pipe, target.dtype, target.device, None))
         applied = ds.apply_speed_optims(
             pipe,

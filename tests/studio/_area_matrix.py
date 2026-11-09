@@ -41,11 +41,14 @@ import re
 import threading
 import time
 from pathlib import Path
+
+import _appearance_coverage as cov
 from urllib.parse import urlparse
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "studio" / "frontend" / "src"
 MODEL_TS = SRC / "features" / "chat-background" / "model.ts"
+CUSTOM_TS = SRC / "features" / "settings" / "stores" / "appearance-custom-store.ts"
 SHORTCUTS_TS = SRC / "features" / "settings" / "lib" / "keyboard-shortcuts.ts"
 SETTINGS_STORE_TS = SRC / "features" / "settings" / "stores" / "settings-dialog-store.ts"
 
@@ -58,6 +61,9 @@ LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_LENGTH_RATIO", "2.0"))
 # Counts below this many elements / layout objects at LONG turns never fail the length check.
 COUNT_FLOOR = int(os.environ.get("LONG_THREAD_AREAS_COUNT_FLOOR", "3000"))
 MAX_RATIO = float(os.environ.get("LONG_THREAD_AREAS_MAX_RATIO", "4.0"))
+# Also judged on CPU growth with chat length: a streamed reply restyles only its own message, so its
+# element / layout counts stay flat while per-token work over the thread grows.
+CPU_LENGTH = {"stream": float(os.environ.get("LONG_THREAD_AREAS_STREAM_LENGTH_RATIO", "3.0"))}
 # CPU ms a mode must add on top of the ratio before it fails.
 CPU_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_CPU_FLOOR_MS", "150"))
 # Ratios are taken over at least this many ms of the base's CPU: a 20 ms click is not a fair yardstick.
@@ -65,20 +71,22 @@ CPU_BASE_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_CPU_BASE_FLOOR_MS", 
 RECHECKS = int(os.environ.get("LONG_THREAD_AREAS_RECHECKS", "2"))
 # At most this many mode pages are measured again (each loads only its failing areas).
 RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
-# Costs main already has (origin/main 42489f20e2: highest settled reading of 3 Colab runs pinned
-# to 4 CPUs and 7 runs on a loaded 36-core host), as `mode:area=ratio`, `mode:*=ratio`,
-# `length:area=ratio` or `count:area=elements` (elements restyled at LONG turns, replacing the length
-# ratio for that area). Each ceiling is about 1.2-1.3x the highest reading, so these may not get
-# worse while a new mode or area meets MAX_RATIO / LENGTH_RATIO. Glass: CPU raster of the
-# backdrop-filter on every repaint (on GitHub runners, main reads up to 13.5x scrolling Settings and
-# 7.8x on small areas). No area needs a count ceiling. Lower or drop an entry when its cause is fixed;
+# Costs main already has, as `mode:area=ratio`, `mode:*=ratio`, `length:area=ratio` or
+# `count:area=elements` (elements restyled at LONG turns, replacing the length ratio for that area).
+# These may not get worse while a new mode or area meets MAX_RATIO / LENGTH_RATIO. Glass: with
+# software compositing (the gate's headless Chromium; these ceilings assume it) every frame redraws
+# the window, so the sidebar's blur costs on any repaint: small areas up to 7.8x on GitHub runners.
+# glass-motion.ts swaps the blur for a plain fill while anything moves, so scrolling Settings reads
+# 1.4-4.5x (main 7.8-14.0x) and the thread 1.8-4.9x (main 4.6-8.3x); 7x leaves runner margin.
+# It also pauses through bursts of keys and presses: typing reads 1.3-1.7x locally (main 3.1-3.6x,
+# runners 4.1-4.9x before it); a message click 1.3-2.3x (main 2.9-3.7x) but noisy, so it keeps 10x.
 # LONG_THREAD_AREAS_KNOWN="" holds main to the plain limits.
+_GLASS_MODES = ("frosted", "blurred", "liquid", GLASS)
 KNOWN_DEFAULT = ",".join(
-    [f"{m}:*={r}" for m, r in (("frosted", 10), ("blurred", 10), ("liquid", 10), (GLASS, 10))]
-    + [
-        f"{m}:settings_scroll={r}"
-        for m, r in (("frosted", 18), ("blurred", 18), ("liquid", 18), (GLASS, 18))
-    ]
+    [f"{m}:*=10" for m in _GLASS_MODES]
+    + [f"{m}:thread_scroll=7" for m in _GLASS_MODES]
+    + [f"{m}:settings_scroll=7" for m in _GLASS_MODES]
+    + [f"{m}:type=6" for m in _GLASS_MODES]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 
@@ -119,6 +127,40 @@ def modes(materials: list[str], lens_modes: list[str]) -> list[dict]:
     out.append({"name": f"{GLASS}+menus-off", "base": GLASS, "set": {**on_glass, "menus": False}})
     out.append({"name": "solid+dark", "base": "default", "set": {**DEFAULT, "theme": "dark"}})
     out.append({"name": f"{GLASS}+dark", "base": GLASS, "set": {**on_glass, "theme": "dark"}})
+    # Costliest value of every other appearance setting (_appearance_coverage.py keeps this complete).
+    for name, base, setting in (("solid", "default", DEFAULT), (GLASS, GLASS, on_glass)):
+        out.append(
+            {
+                "name": f"{name}+custom",
+                "base": base,
+                "set": {**setting, "custom": dict(cov.CUSTOM_MEASURED)},
+                "expect": cov.CUSTOM_EXPECT,
+            }
+        )
+        out.append(
+            {
+                "name": f"{name}+wallpaper",
+                "base": base,
+                "set": {**setting, "wallpaper": dict(cov.WALLPAPER_MEASURED)},
+                "expect": cov.WALLPAPER_EXPECT,
+            }
+        )
+    out.append(
+        {
+            "name": "solid+palette",
+            "base": "default",
+            "set": {**DEFAULT, "palette": cov.PALETTE_MEASURED},
+            "expect": [f"data-palette={cov.PALETTE_MEASURED}"],
+        }
+    )
+    out.append(
+        {
+            "name": f"{GLASS}+strength-max",
+            "base": GLASS,
+            "set": {**on_glass, "strength": {"light": 100, "dark": 100}},
+            "expect": ["--glass-strength=2.000"],
+        }
+    )
     return out
 
 
@@ -139,11 +181,100 @@ def known_limits(text: str) -> dict[tuple[str, str], float]:
 # --- areas ---------------------------------------------------------------------------------------
 # name: {open, ready, close, gone, setup, teardown, covers}
 #   actions: ("key", chord) | ("click", css) | ("rclick", css) | ("hover", css) | ("js", expr) | ("type", text)
+#            | ("compose", text) the composer holds text (inserted at once)
 #            | ("scroll", where) | ("tabs", None) | None ; chords use Mod for Meta on macOS, Control elsewhere
 #   ready / gone: ("overlay",) a new visible dialog/menu/listbox | ("overlay_gone",) | ("sel", css) | ("gone", css)
-#                 | ("settle",) wait only
+#                 | ("settle",) wait only | ("streamed", text) a streamed reply ended with text
 #   setup / teardown run outside the measured window; covers: trigger keys (see trigger_key) it measures.
 # "last|css": inside the last assistant message; "js|expr": an expression returning the element.
+# Fixed frames at a fixed cadence, answered in-page, so every run renders the same tokens on the same clock.
+STREAM_PROMPT = "Explain the scheduler buffer in detail."
+# The model the stub reports resident (/api/inference/status); its chip is the model picker trigger.
+STUB_MODEL = "unsloth/Qwen3-4B"
+STREAM_END = "GATE-STREAM-END"
+STREAM_MS = 25
+
+
+def stream_frames() -> list[dict]:
+    """The reply as SSE payloads: reasoning, a web search tool call, prose, a code fence, a list."""
+
+    def delta(d: dict) -> dict:
+        return {
+            "id": "gate",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": STUB_MODEL,
+            "choices": [{"index": 0, "delta": d, "finish_reason": None}],
+        }
+
+    words = PARA.split(" ")
+    frames = [delta({"role": "assistant"})]
+    frames += [
+        delta({"reasoning_content": f"Step {k}: " + " ".join(words[:8]) + ". "}) for k in range(20)
+    ]
+    q = {"query": "scheduler buffer stream"}
+    frames.append(
+        {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "gate_ws", "arguments": q}
+    )
+    frames.append(
+        {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "gate_ws", "result": PARA}
+    )
+    for para in range(3):
+        frames += [
+            delta({"content": " ".join(words[i : i + 4]) + " "}) for i in range(0, len(words), 4)
+        ]
+        frames.append(delta({"content": "\n\n"}))
+    frames.append(delta({"content": "```python\n"}))
+    frames += [delta({"content": line + "\n"}) for line in CODE.splitlines()]
+    frames.append(delta({"content": "```\n\n"}))
+    frames += [delta({"content": f"- item {k}: {PARA[:60]}\n"}) for k in range(6)]
+    frames.append(delta({"content": f"\nDone. {STREAM_END}"}))
+    frames.append(
+        {
+            "id": "gate",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": STUB_MODEL,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+    )
+    return frames
+
+
+STREAM_TIMEOUT_MS = 30_000
+# Polled inside the measured window: no DOM walk until the shim has sent its last frame.
+STREAMED = """(end) => {
+  if (!window.__gateStreamDone) return false;
+  const all = document.querySelectorAll('[data-role="assistant"]');
+  const a = all[all.length - 1];
+  return !!a && (a.textContent || '').includes(end) && !document.querySelector('.aui-composer-cancel');
+}"""
+
+# Answers /v1/chat/completions from the page with STREAM's frames, one per STREAM_MS.
+STREAM_SHIM = """(([frames, ms]) => {
+  const realFetch = window.fetch.bind(window);
+  window.__gateStreams = 0;
+  window.fetch = (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (!/\\/v1\\/chat\\/completions(\\?|$)/.test(url)) return realFetch(input, init);
+    window.__gateStreams++;
+    window.__gateStreamDone = false;
+    const enc = new TextEncoder();
+    const out = frames.map((f) => 'data: ' + JSON.stringify(f) + '\\n\\n').concat(['data: [DONE]\\n\\n']);
+    let i = 0;
+    const body = new ReadableStream({
+      pull(ctrl) {
+        return new Promise((done) => setTimeout(() => {
+          if (i < out.length) ctrl.enqueue(enc.encode(out[i++]));
+          else { ctrl.close(); window.__gateStreamDone = true; }
+          done();
+        }, ms));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+  };
+})"""
+
 LAST = "last|"
 CODE_COPY = "js|(() => { const a = [...document.querySelectorAll('[data-role=\"assistant\"]')].pop(); const pre = a && a.querySelector('pre'); let n = pre; while (n && n !== a && !n.querySelector('button')) n = n.parentElement; return n && n !== a ? n.querySelector('button') : null; })()"
 AREAS: dict[str, dict] = {
@@ -215,7 +346,7 @@ AREAS: dict[str, dict] = {
         "ready": ("overlay",),
         "close": ("key", "Escape"),
         "gone": ("overlay_gone",),
-        "covers": ["popover-trigger:Select model"],
+        "covers": ["popover-trigger:Select model", f"popover-trigger:{STUB_MODEL.split('/')[-1]}"],
     },
     "composer_menu": {
         "open": ("key", "Mod+Shift+Period"),
@@ -370,6 +501,15 @@ AREAS: dict[str, dict] = {
         "gone": ("gone", '[data-slot="hover-card-content"]'),
         "covers": ["hover-card-trigger:*"],
     },
+    # Last on purpose: it adds a turn to the thread.
+    "stream": {
+        "setup": ("compose", STREAM_PROMPT),
+        "open": ("key", "Enter"),
+        "ready": ("streamed", STREAM_END),
+        "close": None,
+        "gone": ("settle",),
+        "covers": [],
+    },
 }
 
 # Popup triggers on the chat page that are not measured, with why. A trigger that is neither here
@@ -377,6 +517,9 @@ AREAS: dict[str, dict] = {
 NOT_AREAS = {
     "popover-trigger:Request failed": "the gate's API stub has no model runtime; this chip only shows a failed status call",
     "dropdown-menu-trigger:Open preset list": "inside the run settings panel, measured as run_settings",
+    "dropdown-menu-trigger:Run settings for this model": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
+    "select-trigger:Inference engine": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
+    "message-timing-trigger:Message timing": "a hover readout on the reply the stream area streamed; the seeded turns carry no timing",
 }
 
 # Keyboard shortcuts (features/settings/lib/keyboard-shortcuts.ts): the area that measures what it
@@ -567,6 +710,13 @@ class Api:
             "/api/hub/hidden-models": {"hidden": []},
             "/api/settings/pinned-models": {"pinned": []},
             "/api/health": {"status": "ok"},
+            "/api/inference/status": {
+                "active_model": STUB_MODEL,
+                "model_identifier": STUB_MODEL,
+                "is_vision": False,
+                "is_gguf": False,
+            },
+            "/api/chat/settings": {"settings": {}},
         }
 
     def handle(self, route) -> None:
@@ -576,6 +726,10 @@ class Api:
             body = {"messagesByThreadId": {self.rec["id"]: self.msgs}}
         elif req.method == "GET" and path in self.bodies:
             body = self.bodies[path]
+        elif req.method == "PUT" and path.startswith(
+            f"/api/chat/threads/{self.rec['id']}/messages"
+        ):
+            body = {}  # the streamed turn is saved; nothing reads it back
         else:
             return route.fulfill(status = 404, content_type = "application/json", body = "{}")
         route.fulfill(status = 200, content_type = "application/json", body = json.dumps(body))
@@ -687,7 +841,30 @@ FIND = """(spec) => {
     el = a ? [...a.querySelectorAll(spec.slice(5))].filter(vis).pop() : null; }
   else el = [...document.querySelectorAll(spec)].filter(vis).pop();
   if (!el) return false;
-  el.setAttribute('data-gate-target', ''); el.scrollIntoView({block: 'nearest'}); return true;
+  // Instant: the thread viewport is scroll-smooth, so a plain scrollIntoView animates and returns while the
+  // target is still moving; a trusted pointer action then lands wherever the target has got to.
+  el.setAttribute('data-gate-target', ''); el.scrollIntoView({block: 'nearest', behavior: 'instant'});
+  return true;
+}"""
+# The target must hold still and be hit at its centre: the floating composer can cover a row scrolled in from
+# below. Only an occluded target is re-centred, so a clear one adds no scroll to the measured window.
+STEADY = """async () => {
+  const el = document.querySelector('[data-gate-target]');
+  if (!el) return false;
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+  const still = async () => {
+    let last = '', same = 0;
+    for (let i = 0; i < 120 && same < 3; i++) {
+      await frame();
+      const r = el.getBoundingClientRect();
+      const k = `${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)},${Math.round(r.height)}`;
+      same = k === last ? same + 1 : 0; last = k;
+    }
+  };
+  const hit = () => { const r = el.getBoundingClientRect(); const t = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!t && (t === el || el.contains(t)); };
+  await still();
+  if (!hit()) { el.scrollIntoView({block: 'center', behavior: 'instant'}); await still(); }
+  return hit();
 }"""
 CLICK = """(right) => {
   const el = document.querySelector('[data-gate-target]'); const r = el.getBoundingClientRect();
@@ -748,7 +925,52 @@ def material_storage(mode: dict) -> str:
         "lens": mode["lens"],
         "scope": "all",
     }
+    if mode.get("strength"):
+        state["strength"] = mode["strength"]
     return json.dumps({"state": state, "version": 0})
+
+
+def custom_storage(custom: dict) -> str:
+    """unsloth_appearance_customization at the store's current version, so no migration rewrites it."""
+    version = int(
+        re.search(
+            r'name: "unsloth_appearance_customization",\s*version: (\d+)',
+            CUSTOM_TS.read_text(encoding = "utf-8"),
+        ).group(1)
+    )
+    return json.dumps({"state": {"customization": custom}, "version": version})
+
+
+# Seeds a wallpaper into the app's chat-background database; a reload then hydrates it like an upload.
+SEED_WALLPAPER = """async (adjust) => {
+  const dbs = await indexedDB.databases();
+  const hit = dbs.find((d) => d.name && d.name.startsWith('unsloth-chat-background'));
+  if (!hit) return 'no chat-background database';
+  const canvas = new OffscreenCanvas(1600, 1000);
+  const ctx = canvas.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 1600, 1000);
+  g.addColorStop(0, '#3b6fd8'); g.addColorStop(0.5, '#e7a34b'); g.addColorStop(1, '#2a9d6f');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 1600, 1000);
+  for (let i = 0; i < 400; i++) {
+    ctx.fillStyle = `hsla(${(i * 37) % 360}, 70%, ${30 + (i % 50)}%, 0.5)`;
+    ctx.beginPath(); ctx.arc((i * 97) % 1600, (i * 61) % 1000, 10 + (i % 60), 0, 7); ctx.fill();
+  }
+  const blob = await canvas.convertToBlob({ type: 'image/png' });
+  const db = await new Promise((ok, no) => { const r = indexedDB.open(hit.name); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+  await new Promise((ok, no) => {
+    const tx = db.transaction('backgrounds', 'readwrite');
+    tx.objectStore('backgrounds').put({ id: 'current', value: { ...adjust, blob }, sha256: null });
+    tx.oncomplete = ok; tx.onerror = () => no(tx.error);
+  });
+  db.close();
+  return 'ok';
+}"""
+ROOT_STATE = """() => { const r = document.documentElement; const out = {};
+  for (const a of r.getAttributeNames()) out[a + (a === 'class' ? '' : '=' + r.getAttribute(a))] = 1;
+  for (const c of r.classList) out[c] = 1;
+  for (const a of r.getAttributeNames()) out[a] = 1;
+  const v = r.style.getPropertyValue('--glass-strength').trim(); if (v) out['--glass-strength=' + v] = 1;
+  return Object.keys(out); }"""
 
 
 class Page:
@@ -765,10 +987,15 @@ class Page:
             "unsloth_window_material": material_storage(mode["set"]),
             "theme": mode["set"]["theme"],
         }
+        if mode["set"].get("custom"):
+            init["unsloth_appearance_customization"] = custom_storage(mode["set"]["custom"])
+        if mode["set"].get("palette"):
+            init["palette"] = mode["set"]["palette"]
         self.ctx.add_init_script(
             "(() => { const v = %s; for (const k in v) localStorage.setItem(k, v[k]); })()"
             % json.dumps(init)
         )
+        self.ctx.add_init_script(f"{STREAM_SHIM}({json.dumps([stream_frames(), STREAM_MS])})")
         self.ctx.route(lambda url: urlparse(url).path.startswith("/api/"), self.api.handle)
         self.ctx.route(
             lambda url: not url.startswith(base), lambda route: route.fulfill(status = 204, body = "")
@@ -779,12 +1006,53 @@ class Page:
         self.attr_before = None
         self.focusins_before = 0
         page.on("pageerror", lambda e: self.errors.append(str(e)[:200]))
-        page.goto(f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000)
-        page.wait_for_function(
-            "(n) => document.querySelectorAll('[data-role]').length >= n",
-            arg = 2 * turns,
-            timeout = 120_000,
-        )
+
+        def load():
+            page.goto(
+                f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000
+            )
+            page.wait_for_function(
+                "(n) => document.querySelectorAll('[data-role]').length >= n",
+                arg = 2 * turns,
+                timeout = 120_000,
+            )
+
+        load()
+        if mode["set"].get("wallpaper"):
+            seeded = page.evaluate(SEED_WALLPAPER, mode["set"]["wallpaper"])
+            if seeded != "ok":
+                raise RuntimeError(f"wallpaper not seeded: {seeded}")
+            load()
+            if mode["set"]["wallpaper"].get("blur"):
+                # Fail if the bake (artwork.tsx) never replaces the live, per-frame blur.
+                try:
+                    page.wait_for_function(
+                        "() => { const a = [...document.querySelectorAll('.chat-wallpaper-artwork')]"
+                        ".filter((e) => !e.classList.contains('glass-backdrop'));"
+                        " return a.length > 0 && a.every((e) => e.hasAttribute('data-baked') && !e.style.filter); }",
+                        timeout = 15_000,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"mode {mode['name']}: the blurred wallpaper never baked (live filter still on the artwork)"
+                    ) from exc
+        if mode.get("expect"):
+            # A setting that did not reach the page would measure the default look and pass silently.
+            want = list(mode["expect"])
+            try:
+                page.wait_for_function(
+                    "(want) => { const r = document.documentElement;"
+                    " return want.every((w) => w.startsWith('--') ? r.style.getPropertyValue(w.split('=')[0]).trim() === w.split('=')[1]"
+                    " : w.includes('=') ? r.getAttribute(w.split('=')[0]) === w.split('=')[1]"
+                    " : r.hasAttribute(w) || r.classList.contains(w)); }",
+                    arg = want,
+                    timeout = 30_000,
+                )
+            except Exception as exc:  # noqa: BLE001
+                have = page.evaluate(ROOT_STATE)
+                raise RuntimeError(
+                    f"mode {mode['name']} did not apply: want {want}, <html> has {sorted(have)}"
+                ) from exc
         page.evaluate(PROBE)
         page.wait_for_timeout(600)
         self.mac = page.evaluate(
@@ -816,6 +1084,10 @@ class Page:
                 page.keyboard.press(ch)
                 page.wait_for_timeout(40)
             return True
+        if kind == "compose":
+            page.click(".aui-composer-input", timeout = 3_000)
+            page.keyboard.insert_text(arg)
+            return True
         if kind == "scroll":
             return bool(page.evaluate(SCROLL, [arg, 20, 60 if arg == "thread" else 40]))
         if kind == "tabs":
@@ -837,6 +1109,9 @@ class Page:
             self.last_error = "; ".join(problems)
             return not problems
         if not page.evaluate(FIND, arg):
+            return False
+        if kind in ("hover", "pclick") and not page.evaluate(STEADY):
+            self.last_error = "target never held still and clear of overlays under its centre"
             return False
         if kind == "hover":
             page.locator("[data-gate-target]").first.hover(timeout = 3_000, force = True)
@@ -881,6 +1156,11 @@ class Page:
                     "([s, a, v]) => window.__gateAttr(s, a) === v",
                     arg = [pred[1], pred[2], self.attr_before],
                     timeout = 3_000,
+                )
+            elif kind == "streamed":
+                # A reply that never draws is NOT_RUN, which fails on the default page.
+                self.page.wait_for_function(
+                    STREAMED, arg = pred[1], timeout = STREAM_TIMEOUT_MS, polling = 50
                 )
             elif kind == "focusin":
                 self.page.wait_for_function(
@@ -1483,6 +1763,24 @@ def judge(result: dict, known: str | None = None) -> list[dict]:
                 continue
             limit = limits.get(("length", area), LENGTH_RATIO)
             cap = limits.get(("count", area))
+            if area in CPU_LENGTH:
+                lv, sv = cheapest(lc, "cpu_ms"), cheapest(sc, "cpu_ms")
+                ratio = lv / max(sv, CPU_BASE_FLOOR_MS)
+                cpu_limit = limits.get(("length", area), CPU_LENGTH[area])
+                out.append(
+                    {
+                        "kind": "length",
+                        "metric": "cpu_ms",
+                        "turns": turns,
+                        "mode": mode,
+                        "area": area,
+                        "value": round(lv),
+                        "base_value": round(sv),
+                        "ratio": ratio,
+                        "limit": cpu_limit,
+                        "fail": ratio > cpu_limit and lv - sv >= CPU_FLOOR_MS,
+                    }
+                )
             for metric in ("elements", "layout_objects"):
                 lv, sv = lc.get(metric, 0), sc.get(metric, 0)
                 ratio = lv / max(sv, 1)
@@ -1599,7 +1897,7 @@ def run(
             for v in verdicts
             if v["fail"]
             and (
-                v["kind"] == "appearance"
+                v["kind"] in ("appearance", "length")
                 and v["metric"] == "cpu_ms"
                 or v["kind"] == "broken"
                 and v["area"] != "*"
@@ -1639,6 +1937,15 @@ def run(
                 if "cap" in v
                 else f"limit {v['limit']:.1f}x; LONG_THREAD_AREAS_LENGTH_RATIO / _KNOWN length:{v['area']}=..."
             )
+            if v["metric"] == "cpu_ms":
+                failures.append(
+                    f"area {v['area']} ({v['mode']}) costs more as the chat grows: {v['base_value']:,} ms CPU at "
+                    f"{SHORT} turns -> {v['value']:,} at {LONG} turns = {v['ratio']:.1f}x (limit {v['limit']:.1f}x; "
+                    f"LONG_THREAD_AREAS_STREAM_LENGTH_RATIO / _KNOWN length:{v['area']}=...). Per-token work walks the "
+                    "whole thread: a selector or effect over every message, a whole-thread layout read, or more "
+                    "publishes than frames (src/features/chat/utils/stream-pacing.ts)"
+                )
+                continue
             failures.append(
                 f"area {v['area']} ({v['mode']}) costs more as the chat grows: {v['metric'].replace('_', ' ')} "
                 f"{v['base_value']:,} at {SHORT} turns -> {v['value']:,} at {LONG} turns = {v['ratio']:.1f}x ({bound}). "

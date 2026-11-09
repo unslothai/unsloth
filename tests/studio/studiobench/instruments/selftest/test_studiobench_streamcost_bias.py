@@ -151,9 +151,7 @@ def test_the_wire_denominator_is_the_same_price_on_a_windowed_document(browser, 
 
 
 def test_the_wire_count_is_identical_on_both_documents_for_identical_traffic(browser):
-    """The denominator itself, not just its cost. Both arms are fed by the SAME pacer, so the
-    counter has to be a function of the bytes and of nothing else -- least of all of how much of
-    the thread the arm chose to mount."""
+    """The denominator itself: both arms share one pacer, so the wire count depends only on bytes."""
     full, _ = _page(browser, FULL_ELEMENTS)
     win, _ = _page(browser, WINDOWED_ELEMENTS)
     try:
@@ -169,9 +167,8 @@ def test_the_wire_count_is_identical_on_both_documents_for_identical_traffic(bro
 
 
 def test_the_counter_survives_a_frame_split_across_two_decode_calls(browser):
-    """A decode() call is a slice of the socket, not an SSE frame. A counter that assumed frame
-    alignment would silently under-count exactly when the renderer is jammed and the chunks arrive
-    ragged, which is the condition the whole instrument exists to measure."""
+    """A decode() call is a socket slice, not an SSE frame; assuming alignment under-counts ragged
+    chunks."""
     page, _ = _page(browser, WINDOWED_ELEMENTS)
     try:
         before = page.evaluate("() => window.__sb.streamcost.wireStats()")

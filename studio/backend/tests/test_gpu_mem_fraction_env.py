@@ -149,8 +149,7 @@ def _make_logger():
 
 
 class _FakeCuda:
-    """The fraction is stored against ONE device, so a scalar could not tell a cap on
-    every GPU from a cap on cuda:0."""
+    """The fraction is stored per device, so a scalar could not tell all-GPU caps from cuda:0."""
 
     def __init__(
         self,

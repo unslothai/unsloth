@@ -112,8 +112,7 @@ def _planned_files(repo):
 
 
 def _write_planned_tree(root, repo):
-    """The files a pipeline load stages, as stubs: the fixture's configs, shard indexes naming their shards, one byte
-    per weight."""
+    """Stub files a pipeline load stages: configs, shard indexes, one byte per weight."""
     names = sorted(_planned_files(repo))
     _write_configs(root, repo)
     _write_json(root / "scheduler" / "scheduler_config.json", _ckpt(repo)["scheduler_config"])

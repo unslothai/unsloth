@@ -665,6 +665,8 @@ export const zhCN = {
     keepsRunning: "关闭不会停止设置。结果会显示在 设置 > 安全 中。",
   },
   composerSettings: {
+    shareDraft: "在聊天之间共享草稿",
+    shareDraftDescription: "在聊天和对比中使用同一份草稿。默认关闭；每个聊天保留各自的草稿。",
     title: "消息输入",
     plainText: "纯文本输入",
     plainTextDescription: "将代码、Markdown 和链接保留为原始文本。关闭后显示格式化预览。",
@@ -1658,6 +1660,13 @@ export const zhCN = {
         audioUploadCancel: "取消转录",
         audioUploadTranscribing: "正在转录音频…",
         sectionTitle: "语音输入",
+        micTargetLabel: "麦克风按钮",
+        micTargetAsr: "使用 ASR 转写",
+        micTargetModel: "将音频发送给模型",
+        micTargetAsrDescription: "麦克风按钮会把你说的话输入到消息框中。",
+        micTargetModelDescription: "加载支持音频输入的模型后，麦克风会录制一段音频并附加到你的消息中。其他模型仍使用语音输入。",
+        micTargetModelUnavailable: "加载支持音频输入的模型（例如 LFM3-Omni）即可向它发送语音。",
+        micRecordForModel: "为模型录制音频",
         engineLabel: "语音输入引擎",
         engineBrowser: "浏览器",
         engineBrowserDescription:
@@ -1682,6 +1691,13 @@ export const zhCN = {
         sttQuantDescription:
           "选择或搜索要在本地运行的 STT 模型，再选择其量化。",
         sttDeviceLabel: "加载到",
+        sttContextLabel: "语音上下文",
+        sttContextAuto: "自动（推荐）",
+        sttContextAutoDescription:
+          "根据每段录音调整大小，音频越长，使用的内存越多。旧版运行时可能需要设置固定大小才能减少内存占用。适用于“语音”和“转写”中的 Qwen3-ASR。",
+        sttContextFixedDescription:
+          "上限越小，内存占用越少。如果录音超出上限，请提高上限或选择“自动”。适用于“语音”和“转写”中的 Qwen3-ASR。",
+        sttContextTokens: "{count} 个 token",
         sttDeviceAuto: "有 GPU 时使用 GPU",
         sttDeviceCpu: "CPU 内存",
         sttDeviceAutoDescription: "有 GPU 时使用 GPU，否则使用 CPU。",
@@ -3131,12 +3147,10 @@ export const zhCN = {
       exportingAction: "导出中...",
       exportConversations: "导出最近对话与项目",
       exportConversationsDescription:
-        "将最近对话（或加上项目内对话）导出为 Training JSONL、CSV、ShareGPT JSONL 或 Markdown，可合并为单个文件或每个对话一个文件。Message JSONL 仅支持每个对话单独导出。",
+        "将最近对话（或加上项目内对话）导出为 Training JSONL、CSV、ShareGPT JSONL、Markdown、HTML 或 PDF，可合并为单个文件或每个对话一个文件。Message JSONL 仅支持每个对话单独导出。",
       exportConversationsAction: "导出",
       exportScopeRecents: "最近对话",
       exportScopeAll: "最近对话 + 项目",
-      exportCombinedSuffix: "（合并）",
-      exportPerChatSuffix: "（每个对话）",
       importChats: "导入对话",
       importChatsDescription:
         "将 JSON、JSONL、NDJSON、CSV 或 Markdown 文件导入到最近对话。",

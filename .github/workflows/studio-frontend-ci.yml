@@ -46,6 +46,8 @@ on:
       - 'tests/studio/test_css_culprit.py'
       - 'tests/studio/_area_matrix.py'
       - 'tests/studio/test_area_matrix.py'
+      - 'tests/studio/_appearance_coverage.py'
+      - 'tests/studio/test_appearance_coverage.py'
       - 'tests/studio/_has_lint.py'
       - 'tests/studio/test_has_lint.py'
       - 'tests/studio/has_subject_allowlist.txt'
@@ -103,6 +105,8 @@ on:
       - 'tests/studio/test_css_culprit.py'
       - 'tests/studio/_area_matrix.py'
       - 'tests/studio/test_area_matrix.py'
+      - 'tests/studio/_appearance_coverage.py'
+      - 'tests/studio/test_appearance_coverage.py'
       - 'tests/studio/_has_lint.py'
       - 'tests/studio/test_has_lint.py'
       - 'tests/studio/has_subject_allowlist.txt'
@@ -264,8 +268,10 @@ jobs:
           set -euo pipefail
           BUN_VERSION="1.4.3"
           BUN_SHA256="3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18"
+          # GitHub release assets 504 in bursts lasting minutes. Without --retry-delay curl backs
+          # off exponentially (1, 2, 4, ... s), so 8 retries wait about four minutes in total.
           curl --proto '=https' --tlsv1.2 -fsSL \
-            --retry 5 --retry-delay 3 --retry-connrefused --retry-all-errors \
+            --retry 8 --retry-connrefused --retry-all-errors \
             -o "$RUNNER_TEMP/bun.zip" \
             "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
           echo "${BUN_SHA256}  $RUNNER_TEMP/bun.zip" | sha256sum -c -
@@ -425,6 +431,7 @@ jobs:
             tests/studio/test_code_block_flicker_contract.py \
             tests/studio/test_css_culprit.py \
             tests/studio/test_area_matrix.py \
+            tests/studio/test_appearance_coverage.py \
             tests/studio/test_has_lint.py -q
 
       # Keep data settings separate from the shorter checks. Each group owns its cache.

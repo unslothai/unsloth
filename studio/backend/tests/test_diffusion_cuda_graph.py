@@ -920,6 +920,42 @@ def test_fp8_streamk_check_reads_the_onload_card(stub_torch, monkeypatch):
     assert seen == ["cuda:1"]
 
 
+def test_fp8_streamk_check_reads_each_split_card(stub_torch, monkeypatch):
+    """An sm_89 split card under an sm_90 primary is refused too."""
+    _hazard_torch(stub_torch, monkeypatch)
+    caps = {"cuda:0": (9, 0), "cuda:1": (8, 9), "cuda:2": (8, 6)}
+    stub_torch.cuda.get_device_capability = lambda device = None: caps[str(device)]
+    target = types.SimpleNamespace(
+        device = "cuda", backend = "cuda", dtype = "bfloat16", torch_device = "cuda:0"
+    )
+
+    def on(card, w):
+        w.device = _Dev(f"cuda:{card}")
+        return w
+
+    ada = types.SimpleNamespace(transformer = _QuantDiT(on(0, _fp8_weight()), on(1, _fp8_weight())))
+    ok, reason = _eligible(monkeypatch, target = target, pipe = ada)
+    assert ok is False and "sm_89" in reason
+    ampere = types.SimpleNamespace(
+        transformer = _QuantDiT(on(0, _fp8_weight()), on(2, _fp8_weight()))
+    )
+    assert _eligible(monkeypatch, target = target, pipe = ampere) == (True, "eligible")
+    plain = Int8Tensor()
+    plain.device = _Dev("cuda:1")
+    mixed = types.SimpleNamespace(transformer = _QuantDiT(on(0, _fp8_weight()), plain))
+    assert _eligible(monkeypatch, target = target, pipe = mixed) == (True, "eligible")
+
+
+class _Dev:
+    type = "cuda"
+
+    def __init__(self, name):
+        self.name = name
+
+    def __str__(self):
+        return self.name
+
+
 def test_graph_eligible_needs_torch_cuda(stub_torch, monkeypatch):
     stub_torch.cuda.is_available = lambda: False
     assert _eligible(monkeypatch)[1] == "torch.cuda unavailable"
