@@ -42,8 +42,7 @@ from utils.account_context import (
 
 
 def __getattr__(name):
-    # huggingface_hub.hf_api pulls in requests, urllib3, tqdm and the commit API (~0.1 s), and only Hub
-    # lookups need it, so import it on first use instead of at backend start.
+    # huggingface_hub.hf_api costs ~0.1 s at import and only Hub lookups need it.
     if name == "HfApi":
         from huggingface_hub import HfApi
         globals()["HfApi"] = HfApi
