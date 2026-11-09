@@ -109,14 +109,25 @@ def test_calibrated_activation_routes_float32_flux3_only(monkeypatch):
         return types.SimpleNamespace(backend = "cuda", vendor = "nvidia", dtype = dtype)
 
     for dtype in (torch.float16, torch.float32):
-        act = d._calibrated_activation(flux3, on(dtype))
+        act = d._calibrated_activation(flux3, on(dtype), fp32_scaled = True)
         assert act == calibrated_image_activation("flux.3-klein", compute_bytes = 4)
-        # the post-load phase seeds read the table unscaled, so they keep a float32 load unmeasured
-        assert d._calibrated_activation(flux3, on(dtype), fp32_scaled = False) is None
-        assert d._calibrated_activation(zimage, on(dtype)) is None
+        # the post-load phase seeds (the default) read the table unscaled, so they keep a float32 load unmeasured
+        assert d._calibrated_activation(flux3, on(dtype)) is None
+        assert d._calibrated_activation(zimage, on(dtype), fp32_scaled = True) is None
     assert d._calibrated_activation(flux3, on(torch.bfloat16)) == calibrated_image_activation(
         "flux.3-klein"
     )
     monkeypatch.setenv(dm.FP32_CALIBRATED_ENV, "0")
-    assert d._calibrated_activation(flux3, on(torch.float32)) is None
+    assert d._calibrated_activation(flux3, on(torch.float32), fp32_scaled = True) is None
     assert d._calibrated_activation(flux3, on(torch.bfloat16)) is not None
+
+
+def test_only_the_load_plan_reads_the_scaled_table():
+    import ast
+    import inspect
+
+    import core.inference.diffusion as d
+
+    src = ast.unparse(ast.parse(inspect.getsource(d.DiffusionBackend)))
+    assert "calibrated_activation=_calibrated_activation(fam, target, fp32_scaled=True)" in src
+    assert src.count("fp32_scaled=True") == 1

@@ -2975,12 +2975,12 @@ def _calibrated_activation(
     target: Any,
     *,
     unpriced_references_ok: bool = False,
-    fp32_scaled: bool = True,
+    fp32_scaled: bool = False,
 ) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel.
     ``unpriced_references_ok``: skip the reference rule; the caller sizes references via measured_request_extra_mib.
-    ``fp32_scaled``: a float32-compute load of an ``fp32_calibrated`` family reads the 16-bit table scaled 2x; False
-    keeps such a load unmeasured (the post-load phase seeds read the table unscaled)."""
+    ``fp32_scaled``: a float32-compute load of an ``fp32_calibrated`` family reads the 16-bit table scaled 2x (the load
+    plan); False keeps such a load unmeasured (the post-load phase seeds, which read the table unscaled)."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
@@ -11038,9 +11038,7 @@ class DiffusionBackend:
                     try:
                         # the phase-table seed holds only where it was measured; unpriced references size flat
                         pipe._unsloth_phase_seeds = (
-                            _calibrated_activation(
-                                fam, target, unpriced_references_ok = True, fp32_scaled = False
-                            )
+                            _calibrated_activation(fam, target, unpriced_references_ok = True)
                             is not None
                         )
                         # the dense default / max tier seeds hold on the measured target only
@@ -13392,7 +13390,7 @@ class DiffusionBackend:
                 runtime_headroom_mib = runtime_headroom,
                 requested_mode = memory_mode,
                 explicit_offload = cpu_offload,
-                calibrated_activation = _calibrated_activation(fam, target)
+                calibrated_activation = _calibrated_activation(fam, target, fp32_scaled = True)
                 if probe_calibration
                 else activation,
             )
