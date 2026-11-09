@@ -26,6 +26,7 @@ import {
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { rowReachPx } from "@/components/assistant-ui/distant-rows";
 import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
@@ -649,6 +650,20 @@ function browserPanelDefaultSize(split: HTMLElement | null | undefined): string 
   return `${Math.min(50, Math.max(30, (BROWSER_PANEL_DEFAULT_PX / width) * 100))}%`;
 }
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
+const ARTIFACT_LAYOUT_INSTANT_ATTRIBUTE = "data-artifact-layout-instant";
+
+/** A sliding width re-wraps every row in reach each frame, so a taller chat resizes in one step. */
+function markInstantLayout(surface: HTMLElement | null): void {
+  const split = surface?.closest<HTMLElement>(".chat-artifact-split");
+  if (!split) return;
+  const viewport = split.querySelector<HTMLElement>("#chat-thread .aui-thread-viewport");
+  split.toggleAttribute(
+    ARTIFACT_LAYOUT_INSTANT_ATTRIBUTE,
+    viewport !== null &&
+      viewport.clientHeight > 0 &&
+      viewport.scrollHeight > viewport.clientHeight + 2 * rowReachPx(window.innerHeight),
+  );
+}
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
 const SingleContent = memo(function SingleContent({
@@ -786,6 +801,7 @@ const SingleContent = memo(function SingleContent({
     setIsArtifactLayoutAnimating(true);
     let resizeFrameId = 0;
     const prepFrameId = window.requestAnimationFrame(() => {
+      markInstantLayout(contextSurfaceRef.current);
       resizeFrameId = window.requestAnimationFrame(() => {
         panel.resize(
           showContextPanel
@@ -839,8 +855,12 @@ const SingleContent = memo(function SingleContent({
     const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
     if (!surface || !root || !browserDocked) return;
     let width = "";
+    // Children, not `:scope >`, which matches against the whole thread on every resize frame.
     const insets = () =>
-      root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
+      [...root.children].filter(
+        (element): element is HTMLElement =>
+          element instanceof HTMLElement && element.hasAttribute("data-side-panel-inset"),
+      );
     const apply = () => {
       for (const element of insets()) {
         element.style.setProperty(
@@ -1388,6 +1408,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const [loraThreadId, setLoraThreadId] = useState<string>();
   const [pairLoraModelId, setPairLoraModelId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
+  const [pairSaved, setPairSaved] = useState<boolean>();
+  const [submittedPairId, setSubmittedPairId] = useState<string | null>(null);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1403,6 +1425,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const listedPairRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (listedPairRef.current !== pairId) setPairSaved(undefined);
     if (anyRunning && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
@@ -1415,6 +1438,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
         const loraThread = threads.find((t) => t.modelType === "lora");
         setBaseThreadId(baseThread?.id);
         setLoraThreadId(loraThread?.id);
+        setPairSaved(Boolean(baseThread || loraThread));
         setPairLoraModelId(
           loraThread?.modelId?.trim() || baseThread?.modelId?.trim() || undefined,
         );
@@ -1459,6 +1483,10 @@ const LoraCompareContent = memo(function LoraCompareContent({
       composer={
         active ? (
           <SharedComposer
+            draftId={pairId}
+            pairSaved={pairSaved}
+            pairSubmitted={submittedPairId === pairId}
+            onPairSubmitted={() => setSubmittedPairId(pairId)}
             handlesRef={handlesRef}
             onExitCompare={onExitCompare}
             model1ThreadId={baseThreadId}
@@ -1644,6 +1672,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
   const [model2ThreadId, setModel2ThreadId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
+  const [pairSaved, setPairSaved] = useState<boolean>();
+  const [submittedPairId, setSubmittedPairId] = useState<string | null>(null);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1728,6 +1758,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
+    if (listedPairRef.current !== pairId) setPairSaved(undefined);
     if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
@@ -1738,6 +1769,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         const pair = resolveComparePaneThreadIds(threads);
         setModel1ThreadId(pair.first);
         setModel2ThreadId(pair.second);
+        setPairSaved(Boolean(pair.first || pair.second));
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -1775,6 +1807,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
       composer={
         active ? (
           <SharedComposer
+            draftId={pairId}
+            pairSaved={pairSaved}
+            pairSubmitted={submittedPairId === pairId}
+            onPairSubmitted={() => setSubmittedPairId(pairId)}
             handlesRef={handlesRef}
             model1={model1}
             model2={model2}

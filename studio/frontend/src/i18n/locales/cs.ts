@@ -749,6 +749,8 @@ export const cs = {
       "Zavřením tohoto okna se nastavení nezastaví. Jeho výsledek se zobrazí v části Nastavení > Zabezpečení.",
   },
   composerSettings: {
+    shareDraft: "Sdílet koncepty mezi chaty",
+    shareDraftDescription: "Používat jeden koncept pro chaty a porovnání. Ve výchozím stavu vypnuto; každý chat si ponechá vlastní koncept.",
     title: "Pole zprávy",
     plainText: "Pole zprávy s prostým textem",
     plainTextDescription:

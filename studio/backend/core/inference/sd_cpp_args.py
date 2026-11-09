@@ -710,26 +710,37 @@ def is_device_oom_text(text: Optional[str]) -> bool:
 
 
 def device_backend_flags(
-    device_name: Optional[str], offload: Optional[list[str]] = None
+    device_name: Optional[str],
+    offload: Optional[list[str]] = None,
+    *,
+    te_device: Optional[str] = None,
+    vae_device: Optional[str] = None,
 ) -> list[str]:
     """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu."""
     if not device_name:
         return []
     flags = offload or []
-    te = "cpu" if "--clip-on-cpu" in flags else device_name
-    vae = "cpu" if "--vae-on-cpu" in flags else device_name
+    te = "cpu" if "--clip-on-cpu" in flags else (te_device or device_name)
+    vae = "cpu" if "--vae-on-cpu" in flags else (vae_device or device_name)
     return ["--backend", f"diffusion={device_name},te={te},vae={vae}"]
 
 
 def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
-    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload."""
+    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload.
+    A two-card block split's ``--auto-fit`` / ``--max-vram`` belong to its pin and go with it."""
+    items = list(flags)
+    split = any(
+        f == "--backend" and i + 1 < len(items) and "&" in str(items[i + 1])
+        for i, f in enumerate(items)
+    )
+    paired = ("--backend", "--auto-fit", "--max-vram") if split else ("--backend",)
     out: list[str] = []
     skip = False
-    for flag in flags:
+    for flag in items:
         if skip:
             skip = False
             continue
-        if flag == "--backend":
+        if flag in paired:
             skip = True
             continue
         out.append(flag)

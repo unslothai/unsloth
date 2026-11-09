@@ -4097,6 +4097,33 @@ def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: 
 STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
 
 
+@functools.lru_cache(maxsize = 1)
+def _diffusers_takes_block_modules() -> bool:
+    """Whether the installed diffusers' ``apply_group_offloading`` accepts ``block_modules``."""
+    try:
+        import inspect
+
+        from diffusers.hooks import apply_group_offloading
+        return "block_modules" in inspect.signature(apply_group_offloading).parameters
+    except Exception:  # noqa: BLE001 - no diffusers / unreadable: the stock grouping
+        return False
+
+
+def _block_stacks(module: Any) -> list:
+    """The block stacks block-level group offload streams: ``ModuleList`` / ``Sequential`` children, plus the stacks of
+    the ModuleDicts ``_dict_block_modules`` hands to diffusers as ``block_modules``."""
+    import torch
+
+    stacks = []
+    dicts = set(_dict_block_modules(module)) if _diffusers_takes_block_modules() else set()
+    for name, child in module.named_children():
+        if isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
+            stacks.append(child)
+        elif name in dicts:
+            stacks.extend(child.values())
+    return stacks
+
+
 def _stream_window_mib(pipe: Any) -> int:
     """Device MiB the block prefetcher holds in flight: ``depth + 1`` of the largest denoiser block, or -1."""
     try:
@@ -4110,9 +4137,7 @@ def _stream_window_mib(pipe: Any) -> int:
                 continue
             if not isinstance(module, torch.nn.Module):
                 continue
-            for child in module.children():
-                if not isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
-                    continue
+            for child in _block_stacks(module):
                 for block in child:
                     seen: set[int] = set()
                     nbytes = 0
@@ -4168,9 +4193,8 @@ def _top_level_group_mib(pipe: Any) -> Optional[int]:
             if not isinstance(module, torch.nn.Module):
                 continue
             blocks: set[int] = set()
-            for child in module.children():
-                if isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
-                    blocks.update(id(t) for t in (*child.parameters(), *child.buffers()))
+            for child in _block_stacks(module):
+                blocks.update(id(t) for t in (*child.parameters(), *child.buffers()))
             seen: set[int] = set()
             nbytes = 0
             for t in (*module.parameters(), *module.buffers()):
@@ -6854,6 +6878,51 @@ def _module_pin_mib(module: Any) -> int:
         return _module_host_mib(module)
 
 
+# Block-level offload groups only direct ModuleList children; split FLUX.3's ModuleDict of block stacks too ("0": off).
+GROUP_OFFLOAD_DICT_BLOCKS_ENV = "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_DICT_BLOCKS"
+_DICT_BLOCK_CLASSES = frozenset({"Flux3Transformer2DModel"})
+
+
+def _dict_block_modules(module: Any) -> list[str]:
+    """Direct children of ``module`` that are ModuleDicts of block stacks."""
+    if _env_off(GROUP_OFFLOAD_DICT_BLOCKS_ENV) or type(module).__name__ not in _DICT_BLOCK_CLASSES:
+        return []
+    try:
+        import torch
+
+        names = []
+        for name, child in module.named_children():
+            if (
+                isinstance(child, torch.nn.ModuleDict)
+                and len(child) > 0
+                and all(
+                    isinstance(v, (torch.nn.ModuleList, torch.nn.Sequential))
+                    for v in child.values()
+                )
+            ):
+                names.append(name)
+        return names
+    except Exception:  # noqa: BLE001 - unreadable: the stock grouping
+        return []
+
+
+def _with_dict_block_modules(
+    apply: Callable[..., Any], module: Any, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    if kwargs.get("offload_type", "block_level") != "block_level" or "block_modules" in kwargs:
+        return kwargs
+    names = _dict_block_modules(module)
+    if not names:
+        return kwargs
+    try:
+        import inspect
+        if "block_modules" not in inspect.signature(apply).parameters:
+            return kwargs
+    except (TypeError, ValueError):
+        return kwargs
+    return {**kwargs, "block_modules": names}
+
+
 def _apply_group_offloading_packed(
     apply: Callable[..., Any],
     module: Any,
@@ -6867,6 +6936,7 @@ def _apply_group_offloading_packed(
     pages, so overlap is unchanged. Lazy (``low_cpu_mem_usage``) and unstreamed applies run as before."""
     from .diffusion_pinned_arena import packable_bytes, pinned_arena_for_group_offload
 
+    kwargs = _with_dict_block_modules(apply, module, kwargs)
     pack = (
         bool(kwargs.get("use_stream"))
         and not kwargs.get("low_cpu_mem_usage", False)
@@ -8322,7 +8392,12 @@ def _apply_group_offload(
                 and not gkwargs.get("low_cpu_mem_usage", False)
                 and not _torchao_weight_classes(module)
             ):
-                apply_group_offloading(module, **{**gkwargs, "low_cpu_mem_usage": True})
+                apply_group_offloading(
+                    module,
+                    **_with_dict_block_modules(
+                        apply_group_offloading, module, {**gkwargs, "low_cpu_mem_usage": True}
+                    ),
+                )
                 _defer_pinning(pipe, module, onload, logger)
             else:
                 _apply_group_offloading_packed(
@@ -8396,7 +8471,12 @@ def _apply_group_offload(
                             if "low_cpu_mem_usage" in _params and use_stream:
                                 dkwargs["low_cpu_mem_usage"] = True
                             apply_group_offloading(
-                                dit, **_torchao_group_offload_kwargs(dit, dkwargs, pinned_mib)
+                                dit,
+                                **_with_dict_block_modules(
+                                    apply_group_offloading,
+                                    dit,
+                                    _torchao_group_offload_kwargs(dit, dkwargs, pinned_mib),
+                                ),
                             )
                             installed += 1
                     transformer_demoted = True

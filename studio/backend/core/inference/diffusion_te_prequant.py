@@ -1561,6 +1561,9 @@ def _fetch_dense_components(
         fetched = snapshot_download(
             repo_id,
             allow_patterns = [f"{c}/*" for c in components],
+            ignore_patterns = _dense_component_pickles(
+                repo_id, components, revision, hf_token, cache_dir
+            ),
             token = hf_token,
             cache_dir = cache_dir,
             revision = revision,
@@ -1571,6 +1574,60 @@ def _fetch_dense_components(
     except Exception as exc:  # noqa: BLE001 - the strict refusal below still explains the load
         _warn(logger, "dense_fallback_fetch", exc)
         return False
+
+
+def _dense_component_pickles(
+    repo_id: str,
+    components: list,
+    revision: Optional[str],
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
+) -> list:
+    """ignore_patterns for a dense encoder fetch: every .pt / .pth / .ckpt / .pkl, plus a component's .bin shards when
+    the repo lists a safetensors weight for it. A component whose .bin is already cached and matches the Hub's sha256
+    (and whose safetensors is not cached) skips its safetensors instead, so nothing is downloaded twice. Without a
+    listing only the never-read pickles are dropped, so a component whose only copy is a .bin still loads."""
+    from .diffusers_safetensors import (
+        _is_model_safetensors,
+        pipeline_pickle_files,
+        verified_bin_components,
+    )
+
+    patterns = [
+        f"{c}/*{suffix}"
+        for c in components
+        for suffix in (".pt", ".pth", ".ckpt", ".pkl", ".pickle")
+    ]
+    try:
+        from huggingface_hub import HfApi
+        names = HfApi().list_repo_files(repo_id, revision = revision, token = hf_token)
+    except Exception:  # noqa: BLE001 - no listing: the .bin of a component without safetensors must stay fetchable
+        return patterns
+    reused: set = set()
+    try:
+        import os
+
+        from huggingface_hub import try_to_load_from_cache
+
+        hit = try_to_load_from_cache(
+            repo_id, "model_index.json", cache_dir = cache_dir, revision = revision
+        )
+        if isinstance(hit, str):
+            reused = verified_bin_components(
+                os.path.dirname(hit), components, token = hf_token, revision = revision
+            )
+    except Exception:  # noqa: BLE001 - unverified: safetensors stays first
+        reused = set()
+    wanted = tuple(f"{c}/" for c in components)
+    for n in pipeline_pickle_files(list(names) + ["model_index.json"]):
+        if n.startswith(wanted) and n.split("/", 1)[0] not in reused:
+            patterns.append(n)
+    for n in names:
+        if n.split("/", 1)[0] in reused and (
+            _is_model_safetensors(n) or n.endswith(".safetensors.index.json")
+        ):
+            patterns.append(n)
+    return patterns
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:

@@ -75,6 +75,7 @@ from .diffusion_comfy_quant import (
     refuse_comfy_quant,
 )
 from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
+from .diffusers_safetensors import component_safetensors_kwargs, pipeline_safetensors_kwargs
 from .diffusion_prequant import scoped_local_files_only
 from .video_moe_pair import moe_expert_of, moe_partner_filename, moe_pick_pairs
 from .diffusion_cache import (
@@ -4124,6 +4125,7 @@ def _read_native_quant_from_hosted(
                 family = getattr(fam, "name", None),
                 component = component,
                 config_kwargs = config_kwargs,
+                base = base or getattr(fam, "base_repo", None),
                 logger = logger,
             )
             if module is None:
@@ -4630,16 +4632,22 @@ def _video_native_hosted_scheme(fam: Any, scheme: Optional[str], target: Any) ->
     """``int8`` when an offloaded load of ``scheme`` builds the W8A8 ConvRot native DiT that the family's hosted int8
     checkpoint already holds (``diffusion_native_hosted``), else None. The load re-checks the file; never raises."""
     try:
-        from .diffusion_native_hosted import native_hosted_family
+        from .diffusion_native_hosted import native_hosted_family, native_hosted_pickle
         from .diffusion_native_quant import int8_rotation_group
 
         if scheme != TQ_INT8 or not native_hosted_family(fam):
             return None
         if getattr(target, "device", None) != "cuda":
             return None
+        # A pickle unpickles through torchao: not on ROCm or a stubbed torchao (native_offload_host's set).
+        if native_hosted_pickle(fam) and not native_offload_host(target):
+            return None
         if native_quant_scheme(target, TQ_INT8, family = fam.name, offload = True) != TQ_INT8:
             return None
-        if not native_int8_act(target) or int(int8_rotation_group() or 0) <= 0:
+        if not native_int8_act(target):
+            return None
+        # A ConvRot file only matches a rotated runtime build; a pickle is read unrotated, so ConvRot off keeps it.
+        if not native_hosted_pickle(fam) and int(int8_rotation_group() or 0) <= 0:
             return None
         return TQ_INT8
     except Exception:  # noqa: BLE001 -- unanswerable: the dense shards and runtime build, as before
@@ -10042,6 +10050,15 @@ class VideoBackend:
                 else {}
             )
 
+        def _safetensors_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+            """use_safetensors=True when the base folder ships safetensors for every component this load reads."""
+            return pipeline_safetensors_kwargs(
+                _base_local_dir or fetch_base,
+                passed = {**_pinned_base_kwargs(), **kwargs},
+                cache_dir = kwargs.get("cache_dir"),
+                pipeline_cls = pipeline_cls,
+            )
+
         pipe_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
             "cache_dir": hub_cache_dir(),
@@ -10262,6 +10279,7 @@ class VideoBackend:
                         _base_local_dir or fetch_base,
                         **_pinned_base_kwargs(),
                         **pipe_kwargs,
+                        **_safetensors_kwargs(pipe_kwargs),
                     )
             except Exception as exc:
                 refusal = (
@@ -10494,6 +10512,7 @@ class VideoBackend:
                         _base_local_dir or fetch_base,
                         **_pinned_base_kwargs(),
                         **{**pipe_kwargs, "transformer": ltx25_transformer},
+                        **_safetensors_kwargs({**pipe_kwargs, "transformer": ltx25_transformer}),
                     )
             else:
 
@@ -10539,6 +10558,7 @@ class VideoBackend:
                     _base_local_dir or fetch_base,
                     **_pinned_base_kwargs(),
                     **{**pipe_kwargs, **experts},
+                    **_safetensors_kwargs({**pipe_kwargs, **experts}),
                 )
 
         # Dtype dict already loads the Wan VAE in float32; this backstops any path bypassing it (e.g. vae=).
@@ -10659,6 +10679,14 @@ class VideoBackend:
                             local_files_only = local_files_only,
                             **({"token": hf_token} if hf_token else {}),
                             **_pinned_base_kwargs(),
+                            **component_safetensors_kwargs(
+                                _base_local_dir or fetch_base,
+                                component,
+                                cache_dir = hub_cache_dir(),
+                                model_cls = dense_cls,
+                                local_files_only = local_files_only,
+                                revision = _pinned_base_kwargs().get("revision"),
+                            ),
                         )
                     }
                 )

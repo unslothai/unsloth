@@ -752,6 +752,8 @@ export const es419 = {
       "Cerrar esto no detiene la configuración. El resultado aparece en Configuración > Seguridad.",
   },
   composerSettings: {
+    shareDraft: "Compartir borradores entre chats",
+    shareDraftDescription: "Usa un borrador para los chats y las comparaciones. Desactivado por defecto; cada chat conserva su propio borrador.",
     title: "Redactor",
     plainText: "Redactor de texto sin formato",
     plainTextDescription:

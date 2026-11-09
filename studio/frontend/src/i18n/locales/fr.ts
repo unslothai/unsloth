@@ -665,6 +665,8 @@ export const fr = {
     keepsRunning: "Fermer cette fenêtre n'arrête pas la configuration. Le résultat s'affiche dans Paramètres > Sécurité.",
   },
   composerSettings: {
+    shareDraft: "Partager les brouillons entre les discussions",
+    shareDraftDescription: "Utiliser un seul brouillon pour les discussions et les comparaisons. Désactivé par défaut ; chaque discussion conserve son propre brouillon.",
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
     plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",

@@ -63,6 +63,13 @@ export interface GlassMotion {
   stop(): void;
 }
 
+let active: GlassMotion | null = null;
+
+/** Pause `el` for `ms`: a surface animated from script fires no animation events. No-op while glass motion is off. */
+export function holdGlassMotion(el: Element | null, ms: number): void {
+  if (el && active) active.hold(el, ms);
+}
+
 function isElement(node: unknown): node is Element {
   return typeof Element !== "undefined" && node instanceof Element;
 }
@@ -213,6 +220,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
   doc.addEventListener("animationcancel", onAnimationEnd, opts);
 
   const stop = () => {
+    if (active === controller) active = null;
     observer?.disconnect();
     doc.removeEventListener("scroll", onScroll, opts);
     for (const type of INTERACTION_EVENTS) doc.removeEventListener(type, onInteraction, opts);
@@ -233,5 +241,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     lastTargets = null;
     page = [];
   };
-  return { hold, scrollTargets, stop };
+  const controller: GlassMotion = { hold, scrollTargets, stop };
+  active = controller;
+  return controller;
 }

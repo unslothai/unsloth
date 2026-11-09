@@ -46,6 +46,8 @@ on:
       - 'tests/studio/test_css_culprit.py'
       - 'tests/studio/_area_matrix.py'
       - 'tests/studio/test_area_matrix.py'
+      - 'tests/studio/_appearance_coverage.py'
+      - 'tests/studio/test_appearance_coverage.py'
       - 'tests/studio/_has_lint.py'
       - 'tests/studio/test_has_lint.py'
       - 'tests/studio/has_subject_allowlist.txt'
@@ -103,6 +105,8 @@ on:
       - 'tests/studio/test_css_culprit.py'
       - 'tests/studio/_area_matrix.py'
       - 'tests/studio/test_area_matrix.py'
+      - 'tests/studio/_appearance_coverage.py'
+      - 'tests/studio/test_appearance_coverage.py'
       - 'tests/studio/_has_lint.py'
       - 'tests/studio/test_has_lint.py'
       - 'tests/studio/has_subject_allowlist.txt'
@@ -427,6 +431,7 @@ jobs:
             tests/studio/test_code_block_flicker_contract.py \
             tests/studio/test_css_culprit.py \
             tests/studio/test_area_matrix.py \
+            tests/studio/test_appearance_coverage.py \
             tests/studio/test_has_lint.py -q
 
       # Keep data settings separate from the shorter checks. Each group owns its cache.

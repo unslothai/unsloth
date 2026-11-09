@@ -747,6 +747,8 @@ export const tr = {
       "Bunu kapatmak kurulumu durdurmaz. Sonuç, Ayarlar > Güvenlik bölümünde görünür.",
   },
   composerSettings: {
+    shareDraft: "Taslakları sohbetler arasında paylaş",
+    shareDraftDescription: "Sohbetler ve karşılaştırmalar için tek bir taslak kullan. Varsayılan olarak kapalıdır; her sohbet kendi taslağını tutar.",
     title: "Yazma alanı",
     plainText: "Düz metin yazma alanı",
     plainTextDescription:
