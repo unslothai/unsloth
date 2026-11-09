@@ -65,15 +65,16 @@ def test_probe_script_activates_before_it_downloads(module, attr):
     assert activate < script.find(".from_pretrained("), f"{attr} downloads before activating"
 
 
-def test_prebuilt_core_gate_matches_the_generated_source():
-    """prebuilt_core.py's gate is a pasted copy, and drift is silent, so compare parsed AST, not text."""
+@pytest.mark.parametrize("name", ["prebuilt_core.py", "install_hnsw_prebuilt.py"])
+def test_prebuilt_core_gate_matches_the_generated_source(name):
+    """These gates are pasted copies, and drift is silent, so compare parsed AST, not text."""
     from utils.native_tls import inline_gate_source
 
-    source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding = "utf-8")
+    source = (_BACKEND.parent / name).read_text(encoding = "utf-8")
     gate = [ast.dump(node) for node in ast.parse(inline_gate_source()).body]
     body = [ast.dump(node) for node in ast.parse(source).body]
     assert any(body[i : i + len(gate)] == gate for i in range(len(body) - len(gate) + 1)), (
-        "prebuilt_core.py's gate has drifted from native_tls.inline_gate_source(); "
+        f"{name}'s gate has drifted from native_tls.inline_gate_source(); "
         "paste the current output of that function over it"
     )
 

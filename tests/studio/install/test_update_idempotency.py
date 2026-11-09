@@ -125,6 +125,8 @@ INDEX_DIGEST = (
     "else:\n"
     "    digest = hashlib.sha256()\n"
     "    for name in sorted(index):\n"
+    "        if name in ('usearch', 'numkong'):\n"
+    "            continue\n"
     "        digest.update(f'{name}=={index[name][0]}\\n'.encode('utf-8'))\n"
     "    print(digest.hexdigest())\n"
 )
@@ -352,6 +354,8 @@ def run_update(
     # Inherited, not replaced: a hand-built environment fails in ways that look like the product.
     env = dict(os.environ)
     env.pop("UNSLOTH_IDEMPOTENCY_E2E", None)
+    # tests/conftest.py turns the HNSW download off for unit tests; the update under test must run it.
+    env.pop("RAG_VEC_ANN_AUTO_INSTALL", None)
     # The pytest venv is not the venv under test.
     for leaked in (
         "VIRTUAL_ENV",
@@ -531,6 +535,11 @@ def snapshot(venv_python: pathlib.Path) -> dict:
 
     state["uv_cache_marker"] = _digest(studio_home / "cache" / "uv-cache-dir")
     state["no_torch_marker"] = (venv / ".unsloth-no-torch").is_file()
+    # A no-op update must not rewrite the HNSW probe marker.
+    hnsw_marker = venv / ".unsloth-hnsw.json"
+    state["hnsw_marker"] = (
+        (_digest(hnsw_marker), hnsw_marker.stat().st_mtime_ns) if hnsw_marker.is_file() else None
+    )
     for name in (".venv_t5_530", ".venv_t5_550", ".venv_t5_510"):
         state[name] = _tree_state(studio_home / name)
 

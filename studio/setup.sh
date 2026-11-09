@@ -2411,6 +2411,21 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# A skipped (current) Python stack leaves the HNSW pair unchecked; --check-only is offline.
+_hnsw_backfill() {
+    case "${RAG_VEC_ANN_AUTO_INSTALL:-1}" in 0|false|no|off) return 0 ;; esac
+    local _installer="$SCRIPT_DIR/install_hnsw_prebuilt.py" _status
+    [ -f "$_installer" ] || return 0
+    _status=$(python "$_installer" --check-only --json 2>/dev/null | tail -n 1 \
+        | sed -n 's/.*"status": *"\([a-z_]*\)".*/\1/p') || return 0
+    case "$_status" in
+        already|disabled|unsupported|offline|"") return 0 ;;
+    esac
+    _status=$(python "$_installer" --json --timeout 300 2>/dev/null | tail -n 1 \
+        | sed -n 's/.*"status": *"\([a-z_]*\)".*/\1/p') || true
+    step "HNSW search" "${_status:-failed}" "$([ "$_status" = ready ] || printf '%s' "$C_WARN")"
+}
+
 # Phases a release adds below would be skipped by the update installing it; exec keeps the CLI's PID.
 _setup_rerun_if_replaced() {
     if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
@@ -3412,6 +3427,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
+    _hnsw_backfill || true
 fi
 _frontend_bg_reap
 

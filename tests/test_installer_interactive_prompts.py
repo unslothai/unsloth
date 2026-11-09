@@ -29,6 +29,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
     "studio/install_audio_cpp_prebuilt.py",
+    "studio/install_hnsw_prebuilt.py",
     "studio/install_lemonade_prebuilt.py",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
