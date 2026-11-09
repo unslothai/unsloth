@@ -93,9 +93,9 @@ export function writeComposerDraft(key: string, text: string): void {
 
 // A draft saved per chat before the shared slot existed becomes the shared draft when that chat
 // opens and nothing newer is waiting, so an upgrade never loses unsent text. True if it did.
-export function adoptLegacyDraft(threadId: string | null): boolean {
+export function adoptLegacyDraft(threadId: string | null, overwrite = false): boolean {
   // Text typed this session and not yet saved is newer than any old slot.
-  if (latest) return false;
+  if (latest && !overwrite) return false;
   const id = threadId ?? "__new__";
   try {
     const storage = window.localStorage;
@@ -111,13 +111,20 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
         : storage.getItem(pasteKey);
     if (text === null && pastes === null) return false;
     let adopted = false;
-    if (storage.getItem(DRAFT_KEY) === null && storage.getItem(PASTE_DRAFT_KEY) === null) {
-      if (text !== null) storage.setItem(DRAFT_KEY, text);
+    const prevText = storage.getItem(DRAFT_KEY);
+    const prevPastes = storage.getItem(PASTE_DRAFT_KEY);
+    if (overwrite || (prevText === null && prevPastes === null)) {
       try {
+        if (text !== null) storage.setItem(DRAFT_KEY, text);
+        else storage.removeItem(DRAFT_KEY);
         if (pastes !== null) storage.setItem(PASTE_DRAFT_KEY, pastes);
+        else storage.removeItem(PASTE_DRAFT_KEY);
       } catch (error) {
         // All or nothing: a text-only copy would make the next try skip, dropping the paste.
-        storage.removeItem(DRAFT_KEY);
+        if (prevText === null) storage.removeItem(DRAFT_KEY);
+        else storage.setItem(DRAFT_KEY, prevText);
+        if (prevPastes === null) storage.removeItem(PASTE_DRAFT_KEY);
+        else storage.setItem(PASTE_DRAFT_KEY, prevPastes);
         throw error;
       }
       adopted = true;
@@ -146,17 +153,8 @@ const perChatDrafts = new Map<string, string>();
 let lastTypedDraftId: string | null = null;
 
 export function adoptCurrentDraft(): boolean {
-  const id = lastTypedDraftId;
-  if (id === null) return false;
-  if (adoptLegacyDraft(id)) return true;
-  // Another window filled the shared slot first: this tab keeps showing its own draft (#15782).
-  const text = perChatDrafts.get(composerDraftKey(id)) ?? "";
-  const pastes = perChatPastes.get(composerPasteDraftKey(id)) ?? [];
-  if (!text && pastes.length === 0) return false;
-  latest = text;
-  latestPastes = [...pastes];
-  dropPerChatDraft(id);
-  return true;
+  // What this tab just typed wins over an older shared draft, including another window's (#15782).
+  return lastTypedDraftId !== null && adoptLegacyDraft(lastTypedDraftId, true);
 }
 
 export function latestDraft(key = DRAFT_KEY): string {
@@ -189,6 +187,15 @@ const deletedDraftIds = new Set<string>();
 export function clearComposerDraft(threadId: string): void {
   deletedDraftIds.add(threadId);
   dropPerChatDraft(threadId);
+}
+
+// While a delete is in flight: late writes are dropped, the draft survives a failed delete.
+export function closeComposerDraft(threadId: string): void {
+  deletedDraftIds.add(threadId);
+}
+
+export function reopenComposerDraft(threadId: string): void {
+  deletedDraftIds.delete(threadId);
 }
 
 function dropPerChatDraft(threadId: string): void {

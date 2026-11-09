@@ -340,11 +340,13 @@ test("a paste-only draft is what switching sharing on adopts", async () => {
   assert.equal(tab.latestDraft(tab.composerDraftKey("typed-earlier")), "older text");
 });
 
-test("deleting a comparison also clears its pair-scoped draft", async () => {
+test("deleting a comparison clears its pair-scoped draft once the delete holds, and a failed delete reopens it", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/features/chat/hooks/use-chat-sidebar-items.ts", import.meta.url), "utf8");
   const del = src.slice(src.indexOf("export async function deleteChatItems("));
-  assert.match(del, /if \(item\.type !== "single"\) clearComposerDraft\(item\.id\)/);
+  assert.match(del, /items\.filter\(\(i\) => i\.type !== "single"\)\.map\(\(i\) => i\.id\)/);
+  assert.match(del, /for \(const id of draftIds\) clearComposerDraft\(id\)/);
+  assert.match(del, /for \(const id of draftIds\) reopenComposerDraft\(id\)/);
 });
 
 test("a pending autosave landing after its chat was deleted is dropped", async () => {
@@ -359,11 +361,35 @@ test("a pending autosave landing after its chat was deleted is dropped", async (
   assert.equal(tab.adoptCurrentDraft(), false);
 });
 
-test("with the shared slot taken by another window, this tab keeps showing its own draft", async () => {
+test("what this tab just typed replaces a shared draft another window left", async () => {
   const tab = await openTab();
   tab.writeComposerDraft(tab.composerDraftKey("mine-only"), "this window");
   store.set(composerDraftKey("", true), "other window");
   assert.equal(tab.adoptCurrentDraft(), true);
   assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "this window");
-  assert.equal(store.get(composerDraftKey("", true)), "other window");
+  assert.equal(store.get(composerDraftKey("", true)), "this window");
+});
+
+test("a shared copy that does not fit keeps the saved per-chat draft and the old shared one", async () => {
+  const tab = await openTab();
+  const key = tab.composerDraftKey("quota-chat");
+  tab.writeComposerDraft(key, "saved prompt");
+  store.set(composerDraftKey("", true), "older shared");
+  failWrites = true;
+  assert.equal(tab.adoptCurrentDraft(), false);
+  failWrites = false;
+  assert.equal(store.get(key), "saved prompt");
+  assert.equal(store.get(composerDraftKey("", true)), "older shared");
+});
+
+test("a delete in flight drops late writes, and a failed delete reopens the slot with its draft", async () => {
+  const tab = await openTab();
+  const key = tab.composerDraftKey("restored-chat");
+  tab.writeComposerDraft(key, "keep me");
+  tab.closeComposerDraft("restored-chat");
+  tab.writeComposerDraft(key, "late flush");
+  assert.equal(store.get(key), "keep me");
+  tab.reopenComposerDraft("restored-chat");
+  tab.writeComposerDraft(key, "typed after restore");
+  assert.equal(store.get(key), "typed after restore");
 });
