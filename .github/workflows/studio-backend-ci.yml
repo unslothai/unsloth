@@ -123,9 +123,11 @@ jobs:
         # 3.13 full run, plus 3.11 for the files with a pre-3.12 sys.version_info branch.
         #
         # Shards root at `tests/` and differ only in ignores: `--ignore=FILE` does not filter explicit arguments.
-        # Shard 3 is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
+        # `rest` is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
         # a-f / g-r, not a-k / l-r: a-k's parallel step reached 1024-1264 s against the 1500 s backstop,
-        # and hit it twice on 2026-10-23, while l-r took 590-867 s (705 files each side now).
+        # and hit it twice on 2026-10-23, while l-r took 590-867 s.
+        # g-r then split into g-l / m-r: it took 955-1433 s on main and hit the backstop on 2026-11-09.
+        # Per-letter progress timestamps put about 40% of g-r's time in g-l and 60% in m-r.
         include:
           - python: '3.13'
             scope: full
@@ -137,12 +139,20 @@ jobs:
               --ignore-glob=tests/test_[!a-f]*.py
           - python: '3.13'
             scope: full
-            shard: g-r
+            shard: g-l
             selection: >-
               tests/
               --ignore-glob=tests/*/*
               --ignore-glob=tests/*_test.py
-              --ignore-glob=tests/test_[!g-r]*.py
+              --ignore-glob=tests/test_[!g-l]*.py
+          - python: '3.13'
+            scope: full
+            shard: m-r
+            selection: >-
+              tests/
+              --ignore-glob=tests/*/*
+              --ignore-glob=tests/*_test.py
+              --ignore-glob=tests/test_[!m-r]*.py
           - python: '3.13'
             scope: full
             shard: rest
