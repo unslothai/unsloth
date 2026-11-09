@@ -12,8 +12,7 @@ import weakref
 from functools import partial
 from typing import Any, Optional
 
-# The only versions whose private layout was read; verify() still checks each device bit-identical. Exact, never a
-# minimum.
+# Exact versions whose private layout was read, never a minimum.
 _SUPPORTED = ("0.6.6", "0.7.3")
 
 NVFP4_FAST_DISPATCH_ENV = "UNSLOTH_NVFP4_FAST_DISPATCH"
@@ -204,8 +203,7 @@ def _fast_quantize(
     if got is None:
         return None, None
     fn, pdl = got
-    # By keyword: 0.7 put ``is_global_scale_inversed`` before ``enable_pdl``, so a positional pdl would invert the
-    # scale there.
+    # By keyword: 0.7 put ``is_global_scale_inversed`` before ``enable_pdl``; positional pdl inverts the scale.
     xq, sf = fn(
         x,
         global_sf,

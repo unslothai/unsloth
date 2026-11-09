@@ -480,7 +480,6 @@ def _sig_073(
 
 @pytest.mark.parametrize("fn", [_sig_066, _sig_073], ids = ["0.6.6", "0.7.3"])
 def test_fast_quantize_passes_pdl_by_keyword_on_both_layouts(monkeypatch, fn):
-    # 0.7 inserted is_global_scale_inversed before enable_pdl: a positional pdl=True there would invert the scale.
     seen = {}
 
     def _quant(x, gsf, *args, **kw):

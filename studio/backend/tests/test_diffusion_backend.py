@@ -11877,8 +11877,7 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     from core.inference import diffusion_nvfp4_gate as gate
     from core.inference.diffusion_nvfp4_install import FLASHINFER_RELEASES
 
-    # The gate covers only the flashinfer its record was measured on; pin the covered release Studio installs so
-    # the answer does not depend on this host's flashinfer (CI runners have none).
+    # Pin the covered release so the answer does not depend on this host's flashinfer.
     monkeypatch.setattr(
         gate, "installed_flashinfer_version", lambda: FLASHINFER_RELEASES[-1].version
     )
@@ -11893,8 +11892,7 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
         == "unsloth/FLUX.1-schnell-NVFP4"
     )
 
-    # Nor is the newest release until its kernels are measured on the gated checkpoints, or an unreadable version:
-    # the plan and the load both drop the nvfp4 rung, so nothing fetches it.
+    # An unmeasured or unreadable version: plan and load both drop the nvfp4 rung.
     from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
 
     monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: FLASHINFER_VERSION)

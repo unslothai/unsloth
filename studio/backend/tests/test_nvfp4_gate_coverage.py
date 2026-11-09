@@ -153,8 +153,7 @@ def _zimage_record(**versions):
 
 
 def test_the_shipped_records_cover_the_fallback_flashinfer_and_refuse_the_unmeasured_newest():
-    # A version joins flashinfer_bit_identical only with measured evidence. Until then auto does not take a gated
-    # head on the newest release Studio installs, and an explicit NVFP4 load on it warns once.
+    # A version joins flashinfer_bit_identical only with measured evidence.
     from core.inference.diffusion_nvfp4_install import FLASHINFER_RELEASES
 
     records = [r for r in load_gate_records() if r.get("backend") == "flashinfer"]

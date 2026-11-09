@@ -1578,9 +1578,7 @@ def test_an_installed_cutlass_dsl_is_pinned_not_ranged(env):
         ("13.0", (10, 0), {}, V, "cu130"),
         ("12.9", (12, 0), {}, V, "cu129"),
         ("13.2", (10, 3), {}, V, "cu130"),
-        # No newer cu128 jit-cache: the fallback still installs prebuilt kernels.
         ("12.8", (10, 0), {}, FALLBACK, "cu128"),
-        # Installed dependencies below the newest floors are never raised.
         ("13.0", (10, 0), {"nvidia-cutlass-dsl": "4.5.0"}, FALLBACK, "cu130"),
         ("13.0", (10, 0), {"nvidia-cutlass-dsl": "4.6.2a0"}, FALLBACK, "cu130"),
         ("13.0", (10, 0), {"apache-tvm-ffi": "0.1.9"}, FALLBACK, "cu130"),
@@ -1677,7 +1675,6 @@ def test_an_installed_fallback_is_kept_not_upgraded(env):
 
 
 def test_the_verify_child_runs_the_shipped_snippet():
-    # The child code must itself be valid Python that prints providers then the version on its last line.
     import ast
     ast.parse(inst._VERIFY_CODE)
     assert inst._VERIFY_CODE.rstrip().endswith("'unknown')))")
