@@ -342,6 +342,7 @@ import {
   exportConversationShareGPT,
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "./components/export-format-items";
 
 const BrowserPanel = lazy(() =>
   import("@/features/browser/browser-panel").then((module) => ({
@@ -2576,18 +2577,15 @@ function ProjectLanding({
                             <span>Export</span>
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent className="unsloth-plus-menu w-52">
-                            {PROJECT_CHAT_EXPORT_OPTIONS.map(
-                              ({ label, format }) => (
-                                <DropdownMenuItem
-                                  key={format}
-                                  onSelect={() =>
-                                    void handleExport(item, format)
-                                  }
-                                >
-                                  {label}
-                                </DropdownMenuItem>
-                              ),
-                            )}
+                            <ExportFormatItems
+                              options={PROJECT_CHAT_EXPORT_OPTIONS.map(
+                                ({ label, format }) => ({ key: format, label }),
+                              )}
+                              onSelect={(format) =>
+                                void handleExport(item, format)
+                              }
+                              subContentClassName="unsloth-plus-menu w-48"
+                            />
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
                         <DropdownMenuItem

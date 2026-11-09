@@ -3135,8 +3135,6 @@ export const zhCN = {
       exportConversationsAction: "导出",
       exportScopeRecents: "最近对话",
       exportScopeAll: "最近对话 + 项目",
-      exportCombinedSuffix: "（合并）",
-      exportPerChatSuffix: "（每个对话）",
       importChats: "导入对话",
       importChatsDescription:
         "将 JSON、JSONL、NDJSON、CSV 或 Markdown 文件导入到最近对话。",

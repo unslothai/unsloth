@@ -3193,8 +3193,6 @@ export const ptBR = {
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recentes",
       exportScopeAll: "Recentes + Projetos",
-      exportCombinedSuffix: "(combinado)",
-      exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
         "Importe arquivos JSON, JSONL, NDJSON, CSV ou Markdown para Recentes.",

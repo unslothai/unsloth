@@ -3178,8 +3178,6 @@ export const ar = {
       exportConversationsAction: "تصدير",
       exportScopeRecents: "العناصر الأخيرة",
       exportScopeAll: "العناصر الأخيرة + المشاريع",
-      exportCombinedSuffix: "(مجمّعة)",
-      exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
         "استيراد ملفات JSON أو JSONL أو NDJSON أو CSV أو Markdown إلى الأخيرة.",

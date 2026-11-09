@@ -3426,8 +3426,6 @@ export const fa = {
       exportConversationsAction: "خروجی گرفتن",
       exportScopeRecents: "اخیر",
       exportScopeAll: "اخیر + پروژه‌ها",
-      exportCombinedSuffix: "(ترکیبی)",
-      exportPerChatSuffix: "(برای هر گفتگو)",
       importChats: "وارد کردن گفتگوها",
       importChatsDescription:
         "فایل‌های JSON، JSONL، NDJSON، CSV یا Markdown را به «اخیر» وارد کنید.",

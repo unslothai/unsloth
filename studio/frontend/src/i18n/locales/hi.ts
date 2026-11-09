@@ -3187,8 +3187,6 @@ export const hi = {
       exportConversationsAction: "एक्सपोर्ट करें",
       exportScopeRecents: "हाल के",
       exportScopeAll: "हाल के + प्रोजेक्ट",
-      exportCombinedSuffix: "(संयुक्त)",
-      exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
         "JSON, JSONL, NDJSON, CSV या Markdown फ़ाइलों को Recents में इंपोर्ट करें।",

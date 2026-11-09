@@ -3262,8 +3262,6 @@ export const he = {
       exportConversationsAction: "ייצוא",
       exportScopeRecents: "אחרונים",
       exportScopeAll: "אחרונים + פרויקטים",
-      exportCombinedSuffix: "(משולב)",
-      exportPerChatSuffix: "(לכל צ'אט)",
       importChats: "ייבוא צ'אטים",
       importChatsDescription:
         "ייבא קובצי JSON, JSONL, NDJSON, CSV או Markdown אל 'אחרונים'.",

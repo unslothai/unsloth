@@ -3439,8 +3439,6 @@ export const vi = {
       exportConversationsAction: "Xuất",
       exportScopeRecents: "Gần đây",
       exportScopeAll: "Gần đây + Dự án",
-      exportCombinedSuffix: "(gộp chung)",
-      exportPerChatSuffix: "(theo từng cuộc trò chuyện)",
       importChats: "Nhập cuộc trò chuyện",
       importChatsDescription:
         "Nhập tệp JSON, JSONL, NDJSON, CSV hoặc Markdown vào Gần đây.",

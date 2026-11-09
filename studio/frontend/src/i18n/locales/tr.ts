@@ -3441,8 +3441,6 @@ export const tr = {
       exportConversationsAction: "Dışa aktar",
       exportScopeRecents: "Son Kullanılanlar",
       exportScopeAll: "Son Kullanılanlar + Projeler",
-      exportCombinedSuffix: "(birleşik)",
-      exportPerChatSuffix: "(sohbet başına)",
       importChats: "Sohbetleri içe aktar",
       importChatsDescription:
         "JSON, JSONL, NDJSON, CSV veya Markdown dosyalarını Son Kullanılanlar'a aktarın.",

@@ -3348,8 +3348,6 @@ export const sv = {
       exportConversationsAction: "Exportera",
       exportScopeRecents: "Senaste",
       exportScopeAll: "Senaste + Projekt",
-      exportCombinedSuffix: "(sammanslagen)",
-      exportPerChatSuffix: "(per chatt)",
       importChats: "Importera chattar",
       importChatsDescription:
         "Importera JSON-, JSONL-, NDJSON-, CSV- eller Markdown-filer till Senaste.",

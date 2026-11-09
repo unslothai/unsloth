@@ -3172,8 +3172,6 @@ export const ko = {
       exportConversationsAction: "내보내기",
       exportScopeRecents: "최근 항목",
       exportScopeAll: "최근 항목 + 프로젝트",
-      exportCombinedSuffix: "(통합)",
-      exportPerChatSuffix: "(채팅별)",
       importChats: "채팅 가져오기",
       importChatsDescription:
         "JSON, JSONL, NDJSON, CSV 또는 Markdown 파일을 최근 항목으로 가져옵니다.",

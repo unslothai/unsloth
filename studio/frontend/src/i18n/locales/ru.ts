@@ -3191,8 +3191,6 @@ export const ru = {
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
-      exportCombinedSuffix: "(объединённо)",
-      exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
         "Импортируйте файлы JSON, JSONL, NDJSON, CSV или Markdown в Недавние.",

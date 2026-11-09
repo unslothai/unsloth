@@ -15,7 +15,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -32,8 +31,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
-  COMBINED_EXPORT_FORMATS_LIST,
-  EXPORT_FORMATS_LIST,
   type FineTuneFormat,
   archiveAllChatItems,
   BulkExportItems,
@@ -694,12 +691,13 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                     : t("settings.data.exportArchivedChats")}
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64">
-                <DropdownMenuItem onSelect={() => void handleExportArchived()}>
-                  JSON {t("settings.chat.exportCombinedSuffix")}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
+              <DropdownMenuContent align="end" className="w-56">
                 <BulkExportItems
+                  combinedLead={
+                    <DropdownMenuItem onSelect={() => void handleExportArchived()}>
+                      JSON
+                    </DropdownMenuItem>
+                  }
                   onExport={(fmt, merged) =>
                     void bulkExportConversationsByScope("archived", fmt, merged)
                   }
@@ -962,12 +960,13 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                   : t("settings.chat.exportAction")}
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64">
-              <DropdownMenuItem onSelect={() => void handleExport()}>
-                JSON {t("settings.chat.exportCombinedSuffix")}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
+            <DropdownMenuContent align="end" className="w-56">
               <BulkExportItems
+                combinedLead={
+                  <DropdownMenuItem onSelect={() => void handleExport()}>
+                    JSON
+                  </DropdownMenuItem>
+                }
                 onExport={(fmt, merged) =>
                   void bulkExportConversationsByScope("history", fmt, merged)
                 }
@@ -1002,27 +1001,11 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                     {t(`settings.chat.${label}`)}
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-56">
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
-                      <DropdownMenuItem
-                        key={`${scope}-m-${fmt}`}
-                        onSelect={() =>
-                          void bulkExportConversationsByScope(scope, fmt, true)
-                        }
-                      >
-                        {fmtLabel} {t("settings.chat.exportCombinedSuffix")}
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
-                      <DropdownMenuItem
-                        key={`${scope}-s-${fmt}`}
-                        onSelect={() =>
-                          void bulkExportConversationsByScope(scope, fmt, false)
-                        }
-                      >
-                        {fmtLabel} {t("settings.chat.exportPerChatSuffix")}
-                      </DropdownMenuItem>
-                    ))}
+                    <BulkExportItems
+                      onExport={(fmt, merged) =>
+                        void bulkExportConversationsByScope(scope, fmt, merged)
+                      }
+                    />
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
               ))}

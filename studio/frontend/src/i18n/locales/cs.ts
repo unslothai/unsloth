@@ -3457,8 +3457,6 @@ export const cs = {
       exportConversationsAction: "Exportovat",
       exportScopeRecents: "Nedávné",
       exportScopeAll: "Nedávné + Projekty",
-      exportCombinedSuffix: "(sloučené)",
-      exportPerChatSuffix: "(po chatech)",
       importChats: "Importovat chaty",
       importChatsDescription:
         "Importovat soubory JSON, JSONL, NDJSON, CSV nebo Markdown do Nedávných.",

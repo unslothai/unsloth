@@ -3443,8 +3443,6 @@ export const id = {
       exportConversationsAction: "Ekspor",
       exportScopeRecents: "Terbaru",
       exportScopeAll: "Terbaru + Proyek",
-      exportCombinedSuffix: "(digabung)",
-      exportPerChatSuffix: "(setiap chat)",
       importChats: "Impor chat",
       importChatsDescription:
         "Impor file JSON, JSONL, NDJSON, CSV, atau Markdown ke Terbaru.",

@@ -3481,8 +3481,6 @@ export const pl = {
       exportConversationsAction: "Eksportuj",
       exportScopeRecents: "Ostatnie",
       exportScopeAll: "Ostatnie + Projekty",
-      exportCombinedSuffix: "(łącznie)",
-      exportPerChatSuffix: "(każdy czat osobno)",
       importChats: "Importuj czaty",
       importChatsDescription:
         "Importuj pliki JSON, JSONL, NDJSON, CSV lub Markdown do sekcji Ostatnie.",

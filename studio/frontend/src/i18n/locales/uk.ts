@@ -3473,8 +3473,6 @@ export const uk = {
       exportConversationsAction: "Експортувати",
       exportScopeRecents: "Нещодавні",
       exportScopeAll: "Нещодавні + Проєкти",
-      exportCombinedSuffix: "(одним файлом)",
-      exportPerChatSuffix: "(для кожного чату)",
       importChats: "Імпортувати чати",
       importChatsDescription:
         "Імпортувати файли JSON, JSONL, NDJSON, CSV або Markdown у «Нещодавні».",

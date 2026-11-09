@@ -3216,8 +3216,6 @@ export const fr = {
       exportConversationsAction: "Exporter",
       exportScopeRecents: "Récents",
       exportScopeAll: "Récents + Projets",
-      exportCombinedSuffix: "(combiné)",
-      exportPerChatSuffix: "(par discussion)",
       importChats: "Importer des discussions",
       importChatsDescription:
         "Importez des fichiers JSON, JSONL, NDJSON, CSV ou Markdown dans Récents.",

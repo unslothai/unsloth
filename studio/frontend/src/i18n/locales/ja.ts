@@ -3164,8 +3164,6 @@ export const ja = {
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",
-      exportCombinedSuffix: "(一括)",
-      exportPerChatSuffix: "(チャットごと)",
       importChats: "チャットをインポート",
       importChatsDescription: "JSON、JSONL、NDJSON、CSV、または Markdown ファイルを履歴にインポートします。",
       importChatsAction: "インポート",

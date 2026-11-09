@@ -3220,8 +3220,6 @@ export const de = {
       exportConversationsAction: "Exportieren",
       exportScopeRecents: "Zuletzt verwendet",
       exportScopeAll: "Zuletzt verwendet + Projekte",
-      exportCombinedSuffix: "(kombiniert)",
-      exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
         "JSON-, JSONL-, NDJSON-, CSV- oder Markdown-Dateien in Zuletzt importieren.",

@@ -3299,8 +3299,6 @@ export const th = {
       exportConversationsAction: "ส่งออก",
       exportScopeRecents: "รายการล่าสุด",
       exportScopeAll: "รายการล่าสุด + โปรเจกต์",
-      exportCombinedSuffix: "(รวม)",
-      exportPerChatSuffix: "(แยกตามแชท)",
       importChats: "นำเข้าแชท",
       importChatsDescription:
         "นำเข้าไฟล์ JSON, JSONL, NDJSON, CSV หรือ Markdown ไปยังรายการล่าสุด",

@@ -3483,8 +3483,6 @@ export const nl = {
       exportConversationsAction: "Exporteren",
       exportScopeRecents: "Recent",
       exportScopeAll: "Recent + Projecten",
-      exportCombinedSuffix: "(gecombineerd)",
-      exportPerChatSuffix: "(per chat)",
       importChats: "Chats importeren",
       importChatsDescription:
         "JSON-, JSONL-, NDJSON-, CSV- of Markdown-bestanden importeren in Recent.",

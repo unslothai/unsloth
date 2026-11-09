@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   BulkExportItems,
+  ExportFormatItems,
   type ConvExportFormat,
   type ConversationExportFormat,
   chatExportOptions,
@@ -222,13 +223,16 @@ export function ExportSubmenu({
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className={cn(MENU, bulk ? "w-56" : "w-48")}>
         {bulk ? (
-          <BulkExportItems onExport={(format, merged) => onExport({ kind: "bulk", format, merged })} />
+          <BulkExportItems
+            onExport={(format, merged) => onExport({ kind: "bulk", format, merged })}
+            subContentClassName={cn(MENU, "w-48")}
+          />
         ) : (
-          chatExportOptions().map(({ label, format }) => (
-            <DropdownMenuItem key={format} onSelect={() => onExport({ kind: "chat", format })}>
-              {label}
-            </DropdownMenuItem>
-          ))
+          <ExportFormatItems
+            options={chatExportOptions().map(({ label, format }) => ({ key: format, label }))}
+            onSelect={(format) => onExport({ kind: "chat", format })}
+            subContentClassName={cn(MENU, "w-48")}
+          />
         )}
       </DropdownMenuSubContent>
     </DropdownMenuSub>

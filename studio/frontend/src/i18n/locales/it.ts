@@ -3113,8 +3113,6 @@ export const it = {
       exportConversationsAction: "Esporta",
       exportScopeRecents: "Recenti",
       exportScopeAll: "Recenti + Progetti",
-      exportCombinedSuffix: "(file unico)",
-      exportPerChatSuffix: "(uno per chat)",
       importChats: "Importa chat",
       importChatsDescription:
         "Importa file JSON, JSONL, NDJSON, CSV o Markdown in Recenti.",

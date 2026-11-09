@@ -3281,8 +3281,6 @@ export const zhTW = {
       exportConversationsAction: "匯出",
       exportScopeRecents: "最近項目",
       exportScopeAll: "最近項目 + 專案",
-      exportCombinedSuffix: "（合併）",
-      exportPerChatSuffix: "（每個聊天）",
       importChats: "匯入聊天",
       importChatsDescription:
         "將 JSON、JSONL、NDJSON、CSV 或 Markdown 檔案匯入「最近項目」。",
