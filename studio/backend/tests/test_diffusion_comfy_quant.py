@@ -1695,7 +1695,6 @@ def test_cpu_keeps_int8_codes_resident_and_matches_the_expanded_dit_bitwise(
             assert layer.weight_q.dtype == torch.int8
     for block in expanded.blocks:
         assert not any(is_native_linear(m) for m in block.modules())
-    # float32: 4 bytes a weight down to 1 plus a 4-byte row scale
     assert _held(expanded) - _held(stored) == 8 * (DIM * DIM * (dtype.itemsize - 1) - 4 * DIM)
     for rows in (1, 3, 17):
         x = torch.randn(rows, DIM).to(dtype)

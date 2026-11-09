@@ -467,7 +467,7 @@ def fused_w8a8_state() -> dict:
     }
 
 
-# Per-thread fp32 widen buffer: a fresh weight-sized tensor per call costs ~4x the widen in page faults.
+# Per-thread fp32 widen buffer: a fresh one per call costs ~4x the widen in page faults.
 _CPU_WIDEN = threading.local()
 
 
@@ -477,7 +477,7 @@ def _cpu_widen_scratch(numel: int) -> Any:
     buf = getattr(_CPU_WIDEN, "buf", None)
     if buf is None or buf.numel() < numel:
         _CPU_WIDEN.buf = None
-        # A normal tensor, writable in and out of inference_mode (an inference tensor is not, outside it).
+        # Not an inference tensor: those are read-only outside inference_mode.
         with torch.inference_mode(False):
             buf = _CPU_WIDEN.buf = torch.empty(numel, dtype = torch.float32)
     return buf[:numel]
