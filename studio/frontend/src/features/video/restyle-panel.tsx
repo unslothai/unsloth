@@ -115,7 +115,8 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             CLIPS.map((clip) => fetchVideoRestyleClip(next.id as string, clip.kind)),
           );
         } catch (err) {
-          if (loadedFor.current === next.id) loadedFor.current = null;
+          // Retry only for the selection that asked: a result a new clip discarded stays discarded.
+          if (loadedFor.current === next.id && ticket === clipsFor.current) loadedFor.current = null;
           throw err;
         }
         const [input, control, output] = clips;
