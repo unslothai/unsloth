@@ -692,6 +692,10 @@ def stream_h3_text_encoder(
         return None
     # The manager only evicts inside a managed pre_forward; else the last decode's VAE sits beside the encode.
     target.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
+    if stream:
+        # One transfer per decoder layer instead of 11 synchronised leaf groups; UNSLOTH_H3_TE_LAYER_STREAM=0 keeps them.
+        from .video_minimax_h3_te_layers import install_h3_te_layer_stream
+        install_h3_te_layer_stream(text_encoder, onload, pinned = bool(pin), logger = logger)
     mode = ("stream" if pin else "stream_lazy") if stream else "sync"
     if logger is not None:
         logger.info(
