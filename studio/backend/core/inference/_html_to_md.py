@@ -354,7 +354,7 @@ _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 _WHITESPACE_RUN = re.compile(r"\s+")
 # browsers collapse only ASCII whitespace, so text indented with &nbsp; or &emsp; keeps its indent
 _COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
-# a whole space run holding a kept Unicode space; the lookbehind starts it at the run's first char
+# a space run holding a kept Unicode space; the lookbehind starts it only at a run's first char, keeping it linear
 _KEPT_SPACE_RUN = re.compile(r"(?<![^\S\n])[ \t\r\f\v]*[^\S \t\n\r\f\v][^\S\n]*")
 _KEPT_SPACE = re.compile(r"[^\S \t\n\r\f\v]")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
