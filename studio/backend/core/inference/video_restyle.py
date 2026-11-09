@@ -751,3 +751,8 @@ class RestyleRunner:
 
 
 runner = RestyleRunner()
+
+
+def generation_in_flight() -> bool:
+    """For the desktop watchdog's busy budget; a lock-free read, like the other media modules'."""
+    return bool(runner._state.get("active"))

@@ -90,15 +90,18 @@ idle_after = probe()
 # Keep this independent of main._MEDIA_BACKEND_MODULES so omissions are detected.
 media_modules = (
     "core.inference.video",
+    "core.inference.video_restyle",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
     "core.inference.mlx_diffusion_backend",
     "routes.inference",
 )
-# routes.inference is imported at startup regardless, so the ML-stack question is only
-# about the three engines.
+# routes.inference and the import-light restyle module load at startup regardless, so the
+# ML-stack question is only about the three engines.
 media_import_free = [
-    name for name in media_modules if name.startswith("core.") and name in sys.modules
+    name
+    for name in media_modules
+    if name.startswith("core.") and name != "core.inference.video_restyle" and name in sys.modules
 ]
 scanned = list(getattr(main, "_MEDIA_BACKEND_MODULES", ()) or ())
 

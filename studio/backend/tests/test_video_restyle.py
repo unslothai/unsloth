@@ -1206,3 +1206,14 @@ def test_a_finished_job_has_already_released_its_server(weights, monkeypatch):
     monkeypatch.setattr(runner, "_update", update)
     runner.run(runner.start(prompt = "x", frames = _frames(5)))
     assert runner.progress()["phase"] == "done" and seen == [None]
+
+
+def test_a_running_restyle_counts_as_inference_activity(weights, monkeypatch):
+    import main
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    monkeypatch.setattr(vr, "runner", runner)
+    assert "core.inference.video_restyle" in main._MEDIA_BACKEND_MODULES
+    assert not vr.generation_in_flight()
+    runner.start(prompt = "x", frames = _frames(5))
+    assert vr.generation_in_flight() and main._media_generation_active()
