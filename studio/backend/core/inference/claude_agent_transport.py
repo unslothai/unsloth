@@ -232,7 +232,9 @@ class ClaudeAgentTransport:
             return
         max_tokens = self._max_tokens
         if self._fitter is not None:
-            messages, max_tokens, truncation_line = await self._fitter(messages)
+            messages, fitted, truncation_line = await self._fitter(messages)
+            if max_tokens and fitted:
+                max_tokens = min(max_tokens, fitted)
             if truncation_line:
                 yield truncation_line
         system, blocks = build_prompt(messages, tools = bool(tools))

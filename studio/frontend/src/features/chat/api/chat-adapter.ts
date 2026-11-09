@@ -6737,18 +6737,24 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.topP !== false && params.topP < 1
                 ? { top_p: params.topP }
                 : {}),
-              // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
-              max_tokens: Math.min(
-                Math.max(
-                  params.maxTokens,
-                  getExternalMinOutputTokens(externalProvider?.providerType),
-                ),
-                getExternalMaxOutputTokens(
-                  externalProvider?.providerType,
-                  externalSelection?.modelId,
-                  externalProvider?.maxOutputTokens,
-                ),
-              ),
+              // Claude Code is a hard cap shared with thinking, so only a limit saved on the connection applies.
+              ...(externalProvider?.providerType === CLAUDE_AGENT_PROVIDER_TYPE
+                ? externalProvider.maxOutputTokens
+                  ? { max_tokens: externalProvider.maxOutputTokens }
+                  : {}
+                : {
+                    max_tokens: Math.min(
+                      Math.max(
+                        params.maxTokens,
+                        getExternalMinOutputTokens(externalProvider?.providerType),
+                      ),
+                      getExternalMaxOutputTokens(
+                        externalProvider?.providerType,
+                        externalSelection?.modelId,
+                        externalProvider?.maxOutputTokens,
+                      ),
+                    ),
+                  }),
 
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.minP

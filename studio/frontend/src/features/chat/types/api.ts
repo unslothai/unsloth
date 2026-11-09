@@ -622,7 +622,7 @@ export interface OpenAIChatCompletionsRequest {
   /** Reasoning-class OpenAI models reject these; caller may omit. */
   temperature?: number;
   top_p?: number;
-  max_tokens: number;
+  max_tokens?: number;
   top_k?: number;
   min_p?: number;
   repetition_penalty?: number;

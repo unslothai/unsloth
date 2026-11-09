@@ -422,6 +422,23 @@ def test_options_isolate_claude_code_and_pass_model_and_effort(monkeypatch, tmp_
     assert not hasattr(options, "mcp_servers")
 
 
+@pytest.mark.parametrize(("requested", "expected"), [(None, None), (2048, "2048")])
+def test_context_fitter_never_adds_an_output_cap(monkeypatch, tmp_path, requested, expected):
+    sdk = _install(monkeypatch, tmp_path, turns = [[_result()]])
+
+    async def fitter(messages):
+        return messages, 50_000, None
+
+    async def run():
+        transport = ClaudeAgentTransport(model = "haiku", max_tokens = requested, message_fitter = fitter)
+        await _round(transport, [{"role": "user", "content": "hi"}], tools = None)
+        await transport.aclose()
+
+    asyncio.run(run())
+
+    assert sdk.clients[-1].options.env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == expected
+
+
 def test_user_turn_is_only_the_newest_message(monkeypatch, tmp_path):
     sdk = _install(monkeypatch, tmp_path, turns = [[_result()]])
     _stream(
