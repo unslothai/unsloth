@@ -498,7 +498,9 @@ def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any
             "status": status,
             "reason": reason,
         }
-    return record
+    from .diffusion_nvfp4_route import annotate_resolved
+
+    return annotate_resolved(record)
 
 
 def format_resolved_for_log(record: Optional[dict[str, dict[str, Any]]]) -> str:

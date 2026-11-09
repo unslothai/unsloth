@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from core.inference.web_access_policy import check_url_access, normalize_website_policy
-from storage.studio_db import get_connection as _studio_connection
+from storage.studio_db import get_connection as _studio_connection, insert_server_chat_message
 
 ACTIVE_STATUSES = frozenset(
     {"planning", "awaiting_approval", "queued", "running", "paused", "cancelling"}
@@ -158,27 +158,15 @@ def _bind_assistant_locked(
         "serverManaged": True,
     }
     if message is None:
-        # An empty placeholder adds no attachment entries; keep a clean inventory clean (#14217).
-        inventory_was_clean = (
-            conn.execute(
-                "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
-            ).fetchone()
-            is not None
+        insert_server_chat_message(
+            conn,
+            assistant_message_id,
+            thread_id,
+            user_message_id,
+            "[]",
+            json.dumps(metadata, ensure_ascii = False),
+            created,
         )
-        conn.execute(
-            """INSERT INTO chat_messages
-               (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
-               VALUES (?, ?, ?, 'assistant', '[]', ?, ?)""",
-            (
-                assistant_message_id,
-                thread_id,
-                user_message_id,
-                json.dumps(metadata, ensure_ascii = False),
-                created,
-            ),
-        )
-        if inventory_was_clean:
-            conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
         conn.execute(
             "UPDATE chat_threads SET updated_at=MAX(COALESCE(updated_at, created_at), ?) WHERE id=?",
             (created, thread_id),
@@ -638,18 +626,14 @@ def create_and_bind_terminal_fallback(
             "serverManaged": True,
         }
         created = now_ms()
-        conn.execute(
-            """INSERT INTO chat_messages
-               (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
-               VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
-            (
-                message_id,
-                run["thread_id"],
-                run["user_message_id"],
-                json.dumps(parts, ensure_ascii = False),
-                json.dumps(metadata, ensure_ascii = False),
-                created,
-            ),
+        insert_server_chat_message(
+            conn,
+            message_id,
+            run["thread_id"],
+            run["user_message_id"],
+            json.dumps(parts, ensure_ascii = False),
+            json.dumps(metadata, ensure_ascii = False),
+            created,
         )
         conn.execute(
             "UPDATE research_runs SET assistant_message_id=?, updated_at=? WHERE id=?",

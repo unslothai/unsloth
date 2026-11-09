@@ -1099,6 +1099,10 @@ const highlightResize = (): void => {
 };
 
 // Bounded entries ignore wheel and touch scrolling; the rest still wait for the reader to stop.
+// Only with requestIdleCallback: without it (WebKit) each step is a timer inside the scroll that
+// swaps markup without colour (scroll cost rose about 6x).
+const MID_SCROLL_WORK = typeof window !== "undefined"
+  && typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback === "function";
 const highlightQuietIn = (duringScroll: boolean): number =>
   Math.max(
     duringScroll ? nonScrollInputQuietIn() : inputQuietIn(),
@@ -1166,7 +1170,7 @@ export function queueFenceWork(work: () => void): () => void {
   const remove = highlightQueue.add(() => {
     finish();
     return true;
-  }, finish, true);
+  }, finish, MID_SCROLL_WORK);
   cancel = () => {
     remove();
     unwatchHighlighting();
@@ -1315,7 +1319,7 @@ function useFenceHighlightLimit(
         );
       setPrevious({ tokens, parked, progress: next });
       return true;
-    }, () => setPrevious({ tokens, parked, progress: null }), capped !== null);
+    }, () => setPrevious({ tokens, parked, progress: null }), capped !== null && MID_SCROLL_WORK);
     return () => {
       cancel();
       unwatchHighlighting();

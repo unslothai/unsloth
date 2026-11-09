@@ -724,6 +724,20 @@ def segment_graphs_disabled() -> bool:
     return (os.environ.get(SEGMENT_GRAPHS_ENV) or "").strip().lower() in _OFF
 
 
+# 0: a segment whose blocks carry an armed NVFP4 step schedule stays per block for the whole run (the old behaviour).
+SEGMENT_PROTECT_ENV = "UNSLOTH_DIFFUSION_SEGMENT_GRAPHS_PROTECT"
+
+
+def segment_protect_fallback_enabled() -> bool:
+    """Default on: only the protected (W4A16) steps leave the segment; the W4A4 steps keep replaying it."""
+    return (os.environ.get(SEGMENT_PROTECT_ENV) or "").strip().lower() not in _OFF
+
+
+def _protect_live(controller: Any) -> bool:
+    """The layers run W4A16 exactly when ``armed and protected``."""
+    return bool(getattr(controller, "armed", False) and getattr(controller, "protected", False))
+
+
 class _SegRecord:
     """One eager pass over a segment: each block's call layout, where each of its input tensors came from (an earlier
     block's output, or one of the first block's inputs), and its output layout."""
@@ -815,6 +829,7 @@ class SegmentGraph:
             "segment_breaks": 0,
             "segment_refusals": 0,
             "segment_fallbacks": 0,
+            "segment_protected_steps": 0,
         }
         for i, g in enumerate(self.graphs):
             g.segment = self
@@ -887,14 +902,29 @@ class SegmentGraph:
             t.device.index != self.shared.device_index for t in live
         ):
             return _NOT_HANDLED
+        controller = None
         for g in self.graphs:
             if g.protect is None:
                 g.protect = g._protect_controller()
-            if g.poisoned or g.churned or g.bypassed or g.protect:
+            if g.poisoned or g.churned or g.bypassed:
                 return _NOT_HANDLED
+            if g.protect:
+                if not segment_protect_fallback_enabled():
+                    return _NOT_HANDLED
+                controller = controller or g.protect
+        if controller is not None and any(
+            _protect_live(g.protect) for g in self.graphs if g.protect
+        ):
+            # W4A16 step: per block for this forward only; it writes no state a W4A4 recording reads.
+            self.stats["segment_protected_steps"] += 1
+            return _NOT_HANDLED
         placement = self._placement()
         if placement is None:
             return _NOT_HANDLED
+        if controller is not None:
+            # Keyed by branch so a recording only replays at the branch it recorded.
+            from .diffusion_cuda_graph import protect_graph_key
+            placement = (placement, protect_graph_key(controller))
         full = (key, placement) if extra is None else (key, placement, extra)
         if full in self.refused:
             return _NOT_HANDLED
