@@ -1300,6 +1300,9 @@ function VideoGenerator({
   // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
   const [trainMounted, setTrainMounted] = useState(false);
   if (pageMode === "train" && !trainMounted) setTrainMounted(true);
+  // Kept mounted once opened: its poll is what saves a finished restyle into the gallery.
+  const [restyleMounted, setRestyleMounted] = useState(false);
+  if (pageMode === "restyle" && !restyleMounted) setRestyleMounted(true);
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
@@ -4056,7 +4059,11 @@ function VideoGenerator({
           />
         </div>
       )}
-      {pageMode === "restyle" && <VideoRestylePanel active={active} />}
+      {restyleMounted && (
+        <div className={pageMode === "restyle" ? "contents" : "hidden"} inert={pageMode !== "restyle" || undefined}>
+          <VideoRestylePanel active={active} />
+        </div>
+      )}
       {pageMode === "create" && (
       /* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
           wide row pan the page sideways on a phone. */

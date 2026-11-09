@@ -54,7 +54,7 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
     assert.match(
       src,
       page.includes("video")
-        ? /\/>\s*<\/div>\s*\)\}\s*\{pageMode === "restyle" && <VideoRestylePanel active=\{active\} \/>\}\s*\{pageMode === "create" && \(/
+        ? /\/>\s*<\/div>\s*\)\}\s*\{restyleMounted && \(\s*<div className=\{pageMode === "restyle" \? "contents" : "hidden"\} inert=\{pageMode !== "restyle" \|\| undefined\}>\s*<VideoRestylePanel active=\{active\} \/>\s*<\/div>\s*\)\}\s*\{pageMode === "create" && \(/
         : /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/,
     );
     assert.doesNotMatch(src, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);

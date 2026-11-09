@@ -1133,3 +1133,24 @@ def test_the_worker_starts_inside_the_shielded_start(weights, monkeypatch):
         prompt = "x", frames = _frames(5), seed = 1, owner = None, reservation = None
     )
     assert job["id"] and ran.wait(5)
+
+
+def test_the_shielded_start_releases_the_reservation_itself(weights, monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import video_restyle as route
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    monkeypatch.setattr(vr, "runner", runner)
+
+    def refuse(mode = None):
+        assert runner.holds_gpu()  # still reserved while the handoff runs
+        raise HTTPException(status_code = 409, detail = "busy")
+
+    monkeypatch.setattr(route, "_take_the_gpu", refuse)
+    token = runner.reserve("alice")
+    with pytest.raises(HTTPException):
+        route._admit_and_start(
+            prompt = "x", frames = _frames(5), seed = 1, owner = "alice", reservation = token
+        )
+    assert not runner.holds_gpu()

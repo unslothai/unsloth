@@ -92,10 +92,14 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
         reservation = video_restyle.runner.reserve(current_account_id())
     except RestyleBusy as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
+    # Released here until the shielded start takes it over, which then releases it itself:
+    # a cancelled request must not free a reservation that start() is still about to use.
+    lease = {"route": True}
     try:
-        return await _start_reserved(request, reservation)
+        return await _start_reserved(request, reservation, lease)
     finally:
-        video_restyle.runner.release(reservation)
+        if lease["route"]:
+            video_restyle.runner.release(reservation)
 
 
 def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
@@ -113,6 +117,8 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
             job = video_restyle.runner.start(**kwargs)
     except TrainingActiveError as exc:
         raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
+    finally:
+        video_restyle.runner.release(kwargs.get("reservation"))
     # Launched here, inside the shielded call: a request cancelled after start() must not leave
     # an active runner with no worker.
     account_thread(
@@ -167,7 +173,7 @@ def _take_the_gpu(mode: Optional[str] = None) -> None:
         gpu_arbiter.restyle_handoff.reset(handoff)
 
 
-async def _start_reserved(request: Request, reservation: str):
+async def _start_reserved(request: Request, reservation: str, lease: dict):
     fields, files = await _read_upload(request)
     seed: Optional[int] = None
     if fields.get("seed"):
@@ -184,6 +190,7 @@ async def _start_reserved(request: Request, reservation: str):
         # As a Create load: an evicted chat model gets its KV saved first (keep-KV setting).
         mode = await asyncio.to_thread(get_multi_model_mode)
         swap = await save_chat_kv_before_swap(gpu_arbiter.VIDEO, "video", policy = mode)
+        lease["route"] = False
         job = await acquire_then_close(
             swap,
             functools.partial(
