@@ -48398,21 +48398,39 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
     )
 
 
-async def _route_nvfp4_request(request: Any, media: str = "image") -> tuple:
-    """``(request, route)``: an explicit NVFP4 pick rerouted to INT8 / Auto on a pre-Blackwell host, before any check
-    or download plan reads it (``diffusion_nvfp4_route``); the same request and None otherwise."""
+async def _route_nvfp4_request(
+    request: Any,
+    media: str = "image",
+    *,
+    user_initiated: bool = True,
+) -> tuple:
+    """``(request, route)``: an explicit NVFP4 pick rerouted to INT8 / Auto on a pre-Blackwell host
+    (``diffusion_nvfp4_route``), after authorization and before any check or download plan reads it. A replaced
+    checkpoint's family pipeline is authorized like any pick. A load nobody picked by hand reroutes precision only:
+    its caller tracks the model by the path it asked for."""
     from core.inference.diffusion_nvfp4_route import route_load_request
-    return await asyncio.to_thread(route_load_request, request, media = media)
+
+    routed, route = await asyncio.to_thread(
+        route_load_request, request, media = media, replace_checkpoint = user_initiated
+    )
+    if (
+        route is not None
+        and routed.model_path != request.model_path
+        and account_access.managed_account()
+    ):
+        await asyncio.to_thread(account_access.require_model_access, routed.model_path)
+    return routed, route
 
 
 def _nvfp4_route_kwarg(begin_load: Any, route: Any) -> dict:
-    """Hands the reroute to a backend whose ``begin_load`` records it; native engines take no such argument."""
-    if route is None:
-        return {}
+    """Hands the route's decision to a backend whose ``begin_load`` records it (an unchanged one too, so the backend
+    does not decide again on a card the route never saw); native engines take no such argument."""
+    from core.inference.diffusion_nvfp4_route import ROUTE_UNCHANGED
+
     try:
         import inspect
         if "nvfp4_route" in inspect.signature(begin_load).parameters:
-            return {"nvfp4_route": route}
+            return {"nvfp4_route": route if route is not None else ROUTE_UNCHANGED}
     except (TypeError, ValueError):
         pass
     return {}
@@ -48505,7 +48523,6 @@ async def diffusion_download_plan(
 
     Validates the same way /images/load does, so an unloadable pick fails here rather than
     after a multi-GB download."""
-    request, nvfp4_route = await _route_nvfp4_request(request, "image")
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
@@ -48519,6 +48536,7 @@ async def diffusion_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, _ = await _route_nvfp4_request(request, "image")
     from core.inference.diffusion import (
         get_diffusion_backend,
         split_local_checkpoint_path,
@@ -48797,7 +48815,6 @@ async def load_diffusion_model_gated(
     user_initiated: bool = False,
 ):
     """Media auto-switch awaits this so the idle unload can tell API loads from user-picked ones."""
-    request, nvfp4_route = await _route_nvfp4_request(request, "image")
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
@@ -48812,6 +48829,9 @@ async def load_diffusion_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, nvfp4_route = await _route_nvfp4_request(
+        request, "image", user_initiated = user_initiated
+    )
     # Tested at ENTRY since begin_load returns early; the write waits, as validation can 400 first
     _media_repos_to_record = [
         ref

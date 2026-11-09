@@ -5507,8 +5507,12 @@ class DiffusionBackend:
         with self._load_cancel_lock:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
-        if nvfp4_route is None:
-            from .diffusion_nvfp4_route import plan_nvfp4_route
+        from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
+
+        if nvfp4_route is ROUTE_UNCHANGED:
+            # The route already decided to leave this request as it is.
+            nvfp4_route = None
+        elif nvfp4_route is None:
             nvfp4_route = plan_nvfp4_route(
                 media = "image",
                 model_path = repo_id,
@@ -5521,6 +5525,7 @@ class DiffusionBackend:
                 transformer_prequant_path = transformer_prequant_path,
                 gpu_ordinal = gpu_ordinal,
                 gpu_ids = gpu_ids,
+                component_files = bool(text_encoder_files or vae_file),
             )
             if nvfp4_route is not None:
                 updates = nvfp4_route.updates

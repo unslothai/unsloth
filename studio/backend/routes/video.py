@@ -156,13 +156,11 @@ async def video_download_plan(
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
     from routes.inference import (
-        _nvfp4_route_kwarg,
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
         _route_nvfp4_request,
     )
 
-    request, nvfp4_route = await _route_nvfp4_request(request, "video")
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
@@ -176,6 +174,7 @@ async def video_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, _ = await _route_nvfp4_request(request, "video")
     from core.inference.diffusion import split_local_checkpoint_path
     from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.video import (
@@ -316,7 +315,6 @@ async def load_video_model_gated(
         _route_nvfp4_request,
     )
 
-    request, nvfp4_route = await _route_nvfp4_request(request, "video")
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
@@ -331,6 +329,9 @@ async def load_video_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, nvfp4_route = await _route_nvfp4_request(
+        request, "video", user_initiated = user_initiated
+    )
     # Tested at entry (begin_load returns early) and written at launch (validation may 400 first).
     from routes.inference import (
         _note_load_fetched_with_a_request_token,

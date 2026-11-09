@@ -85,7 +85,9 @@ def _expected(device, cap, kind):
     if kind in ("auto", "local_unknown") or blackwell:
         return None
     nvidia = device == "cuda"
-    dit = "int8" if nvidia else "auto"
+    # Video INT8 needs bf16 (sm_80+); image INT8 also runs on a Turing fp16 card.
+    floor = (8, 0) if kind == "ltx_packed" else (7, 5)
+    dit = "int8" if nvidia and cap >= floor else "auto"
     te = "int8" if nvidia and cap[0] >= 8 else "auto"
     if kind == "dit" or kind == "hosted_source":
         return {"transformer_quant": dit}
@@ -180,8 +182,9 @@ def test_an_unknown_nvfp4_file_keeps_its_dit_precision_but_not_its_te_pick(
         ("FLUX.2-klein-9B-NVFP4.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
         ("flux-2-klein-4b-nvfp4.safetensors", "black-forest-labs/FLUX.2-klein-4B"),
         ("qwen-image-2.1-turbo-nvfp4.safetensors", "Qwen/Qwen-Image-2.1-Turbo"),
-        # Spells the family but neither its default base nor a registered variant: kept, never another model.
-        ("flux1-dev-nvfp4.safetensors", None),
+        ("flux1-dev-nvfp4.safetensors", "black-forest-labs/FLUX.1-dev"),
+        # Spells a variant whose canonical spelling the family never states: kept, never another model.
+        ("flux1-krea-dev-nvfp4.safetensors", None),
     ],
 )
 def test_a_known_family_file_keeps_its_variant(monkeypatch, tmp_path, name, base):
@@ -298,7 +301,7 @@ def test_nvidia_smi_answers_without_initialising_cuda(monkeypatch):
 
     from utils.hardware import hardware, nvidia
 
-    route._probe_device_profile.cache_clear()
+    route.reset_device_profile()
     monkeypatch.setattr(torch.cuda, "is_initialized", lambda: False)
     monkeypatch.setattr(
         torch.cuda, "get_device_capability", lambda *a: pytest.fail("initialised CUDA")
@@ -313,7 +316,7 @@ def test_nvidia_smi_answers_without_initialising_cuda(monkeypatch):
     try:
         assert route.device_profile() == DeviceProfile("nvidia", ((8, 9), (8, 9)))
     finally:
-        route._probe_device_profile.cache_clear()
+        route.reset_device_profile()
     # Different cards need torch ordinals (rows are not ordinals), so nvidia-smi does not answer: a B200 beside an
     # L4, and a 4090 beside a T4, where the TE target differs per card.
     for caps in ({0: (8, 9), 1: (12, 0)}, {0: (8, 9), 1: (7, 5)}):
@@ -326,7 +329,7 @@ def test_the_device_is_read_once(monkeypatch):
     import torch
 
     calls = []
-    route._probe_device_profile.cache_clear()
+    route.reset_device_profile()
     monkeypatch.setattr(route, "_smi_visible_capabilities", lambda torch: ())
     monkeypatch.setattr(torch.cuda, "is_available", lambda: calls.append("avail") or True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
@@ -337,7 +340,7 @@ def test_the_device_is_read_once(monkeypatch):
         assert route.device_profile() == DeviceProfile("nvidia", ((8, 9),))
         assert calls == ["avail"]
     finally:
-        route._probe_device_profile.cache_clear()
+        route.reset_device_profile()
 
 
 @pytest.mark.parametrize(
@@ -350,7 +353,7 @@ def test_the_device_is_read_once(monkeypatch):
 def test_rocm_never_reads_as_blackwell(monkeypatch, hip, version):
     import torch
 
-    route._probe_device_profile.cache_clear()
+    route.reset_device_profile()
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = None: (12, 0))
@@ -363,7 +366,7 @@ def test_rocm_never_reads_as_blackwell(monkeypatch, hip, version):
         assert got.updates["transformer_quant"] == "auto"
         assert got.device == "rocm"
     finally:
-        route._probe_device_profile.cache_clear()
+        route.reset_device_profile()
 
 
 # --- the resolved record reports what was asked and why it fell back ---
@@ -425,30 +428,188 @@ class _Seen(Exception):
 
 @pytest.mark.parametrize("field", ["transformer_quant", "text_encoder_quant"])
 @pytest.mark.parametrize("cap,want", [((8, 9), "int8"), ((10, 0), "nvfp4")])
-def test_every_load_and_plan_route_sees_the_rerouted_request(monkeypatch, field, cap, want):
+def test_every_load_and_plan_route_reroutes_before_its_checks(monkeypatch, field, cap, want):
+    """All four entries reroute after the disabled-NVFP4 refusal and account checks, before anything else reads the
+    request; the managed-account refusals still come first (``test_nvfp4_diffusion_flag``)."""
     from models.inference import DiffusionLoadRequest, VideoLoadRequest
     from routes import inference as image_routes
     from routes import video as video_routes
 
     _fake_device(monkeypatch, "cuda", cap)
+    real = image_routes._route_nvfp4_request
     seen = []
 
-    def _capture(request):
-        seen.append(getattr(request, field))
+    async def _spy(
+        request,
+        media = "image",
+        **kwargs,
+    ):
+        routed, got = await real(request, media, **kwargs)
+        seen.append((media, getattr(routed, field), kwargs.get("user_initiated", True)))
         raise _Seen()
 
-    monkeypatch.setattr(image_routes, "_refuse_disabled_nvfp4_request", _capture)
+    monkeypatch.setattr(image_routes, "_route_nvfp4_request", _spy)
     image = DiffusionLoadRequest(model_path = "Tongyi-MAI/Z-Image-Turbo", **{field: "nvfp4"})
     video = VideoLoadRequest(model_path = "Wan-AI/Wan2.2-TI2V-5B-Diffusers", **{field: "nvfp4"})
     for call in (
         image_routes.diffusion_download_plan(image, current_subject = "u"),
-        image_routes.load_diffusion_model_gated(image, "u"),
+        image_routes.load_diffusion_model_gated(image, "u", user_initiated = True),
         video_routes.video_download_plan(video, current_subject = "u"),
         video_routes.load_video_model_gated(video, "u"),
     ):
         with pytest.raises(_Seen):
             asyncio.run(call)
-    assert seen == [want] * 4
+    assert seen == [
+        ("image", want, True),
+        ("image", want, True),
+        ("video", want, True),
+        ("video", want, False),
+    ]
+
+
+def test_a_load_nobody_picked_by_hand_keeps_its_checkpoint(monkeypatch, tmp_path):
+    """Media auto-switch tracks the model by the path it asked for, so only precision is rerouted there."""
+    from models.inference import VideoLoadRequest
+
+    _fake_device(monkeypatch, "cuda", (8, 0))
+    media, kwargs = _pick("ltx_packed", tmp_path)
+    pick = VideoLoadRequest(**kwargs)
+    same, got = route.route_load_request(pick, media = media, replace_checkpoint = False)
+    assert got is None and same is pick
+    swapped, got = route.route_load_request(pick, media = media)
+    assert swapped.model_path == "Lightricks/LTX-2.5-Diffusers"
+
+
+def test_a_pick_with_its_own_components_keeps_its_checkpoint(monkeypatch, tmp_path):
+    _fake_device(monkeypatch, "cuda", (8, 9))
+    folder = tmp_path / "models"
+    folder.mkdir()
+    (folder / "flux-2-klein-4b-nvfp4.safetensors").write_bytes(b"\0" * 64)
+    got = route.plan_nvfp4_route(
+        model_path = str(folder),
+        gguf_filename = "flux-2-klein-4b-nvfp4.safetensors",
+        model_kind = "single_file",
+        component_files = True,
+    )
+    assert got is None
+
+
+def test_a_bare_folder_or_file_path_decides_like_its_folder_and_file(monkeypatch, tmp_path):
+    _fake_device(monkeypatch, "cuda", (8, 0))
+    folder = tmp_path / "ltx"
+    folder.mkdir()
+    name = "ltx-2.5-22b-distilled-transformer-nvfp4.safetensors"
+    (folder / name).write_bytes(b"\0" * 64)
+    pair = route.plan_nvfp4_route(media = "video", model_path = str(folder), gguf_filename = name)
+    bare = route.plan_nvfp4_route(media = "video", model_path = str(folder))
+    whole = route.plan_nvfp4_route(media = "video", model_path = str(folder / name))
+    assert pair.updates == bare.updates == whole.updates
+    assert pair.updates["model_path"] == "Lightricks/LTX-2.5-Diffusers"
+
+
+def test_a_missing_local_file_is_not_a_pick(monkeypatch, tmp_path):
+    _fake_device(monkeypatch, "cuda", (8, 9))
+    assert not route.checkpoint_is_nvfp4(
+        str(tmp_path / "nope"), "flux-2-klein-4b-nvfp4.safetensors"
+    )
+    assert (
+        route.plan_nvfp4_route(
+            model_path = str(tmp_path / "nope"), gguf_filename = "flux-2-klein-4b-nvfp4.safetensors"
+        )
+        is None
+    )
+
+
+def test_a_recorded_header_wins_over_the_name_and_pickles_are_never_opened(monkeypatch, tmp_path):
+    from core.inference import diffusion_prequant
+
+    opened = []
+    monkeypatch.setattr(
+        diffusion_prequant, "local_prequant_scheme", lambda path: opened.append(path) or "int8"
+    )
+    art = tmp_path / "my-finetune-from-nvfp4-int8.safetensors"
+    art.write_bytes(b"\0" * 64)
+    assert not route.checkpoint_is_nvfp4(str(art))
+    pickle = tmp_path / "flux-2-klein-4b-nvfp4.pt"
+    pickle.write_bytes(b"\0" * 64)
+    assert route.checkpoint_is_nvfp4(str(pickle))
+    assert opened == [str(art)]
+
+
+def test_an_unreadable_device_is_not_cached_and_leaves_the_request(monkeypatch):
+    calls = []
+
+    def _boom():
+        calls.append(1)
+        raise RuntimeError("driver hiccup")
+
+    route.reset_device_profile()
+    monkeypatch.setattr(route, "_probe_device_profile", _boom)
+    try:
+        assert route.device_profile().kind == route.UNKNOWN
+        assert route.device_profile().kind == route.UNKNOWN
+        assert len(calls) == 2
+        got = route.plan_nvfp4_route(
+            model_path = "Tongyi-MAI/Z-Image-Turbo", transformer_quant = "nvfp4"
+        )
+        assert got is None
+    finally:
+        route.reset_device_profile()
+
+
+@pytest.mark.parametrize(
+    "cap,media,turing_on,want",
+    [
+        ((7, 5), "image", True, "int8"),
+        ((7, 5), "image", False, "auto"),
+        ((7, 5), "video", True, "auto"),  # video INT8 needs bf16
+        ((8, 0), "video", True, "int8"),
+        ((6, 1), "image", True, "auto"),
+    ],
+)
+def test_the_int8_target_follows_what_the_card_runs(monkeypatch, cap, media, turing_on, want):
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setenv(tq.FP16_CARD_INT8_ENV, "1" if turing_on else "0")
+    _fake_device(monkeypatch, "cuda", cap)
+    repo = "Tongyi-MAI/Z-Image-Turbo" if media == "image" else "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    got = route.plan_nvfp4_route(media = media, model_path = repo, transformer_quant = "nvfp4")
+    assert got.updates["transformer_quant"] == want
+
+
+def test_a_selection_counts_every_card_it_places_work_on(monkeypatch):
+    from core.inference import diffusion_device
+
+    monkeypatch.setattr(diffusion_device, "resolve_selected_cuda_ordinals", lambda ids: [0, 1])
+    profile = DeviceProfile("nvidia", ((10, 0), (8, 0)))
+    # Primary B200 ranked by the route, A100 also selected: the A100 cannot run NVFP4.
+    got = route.plan_nvfp4_route(
+        model_path = "Tongyi-MAI/Z-Image-Turbo",
+        transformer_quant = "nvfp4",
+        gpu_ordinal = 0,
+        gpu_ids = [0, 1],
+        profile = profile,
+    )
+    assert got is not None and got.updates["transformer_quant"] == "int8"
+
+
+def test_hosted_repo_lookup_is_unambiguous_and_canonical(monkeypatch):
+    _fake_device(monkeypatch, "cuda", (8, 9))
+    # HunyuanVideo-1.5 480p and 720p share one NVFP4 repo: nothing tells them apart, so it is kept.
+    assert route.hosted_nvfp4_repo_base("unsloth/HunyuanVideo-1.5-NVFP4", "video") is None
+    fam, base = route.hosted_nvfp4_repo_base(
+        "unsloth/HunyuanVideo-1.5-NVFP4", "video", family_override = "hunyuanvideo-1.5-720p"
+    )
+    assert fam.name == "hunyuanvideo-1.5-720p" and base == fam.base_repo
+    fam, base = route.hosted_nvfp4_repo_base(
+        "unsloth/HunyuanVideo-1.5-NVFP4",
+        "video",
+        filename = "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.safetensors",
+    )
+    assert fam.name == "hunyuanvideo-1.5-720p"
+    # A variant row's base is a lowercase key: returned only in a spelling the family states in full.
+    got = route.hosted_nvfp4_repo_base("unsloth/Qwen-Image-2512-NVFP4", "image")
+    assert got is None or got[1] != got[1].lower()
 
 
 def test_the_route_hands_the_reroute_only_to_a_backend_that_records_it():
@@ -463,7 +624,8 @@ def test_the_route_hands_the_reroute_only_to_a_backend_that_records_it():
     marker = object()
     assert _nvfp4_route_kwarg(native, marker) == {}
     assert _nvfp4_route_kwarg(diffusers, marker) == {"nvfp4_route": marker}
-    assert _nvfp4_route_kwarg(diffusers, None) == {}
+    # An unchanged decision is handed over too, so the backend does not decide again on another card.
+    assert _nvfp4_route_kwarg(diffusers, None) == {"nvfp4_route": route.ROUTE_UNCHANGED}
 
 
 @pytest.mark.parametrize(

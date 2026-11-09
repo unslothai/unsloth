@@ -5694,8 +5694,12 @@ class VideoBackend:
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-        if nvfp4_route is None:
-            from .diffusion_nvfp4_route import plan_nvfp4_route
+        from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
+
+        if nvfp4_route is ROUTE_UNCHANGED:
+            # The route already decided to leave this request as it is.
+            nvfp4_route = None
+        elif nvfp4_route is None:
             nvfp4_route = plan_nvfp4_route(
                 media = "video",
                 model_path = repo_id,
