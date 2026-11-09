@@ -62,7 +62,6 @@ function useObjectUrl(blob: Blob | null): string | null {
   return url;
 }
 
-/** Restyle a short clip with Cosmos3-Nano-Sim-Transfer: the clip's edges keep the motion, the prompt sets the look. */
 export function VideoRestylePanel({ active }: { active: boolean }) {
   const [video, setVideo] = useState<File | null>(null);
   const [frames, setFrames] = useState<File[]>([]);
@@ -123,7 +122,6 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       .catch(() => setStatus(null));
   }, [active]);
 
-  // Show what the model will follow before anything heavy runs.
   const choose = async (next: { video: File | null; frames: File[] }) => {
     setVideo(next.video);
     setFrames(next.frames);
@@ -186,7 +184,6 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     }
   };
 
-  // Keep the players on the same frame.
   const syncPlay = (play: boolean) => {
     for (const el of Object.values(players.current)) {
       if (!el) continue;
@@ -336,7 +333,6 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
         ) : (
           <Button
             variant="primary"
-            // Same fill as Generate on the Create tab.
             className="h-11 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
             disabled={!source || !prompt.trim() || submitting || previewing || unavailable}
             onClick={() => void submit()}

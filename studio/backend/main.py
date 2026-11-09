@@ -1602,7 +1602,6 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
-# The restyle upload and its preview (same multipart body, no model run).
 _VIDEO_RESTYLE_UPLOAD_PATHS = (
     "/api/inference/video/restyle",
     "/api/inference/video/restyle/preview",

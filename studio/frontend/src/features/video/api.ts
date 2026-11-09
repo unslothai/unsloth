@@ -440,7 +440,6 @@ export async function fetchGalleryVideoExport(
 export interface VideoRestyleProgress {
   active: boolean;
   id?: string;
-  // edges, loading, generate, decode, export, then done / error / cancelled.
   phase: string | null;
   // Latent frames done out of total; Cosmos3 makes one per 4 output frames.
   step?: number;
@@ -458,7 +457,6 @@ export interface VideoRestyleStatus {
 }
 
 export interface VideoRestylePreview {
-  // Frames a restyle would use (4n + 1, at most 121) and their length at 30 fps.
   frames: number;
   seconds: number;
   source_seconds: number | null;
@@ -492,7 +490,6 @@ export async function previewVideoRestyle(input: {
   );
 }
 
-/** One video file, or a folder of frames read in file-name order. */
 export async function startVideoRestyle(input: {
   prompt: string;
   seed?: number | null;

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Restyle a video (Cosmos3-Nano-Sim-Transfer on sd-server): upload a clip or a folder of frames plus a prompt,
-poll progress, then fetch the fitted input and the restyled output for a side-by-side view."""
+"""Video restyle routes (Cosmos3-Nano-Sim-Transfer on sd-server)."""
 
 from __future__ import annotations
 
@@ -71,7 +70,6 @@ async def restyle_status(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/video/restyle/preview")
 async def preview_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
-    """The frame count a restyle would use and one frame with its edge control; runs no model."""
     _, files = await _read_upload(request)
     try:
         frames, seconds = await _frames_from_upload(files)

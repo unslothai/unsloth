@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Restyle a video with Cosmos3-Nano-Sim-Transfer on a resident sd-server: frames in, Canny edge
-control frames out to ``vid_gen``, one restyled clip back. Import-light: numpy, PIL and av load lazily."""
+"""Cosmos3-Nano-Sim-Transfer video restyle on a resident sd-server. Import-light: numpy, PIL and av load lazily."""
 
 from __future__ import annotations
 
@@ -24,7 +23,6 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MODEL_ID = "nvidia/Cosmos3-Nano-Sim-Transfer"
-# What the model was trained for (docs/cosmos3.md in the sd.cpp port).
 WIDTH = 832
 HEIGHT = 480
 FPS = 30
@@ -43,12 +41,11 @@ _LATENT_RE = re.compile(r"cosmos3: latent frame (\d+)/(\d+)")
 _DECODE_RE = re.compile(r"cosmos3: \d+ latent frames in")
 
 _TERMINAL = ("done", "error", "cancelled")
-# The fitted input, its edge control and the restyled clip, served for a three-way view.
 MEDIA_KINDS = ("input", "control", "output")
 
 
 class RestyleError(ValueError):
-    """A request the restyle workflow cannot run; the message is shown to the user."""
+    """Shown to the user."""
 
 
 class RestyleBusy(RuntimeError):
@@ -154,9 +151,7 @@ def frames_from_video(
 
 
 def video_seconds(data: bytes) -> Optional[float]:
-    """Length of the uploaded clip, or None when the container doesn't say."""
     import av
-
     try:
         with av.open(io.BytesIO(data)) as container:
             if container.duration:
@@ -192,8 +187,7 @@ def canny_edges(
     low: int = CANNY_LOW,
     high: int = CANNY_HIGH,
 ) -> Any:
-    """``cv2.Canny(rgb, low, high)`` in numpy (3x3 Sobel, L1 magnitude, strongest channel), since
-    OpenCV is not a Studio dependency. Returns a uint8 map of 0 / 255."""
+    """``cv2.Canny(rgb, low, high)`` in numpy (3x3 Sobel, L1, strongest channel): OpenCV is not a Studio dependency."""
     import numpy as np
 
     img = np.asarray(rgb, dtype = np.int32)
@@ -233,7 +227,6 @@ def canny_edges(
     )
     weak = keep & (c > low)
 
-    # Hysteresis: grow from strong pixels through 8-connected weak ones.
     pw = w + 2
     weak_flat = np.zeros((h + 2) * pw, dtype = bool)
     weak_flat.reshape(h + 2, pw)[1:-1, 1:-1] = weak
@@ -258,13 +251,11 @@ def _png_b64(array: Any) -> str:
 
 
 def control_frames(frames: list[Any]) -> list[Any]:
-    """Each fitted RGB frame's Canny map as a 3-channel uint8 array."""
     import numpy as np
     return [np.repeat(canny_edges(np.asarray(f))[..., None], 3, axis = -1) for f in frames]
 
 
 def control_frames_b64(frames: list[Any]) -> list[str]:
-    """Each fitted RGB frame as a 3-channel Canny PNG, base64."""
     return [_png_b64(edges) for edges in control_frames(frames)]
 
 
@@ -277,7 +268,6 @@ def _jpeg_b64(array: Any) -> str:
 
 
 def preview(frames: list[Any], source_seconds: Optional[float] = None) -> dict[str, Any]:
-    """What a restyle of ``frames`` would use: frame count, length, and one frame with its edges."""
     import numpy as np
 
     if not frames:
@@ -325,7 +315,6 @@ def binary_supports_cosmos3(binary: str) -> bool:
 
 
 def availability(env: Optional[dict[str, str]] = None) -> dict[str, Any]:
-    """Whether a restyle can run here, with the reason shown to the user when it can't."""
     try:
         model_files(env)
     except RestyleError:
@@ -397,8 +386,6 @@ def encode_mp4(frames: list[Any], fps: int = FPS) -> bytes:
 
 
 class RestyleRunner:
-    """One restyle at a time against a lazily started, resident sd-server."""
-
     def __init__(self, server_factory: Optional[Callable[[str], Any]] = None) -> None:
         self._lock = threading.Lock()
         self._server: Any = None
@@ -408,7 +395,6 @@ class RestyleRunner:
         self._state: dict[str, Any] = {"active": False, "phase": None}
         self._owner: Optional[str] = None
         self._workdir: Optional[Path] = None
-        # A server still loading weights, so a cancel can abort the load.
         self._loading: Any = None
         # Set once the clip is being published; a cancel after that point is refused, not half-honoured.
         self._publishing = False
