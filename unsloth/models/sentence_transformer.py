@@ -34,6 +34,8 @@ import inspect
 import json
 import os
 import posixpath
+import importlib.abc
+import sys
 import threading
 import types
 from huggingface_hub import hf_hub_download
@@ -3645,7 +3647,56 @@ def _patch_dense_input_dtype():
     Dense._unsloth_input_dtype = True
 
 
-_patch_sentence_transformer_trainer()
-_patch_st_trainer_load_from_checkpoint()
-_patch_pooling_float16_accumulation()
-_patch_dense_input_dtype()
+def _apply_sentence_transformers_patches():
+    _patch_sentence_transformer_trainer()
+    _patch_st_trainer_load_from_checkpoint()
+    _patch_pooling_float16_accumulation()
+    _patch_dense_input_dtype()
+
+
+class _PatchAfterImportLoader(importlib.abc.Loader):
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        return self._loader.create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        # Hand the module back its own loader, then patch the fully imported package.
+        module.__loader__ = self._loader
+        if getattr(module, "__spec__", None) is not None:
+            module.__spec__.loader = self._loader
+        _apply_sentence_transformers_patches()
+
+
+class _SentenceTransformersFinder(importlib.abc.MetaPathFinder):
+    def find_spec(
+        self,
+        fullname,
+        path,
+        target = None,
+    ):
+        if fullname != "sentence_transformers" or fullname in sys.modules:
+            return None
+        for finder in sys.meta_path:
+            if finder is self or not hasattr(finder, "find_spec"):
+                continue
+            try:
+                spec = finder.find_spec(fullname, path, target)
+            except Exception:
+                continue
+            if spec is None:
+                continue
+            if spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                spec.loader = _PatchAfterImportLoader(spec.loader)
+            return spec
+        return None
+
+
+# sentence_transformers imports its whole package (trainers, evaluators, sklearn / scipy pieces) and only
+# embedding fine-tuning uses it, so patch it when it is first imported instead of importing it here.
+if "sentence_transformers" in sys.modules:
+    _apply_sentence_transformers_patches()
+elif not any(isinstance(f, _SentenceTransformersFinder) for f in sys.meta_path):
+    sys.meta_path.insert(0, _SentenceTransformersFinder())
