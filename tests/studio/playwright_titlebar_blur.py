@@ -160,6 +160,53 @@ def run():
                             )
                             expected_color = reference.evaluate("e => getComputedStyle(e).color")
                             expect(action).to_have_css("color", expected_color)
+                    dialog = page.locator('[data-slot="dialog-content"]')
+                    page.set_viewport_size({"width": 620, "height": 700})
+                    # A tall body must not carry the fullscreen close button offscreen.
+                    dialog.evaluate("""e => {
+                        const body = document.createElement('div');
+                        body.dataset.testTallBody = '';
+                        body.style.height = '2000px';
+                        body.textContent = 'Tall dialog content';
+                        e.append(body);
+                    }""")
+                    close = dialog.locator('[data-slot="dialog-close"]')
+                    expect(close).to_have_css("position", "fixed")
+                    expect(dialog).to_have_css("backdrop-filter", "none")
+                    close_top = close.evaluate("e => e.getBoundingClientRect().top")
+                    expected_top = close.evaluate("e => parseFloat(getComputedStyle(e).top)")
+                    assert abs(close_top - expected_top) < 1, (close_top, expected_top)
+                    dialog.evaluate("e => e.scrollTop = 300")
+                    page.wait_for_function("""() =>
+                        document.querySelector('[data-slot="dialog-content"]').scrollTop === 300""")
+                    assert abs(close.evaluate("e => e.getBoundingClientRect().top") - close_top) < 1
+                    expect(close).to_be_in_viewport()
+                    narrow_layer = dialog.evaluate(
+                        "e => getComputedStyle(e, '::before').backdropFilter"
+                    )
+                    assert narrow_layer == "blur(16px)", narrow_layer
+                    dialog.locator("[data-test-tall-body]").evaluate("e => e.remove()")
+                    dialog.evaluate("e => e.scrollTop = 0")
+                    page.set_viewport_size({"width": 1440, "height": 900})
+                    # Settings uses the shared dialog with an overflow-hidden shell.
+                    dialog.evaluate("""e => {
+                        e.setAttribute('data-settings-dialog', '');
+                        e.style.overflow = 'hidden';
+                    }""")
+                    expect(dialog).to_have_css("backdrop-filter", "none")
+                    settings_layer = dialog.evaluate("""e => {
+                        const s = getComputedStyle(e, '::before');
+                        return {blur: s.backdropFilter, position: s.position, pointer: s.pointerEvents};
+                    }""")
+                    assert settings_layer == {
+                        "blur": "blur(16px)",
+                        "position": "absolute",
+                        "pointer": "none",
+                    }
+                    dialog.evaluate("""e => {
+                        e.removeAttribute('data-settings-dialog');
+                        e.style.removeProperty('overflow');
+                    }""")
                 finally:
                     steady_buttons.evaluate("e => e.remove()")
                     page.evaluate(

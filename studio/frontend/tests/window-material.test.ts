@@ -64,7 +64,7 @@ test("glass keeps the unprefixed backdrop-filter that Chromium reads", () => {
 
 test("glass menus only apply on top of an applied material", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const rules = [...css.matchAll(/^([^\n{]*\[data-glass-menus\][^\n{]*)\{/gm)].map((m) => m[1]);
+	const rules = [...css.matchAll(/^([^\n{]*\[data-glass-menus\][^\n{]*)\{/gm)].map((m) => m[1].trim());
 	assert.ok(rules.length > 0);
 	for (const rule of rules) assert.match(rule, /^html(?:\[data-glass(?:\^?="[a-z0-9-]+")?\]|\.tauri\.client-windows\[data-glass-clear\])\[data-glass-menus\]/);
 });

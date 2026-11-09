@@ -7110,11 +7110,13 @@ html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
    shell never scrolls (overflow-hidden), while a dialog that scrolls its own box would carry an absolute
    layer away with its content and lose the blur. Not on WebKit (data-glass-layers), where the layer costs
    about 9% more; no will-change, which made the Style dropdown inside Settings slower to open. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog],
 html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog] {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   isolation: isolate;
 }
+html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog]::before,
 html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog]::before {
   content: "";
   position: absolute;
@@ -7531,6 +7533,28 @@ html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="m
 html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-settings-dialog] {
   /* The sidebar and main pane already provide the dialog's fill. */
   background-color: transparent;
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog]::before {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+/* A fullscreen dialog's close button stays viewport-fixed. Keep its blur on a
+   fixed background layer so neither the button nor the blur scrolls with the body. */
+@media (width < 40rem) {
+  html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"].fixed:not([data-settings-dialog]) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    isolation: isolate;
+  }
+  html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"].fixed:not([data-settings-dialog])::before {
+    content: "";
+    position: fixed;
+    inset: var(--studio-window-chrome-top, 0px) 0 0;
+    z-index: -1;
+    pointer-events: none;
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+  }
 }
 /* In base so this !important outranks layered utilities and unlayered rules alike. */
 @layer base {
