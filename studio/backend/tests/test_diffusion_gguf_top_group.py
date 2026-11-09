@@ -145,3 +145,25 @@ def test_other_parameter_subclasses_still_keep_diffusers_path(monkeypatch):
 
 def test_the_kill_switch_name_matches_the_module():
     assert mem.TOP_GROUP_GGUF_ENV == TOP_GROUP_GGUF_ENV
+
+
+def test_a_pinned_gguf_top_group_keeps_streamed_graphs_off(monkeypatch):
+    """Base never captured a block-streamed graph over a GGUF denoiser (its top group was not pinned). A pinned GGUF
+    top group must not change that: a recorded streamed graph held the VRAM a 6 GiB T4 decode needed."""
+    import core.inference.diffusion_offload_prefetch as op
+
+    module, group, _ = _top_group(monkeypatch)
+    monkeypatch.setattr(mem, "host_pinning_allowed", lambda device = None: True)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1 << 20)
+    monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self, *a, **k: self)
+    assert mem._pin_top_level_group(module) is True
+    assert group._unsloth_top_gguf is True
+    monkeypatch.setattr(op, "module_prefetcher", lambda m: object())
+    monkeypatch.setattr(mem, "_offload_groups", lambda m: [group])
+    assert "GGUF top-level group" in (op.capture_refusal(module) or "")
+    # a plain pinned top group still lets the graph through (unchanged)
+    plain, plain_group, _ = _top_group(monkeypatch, gguf_weight = False)
+    assert mem._pin_top_level_group(plain) is True and plain_group._unsloth_top_gguf is False
+    monkeypatch.setattr(mem, "_offload_groups", lambda m: [plain_group])
+    assert op.capture_refusal(plain) is None

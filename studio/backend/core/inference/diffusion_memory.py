@@ -7659,6 +7659,10 @@ def _pin_top_level_group(
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_pinned_top = True
+        # GGUF top groups pinned here keep block-streamed CUDA graphs off, as before (capture_refusal): a recorded
+        # streamed graph's pool held the VRAM a 6 GiB T4 decode needed.
+        gguf = _gguf_parameter_class()
+        group._unsloth_top_gguf = gguf is not None and any(type(t) is gguf for t in tensors)
         setattr(group, TOP_GROUP_HOST_ATTR, host)
         if pinned_mib is not None:
             pinned_mib[0] = already + need_mib
