@@ -74,7 +74,10 @@ export function readComposerDraft(key: string): string | null {
 }
 
 export function writeComposerDraft(key: string, text: string): void {
-  if (key !== DRAFT_KEY) perChatDrafts.set(key, text);
+  if (key !== DRAFT_KEY) {
+    perChatDrafts.set(key, text);
+    if (text) lastTypedDraftId = key.slice(LEGACY_DRAFT_PREFIX.length);
+  }
   try {
     if (text.length > 0) window.localStorage.setItem(key, text);
     else window.localStorage.removeItem(key);
@@ -91,8 +94,16 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
   const id = threadId ?? "__new__";
   try {
     const storage = window.localStorage;
-    const text = storage.getItem(`${LEGACY_DRAFT_PREFIX}${id}`);
-    const pastes = storage.getItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);
+    // This tab's copy first: another window may have written its own draft to the same slot since.
+    const textKey = `${LEGACY_DRAFT_PREFIX}${id}`;
+    const pasteKey = `${LEGACY_PASTE_DRAFT_PREFIX}${id}`;
+    const cachedText = perChatDrafts.get(textKey);
+    const cachedPastes = perChatPastes.get(pasteKey);
+    const text = cachedText !== undefined ? cachedText || null : storage.getItem(textKey);
+    const pastes =
+      cachedPastes !== undefined
+        ? cachedPastes.length > 0 ? JSON.stringify(cachedPastes) : null
+        : storage.getItem(pasteKey);
     if (text === null && pastes === null) return false;
     let adopted = false;
     if (storage.getItem(DRAFT_KEY) === null && storage.getItem(PASTE_DRAFT_KEY) === null) {
@@ -105,6 +116,7 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
         throw error;
       }
       adopted = true;
+      latest = null;
       seeded = null;
       latestPastes = null;
       // Moved, not copied: a copy left behind would return a prompt sent from the shared slot.
@@ -124,6 +136,13 @@ const draftListeners = new Set<DraftListener>();
 let latest: string | null = null;
 let seeded: string | null = null;
 const perChatDrafts = new Map<string, string>();
+// The per-chat slot this tab last saved text into: what switching sharing on adopts, even when
+// the composer showing it is unmounted (Settings hides the chat view).
+let lastTypedDraftId: string | null = null;
+
+export function adoptCurrentDraft(): boolean {
+  return lastTypedDraftId !== null && adoptLegacyDraft(lastTypedDraftId);
+}
 
 export function latestDraft(key = DRAFT_KEY): string {
   if (key !== DRAFT_KEY) {
@@ -150,6 +169,7 @@ export function subscribeDraft(source: symbol, listener: (text: string) => void)
 }
 
 export function clearComposerDraft(threadId: string): void {
+  if (lastTypedDraftId === threadId) lastTypedDraftId = null;
   perChatDrafts.delete(composerDraftKey(threadId));
   perChatPastes.delete(composerPasteDraftKey(threadId));
   try {

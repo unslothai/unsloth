@@ -299,3 +299,34 @@ test("a draft adopted into the shared slot and sent there does not return when s
   assert.equal(reloaded.latestDraft(textKey), "");
   assert.deepEqual(reloaded.latestPasteDraft(pasteKey), []);
 });
+
+test("enabling sharing adopts this window's per-chat draft, not another window's later write", async () => {
+  const tab = await openTab();
+  const textKey = tab.composerDraftKey("two-windows");
+  const pasteKey = tab.composerPasteDraftKey("two-windows");
+  tab.writeComposerDraft(textKey, "mine");
+  tab.writePasteDraft(pasteKey, ["my paste"]);
+  store.set(textKey, "theirs");
+  store.set(pasteKey, '["their paste"]');
+  tab.publishDraft("", Symbol("chat"));
+  assert.equal(tab.adoptLegacyDraft("two-windows"), true);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "mine");
+  assert.deepEqual(tab.latestPasteDraft(tab.composerPasteDraftKey("", true)), ["my paste"]);
+});
+
+test("an unsent Compare pair's draft is adopted from its own slot", async () => {
+  const tab = await openTab();
+  tab.writeComposerDraft(tab.composerDraftKey(tab.NEW_COMPARE_DRAFT_ID), "compare prompt");
+  assert.equal(tab.adoptLegacyDraft(tab.NEW_COMPARE_DRAFT_ID), true);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "compare prompt");
+  assert.equal(tab.latestDraft(tab.composerDraftKey(tab.NEW_COMPARE_DRAFT_ID)), "");
+});
+
+test("switching sharing on adopts the slot this tab last typed into, even with its composer unmounted", async () => {
+  const tab = await openTab();
+  tab.writeComposerDraft(tab.composerDraftKey("older-chat"), "older");
+  tab.writeComposerDraft(tab.composerDraftKey(tab.NEW_COMPARE_DRAFT_ID), "typed in Compare");
+  assert.equal(tab.adoptCurrentDraft(), true);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "typed in Compare");
+  assert.equal(tab.latestDraft(tab.composerDraftKey("older-chat")), "older");
+});

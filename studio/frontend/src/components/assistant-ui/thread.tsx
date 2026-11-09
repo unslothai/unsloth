@@ -348,7 +348,6 @@ import {
   shouldAbortPendingQueueForSettingsChange,
   resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
-  adoptLegacyDraft,
   latestDraft,
   NEW_CHAT_DRAFT_ID,
   latestPasteDraft,
@@ -365,7 +364,6 @@ import {
   type PromptQueueStopEventDetail,
   dictationFailed,
   dictationProducedTranscript,
-  readComposerDraft,
   type PromptQueueUIEntry,
   type PromptQueueUIItem,
   type PromptQueueUIItemStatus,
@@ -4050,7 +4048,6 @@ const Composer: FC<{
 
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
-  const shareDraftBeforeRef = useRef(shareDraft);
   const draftThreadId = referenceThreadId ?? NEW_CHAT_DRAFT_ID;
   const draftKey = composerDraftKey(draftThreadId, shareDraft);
   const draftScope = incognito
@@ -4079,12 +4076,7 @@ const Composer: FC<{
       return;
     }
     remoteDraftRef.current = null;
-    // Adopt only on switching sharing on: later, an old per-chat copy could resurrect a sent prompt.
-    const enableSharing = shareDraft && !shareDraftBeforeRef.current;
-    shareDraftBeforeRef.current = shareDraft;
-    const draft = enableSharing && adoptLegacyDraft(referenceThreadId)
-      ? (readComposerDraft(draftKey) ?? "")
-      : latestDraft(draftKey);
+    const draft = latestDraft(draftKey);
     // A save that raced the send still holds the sent text, so restoring it
     // would undo the clear. Clear rather than return early, which would leave
     // the previous thread's text on screen under this one.

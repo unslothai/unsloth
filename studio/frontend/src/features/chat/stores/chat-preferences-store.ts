@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { adoptCurrentDraft } from "../utils/composer-draft.ts";
 import { persist } from "zustand/middleware";
 import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 import {
@@ -98,7 +99,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     (set) => ({
       ...normalizeComposerPreferences(null),
       shareComposerDraft: false,
-      setShareComposerDraft: (shareComposerDraft) => set({ shareComposerDraft }),
+      setShareComposerDraft: (shareComposerDraft) => {
+        if (shareComposerDraft) adoptCurrentDraft();
+        set({ shareComposerDraft });
+      },
       setPlainTextComposer: (plainTextComposer) => set({ plainTextComposer }),
       setShowContextWindowUsage: (showContextWindowUsage) =>
         set({ showContextWindowUsage }),

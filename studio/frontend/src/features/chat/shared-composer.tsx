@@ -667,11 +667,21 @@ export function SharedComposer({
   const remoteDraftRef = useRef<string | null>(null);
   const unsavedDraftRef = useRef<{ key: string; text: string } | null>(null);
   const draftScopeBeforeRef = useRef(draftScope);
+  const draftOwnerBeforeRef = useRef({ draftId, shareDraft, draftKey });
   useEffect(() => {
     if (draftScopeBeforeRef.current !== draftScope) {
       draftScopeBeforeRef.current = draftScope;
-      remoteDraftRef.current = incognito ? "" : latestDraft(draftKey);
-      setText(remoteDraftRef.current);
+      const before = draftOwnerBeforeRef.current;
+      draftOwnerBeforeRef.current = { draftId, shareDraft, draftKey };
+      let next = incognito ? "" : latestDraft(draftKey);
+      if (!incognito && before.draftId === draftId && before.shareDraft === shareDraft && text && !next) {
+        // Same pair, slot decided by its history: keep what was typed while it loaded.
+        writeComposerDraft(before.draftKey, "");
+        writeComposerDraft(draftKey, text);
+        next = text;
+      }
+      remoteDraftRef.current = next;
+      setText(next);
       return;
     }
     if (incognito || text === remoteDraftRef.current) return;
