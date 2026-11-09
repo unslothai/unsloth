@@ -1370,7 +1370,34 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
+_CSP_CACHE: dict = {}
+
+
 def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
+    """Nonce-free policies are memoized on every input the build reads (env, saved-only set, Colab)."""
+    if script_nonce:
+        return _build_csp_uncached(script_nonce, docs = docs)
+    from utils.hub_settings import SOURCE_ENV, saved_only_endpoints
+
+    environ = os.environ
+    key = (
+        docs,
+        _IS_COLAB,
+        environ.get("HF_ENDPOINT"),
+        environ.get("HF_DATASETS_SERVER"),
+        environ.get(SOURCE_ENV),
+        saved_only_endpoints(),
+    )
+    policy = _CSP_CACHE.get(key)
+    if policy is None:
+        policy = _build_csp_uncached(None, docs = docs)
+        if len(_CSP_CACHE) >= 64:
+            _CSP_CACHE.clear()
+        _CSP_CACHE[key] = policy
+    return policy
+
+
+def _build_csp_uncached(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     script_src = "script-src 'self'"
     style_src = "style-src 'self' 'unsafe-inline'"
     worker_src = "worker-src 'self'"
