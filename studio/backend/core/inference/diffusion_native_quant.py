@@ -270,6 +270,14 @@ def int8_fused_disabled() -> bool:
     return os.environ.get(NATIVE_INT8_FUSED_ENV, "").strip().lower() in ("0", "false", "no", "off")
 
 
+def _own_rotation(h: Any, dtype: Any) -> Any:
+    """This layer's own copy of the cached ConvRot Hadamard, at ``dtype``. A float32 compute dtype (fp16-only GPUs,
+    FLUX.3) made ``h.to(dtype)`` return the cached tensor itself, one buffer shared by every layer: group offload then
+    moved it with whichever group held it last, and the next streamed layer found it on the host (device mismatch on
+    the first render). 256 KiB per layer at float32 (group 256)."""
+    return h.to(dtype, copy = True)
+
+
 def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any) -> Any:
     """Eager ``_rotate`` + ``_int_mm_rows`` maths on tensors only, so offload hooks never invalidate the graph."""
     import torch
@@ -529,7 +537,9 @@ def native_linear_class():
                     h = build_convrot_hadamard(
                         self.rot_group, device = codes.device, dtype = torch.float32
                     )
-                    self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
+                    self.register_buffer(
+                        "rot_h", _own_rotation(h, self.compute_dtype), persistent = False
+                    )
             else:
                 weight = linear.weight.detach()
                 with torch.no_grad():
@@ -544,7 +554,9 @@ def native_linear_class():
                         w = (w.reshape(self.out_features, -1, g) @ h.T).reshape(
                             self.out_features, -1
                         )
-                        self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
+                        self.register_buffer(
+                            "rot_h", _own_rotation(h, self.compute_dtype), persistent = False
+                        )
                     scale = w.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / _QMAX[scheme]
                     if scheme == NATIVE_INT8 and scale_dtype is not None:
                         scale = snap_scale_up(scale, scale_dtype)
