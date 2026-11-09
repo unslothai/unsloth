@@ -637,6 +637,5 @@ def test_span_blocks_compile_without_breaks_and_match_compiled_per_token_rows(re
                 b.forward = f
         counters[span] = cc.frame_count
     torch._dynamo.reset()
-    # one frame per block: the second reference count reuses the dynamic graph (no recompile)
     assert counters[True] == len(blocks)
     assert all(torch.equal(a, b) for a, b in zip(outs[True], outs[False]))

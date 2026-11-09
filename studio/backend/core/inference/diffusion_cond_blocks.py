@@ -343,8 +343,7 @@ def _flux3_cached_forward(
             and image_single_mod.shape[1] == 1
             and cond_single_mod.shape[1] == 1
         ):
-            # one row per span: the image row as temb_mod, the reference row beside it, and an empty
-            # [reference_tokens, 0] tensor marking the span length (no storage, so a block graph can copy every input)
+            # one row per span; the span length rides on a storage-free tensor so block graphs can copy every input
             content_mod = image_single_mod
             block_kwargs[SPAN_KWARG] = cond_single_mod
             block_kwargs[SPAN_LEN_KWARG] = cond_states.new_empty((cond_states.shape[1], 0))
