@@ -1729,7 +1729,7 @@ def test_no_find_starts_while_a_render_is_on_its_way(monkeypatch):
     )
     seen = []
 
-    async def _run(request):
+    async def _run(request, pinned_load = None):
         # The render released SAM 3 and has not taken the slot yet: a Find is refused, and frees the slot it took.
         with pytest.raises(seg.SegmenterBusyError, match = "generating"):
             seg.segment_image(_png_b64(), "sofa")

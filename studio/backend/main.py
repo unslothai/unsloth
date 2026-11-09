@@ -439,6 +439,7 @@ from datetime import datetime
 
 from routes import (
     auth_router,
+    chat_export_router,
     chat_history_router,
     data_recipe_router,
     datasets_router,
@@ -1275,6 +1276,10 @@ app.router.lifespan_context = combine_lifespans(
     app.router.lifespan_context, _studio_mcp_app.lifespan
 )
 app.mount("/mcp", StudioMcpGate(_studio_mcp_app))
+from core.inference.studio_tools_mcp import ChatRootPathMiddleware, remember_studio_app  # noqa: E402
+
+remember_studio_app(app)
+app.add_middleware(ChatRootPathMiddleware)
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
@@ -2086,6 +2091,7 @@ app.include_router(
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(chat_export_router, prefix = "/api/chat-export", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(
     chat_generation_runs_router,

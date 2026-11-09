@@ -444,7 +444,7 @@ def test_h3_streamed_mp4_matches_the_x264_export(tmp_path):
     session = _h3_session(pipe)
     frames = _h3_render(pipe, session)
     assert isinstance(frames, torch.Tensor) and frames.dtype == torch.uint8
-    streamed = sum(len(host) for host, _ in session.chunks)
+    streamed = sum(chunk.frames for chunk in session.chunks)
     # two clips stream while decoding; the final cross-fade tail comes from the exported clip
     assert 0 < streamed < len(frames)
     audio = _audio(len(frames))
@@ -532,3 +532,148 @@ def test_encode_mp4_claims_an_h3_stream_with_its_soundtrack():
     with av.open(io.BytesIO(data)) as c:
         assert len(c.streams.audio) == 1
     assert vse._mp4_frame_count(data, frames.shape[1:3]) == len(frames)
+
+
+class _NoVae:
+    config = None
+    decoder = None
+
+
+def _spool_session(frames = 25):
+    torch.manual_seed(3)
+    clip = torch.rand(frames, 3, 24, 32)
+    session = vse.StreamEncode(_NoVae(), None, 8)
+    session._decoding = True
+    for start in [0] + list(range(1, frames, 4)):
+        session._push_uint8(clip[start : 1 if start == 0 else min(frames, start + 4)])
+    session._decoding, session._decoded = False, True
+    final = (clip * 255).round_().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+    return session, final
+
+
+def _drained(session, spooled):
+    import time
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if all((chunk.host is None) is spooled for chunk in session.chunks):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_encoded_chunks_are_spooled_and_released(tmp_path):
+    session, final = _spool_session()
+    assert len(session.chunks) == 7
+    assert _drained(session, spooled = True)
+    assert all(chunk.offset is not None for chunk in session.chunks)
+    spool = session._spool
+    data = session.take(final, 8)
+    assert data is not None, vse.STATS["last"]
+    assert len(_mp4_frames(data, tmp_path)) == len(final)
+    assert spool.closed and session._spool is None
+
+
+@pytest.mark.parametrize("frame", [0, 3, -1])
+def test_a_spooled_chunk_that_differs_falls_back(frame):
+    session, final = _spool_session()
+    assert _drained(session, spooled = True)
+    final[frame, -1, -1, -1] ^= 1
+    assert session.take(final, 8) is None
+    assert vse.STATS["last"] == "frames differ"
+
+
+def test_shared_output_off_keeps_every_chunk(monkeypatch):
+    monkeypatch.setenv(vse.SHARED_OUTPUT_ENV, "0")
+    session, final = _spool_session()
+    session._join()
+    assert all(chunk.host is not None for chunk in session.chunks) and session._spool is None
+    assert session._matches(final)
+    session.close()
+
+
+def test_a_spool_that_cannot_be_written_keeps_the_chunks(monkeypatch):
+    def refuse(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(vse.tempfile, "TemporaryFile", refuse)
+    session, final = _spool_session()
+    assert _drained(session, spooled = False)
+    assert session.take(final, 8) is not None
+    session, final = _spool_session()
+    final[-1, 0, 0, 0] ^= 1
+    assert session.take(final, 8) is None and vse.STATS["last"] == "frames differ"
+
+
+def _raw_bytes_held(session):
+    """uint8 frame bytes reachable from the session's own containers, whatever shape its chunk records take."""
+    seen, total, stack = set(), 0, [vars(session)]
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, torch.Tensor):
+            total += obj.numel() * obj.element_size() if obj.dtype == torch.uint8 else 0
+        elif isinstance(obj, dict):
+            stack.extend(obj.values())
+        elif isinstance(obj, (list, tuple)):
+            stack.extend(obj)
+        elif hasattr(type(obj), "__slots__"):
+            stack.extend(getattr(obj, name, None) for name in type(obj).__slots__)
+    return total
+
+
+def test_the_session_holds_no_raw_frames_once_they_are_encoded():
+    session, final = _spool_session()
+    session._join()
+    assert (
+        _raw_bytes_held(session) == 0
+    ), f"{_raw_bytes_held(session)} of {final.numel()} raw bytes still held"
+    assert session._matches(final)
+    session.close()
+
+
+class _FullDisk:
+    """A spool whose writes are buffered and whose flush reports ENOSPC, like a filling temp filesystem."""
+
+    def __init__(self):
+        import io
+        self.buf, self.closed = io.BytesIO(), False
+
+    def write(self, data):
+        return self.buf.write(data)
+
+    def flush(self):
+        raise OSError(28, "No space left on device")
+
+    def seek(self, *a):
+        raise OSError(28, "No space left on device")
+
+    def tell(self):
+        return self.buf.tell()
+
+    def readinto(self, b):
+        raise OSError(5, "Input/output error")
+
+    def close(self):
+        self.closed = True
+
+
+def test_a_spool_that_fills_on_flush_keeps_the_chunks(monkeypatch):
+    monkeypatch.setattr(vse.tempfile, "TemporaryFile", lambda *a, **k: _FullDisk())
+    session, final = _spool_session()
+    session._join()
+    assert all(chunk.host is not None for chunk in session.chunks)
+    assert session._matches(final)
+    session.close()
+
+
+def test_an_unreadable_spool_falls_back_instead_of_raising(monkeypatch):
+    session, final = _spool_session()
+    assert _drained(session, spooled = True)
+    monkeypatch.setattr(
+        session, "_spool_equal", lambda *a: (_ for _ in ()).throw(OSError(5, "EIO"))
+    )
+    assert session.take(final, 8) is None
+    assert vse.STATS["last"] == "spool unreadable"

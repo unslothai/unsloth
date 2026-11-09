@@ -18,6 +18,20 @@ from pathlib import Path
 
 import pytest
 
+try:
+    from ._sparse_file import extend_sparse
+except (
+    ImportError
+):  # imported top-level by a sibling test, or by file path (test_h3_native_resident.py)
+    import importlib.util as _importlib_util
+
+    _sparse_spec = _importlib_util.spec_from_file_location(
+        "_studio_tests_sparse_file", Path(__file__).with_name("_sparse_file.py")
+    )
+    _sparse_module = _importlib_util.module_from_spec(_sparse_spec)
+    _sparse_spec.loader.exec_module(_sparse_module)
+    extend_sparse = _sparse_module.extend_sparse
+
 import core.inference.video as video_module
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video import (
@@ -1667,6 +1681,26 @@ def test_failed_background_generate_retains_terminal_error(fake_runtime, tmp_pat
     assert backend.generate_progress()["phase"] == "failed"
 
 
+def test_a_stopped_generation_ticket_cancels_the_video_job(fake_runtime, tmp_path, monkeypatch):
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    running, stopped, pipe = threading.Event(), threading.Event(), type(backend._state.pipe)
+
+    @functools.wraps(pipe.__call__)  # its signature says which arguments to pass
+    def _hold(self, *_args, **_kwargs):
+        running.set()
+        if backend._active_generate_cancel.wait(10):
+            stopped.set()
+        raise ValueError("stopped")
+
+    monkeypatch.setattr(pipe, "__call__", _hold)
+    with generation_ticket(ticket := GenerationTicket()):
+        backend.begin_generate(prompt = "a clip")
+    assert running.wait(10) and ticket.stop() is True and stopped.wait(10)
+
+
 def test_cache_bytes_counts_incomplete_blobs(fake_runtime, tmp_path, monkeypatch):
     # scan_cache_dir skips *.incomplete blobs; count both, without double-counting symlinks.
     import core.inference.video as video_mod
@@ -2764,7 +2798,7 @@ def test_wan_a14b_gguf_pair_loads_high_as_transformer_and_low_as_transformer_2(
     pick = high if picked == "high" else low
     VideoBackend().load_pipeline(
         str(tmp_path),
-        gguf_filename = str(pick.relative_to(tmp_path)),
+        gguf_filename = pick.relative_to(tmp_path).as_posix(),  # a hub path, '/' on every OS
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         family_override = "wan2.2-t2v-a14b",
     )
@@ -9124,6 +9158,47 @@ def _allow_te_prequant(monkeypatch, *, injects = True):
     return tpq.TE_PREQUANT_BUDGET_SCALE
 
 
+def _capture_te_quant_lines(monkeypatch):
+    import core.inference.video as video_mod
+
+    lines: list = []
+    real = video_mod.logger
+
+    class _Recorder:
+        def info(self, fmt, *a, **k):
+            message = fmt % a if a else fmt
+            if message.startswith("video.text_encoder_quant:"):
+                lines.append(message)
+            return real.info(fmt, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    monkeypatch.setattr(video_mod, "logger", _Recorder())
+    return lines
+
+
+@pytest.mark.parametrize("injects", [True, False])
+def test_a_failed_te_prefetch_is_logged_by_the_retried_outcome(
+    fake_runtime, monkeypatch, tmp_path, injects
+):
+    _allow_te_prequant(monkeypatch, injects = injects)
+    lines = _capture_te_quant_lines(monkeypatch)
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    VideoBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+        _te_prequant_failed = {"text_encoder": "unsloth/LTX-2-FP8: HTTP 503"},
+    )
+    assert len(lines) == 1
+    if injects:
+        assert "'fp8' selected automatically for ltx-2" in lines[0]
+    else:
+        assert "is not available" in lines[0] and "HTTP 503" in lines[0]
+
+
 def test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
     fake_runtime, monkeypatch, tmp_path
 ):
@@ -10612,6 +10687,44 @@ def test_seeding_is_skipped_entirely_under_offload(fake_runtime, monkeypatch):
     assert calls == [], "no checkpoint may be fetched for a load that cannot keep it resident"
     assert status["transformer_quant"] is None
     assert "moves the DiT" in status["resolved"]["transformer_quant"]["reason"]
+
+
+@pytest.mark.parametrize("switch", [None, "0"])
+def test_a_seed_declined_by_the_loads_own_offload_plan_reads_the_hosted_native_build(
+    fake_runtime, monkeypatch, switch
+):
+    """Probe prices the seed resident but the load's plan offloads it (LTX-2.5 sidecar encoder): read the hosted file."""
+    import core.inference.video as video_mod
+
+    if switch is not None:
+        monkeypatch.setenv(video_mod.OFFLOAD_HOSTED_READ_ENV, switch)
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "int8")
+    _stub_denoiser_seed(monkeypatch, scheme = "int8", plan_scheme = "int8")
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    _stub_apply_memory_plan(monkeypatch, video_mod)
+    monkeypatch.setattr(
+        video_mod, "_video_native_hosted_scheme", lambda fam, scheme, target: "int8"
+    )
+    monkeypatch.setattr(video_mod, "_video_native_cache_spec", lambda fam, **kw: {"scheme": "int8"})
+    monkeypatch.setattr(video_mod, "_read_native_quant_from_cache", lambda *a, **k: {})
+    monkeypatch.setattr(video_mod, "_video_native_stream_build", lambda *a, **k: {})
+    hosted_reads = []
+    monkeypatch.setattr(
+        video_mod, "_read_native_quant_from_hosted", lambda *a, **k: hosted_reads.append(k) or {}
+    )
+
+    # The fake target lacks a native int8 kernel, so the load refuses after the read.
+    with contextlib.suppress(RuntimeError):
+        VideoBackend().load_pipeline(
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+        )
+    assert len(hosted_reads) == (0 if switch == "0" else 1)
 
 
 def _plans_for(monkeypatch, video_mod):
@@ -12875,7 +12988,7 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *a, **k: [tmp_path])
     good = blobs / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
     with open(good, "wb") as fh:
-        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # sparse
+        extend_sparse(fh, video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # sparse
     snap = tmp_path / "snap"
     snap.mkdir()
     (snap / name).symlink_to(good)
@@ -12887,7 +13000,7 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     elsewhere.mkdir(parents = True)
     fake = elsewhere / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
     with open(fake, "wb") as fh:
-        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)
+        extend_sparse(fh, video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)
     (snap / name).unlink()
     (snap / name).symlink_to(fake)
     monkeypatch.setattr(
@@ -12899,7 +13012,9 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     (snap / name).symlink_to(good)
     bad = blobs / ("0" * 64)
     with open(bad, "wb") as fh:
-        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # right size, wrong content (zeros)
+        extend_sparse(
+            fh, video_ltx2.LTX23_PREQUANT_SOURCE_SIZE
+        )  # right size, wrong content (zeros)
     (snap / name).unlink()
     (snap / name).symlink_to(bad)
     monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", lambda path: "0" * 64)

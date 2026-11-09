@@ -2554,6 +2554,12 @@ def _resize_mlx_vlm_images(
     return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
+_MLX_VIDEO_UNSUPPORTED = (
+    "Training on video is not supported on Apple Silicon (MLX) yet. "
+    "Train this dataset on an NVIDIA or AMD GPU, or drop the video column."
+)
+
+
 _RESOLVE_IMAGE_COLUMN = object()
 
 
@@ -2629,6 +2635,8 @@ def _adapt_for_mlx_vlm(
             if isinstance(content, list):
                 new_content = []
                 for part in content:
+                    if isinstance(part, dict) and part.get("type") == "video":
+                        raise ValueError(_MLX_VIDEO_UNSUPPORTED)
                     if isinstance(part, dict) and part.get("type") == "image":
                         img = part.get("image")
                         if img is not None:
@@ -3567,6 +3575,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         eval_dataset, resize = vision_image_size, image_layout = image_layout
                     )
         elif is_vlm:
+            from utils.datasets.format_detection import detect_video_columns, video_sample
+
+            # Before formatting: conversion would fetch every Hub clip only to be refused.
+            first_row = next(iter(dataset), None)
+            if isinstance(first_row, dict) and detect_video_columns(
+                video_sample(dataset, first_row)
+            ):
+                raise ValueError(_MLX_VIDEO_UNSUPPORTED)
             _send("status", status_message = "Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(
                 dataset,
@@ -3574,6 +3590,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 tokenizer = tokenizer,
                 is_vlm = True,
                 dataset_name = hf_dataset or "local",
+                dataset_revision = config.get("dataset_revision"),
                 custom_format_mapping = custom_format_mapping,
                 progress_callback = _fmt_progress,
             )
@@ -3598,6 +3615,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     tokenizer = tokenizer,
                     is_vlm = True,
                     dataset_name = hf_dataset or "local",
+                    dataset_revision = config.get("dataset_revision"),
                     custom_format_mapping = custom_format_mapping,
                 )
                 if ev_info.get("success"):
