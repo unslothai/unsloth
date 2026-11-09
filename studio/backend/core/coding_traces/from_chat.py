@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import json
-from typing import Any, Optional
+"""Builds a coding trace from one saved Studio chat thread, in the order the UI shows."""
 
-import storage.studio_db as studio_db
+from typing import Optional
+
 from core.coding_traces.schema import (
     ChatTrace,
     ChatTraceError,
@@ -12,6 +12,14 @@ from core.coding_traces.schema import (
     TraceMessage,
     TraceWarning,
 )
+from core.rag.conversation_archive import (
+    _flushes_local_pair,
+    _local_round_id,
+    _server_builtin,
+    _tool_result_content,
+    _with_attachments,
+)
+from storage import studio_db
 
 # Same order as compareStoredMessages in frontend/src/features/chat/utils/message-order.ts.
 _ROLE_ORDER = {"system": 0, "user": 1, "assistant": 2}
@@ -26,8 +34,9 @@ def _sort_key(message: dict) -> tuple:
 
 
 def _resolve_parents(ordered: list[dict]) -> dict[str, Optional[str]]:
-    # Mirrors createParentResolver: rows saved before parent links existed chain to the
-    # previous row, while a null parent after any recorded parent starts a new root.
+    # Mirrors createParentResolver (and the parent loop in studio_db.fork_chat_thread): rows saved
+    # before parent links existed chain to the previous row, while a null parent after any recorded
+    # parent starts a new root.
     parents: dict[str, Optional[str]] = {}
     previous_id = None
     saw_recorded_parent = False
@@ -42,30 +51,31 @@ def _resolve_parents(ordered: list[dict]) -> dict[str, Optional[str]]:
 
 
 def _newest_leaf(head_id: str, ordered: list[dict], parents: dict[str, Optional[str]]) -> str:
-    # The UI saves a branch head and then shows its newest descendant (resolveSavedBranchHead).
+    # The UI saves a branch head and then shows its newest leaf (resolveSavedBranchHead); inner
+    # nodes never win, even when an edited timestamp sorts them after the leaf.
     position = {message["id"]: index for index, message in enumerate(ordered)}
     children: dict[str, list[str]] = {}
     for message_id, parent_id in parents.items():
         if parent_id is not None:
             children.setdefault(parent_id, []).append(message_id)
-    best, pending, seen = head_id, [head_id], set()
+    best, best_position, pending, seen = head_id, -1, [head_id], set()
     while pending:
         current = pending.pop()
         if current in seen:
             continue
         seen.add(current)
-        if position[current] > position[best]:
-            best = current
-        pending.extend(children.get(current, []))
+        below = children.get(current)
+        if below:
+            pending.extend(below)
+        elif position[current] > best_position:
+            best, best_position = current, position[current]
     return best
 
 
-def _result_text(result: Any) -> str:
-    if isinstance(result, str):
-        return result
-    if isinstance(result, dict) and isinstance(result.get("text"), str):
-        return result["text"]
-    return json.dumps(result, ensure_ascii = False)
+def _model_parts(message: dict) -> list:
+    """Content plus attachments, minus mcpToolOnly parts, as modelVisibleMessage (mcp-image.ts) sends them."""
+    content = _with_attachments(message) or []
+    return [p for p in content if not (isinstance(p, dict) and p.get("mcpToolOnly") is True)]
 
 
 def _append_text(current: str, addition: str) -> str:
@@ -109,7 +119,8 @@ def _branch(
     if dropped:
         warnings.append(
             TraceWarning(
-                "other_branches_dropped", f"Left out {dropped} saved message(s) from other branches"
+                "other_branches_dropped",
+                f"Left out {dropped} saved message(s) that are not on the selected branch",
             )
         )
     return chain
@@ -126,14 +137,43 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
         if role != "assistant":
             current = TraceMessage(id = message_id, role = role, created_at = message.get("createdAt"))
             out.append(current)
-        for part in message.get("content") or []:
+        # Tool messages wait until their call group closes, as serializeAssistantReplayMessages
+        # (chat-adapter.ts) and conversation_archive._as_wire group one row's calls.
+        pending: list[TraceMessage] = []
+        pending_round = None
+        pieces = 0
+        for position, part in enumerate(_model_parts(message)):
             kind = part.get("type") if isinstance(part, dict) else None
             if role == "assistant":
+                if kind == "tool-call" and _server_builtin(part)[0]:
+                    # The provider ran it; the model never got it back as a tool message.
+                    warnings.append(
+                        TraceWarning(
+                            "server_tool_skipped",
+                            f"Skipped provider-run tool {part.get('toolName')!r}",
+                            message_id,
+                        )
+                    )
+                    continue
+                round_id = _local_round_id(part) if kind == "tool-call" else None
+                flush_pair = kind == "tool-call" and round_id is None and _flushes_local_pair(part)
+                if pending and (
+                    kind != "tool-call"
+                    or flush_pair
+                    or (round_id is not None and pending_round not in (None, round_id))
+                ):
+                    out.extend(pending)
+                    pending, pending_round = [], None
+                if round_id is not None:
+                    pending_round = round_id
                 # Importers split one reply into a row per block; merge rows until a tool result.
                 if not out or out[-1].role != "assistant":
+                    pieces += 1
                     out.append(
                         TraceMessage(
-                            id = message_id, role = "assistant", created_at = message.get("createdAt")
+                            id = message_id if pieces == 1 else f"{message_id}#{pieces}",
+                            role = "assistant",
+                            created_at = message.get("createdAt"),
                         )
                     )
                 current = out[-1]
@@ -143,7 +183,7 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                 reasoning = part.get("text") or part.get("thinking") or ""
                 current.reasoning = _append_text(current.reasoning, str(reasoning))
             elif kind == "tool-call" and role == "assistant":
-                call_id = str(part.get("toolCallId") or f"{message_id}:call")
+                call_id = str(part.get("toolCallId") or f"{message_id}-{position}")
                 if call_id in call_ids:
                     suffix = 2
                     while f"{call_id}#{suffix}" in call_ids:
@@ -159,10 +199,11 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     call_id = renamed
                 call_ids.add(call_id)
                 args = part.get("args")
+                name = str(part.get("toolName") or "")
                 current.tool_calls.append(
                     ToolCall(
                         id = call_id,
-                        name = str(part.get("toolName") or "unknown"),
+                        name = name or "unknown",
                         arguments = args if isinstance(args, dict) else {},
                     )
                 )
@@ -175,21 +216,66 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                         )
                     )
                     continue
-                out.append(
+                pending.append(
                     TraceMessage(
                         id = f"{message_id}:{call_id}",
                         role = "tool",
-                        text = _result_text(part["result"]),
+                        text = _tool_result_content(part["result"], name),
                         tool_call_id = call_id,
                         is_error = bool(part.get("isError")),
                         created_at = message.get("createdAt"),
                     )
                 )
+                if flush_pair:
+                    out.extend(pending)
+                    pending, pending_round = [], None
             else:
                 warnings.append(
                     TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
                 )
+        out.extend(pending)
     return [m for m in out if m.text or m.reasoning or m.tool_calls or m.role == "tool"]
+
+
+def _system_message(
+    thread: dict, project: Optional[dict], warnings: list[TraceWarning]
+) -> Optional[TraceMessage]:
+    """The system turn as composeChatInstructions (agents-md.ts) builds it from stored fields."""
+    settings = thread.get("settings")
+    prompt = settings.get("systemPrompt") if isinstance(settings, dict) else None
+    if not isinstance(prompt, str):
+        # No thread snapshot means the chat ran on the browser's global prompt, which is not saved.
+        warnings.append(
+            TraceWarning(
+                "system_prompt_not_stored",
+                "The thread stores no system prompt; the trace may lack the one the model saw",
+            )
+        )
+        prompt = ""
+    elif "{{" in prompt:
+        warnings.append(
+            TraceWarning(
+                "system_prompt_variables",
+                "System prompt template variables are left as stored, not resolved",
+            )
+        )
+    instructions = ""
+    if project and not project.get("archived"):
+        instructions = str(project.get("instructions") or "").strip()
+    # AGENTS.md is read live at send time and not kept with the thread, so it is not added.
+    text = "\n\n".join(
+        part
+        for part in (
+            f"<project_instructions>\n{instructions}\n</project_instructions>"
+            if instructions
+            else "",
+            prompt.strip(),
+        )
+        if part
+    )
+    if not text:
+        return None
+    return TraceMessage(id = f"{thread['id']}:system", role = "system", text = text)
 
 
 def chat_to_trace(
@@ -199,7 +285,11 @@ def chat_to_trace(
     project: Optional[dict] = None,
     head_id: Optional[str] = None,
 ) -> ChatTrace:
-    """Turn a saved Studio thread and its message rows into one coding trace branch."""
+    """Turn a saved Studio thread and its message rows into one coding trace branch.
+
+    head_id picks the branch like a saved UI branch head (its newest leaf); None follows the newest
+    row. Unlike the UI, an id that is not saved raises ChatTraceError instead of falling back.
+    """
     if not messages:
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no messages")
     warnings: list[TraceWarning] = []
@@ -208,6 +298,9 @@ def chat_to_trace(
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")
     if not any(m.role == "user" for m in trace_messages):
         warnings.append(TraceWarning("no_user_message", "The branch has no user message"))
+    system = _system_message(thread, project, warnings)
+    if system is not None:
+        trace_messages.insert(0, system)
     return ChatTrace(
         thread_id = thread["id"],
         title = thread.get("title") or "",
@@ -223,7 +316,7 @@ def chat_to_trace(
 
 
 def load_chat_trace(thread_id: str, *, head_id: Optional[str] = None) -> ChatTrace:
-    """Load a saved Studio thread from the database and turn it into a coding trace."""
+    """Load a saved Studio thread from the database and turn it into a coding trace; head_id works as in chat_to_trace."""
     thread = studio_db.get_chat_thread(thread_id)
     if thread is None:
         raise ChatTraceError(f"Thread {thread_id!r} does not exist")
