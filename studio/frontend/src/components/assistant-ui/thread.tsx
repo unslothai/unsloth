@@ -348,8 +348,10 @@ import {
   shouldAbortPendingQueueForSettingsChange,
   resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
+  flushComposerDraft,
   latestDraft,
   NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   latestPasteDraft,
   publishDraft,
   subscribeDraft,
@@ -4217,7 +4219,10 @@ const Composer: FC<{
     if (composerText === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
     if (shareDraft) publishDraft(composerText, draftSource);
-    if (!shareDraft) pendingDraftRef.current = { key: draftKey, text: composerText };
+    if (!shareDraft) {
+      pendingDraftRef.current = { key: draftKey, text: composerText };
+      stageComposerDraft(draftKey, composerText);
+    }
     const t = setTimeout(() => {
       writeComposerDraft(draftKey, composerText);
       pendingDraftRef.current = null;
@@ -4228,7 +4233,7 @@ const Composer: FC<{
   useEffect(() => () => {
     const pending = pendingDraftRef.current;
     if (pending && !sentTextGuardBlocksDraft(justSentRef.current, pending.text, pending.key)) {
-      writeComposerDraft(pending.key, pending.text);
+      flushComposerDraft(pending.key, pending.text);
     }
     pendingDraftRef.current = null;
   }, [draftScope]);

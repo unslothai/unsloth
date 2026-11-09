@@ -393,3 +393,25 @@ test("a delete in flight drops late writes, and a failed delete reopens the slot
   tab.writeComposerDraft(key, "typed after restore");
   assert.equal(store.get(key), "typed after restore");
 });
+
+test("typing still inside the save debounce is what sharing adopts, and its late flush is dropped", async () => {
+  const tab = await openTab();
+  const key = tab.composerDraftKey("debounced-chat");
+  tab.writeComposerDraft(key, "saved earlier");
+  tab.stageComposerDraft(key, "saved earlier, then typed more");
+  assert.equal(tab.adoptCurrentDraft(), true);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "saved earlier, then typed more");
+  tab.flushComposerDraft(key, "saved earlier, then typed more");
+  assert.equal(store.has(key), false);
+});
+
+test("an adoption keeps its own text when another window adopts right after", async () => {
+  const tab = await openTab();
+  tab.writeComposerDraft(tab.composerDraftKey("window-a"), "window A draft");
+  tab.writePasteDraft(tab.composerPasteDraftKey("window-a"), ["A paste"]);
+  assert.equal(tab.adoptCurrentDraft(), true);
+  store.set(composerDraftKey("", true), "window B draft");
+  store.set(composerPasteDraftKey("", true), '["B paste"]');
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "window A draft");
+  assert.deepEqual(tab.latestPasteDraft(tab.composerPasteDraftKey("", true)), ["A paste"]);
+});

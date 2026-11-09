@@ -99,8 +99,10 @@ import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
 import {
   composerDraftKey,
+  flushComposerDraft,
   latestDraft,
   NEW_COMPARE_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   writeComposerDraft,
@@ -694,6 +696,7 @@ export function SharedComposer({
       return;
     }
     unsavedDraftRef.current = { key: draftKey, text };
+    stageComposerDraft(draftKey, text);
     const timer = setTimeout(() => {
       writeComposerDraft(draftKey, text);
       unsavedDraftRef.current = null;
@@ -703,7 +706,7 @@ export function SharedComposer({
   useEffect(
     () => () => {
       if (unsavedDraftRef.current !== null) {
-        writeComposerDraft(unsavedDraftRef.current.key, unsavedDraftRef.current.text);
+        flushComposerDraft(unsavedDraftRef.current.key, unsavedDraftRef.current.text);
         unsavedDraftRef.current = null;
       }
     },

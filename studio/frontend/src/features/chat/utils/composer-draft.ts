@@ -27,6 +27,10 @@ export function readPasteDraft(key: string): string[] {
   } catch {
     return [];
   }
+  return parsePastes(raw);
+}
+
+function parsePastes(raw: string | null): string[] {
   if (!raw) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -75,6 +79,19 @@ export function readComposerDraft(key: string): string | null {
   } catch {
     return null;
   }
+}
+
+// Typing inside the save debounce: this tab's cache shows it at once, so adoption takes it.
+export function stageComposerDraft(key: string, text: string): void {
+  if (key === DRAFT_KEY || deletedDraftIds.has(key.slice(LEGACY_DRAFT_PREFIX.length))) return;
+  perChatDrafts.set(key, text);
+  if (text) lastTypedDraftId = key.slice(LEGACY_DRAFT_PREFIX.length);
+}
+
+// A staged save whose slot was adopted (or deleted) since must not recreate it.
+export function flushComposerDraft(key: string, text: string): void {
+  if (key !== DRAFT_KEY && perChatDrafts.get(key) !== text) return;
+  writeComposerDraft(key, text);
 }
 
 export function writeComposerDraft(key: string, text: string): void {
@@ -128,9 +145,10 @@ export function adoptLegacyDraft(threadId: string | null, overwrite = false): bo
         throw error;
       }
       adopted = true;
-      latest = null;
+      // Seeded from what was adopted: another window's adoption may already have replaced storage.
+      latest = text ?? "";
       seeded = null;
-      latestPastes = null;
+      latestPastes = parsePastes(pastes);
       // Moved, not copied: a copy left behind would return a prompt sent from the shared slot.
       dropPerChatDraft(id);
     }
