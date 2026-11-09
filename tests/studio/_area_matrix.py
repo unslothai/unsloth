@@ -58,6 +58,10 @@ LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_LENGTH_RATIO", "2.0"))
 # Counts below this many elements / layout objects at LONG turns never fail the length check.
 COUNT_FLOOR = int(os.environ.get("LONG_THREAD_AREAS_COUNT_FLOOR", "3000"))
 MAX_RATIO = float(os.environ.get("LONG_THREAD_AREAS_MAX_RATIO", "4.0"))
+# Areas judged on CPU with chat length too, not only on elements and layout objects: a streamed reply
+# restyles only its own message, so its counts stay flat while per-token work over the whole thread
+# grows. Main reads 1.4-2.1x (40 -> 200 turns) for `stream`; 3x fails a cost that scales with the chat.
+CPU_LENGTH = {"stream": float(os.environ.get("LONG_THREAD_AREAS_STREAM_LENGTH_RATIO", "3.0"))}
 # CPU ms a mode must add on top of the ratio before it fails.
 CPU_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_CPU_FLOOR_MS", "150"))
 # Ratios are taken over at least this many ms of the base's CPU: a 20 ms click is not a fair yardstick.
@@ -138,11 +142,102 @@ def known_limits(text: str) -> dict[tuple[str, str], float]:
 # --- areas ---------------------------------------------------------------------------------------
 # name: {open, ready, close, gone, setup, teardown, covers}
 #   actions: ("key", chord) | ("click", css) | ("rclick", css) | ("hover", css) | ("js", expr) | ("type", text)
+#            | ("compose", text) the composer holds text (inserted at once)
 #            | ("scroll", where) | ("tabs", None) | None ; chords use Mod for Meta on macOS, Control elsewhere
 #   ready / gone: ("overlay",) a new visible dialog/menu/listbox | ("overlay_gone",) | ("sel", css) | ("gone", css)
-#                 | ("settle",) wait only
+#                 | ("settle",) wait only | ("streamed", text) a streamed reply ended with text
 #   setup / teardown run outside the measured window; covers: trigger keys (see trigger_key) it measures.
 # "last|css": inside the last assistant message; "js|expr": an expression returning the element.
+# The streamed reply: fixed frames at a fixed cadence (no network: an init script answers the
+# completions request from the page), so every run renders the same tokens on the same clock.
+STREAM_PROMPT = "Explain the scheduler buffer in detail."
+# The model the stub reports resident (/api/inference/status); its chip is the model picker trigger.
+STUB_MODEL = "unsloth/Qwen3-4B"
+STREAM_END = "GATE-STREAM-END"
+STREAM_MS = 25
+
+
+def stream_frames() -> list[dict]:
+    """The reply as SSE payloads: reasoning, a web search tool call, prose, a code fence, a list."""
+
+    def delta(d: dict) -> dict:
+        return {
+            "id": "gate",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": STUB_MODEL,
+            "choices": [{"index": 0, "delta": d, "finish_reason": None}],
+        }
+
+    words = PARA.split(" ")
+    frames = [delta({"role": "assistant"})]
+    frames += [
+        delta({"reasoning_content": f"Step {k}: " + " ".join(words[:8]) + ". "}) for k in range(20)
+    ]
+    q = {"query": "scheduler buffer stream"}
+    frames.append(
+        {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "gate_ws", "arguments": q}
+    )
+    frames.append(
+        {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "gate_ws", "result": PARA}
+    )
+    for para in range(3):
+        frames += [
+            delta({"content": " ".join(words[i : i + 4]) + " "}) for i in range(0, len(words), 4)
+        ]
+        frames.append(delta({"content": "\n\n"}))
+    frames.append(delta({"content": "```python\n"}))
+    frames += [delta({"content": line + "\n"}) for line in CODE.splitlines()]
+    frames.append(delta({"content": "```\n\n"}))
+    frames += [delta({"content": f"- item {k}: {PARA[:60]}\n"}) for k in range(6)]
+    frames.append(delta({"content": f"\nDone. {STREAM_END}"}))
+    frames.append(
+        {
+            "id": "gate",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": STUB_MODEL,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+    )
+    return frames
+
+
+STREAM_TIMEOUT_MS = 30_000
+# Cheap until the shim has sent its last frame (it is polled inside the measured window), then one
+# check that the last assistant message shows the end text and the run has ended.
+STREAMED = """(end) => {
+  if (!window.__gateStreamDone) return false;
+  const all = document.querySelectorAll('[data-role="assistant"]');
+  const a = all[all.length - 1];
+  return !!a && (a.textContent || '').includes(end) && !document.querySelector('.aui-composer-cancel');
+}"""
+
+# Answers /v1/chat/completions from the page with STREAM's frames, one per STREAM_MS.
+STREAM_SHIM = """(([frames, ms]) => {
+  const realFetch = window.fetch.bind(window);
+  window.__gateStreams = 0;
+  window.fetch = (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (!/\\/v1\\/chat\\/completions(\\?|$)/.test(url)) return realFetch(input, init);
+    window.__gateStreams++;
+    window.__gateStreamDone = false;
+    const enc = new TextEncoder();
+    const out = frames.map((f) => 'data: ' + JSON.stringify(f) + '\\n\\n').concat(['data: [DONE]\\n\\n']);
+    let i = 0;
+    const body = new ReadableStream({
+      pull(ctrl) {
+        return new Promise((done) => setTimeout(() => {
+          if (i < out.length) ctrl.enqueue(enc.encode(out[i++]));
+          else { ctrl.close(); window.__gateStreamDone = true; }
+          done();
+        }, ms));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+  };
+})"""
+
 LAST = "last|"
 CODE_COPY = "js|(() => { const a = [...document.querySelectorAll('[data-role=\"assistant\"]')].pop(); const pre = a && a.querySelector('pre'); let n = pre; while (n && n !== a && !n.querySelector('button')) n = n.parentElement; return n && n !== a ? n.querySelector('button') : null; })()"
 AREAS: dict[str, dict] = {
@@ -214,7 +309,8 @@ AREAS: dict[str, dict] = {
         "ready": ("overlay",),
         "close": ("key", "Escape"),
         "gone": ("overlay_gone",),
-        "covers": ["popover-trigger:Select model"],
+        # The chip reads the resident model's name (the stub reports STUB_MODEL).
+        "covers": ["popover-trigger:Select model", f"popover-trigger:{STUB_MODEL.split('/')[-1]}"],
     },
     "composer_menu": {
         "open": ("key", "Mod+Shift+Period"),
@@ -369,6 +465,17 @@ AREAS: dict[str, dict] = {
         "gone": ("gone", '[data-slot="hover-card-content"]'),
         "covers": ["hover-card-trigger:*"],
     },
+    # A reply streamed into the chat: the composer holds a fixed message (setup, outside the window),
+    # Enter sends it and the window ends when the last frame of STREAM has rendered. Last on purpose:
+    # it adds a turn to the thread.
+    "stream": {
+        "setup": ("compose", STREAM_PROMPT),
+        "open": ("key", "Enter"),
+        "ready": ("streamed", STREAM_END),
+        "close": None,
+        "gone": ("settle",),
+        "covers": [],
+    },
 }
 
 # Popup triggers on the chat page that are not measured, with why. A trigger that is neither here
@@ -376,6 +483,9 @@ AREAS: dict[str, dict] = {
 NOT_AREAS = {
     "popover-trigger:Request failed": "the gate's API stub has no model runtime; this chip only shows a failed status call",
     "dropdown-menu-trigger:Open preset list": "inside the run settings panel, measured as run_settings",
+    "dropdown-menu-trigger:Run settings for this model": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
+    "select-trigger:Inference engine": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
+    "message-timing-trigger:Message timing": "a hover readout on the reply the stream area streamed; the seeded turns carry no timing",
 }
 
 # Keyboard shortcuts (features/settings/lib/keyboard-shortcuts.ts): the area that measures what it
@@ -566,6 +676,14 @@ class Api:
             "/api/hub/hidden-models": {"hidden": []},
             "/api/settings/pinned-models": {"pinned": []},
             "/api/health": {"status": "ok"},
+            # A resident model, so the composer can send (the reply comes from STREAM_SHIM).
+            "/api/inference/status": {
+                "active_model": STUB_MODEL,
+                "model_identifier": STUB_MODEL,
+                "is_vision": False,
+                "is_gguf": False,
+            },
+            "/api/chat/settings": {"settings": {}},
         }
 
     def handle(self, route) -> None:
@@ -575,6 +693,10 @@ class Api:
             body = {"messagesByThreadId": {self.rec["id"]: self.msgs}}
         elif req.method == "GET" and path in self.bodies:
             body = self.bodies[path]
+        elif req.method == "PUT" and path.startswith(
+            f"/api/chat/threads/{self.rec['id']}/messages"
+        ):
+            body = {}  # the streamed turn is saved; nothing reads it back
         else:
             return route.fulfill(status = 404, content_type = "application/json", body = "{}")
         route.fulfill(status = 200, content_type = "application/json", body = json.dumps(body))
@@ -768,6 +890,7 @@ class Page:
             "(() => { const v = %s; for (const k in v) localStorage.setItem(k, v[k]); })()"
             % json.dumps(init)
         )
+        self.ctx.add_init_script(f"{STREAM_SHIM}({json.dumps([stream_frames(), STREAM_MS])})")
         self.ctx.route(lambda url: urlparse(url).path.startswith("/api/"), self.api.handle)
         self.ctx.route(
             lambda url: not url.startswith(base), lambda route: route.fulfill(status = 204, body = "")
@@ -814,6 +937,10 @@ class Page:
             for ch in arg:
                 page.keyboard.press(ch)
                 page.wait_for_timeout(40)
+            return True
+        if kind == "compose":
+            page.click(".aui-composer-input", timeout = 3_000)
+            page.keyboard.insert_text(arg)
             return True
         if kind == "scroll":
             return bool(page.evaluate(SCROLL, [arg, 20, 60 if arg == "thread" else 40]))
@@ -880,6 +1007,12 @@ class Page:
                     "([s, a, v]) => window.__gateAttr(s, a) === v",
                     arg = [pred[1], pred[2], self.attr_before],
                     timeout = 3_000,
+                )
+            elif kind == "streamed":
+                # The last frame rendered in the last assistant message and the run has ended: the
+                # stream really drew (a reply that never arrives is NOT_RUN, which fails on default).
+                self.page.wait_for_function(
+                    STREAMED, arg = pred[1], timeout = STREAM_TIMEOUT_MS, polling = 50
                 )
             elif kind == "focusin":
                 self.page.wait_for_function(
@@ -1482,6 +1615,24 @@ def judge(result: dict, known: str | None = None) -> list[dict]:
                 continue
             limit = limits.get(("length", area), LENGTH_RATIO)
             cap = limits.get(("count", area))
+            if area in CPU_LENGTH:
+                lv, sv = cheapest(lc, "cpu_ms"), cheapest(sc, "cpu_ms")
+                ratio = lv / max(sv, CPU_BASE_FLOOR_MS)
+                cpu_limit = limits.get(("length", area), CPU_LENGTH[area])
+                out.append(
+                    {
+                        "kind": "length",
+                        "metric": "cpu_ms",
+                        "turns": turns,
+                        "mode": mode,
+                        "area": area,
+                        "value": round(lv),
+                        "base_value": round(sv),
+                        "ratio": ratio,
+                        "limit": cpu_limit,
+                        "fail": ratio > cpu_limit and lv - sv >= CPU_FLOOR_MS,
+                    }
+                )
             for metric in ("elements", "layout_objects"):
                 lv, sv = lc.get(metric, 0), sc.get(metric, 0)
                 ratio = lv / max(sv, 1)
@@ -1598,7 +1749,7 @@ def run(
             for v in verdicts
             if v["fail"]
             and (
-                v["kind"] == "appearance"
+                v["kind"] in ("appearance", "length")
                 and v["metric"] == "cpu_ms"
                 or v["kind"] == "broken"
                 and v["area"] != "*"
@@ -1638,6 +1789,15 @@ def run(
                 if "cap" in v
                 else f"limit {v['limit']:.1f}x; LONG_THREAD_AREAS_LENGTH_RATIO / _KNOWN length:{v['area']}=..."
             )
+            if v["metric"] == "cpu_ms":
+                failures.append(
+                    f"area {v['area']} ({v['mode']}) costs more as the chat grows: {v['base_value']:,} ms CPU at "
+                    f"{SHORT} turns -> {v['value']:,} at {LONG} turns = {v['ratio']:.1f}x (limit {v['limit']:.1f}x; "
+                    f"LONG_THREAD_AREAS_STREAM_LENGTH_RATIO / _KNOWN length:{v['area']}=...). Per-token work walks the "
+                    "whole thread: a selector or effect over every message, a whole-thread layout read, or more "
+                    "publishes than frames (src/features/chat/utils/stream-pacing.ts)"
+                )
+                continue
             failures.append(
                 f"area {v['area']} ({v['mode']}) costs more as the chat grows: {v['metric'].replace('_', ' ')} "
                 f"{v['base_value']:,} at {SHORT} turns -> {v['value']:,} at {LONG} turns = {v['ratio']:.1f}x ({bound}). "
