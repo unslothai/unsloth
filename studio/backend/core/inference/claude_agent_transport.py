@@ -253,7 +253,11 @@ class ClaudeAgentTransport:
                 if not self._turn_open:
                     return
             elif self._waiting:
-                self._answer(fresh)
+                # Image trimming can delete earlier turns, so take this round's results after its reply.
+                reply = max(
+                    (i for i, m in enumerate(messages) if m.get("role") == "assistant"), default = -1
+                )
+                self._answer(messages[reply + 1 :])
             elif not self._turn_open:
                 blocks = []
                 for message in fresh:

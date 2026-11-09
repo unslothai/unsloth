@@ -967,6 +967,32 @@ def test_tool_round_trip_keeps_one_session(monkeypatch, tmp_path):
     assert client.disconnected is True
 
 
+def test_a_tool_result_still_reaches_claude_after_earlier_turns_are_trimmed(monkeypatch, tmp_path):
+    sdk = _install(
+        monkeypatch,
+        tmp_path,
+        turns = [
+            _tool_turn([("toolu_1", "get_time", {"city": "Paris"})])
+            + [_text("It is noon."), _result()]
+        ],
+    )
+    image = {"role": "user", "content": [{"type": "text", "text": "Earlier picture."}]}
+    messages = [{"role": "user", "content": "Time in Paris?"}, image, image]
+
+    async def run():
+        transport = ClaudeAgentTransport(model = "haiku")
+        first = await _round(transport, messages)
+        # The image cap deleted both earlier turns as this round's result came in.
+        await _round(transport, _replay(messages[:1], first, "12:00"))
+        await transport.aclose()
+
+    asyncio.run(run())
+    assert sdk.clients[0].results["toolu_1"] == {
+        "content": [{"type": "text", "text": "12:00"}],
+        "is_error": False,
+    }
+
+
 def test_two_calls_in_one_turn_and_a_denied_one(monkeypatch, tmp_path):
     sdk = _install(
         monkeypatch,
