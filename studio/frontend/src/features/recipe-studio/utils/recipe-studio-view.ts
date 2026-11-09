@@ -31,7 +31,10 @@ export function buildDialogOptions(configList: NodeConfig[]): DialogOptions {
       continue;
     }
     if (config.kind === "model_config") {
-      modelConfigAliases.push(config.name);
+      // Image presets are picked in the Image block, not by AI text steps.
+      if (config.generation !== "image") {
+        modelConfigAliases.push(config.name);
+      }
       continue;
     }
     if (config.kind === "model_provider") {

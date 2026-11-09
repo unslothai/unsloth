@@ -33,6 +33,41 @@ export function parseModelProvider(
   };
 }
 
+function parseImageModelConfig(
+  model: Record<string, unknown>,
+  inference: Record<string, unknown>,
+  name: string,
+  id: string,
+): ModelConfig {
+  const { size, steps, guidance, ...extraBody } = isRecord(inference.extra_body)
+    ? (inference.extra_body as Record<string, unknown>)
+    : {};
+  const modelName = readString(model.model) ?? "";
+  return {
+    id,
+    kind: "model_config",
+    name,
+    model: modelName.toLowerCase() === "local" ? "" : modelName,
+    provider: readString(model.provider) ?? "",
+    generation: "image",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    image_size: readString(size) ?? "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    image_steps: readNumberString(steps),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    image_guidance: readNumberString(guidance),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_timeout: readNumberString(inference.timeout),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_extra_body:
+      Object.keys(extraBody).length > 0
+        ? JSON.stringify(extraBody, null, 2)
+        : "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    skip_health_check: model.skip_health_check === true,
+  };
+}
+
 export function parseModelConfig(
   model: Record<string, unknown>,
   name: string,
@@ -41,6 +76,9 @@ export function parseModelConfig(
   const inference = isRecord(model.inference_parameters)
     ? (model.inference_parameters as Record<string, unknown>)
     : {};
+  if (inference.generation_type === "image") {
+    return parseImageModelConfig(model, inference, name, id);
+  }
   return {
     id,
     kind: "model_config",

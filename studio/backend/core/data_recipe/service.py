@@ -457,6 +457,40 @@ def _apply_data_designer_sql_inline_config_patch() -> None:
     setattr(SQLValidator, "_unsloth_sql_inline_config_patch_applied", True)
 
 
+# Set by the jobs route on a local image model config; stripped before Data Designer sees it.
+DIFFUSION_ROUTE_KEY = "unsloth_diffusion_route"
+
+# Per process: each job runs in its own.
+_studio_diffusion_models: set[str] = set()
+
+
+def _apply_data_designer_local_image_route_patch() -> None:
+    # Data Designer sends only names like "dall-e-" to /images/generations; Studio's image models match none.
+    from data_designer.engine.models import facade  # pyright: ignore[reportMissingImports]
+
+    if getattr(facade, "_unsloth_local_image_route_patch_applied", False):
+        return
+
+    original_is_diffusion = facade.is_image_diffusion_model
+
+    @functools.wraps(original_is_diffusion)
+    def _patched_is_diffusion(model_name: str) -> bool:
+        return model_name in _studio_diffusion_models or original_is_diffusion(model_name)
+
+    facade.is_image_diffusion_model = _patched_is_diffusion
+    setattr(facade, "_unsloth_local_image_route_patch_applied", True)
+
+
+def _register_studio_diffusion_models(recipe: dict[str, Any]) -> None:
+    _studio_diffusion_models.clear()
+    for model_config in recipe.get("model_configs") or []:
+        if not isinstance(model_config, dict) or model_config.get(DIFFUSION_ROUTE_KEY) is not True:
+            continue
+        model = model_config.get("model")
+        if isinstance(model, str) and model:
+            _studio_diffusion_models.add(model)
+
+
 def _require_public_provider_endpoint(endpoint: str) -> None:
     """Managed endpoints need HTTPS unless private switch is on; the metadata block holds even then."""
     if not managed_account():
@@ -557,18 +591,22 @@ def build_model_providers(recipe: dict[str, Any]):
     return providers
 
 
-def _recipe_has_llm_columns(recipe: dict[str, Any]) -> bool:
+def _is_model_column_type(column_type: Any) -> bool:
+    """LLM and image columns call a model through a provider."""
+    return isinstance(column_type, str) and (
+        column_type.startswith("llm-") or column_type == "image"
+    )
+
+
+def _recipe_has_model_columns(recipe: dict[str, Any]) -> bool:
     for column in recipe.get("columns", []):
-        if not isinstance(column, dict):
-            continue
-        column_type = column.get("column_type")
-        if isinstance(column_type, str) and column_type.startswith("llm-"):
+        if isinstance(column, dict) and _is_model_column_type(column.get("column_type")):
             return True
     return False
 
 
 def _validate_recipe_runtime_support(recipe: dict[str, Any], model_providers: list[Any]) -> None:
-    if _recipe_has_llm_columns(recipe) and not model_providers:
+    if _recipe_has_model_columns(recipe) and not model_providers:
         raise ValueError("Add a Provider connection block before running this recipe.")
 
 
@@ -719,9 +757,12 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
     changed = False
     next_model_configs: list[Any] = []
     for model_config in model_configs:
-        if isinstance(model_config, dict) and "gguf_variant" in model_config:
+        if isinstance(model_config, dict) and (
+            "gguf_variant" in model_config or DIFFUSION_ROUTE_KEY in model_config
+        ):
             next_model_config = dict(model_config)
             next_model_config.pop("gguf_variant", None)
+            next_model_config.pop(DIFFUSION_ROUTE_KEY, None)
             next_model_configs.append(next_model_config)
             changed = True
             continue
@@ -836,12 +877,14 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_seed_uri_quote_patch()
     _apply_data_designer_sql_inline_config_patch()
     _apply_data_designer_python_validator_path_patch()
+    _apply_data_designer_local_image_route_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
         # Packaged Unsloth can run with cwd=/, so pin the artifact root.
         artifact_path = str(recipe_datasets_root())
 
+    _register_studio_diffusion_models(recipe)
     recipe = _strip_frontend_model_config_metadata(recipe)
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)

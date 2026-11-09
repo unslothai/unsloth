@@ -168,7 +168,7 @@ export function syncEdgesForConfigPatch(
     patch,
     "model_alias",
   );
-  if (current.kind === "llm" && hasModelAliasPatch) {
+  if ((current.kind === "llm" || current.kind === "image") && hasModelAliasPatch) {
     const nextAlias =
       (patch as Partial<NodeConfig> & { model_alias?: string }).model_alias ?? "";
     if (nextAlias.trim() === current.model_alias.trim()) {

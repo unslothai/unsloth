@@ -38,6 +38,7 @@ import {
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
 import { makeUnstructuredUploadUid } from "../utils/config-factories";
+import { isImageModelConfig } from "../utils/config-type-guards";
 import {
   centerModelInfraNodes,
   optimizeModelInfraEdgeHandles,
@@ -108,6 +109,7 @@ type RecipeStudioState = {
     position?: XYPosition,
     openDialog?: boolean,
   ) => void;
+  addImageNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
   addToolProfileNode: (position?: XYPosition, openDialog?: boolean) => void;
@@ -262,6 +264,51 @@ function connectSemantic(
   };
 }
 
+// An AI step auto-connects to the only preset of its kind: image presets for Image blocks.
+function addModelStepNode(
+  state: RecipeStudioState,
+  type: LlmType | "image",
+  position: XYPosition | undefined,
+  openDialog: boolean,
+): Partial<RecipeStudioState> | RecipeStudioState {
+  if (state.executionLocked) {
+    return state;
+  }
+  const added = buildAddedNodeState(state, "llm", type, position, openDialog);
+  const context = getAddedNodeContext(added);
+  if (!context) {
+    return added;
+  }
+  let { nodes, configs } = context;
+  let edges = state.edges;
+  const wantsImage = type === "image";
+  const modelConfigs = Object.values(configs).filter(
+    (config) =>
+      config.kind === "model_config" && isImageModelConfig(config) === wantsImage,
+  );
+  if (modelConfigs.length === 1) {
+    if (!position) {
+      nodes = placeNodeNear(
+        nodes,
+        context.newNodeId,
+        modelConfigs[0].id,
+        state.layoutDirection,
+        "after",
+      );
+    }
+    const next = connectSemantic(
+      edges,
+      configs,
+      modelConfigs[0].id,
+      context.newNodeId,
+      state.layoutDirection,
+    );
+    edges = next.edges;
+    configs = next.configs;
+  }
+  return { ...added, nodes, edges, configs };
+}
+
 function isModelSemanticEdge(
   edge: Edge,
   configs: Record<string, NodeConfig>,
@@ -272,7 +319,8 @@ function isModelSemanticEdge(
     source &&
       target &&
       ((source.kind === "model_provider" && target.kind === "model_config") ||
-        (source.kind === "model_config" && target.kind === "llm") ||
+        (source.kind === "model_config" &&
+          (target.kind === "llm" || target.kind === "image")) ||
         (source.kind === "tool_config" && target.kind === "llm")),
   );
 }
@@ -486,48 +534,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     });
   },
   addLlmNode: (type, position, openDialog = true) =>
-    set((state) => {
-      if (state.executionLocked) {
-        return state;
-      }
-      const added = buildAddedNodeState(
-        state,
-        "llm",
-        type,
-        position,
-        openDialog,
-      );
-      const context = getAddedNodeContext(added);
-      if (!context) {
-        return added;
-      }
-      let { nodes, configs } = context;
-      let edges = state.edges;
-      const modelConfigs = Object.values(configs).filter(
-        (config) => config.kind === "model_config",
-      );
-      if (modelConfigs.length === 1) {
-        if (!position) {
-          nodes = placeNodeNear(
-            nodes,
-            context.newNodeId,
-            modelConfigs[0].id,
-            state.layoutDirection,
-            "after",
-          );
-        }
-        const next = connectSemantic(
-          edges,
-          configs,
-          modelConfigs[0].id,
-          context.newNodeId,
-          state.layoutDirection,
-        );
-        edges = next.edges;
-        configs = next.configs;
-      }
-      return { ...added, nodes, edges, configs };
-    }),
+    set((state) => addModelStepNode(state, type, position, openDialog)),
+  addImageNode: (position, openDialog = true) =>
+    set((state) => addModelStepNode(state, "image", position, openDialog)),
   addModelProviderNode: (position, openDialog = true) =>
     set((state) => {
       if (state.executionLocked) {

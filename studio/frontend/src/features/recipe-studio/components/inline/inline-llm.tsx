@@ -51,7 +51,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
   const modelConfigAliases = useMemo(
     () =>
       Object.values(configs)
-        .filter((c) => c.kind === "model_config")
+        .filter((c) => c.kind === "model_config" && c.generation !== "image")
         .map((c) => c.name),
     [configs],
   );

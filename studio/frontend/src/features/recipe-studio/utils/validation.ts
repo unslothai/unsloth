@@ -194,6 +194,14 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       errors.push("Trace mode must be none, last_message, or all_messages.");
     }
   }
+  if (config.kind === "image") {
+    if (!config.model_alias.trim()) {
+      errors.push("Choose an image model preset.");
+    }
+    if (!config.prompt.trim()) {
+      errors.push("Prompt is required.");
+    }
+  }
   if (config.kind === "expression") {
     if (!config.expr.trim()) {
       errors.push("Expression is required.");

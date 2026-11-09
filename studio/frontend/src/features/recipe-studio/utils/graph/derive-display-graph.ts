@@ -94,7 +94,7 @@ function normalizeEdge(
       ? getDefaultDataSourceHandle(layoutDirection)
       : getDefaultSemanticSourceHandle(layoutDirection);
   const semanticTargetDefault =
-    target?.kind === "llm"
+    (target?.kind === "llm" || target?.kind === "image")
       ? getDefaultDataTargetHandle(layoutDirection)
       : getDefaultSemanticTargetHandle(layoutDirection);
   let sourceHandle = getDefaultDataSourceHandle(layoutDirection);
@@ -114,7 +114,7 @@ function normalizeEdge(
     if (source?.kind === "llm" && isSemanticSourceHandle(sourceHandle)) {
       sourceHandle = semanticSourceDefault;
     }
-    if (target?.kind === "llm" && isSemanticTargetHandle(targetHandle)) {
+    if ((target?.kind === "llm" || target?.kind === "image") && isSemanticTargetHandle(targetHandle)) {
       targetHandle = semanticTargetDefault;
     }
   } else {
