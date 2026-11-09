@@ -12,19 +12,39 @@ import types
 import pytest
 
 torch = pytest.importorskip("torch")
-gguf = pytest.importorskip("gguf")
-gguf_utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
 
 import core.inference.diffusion_memory as mem  # noqa: E402
 
-GGUFParameter = gguf_utils.GGUFParameter
+
+class GGUFParameter(torch.nn.Parameter):
+    """Stand-in for diffusers' GGUFParameter (packed bytes + a quant type on the Parameter). The real module is never
+    imported here: ``_gguf_parameter_class`` reads it from ``sys.modules``, so importing it would leak into other tests."""
+
+    def __new__(
+        cls,
+        data,
+        requires_grad = False,
+        quant_type = None,
+    ):
+        self = torch.Tensor._make_subclass(cls, data, requires_grad)
+        self.quant_type = quant_type
+        return self
+
+
+Q8_0 = 8
+# Literal, not mem.TOP_GROUP_GGUF_ENV: the behavioural tests must also run (and fail) on a tree without the name.
+TOP_GROUP_GGUF_ENV = "UNSLOTH_DIFFUSION_TOP_GROUP_GGUF"
+
+
+@pytest.fixture(autouse = True)
+def _fake_gguf_utils(monkeypatch):
+    mod = types.ModuleType("diffusers.quantizers.gguf.utils")
+    mod.GGUFParameter = GGUFParameter
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", mod)
 
 
 def _gguf_weight():
-    return GGUFParameter(
-        torch.arange(4 * 34, dtype = torch.uint8).reshape(4, 34),
-        quant_type = gguf.GGMLQuantizationType.Q8_0,
-    )
+    return GGUFParameter(torch.arange(4 * 34, dtype = torch.uint8).reshape(4, 34), quant_type = Q8_0)
 
 
 def _top_group(
@@ -70,7 +90,7 @@ def _top_group(
 
 @pytest.fixture(autouse = True)
 def _env(monkeypatch):
-    for name in (mem.TOP_GROUP_GGUF_ENV, mem.PIN_TOP_GROUP_ENV, mem.GROUP_OFFLOAD_PIN_ENV):
+    for name in (TOP_GROUP_GGUF_ENV, mem.PIN_TOP_GROUP_ENV, mem.GROUP_OFFLOAD_PIN_ENV):
         monkeypatch.delenv(name, raising = False)
 
 
@@ -85,7 +105,7 @@ def test_gguf_top_group_skips_the_copy_back(monkeypatch):
     group.offload_()
     # the Parameter object (and its quant type) is the one the forward reads; only its data is re-pointed
     assert leaf.weight is weight and type(leaf.weight) is GGUFParameter
-    assert leaf.weight.quant_type == gguf.GGMLQuantizationType.Q8_0
+    assert leaf.weight.quant_type == Q8_0
     assert leaf.weight.data_ptr() == host_ptr
 
 
@@ -103,12 +123,12 @@ def test_gguf_top_group_pins_when_the_budget_allows(monkeypatch):
         assert mem._pin_top_level_group(module) is True
     finally:
         monkeypatch.setattr(torch.Tensor, "pin_memory", real_pin)
-    assert group._unsloth_pinned_top is True and GGUFParameter in pinned
-    assert type(leaf.weight) is GGUFParameter
+    assert group._unsloth_pinned_top is True and len(pinned) == 2  # weight + bias
+    assert type(leaf.weight) is GGUFParameter and leaf.weight.quant_type == Q8_0
 
 
 def test_kill_switch_keeps_diffusers_path_for_gguf(monkeypatch):
-    monkeypatch.setenv(mem.TOP_GROUP_GGUF_ENV, "0")
+    monkeypatch.setenv(TOP_GROUP_GGUF_ENV, "0")
     module, group, _ = _top_group(monkeypatch)
     assert mem._skip_top_level_copy_back(module) is False
     assert group.onload_ == "diffusers" and group.offload_ == "diffusers"
@@ -121,3 +141,7 @@ def test_other_parameter_subclasses_still_keep_diffusers_path(monkeypatch):
     module, group, _ = _top_group(monkeypatch, other_subclass = True)
     assert mem._skip_top_level_copy_back(module) is False
     assert group.onload_ == "diffusers"
+
+
+def test_the_kill_switch_name_matches_the_module():
+    assert mem.TOP_GROUP_GGUF_ENV == TOP_GROUP_GGUF_ENV
