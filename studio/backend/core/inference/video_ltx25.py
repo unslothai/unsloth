@@ -1340,8 +1340,15 @@ class Ltx25TextEncoderClient:
         self.close()
         return True
 
-    def cached(self, prompts: list[str], max_sequence_length: int) -> bool:
-        key = (tuple(prompts), int(max_sequence_length), compact_conditioning_enabled())
+    def cached(
+        self,
+        prompts: list[str],
+        max_sequence_length: int,
+        *,
+        compact: Optional[bool] = None,
+    ) -> bool:
+        compact = compact_conditioning_enabled() if compact is None else bool(compact)
+        key = (tuple(prompts), int(max_sequence_length), compact)
         with self._lock:
             return any(cached_key == key for cached_key, _ in self._cache)
 
@@ -1352,11 +1359,13 @@ class Ltx25TextEncoderClient:
         cancel: Optional[threading.Event] = None,
         *,
         copy: bool = True,
+        compact: Optional[bool] = None,
     ) -> tuple[Any, Any]:
         """``copy=False`` returns the cached host tensors themselves, for a caller that only reads them: a 385 MB host
-        clone per call is ~40 ms on a B200 host. With compact conditioning (the default) the embeds are only the
-        valid rows, ``[valid rows, D]`` (``expand_valid_rows`` rebuilds ``[B, L, D]``)."""
-        compact = compact_conditioning_enabled()
+        clone per call is ~40 ms on a B200 host. With compact conditioning (the default; ``compact=False`` asks for
+        the full width) the embeds are only the valid rows, ``[valid rows, D]`` (``expand_valid_rows`` rebuilds
+        ``[B, L, D]``)."""
+        compact = compact_conditioning_enabled() if compact is None else bool(compact)
         key = (tuple(prompts), int(max_sequence_length), compact)
         with self._lock:
             for i, (cached_key, value) in enumerate(self._cache):
@@ -1441,10 +1450,15 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         device = device or pipe._execution_device
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
+        # Set once the batch is known; empty keeps the client's default transport.
+        transport: dict[str, bool] = {}
+
         def _lend(*texts: list[str]) -> Optional[Callable[..., None]]:
             # Cache miss: lend resident DiT blocks to the worker for the encode.
             is_cached = getattr(client, "cached", None)
-            if not callable(is_cached) or all(is_cached(t, max_sequence_length) for t in texts):
+            if not callable(is_cached) or all(
+                is_cached(t, max_sequence_length, **transport) for t in texts
+            ):
                 return None
             return lend_resident_dit_for_encode(pipe, client)
 
@@ -1452,7 +1466,9 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
             """Cached (read-only) tensors per prompt list, all encoded under one lease."""
             restore = _lend(*texts)
             try:
-                return [client.encode(t, max_sequence_length, copy = False) for t in texts]
+                return [
+                    client.encode(t, max_sequence_length, copy = False, **transport) for t in texts
+                ]
             except BaseException:
                 # A cancelled encode may still use the lent memory: stop it before pinning back.
                 stop = getattr(client, "stop_if_busy", None)
@@ -1488,6 +1504,10 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0]
+        if num_videos_per_prompt != 1 and batch_size > 1 and compact_conditioning_enabled():
+            # diffusers repeats these embeds per prompt but the mask per batch, so with unequal prompt lengths some
+            # padded rows reach the connectors as valid: only the full-width rows reproduce that exactly.
+            transport["compact"] = False
         if (
             prompt_embeds is None
             and do_classifier_free_guidance
@@ -1840,8 +1860,18 @@ def reuse_connector_outputs(runner: Any):
     returned: list[tuple[str, Any, Any]] = []
     results: dict[tuple[str, str], tuple] = {}
     had_encode = "encode_prompt" in getattr(runner, "__dict__", {})
-    prior_forward = connectors.__dict__.get("forward")  # an offload hook's wrapper, or None
-    inner = connectors.forward
+    # What ``forward`` wraps: the instance attribute it replaced (an offload hook's wrapper) or the class method.
+    wrapped: dict[str, Any] = {}
+
+    def arm() -> None:
+        # At entry, and again before each call's connectors: an offload reset between the calls re-arms the module's
+        # hooks (a new ``forward``), which is then wrapped in turn.
+        if connectors.__dict__.get("forward") is forward:
+            return
+        wrapped["own"] = "forward" in connectors.__dict__
+        wrapped["prior"] = connectors.__dict__.get("forward")
+        wrapped["inner"] = connectors.forward
+        connectors.forward = forward
 
     def encode_prompt(*args: Any, **kwargs: Any) -> Any:
         out = encode(*args, **kwargs)
@@ -1855,6 +1885,7 @@ def reuse_connector_outputs(runner: Any):
         ):
             key = repr(sorted((k, repr(v)) for k, v in kwargs.items()))
             returned.append((key, weakref.ref(out[0]), weakref.ref(out[1])))
+        arm()
         return out
 
     def forward(*args: Any, **kwargs: Any) -> Any:
@@ -1866,7 +1897,7 @@ def reuse_connector_outputs(runner: Any):
         if key is not None and key in results:
             CONDITIONING_STATS["connector_reuses"] += 1
             return results[key]
-        out = inner(*args, **kwargs)
+        out = wrapped["inner"](*args, **kwargs)
         CONDITIONING_STATS["connector_runs"] += 1
         if key is not None and isinstance(out, tuple):
             # A copy: the first call's denoise owns its tensors.
@@ -1874,17 +1905,17 @@ def reuse_connector_outputs(runner: Any):
         return out
 
     runner.encode_prompt = encode_prompt
-    connectors.forward = forward
+    arm()
     try:
         yield
     finally:
         results.clear()
         returned.clear()
         if connectors.__dict__.get("forward") is forward:
-            if prior_forward is None:
-                del connectors.forward
+            if wrapped.get("own"):
+                connectors.forward = wrapped["prior"]
             else:
-                connectors.forward = prior_forward
+                del connectors.forward
         if runner.__dict__.get("encode_prompt") is encode_prompt:
             if had_encode:
                 runner.encode_prompt = encode

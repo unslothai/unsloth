@@ -15,6 +15,14 @@ import pytest
 torch = pytest.importorskip("torch")
 connectors_mod = pytest.importorskip("diffusers.pipelines.ltx2.connectors")
 
+import inspect  # noqa: E402
+
+if (
+    "per_modality_projections"
+    not in inspect.signature(connectors_mod.LTX2TextConnectors.__init__).parameters
+):
+    pytest.skip("diffusers predates the LTX-2.3 connectors", allow_module_level = True)
+
 from core.inference import diffusion_multistage as MS  # noqa: E402
 from core.inference import video_ltx25 as v25  # noqa: E402
 from core.inference import video_ltx25_te_worker as worker  # noqa: E402
@@ -113,7 +121,7 @@ def test_worker_encode_returns_only_valid_rows():
     )
 
 
-def _client(seq_len: int, valid: int) -> object:
+def _client(seq_len: int, valid) -> object:
     client = v25.Ltx25TextEncoderClient(
         repo = "r",
         hf_token = None,
@@ -128,7 +136,7 @@ def _client(seq_len: int, valid: int) -> object:
     client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
     client._ready = True
     client.sent = []
-    embeds, mask = _packed([valid], seq_len, torch.float32)
+    embeds, mask = _packed(valid if isinstance(valid, list) else [valid], seq_len, torch.float32)
 
     def fake_put(msg):
         # The worker's reply, built with its own compaction helper.
@@ -156,12 +164,17 @@ class _Pipe:
         self.transformer = SimpleNamespace(dtype = torch.float32)
         self.connectors = conn
 
-    def __call__(self, guidance: bool = False):
+    def __call__(
+        self,
+        guidance: bool = False,
+        prompt = "a fox",
+        videos: int = 1,
+    ):
         pe, pm, ne, nm = self.encode_prompt(
-            prompt = "a fox",
-            negative_prompt = "blurry",
+            prompt = prompt,
+            negative_prompt = "blurry" if isinstance(prompt, str) else ["blurry"] * len(prompt),
             do_classifier_free_guidance = guidance,
-            num_videos_per_prompt = 1,
+            num_videos_per_prompt = videos,
             prompt_embeds = None,
             negative_prompt_embeds = None,
             prompt_attention_mask = None,
@@ -248,3 +261,40 @@ def test_cache_key_separates_the_transport_forms(monkeypatch):
     assert not client.cached(["p"], 32)
     full, _ = client.encode(["p"], 32, copy = False)
     assert rows.ndim == 2 and full.ndim == 3 and len(client.sent) == 2
+
+
+def test_reuse_survives_an_offload_reset_between_the_calls(monkeypatch):
+    """diffusers' end-of-call offload reset re-installs the hooks: a new ``forward`` on the module."""
+    monkeypatch.setenv(v25.COMPACT_CONDITIONING_ENV, "1")
+    conn = _connectors(True)
+    pipe = _Pipe(conn)
+    v25.install_remote_encode_prompt(pipe, _client(32, 5))
+    before = _stats()
+    with torch.inference_mode(), MS.encode_once(pipe), v25.reuse_connector_outputs(pipe):
+        first = pipe()
+        rearmed = conn.__dict__.pop("forward")
+        assert rearmed is not None
+        hook = lambda *a, **k: type(conn).forward(conn, *a, **k)  # noqa: E731
+        conn.forward = hook
+        second = pipe()
+    delta = _delta(before)
+    assert delta["connector_runs"] == 1 and delta["connector_reuses"] == 1
+    assert all(torch.equal(a, b) for a, b in zip(first, second))
+    assert conn.forward is hook
+
+
+@pytest.mark.parametrize("guidance", [False, True])
+def test_batched_prompts_with_several_videos_keep_the_full_width(monkeypatch, guidance):
+    """diffusers repeats the embeds per prompt but the mask per batch there, so padded rows can reach the connectors:
+    the compact transport steps aside and the outputs stay those of the old path."""
+    outs, stats = [], []
+    for mode in ("0", "1"):
+        monkeypatch.setenv(v25.COMPACT_CONDITIONING_ENV, mode)
+        pipe = _Pipe(_connectors(True))
+        v25.install_remote_encode_prompt(pipe, _client(32, [3, 20]))
+        before = _stats()
+        with torch.inference_mode():
+            outs.append(pipe(guidance, prompt = ["a", "b"], videos = 2))
+        stats.append(_delta(before))
+    assert all(torch.equal(a, b) for a, b in zip(*outs))
+    assert stats[1]["full_encodes"] >= 1 and stats[1]["compact_encodes"] == 0
