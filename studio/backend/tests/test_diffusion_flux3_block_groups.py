@@ -88,7 +88,7 @@ def test_flux3_mode_blocks_get_their_own_diffusers_groups(monkeypatch):
 
     from diffusers.hooks import apply_group_offloading
 
-    # an older diffusers without block_modules keeps the stock grouping (and this PR adds nothing to it)
+    # an older diffusers without block_modules keeps the stock grouping
     supported = "block_modules" in inspect.signature(apply_group_offloading).parameters
     monkeypatch.delenv(dm.GROUP_OFFLOAD_DICT_BLOCKS_ENV, raising = False)
     counts = {}
@@ -132,8 +132,7 @@ def test_top_level_group_leaves_the_mode_blocks_out(monkeypatch, supported):
     model = _mib_model(monkeypatch)
     pipe = type("P", (), {"components": {"transformer": model}})()
     top = dm._top_level_group_mib(pipe)
-    # x_embedder + modulations (2 tensors each, 4 MiB) stay top level; the 6 mode blocks (2 x 64 MiB each) move out
-    # only when diffusers can split them
+    # x_embedder + modulations (16 MiB) stay top level; the 6 mode blocks move out only if diffusers can split them
     assert top == (16 if supported else 16 + 6 * 128)
     monkeypatch.setenv(dm.GROUP_OFFLOAD_DICT_BLOCKS_ENV, "0")
     assert dm._top_level_group_mib(pipe) == 16 + 6 * 128
