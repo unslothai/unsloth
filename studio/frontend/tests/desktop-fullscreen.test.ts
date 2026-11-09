@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 register("./helpers/tauri-window-resolver.mjs", import.meta.url);
 
@@ -35,18 +36,24 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
     target.dispatchEvent(event);
     return event;
   };
-  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  // Wait for the native call rather than assuming the lazy import takes one tick.
+  const waitForChanges = async (expected: number) => {
+    const deadline = Date.now() + 10_000;
+    while (control.fullscreenChanges.length < expected && Date.now() < deadline) {
+      await delay(10);
+    }
+    assert.equal(control.fullscreenChanges.length, expected);
+  };
 
   assert.equal(press("F11").defaultPrevented, true);
-  await settle();
+  await waitForChanges(1);
   assert.deepEqual(control.fullscreenChanges, [true]);
-  press("F11", { repeat: true });
-  press("F11", { ctrlKey: true });
-  press("F10");
-  await settle();
+  assert.equal(press("F11", { repeat: true }).defaultPrevented, false);
+  assert.equal(press("F11", { ctrlKey: true }).defaultPrevented, false);
+  assert.equal(press("F10").defaultPrevented, false);
   assert.deepEqual(control.fullscreenChanges, [true]);
   press("F11");
-  await settle();
+  await waitForChanges(2);
   assert.deepEqual(control.fullscreenChanges, [true, false]);
 
   let releaseGate: (() => void) | undefined;
@@ -54,10 +61,9 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
     releaseGate = resolve;
   });
   press("F11");
-  await settle();
   press("F11");
   assert.ok(releaseGate);
   releaseGate();
-  await settle();
+  await waitForChanges(3);
   assert.deepEqual(control.fullscreenChanges, [true, false, true]);
 });
