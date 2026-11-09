@@ -943,7 +943,7 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
     try:
         import torch  # noqa: PLC0415
 
-        # the helpers _merge_groups needs (torch 2.8+): torch 2.7 has AppendingByteSerializer but a flat bundle
+        # _merge_groups needs these (torch 2.8+), not just AppendingByteSerializer
         from torch.compiler._cache import (  # noqa: F401, PLC0415
             CacheArtifactManager,
             _deserialize_single_cache,
