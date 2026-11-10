@@ -417,7 +417,7 @@ export async function loadModel(
       try {
         const response = await authFetch("/api/inference/load", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { ...options?.headers, "Content-Type": "application/json" },
           body: JSON.stringify(wireLoadRequest(payload, preparedToken.token)),
           signal: options?.signal,
         });
