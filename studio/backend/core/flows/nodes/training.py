@@ -557,10 +557,10 @@ def mapping_facts(
 def trained_system_prompt(config: dict, row: Optional[dict] = None) -> str:
     """The system message a new prompt would have got in training (SFT mapping's, or GRPO's).
 
-    GRPO's counts only when ``row`` has plain-text prompts and no system column."""
+    GRPO's counts only when ``row`` has no system column and its prompt no system turn."""
     mapping = config.get("custom_format_mapping")
     if config.get("objective") == "grpo":
-        from core.training.rl import resolve_role_columns
+        from core.training.rl import _as_messages, resolve_role_columns
 
         if not isinstance(row, dict):
             return ""
@@ -570,7 +570,11 @@ def trained_system_prompt(config: dict, row: Optional[dict] = None) -> str:
             )
         except ValueError:
             return ""
-        if "system" in roles or not isinstance(row.get(roles["prompt"]), str):
+        if "system" in roles:
+            return ""
+        # As format_rl_dataset: the fallback fills any prompt, text or conversation, with no system turn.
+        prompt = _as_messages(row.get(roles["prompt"]), "user")
+        if any(m["role"] == "system" for m in prompt):
             return ""
         return str(config.get("rl_system_prompt") or "").strip()
     if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):

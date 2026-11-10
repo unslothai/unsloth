@@ -884,6 +884,11 @@ def test_the_checkpoint_carries_the_one_system_prompt_training_used():
     # A conversation prompt can carry its own system message, which training kept.
     convo = {"prompt": [{"role": "system", "content": "Respond with JSON only."}], "answer": "4"}
     assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, convo) == ""
+    # A conversation prompt with no system message got the GRPO one in training.
+    user_only = {"prompt": [{"role": "user", "content": "What is 2 + 2?"}], "answer": "4"}
+    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, user_only) == (
+        "Use <answer> tags."
+    )
     sft = {
         "custom_format_mapping": {
             "q": "user",
