@@ -187,7 +187,8 @@ def wanted(device):
         device = torch.device(device)
     except Exception:
         return False
-    if device.type != "cuda" or not torch.cuda.is_available():
+    # auto is calibrated on NVIDIA; ROCm reports gfx numbers as the capability, so it needs =1.
+    if device.type != "cuda" or not torch.cuda.is_available() or torch.version.hip is not None:
         return False
     try:
         major = torch.cuda.get_device_capability(device)[0]

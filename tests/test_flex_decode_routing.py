@@ -177,6 +177,7 @@ def test_flex_preferred_config_decodes_on_flex_decode_when_routable(flex_on, mon
 def test_policy_auto_needs_sm80_and_env_overrides(monkeypatch):
     monkeypatch.setattr(FD, "register", lambda: True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
     for major, expected in ((7, False), (8, True), (9, True), (12, True)):
         monkeypatch.setattr(
             torch.cuda, "get_device_capability", lambda device = None, m = major: (m, 0)
@@ -188,6 +189,12 @@ def test_policy_auto_needs_sm80_and_env_overrides(monkeypatch):
         assert FD.wanted("cuda:0") is True
         monkeypatch.delenv(FD.ENV)
     assert FD.wanted("cpu") is False
+    # ROCm reports gfx11 as (11, x): auto stays off there, =1 still forces it.
+    monkeypatch.setattr(torch.version, "hip", "7.2")
+    assert FD.wanted("cuda:0") is False
+    monkeypatch.setenv(FD.ENV, "1")
+    assert FD.wanted("cuda:0") is True
+    monkeypatch.delenv(FD.ENV)
     monkeypatch.setattr(FD, "register", lambda: False)
     monkeypatch.setenv(FD.ENV, "1")
     assert FD.wanted("cuda:0") is False
