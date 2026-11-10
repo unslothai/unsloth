@@ -2,8 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
 
 import pytest
+
+from core.flows.engine import FlowEngine
 from core.flows.nodes import _common
 from studio_mcp import loading
 
@@ -686,3 +689,32 @@ def test_a_reload_keeps_an_explicit_cache_off_and_the_built_family():
     assert "transformer_cache" not in knobs and "attention_backend" not in knobs
     status["resolved"]["transformer_cache"] = {"requested": "static", "value": "static"}
     assert _common.resident_build_knobs(status)["transformer_cache"] == "static"
+
+
+# Model cache keys: a local model's key follows its files.
+
+
+def test_a_local_model_key_changes_when_its_files_change(tmp_path):
+    weights = tmp_path / "model.gguf"
+    weights.write_bytes(b"a" * 10)
+    eng = FlowEngine()
+    found = {"model_kind": "chat"}
+    params = {"model": {"repo": str(weights)}}
+
+    first = asyncio.run(eng._model_key(None, found, params))
+    weights.write_bytes(b"b" * 20)
+    os.utime(weights, ns = (1, 2_000_000_000))
+    second = asyncio.run(eng._model_key(None, found, params))
+    assert first != second
+    hub = asyncio.run(eng._model_key(None, found, {"model": {"repo": "unsloth/x"}}))
+    assert hub == {"repo": "unsloth/x", "variant": None}
+
+
+def test_a_change_to_any_file_in_a_model_folder_changes_its_fingerprint(tmp_path):
+    from core.flows.engine import _local_fingerprint
+
+    for i in range(300):
+        (tmp_path / f"shard-{i:04d}.bin").write_bytes(b"x")
+    before = _local_fingerprint(str(tmp_path))
+    (tmp_path / "shard-0299.bin").write_bytes(b"xy")
+    assert _local_fingerprint(str(tmp_path)) != before

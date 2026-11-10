@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import asyncio
 
 import pytest
 
-from core.flows.compiler import parse_document
 from core.flows.engine import FlowEngine
 from core.flows.nodes import training
+import asyncio
 
-from ._flows_helpers import doc, edge, node, run_async
+from ._flows_helpers import doc, edge, make_engine, node, run_async, run_doc
 
 
 @pytest.fixture
@@ -55,10 +54,9 @@ def _engine(state) -> FlowEngine:
         state["asked"].append(ctx.params.get("prompt"))
         return {"text": ctx.inputs["checkpoint"]["name"]}
 
-    eng = FlowEngine()
-    eng.handlers = {"data.hf_dataset": hub, "train.finetune": tune, "train.chat_checkpoint": chat}
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
+    eng = make_engine(
+        {"data.hf_dataset": hub, "train.finetune": tune, "train.chat_checkpoint": chat}
+    )
     return eng
 
 
@@ -77,10 +75,7 @@ def _flow(prompt = "q1", **tune):
 
 
 async def _run(eng, d, **options):
-    parsed, errors = parse_document(d)
-    assert not errors, errors
-    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = options)
-    await asyncio.wait_for(rs.task, timeout = 20)
+    rs = await run_doc(eng, d, **options)
     assert rs.status == "completed", rs.error
     return rs
 
@@ -460,3 +455,62 @@ def test_continuing_from_a_checkpoint_keys_on_that_checkpoints_weights(tmp_path,
     # A checkpoint that cannot be found cannot be keyed.
     Ctx.inputs = {"start": {"kind": "checkpoint", "name": "run-9"}}
     assert asyncio.run(training.finetune_cache_material(Ctx())) is None
+
+
+class _TrainCtx:
+    def __init__(self, run_id):
+        self.run_id = run_id
+        self.caller = None
+        self.params = {"base_model": "unsloth/Qwen3-4B", "training_type": "lora"}
+        self.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/data"}}
+
+
+def test_fine_tune_cache_lookups_run_once_per_run(monkeypatch):
+    asked = []
+
+    def revision(dataset, token):
+        asked.append(("dataset", dataset["ref"]))
+        return "d1"
+
+    def model_revision(repo, token):
+        asked.append(("model", repo))
+        return "m1"
+
+    def adapter_base(repo, revision, token):
+        asked.append(("adapter", repo))
+        return None
+
+    monkeypatch.setattr(training, "_RUN_MEMO", {})
+    monkeypatch.setattr(training, "_hub_revision", revision)
+    monkeypatch.setattr(training, "_hub_model_revision", model_revision)
+    monkeypatch.setattr(training, "_hub_adapter_base", adapter_base)
+    first = asyncio.run(training.finetune_cache_material(_TrainCtx("run-1")))
+    per_run = len(asked)
+    assert per_run >= 3
+    again = asyncio.run(training.finetune_cache_material(_TrainCtx("run-1")))
+    assert again == first and len(asked) == per_run
+    asyncio.run(training.finetune_cache_material(_TrainCtx("run-2")))
+    assert len(asked) == 2 * per_run
+
+
+def test_a_local_dataset_is_hashed_again_when_its_file_changes(monkeypatch, tmp_path):
+    from core.flows.nodes import data
+
+    path = tmp_path / "rows.jsonl"
+    path.write_text('{"a": 1}\n')
+    hashed = []
+    real = training._content_hash
+
+    def counting(p):
+        hashed.append(p)
+        return real(p)
+
+    monkeypatch.setattr(training, "_RUN_MEMO", {})
+    monkeypatch.setattr(training, "_content_hash", counting)
+    monkeypatch.setattr(data, "local_seed_path", lambda ref: str(path))
+    ctx = _TrainCtx("run-1")
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "local", "ref": "uploads/rows.jsonl"}}
+    one = asyncio.run(training.dataset_material(ctx))
+    assert asyncio.run(training.dataset_material(ctx)) == one and len(hashed) == 1
+    path.write_text('{"a": 2, "b": "longer"}\n')
+    assert asyncio.run(training.dataset_material(ctx)) != one and len(hashed) == 2

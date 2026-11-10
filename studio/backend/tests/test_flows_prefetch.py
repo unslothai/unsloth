@@ -4,22 +4,29 @@
 """Model residency across a run: reuse, load-ahead during CPU steps, cache-hit skips, unload at run end."""
 
 import asyncio
-import time
 
 import pytest
 
 from core.flows import engine as engine_mod
 from core.flows.compiler import parse_document
-from core.flows.engine import FlowEngine
 from core.flows.nodes import _common
 from studio_mcp import loading
 
-from ._flows_helpers import doc, edge, node, run_async
+from ._flows_helpers import (
+    doc,
+    edge,
+    make_engine,
+    node,
+    run_async,
+    run_doc,
+    text_handler,
+    wait_until,
+)
 
 
 @pytest.fixture
 def studio(monkeypatch):
-    state = {"slots": {}, "loads": [], "unloads": []}
+    state = {"slots": {}, "loads": [], "unloads": [], "order": []}
 
     async def resident_slots(caller):
         return {k: list(v) for k, v in state["slots"].items()}
@@ -35,8 +42,8 @@ def studio(monkeypatch):
             return None
         held = state["slots"].get("llm") or []
         if repo not in held if state.get("keep") else held != [repo]:
-            await asyncio.sleep(0.2)  # the load itself
-            state["loads"].append((repo, time.monotonic()))
+            state["loads"].append(repo)
+            state["order"].append(("load", repo))
             state["slots"]["llm"] = [*held, repo] if state.get("keep") else [repo]
             ctx.note_loaded("llm", repo)
         ctx.resident["llm"] = repo
@@ -57,37 +64,54 @@ def studio(monkeypatch):
     return state
 
 
-def _engine(handlers: dict) -> FlowEngine:
-    eng = FlowEngine()
-    eng.handlers = handlers
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
-    return eng
-
-
-async def _run(eng: FlowEngine, d: dict, **options):
-    parsed, errors = parse_document(d)
-    assert not errors, errors
-    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = options)
-    await asyncio.wait_for(rs.task, timeout = 30)
-    return rs
-
-
-async def _text(ctx):
-    return {"text": str(ctx.params.get("value") or "")}
-
-
 async def _gen(ctx):
     await ctx.ensure_model("chat", ctx.params.get("model"))
     return {"text": f"{ctx.params['model']['repo']}:{ctx.inputs.get('prompt')}"}
 
 
-def _slow_template(spans: list):
+async def _settle_prefetch(ctx) -> None:
+    """Wait (bounded) for the early load the engine chose when it launched this CPU step, if it chose one.
+
+    The engine decides synchronously as it launches the step, so by the time a handler runs the
+    decision is made: a CPU step that settles it (or is stopped first) gives the load every chance to land while it runs,
+    with no wall-clock window. asyncio.wait never cancels the load it waits on.
+    """
+    rs = ctx._rs
+    while rs.gpu_parent is not None:
+        rs = rs.gpu_parent
+    if rs.prefetch_task is not None:
+        stopped = asyncio.ensure_future(rs.cancel_event.wait())
+        try:
+            await asyncio.wait(
+                {rs.prefetch_task, stopped}, timeout = 10, return_when = asyncio.FIRST_COMPLETED
+            )
+        finally:
+            stopped.cancel()
+
+
+def _cpu_step(order: list | None = None):
+    """A CPU template that records when it starts and ends and lets any early load land in between."""
+
     async def template(ctx):
-        start = time.monotonic()
-        await asyncio.sleep(0.6)
-        spans.append((start, time.monotonic()))
+        if order is not None:
+            order.append(("start", ctx.node_id))
+        await _settle_prefetch(ctx)
+        if order is not None:
+            order.append(("end", ctx.node_id))
         return {"text": "+".join(map(str, ctx.inputs.get("values") or []))}
+
+    return template
+
+
+def _gated_cpu_step(waits_for: dict[str, asyncio.Event]):
+    """CPU templates by node id: each named one stays running until its Event is set (bounded)."""
+
+    async def template(ctx):
+        await _settle_prefetch(ctx)
+        gate = waits_for.get(ctx.node_id)
+        if gate is not None:
+            await asyncio.wait_for(gate.wait(), 10)
+        return {"text": "t"}
 
     return template
 
@@ -112,16 +136,18 @@ def _chain(tag: str, **meta) -> dict:
 
 @run_async
 async def test_the_next_model_loads_while_cpu_steps_run(studio):
-    spans: list = []
-    eng = _engine(
-        {"input.text": _text, "llm.generate": _gen, "text.template": _slow_template(spans)}
+    eng = make_engine(
+        {
+            "input.text": text_handler,
+            "llm.generate": _gen,
+            "text.template": _cpu_step(studio["order"]),
+        }
     )
-    rs = await _run(eng, _chain("prefetch-on"))
+    rs = await run_doc(eng, _chain("prefetch-on"))
     assert rs.status == "completed"
-    assert [repo for repo, _ in studio["loads"]] == ["m1", "m2"]
-    (start, end) = spans[0]
-    m2_loaded = dict(studio["loads"])["m2"]
-    assert start < m2_loaded < end
+    order = studio["order"]
+    assert [e for e in order if e[0] == "load"] == [("load", "m1"), ("load", "m2")]
+    assert order.index(("load", "m2")) < order.index(("end", "t")), "m2 loads while t runs"
     assert rs.prefetched == 1
     logs = [
         e["data"]["message"] for e in rs.events if e["type"] == "node.log" and e["node_id"] == "g2"
@@ -132,25 +158,28 @@ async def test_the_next_model_loads_while_cpu_steps_run(studio):
 @run_async
 async def test_the_kill_switch_keeps_loads_where_the_step_runs(studio, monkeypatch):
     monkeypatch.setenv("UNSLOTH_FLOWS_PREFETCH", "0")
-    spans: list = []
-    eng = _engine(
-        {"input.text": _text, "llm.generate": _gen, "text.template": _slow_template(spans)}
+    eng = make_engine(
+        {
+            "input.text": text_handler,
+            "llm.generate": _gen,
+            "text.template": _cpu_step(studio["order"]),
+        }
     )
-    rs = await _run(eng, _chain("prefetch-off"))
+    rs = await run_doc(eng, _chain("prefetch-off"))
     assert rs.status == "completed" and rs.prefetched == 0
-    assert dict(studio["loads"])["m2"] > spans[0][1]
+    order = studio["order"]
+    assert order.index(("end", "t")) < order.index(("load", "m2")), "m2 loads when g2 runs"
 
 
 @run_async
 async def test_a_rerun_served_from_the_cache_loads_nothing_ahead(studio):
-    spans: list = []
-    eng = _engine(
-        {"input.text": _text, "llm.generate": _gen, "text.template": _slow_template(spans)}
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _cpu_step()}
     )
-    await _run(eng, _chain("rerun"))
+    await run_doc(eng, _chain("rerun"))
     studio["loads"].clear()
     studio["slots"]["llm"] = ["something-else"]
-    rs = await _run(eng, _chain("rerun"))
+    rs = await run_doc(eng, _chain("rerun"))
     assert rs.nodes["g2"].status == "cached"
     ahead = [
         e for e in rs.events if e["type"] == "node.log" and "ahead while" in e["data"]["message"]
@@ -161,10 +190,10 @@ async def test_a_rerun_served_from_the_cache_loads_nothing_ahead(studio):
 @run_async
 async def test_nothing_loads_ahead_of_a_branch(studio):
     async def gate(ctx):
-        await asyncio.sleep(0.4)
+        await _settle_prefetch(ctx)
         return {"then": ctx.inputs.get("value")}
 
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "logic.if": gate})
+    eng = make_engine({"input.text": text_handler, "llm.generate": _gen, "logic.if": gate})
     d = doc(
         [
             node("a", "input.text", value = "branch"),
@@ -178,7 +207,7 @@ async def test_nothing_loads_ahead_of_a_branch(studio):
             edge("if", "then", "g2", "prompt"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed" and rs.prefetched == 0
 
 
@@ -191,25 +220,27 @@ async def test_the_first_gpu_step_keeps_what_studio_already_has_loaded(studio):
         order.append(ctx.params["model"]["repo"])
         return await _gen(ctx)
 
-    eng = _engine({"input.text": _text, "llm.generate": gen})
+    eng = make_engine({"input.text": text_handler, "llm.generate": gen})
     d = doc(
         [
             node("g1", "llm.generate", prompt = "seeded one", model = {"repo": "m1"}),
             node("g2", "llm.generate", prompt = "seeded two", model = {"repo": "m2"}),
         ]
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed"
     assert order == ["m2", "m1"]
-    assert [repo for repo, _ in studio["loads"]] == ["m1"]
+    assert studio["loads"] == ["m1"]
 
 
 @run_async
 async def test_unload_after_the_run_frees_only_what_the_run_loaded(studio):
     studio["keep"] = True
     studio["slots"]["llm"] = ["m0", "m1"]
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
-    rs = await _run(eng, _chain("unload", unload_after_run = True))
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _cpu_step()}
+    )
+    rs = await run_doc(eng, _chain("unload", unload_after_run = True))
     assert rs.status == "completed"
     assert studio["unloads"] == ["m2"]
     logs = [e["data"]["message"] for e in rs.events if e["type"] == "node.log"]
@@ -218,17 +249,19 @@ async def test_unload_after_the_run_frees_only_what_the_run_loaded(studio):
 
 @run_async
 async def test_models_stay_loaded_by_default(studio):
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
-    rs = await _run(eng, _chain("keep"))
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _cpu_step()}
+    )
+    rs = await run_doc(eng, _chain("keep"))
     assert rs.status == "completed" and studio["unloads"] == []
 
 
-def test_prefetch_switch_values(monkeypatch):
-    for off in ("0", "false", "off"):
-        monkeypatch.setenv("UNSLOTH_FLOWS_PREFETCH", off)
-        assert not engine_mod.prefetch_enabled()
-    monkeypatch.setenv("UNSLOTH_FLOWS_PREFETCH", "1")
-    assert engine_mod.prefetch_enabled()
+@pytest.mark.parametrize(
+    "value, enabled", [("0", False), ("false", False), ("off", False), ("1", True)]
+)
+def test_prefetch_switch_values(monkeypatch, value, enabled):
+    monkeypatch.setenv("UNSLOTH_FLOWS_PREFETCH", value)
+    assert engine_mod.prefetch_enabled() is enabled
 
 
 def test_the_plan_suggests_keeping_models_loaded_only_when_it_helps(monkeypatch):
@@ -253,17 +286,18 @@ def test_the_plan_suggests_keeping_models_loaded_only_when_it_helps(monkeypatch)
 async def test_no_early_load_swaps_the_model_a_use_loaded_model_step_runs_on(studio):
     seen = {}
 
+    ran = asyncio.Event()
+
     async def gen(ctx):
         if not (ctx.params.get("model") or {}).get("repo"):
             seen[ctx.node_id] = list(studio["slots"].get("llm") or [])
+            ran.set()
             return {"text": "loaded"}
         return await _gen(ctx)
 
-    async def template(ctx):
-        await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
-        return {"text": "t"}
-
-    eng = _engine({"input.text": _text, "llm.generate": gen, "text.template": template})
+    # t2 (feeding m2) is still running while the use-loaded-model step runs.
+    template = _gated_cpu_step({"t2": ran})
+    eng = make_engine({"input.text": text_handler, "llm.generate": gen, "text.template": template})
     d = doc(
         [
             node("a", "input.text", value = "loaded-model"),
@@ -281,13 +315,15 @@ async def test_no_early_load_swaps_the_model_a_use_loaded_model_step_runs_on(stu
             edge("t2", "text", "g2", "prompt"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed"
     assert seen["loaded"] == ["m1"]
 
 
 @run_async
 async def test_stopping_a_run_mid_early_load_stops_that_load(studio, monkeypatch):
+    loading_m2 = asyncio.Event()
+
     async def ensure_model(
         ctx,
         kind,
@@ -296,21 +332,21 @@ async def test_stopping_a_run_mid_early_load_stops_that_load(studio, monkeypatch
     ):
         repo = choice["repo"]
         if repo == "m2":
-            await asyncio.sleep(30)  # still loading when the run is stopped
+            loading_m2.set()
+            await asyncio.Event().wait()  # still loading when the run is stopped
         studio["slots"]["llm"] = [repo]
         ctx.resident["llm"] = repo
         return {"repo": repo}
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _cpu_step()}
+    )
     parsed, errors = parse_document(_chain("stop-early-load"))
     assert not errors, errors
     rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
     rs.caller = rs.caller or object()
-    for _ in range(100):
-        if rs.prefetch_load:
-            break
-        await asyncio.sleep(0.05)
+    await asyncio.wait_for(loading_m2.wait(), 10)
     assert rs.prefetch_load == ("llm", "m2")
     await eng.cancel(rs.id)
     await asyncio.wait_for(rs.task, timeout = 30)
@@ -331,15 +367,25 @@ async def test_unload_after_the_run_leaves_a_slot_it_could_not_read(studio, monk
         return {k: list(v) for k, v in studio["slots"].items()}
 
     monkeypatch.setattr(loading, "resident_slots", resident_slots)
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
-    rs = await _run(eng, _chain("unknown-slot", unload_after_run = True))
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _cpu_step()}
+    )
+    rs = await run_doc(eng, _chain("unknown-slot", unload_after_run = True))
     assert rs.status == "completed" and studio["unloads"] == []
 
 
 @run_async
 async def test_unload_after_the_run_waits_for_the_gpu(studio, monkeypatch):
     studio["slots"]["llm"] = []
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    tail_started, release_tail = asyncio.Event(), asyncio.Event()
+
+    async def template(ctx):
+        if ctx.node_id == "tail":
+            tail_started.set()
+            await asyncio.wait_for(release_tail.wait(), 10)
+        return {"text": "t"}
+
+    eng = make_engine({"input.text": text_handler, "llm.generate": _gen, "text.template": template})
     d = _chain("unload-waits", unload_after_run = True)
     d["nodes"].append(node("tail", "text.template", template = "{}"))
     d["edges"].append(edge("g2", "text", "tail", "values"))
@@ -347,13 +393,12 @@ async def test_unload_after_the_run_waits_for_the_gpu(studio, monkeypatch):
     assert not errors, errors
     lock = eng.gpu_lock()
     rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
-    for _ in range(200):
-        if rs.nodes["g2"].status in ("done", "cached"):
-            break
-        await asyncio.sleep(0.05)
+    await asyncio.wait_for(tail_started.wait(), 10)  # g2 is done; only the CPU tail is left
     async with lock:
-        await asyncio.sleep(1.5)
-        assert studio["unloads"] == []
+        release_tail.set()
+        # The run ends and its unload queues behind the lock this test holds.
+        await wait_until(lambda: lock._waiting > 0, what = "the unload to wait for the GPU")
+        assert studio["unloads"] == [] and not rs.task.done()
     await asyncio.wait_for(rs.task, timeout = 30)
     assert studio["unloads"] == ["m2"]
 
@@ -367,7 +412,7 @@ async def test_unload_after_the_run_frees_an_agents_vision_model(studio):
         await ctx.ensure_model("vision", ctx.params.get("vision_model"))
         return {"text": "seen"}
 
-    eng = _engine({"input.text": _text, "llm.generate": agent})
+    eng = make_engine({"input.text": text_handler, "llm.generate": agent})
     d = doc(
         [
             node(
@@ -380,7 +425,7 @@ async def test_unload_after_the_run_frees_an_agents_vision_model(studio):
         ],
         meta = {"unload_after_run": True},
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed" and studio["unloads"] == ["vis-m"]
 
 
@@ -388,6 +433,8 @@ async def test_unload_after_the_run_frees_an_agents_vision_model(studio):
 async def test_stopping_an_early_load_never_unloads_inside_another_flows_gpu_step(
     studio, monkeypatch
 ):
+    loading_m2 = asyncio.Event()
+
     async def ensure_model(
         ctx,
         kind,
@@ -395,7 +442,8 @@ async def test_stopping_an_early_load_never_unloads_inside_another_flows_gpu_ste
         options = None,
     ):
         if choice["repo"] == "m2":
-            await asyncio.sleep(30)
+            loading_m2.set()
+            await asyncio.Event().wait()
         studio["slots"]["llm"] = [choice["repo"]]
         ctx.resident["llm"] = choice["repo"]
         return {"repo": choice["repo"]}
@@ -411,24 +459,26 @@ async def test_stopping_an_early_load_never_unloads_inside_another_flows_gpu_ste
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
     monkeypatch.setattr(loading, "unload_llm", unload_llm)
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _cpu_step()}
+    )
     parsed, errors = parse_document(_chain("stop-early-load-locked"))
     assert not errors, errors
     rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
     rs.caller = rs.caller or object()
-    for _ in range(100):
-        if rs.prefetch_load:
-            break
-        await asyncio.sleep(0.05)
+    await asyncio.wait_for(loading_m2.wait(), 10)
+    lock = eng.gpu_lock()
 
     async def other_flow_step():
-        async with eng.gpu_lock():
+        async with lock:
             inside["now"] = True
-            await asyncio.sleep(0.5)
+            # Hold the GPU until the stopped load's unload queues behind it (or, wrongly, runs anyway).
+            await wait_until(lambda: lock._waiting > 0 or inside["seen"], what = "the unload")
             inside["now"] = False
 
     other = asyncio.create_task(other_flow_step())
-    await asyncio.sleep(0)
+    # The other flow's step is queued for the GPU the early load holds before Stop frees it.
+    await wait_until(lambda: lock._waiting > 0, what = "the other step to queue")
     await eng.cancel(rs.id)
     await asyncio.wait_for(asyncio.gather(rs.task, other), timeout = 30)
     assert inside["seen"] == [False]
@@ -444,12 +494,12 @@ async def test_unload_after_the_run_leaves_a_model_another_run_loaded(studio, mo
 
     monkeypatch.setattr(loading, "resident_slots", resident_slots)
     studio["slots"]["llm"] = ["m1"]
-    eng = _engine({"input.text": _text, "llm.generate": _gen})
+    eng = make_engine({"input.text": text_handler, "llm.generate": _gen})
     d = doc(
         [node("g", "llm.generate", prompt = "hi", model = {"repo": "m1"})],
         meta = {"unload_after_run": True},
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed" and studio["loads"] == [] and studio["unloads"] == []
 
 
@@ -472,7 +522,9 @@ async def test_a_failed_early_load_leaves_the_steps_own_load_in_place(studio, mo
         return {"repo": repo}
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _cpu_step()}
+    )
     parsed, errors = parse_document(_chain("failed-early-load"))
     assert not errors, errors
     rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
@@ -498,7 +550,6 @@ async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_mod
         if not repo:
             return None
         if kind == "image":
-            await asyncio.sleep(0.2)
             studio["slots"]["llm"] = []
             studio["slots"]["image"] = [repo]
             ctx.resident["image"] = repo
@@ -507,9 +558,12 @@ async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_mod
         ctx.resident["llm"] = repo
         return {"repo": repo}
 
+    ran = asyncio.Event()
+
     async def gen(ctx):
         if not (ctx.params.get("model") or {}).get("repo"):
             seen[ctx.node_id] = list(studio["slots"].get("llm") or [])
+            ran.set()
             return {"text": "loaded"}
         return await _gen(ctx)
 
@@ -517,14 +571,12 @@ async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_mod
         await ctx.ensure_model("image", ctx.params.get("model"))
         return {"images": []}
 
-    async def template(ctx):
-        await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
-        return {"text": "t"}
+    template = _gated_cpu_step({"t2": ran})
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
-    eng = _engine(
+    eng = make_engine(
         {
-            "input.text": _text,
+            "input.text": text_handler,
             "llm.generate": gen,
             "text.template": template,
             "image.generate": image,
@@ -547,7 +599,7 @@ async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_mod
             edge("t2", "text", "img", "prompt"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert seen["loaded"] == ["m1"]
 
@@ -559,17 +611,18 @@ async def test_an_agent_seeing_an_image_on_the_loaded_vision_model_blocks_early_
 
     seen = {}
 
+    ran = asyncio.Event()
+
     async def agent(ctx):
         seen[ctx.node_id] = list(studio["slots"].get("llm") or [])
+        ran.set()
         return {"text": "seen"}
 
-    async def template(ctx):
-        await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
-        return {"text": "t"}
+    template = _gated_cpu_step({"t2": ran})
 
-    eng = _engine(
+    eng = make_engine(
         {
-            "input.text": _text,
+            "input.text": text_handler,
             "llm.generate": _gen,
             "text.template": template,
             "llm.agent": agent,
@@ -595,7 +648,7 @@ async def test_an_agent_seeing_an_image_on_the_loaded_vision_model_blocks_early_
             edge("t2", "text", "g2", "prompt"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert seen["ag"] == ["m1"]
 
@@ -610,12 +663,12 @@ async def test_no_early_load_while_a_for_each_body_runs_on_the_loaded_model(stud
 
     async def gen(ctx):
         if not (ctx.params.get("model") or {}).get("repo"):
-            await asyncio.sleep(0.3)
+            await _settle_prefetch(ctx)
             seen.append(list(studio["slots"].get("llm") or []))
             return {"text": "loaded"}
         return await _gen(ctx)
 
-    eng = _engine({"input.list": items, "llm.generate": gen})
+    eng = make_engine({"input.list": items, "llm.generate": gen})
     d = doc(
         [
             node("l", "input.list"),
@@ -630,7 +683,7 @@ async def test_no_early_load_while_a_for_each_body_runs_on_the_loaded_model(stud
             edge("fe", "results", "g2", "context"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert seen == [["m1"]] * 3
 
@@ -644,11 +697,11 @@ async def test_a_controlnet_image_step_is_not_loaded_early(studio):
     async def pic(ctx):
         return {"image": {"kind": "image", "url": "/edges.png"}}
 
-    eng = _engine(
+    eng = make_engine(
         {
-            "input.text": _text,
+            "input.text": text_handler,
             "input.image": pic,
-            "text.template": _slow_template([]),
+            "text.template": _cpu_step(),
             "image.generate": image,
         }
     )
@@ -665,13 +718,15 @@ async def test_a_controlnet_image_step_is_not_loaded_early(studio):
             edge("edges", "image", "img", "control_image"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert rs.prefetched == 0
 
 
 @run_async
 async def test_a_player_invoke_that_ends_early_stops_its_early_load(studio, monkeypatch):
+    loading_m2 = asyncio.Event()
+
     async def ensure_model(
         ctx,
         kind,
@@ -679,19 +734,25 @@ async def test_a_player_invoke_that_ends_early_stops_its_early_load(studio, monk
         options = None,
     ):
         if choice["repo"] == "m2":
-            await asyncio.sleep(30)  # still loading when the invoke gives up
+            loading_m2.set()
+            await asyncio.Event().wait()  # still loading when the invoke gives up
         return {"repo": choice["repo"]}
 
     async def failing(ctx):
-        await asyncio.sleep(0.6)
+        await asyncio.wait_for(loading_m2.wait(), 10)
         raise RuntimeError("upstream step failed")
 
     async def reply(ctx):
         return {"reply": ctx.inputs.get("reply")}
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
-    eng = _engine(
-        {"input.text": _text, "llm.generate": _gen, "text.template": failing, "chat.output": reply}
+    eng = make_engine(
+        {
+            "input.text": text_handler,
+            "llm.generate": _gen,
+            "text.template": failing,
+            "chat.output": reply,
+        }
     )
     d = doc(
         [
@@ -739,8 +800,10 @@ async def test_a_load_ahead_asks_for_the_cards_own_and_saved_load_settings(studi
     g2 = next(n for n in d["nodes"] if n["id"] == "g2")
     g2["params"]["load"] = {"max_seq_length": 8192}
     g2["params"]["use_model_settings"] = True
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
-    rs = await _run(eng, d)
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _cpu_step()}
+    )
+    rs = await run_doc(eng, d)
     assert rs.status == "completed" and rs.prefetched == 1
     assert seen["m2"] == model_settings.card_load_kwargs(g2["params"])
     assert seen["m2"]["max_seq_length"] == 8192

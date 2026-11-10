@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import io
 import math
 import wave
@@ -9,6 +10,7 @@ import pytest
 
 from core.flows.nodes import media_utils as mu
 from core.flows.registry import FlowNodeError
+from core.flows.specs import SPECS_BY_TYPE
 
 
 def _img(
@@ -335,3 +337,127 @@ def test_edit_video_a_trim_shorter_than_a_frame_keeps_one_frame():
     src = av.open(io.BytesIO(mu.edit_video(_clip(frames = 12, fps = 12), end_s = 0.01)))
     assert sum(1 for _ in src.decode(src.streams.video[0])) == 1
     src.close()
+
+
+def test_transcribe_retries_without_timestamps_on_501(monkeypatch):
+    from core.flows.nodes import audio
+
+    async def fake_bytes(ctx, media):
+        return b"RIFF", "audio/wav"
+
+    monkeypatch.setattr(audio, "media_bytes", fake_bytes)
+
+    class Ctx:
+        params = {"translate": False, "speakers": False}
+        inputs = {"audio": {"kind": "audio", "ref": "audio:1"}}
+        formats = []
+
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            data = None,
+            **kw,
+        ):
+            self.formats.append(data["response_format"])
+            if data["response_format"] != "json":
+                raise FlowNodeError("timestamps need a language", status = 501)
+            return {"text": "hello"}
+
+    ctx = Ctx()
+    assert asyncio.run(audio.transcribe(ctx))["text"] == "hello"
+    assert ctx.formats == ["verbose_json", "json"]
+
+
+def test_transcribe_downloads_a_missing_speech_model_once(monkeypatch):
+    from core.flows.nodes import audio
+    from studio_mcp.tools import audio as mcp_audio
+
+    async def fake_bytes(ctx, media):
+        return b"RIFF", "audio/wav"
+
+    downloads = []
+
+    async def fake_download(caller, ctx, model):
+        downloads.append(model)
+
+    monkeypatch.setattr(audio, "media_bytes", fake_bytes)
+    monkeypatch.setattr(mcp_audio, "_download_then_retry", fake_download)
+
+    class Ctx:
+        params = {"translate": False, "speakers": False}
+        inputs = {"audio": {"kind": "audio", "ref": "audio:1"}}
+        caller = object()
+        calls = 0
+
+        def progress(self, *a, **kw):
+            pass
+
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            data = None,
+            **kw,
+        ):
+            self.calls += 1
+            if not downloads:
+                raise FlowNodeError("STT model 'x' is not downloaded yet.", status = 409)
+            return {"text": "hello"}
+
+    ctx = Ctx()
+    assert asyncio.run(audio.transcribe(ctx))["text"] == "hello"
+    assert downloads == [None] and ctx.calls == 2
+
+
+def test_speak_sends_the_reference_transcript_for_cloning(monkeypatch):
+    from core.flows.nodes import _common
+
+    sent = []
+
+    async def fake_run(ctx, body):
+        sent.append(body)
+        return [{"kind": "audio", "ref": "audio:x"}]
+
+    async def fake_ensure(ctx, kind, model):
+        return None
+
+    monkeypatch.setattr(_common, "audio_run", fake_run)
+    monkeypatch.setattr(_common, "ensure_model", fake_ensure)
+    clip = {"kind": "audio", "ref": "audio:abc"}
+    asyncio.run(
+        _common.speak(
+            object(), model = None, text = "Hola", reference = clip, reference_text = " Hello there "
+        )
+    )
+    asyncio.run(
+        _common.speak(object(), model = None, text = "Hola", reference_text = "ignored without a clip")
+    )
+    assert sent[0]["workflow"] == "clone" and sent[0]["inputs"]["reference_text"] == "Hello there"
+    assert sent[1]["workflow"] == "speak" and "inputs" not in sent[1]
+    from models.inference import AudioRunRequest
+
+    sent[0]["inputs"]["reference"] = {"clip_id": "abc"}
+    AudioRunRequest.model_validate(sent[0])
+    assert any(p["id"] == "reference_text" for p in SPECS_BY_TYPE["audio.speak"]["inputs"])
+
+
+def test_an_8_bit_wav_gap_is_silence_not_full_negative():
+    import io
+    import wave
+
+    from core.flows.nodes.audio import concat_wav
+
+    def clip():
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(1)
+            w.setframerate(1000)
+            w.writeframes(b"\x80" * 10)
+        return buf.getvalue()
+
+    with wave.open(io.BytesIO(concat_wav([clip(), clip()], 5))) as w:
+        assert set(w.readframes(w.getnframes())) == {0x80}

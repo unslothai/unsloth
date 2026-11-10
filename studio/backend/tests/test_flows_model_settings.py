@@ -6,10 +6,13 @@ before the setting existed runs exactly as it did."""
 
 import asyncio
 
+import pytest
+
 from core.flows import engine as engine_mod
 from core.flows import model_settings
 from core.flows.engine import param_values
 from core.flows.nodes import _common
+from core.flows.registry import FlowNodeError
 from core.flows.specs import NODE_SPECS
 from core.inference import gpu_arbiter
 
@@ -537,3 +540,213 @@ def test_saved_settings_equal_to_the_cards_still_bind_the_model_they_came_from(m
     asyncio.run(_common.ensure_model(_LoadCtx({}), "chat", {"repo": other, "variant": None}))
     asyncio.run(_common.ensure_model(ctx, "chat", None))
     assert [l["model"] for l in loads] == [other, GGUF]
+
+
+# Load settings and requirements in ensure_model (core/flows/nodes/_common.py).
+
+
+def _llm_fakes(monkeypatch):
+    loads, state = [], {"llm": [], "variant": None, "is_gguf": True}
+
+    async def fake_load_llm(caller, ctx, **kwargs):
+        loads.append(kwargs)
+        state["llm"] = [kwargs["model"]]
+
+    async def fake_slots(caller):
+        return {"llm": state["llm"]}
+
+    async def fake_resident(caller):
+        return {"llm": state["llm"]}, {"gguf_variant": None, "is_gguf": state["is_gguf"]}
+
+    monkeypatch.setattr(loading, "load_llm", fake_load_llm)
+    monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(loading, "_resident", fake_resident)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: None)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {})
+    return loads, state
+
+
+class _ModelCtx:
+    def __init__(self, spec = None):
+        self.resident, self.spec = {}, spec or {}
+
+    def set_status(
+        self,
+        status,
+        message = None,
+    ):
+        pass
+
+
+def test_load_settings_reload_only_when_they_change(monkeypatch):
+    loads, _ = _llm_fakes(monkeypatch)
+    ctx = _ModelCtx()
+    choice = {"repo": "unsloth/Qwen3-0.6B-GGUF"}
+    kv8 = {"cache_type_kv": "q8_0", "max_seq_length": 8192}
+
+    async def go():
+        await _common.ensure_model(ctx, "chat", choice)
+        await _common.ensure_model(ctx, "chat", choice)
+        await _common.ensure_model(ctx, "chat", choice, kv8)
+        await _common.ensure_model(ctx, "chat", choice, dict(kv8))
+        await _common.ensure_model(ctx, "chat", choice, {"cache_type_kv": "q4_0"})
+        await _common.ensure_model(ctx, "chat", choice)
+
+    asyncio.run(go())
+    assert len(loads) == 4
+    assert (
+        loads[0]["extra_body"] is None and loads[0]["max_seq_length"] == _common.FLOW_CHAT_CONTEXT
+    )
+    assert (
+        loads[1]["extra_body"] == {"cache_type_kv": "q8_0"} and loads[1]["max_seq_length"] == 8192
+    )
+    assert loads[2]["extra_body"] == {"cache_type_kv": "q4_0"}
+    assert loads[3]["extra_body"] is None
+
+
+def test_a_load_elsewhere_voids_the_remembered_settings(monkeypatch):
+    loads, _ = _llm_fakes(monkeypatch)
+    ctx = _ModelCtx()
+    choice = {"repo": "unsloth/Qwen3-0.6B-GGUF"}
+    kv8 = {"cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
+    monkeypatch.setattr(gpu_arbiter, "_loads", gpu_arbiter._loads + 2)
+    monkeypatch.setitem(
+        gpu_arbiter._owner_loads,
+        gpu_arbiter.CHAT,
+        gpu_arbiter._owner_loads.get(gpu_arbiter.CHAT, 0) + 2,
+    )
+    asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
+    assert len(loads) == 2 and loads[1]["extra_body"] == kv8
+
+
+def test_a_media_load_keeps_the_chat_models_settings(no_gpu_lease, monkeypatch):
+    loads, _ = _llm_fakes(monkeypatch)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
+    monkeypatch.setattr(gpu_arbiter, "_owner_loads", {})
+    ctx = _ModelCtx()
+    choice = {"repo": "unsloth/Qwen3-0.6B-GGUF"}
+    kv8 = {"cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
+    assert len(loads) == 1
+
+
+def test_without_settings_a_model_loaded_elsewhere_is_reused_as_before(monkeypatch):
+    loads, state = _llm_fakes(monkeypatch)
+    state["llm"] = ["unsloth/Qwen3-0.6B-GGUF"]
+    asyncio.run(_common.ensure_model(_ModelCtx(), "chat", {"repo": "unsloth/Qwen3-0.6B-GGUF"}))
+    assert loads == []
+
+
+def test_settings_on_a_media_model_are_refused(monkeypatch):
+    _llm_fakes(monkeypatch)
+    with pytest.raises(FlowNodeError, match = "chat models only"):
+        asyncio.run(
+            _common.ensure_model(
+                _ModelCtx(), "image", {"repo": "black-forest-labs/FLUX.2-klein"}, {"x": 1}
+            )
+        )
+
+
+def test_loads_with_other_load_settings_are_never_followed(monkeypatch):
+    from types import SimpleNamespace
+
+    seen = []
+
+    async def fake_start_load(caller, ctx, **kwargs):
+        seen.append(kwargs)
+
+    monkeypatch.setattr(loading, "start_load", fake_start_load)
+    for extra in ({"cache_type_kv": "q8_0"}, {"cache_type_kv": "q4_0"}, None):
+        asyncio.run(
+            loading.load_llm(
+                SimpleNamespace(hf_token = None),
+                None,
+                model = "unsloth/Qwen3-0.6B-GGUF",
+                variant = None,
+                max_seq_length = 0,
+                load_in_4bit = True,
+                hf_token = None,
+                extra_body = extra,
+            )
+        )
+    assert len({repr(k["options"]) for k in seen}) == 3
+    assert [k["attach"] for k in seen] == [False, False, True]
+
+
+def test_a_requirement_that_cannot_be_checked_fails_closed(monkeypatch):
+    _, state = _llm_fakes(monkeypatch)
+    state["llm"] = ["unsloth/Qwen3-0.6B"]
+    state["is_gguf"] = None
+    ctx = _ModelCtx({"title": "Capture", "requires": ["transformers"]})
+    with pytest.raises(FlowNodeError, match = "could not check"):
+        asyncio.run(_common.ensure_model(ctx, "chat", {"repo": "unsloth/Qwen3-0.6B"}))
+
+
+def test_a_node_that_needs_transformers_refuses_a_gguf(monkeypatch):
+    _, state = _llm_fakes(monkeypatch)
+    state["llm"] = ["unsloth/Qwen3-0.6B-GGUF"]
+    ctx = _ModelCtx({"title": "Capture Activations", "requires": ["transformers"]})
+    with pytest.raises(FlowNodeError, match = "needs a transformers model, not GGUF"):
+        asyncio.run(_common.ensure_model(ctx, "chat", {"repo": "unsloth/Qwen3-0.6B-GGUF"}))
+    state["is_gguf"] = False
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": "unsloth/Qwen3-0.6B-GGUF"}))
+
+
+def test_a_cards_load_settings_are_read_once_per_run(monkeypatch):
+    from core.flows import model_settings
+    from core.flows.engine import FlowEngine, RunState
+
+    reads = []
+    real = model_settings.card_load_kwargs
+    monkeypatch.setattr(model_settings, "card_load_kwargs", lambda *a: reads.append(1) or real(*a))
+    load = {"max_seq_length": 8192}
+    nodes = {f"g{i}": {"params": {"model": {"repo": "x/y-GGUF"}, "load": load}} for i in range(5)}
+    plan = SimpleNamespace(specs = {n: {"model_kind": "chat"} for n in nodes}, nodes = nodes)
+    rs = RunState(id = "r", flow_id = "f", account = None, doc = {}, plan = plan, options = {}, persist = False)
+    eng = FlowEngine()
+    for _ in range(10):
+        eng._pick_gpu(rs, list(nodes))
+    assert len(reads) == 5
+
+
+def test_zero_temperature_is_kept():
+    from core.flows.nodes import text
+
+    from .flows_player_fakes import FakeCtx
+
+    ctx = FakeCtx(
+        "llm.generate", params = {"temperature": 0}, inputs = {"prompt": "hi"}, llm = lambda **kw: "ok"
+    )
+    asyncio.run(text.generate(ctx))
+    assert ctx.llm_calls[0]["temperature"] == 0.0
+
+
+def test_streamed_text_hides_thinking_split_across_pieces():
+    from core.flows.nodes._common import visible_so_far
+
+    pieces = ["<th", "ink>plan the ", "reply</thi", "nk>Hello", " there <", "b>x"]
+    shown, text = "", ""
+    for piece in pieces:
+        text += piece
+        visible = visible_so_far(text)
+        assert visible.startswith(shown), (shown, visible)
+        shown = visible
+    assert shown == "Hello there <b>x"
+    assert "plan" not in shown and "<th" not in shown
+    assert visible_so_far("<think>x</think>Answer") == "Answer"
+
+
+def test_first_json_returns_a_list_of_objects_whole():
+    from core.flows.nodes._common import first_json
+
+    assert first_json('[{"q": "a"}, {"q": "b"}]') == [{"q": "a"}, {"q": "b"}]
+    assert first_json('Here you go:\n```json\n[{"q": "a"}, {"q": "b"}]\n```') == [
+        {"q": "a"},
+        {"q": "b"},
+    ]
+    assert first_json('{"rows": [1, 2]} and [3]') == {"rows": [1, 2]}
+    assert first_json("no braces [1, 2]") == [1, 2]

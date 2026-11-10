@@ -12,8 +12,6 @@ from core.flows.nodes import training
 from core.flows.specs import SPECS_BY_TYPE
 from utils.notebooks import catalog
 
-from .test_flows_routes import client  # noqa: F401 - shared route fixture
-
 
 def _nb(*cells: str) -> bytes:
     return json.dumps(
@@ -101,18 +99,18 @@ def test_not_a_notebook_is_refused():
         notebook_import.read_notebook(b"not json", "x.ipynb")
 
 
-def test_import_notebook_route(client):  # noqa: F811
-    ok = client.post(
+def test_import_notebook_route(flows_client):
+    ok = flows_client.post(
         "/api/flows/import/notebook", content = SFT, params = {"name": "Qwen3_(4B)-Instruct.ipynb"}
     )
     assert ok.status_code == 200, ok.text
     flow = ok.json()["flow"]
     assert any(n["type"] == "train.finetune" for n in flow["doc"]["nodes"])
-    rl = client.post(
+    rl = flows_client.post(
         "/api/flows/import/notebook", content = GRPO, params = {"name": "Qwen3_(4B)-GRPO.ipynb"}
     )
     assert rl.status_code == 200 and rl.json()["flow"] is None
-    assert client.post("/api/flows/import/notebook", content = b"{}").status_code == 400
+    assert flows_client.post("/api/flows/import/notebook", content = b"{}").status_code == 400
 
 
 def test_catalog_marks_what_studio_can_train():

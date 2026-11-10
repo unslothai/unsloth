@@ -8,25 +8,20 @@ import json
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from auth.authentication import get_current_subject
 from core.flows import dataset_rows as dr
 from hub.services.datasets import formatting
 from hub.utils.host_paths import cache_reference
-from routes import flows as flows_routes
 from utils.paths.storage_roots import dataset_uploads_root, recipe_datasets_root
+
+from ._flows_helpers import flows_test_client
 
 ROWS = [{"sql_prompt": f"q{i}", "sql": f"SELECT {i}"} for i in range(30)]
 
 
 @pytest.fixture
-def client():
-    app = FastAPI()
-    app.include_router(flows_routes.router, prefix = "/api/flows")
-    app.dependency_overrides[get_current_subject] = lambda: "tester"
-    with TestClient(app) as test_client:
+def client(monkeypatch):
+    with flows_test_client(monkeypatch) as test_client:
         yield test_client
 
 

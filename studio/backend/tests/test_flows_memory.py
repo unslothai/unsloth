@@ -382,3 +382,13 @@ def test_recall_embeds_a_large_stream_within_the_request_limit():
     out = run(nodes.retrieve(ctx))
     assert all(isinstance(r.get("embedding"), list) for r in out["memory"]["records"])
     assert not any(level == "warning" for level, _ in ctx.logs)
+
+
+def test_the_token_cache_keeps_only_short_texts():
+    from core.flows import memory
+
+    memory._cached_tokens.cache_clear()
+    memory.tokens("a short memory about the lantern")
+    memory.tokens("lantern " * 1000)
+    assert memory._cached_tokens.cache_info().currsize == 1
+    assert memory.tokens("lantern " * 1000) == frozenset({"lantern"})

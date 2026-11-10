@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import copy
 import json
+from dataclasses import asdict
 
 import pytest
 
@@ -261,3 +263,105 @@ def test_for_each_groups_owning_each_other_are_refused_without_hanging():
     worker.join(10)
     assert found, "compiling an ownership cycle hung"
     assert any("nested in a loop" in i["message"] for i in found[0])
+
+
+def test_two_flow_outputs_cannot_share_a_name():
+    d = doc([node("o1", "output.result", name = "x"), node("o2", "output.result", name = "x")])
+    parsed, _ = parse_document(d)
+    with pytest.raises(CompileError) as err:
+        compile_flow(parsed)
+    assert any("already named" in i["message"] for i in err.value.issues)
+
+
+def _plan(d: dict) -> dict:
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    plan = asdict(compile_flow(parsed))
+    plan.pop("doc")
+    return plan
+
+
+@pytest.mark.parametrize(
+    "cards",
+    [
+        [{"id": "sc1", "title": "Wrap", "members": ["t", "t2"]}],
+        [{"id": "sc1", "title": "Wrap", "members": ["t", "t2"], "open": True}],
+        ["g"],  # the earlier group-id format
+    ],
+    ids = ["closed", "open", "group-id"],
+)
+def test_a_super_card_compiles_to_the_same_plan(cards):
+    open_doc = doc(
+        [
+            node("a", "input.text", value = "x"),
+            node("t", "text.template", group = "g", template = "<{{values}}>"),
+            node("t2", "text.template", group = "g", template = "[{{values}}]"),
+            node("out", "output.result"),
+        ],
+        [
+            edge("a", "text", "t", "values"),
+            edge("t", "text", "t2", "values"),
+            edge("t2", "text", "out", "value"),
+        ],
+        groups = [{"id": "g", "label": "Wrap", "rect": [0, 0, 400, 300]}],
+    )
+    combined = copy.deepcopy(open_doc)
+    combined["editor"] = {"super_cards": cards}
+    assert _plan(combined) == _plan(open_doc)
+
+
+def test_upstream_sets_are_worked_out_once_per_node(monkeypatch):
+    from core.flows import compiler
+
+    calls = []
+    real = compiler.Plan.ancestors
+    monkeypatch.setattr(
+        compiler.Plan, "ancestors", lambda self, t: calls.append(1) or real(self, t)
+    )
+    nodes = [node(f"t{i}", "text.template") for i in range(30)]
+    edges = [edge(f"t{i}", "text", f"t{i + 1}", "values") for i in range(29)]
+    plan = compiler.compile_flow(parse_document(doc(nodes, edges))[0])
+    calls.clear()
+    for _ in range(20):
+        for i in range(30):
+            plan.upstream(f"t{i}")
+    assert len(calls) == 30
+    assert plan.upstream("t3") == {"t0", "t1", "t2"}
+
+
+def test_the_heap_topological_order_matches_the_sorted_list_one():
+    import random
+
+    from core.flows.compiler import _topo
+
+    def reference(nodes, inputs):
+        position = {nid: i for i, nid in enumerate(nodes)}
+        remaining = {n: {s for ss in inputs.get(n, {}).values() for s, _ in ss} for n in nodes}
+        dependents = {n: set() for n in nodes}
+        for n, d in remaining.items():
+            for s in d:
+                dependents[s].add(n)
+        ready = sorted((n for n, d in remaining.items() if not d), key = position.__getitem__)
+        order = []
+        while ready:
+            n = ready.pop(0)
+            order.append(n)
+            for nxt in dependents[n]:
+                remaining[nxt].discard(n)
+                if not remaining[nxt] and nxt not in order and nxt not in ready:
+                    ready.append(nxt)
+            ready.sort(key = position.__getitem__)
+        return order if len(order) == len(nodes) else None
+
+    rng = random.Random(0)
+    for _ in range(200):
+        names = [f"n{i}" for i in range(rng.randint(1, 25))]
+        rng.shuffle(names)
+        nodes = {n: {} for n in names}
+        inputs = {}
+        for i, n in enumerate(names):
+            pool = names if rng.random() < 0.05 else names[:i] + names[i + 1 :]
+            picks = rng.sample(pool, min(len(pool), rng.randint(0, 3)))
+            if picks:
+                inputs[n] = {"a": [(p, "o") for p in picks]}
+        assert _topo(nodes, inputs, {n: None for n in names}, {}) == reference(nodes, inputs)

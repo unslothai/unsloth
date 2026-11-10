@@ -10,41 +10,23 @@ import pytest
 from core.flows import caller as flow_caller
 from core.flows.nodes import benchmark
 from core.flows.registry import FlowNodeError
-from core.flows.specs import SPECS_BY_TYPE
+
+from ._flows_helpers import RouteCtx
 
 ROWS = [{"instruction": f"city {i}?", "response": f"answer-{i}", "id": i} for i in range(4)]
 
 
-class _Ctx:
-    def __init__(self, routes, **params):
-        self.routes, self.calls = routes, []
-        self.inputs = {
-            "checkpoint": {"kind": "checkpoint", "name": "run-1"},
-            "dataset": {"kind": "dataset", "source": "recipe", "ref": "job1"},
-        }
-        self.params = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.benchmark"]["params"]}
-        self.params.update(params)
-        self.caller = object()
+class _Ctx(RouteCtx):
+    node_type = "train.benchmark"
+    default_inputs = {
+        "checkpoint": {"kind": "checkpoint", "name": "run-1"},
+        "dataset": {"kind": "dataset", "source": "recipe", "ref": "job1"},
+    }
 
-    async def call(
-        self,
-        method,
-        path,
-        json = None,
-        params = None,
-        files = None,
-        **_,
-    ):
-        self.calls.append((method, path, params, json, files))
+    def answer(self, method, path, params, json):
         if path in ("/api/benchmarks/evals/reserve", "/api/benchmarks/evals/cancel"):
             return {"success": True}
         return self.routes(method, path, params, json)
-
-    def progress(self, *a, **k):
-        pass
-
-    def on_cancel(self, fn):
-        self.cancel = fn
 
 
 def _samples(correct):
@@ -741,8 +723,10 @@ def test_a_stop_during_the_load_keeps_the_slot_until_that_load_has_ended(monkeyp
     events = []
 
     async def scenario():
+        load_may_end = asyncio.Event()
+
         async def physical_load():
-            await asyncio.sleep(0.05)
+            await load_may_end.wait()
             events.append("load ended")
 
         job = SimpleNamespace(task = asyncio.ensure_future(physical_load()))
@@ -753,6 +737,8 @@ def test_a_stop_during_the_load_keeps_the_slot_until_that_load_has_ended(monkeyp
         async def stopped(ctx):
             # Stop pressed mid-load: the hook runs, the waiter gives up, the load job runs on.
             await ctx.cancel()
+            # The load can end now, but only after the node has given up waiting for it.
+            load_may_end.set()
             raise FlowCancelled()
 
         monkeypatch.setattr(benchmark, "_load_target", stopped)
@@ -772,7 +758,7 @@ def test_a_stop_during_the_load_keeps_the_slot_until_that_load_has_ended(monkeyp
 
         ctx.call = call
         with pytest.raises(FlowCancelled):
-            await benchmark.benchmark(ctx)
+            await asyncio.wait_for(benchmark.benchmark(ctx), 10)
 
     asyncio.run(scenario())
     assert events == ["load ended", "slot freed"]

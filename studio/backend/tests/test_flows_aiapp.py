@@ -9,8 +9,7 @@ from core.flows.compiler import parse_document
 from core.flows.nodes import chat
 from core.flows.registry import FlowNodeError
 
-from ._flows_helpers import doc, edge, node, run_async
-from .test_flows_engine import BASE, _engine
+from ._flows_helpers import BASE_HANDLERS, doc, edge, make_engine, node, run_async
 
 
 class Ctx:
@@ -170,9 +169,9 @@ def test_chat_input_memory_and_output():
 
 @run_async
 async def test_the_chat_player_invokes_the_output_with_its_message():
-    eng = _engine(
+    eng = make_engine(
         {
-            **BASE,
+            **BASE_HANDLERS,
             "chat.input": chat.chat_input,
             "chat.output": chat.chat_output,
         }

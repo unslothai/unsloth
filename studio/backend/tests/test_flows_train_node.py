@@ -8,60 +8,9 @@ import pytest
 
 from core.flows.nodes import training
 from core.flows.registry import FlowCancelled, FlowNodeError
-from core.flows.specs import SPECS_BY_TYPE
+from core.flows.nodes import _common
 
-
-class _Ctx:
-    def __init__(self, routes, **params):
-        self.routes, self.calls, self.partials = routes, [], []
-        self.inputs = {"dataset": {"kind": "dataset", "source": "recipe", "ref": "job1"}}
-        self.params = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.finetune"]["params"]}
-        self.params.update(params)
-        self.seed, self.caller = 1, object()
-        self.cancelled = False
-
-    def check_cancelled(self):
-        if self.cancelled:
-            raise FlowCancelled()
-
-    async def call(
-        self,
-        method,
-        path,
-        json = None,
-        params = None,
-        files = None,
-        **_,
-    ):
-        self.calls.append((method, path, params, json, files))
-        return self.routes(method, path, params, json)
-
-    def progress(self, *a, **k):
-        pass
-
-    def log(self, *a, **k):
-        pass
-
-    def partial(self, port, value, **k):
-        self.partials.append((port, value))
-
-
-ROWS = [{"q": f"q{i}", "a": f"a{i}"} for i in range(20)]
-
-
-def _recipe_routes(started):
-    def routes(method, path, params, body):
-        if path.endswith("/jobs/job1/dataset"):
-            off = params["offset"]
-            return {"dataset": ROWS[off : off + 500], "total": len(ROWS)}
-        if path == "/api/hub/datasets/upload":
-            return {"stored_path": f"/cache/{len(started)}.jsonl"}
-        if path == "/api/train/start":
-            started.append(body)
-            raise RuntimeError("started")
-        raise AssertionError(path)
-
-    return routes
+from ._flows_recipe_helpers import FINETUNE_ROWS, FinetuneCtx, finetune_job_routes
 
 
 def _uploads(ctx):
@@ -84,7 +33,9 @@ def _uploads(ctx):
 def test_holdout_rows_never_reach_training_and_match_the_recipe_card_split(monkeypatch):
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
     started = []
-    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, prompt_column = "q", response_column = "a")
+    ctx = FinetuneCtx(
+        finetune_job_routes(started), holdout_percent = 10, prompt_column = "q", response_column = "a"
+    )
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     files = _uploads(ctx)
@@ -103,21 +54,21 @@ def test_holdout_rows_never_reach_training_and_match_the_recipe_card_split(monke
 def test_no_holdout_keeps_the_old_path(monkeypatch):
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
     started = []
-    ctx = _Ctx(_recipe_routes(started))
+    ctx = FinetuneCtx(finetune_job_routes(started))
     with pytest.raises(RuntimeError):
         asyncio.run(training.finetune(ctx))
     assert len(_uploads(ctx)) == 1 and "custom_format_mapping" not in started[0]
 
 
 def test_one_column_alone_is_refused():
-    ctx = _Ctx(_recipe_routes([]), prompt_column = "q")
+    ctx = FinetuneCtx(finetune_job_routes([]), prompt_column = "q")
     with pytest.raises(FlowNodeError, match = "both"):
         asyncio.run(training.finetune(ctx))
 
 
 def test_holdout_refuses_a_dataset_too_small_to_split(monkeypatch):
     monkeypatch.setattr(training, "holdout_row_ids", lambda *a: [])
-    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx = FinetuneCtx(finetune_job_routes([]), holdout_percent = 10)
     with pytest.raises(FlowNodeError, match = "too few"):
         asyncio.run(training.finetune(ctx))
 
@@ -143,7 +94,7 @@ def test_live_metrics_stream_to_the_node_as_a_partial(monkeypatch):
 
     monkeypatch.setattr(jobs, "_run_folder", run_folder)
     monkeypatch.setattr(training, "POLL_S", 0)
-    ctx = _Ctx(None)
+    ctx = FinetuneCtx(None)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
     ctx.on_cancel = lambda fn: None
     ctx.check_cancelled = lambda: None
@@ -176,7 +127,7 @@ def test_live_metrics_stream_to_the_node_as_a_partial(monkeypatch):
 def test_holdout_splits_only_the_sliced_rows(monkeypatch):
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
     started = []
-    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, dataset_slice_end = 9)
+    ctx = FinetuneCtx(finetune_job_routes(started), holdout_percent = 10, dataset_slice_end = 9)
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     files = _uploads(ctx)
@@ -197,11 +148,11 @@ def test_holdout_reads_hub_datasets_with_the_requests_token(monkeypatch):
         start = 0,
     ):
         seen["token"] = token
-        return ROWS
+        return FINETUNE_ROWS
 
     monkeypatch.setattr(training, "_load_table", _as_table(load_rows))
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
-    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx = FinetuneCtx(finetune_job_routes([]), holdout_percent = 10)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/gated"}}
     ctx.caller = type("C", (), {"hf_token": "hf_req"})()
     with pytest.raises(RuntimeError, match = "started"):
@@ -210,7 +161,7 @@ def test_holdout_reads_hub_datasets_with_the_requests_token(monkeypatch):
 
 
 def test_one_column_for_both_roles_is_refused():
-    ctx = _Ctx(_recipe_routes([]), prompt_column = "q", response_column = "q")
+    ctx = FinetuneCtx(finetune_job_routes([]), prompt_column = "q", response_column = "q")
     with pytest.raises(FlowNodeError, match = "different columns"):
         asyncio.run(training.finetune(ctx))
 
@@ -258,7 +209,7 @@ def test_chat_with_checkpoint_puts_back_the_chat_model_it_replaced(monkeypatch):
 
     monkeypatch.setattr(loading, "load_llm", load_llm)
     monkeypatch.setattr(trained_models, "resolve_by", resolve_by)
-    ctx = _Ctx(
+    ctx = FinetuneCtx(
         lambda m, p, q, b: {"model_identifier": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"}
     )
     ctx.inputs = {"checkpoint": {"kind": "checkpoint", "name": "run-1"}, "prompt": "hi"}
@@ -289,7 +240,7 @@ def test_chat_with_checkpoint_skips_the_reload_once_stopped(monkeypatch):
 
     monkeypatch.setattr(loading, "load_llm", load_llm)
     monkeypatch.setattr(trained_models, "resolve_by", resolve_by)
-    ctx = _Ctx(lambda m, p, q, b: {"model_identifier": "unsloth/Qwen3-1.7B-GGUF"})
+    ctx = FinetuneCtx(lambda m, p, q, b: {"model_identifier": "unsloth/Qwen3-1.7B-GGUF"})
     ctx.inputs = {"checkpoint": {"kind": "checkpoint", "name": "run-1"}, "prompt": "hi"}
     ctx.params = {"max_tokens": 8}
     ctx.resident, ctx.set_status = {}, lambda *a, **k: None
@@ -387,7 +338,7 @@ def _hub_body(**params):
             raise RuntimeError("started")
         raise AssertionError(path)
 
-    ctx = _Ctx(routes, **params)
+    ctx = FinetuneCtx(routes, **params)
     ctx.inputs = {
         "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
     }
@@ -428,7 +379,7 @@ def test_dataset_group_sends_slices_eval_split_and_format():
 def test_holdout_starts_at_the_train_split_start(monkeypatch):
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
     started = []
-    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, dataset_slice_start = 10)
+    ctx = FinetuneCtx(finetune_job_routes(started), holdout_percent = 10, dataset_slice_start = 10)
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     rows = [r for f in _uploads(ctx).values() for r in f]
@@ -548,7 +499,7 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
         start = 0,
     ):
         splits.append(dataset.get("split"))
-        return ROWS if dataset.get("split") == "train" else ROWS[:5]
+        return FINETUNE_ROWS if dataset.get("split") == "train" else FINETUNE_ROWS[:5]
 
     monkeypatch.setattr(training, "_load_table", _as_table(load_rows))
     monkeypatch.setattr(
@@ -557,7 +508,9 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
         lambda dataset, token, split: load_rows({**dataset, "split": split}, token, None),
     )
     started = []
-    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_split = "test", eval_steps = 0.1)
+    ctx = FinetuneCtx(
+        finetune_job_routes(started), holdout_percent = 10, eval_split = "test", eval_steps = 0.1
+    )
     ctx.inputs = {
         "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
     }
@@ -568,7 +521,9 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
     assert len(evals) == 5 and len(started[0]["local_eval_datasets"]) == 1
     splits.clear()
     started.clear()
-    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_split = "train", eval_steps = 0.1)
+    ctx = FinetuneCtx(
+        finetune_job_routes(started), holdout_percent = 10, eval_split = "train", eval_steps = 0.1
+    )
     ctx.inputs = {
         "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
     }
@@ -587,7 +542,7 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
     )
     splits.clear()
     started.clear()
-    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_steps = 0.1)
+    ctx = FinetuneCtx(finetune_job_routes(started), holdout_percent = 10, eval_steps = 0.1)
     ctx.inputs = {
         "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
     }
@@ -636,8 +591,6 @@ def test_a_sliced_hub_split_is_read_without_streaming_the_instruction(monkeypatc
 
 
 def test_hub_hold_out_streams_a_late_slice_and_caps_unknown_sizes(monkeypatch):
-    from types import SimpleNamespace
-
     import datasets
 
     class Stream:
@@ -715,7 +668,7 @@ def test_chat_with_checkpoint_turns_the_adapter_back_on_after_a_benchmark(monkey
     monkeypatch.setattr(_common, "chat_model_name", lambda ctx: "m")
     monkeypatch.setattr(loading, "load_llm", noop)
     monkeypatch.setattr(trained_models, "resolve_by", resolve_by)
-    ctx = _Ctx(lambda m, p, q, b: {})
+    ctx = FinetuneCtx(lambda m, p, q, b: {})
     ctx.inputs = {"checkpoint": {"kind": "checkpoint", "name": "run-1"}, "prompt": "list users"}
     ctx.params = {"max_tokens": 8}
     ctx.resident, ctx.set_status = {}, lambda *a, **k: None
@@ -748,7 +701,7 @@ def test_chat_with_checkpoint_asks_with_the_trained_system_prompt(monkeypatch):
     asked = []
 
     def chat(**params):
-        ctx = _Ctx(lambda m, p, q, b: {})
+        ctx = FinetuneCtx(lambda m, p, q, b: {})
         ctx.inputs = {
             "checkpoint": {
                 "kind": "checkpoint",
@@ -841,20 +794,22 @@ def test_stop_gives_up_on_a_blocked_holdout_read(monkeypatch):
     import threading
     import time
 
-    release = threading.Event()
+    release, entered = threading.Event(), threading.Event()
 
     def stuck(*args, **kwargs):
+        entered.set()
         release.wait(30)
-        return ROWS
+        return FINETUNE_ROWS
 
     monkeypatch.setattr(training, "_load_table", _as_table(stuck))
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
-    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx = FinetuneCtx(finetune_job_routes([]), holdout_percent = 10)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/big"}}
 
     async def run():
         task = asyncio.ensure_future(training.finetune(ctx))
-        await asyncio.sleep(0.3)
+        # Stop only once the hold-out read is stuck in its worker thread.
+        assert await asyncio.to_thread(entered.wait, 10), "the hold-out read never started"
         ctx.cancelled = True
         began = time.monotonic()
         try:
@@ -887,7 +842,7 @@ def test_a_stopped_run_does_not_reload_the_previous_chat_model(monkeypatch):
         loads.append(k)
 
     monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
-    ctx = _Ctx(lambda *a: {})
+    ctx = FinetuneCtx(lambda *a: {})
     ctx.cancelled = True
     ctx.log = lambda message, level = "info": logs.append(message)
     asyncio.run(
@@ -987,7 +942,7 @@ def test_a_loops_frozen_test_questions_never_reach_a_later_rounds_training(monke
         _as_table(lambda dataset, token, end, start = 0: list(reversed(rows))),
     )
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
-    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx = FinetuneCtx(finetune_job_routes([]), holdout_percent = 10)
     frozen = loop_rounds.questions(rows[:3])
     ctx.inputs = {
         "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data"},
@@ -1007,7 +962,7 @@ def test_frozen_test_questions_are_read_through_the_benchmarks_prompt_column(mon
         training, "_load_table", _as_table(lambda dataset, token, end, start = 0: list(rows))
     )
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
-    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx = FinetuneCtx(finetune_job_routes([]), holdout_percent = 10)
     frozen = loop_rounds.questions(rows[:4], "ticket")
     assert len(frozen) == 4
     ctx.inputs = {
@@ -1034,7 +989,7 @@ def test_the_previous_chat_model_is_put_back_with_its_own_context_and_precision(
         "requested_context_length": 65536,
         "load_in_4bit": False,
     }
-    ctx = _Ctx(lambda *a: status)
+    ctx = FinetuneCtx(lambda *a: status)
     ctx.resident = {}
     ctx.set_status = lambda *a, **k: None
     previous = asyncio.run(training.active_chat_model(ctx))
@@ -1066,7 +1021,7 @@ def test_a_chat_model_on_vllm_is_put_back_on_vllm(monkeypatch):
         "engine_kv_cache_dtype": "fp8",
         "engine_seed": None,
     }
-    ctx = _Ctx(lambda *a: status)
+    ctx = FinetuneCtx(lambda *a: status)
     ctx.resident = {}
     ctx.set_status = lambda *a, **k: None
     asyncio.run(
@@ -1101,7 +1056,7 @@ def test_a_gguf_held_in_ram_is_put_back_in_ram(monkeypatch):
         "gpu_layers": 0,
         "n_cpu_moe": None,
     }
-    ctx = _Ctx(lambda *a: status)
+    ctx = FinetuneCtx(lambda *a: status)
     ctx.resident = {}
     ctx.set_status = lambda *a, **k: None
     asyncio.run(
@@ -1146,7 +1101,7 @@ def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monke
     monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
     monkeypatch.setattr(training, "note_loaded", lambda *a: None)
     status = {"model_identifier": "unsloth/Qwen3-4B", "requested_context_length": 0}
-    ctx = _Ctx(lambda *a: status)
+    ctx = FinetuneCtx(lambda *a: status)
     ctx.resident = {}
     ctx.set_status = lambda *a, **k: None
     previous = asyncio.run(training.active_chat_model(ctx))
@@ -1172,7 +1127,7 @@ def test_a_csv_hold_out_is_saved_as_csv_and_reads_back_like_the_source(tmp_path,
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
     monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: str(source))
     started = []
-    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, dataset_slice_end = 200000)
+    ctx = FinetuneCtx(finetune_job_routes(started), holdout_percent = 10, dataset_slice_end = 200000)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "local", "ref": str(source)}}
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
@@ -1239,7 +1194,7 @@ def test_a_hold_out_keeps_the_source_column_types(monkeypatch):
     monkeypatch.setattr(training, "_load_table", lambda *a, **k: Dataset(table))
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
-    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx = FinetuneCtx(finetune_job_routes([]), holdout_percent = 10)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/prices"}}
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
@@ -1382,7 +1337,7 @@ def test_the_checkpoint_names_the_columns_training_read(monkeypatch, format_type
     monkeypatch.setattr(training, "POLL_S", 0)
     # No column fields set: the roles are the ones training found in the rows.
     monkeypatch.setattr(training, "_first_row", lambda dataset, token: dict(row))
-    ctx = _Ctx(None, **({"format_type": format_type} if format_type else {}))
+    ctx = FinetuneCtx(None, **({"format_type": format_type} if format_type else {}))
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
     ctx.on_cancel = lambda fn: None
     ctx.check_cancelled = lambda: None
@@ -1422,9 +1377,8 @@ def test_a_loop_s_seed_bookkeeping_never_reaches_training(monkeypatch):
         for i in range(20)
     ]
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
-    monkeypatch.setitem(globals(), "ROWS", rows)
     started = []
-    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10)
+    ctx = FinetuneCtx(finetune_job_routes(started, rows), holdout_percent = 10)
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     for name, uploaded in _uploads(ctx).items():
@@ -1432,3 +1386,159 @@ def test_a_loop_s_seed_bookkeeping_never_reaches_training(monkeypatch):
     # Automatic formatting then reads the question and the answer, every round.
     trained = next(r for n, r in _uploads(ctx).items() if n.endswith("-train.jsonl"))
     assert training.auto_mapping(trained[0]) == {"question": "user", "answer": "assistant"}
+
+
+def test_finetune_trains_on_a_data_recipe_dataset(monkeypatch):
+    rows = [{"instruction": f"q{i}", "output": f"a{i}"} for i in range(3)]
+
+    def routes(method, path, params, body):
+        if path.endswith("/jobs/job1/dataset"):
+            off = params["offset"]
+            return {"dataset": rows[off : off + 2] if off < 3 else [], "total": 3}
+        if path == "/api/hub/datasets/upload":
+            return {"stored_path": "/cache/recipe-job1.jsonl"}
+        if path == "/api/train/start":
+            raise RuntimeError(f"started with {body['local_datasets']}")
+        raise AssertionError(path)
+
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: "cache:recipe-job1.jsonl")
+    ctx = FinetuneCtx(routes)
+    try:
+        asyncio.run(training.finetune(ctx))
+    except RuntimeError as exc:
+        assert "cache:recipe-job1.jsonl" in str(exc)
+    else:
+        raise AssertionError("training never started")
+    uploaded = [c for c in ctx.calls if c[1] == "/api/hub/datasets/upload"][0][4]["file"][1]
+    assert uploaded.decode().count("\n") == 2
+
+
+def test_finetune_waits_out_a_trainer_that_is_still_shutting_down(monkeypatch):
+    monkeypatch.setattr(training, "POLL_S", 0)
+    starts = []
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            starts.append(body)
+            if len(starts) < 3:
+                return {"job_id": "old", "status": "error", "error": "Training already active"}
+            raise RuntimeError("started")
+        raise AssertionError(path)
+
+    ctx = FinetuneCtx(routes)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    ctx.progress = lambda *a, **k: None
+    ctx.check_cancelled = lambda: None
+    try:
+        asyncio.run(training.finetune(ctx))
+    except RuntimeError as exc:
+        assert str(exc) == "started"
+    assert len(starts) == 3
+
+
+def test_finetune_reports_other_start_errors_instead_of_polling_another_job():
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            return {"job_id": "old", "status": "error", "message": "No GPU memory", "error": "oom"}
+        raise AssertionError(path)
+
+    ctx = FinetuneCtx(routes)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    with pytest.raises(FlowNodeError, match = "No GPU memory"):
+        asyncio.run(training.finetune(ctx))
+
+
+class _PollCtx:
+    def __init__(self, cancelled = False):
+        self.progressed, self.hooks, self.cancelled = [], [], cancelled
+
+    def progress(
+        self,
+        fraction = None,
+        **kw,
+    ):
+        self.progressed.append((fraction, kw))
+
+    def on_cancel(self, fn):
+        self.hooks.append(fn)
+
+    def check_cancelled(self):
+        if self.cancelled:
+            raise FlowCancelled()
+
+
+def _states(*payloads):
+    it = iter(payloads)
+
+    async def status():
+        return next(it)
+
+    return status
+
+
+def _parse(payload):
+    return payload["state"], payload.get("progress"), payload.get("error")
+
+
+def test_poll_job_reports_progress_and_returns_the_final_payload():
+    ctx = _PollCtx()
+
+    async def stop():
+        return None
+
+    final = asyncio.run(
+        _common.poll_job(
+            ctx,
+            status = _states(
+                {"state": "running", "progress": {"fraction": 0.5, "phase": "train"}},
+                {"state": "completed", "n": 3},
+            ),
+            parse = _parse,
+            cancel = stop,
+            interval = 0,
+        )
+    )
+    assert final == {"state": "completed", "n": 3}
+    assert ctx.progressed == [(0.5, {"phase": "train"})]
+    assert ctx.hooks == [stop]
+
+
+def test_poll_job_raises_the_job_error_and_reports_a_stop_as_cancelled():
+    with pytest.raises(FlowNodeError, match = "out of memory"):
+        asyncio.run(
+            _common.poll_job(
+                _PollCtx(),
+                status = _states({"state": "failed", "error": "out of memory"}),
+                parse = _parse,
+                interval = 0,
+            )
+        )
+    with pytest.raises(FlowCancelled):
+        asyncio.run(
+            _common.poll_job(
+                _PollCtx(cancelled = True),
+                status = _states({"state": "cancelled"}),
+                parse = _parse,
+                interval = 0,
+            )
+        )
+
+
+@pytest.mark.parametrize("settle, waited", [(False, [0.0]), (True, [5.0])])
+def test_poll_job_polls_at_once_unless_told_to_settle(monkeypatch, settle, waited):
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(_common.asyncio, "sleep", fake_sleep)
+    asyncio.run(
+        _common.poll_job(
+            _PollCtx(),
+            status = _states({"state": "completed"}),
+            parse = _parse,
+            interval = 5.0,
+            settle = settle,
+        )
+    )
+    assert slept == waited
