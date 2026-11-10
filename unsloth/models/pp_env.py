@@ -880,6 +880,19 @@ def _cpu_chunked_ce_model(trainer, model):
     return None
 
 
+def _compute_loss_adds_router_aux(compute_loss):
+    """TRL >= 1.15 SFTTrainer.compute_loss adds router_aux_loss_coef x aux / accumulation steps itself; older
+    ones (1.14 already has the attribute) leave it to the model forward. Read from the code, not the version."""
+    for _ in range(8):
+        names = getattr(getattr(compute_loss, "__code__", None), "co_names", ())
+        if "router_aux_loss_coef" in names and "current_gradient_accumulation_steps" in names:
+            return True
+        compute_loss = getattr(compute_loss, "__wrapped__", None)
+        if compute_loss is None:
+            return False
+    return False
+
+
 def _trainer_router_aux(
     trainer,
     stage,
@@ -887,16 +900,18 @@ def _trainer_router_aux(
     chunked,
     train = True,
 ):
-    """(coefficient, divisor) of the router auxiliary loss when the Trainer's compute_loss adds it in one
-    process, else None (the model forward adds it, weighted as pp_native._forward_aux_weighting does).
+    """(coefficient, divisor) of the router aux loss when the Trainer's compute_loss adds it in one process,
+    else None (the model forward adds it: pp_native._forward_aux_weighting).
 
-    On the CPU backend a stock TRL SFTTrainer runs its own fused head loss (zoo's compute_loss falls through
-    to it unless the chunked CE arms, and always under no_grad) and adds
-    trainer.router_aux_loss_coef x outputs.aux_loss / current_gradient_accumulation_steps, or / 1 without a
-    window token count. Its coefficient is the trainer's: the one MoE CausalLMs cached at init can be stale."""
+    CPU backend: zoo's compute_loss falls through to stock TRL unless the chunked CE arms (never under no_grad),
+    and TRL >= 1.15 adds its own coefficient x aux / current_gradient_accumulation_steps (/ 1 without a window
+    token count); the coefficient MoE CausalLMs cached at init can be stale."""
     if getattr(getattr(stage, "ctx", None), "moe", None) is None or (train and chunked is not None):
         return None
-    if not getattr(getattr(type(trainer), "compute_loss", None), "_unsloth_cpu", False):
+    compute_loss = getattr(type(trainer), "compute_loss", None)
+    if not getattr(compute_loss, "_unsloth_cpu", False):
+        return None
+    if not _compute_loss_adds_router_aux(compute_loss):
         return None
     if not getattr(trainer, "aux_loss_enabled", False):
         return None

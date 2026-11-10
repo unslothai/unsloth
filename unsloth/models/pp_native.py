@@ -1061,9 +1061,7 @@ class _StageContext:
         self.moe = None
         self.router_logits = None
         self.aux_losses = []
-        # (coefficient, divisor) when the Trainer's own compute_loss, not the model forward, adds the router
-        # auxiliary loss in one process (stock TRL SFTTrainer on the CPU backend; pp_env._trainer_router_aux).
-        self.trainer_aux = None
+        self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
 
     def configure(self, start, end, is_first, is_last):
         """The stage about to run (several stages of one rank share this context, one runs at a time)."""

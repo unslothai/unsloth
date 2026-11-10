@@ -5,6 +5,7 @@
 weights it in one process (stock TRL SFTTrainer: its coefficient x aux / accumulation steps), not added at
 full weight on every accumulation step (#17054)."""
 
+import functools
 import types
 
 import pytest
@@ -26,20 +27,30 @@ class _Accelerator:
         return model
 
 
+def _trl_1_15_compute_loss(self, *a, **k):
+    # The attributes TRL >= 1.15 reads to add coef x aux / accumulation steps itself.
+    raise AssertionError((self.router_aux_loss_coef, self.current_gradient_accumulation_steps))
+
+
+def _trl_1_14_compute_loss(self, *a, **k):
+    # TRL 1.14 sets router_aux_loss_coef but leaves the term to the model forward.
+    raise AssertionError(self.aux_loss_enabled)
+
+
 def _trainer(
     stage,
     zoo_wrapped = True,
     aux_loss_enabled = True,
     coef = 0.5,
     current_steps = 4,
+    trl = _trl_1_15_compute_loss,
 ):
+    @functools.wraps(trl)
     def compute_loss(self, *a, **k):
         raise AssertionError("the pipeline step never calls compute_loss")
 
     if zoo_wrapped:
-        compute_loss._unsloth_cpu = (
-            True  # what unsloth_zoo.cpu.trainer._patch_sft_compute_loss marks
-        )
+        compute_loss._unsloth_cpu = True  # unsloth_zoo.cpu.trainer._patch_sft_compute_loss
     cls = type(
         "CpuSFTTrainer", (), {"compute_loss": compute_loss, "_prepare_inputs": lambda self, x: x}
     )
@@ -135,8 +146,9 @@ def test_cleared_when_the_stage_raises(plain_helpers):
         dict(zoo_wrapped = False),  # Unsloth's GPU trainer: the model forward adds the (scaled) term
         dict(aux_loss_enabled = False),  # TRL turned the aux loss off (router_aux_loss_coef = 0.0)
         dict(coef = None),
+        dict(trl = _trl_1_14_compute_loss),
     ],
-    ids = ["gpu_trainer", "aux_off", "no_coef"],
+    ids = ["gpu_trainer", "aux_off", "no_coef", "trl_1_14"],
 )
 def test_the_model_forward_keeps_the_term_elsewhere(plain_helpers, kwargs):
     stage = _Stage()
