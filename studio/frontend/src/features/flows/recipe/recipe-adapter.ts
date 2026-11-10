@@ -4,8 +4,7 @@
 // A Recipe group seen through Recipe Studio's own configs, so its block dialogs, reference sync and payload
 // builders edit a flow without the Recipe Studio store. Loaded with the editor dialogs, not with the canvas.
 
-import { syncSubcategoryConfigsForCategoryUpdate } from "@/features/recipe-studio/stores/helpers/edge-sync";
-import { applyRenameToConfigs } from "@/features/recipe-studio/stores/helpers/reference-sync";
+import { syncConfigsForPatch } from "@/features/recipe-studio/stores/helpers/config-patch";
 import { renameRoot, replaceRef } from "@/features/recipe-studio/utils/refs";
 import type {
   NodeConfig,
@@ -97,7 +96,6 @@ export function studioView(group: FlowGroup, columns: FlowNode[]): StudioView {
   };
 }
 
-/** Recipe Studio's `updateConfig` without the store: the patch plus subcategory, rename and provider sync. */
 /** A tool server is one recipe-wide definition shared by name: an edit made through one tool profile is
  * made in every profile that names it, so the copies never disagree (the payload keeps only one). */
 function withSharedMcpProviders(
@@ -126,6 +124,7 @@ function withSharedMcpProviders(
   return result;
 }
 
+/** Recipe Studio's `updateConfig` without the store: the patch plus subcategory, rename and provider sync. */
 export function applyConfigPatch(
   configs: Record<string, NodeConfig>,
   id: string,
@@ -134,36 +133,10 @@ export function applyConfigPatch(
   const current = configs[id];
   if (!current) return configs;
   const next = { ...current, ...patch } as NodeConfig;
-  const nameChanged = current.name !== next.name;
   let result: Record<string, NodeConfig> = { ...configs, [id]: next };
   if (next.kind === "tool_config" && current.kind === "tool_config")
     result = withSharedMcpProviders(result, current, next);
-  result = syncSubcategoryConfigsForCategoryUpdate(
-    current,
-    next,
-    result,
-    current.name,
-    next.name,
-    nameChanged,
-  );
-  if (nameChanged)
-    result = applyRenameToConfigs(result, current.name, next.name);
-  if (
-    current.kind === "model_provider" &&
-    next.kind === "model_provider" &&
-    (current.is_local === true) !== (next.is_local === true)
-  ) {
-    for (const [cid, cfg] of Object.entries(result)) {
-      if (cfg.kind === "model_config" && cfg.provider === next.name) {
-        // biome-ignore lint/style/useNamingConvention: api schema
-        result = {
-          ...result,
-          [cid]: { ...cfg, model: "", gguf_variant: undefined },
-        };
-      }
-    }
-  }
-  return result;
+  return syncConfigsForPatch(result, current, next);
 }
 
 export function isColumnConfig(config: NodeConfig): boolean {
