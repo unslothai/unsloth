@@ -631,6 +631,27 @@ def test_auto_tool_choice_leaves_the_reply_to_the_model(monkeypatch):
     assert backend.calls[0]["messages"][-1]["role"] == "user"
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "template", [_HERMES_TEMPLATE, _QWEN_XML_TEMPLATE], ids = ["hermes", "qwen_xml"]
+)
+def test_an_empty_reply_to_a_forced_call_is_not_a_call(monkeypatch, template, stream):
+    backend = _ScriptedBackend(_fixed(""))
+    backend.models["sf-model"]["chat_template_info"] = {"template": template}
+    payload = _request(tools = [LOOKUP_TOOL], tool_choice = "required", stream = stream)
+    response = _call(payload, monkeypatch, backend)
+    if stream:
+        choices = [
+            o["choices"][0] for o in _sse_objects(_collect_sse(response)) if o.get("choices")
+        ]
+        assert not [c for c in choices if (c.get("delta") or {}).get("tool_calls")]
+        assert [c["finish_reason"] for c in choices if c.get("finish_reason")] == ["stop"]
+    else:
+        choice = _json_body(response)["choices"][0]
+        assert choice["message"].get("tool_calls") is None
+        assert choice["finish_reason"] == "stop"
+
+
 def test_forced_call_prefix_is_added_after_the_context_fit(monkeypatch):
     backend = _TrimmingBackend(_model_that_answers_in_prose)
     backend.models["sf-model"]["is_mlx"] = True
