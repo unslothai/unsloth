@@ -4690,6 +4690,8 @@ class FastLlamaModel:
         model.config.update({"unsloth_version": __version__})
 
         patch_saving_functions(model)
+        # The GGUF export keeps its converter to this consent, as FastBaseModel's stamp does.
+        model._unsloth_trust_remote_code = trust_remote_code
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Fix gradient accumulation; see #4982.
