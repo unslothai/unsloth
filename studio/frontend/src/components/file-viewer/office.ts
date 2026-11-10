@@ -1158,8 +1158,11 @@ export function readXlsx(
   const paths = new Map(rels.map((rel) => [rel.id, rel.path]));
   const sheets: Sheet[] = [];
   const budget = { cells: MAX_WORKBOOK_CELLS };
-  for (const sheet of all(workbook, "sheet")) {
-    if (!keepHidden && (sheet.getAttribute("state") === "hidden" || sheet.getAttribute("state") === "veryHidden")) continue;
+  const listed = all(workbook, "sheet");
+  const isHidden = (sheet: Element) => ["hidden", "veryHidden"].includes(sheet.getAttribute("state") ?? "");
+  const visible = listed.filter((sheet) => !isHidden(sheet));
+  // Hidden sheets last, so they never take the sheet or cell budget from visible ones.
+  for (const sheet of keepHidden ? [...visible, ...listed.filter(isHidden)] : visible) {
     if (limits.extraNames !== undefined && sheets.length >= limits.sheets) {
       if (sheets.length >= limits.sheets + limits.extraNames) break;
       sheets.push({ name: sheet.getAttribute("name") ?? "Sheet", rows: [], widths: [], truncated: false });

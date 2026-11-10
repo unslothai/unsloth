@@ -284,6 +284,26 @@ test("xlsx: a chat attachment keeps the rows, columns and sheets the viewer hide
   );
 });
 
+test("xlsx: kept hidden sheets come after visible ones so they cannot use up the sheet budget", () => {
+  const zip = zipSync({
+    "xl/workbook.xml": strToU8(
+      `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets><sheet name="Lookup" sheetId="1" state="veryHidden" r:id="rId1"/><sheet name="Sales" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": rels(
+      `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/>`,
+    ),
+    "xl/worksheets/sheet1.xml": strToU8(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>code</t></is></c></row></sheetData></worksheet>`,
+    ),
+    "xl/worksheets/sheet2.xml": strToU8(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>North</t></is></c></row></sheetData></worksheet>`,
+    ),
+  });
+  const limits = { sheets: 1, rows: 10, columns: 10 };
+  assert.deepEqual(readXlsx(zip, limits, { keepHidden: true }).map((sheet) => sheet.name), ["Sales"]);
+  assert.deepEqual(readXlsx(zip, undefined, { keepHidden: true }).map((sheet) => sheet.name), ["Sales", "Lookup"]);
+});
+
 test("pptx: maxSlides stops reading after that many slides", () => {
   const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
   const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
