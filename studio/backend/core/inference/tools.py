@@ -6680,25 +6680,123 @@ _BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?
 _HERESTRING_TO_INTERPRETER_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
 )
-# Groups: interpreter, args, <<- dash, quote, quoted delimiter, bare delimiter.
-_HEREDOC_TO_INTERPRETER_RE = re.compile(
-    r"\b((?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php))\b"
-    r"([^\n<>;&|]*?)<<(-?)[ \t]*(?:([\"'])([^\"'\n]+)\4|\\?([^\s<>;&|()\"']+))"
+_HEREDOC_INTERPRETER_RE = re.compile(
+    r"(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)"
 )
+_HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;"})
+_PYTHON_FLAG_LETTERS = frozenset("bBdEhiIOPqsSuvVxR?")
 
 
-def _heredoc_is_program(args: str) -> bool:
-    """Whether the interpreter reads its program from stdin: `-` or /dev/stdin (later words are
-    program arguments), or only flags before the heredoc; -c / -m or a script operand make it data."""
-    words = iter(args.split())
+def _python_reads_stdin_program(words: list) -> "bool | None":
+    """CPython's option grammar: True when the program comes from stdin, False when stdin is data
+    (-c, -m, a script operand), None when the words cannot be resolved."""
+    words = iter(words)
     for word in words:
+        if any(ch in word for ch in "$`\\*?[{~"):
+            return None
         if word in ("-", "/dev/stdin"):
             return True
-        if word in ("-W", "-X"):
+        if word == "--check-hash-based-pycs":
             next(words, None)
-        elif word[:2] in ("-c", "-m") or not (word.startswith("-") or word == "run"):
+        elif word.startswith("--"):
+            if not word.startswith("--check-hash-based-pycs="):
+                return None
+        elif word.startswith("-"):
+            for i, ch in enumerate(word[1:], 1):
+                if ch in "cm":
+                    return False
+                if ch in "WX":
+                    if i == len(word) - 1:
+                        next(words, None)
+                    break
+                if ch not in _PYTHON_FLAG_LETTERS:
+                    return None
+        else:
             return False
     return True
+
+
+def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
+    """Heredocs taken in shell order, each owned by its simple command: Python reading its program
+    from stdin gets the body screened; other interpreters, a second stdin redirection, expansions in
+    an unquoted body, or a header that does not tokenize fail closed."""
+    lines = command.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if "<<" not in line:
+            continue
+        lexer = shlex.shlex(line, posix = False, punctuation_chars = True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            if _HEREDOC_INTERPRETER_RE.search(line):
+                return True
+            continue
+        pending = []
+        start = 0
+        for end in range(len(tokens) + 1):
+            if end < len(tokens) and tokens[end] not in _HEREDOC_COMMAND_BREAKS:
+                continue
+            words = tokens[start:end]
+            start = end + 1
+            heredocs = [k for k, w in enumerate(words) if w in ("<<", "<<-")]
+            for k in heredocs:
+                dash = words[k] == "<<-"
+                raw = words[k + 1] if k + 1 < len(words) else ""
+                if raw == "-" and not dash and k + 2 < len(words):
+                    dash, raw = True, words[k + 2]
+                elif raw.startswith("-") and not dash:
+                    dash, raw = True, raw[1:]
+                quoted = any(ch in raw for ch in "'\"\\")
+                pending.append(
+                    (
+                        raw.replace("'", "").replace('"', "").replace("\\", ""),
+                        dash,
+                        quoted,
+                        words,
+                        k,
+                    )
+                )
+        for delimiter, dash, quoted, words, k in pending:
+            body = []
+            while i < len(lines):
+                text = lines[i].lstrip("\t") if dash else lines[i]
+                i += 1
+                if text == delimiter:
+                    break
+                body.append(text)
+            names = [os.path.basename(w.strip("'\"")) for w in words[:k]]
+            at = next(
+                (n for n, w in enumerate(names) if _HEREDOC_INTERPRETER_RE.fullmatch(w)), None
+            )
+            if at is None:
+                continue
+            if any(w.startswith("<") for n, w in enumerate(words) if n != k):
+                return True
+            if not names[at].lower().startswith(("python", "pypy")) or depth >= 3:
+                return True
+            args, skip = [], False
+            for w in words[at + 1 :]:
+                if skip or w.isdigit():
+                    skip = False
+                elif w[:1] in "<>":
+                    skip = True
+                else:
+                    args.append(w.replace("'", "").replace('"', ""))
+            reads = _python_reads_stdin_program(args)
+            if reads is None:
+                return True
+            if not reads:
+                continue
+            program = "\n".join(body)
+            if not quoted and re.search(r"[$`]|\\[\\$`\n]", program):
+                return True
+            if _inline_python_is_high_risk(program):
+                return True
+    return False
 
 
 # Generated script content is unscreenable; diff <(...) only reads and stays out.
@@ -7431,24 +7529,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     _herestring = _HERESTRING_TO_INTERPRETER_RE.search(command)
     if _herestring:
         return True
-    for heredoc in _HEREDOC_TO_INTERPRETER_RE.finditer(command):
-        if not _heredoc_is_program(heredoc.group(2)):
-            continue
-        # Another stdin redirection on the line (a second heredoc, `< file`) is what actually runs.
-        if "<" in command[heredoc.end() :].split("\n", 1)[0]:
-            return True
-        if not heredoc.group(1).lower().startswith(("python", "pypy")) or _depth >= 3:
-            return True
-        delimiter = heredoc.group(5) or heredoc.group(6)
-        body = []
-        for line in command[heredoc.end() :].splitlines()[1:]:
-            if heredoc.group(3):
-                line = line.lstrip("\t")
-            if line == delimiter:
-                break
-            body.append(line)
-        if _inline_python_is_high_risk("\n".join(body)):
-            return True
+    if "<<" in command and _heredoc_feeds_risky_program(command, _depth):
+        return True
     # shlex reads newlines as whitespace; ANSI-C quoting hides names.
     decoded = _decode_ansi_c(command, keep_one_word = True)
     normalized = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
