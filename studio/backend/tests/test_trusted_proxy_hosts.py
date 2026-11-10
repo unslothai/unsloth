@@ -15,7 +15,11 @@ from utils.client_ip import request_via_trusted_proxy, trusted_proxy_hosts
 _ENV = "UNSLOTH_STUDIO_PROXY_HOSTS"
 
 
-def _scope(headers, client = "127.0.0.1", server = "127.0.0.1"):
+def _scope(
+    headers,
+    client = "127.0.0.1",
+    server = "127.0.0.1",
+):
     return {
         "type": "http",
         "client": (client, 50000) if client else None,
@@ -49,9 +53,17 @@ def test_nothing_is_admitted_without_the_setting(monkeypatch):
     "headers",
     [
         # cloudflared's default: the public hostname as Host
-        [("host", "studio.example.com"), ("cf-connecting-ip", "203.0.113.7"), ("x-forwarded-proto", "https")],
+        [
+            ("host", "studio.example.com"),
+            ("cf-connecting-ip", "203.0.113.7"),
+            ("x-forwarded-proto", "https"),
+        ],
         # a proxy that keeps the origin Host and names the public one in X-Forwarded-Host
-        [("host", "127.0.0.1:8888"), ("x-forwarded-host", "studio.example.com"), ("x-forwarded-proto", "https")],
+        [
+            ("host", "127.0.0.1:8888"),
+            ("x-forwarded-host", "studio.example.com"),
+            ("x-forwarded-proto", "https"),
+        ],
         [("host", "localhost:8888"), ("x-forwarded-host", "Studio.Example.com:443")],
         [("host", "studio.example.com"), ("x-forwarded-host", "studio.example.com")],
     ],
@@ -81,7 +93,12 @@ def test_other_names_are_refused(allow_studio, headers):
 
 @pytest.mark.parametrize(
     "client, server",
-    [("192.168.1.20", "127.0.0.1"), ("127.0.0.1", "192.168.1.5"), (None, "127.0.0.1"), ("127.0.0.1", None)],
+    [
+        ("192.168.1.20", "127.0.0.1"),
+        ("127.0.0.1", "192.168.1.5"),
+        (None, "127.0.0.1"),
+        ("127.0.0.1", None),
+    ],
 )
 def test_only_the_loopback_listener_honours_the_allowlist(allow_studio, client, server):
     assert not request_via_trusted_proxy(_scope([("host", "studio.example.com")], client, server))
@@ -92,7 +109,9 @@ def _desktop_frontend(tmp_path):
 
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents = True)
-    (dist / "index.html").write_text("<html><head></head><body>studio</body></html>", encoding = "utf-8")
+    (dist / "index.html").write_text(
+        "<html><head></head><body>studio</body></html>", encoding = "utf-8"
+    )
     (dist / "assets" / "app.js").write_text("console.log(1)", encoding = "utf-8")
     app = FastAPI()
     assert main.setup_frontend(app, dist, tunnel_only = True)
@@ -102,7 +121,9 @@ def _desktop_frontend(tmp_path):
 def _get(app, path, headers):
     async def run():
         transport = httpx.ASGITransport(app = app, client = ("127.0.0.1", 50000))
-        async with httpx.AsyncClient(transport = transport, base_url = "http://127.0.0.1:8888") as client:
+        async with httpx.AsyncClient(
+            transport = transport, base_url = "http://127.0.0.1:8888"
+        ) as client:
             return await client.get(path, headers = headers)
 
     return asyncio.run(run())
@@ -111,7 +132,11 @@ def _get(app, path, headers):
 @pytest.mark.parametrize("path", ["/", "/chat", "/assets/app.js"])
 def test_the_desktop_web_ui_is_served_through_an_allowlisted_proxy(tmp_path, monkeypatch, path):
     app = _desktop_frontend(tmp_path)
-    proxied = {"host": "studio.example.com", "x-forwarded-proto": "https", "cf-connecting-ip": "203.0.113.7"}
+    proxied = {
+        "host": "studio.example.com",
+        "x-forwarded-proto": "https",
+        "cf-connecting-ip": "203.0.113.7",
+    }
 
     monkeypatch.delenv(_ENV, raising = False)
     assert _get(app, path, proxied).status_code == 404
@@ -125,8 +150,10 @@ def test_the_desktop_web_ui_is_served_through_an_allowlisted_proxy(tmp_path, mon
 
 def test_a_proxied_request_still_never_counts_as_local_for_the_bootstrap_password(monkeypatch):
     import main
-
     monkeypatch.setenv(_ENV, "studio.example.com")
-    for headers in ({"host": "studio.example.com"}, {"host": "127.0.0.1", "x-forwarded-host": "studio.example.com"}):
+    for headers in (
+        {"host": "studio.example.com"},
+        {"host": "127.0.0.1", "x-forwarded-host": "studio.example.com"},
+    ):
         request = SimpleNamespace(client = SimpleNamespace(host = "127.0.0.1"), headers = headers)
         assert main._is_local_bootstrap_request(request) is False, headers

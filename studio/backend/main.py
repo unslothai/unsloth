@@ -3535,6 +3535,7 @@ def _is_remote_frontend_request(scope, app_state) -> bool:
     allowlisted in ``UNSLOTH_STUDIO_PROXY_HOSTS``."""
     from lan_access import request_on_lan_listener
     from utils.client_ip import request_via_trusted_proxy
+
     return (
         _is_live_cloudflare_frontend_request(scope, app_state)
         or request_on_lan_listener(scope)
