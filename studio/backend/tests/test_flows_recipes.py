@@ -364,3 +364,10 @@ def test_a_base_model_picked_on_device_trains_on_that_copy(tmp_path, exists):
     else:
         # A flow from another machine: that copy is not here, so the repo trains as typed.
         assert "model_known_cached" not in sent and "model_local_path" not in sent
+
+
+def test_a_recipe_group_refuses_a_stdio_server_nested_in_a_tool_profile():
+    stdio = {"name": "fs", "provider_type": "stdio", "command": "npx"}
+    recipe = {"columns": [], "tool_configs": [{"tool_alias": "files", "mcp_providers": [stdio]}]}
+    with pytest.raises(FlowNodeError, match = "fs is a local"):
+        data.runnable_recipe(recipe)

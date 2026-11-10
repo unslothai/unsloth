@@ -32,7 +32,7 @@ from core.flows import caller as flow_caller
 from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
 from core.flows.recipe_compile import RecipeCompileError, compile_recipe, recipe_graph
 from core.flows.recipe_import import GENERATE_TYPE, flow_from_recipe
-from core.flows.recipe_share import is_stdio, share_recipe
+from core.flows.recipe_share import share_recipe, stdio_anywhere
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -363,20 +363,6 @@ def _made_from_unchanged(flow: Optional[dict], record: dict) -> bool:
     return made_from.get("updatedAt") == record.get("updatedAt")
 
 
-def _names_stdio_server(payload: Any) -> bool:
-    # Anywhere in the payload: a tool profile or column can carry its own server list.
-    stack: list[Any] = [payload]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, dict):
-            if is_stdio(node):
-                return True
-            stack.extend(node.values())
-        elif isinstance(node, list):
-            stack.extend(node)
-    return False
-
-
 @router.post("/import/recipe")
 def import_recipe(
     body: RecipeImportBody, via_api_key: Annotated[bool, Depends(authenticated_via_api_key)] = False
@@ -396,7 +382,7 @@ def import_recipe(
             return {"flow": existing, "report": {"notices": [], "reused": True}}
         payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
     elif body.payload is not None:
-        if _names_stdio_server(body.payload):
+        if stdio_anywhere(body.payload):
             # Same rule as saving a recipe: only the Unsloth UI may hand this host a command to run.
             require_ui_session_for_local_commands(via_api_key)
         payload, name, source = body.payload, None, None

@@ -36,6 +36,21 @@ def stdio_names(recipe: Any) -> list[str]:
     return [str(p.get("name")) for p in providers or [] if is_stdio(p)]
 
 
+def stdio_anywhere(payload: Any) -> list[str]:
+    """Every stdio server named anywhere in the payload: a tool profile or column can carry its own list."""
+    found: list[str] = []
+    stack: list[Any] = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if is_stdio(node):
+                found.append(str(node.get("name")))
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return found
+
+
 def uses_mcp(recipe: Any) -> bool:
     """True when the recipe would call MCP servers (a tool profile names one), which Flows gates like any MCP use."""
     providers = recipe.get("mcp_providers") if isinstance(recipe, dict) else None

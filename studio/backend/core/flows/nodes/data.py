@@ -89,9 +89,9 @@ def runnable_recipe(payload: Any) -> dict:
     if recipe is None:
         raise FlowNodeError("That Data Recipe has no recipe")
     recipe = json.loads(json.dumps(recipe))
-    from core.flows.recipe_share import stdio_names
+    from core.flows.recipe_share import stdio_anywhere
 
-    stdio = stdio_names(recipe)
+    stdio = stdio_anywhere(recipe)
     if stdio:
         raise FlowNodeError(
             f"Tool server {stdio[0]} is a local (stdio) server; those only run from the Data Recipes "
