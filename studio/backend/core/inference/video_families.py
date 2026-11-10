@@ -141,9 +141,7 @@ def assert_ltx_pick_supported(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """Name guard for a pick already resolved to ``family``: an LTX family never loads another release's weights
-    (LTX-2.5 never reaches the 2.3 assembly, and the reverse), and a release after 2.5 is refused. A non-LTX family
-    never trips on an LTX token."""
+    """An LTX family never loads another release's weights, and releases after 2.5 are refused."""
     if family not in LTX_FAMILIES:
         return
     found = ltx_pick_version(repo_id, filename, display_repo_id)
@@ -304,6 +302,10 @@ class VideoFamily:
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
     prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
+    # An offloaded int8 load reads the hosted int8 file's ConvRot codes as native Linears (diffusion_native_hosted)
+    # instead of staging and quantising the dense shards. Hosted file: ConvRot safetensors, or (pickle flag) unrotated W8A8.
+    native_offload_from_hosted_int8: bool = False
+    native_offload_hosted_int8_pickle: bool = False
     # Modular workflow loaded instead of a DiffusionPipeline; its routing blocks are not pruned.
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
@@ -546,9 +548,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             # qwen-image-edit and hunyuanvideo-1.5 have the same small-M shape but each has a PUBLISHED int8
             # checkpoint whose metadata bakes its exclusion set, so they move only with a rebuild and republish.
             int8_pad_tokens = ("context_embedder", "token_refiner"),
-            # The packed sequence runs three modalities through one set of linears, so its activation range is not the
-            # per-family range the fp8 filter was measured against. The trainer refuses both outright; declaring it
-            # here keeps /diffusion/info from advertising a start that is guaranteed to 400.
+            # fp8 and mxfp8 denied for packed sequences (activation range differs from the
+            # per-family range measured); declared so /diffusion/info never advertises a sure 400
             train_scheme_deny = frozenset({"fp8", "mxfp8"}),
             auto_static_skip = (("minimaxai/minimax-h3", (("max", 2), ("steps", 30))),),
         ),
@@ -672,6 +673,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("lightricks/ltx-2.5-diffusers", "int8", "unsloth/LTX-2.5-FP8"),
             ("lightricks/ltx-2.5-diffusers", "fp8", "unsloth/LTX-2.5-FP8"),
         ),
+        native_offload_from_hosted_int8 = True,
         # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
         prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
         # Dev DiT at the root, distilled under distilled/; the pack above supplies VAEs and connectors.
@@ -685,9 +687,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         filter_reduction_configs = True,
     ),
-    # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio + video in one pass. The
-    # Gemma3-12B encoder is stored fp32 on the hub (~49 GB download, ~24 GB resident bf16). The base repo carries the
-    # dev config (40 steps, CFG 4).
+    # LTX-2 (diffusers >= 0.39): Gemma3-12B encoder is stored fp32 on the hub, ~49 GB download, ~24
+    # GB resident as bf16
     VideoFamily(
         name = "ltx-2",
         trainable = True,
@@ -757,13 +758,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        # fp8 / int8 share one repo, files Wan2.2-TI2V-5B-<SCHEME>.pt. Sizes from Hub metadata (2026-08-04).
+        # fp8 / int8: Wan2.2-TI2V-5B-<SCHEME>.pt; nvfp4: .safetensors only. Sizes from Hub (2026-08-04).
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
             ("fp8", "unsloth/Wan2.2-TI2V-5B-FP8"),
             ("int8", "unsloth/Wan2.2-TI2V-5B-FP8"),
         ),
-        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 2.9), ("fp8", 5.1), ("int8", 5.0)),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
@@ -799,10 +800,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         profile = FamilyProfile(
-            # gated: auto leads with nvfp4 only once a passing accuracy-gate record exists for this base and
-            # backend, the rule the image families follow. None exists yet (no bf16 reference was measured; the
-            # hosted NVFP4 experts were only compared with the FP8 build), so auto takes the ladder (int8) here and
-            # nvfp4 stays an explicit pick.
+            # Auto leads with nvfp4 only after a passing accuracy-gate record; none exists yet, so
+            # int8.
             auto_prefer = AutoPrefer(
                 floor = (10, 0),
                 schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
@@ -822,13 +821,16 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("int8", "unsloth/Wan2.2-T2V-A14B-FP8"),
         ),
         prequant_filenames = (
-            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
-            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
+            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.safetensors"),
+            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors"),
             ("fp8", "transformer_2", "Wan2.2-T2V-A14B-FP8-2.pt"),
             ("int8", "transformer_2", "Wan2.2-T2V-A14B-INT8-2.pt"),
         ),
         # BOTH experts: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2), ("fp8", 29.2), ("int8", 28.8)),
+        # Hosted int8 pair is an unrotated W8A8 pickle: offload reads 29 GB instead of 115 GB of dense experts.
+        native_offload_from_hosted_int8 = True,
+        native_offload_hosted_int8_pickle = True,
         # "wan2.2_t2v": ComfyUI's expert files (wan2.2_t2v_high_noise_14B_*.safetensors), paired at load.
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan2.2_t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
@@ -856,8 +858,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto = "fp8",
         # same VAE as TI2V-5B
         cudnn_benchmark = False,
-        # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
-        # (video_moe_pair)
+        # No gguf_repo: GGUFs split experts; any gguf or single_file pick loads the pair.
     ),
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
@@ -938,7 +939,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
         unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
-        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0 repos.
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
@@ -983,7 +984,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
-        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,
@@ -1129,8 +1130,7 @@ def unsupported_video_checkpoint_reason(
         needle = normalize_family_name(str(wan21_checkpoint))
         needles.append(needle)
         name = re.split(r"[/\\]", needle.rstrip("/\\"))[-1]
-        # A leading "fun" is too generic to mark a Fun release unless it names one (version, size, InP, Control); the
-        # other markers are still judged.
+        # A leading fun marks a Fun release only if it names a version, size, InP or Control.
         generic_fun = re.match(r"fun(?![a-z0-9])", name) and not re.match(
             r"fun-(?:v\d|1-3b|14b|inp|control)", name
         )
@@ -1611,13 +1611,7 @@ def validate_video_keyframe_conditioning(
     has_keyframes: bool,
     has_last_frame: bool = False,
 ) -> None:
-    """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
-
-    Pure in the family and the MiniMax-H3 partition, which is what lets the generate route judge
-    the checkpoint it is about to SWITCH TO by the same rules the backend applies to the loaded
-    one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
-    target for a request that was already known to be unservable.
-    """
+    """Raises ValueError if a checkpoint cannot take the keyframes; pure, so auto-switch is pre-checked."""
     if not (has_keyframes or has_last_frame):
         return
     from .video_minimax_h3 import H3_TASK_REFERENCES
@@ -1724,8 +1718,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
 )
-# The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
-# checkpoint itself names.
+# Wan and FusionX keys count only in the model or file name, not in owner or folder names.
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
     k
     for k, _s, _g in _VIDEO_GENERATION_DEFAULTS
@@ -1789,8 +1782,7 @@ def video_generation_variant(
             if scope is not None and family != scope:
                 continue
             needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
-            # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
-            # "wan".
+            # A key must not follow an ASCII letter, so swan-video does not match wan.
             if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(
                 r"(?<![a-z])" + re.escape(normalize_family_name(key)), normalize_family_name(needle)
             ):

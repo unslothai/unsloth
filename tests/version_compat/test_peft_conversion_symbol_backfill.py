@@ -984,9 +984,8 @@ def test_the_not_fused_list_matches_upstream():
 
 
 def _fetch_conversion_mapping_source():
-    """The upstream map, over the network, so the canary runs in the job that
-    installs only pytest -- where `transformers` is absent and every comparison
-    against the installed copy silently skips."""
+    """Fetches the upstream conversion map over the network so the canary also runs in the
+    pytest-only job, where transformers is absent and local comparisons skip."""
     import os
     import urllib.error
     import urllib.request
@@ -1007,9 +1006,8 @@ def _fetch_conversion_mapping_source():
 
 
 def test_the_fused_snapshot_matches_upstream():
-    """The other half of the same canary: a fused MoE alias added upstream and
-    missing here falls through the stand-in silently if its name says nothing
-    about MoE. Runs off the network, so the dependency-free job exercises it."""
+    """A fused MoE alias added upstream but missing from the snapshot falls through the stand-in
+    silently if its name lacks MoE; the dependency-free job runs this canary."""
     src = _fetch_conversion_mapping_source()
     if src is None:
         pytest.skip("upstream conversion map unavailable")
@@ -1077,9 +1075,8 @@ def test_an_unrelated_absolute_import_is_not_queued():
 
 
 def test_an_import_in_a_module_level_match_case_is_collected():
-    """The selected case runs at import time, so an import inside one can raise
-    the startup error this guard exists to catch. `ast.Match` keeps its
-    statements under `cases`, which the walk did not descend into."""
+    """A module-level match case runs at import time, so an import inside one can raise the startup
+    error this guard catches; ast.Match keeps its statements under cases."""
     src = (
         "import sys\n"
         "match sys.version_info[0]:\n"
@@ -1118,18 +1115,16 @@ def test_the_two_base_patterns_are_in_the_snapshot():
 
 @pytest.mark.parametrize("model_type", sorted(F._PEFT_MOE_NAMED_NOT_CONVERTED))
 def test_a_moe_named_type_outside_the_map_is_not_refused(model_type):
-    """peft answers `None` for a type the map does not hold and skips the target
-    rewrite, so refusing breaks an ordinary adapter load. `qwen3_vl_moe` and
-    `lfm2_moe` are both supported models the substring hint was catching."""
+    """peft answers None for a type the map does not hold and skips the target rewrite, so refusing
+    breaks an ordinary load; the substring hint wrongly refused qwen3_vl_moe and lfm2_moe."""
     stand_in = F._UnavailableConversionPatternMap()
     assert stand_in.get(model_type) is None
     assert stand_in.get(model_type, "fallback") == "fallback"
 
 
 def test_the_unconverted_list_is_still_outside_the_upstream_map():
-    """The canary for the other half. A name that gains a conversion pattern
-    upstream becomes fused, and answering `None` for it is the silent
-    mis-conversion the refusal exists to prevent."""
+    """A name in the unconverted list that gains a conversion pattern upstream becomes fused, and
+    answering None for it silently mis-converts; this canary catches that."""
     src = _fetch_conversion_mapping_source()
     if src is None:
         pytest.skip("upstream conversion map unavailable")

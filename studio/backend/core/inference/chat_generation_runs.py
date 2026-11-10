@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import math
 import os
 import threading
 import time
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Iterator
 
 from starlette.requests import Request
 
@@ -423,9 +424,35 @@ def _renew_interval_seconds() -> float:
     return min(30.0, max(0.25, lease / 4.0))
 
 
+def _image_urls(request_payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    for message in request_payload.get("messages", []):
+        content = message.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if part.get("type") == "image_url" and isinstance(part.get("image_url"), dict):
+                    yield part["image_url"]
+
+
+def detach_embedded_images(request_payload: dict[str, Any]) -> dict[str, str]:
+    images: dict[str, str] = {}
+    for image_url in _image_urls(request_payload):
+        url = image_url.get("url")
+        if isinstance(url, str) and url.startswith("data:"):
+            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+            images[digest] = url
+            image_url["url"] = digest
+    return images
+
+
+def _attach_embedded_images(request_payload: dict[str, Any], images: dict[str, str]) -> None:
+    for image_url in _image_urls(request_payload):
+        image_url["url"] = images.get(image_url.get("url"), image_url.get("url"))
+
+
 class ChatGenerationSupervisor:
     def __init__(self, app: Any) -> None:
         self.app = app
+        self._detached_images: dict[str, dict[str, str]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._active_registrations: dict[str, active_generations.ActiveGeneration] = {}
@@ -480,6 +507,7 @@ class ChatGenerationSupervisor:
         *,
         thread_id: str | None = None,
         model: str | None = None,
+        images: dict[str, str] | None = None,
     ) -> None:
         if (
             self._stopping
@@ -487,6 +515,8 @@ class ChatGenerationSupervisor:
             or not self._ensure_reservation(run_id, thread_id = thread_id, model = model)
         ):
             return
+        if images:
+            self._detached_images[run_id] = images
         cancel_event = self._cancel_events[run_id]
         activity = self._activities[run_id]
         try:
@@ -501,6 +531,7 @@ class ChatGenerationSupervisor:
         task.add_done_callback(lambda completed, rid = run_id: self._task_done(rid, completed))
 
     def _cleanup_registration(self, run_id: str) -> None:
+        self._detached_images.pop(run_id, None)
         self._cancel_events.pop(run_id, None)
         activity = self._activities.pop(run_id, None)
         if activity is not None:
@@ -705,6 +736,7 @@ class ChatGenerationSupervisor:
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
+                _attach_embedded_images(request_payload, self._detached_images.pop(run_id, {}))
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Prep runs before the first-token budget; one later touch cannot cover prep longer than the lease
                 response = await produce_openai_chat_completions(

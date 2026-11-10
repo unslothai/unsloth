@@ -200,13 +200,13 @@ test("a provisional forced refresh keeps the server-reported platform", async ()
   );
   assert.match(
     ENV,
-    /fetched: data\.device_type !== undefined \|\| keepPlatform/,
+    /fetched: \(data\.device_type !== undefined && !isDetectionDeferred\(data\)\) \|\| keepPlatform/,
     "fetched drops to false, so the authoritative platform is not treated as held",
   );
 });
 
-// Under the kill switch only a first-use operation detects, so the sidebar must poll.
-test("a deferred verdict is recorded so the sidebar can poll out of it", async () => {
+// A deferred probe has not started; the sidebar must wait for a real hardware request.
+test("a deferred verdict is recorded without starting a background recovery poll", async () => {
   const { readFile } = await import("node:fs/promises");
   assert.match(
     ENV,
@@ -215,8 +215,8 @@ test("a deferred verdict is recorded so the sidebar can poll out of it", async (
   );
   assert.match(
     APP_SIDEBAR,
-    /chatOnlyReason !== "mlx_unavailable" && !detectionDeferred/,
-    "the recovery poll still ignores a deferred verdict, so it never recovers",
+    /if \(detectionDeferred\) return;/,
+    "the sidebar polls a probe that has deliberately not started",
   );
 });
 
@@ -244,7 +244,7 @@ test("a rejected token does not consume the once-per-load window", async () => {
   const { readFile } = await import("node:fs/promises");
   assert.match(
     ENV,
-    /if \(spendWait && !tokenRejected\) hardwareWaitSpent = true;/,
+    /if \(spendWait && !tokenRejected && !detectionDeferred\) hardwareWaitSpent = true;/,
     "the latch is claimed even when the break came from a rejected token, so the " +
       "first accepted token in this page load skips its window",
   );
@@ -266,21 +266,21 @@ test("the store exposes an unknown state, not just chat-only", async () => {
   assert.match(
     ENV,
     // verdictStale: the stored verdict came from a backend a repair or restart has replaced.
-    /return \(!state\.fetched \|\| state\.verdictStale\) && !state\.detectionDeferred;/,
+    /return !state\.fetched \|\| state\.verdictStale \|\| state\.detectionDeferred;/,
     "the selector is not derived from `fetched`, the flag that already means " +
       "'a server-reported verdict is stored'",
   );
 });
 
-// Under the torch-warm kill switch `fetched` never flips, so unknown would spin forever.
-test("a deferred verdict counts as settled, not as still checking", async () => {
+// Deferred remains unmeasured; only an active probe should put navigation into a pending state.
+test("a deferred verdict stays unknown without leaving navigation pending", async () => {
   const { readFile } = await import("node:fs/promises");
   const selector = /capabilitiesUnknown: \(\) => \{([\s\S]*?)\n  \},/.exec(ENV);
   assert.ok(selector, "capabilitiesUnknown is no longer a block the deferred case can live in");
   assert.match(
     selector[1],
     /detectionDeferred/,
-    "a deferred reply leaves the tabs spinning with nothing left to wait for",
+    "the selector lost the distinction between an unmeasured and unsupported host",
   );
 });
 
@@ -299,7 +299,7 @@ test("the sidebar gates Train and Video on a measured verdict", async () => {
     );
   }
   assert.equal(
-    APP_SIDEBAR.match(/pending: capabilitiesUnknown,/g)?.length,
+    APP_SIDEBAR.match(/pending: capabilitiesUnknown && !detectionDeferred,/g)?.length,
     2,
     "Train and Video do not both mark themselves pending while the verdict is out",
   );
@@ -316,7 +316,7 @@ test("the route guard waits out an unknown verdict on Train and Video", async ()
   }
   assert.match(
     src,
-    /!\(unmeasured && waitsOutUnknownVerdict\(location\.pathname\)\)/,
+    /!\(unmeasured && \(detectionDeferred \|\| waitsOutUnknownVerdict\(location\.pathname\)\)\)/,
     "the redirect does not consult the unknown state",
   );
   // Child routes count too, or /studio/anything bounces while /studio does not.

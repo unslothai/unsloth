@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -27,9 +27,8 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "qwen-image": ("--qwen2vl",),
     "qwen-image-edit": ("--qwen2vl",),
     "qwen-image-layered": ("--qwen2vl",),
-    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
-    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
-    # reach the same field.
+    # 2.1 conditions on Qwen3-VL via --llm; --qwen2vl also enables Qwen2-VL's vision, the wrong
+    # door.
     "qwen-image-2.1": ("--llm",),
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
@@ -77,8 +76,7 @@ class SdCppGenParams:
 
     prompt: str
     negative_prompt: Optional[str] = None
-    # None = unset: an image-conditioned run lets sd.cpp derive the size from the input; a plain txt2img falls back to
-    # 1024x1024.
+    # None: unset, so image runs let sd.cpp derive size; plain txt2img defaults to 1024x1024.
     width: Optional[int] = None
     height: Optional[int] = None
     steps: Optional[int] = None
@@ -135,6 +133,8 @@ class SdCppUpscaleParams:
 
 # Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
 # Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
+# Read from the diffusion GGUF only (A100, Q8_0 DiT + Q4_K_M encoder: 1.57x); the env is process-wide, but prompt rows
+# stay below it. Drop the env once the pin carries fork patch 0016, the build's own Q8_0-only default.
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -162,36 +162,12 @@ def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]
         return None
 
 
-def model_files_quantized_weight_types(files: "SdCppModelFiles") -> Optional[frozenset[str]]:
-    """Quantized types across every loaded file (the env override is process-wide), or None if any GGUF is unreadable."""
-    types = gguf_quantized_weight_types(files.diffusion_model)
-    if types is None:
-        return None
-    for path in (
-        files.vae,
-        files.audio_vae,
-        files.clip_l,
-        files.clip_g,
-        files.t5xxl,
-        files.llm,
-        files.llm_vision,
-        files.qwen2vl,
-    ):
-        if not path or not str(path).lower().endswith(".gguf"):
-            continue
-        extra = gguf_quantized_weight_types(path)
-        if extra is None:
-            return None
-        types |= extra
-    return types
-
-
 def quant_cublas_env(
     cuda_ccs: Sequence[tuple[int, int]],
     environ: Optional[dict] = None,
     weight_types: Optional[frozenset[str]] = None,
 ) -> dict[str, str]:
-    """Set only if every card sd.cpp may pick agrees and all quantized tensors are Q8_0; a user value wins."""
+    """Set only if every card sd.cpp may pick agrees and the diffusion GGUF is all Q8_0; a user value wins."""
     import os
 
     environ = os.environ if environ is None else environ
@@ -312,10 +288,8 @@ def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
 
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
-    """True when sd.cpp runs the diffusion model on Apple Metal (macOS; an explicit ``--backend`` for it decides,
-    else an Apple Silicon machine whose GPU is not paravirtual).
-
-    Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
+    """True when sd.cpp runs diffusion on Apple Metal (an explicit --backend decides, else Apple
+    Silicon not paravirtual); direct conv stays off since CONV_2D trips the GPU watchdog."""
     import sys
 
     if sys.platform != "darwin":
@@ -410,8 +384,10 @@ def metal_placement_flags(offload: Sequence[str]) -> list[str]:
     return [f for f in flags if f not in offload]
 
 
-# 1 / 0 forces sd.cpp's --mmap on / off on macOS; unset decides from the installed build (``mac_mmap_flags``).
+# 1 / 0 forces sd.cpp's --mmap on / off; unset decides from the installed build (``mmap_flags``).
 SD_CPP_MMAP_ENV = "UNSLOTH_DIFFUSION_SD_CPP_MMAP"
+# Help text of builds whose --mmap still repacks CPU weights (older ones run them unrepacked: slower, other pixels).
+CPU_MMAP_REPACK_HELP = "weights the CPU repacks are still loaded"
 # leejet/stable-diffusion.cpp#2037 (master-907) maps mmapped weights through Metal device buffers. Older builds accept
 # --mmap but hand Metal a CPU buffer it cannot address, so the flag is only safe from this build on.
 METAL_MMAP_MIN_BUILD = 907
@@ -497,6 +473,73 @@ def mac_mmap_flags(binary: Optional[str], extra_args: Optional[Sequence[str]] = 
         return ["--mmap"]
     build = sd_cpp_build_number(_installed_sd_cpp_tag(str(binary))) if binary else None
     return ["--mmap"] if build is not None and build >= METAL_MMAP_MIN_BUILD else []
+
+
+@functools.lru_cache(maxsize = 8)
+def _installed_sd_cpp_accelerator(binary: str) -> Optional[str]:
+    """The accelerator class (``cpu`` / ``cuda`` / ``vulkan`` / ...) Studio's installer recorded next to ``binary``."""
+    import json
+    from pathlib import Path
+
+    try:
+        path = Path(binary).resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    for parent in list(path.parents)[:3]:
+        try:
+            with open(parent / _INSTALL_RECORD, "r", encoding = "utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        accel = rec.get("accelerator") if isinstance(rec, dict) else None
+        return accel if isinstance(accel, str) and accel else None
+    return None
+
+
+def sd_cpp_mmap_keeps_cpu_repack(binary: str) -> bool:
+    """True when ``binary --help`` says its --mmap still repacks CPU weights. Fails closed."""
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _cpu_mmap_repack_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _cpu_mmap_repack_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and CPU_MMAP_REPACK_HELP in text
+
+
+def mmap_flags(
+    binary: Optional[str],
+    extra_args: Optional[Sequence[str]] = None,
+    backend_args: Optional[Sequence[str]] = None,
+) -> list[str]:
+    """``--mmap`` on macOS Metal-mmap builds and on CPU renders whose --mmap still repacks CPU weights (keeps
+    unrepacked weights file-backed: ~4.6 GB vs 13.3 GB anonymous, pixel-identical). GPU renders are left alone."""
+    import sys
+
+    if sys.platform == "darwin":
+        return mac_mmap_flags(binary, extra_args)
+    if "--mmap" in (extra_args or ()):
+        return []
+    forced = os.environ.get(SD_CPP_MMAP_ENV, "").strip().lower()
+    if forced in ("0", "false", "no", "off"):
+        return []
+    if forced in ("1", "true", "yes", "on"):
+        return ["--mmap"]
+    if not binary:
+        return []
+    args = [*(backend_args or ()), *(extra_args or ())]
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    on_cpu = (
+        target.lower() == "cpu"
+        if target is not None
+        else _installed_sd_cpp_accelerator(str(binary)) == "cpu"
+    )
+    return ["--mmap"] if on_cpu and sd_cpp_mmap_keeps_cpu_repack(str(binary)) else []
 
 
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
@@ -666,27 +709,92 @@ def is_device_oom_text(text: Optional[str]) -> bool:
     return False
 
 
+# sd.cpp ``fail_segment`` capacity-check stages (ggml_runner.cpp); "workspace allocation" is an allocator failure.
+_SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
+    "failed during weight preparation",
+    "failed during workspace capacity check",
+    "failed during allocated capacity check",
+)
+# Allocator failures on the host RAM that weight preparation stages into, as well as on the device.
+_ALLOCATION_FAILURE_MARKERS: tuple[str, ...] = (
+    *_HOST_OOM_MARKERS,
+    "erroroutofhostmemory",
+    "failed to allocate",
+    "backend buffer failed",
+)
+# sd.cpp fills free-512 MiB with cached weights, so each phase needs memory the last one released; half leaves it
+# unclaimed when the driver reports the release late (Windows may defer destroying allocations).
+IMAGE_VRAM_RETRY_SCALE = 0.5
+
+
+def is_vram_refusal_text(text: Optional[str]) -> bool:
+    """sd.cpp's model manager declined a segment for VRAM, and no allocation failed outright (that keeps its error)."""
+    lines = str(text or "").lower().splitlines()
+    if not any(marker in line for line in lines for marker in _SEGMENT_REFUSAL_MARKERS):
+        return False
+    return not any(
+        "failed during" not in line
+        and (
+            is_device_oom_text(line)
+            or any(marker in line for marker in _ALLOCATION_FAILURE_MARKERS)
+        )
+        for line in lines
+    )
+
+
+def image_vram_retry_budget(
+    planned_free_mib: Optional[Mapping[str, int]], render_devices: Iterable[str] = ()
+) -> Optional[str]:
+    """``--max-vram`` for the image retry: half of each planned card's free VRAM (``CUDA0=..,CUDA1=..`` for several),
+    skipping cards under the floor. None if none qualifies or a ``render_devices`` card does not."""
+    planned = dict(planned_free_mib or {})
+    budgets: dict[str, float] = {}
+    for name, mib in planned.items():
+        gib = graph_cut_budget_gib(int(mib) << 20, reserve_bytes = 0, scale = IMAGE_VRAM_RETRY_SCALE)
+        if gib is not None:
+            budgets[name] = gib
+    if not budgets:
+        return None
+    known = {name.lower() for name in budgets}
+    if any(str(device).lower() not in known for device in render_devices):
+        return None
+    if len(planned) == 1:
+        return _format_gib(next(iter(budgets.values())))
+    return ",".join(f"{name}={_format_gib(gib)}" for name, gib in budgets.items())
+
+
 def device_backend_flags(
-    device_name: Optional[str], offload: Optional[list[str]] = None
+    device_name: Optional[str],
+    offload: Optional[list[str]] = None,
+    *,
+    te_device: Optional[str] = None,
+    vae_device: Optional[str] = None,
 ) -> list[str]:
     """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu."""
     if not device_name:
         return []
     flags = offload or []
-    te = "cpu" if "--clip-on-cpu" in flags else device_name
-    vae = "cpu" if "--vae-on-cpu" in flags else device_name
+    te = "cpu" if "--clip-on-cpu" in flags else (te_device or device_name)
+    vae = "cpu" if "--vae-on-cpu" in flags else (vae_device or device_name)
     return ["--backend", f"diffusion={device_name},te={te},vae={vae}"]
 
 
 def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
-    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload."""
+    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload.
+    A two-card block split's ``--auto-fit`` / ``--max-vram`` belong to its pin and go with it."""
+    items = list(flags)
+    split = any(
+        f == "--backend" and i + 1 < len(items) and "&" in str(items[i + 1])
+        for i, f in enumerate(items)
+    )
+    paired = ("--backend", "--auto-fit", "--max-vram") if split else ("--backend",)
     out: list[str] = []
     skip = False
-    for flag in flags:
+    for flag in items:
         if skip:
             skip = False
             continue
-        if flag == "--backend":
+        if flag in paired:
             skip = True
             continue
         out.append(flag)
@@ -819,7 +927,7 @@ def build_sd_cpp_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -917,7 +1025,7 @@ def build_sd_cpp_video_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd.append("-v")
     if extra_args:
@@ -1025,7 +1133,7 @@ def build_sd_cpp_server_command(
         native_speed_flags(native_speed, backend_args, accelerator, binary), offload
     )
     cmd += placement
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -1116,9 +1224,39 @@ def sd_cli_output_paths(output_path: str, num_results: int) -> list[str]:
     return [f"{stem}_{i}.{ext}" for i in range(num_results)]
 
 
-def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
-    """False for reference videos / audio: path-only sd-cli flags with no ``vid_gen`` JSON field."""
-    return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
+H3_SERVER_REFS_ENV = "UNSLOTH_H3_SERVER_REFS"
+# sd-cli's --ref-video reader (examples/cli/main.cpp load_images_from_dir): these extensions, byte-ordered names.
+_SD_CLI_FRAME_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+def h3_server_refs_enabled() -> bool:
+    value = os.environ.get(H3_SERVER_REFS_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def h3_reference_media_keys(params: "SdCppVideoGenParams") -> tuple[str, ...]:
+    keys = []
+    if params.ref_videos:
+        keys.append("ref_videos")
+    if params.ref_video_audios:
+        keys.append("ref_video_audios")
+    if params.ref_audios:
+        keys.append("ref_audios")
+    return tuple(keys)
+
+
+def h3_server_eligible(params: "SdCppVideoGenParams", *, server_refs: bool = False) -> bool:
+    return server_refs or not h3_reference_media_keys(params)
+
+
+def sd_cli_frame_files(directory: str) -> list[str]:
+    entries = [
+        entry
+        for entry in os.scandir(directory)
+        if entry.is_file() and os.path.splitext(entry.name)[1].lower() in _SD_CLI_FRAME_EXTS
+    ]
+    entries.sort(key = lambda entry: entry.name.encode("utf-8", "surrogateescape"))
+    return [entry.path for entry in entries]
 
 
 def build_vid_gen_request(
@@ -1127,16 +1265,29 @@ def build_vid_gen_request(
     images_b64: Optional[dict[str, str]] = None,
     ref_images_b64: Optional[list[str]] = None,
     output_compression: int = 90,
+    ref_videos_b64: Optional[list[list[str]]] = None,
+    ref_video_audios_b64: Optional[list[str]] = None,
+    ref_audios_b64: Optional[list[str]] = None,
 ) -> dict:
     """POST body equal to build_sd_cpp_video_command (same pixels per seed); writes AVI, which needs no WebM build; --rng cpu is a server flag passed at spawn."""
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
     if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
         raise ValueError("width, height, and num_frames must be positive")
-    if not h3_server_eligible(params):
-        raise ValueError("reference videos and audio are not accepted by the sd-server vid_gen API")
+    inline_refs = {
+        "ref_videos": ref_videos_b64,
+        "ref_video_audios": ref_video_audios_b64,
+        "ref_audios": ref_audios_b64,
+    }
+    for key in h3_reference_media_keys(params):
+        if len(inline_refs[key] or ()) != len(getattr(params, key)):
+            raise ValueError(f"{key} must be sent inline to the sd-server vid_gen API")
+    if len(params.ref_video_audios) > len(params.ref_videos):
+        raise ValueError("each reference video soundtrack needs a reference video to pair with")
     images = dict(images_b64 or {})
-    if (images.get("init_image") or images.get("end_image")) and ref_images_b64:
+    if (images.get("init_image") or images.get("end_image")) and (
+        ref_images_b64 or h3_reference_media_keys(params)
+    ):
         raise ValueError(
             "MiniMax-H3 keyframes and references cannot be combined: they run against "
             "different denoiser partitions."
@@ -1163,6 +1314,8 @@ def build_vid_gen_request(
             req[key] = images[key]
     if ref_images_b64:
         req["ref_images"] = list(ref_images_b64)
+    for key in h3_reference_media_keys(params):
+        req[key] = [list(item) if key == "ref_videos" else item for item in inline_refs[key]]
     return req
 
 

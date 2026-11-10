@@ -247,9 +247,7 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
 
 
 def test_degrades_when_unsloth_zoo_entirely_absent():
-    """When unsloth_zoo is absent entirely, the import raises
-    ModuleNotFoundError(name='unsloth_zoo') (top-level package). Guard that the shim still
-    degrades and does not re-raise, breaking every Unsloth import that pulls it in."""
+    """A missing unsloth_zoo must degrade, not re-raise ModuleNotFoundError, or every import breaks."""
 
     class _BlockZoo:
         def find_spec(
@@ -634,9 +632,8 @@ def test_a_spawn_cannot_overlap_the_loader_env_override_window():
 
 
 def test_the_spawn_barrier_is_reentrant():
-    """child_environment_for_spawn nests (an inference respawn inside a training start), which its
-    RLock _spawn_env_lock allows, so the barrier it now takes alongside must be reentrant too or the
-    inner enter deadlocks. Bounded on purpose: a plain Lock hangs the suite rather than failing."""
+    """Nested spawns re-enter the barrier, so it must be an RLock or the inner enter deadlocks; the
+    bounded wait is on purpose since a plain Lock hangs the suite."""
     from utils.hf_cache_settings import child_environment_for_spawn
 
     done = threading.Event()
@@ -654,8 +651,7 @@ def test_the_spawn_barrier_is_reentrant():
 
 
 def test_an_operator_set_gpu_init_override_still_reaches_the_child(monkeypatch):
-    """Only the loader's own transient value is dropped. Someone who exported the flag themselves
-    on a GPU-less box meant it, and their children must keep it."""
+    """Only the loader's transient UNSLOTH_ZOO_DISABLE_GPU_INIT is dropped, not an operator's."""
     from utils.child_stdio import utf8_child_env
 
     monkeypatch.setenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", "1")
@@ -959,8 +955,7 @@ def test_clamp_never_writes_a_key_the_user_set(monkeypatch):
 
 
 def test_clamp_stands_down_when_ram_cannot_be_measured(monkeypatch):
-    """No psutil, no cgroup, or a zoo too old to expose a profile: absence of evidence is not
-    evidence of pressure, so the download runs as before."""
+    """No psutil, cgroup, or zoo profile means no clamp: absence of evidence is not pressure."""
     sized = {_LIMIT: str(8 * _GB)}
 
     unmeasurable = _fake_tuning(0, 0)
@@ -979,8 +974,7 @@ def test_clamp_stands_down_when_ram_cannot_be_measured(monkeypatch):
 
 
 def test_clamp_holds_against_the_real_zoo_formulas():
-    """The fakes above pin the seam; this pins the arithmetic, so a zoo that changes how it sizes
-    cannot quietly reintroduce a budget bigger than free RAM."""
+    """A zoo changing its sizing must not quietly allow a clamp budget above free RAM."""
     tuning = pytest.importorskip("unsloth_zoo.hf_xet_tuning")
 
     idle = tuning.SystemProfile(
@@ -1056,8 +1050,7 @@ def test_free_ram_pressure_reason_applies_the_zoos_own_floor(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def clean_ledger():
-    """Autouse: sizing reserves RAM, so any clamp test leaves a reservation that would otherwise
-    follow the process into the next test and shrink its budget."""
+    """Autouse: a leftover RAM reservation would shrink the next test's budget."""
     shim._budget_reservations.clear()
     shim._pending_reservation.token = None
     yield shim
@@ -1286,8 +1279,7 @@ def test_the_ledgers_liveness_probe_never_signals_on_windows(clean_ledger, monke
 
 
 def test_a_running_worker_keeps_its_reservation_on_windows(clean_ledger, monkeypatch):
-    """The Windows probe must also answer correctly, or every reservation is pruned on sight and
-    concurrent workers go back to promising the same free RAM."""
+    """A wrong Windows probe prunes live reservations, so workers promise the same RAM again."""
     import ctypes
     import os as _os
 

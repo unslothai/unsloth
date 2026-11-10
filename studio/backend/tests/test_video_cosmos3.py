@@ -112,8 +112,7 @@ def _planned_files(repo):
 
 
 def _write_planned_tree(root, repo):
-    """The files a pipeline load stages, as stubs: the fixture's configs, shard indexes naming their shards, one byte
-    per weight."""
+    """Stub files a pipeline load stages: configs, shard indexes, one byte per weight."""
     names = sorted(_planned_files(repo))
     _write_configs(root, repo)
     _write_json(root / "scheduler" / "scheduler_config.json", _ckpt(repo)["scheduler_config"])
@@ -403,7 +402,13 @@ def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
     monkeypatch.setattr(vc3, "logger", log)
     refusal = vc3.guardrail_refusal(repo)
     if repo == NANO and guardrail == "absent":
-        for part in (f"'{NANO}'", "pip install cosmos-guardrail", f"{_OPT_OUT_ENV}=0"):
+        for part in (
+            f"'{NANO}'",
+            "pip install cosmos-guardrail",
+            f"https://huggingface.co/{_GUARDRAIL_REPO}",
+            "token in Settings",
+            f"{_OPT_OUT_ENV}=0",
+        ):
             assert part in refusal, part
         assert vc3.guardrail_refusal(NANO, index = _ckpt(EDGE)["model_index"]) is None
     else:
@@ -767,6 +772,125 @@ def test_a_wan_load_keeps_the_stock_encode(cosmos3_runtime, monkeypatch):
     assert not getattr(backend._state.pipe.vae.encode, "_unsloth_untiled_encode", False)
 
 
+_GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
+
+
+def _gated_load(repo):
+    """The guardrail's real 401 text, wrapped in an OSError."""
+    from huggingface_hub.errors import GatedRepoError
+
+    class _Gated(GatedRepoError):
+        def __init__(self, message):
+            Exception.__init__(self, message)
+
+    def from_pretrained(cls, source, **kwargs):
+        try:
+            raise _Gated(
+                f"401 Client Error. Cannot access gated repo for url https://huggingface.co/{repo}/resolve/cf03c03/"
+                f"blocklist/custom/notable.\nAccess to model {repo} is restricted. Please log in."
+            )
+        except _Gated as exc:
+            raise OSError("could not build the safety checker") from exc
+
+    return classmethod(from_pretrained)
+
+
+def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_runtime, monkeypatch):
+    _set_guardrail(monkeypatch, "installed")
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", _gated_load(_GUARDRAIL_REPO))
+    with pytest.raises(ValueError) as refused:
+        _loaded(NANO)
+    message = str(refused.value)
+    for part in (
+        f"'{NANO}'",
+        f"https://huggingface.co/{_GUARDRAIL_REPO}",
+        "token in Settings",
+        f"{_OPT_OUT_ENV}=0",
+    ):
+        assert part in message, part
+    assert "401 Client Error" not in message and "pip install" not in message
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", _gated_load("nvidia/Cosmos3-Nano"))
+    with pytest.raises(OSError, match = "safety checker"):
+        _loaded(NANO)
+
+
+def _guardrail_downloads(monkeypatch):
+    """Records the token each guardrail snapshot_download sends."""
+    seen = []
+
+    def snapshot_download(
+        repo_id,
+        token = "ambient",
+        **kwargs,
+    ):
+        seen.append(token)
+        return "/nonexistent"
+
+    inner = types.ModuleType("cosmos_guardrail.cosmos_guardrail")
+    inner.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "cosmos_guardrail.cosmos_guardrail", inner)
+    return inner, seen
+
+
+@pytest.mark.parametrize(
+    "token, sent",
+    [("hf_settings", "hf_settings"), (False, False), (None, "ambient"), ("  ", "ambient")],
+)
+def test_the_guardrail_download_gets_the_loads_token(cosmos3_runtime, monkeypatch, token, sent):
+    _set_guardrail(monkeypatch, "installed")
+    inner, seen = _guardrail_downloads(monkeypatch)
+    real_from_pretrained = _FakeCosmos3Pipeline.__dict__["from_pretrained"]
+
+    def from_pretrained(cls, source, **kwargs):
+        inner.snapshot_download(_GUARDRAIL_REPO, allow_patterns = ["blocklist/*"])
+        return real_from_pretrained.__func__(cls, source, **kwargs)
+
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", classmethod(from_pretrained))
+    VideoBackend().load_pipeline(NANO, model_kind = "pipeline", hf_token = token)
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == [sent, "ambient"]
+
+
+def test_the_guardrail_token_scope_ends_with_a_failed_load(monkeypatch):
+    inner, seen = _guardrail_downloads(monkeypatch)
+    with pytest.raises(RuntimeError):
+        with vc3.guardrail_hub_token("hf_x"):
+            inner.snapshot_download(_GUARDRAIL_REPO)
+            raise RuntimeError("load failed")
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == ["hf_x", "ambient"]
+
+
+def test_overlapping_guardrail_loads_keep_their_own_tokens(monkeypatch):
+    """A cancel-and-reload overlaps two loads; exits out of order must not leave either token behind."""
+    import threading
+
+    inner, seen = _guardrail_downloads(monkeypatch)
+    a_in, b_in, a_out = threading.Event(), threading.Event(), threading.Event()
+
+    def load_a():
+        with vc3.guardrail_hub_token("hf_a"):
+            a_in.set()
+            b_in.wait(5)
+            inner.snapshot_download(_GUARDRAIL_REPO)
+        a_out.set()
+
+    def load_b():
+        a_in.wait(5)
+        with vc3.guardrail_hub_token("hf_b"):
+            b_in.set()
+            a_out.wait(5)
+            inner.snapshot_download(_GUARDRAIL_REPO)
+
+    threads = [threading.Thread(target = load_a), threading.Thread(target = load_b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == ["hf_a", "hf_b", "ambient"]
+
+
 def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_runtime, monkeypatch):
     _set_guardrail(monkeypatch, "absent")
     started = []
@@ -775,7 +899,7 @@ def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_ru
     with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=0"):
         backend.begin_load(NANO, model_kind = "pipeline")
     assert started == [] and backend.loading_repo_ids() == ()
-    with pytest.raises(ValueError, match = "cosmos_guardrail"):
+    with pytest.raises(ValueError, match = "pip install cosmos-guardrail"):
         backend.load_pipeline(NANO, model_kind = "pipeline")
     assert _FakeCosmos3Pipeline.loads == []
     with pytest.raises(ValueError, match = "limited to"):
@@ -1007,6 +1131,75 @@ def test_rows_hide_on_a_diffusers_without_edges_native_flow_schedule(
     assert {df.family_pipeline_available(_fam(n)) for n in vf.COSMOS3_FAMILIES} == {available}
 
 
+def _imported_diffusers(monkeypatch, version, *classes):
+    module = types.ModuleType("diffusers")
+    module.__version__ = version
+    for name in classes:
+        setattr(module, name, type(name, (), {"__module__": "diffusers.pipelines.fake"}))
+    monkeypatch.setitem(sys.modules, "diffusers", module)
+    return module
+
+
+@pytest.mark.parametrize(
+    "installed, available",
+    [
+        ("0.39.0", False),
+        ("0.40.0", False),
+        ("0.41.0", True),
+        ("0.41.0.dev0", True),
+        ("0.42.1", True),
+    ],
+)
+def test_an_imported_diffusers_below_the_floor_hides_cosmos3_even_though_it_exports_the_class(
+    monkeypatch, installed, available
+):
+    from core.inference import diffusion_families as df
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    assert {df.family_pipeline_available(_fam(n)) for n in vf.COSMOS3_FAMILIES} == {available}
+
+
+@pytest.mark.parametrize("installed", ["0.39.0", "0.40.0"])
+def test_the_load_gate_refuses_cosmos3_on_a_diffusers_that_exports_it_below_the_floor(
+    monkeypatch, installed
+):
+    from core.inference import diffusion_families as df
+
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    with pytest.raises(ValueError, match = r"needs diffusers >= 0\.41\.0 \(Cosmos3OmniPipeline\)"):
+        df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    with pytest.raises(ValueError, match = rf"has diffusers {installed}\."):
+        df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge", strict = True)
+
+
+@pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.dev0", "0.42.1", "0.42.1+local"])
+def test_the_load_gate_accepts_cosmos3_at_or_above_the_floor(monkeypatch, installed):
+    from core.inference import diffusion_families as df
+
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge", strict = True)
+
+
+def test_the_floor_leaves_main_builds_judged_by_presence(monkeypatch):
+    from core.inference import diffusion_families as df
+
+    _imported_diffusers(monkeypatch, "0.41.0.dev0", "Flux3ModularPipeline", "Cosmos3OmniPipeline")
+    df.assert_pipeline_class_available("Flux3ModularPipeline", "flux3")
+    monkeypatch.setattr(df, "_UNRELEASED_MIN_DIFFUSERS", frozenset({"0.43.0"}))
+    monkeypatch.setitem(df._PIPELINE_MIN_DIFFUSERS, "Cosmos3OmniPipeline", "0.43.0")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    assert df.family_pipeline_available(_fam("cosmos3-edge"))
+
+
+def test_an_unreadable_version_keeps_the_present_class_available(monkeypatch):
+    from core.inference import diffusion_families as df
+
+    module = _imported_diffusers(monkeypatch, "0.40.0", "Cosmos3OmniPipeline")
+    del module.__version__
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    assert df.family_pipeline_available(_fam("cosmos3-edge"))
+
+
 _PIPELINE = ("model_index.json", "transformer/diffusion_pytorch_model.safetensors")
 _SHARDS = ("config.json", "model.safetensors.index.json", "model-00001-of-00002.safetensors")
 
@@ -1080,8 +1273,10 @@ def test_cosmos3_decodes_untiled_when_it_fits_even_at_speed_off(policy, speed):
     placed = policy != "sequential"
     for family in ("cosmos3-edge", "cosmos3-nano"):
         assert gate(family, policy, "cuda", speed) is placed
-        assert gate(family, policy, "cpu", speed) is False
-    assert gate("wan2.2-ti2v-5b", policy, "cuda", speed) is (placed and speed != "off")
+        assert gate(family, policy, "cpu", speed) is placed
+        assert gate(family, policy, "mps", speed) is False
+    for device in ("cuda", "cpu"):
+        assert gate("wan2.2-ti2v-5b", policy, device, speed) is (placed and speed != "off")
 
 
 def _diffusers_tiles(length, tile, stride):

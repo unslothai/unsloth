@@ -50,6 +50,7 @@ on:
       # The only lane that runs this test; the Windows smoke workflow skips it.
       - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_rollback_background_delete.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_setup_download_progress.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
@@ -155,6 +156,7 @@ on:
       # The only lane that runs this test; the Windows smoke workflow skips it.
       - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_rollback_background_delete.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_setup_download_progress.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
@@ -237,7 +239,7 @@ jobs:
         # concurrency is capped at 5. The non-Windows shell steps cover Intel XPU paths no Mac reaches.
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -256,6 +258,7 @@ jobs:
           python -m pytest
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
+          tests/python/test_windows_rollback_background_delete.py
           tests/python/test_windows_setup_output_encoding.py
           tests/python/test_windows_setup_download_progress.py
           tests/python/test_windows_installer_resolver_fallback.py

@@ -127,7 +127,7 @@ test("the reasoning pane picks its primitive from the flag on all three slots", 
   assert.ok(code.includes("<UnmeasuredCollapsibleContent"));
 });
 
-test("the scroll lock outlasts the grid collapse, and the shared hook's other callers do not move", () => {
+test("reasoning and tool scroll locks outlast the grid collapse", () => {
   const code = codeOf(REASONING);
   // The lock arms a commit before the transition starts, so an exact duration releases mid-collapse.
   assert.match(
@@ -136,7 +136,7 @@ test("the scroll lock outlasts the grid collapse, and the shared hook's other ca
   );
   for (const other of [TOOL_GROUP, TOOL_FALLBACK]) {
     assert.ok(
-      codeOf(other).includes("useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION)"),
+      codeOf(other).includes("useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS)"),
     );
   }
 });
@@ -153,11 +153,15 @@ test("the flag-on reasoning content runs no height keyframes", () => {
   assert.ok(REASONING.includes('"data-[state=open]:animate-collapsible-down"'));
 });
 
-test("the height keyframes stay in use everywhere else, because the sidebar listens for them", () => {
+test("tool panes avoid measurement and height keyframes; the sidebar keeps its animations", () => {
   assert.ok(SHARED_COLLAPSIBLE.includes("animate-collapsible-down"));
   assert.ok(SHARED_COLLAPSIBLE.includes("animate-collapsible-up"));
-  assert.ok(TOOL_GROUP.includes("animate-collapsible-down"));
-  assert.ok(TOOL_FALLBACK.includes("animate-collapsible-down"));
+  for (const source of [TOOL_GROUP, TOOL_FALLBACK]) {
+    assert.ok(source.includes("UnmeasuredCollapsible as Collapsible"));
+    assert.ok(source.includes("UnmeasuredCollapsibleContent as CollapsibleContent"));
+    assert.ok(source.includes("UnmeasuredCollapsibleTrigger as CollapsibleTrigger"));
+    assert.ok(!source.includes("animate-collapsible-"));
+  }
   assert.ok(APP_SIDEBAR.includes('e.animationName === "collapsible-down"'));
   assert.ok(APP_SIDEBAR.includes('e.animationName === "collapsible-up"'));
 });

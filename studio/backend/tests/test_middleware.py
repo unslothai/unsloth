@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,15 @@ def main_module():
     return _main
 
 
+@pytest.fixture(scope = "module")
+def zstd():
+    if sys.version_info >= (3, 14):
+        from compression import zstd  # novermin
+    else:
+        from backports import zstd
+    return zstd
+
+
 def _make_protected_app(
     max_bytes: int,
     main_module,
@@ -44,6 +54,8 @@ def _make_protected_app(
         max_bytes_getter = lambda: max_bytes,
         protected_prefixes = (
             "/v1/chat/completions",
+            "/v1/systemone",
+            "/api/auth",
             "/api/inference",
             "/api/settings",
             "/api/train",
@@ -58,6 +70,14 @@ def _make_protected_app(
     @app.post("/v1/chat/completions")
     async def chat(payload: dict):
         return {"ok": True, "n": len(payload.get("text", ""))}
+
+    @app.post("/v1/systemone")
+    async def systemone(payload: dict):
+        return {"ok": True, "n": len(payload.get("text", ""))}
+
+    @app.post("/api/auth/login")
+    async def login(request: Request):
+        return {"ok": True, "total": len(await request.body())}
 
     @app.post("/api/other")
     async def other(payload: dict):
@@ -102,6 +122,82 @@ class TestMaxBodyMiddleware:
         r = c.post("/v1/chat/completions", json = {"text": "x" * 5000})
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
+
+    def test_zstd_body_is_decoded_on_systemone(self, main_module, zstd):
+        c = TestClient(_make_protected_app(4096, main_module))
+        headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"}
+        payload = json.dumps({"text": "x" * 3000}).encode()
+
+        decoded = c.post("/v1/systemone", content = zstd.compress(payload), headers = headers)
+        frames = c.post(
+            "/v1/systemone",
+            content = zstd.compress(payload[:1500]) + zstd.compress(payload[1500:]),
+            headers = headers,
+        )
+        oversized = c.post(
+            "/v1/systemone",
+            content = zstd.compress(json.dumps({"text": "x" * 100_000}).encode()),
+            headers = headers,
+        )
+        garbage = c.post("/v1/systemone", content = b"not zstd", headers = headers)
+        truncated = c.post("/v1/systemone", content = zstd.compress(payload)[:-4], headers = headers)
+
+        assert decoded.status_code == 200
+        assert decoded.json()["n"] == 3000
+        assert frames.status_code == 200
+        assert frames.json()["n"] == 3000
+        assert oversized.status_code == 413
+        assert garbage.status_code == 400
+        assert "zstd" in garbage.json()["detail"]
+        assert truncated.status_code == 400
+
+    def test_zstd_bomb_is_not_decoded_off_systemone(self, main_module, zstd):
+        c = TestClient(_make_protected_app(1 << 30, main_module))
+        bomb = zstd.compress(b"\0" * (64 * 1024 * 1024))
+        r = c.post(
+            "/api/auth/login",
+            content = bomb,
+            headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"},
+        )
+        assert r.status_code == 200
+        assert r.json()["total"] == len(bomb)
+
+    def test_zstd_bomb_on_systemone_hits_decoded_cap(self, main_module, zstd):
+        c = TestClient(_make_protected_app(1 << 30, main_module))
+        bomb = zstd.compress(json.dumps({"text": "x" * (9 * 1024 * 1024)}).encode())
+        r = c.post(
+            "/v1/systemone",
+            content = bomb,
+            headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"},
+        )
+        assert len(bomb) < 64 * 1024
+        assert r.status_code == 413
+        assert "zstd" in r.json()["detail"]
+
+    def test_zstd_frame_flood_reads_each_byte_once(self, main_module, zstd):
+        fed = []
+
+        class CountingDecompressor:
+            def __init__(self):
+                self._d = zstd.ZstdDecompressor()
+
+            def decompress(self, data, *args, **kwargs):
+                fed.append(len(data))
+                return self._d.decompress(data, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._d, name)
+
+        counting = types.SimpleNamespace(
+            ZstdDecompressor = CountingDecompressor,
+            ZstdError = zstd.ZstdError,
+            get_frame_size = zstd.get_frame_size,
+        )
+        flood = zstd.compress(b"") * 1023 + zstd.compress(b"{}")
+        assert main_module._zstd_decode(counting, flood, 1 << 20) == b"{}"
+        assert sum(fed) == len(flood)
+        with pytest.raises(zstd.ZstdError):
+            main_module._zstd_decode(zstd, zstd.compress(b"") + flood, 1 << 20)
 
     def test_unprotected_prefix_passes_large_body(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -1455,8 +1551,7 @@ class TestCspHfEndpoints:
     def test_a_path_prefixed_mirror_is_listed_as_an_origin(
         self, main_module, monkeypatch, endpoint, expected_source
     ):
-        """A CSP host-source path not ending in / matches only that exact URL, so list mirrors by
-        origin only."""
+        """Host-source path without trailing / matches only that URL; list mirrors by origin."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         sources = _connect_src(main_module._build_csp("NONCE"))
         assert expected_source in sources
@@ -1475,8 +1570,7 @@ class TestCspHfEndpoints:
     def test_a_loopback_endpoint_is_only_reported_to_a_loopback_client(
         self, main_module, monkeypatch, endpoint, loopback_sees, remote_sees
     ):
-        """A loopback endpoint means the BROWSER's localhost anywhere else: dead,
-        or an unrelated service that would be handed the user's Hub token."""
+        """Loopback means browser localhost: elsewhere it is dead or leaks the Hub token."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         local = TestClient(main_module.app, client = ("127.0.0.1", 40000))
         assert local.get("/api/health").json()["hf_endpoint"] == loopback_sees
@@ -1484,8 +1578,7 @@ class TestCspHfEndpoints:
         assert remote.get("/api/health").json()["hf_endpoint"] == remote_sees
 
     def test_a_tunneled_client_is_not_mistaken_for_a_local_one(self, main_module, monkeypatch):
-        """Through the managed tunnel the socket peer IS loopback: it is the local
-        cloudflared process, not the visitor."""
+        """Through the tunnel the socket peer is loopback: cloudflared, not the visitor."""
         monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
         c = TestClient(main_module.app, client = ("127.0.0.1", 40000))
         tunneled = c.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"})
@@ -1641,8 +1734,7 @@ def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, m
 
 
 def test_every_api_write_route_is_body_capped(main_module):
-    # FastAPI reads a body before the route's auth dependency, so an uncapped /api write route let an
-    # unauthenticated client stream an unbounded body into memory.
+    # FastAPI reads bodies before auth, so an uncapped /api write lets anyone send any size.
     writes = [
         route.path
         for route in main_module.app.routes
@@ -1772,12 +1864,8 @@ def test_delete_bodies_and_root_path_are_capped(main_module):
 
 
 def test_a_withheld_body_is_not_counted_as_running_inference(main_module, health_app):
-    """Keep-warm runs inside the body limiter: a request is counted once its body is here.
-
-    A model switch drains the in-flight count with no time limit, holding the gate every chat request needs, and
-    nothing bounds how long a client may withhold a body. Counted from the headers on, an anonymous POST that never
-    sent one stayed in flight until its socket closed: the 401 that uncounts it comes from the route, after the body.
-    """
+    """A request counts only once its body is here, so a withheld body is not counted as running
+    inference."""
     from auth import storage
     from auth.authentication import create_access_token
     from core.inference import llama_keepwarm, media_keepwarm

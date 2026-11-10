@@ -103,6 +103,7 @@ async (page) => {
   check(await page.getByRole('slider',{name:'Zoom',exact:true}).getAttribute('aria-valuenow')==='100','upload starts at default zoom');
   await page.getByRole('combobox',{name:'Effect',exact:true}).click();await page.getByRole('option',{name:'Halftone',exact:true}).click();await settled('Halftone');
   await page.getByRole('button',{name:'Toggle theme',exact:true}).click();await settled('Halftone');
+  check(await page.evaluate(()=>document.documentElement.hasAttribute('data-chat-welcome')&&getComputedStyle(document.querySelector('[data-chat-content-root] > .chat-wallpaper')).opacity==='1'),'welcome view is not dimmed');
   await page.getByRole('button',{name:'Toggle conversation',exact:true}).click();
   await page.waitForFunction(()=>getComputedStyle(document.querySelector('[data-chat-content-root] > .chat-wallpaper')).opacity==='0.4');
   await page.emulateMedia({reducedMotion:'reduce'});

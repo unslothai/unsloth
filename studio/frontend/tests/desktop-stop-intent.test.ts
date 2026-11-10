@@ -179,7 +179,7 @@ test("stopping records the intent before the shutdown it can outlive", async () 
 
   // Reaping can block ~15s, so the marker must be written before it; order is load bearing.
   const mark = body.indexOf("markServerStopIntent();\n    try {");
-  const invoke = body.indexOf('await invoke("stop_server")');
+  const invoke = body.indexOf('await invoke("stop_server"');
   assert.ok(
     mark > 0 && invoke > mark,
     "the marker is written after the stop it must survive",
@@ -190,11 +190,29 @@ test("stopping records the intent before the shutdown it can outlive", async () 
     /catch \(e\) \{\s*clearServerStopIntent\(\);\s*throw e;\s*\}/,
     "a failed stop keeps a marker it did not earn",
   );
+});
 
-  const external = body.slice(0, body.indexOf("const { invoke }"));
+test("an attached server is stopped, not only detached", async () => {
+  const hook = USE_TAURI_BACKEND;
+  const body = hook.slice(
+    hook.indexOf("async function runStopServer()"),
+    hook.indexOf("async function startInstall("),
+  );
+
+  assert.doesNotMatch(
+    body,
+    /isExternalServer\)/,
+    "the stop branches on render state the tray handler never sees",
+  );
+  const invoke = body.indexOf('await invoke("stop_server"');
+  const detach = body.indexOf("setExternalServerPort(null);");
+  assert.ok(
+    invoke > 0 && detach > invoke,
+    "the app lets go of an attached server without stopping it",
+  );
   assert.match(
-    external,
-    /stopExternalServerPoll\(\);\s*markServerStopIntent\(\);/,
+    body.slice(detach),
+    /stopExternalServerPoll\(\);\s*setBackendStatus\("stopped"\);/,
   );
 });
 
@@ -203,8 +221,8 @@ test("a second stop cannot run while the first is in flight", async () => {
 
   const tray = hook.slice(hook.indexOf('register<void>("tray-toggle-server"'));
   assert.match(
-    tray.slice(0, tray.indexOf("});")),
-    /statusRef\.current === "running"\)\s*\{\s*stopServer\(\);/,
+    tray.slice(0, tray.indexOf("retry();")),
+    /statusRef\.current === "running"\)\s*\{\s*stopServer\(\)/,
   );
 
   const guard = hook.slice(
@@ -244,4 +262,64 @@ test("every deliberate start drops the marker", async () => {
   );
   assert.match(retry, /clearServerStopIntent\(\);/);
   assert.match(retry, /checkInstallAndStart\(\);/);
+});
+
+test("a tray stop that fails tells the user why", () => {
+  const hook = USE_TAURI_BACKEND;
+  const tray = hook.slice(hook.indexOf('register<void>("tray-toggle-server"'));
+  assert.match(
+    tray.slice(0, tray.indexOf("retry();")),
+    /stopServer\(\)\.catch\(\(e\) => \{\s*toast\.error\([^)]*String\(e\)/,
+    "the tray drops the reason a stop failed",
+  );
+});
+
+// The tray listener is registered once at mount, so run the real runStopServer with that
+// render's state: not attached, whatever the app is attached to now.
+function stopFromMountTimeListener(port: number, stopError?: Error) {
+  const hook = USE_TAURI_BACKEND;
+  const start = hook.indexOf("  async function runStopServer()");
+  const body = hook.slice(start, hook.indexOf("\n  }\n", start) + 4);
+  const calls: string[] = [];
+  const scope: Record<string, unknown> = {
+    isExternalServer: false,
+    externalServerPort: null,
+    portRef: { current: port },
+    startingRef: { current: true },
+    importTauriCore: () =>
+      Promise.resolve({
+        invoke: (command: string, args: { port: number }) => {
+          calls.push(`${command}:${args.port}`);
+          return stopError ? Promise.reject(stopError) : Promise.resolve(null);
+        },
+      }),
+    setExternalServerPort: (next: number | null) => calls.push(`attached:${next}`),
+    stopExternalServerPoll: () => calls.push("stop-poll"),
+    markServerStopIntent: () => calls.push("mark-intent"),
+    clearServerStopIntent: () => calls.push("clear-intent"),
+    setBackendStatus: (status: string) => calls.push(`status:${status}`),
+  };
+  const source = `${body.replace('await import("@tauri-apps/api/core")', "await importTauriCore()")}
+    return runStopServer;`;
+  const keys = Object.keys(scope);
+  const run = new Function(...keys, source)(...keys.map((key) => scope[key])) as () => Promise<void>;
+  return { run, calls };
+}
+
+test("the tray's stop on an attached server stops it by port, then leaves attached mode", async () => {
+  const stop = stopFromMountTimeListener(8890);
+  await stop.run();
+  assert.deepEqual(stop.calls, [
+    "mark-intent",
+    "stop_server:8890",
+    "attached:null",
+    "stop-poll",
+    "status:stopped",
+  ]);
+});
+
+test("a stop the server refuses keeps the app attached and its health poll running", async () => {
+  const stop = stopFromMountTimeListener(8890, new Error("did not stop"));
+  await assert.rejects(stop.run(), /did not stop/);
+  assert.deepEqual(stop.calls, ["mark-intent", "stop_server:8890", "clear-intent"]);
 });

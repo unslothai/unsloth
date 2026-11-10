@@ -5,8 +5,9 @@
 import { isMacPlatform } from "@/features/settings/lib/keyboard-shortcuts";
 // eslint-disable-next-line no-restricted-imports
 import { useTheme } from "@/features/settings/stores/theme-store";
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 import { isTauri } from "@/lib/api-base";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { create } from "zustand";
 import {
   type StateStorage,
@@ -14,15 +15,22 @@ import {
   persist,
 } from "zustand/middleware";
 import {
+  type BackgroundRoute,
+  type BackgroundScope,
   DEFAULT_GLASS_STRENGTH,
   type GlassStrengths,
   type LensMode,
   type WindowMaterial,
+  inScope,
   sanitizeLens,
   sanitizeMaterial,
+  sanitizeScope,
   sanitizeStrength,
   sanitizeStrengths,
 } from "./model";
+import { startGlassMotion } from "./glass-motion";
+import { softwareCompositing } from "./software-compositing";
+import { useChatWelcomeShown } from "./welcome";
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
 
@@ -67,11 +75,15 @@ export const useMaterialStore = create<{
   menus: boolean;
   strength: GlassStrengths;
   lens: LensMode;
+  scope: BackgroundScope;
+  /** Not persisted: whether the current route is inside scope, set by WindowMaterialMount. */
+  here: boolean;
   setMaterial: (material: WindowMaterial) => void;
   setEnabled: (enabled: boolean) => void;
   setMenus: (menus: boolean) => void;
   setStrength: (strength: number, mode: keyof GlassStrengths) => void;
   setLens: (lens: LensMode) => void;
+  setScope: (scope: BackgroundScope) => void;
 }>()(
   persist(
     (set) => ({
@@ -81,6 +93,8 @@ export const useMaterialStore = create<{
       menus: true,
       strength: DEFAULT_GLASS_STRENGTH,
       lens: "off",
+      scope: "all",
+      here: true,
       setMaterial: (material) => {
         const next = sanitizeMaterial(material);
         set(
@@ -100,6 +114,7 @@ export const useMaterialStore = create<{
           strength: { ...s.strength, [mode]: sanitizeStrength(strength) },
         })),
       setLens: (lens) => set({ lens: sanitizeLens(lens) }),
+      setScope: (scope) => set({ scope: sanitizeScope(scope, "all") }),
     }),
     {
       name: MATERIAL_STORAGE_KEY,
@@ -110,6 +125,7 @@ export const useMaterialStore = create<{
         menus: s.menus,
         strength: s.strength,
         lens: s.lens,
+        scope: s.scope,
       }),
       merge: (persisted, current) => {
         const stored = persisted as
@@ -119,6 +135,7 @@ export const useMaterialStore = create<{
               menus?: unknown;
               strength?: unknown;
               lens?: unknown;
+              scope?: unknown;
             }
           | undefined;
         return {
@@ -131,6 +148,8 @@ export const useMaterialStore = create<{
           menus: typeof stored?.menus === "boolean" ? stored.menus : true,
           strength: sanitizeStrengths(stored?.strength),
           lens: sanitizeLens(stored?.lens),
+          // Glass applied everywhere before the setting existed.
+          scope: sanitizeScope(stored?.scope, "all"),
         };
       },
     },
@@ -142,6 +161,11 @@ async function setNativeVibrancy(enabled: boolean): Promise<boolean> {
   return invoke<boolean>("set_native_vibrancy", { enabled });
 }
 
+/** The material drawn on this route: solid outside the glass scope. */
+export function useAppliedMaterial(): WindowMaterial {
+  return useMaterialStore((s) => (s.here ? s.material : "solid"));
+}
+
 export function useGlassStrength(): number {
   const { resolved } = useTheme();
   return useMaterialStore((s) => s.strength[resolved]);
@@ -149,10 +173,41 @@ export function useGlassStrength(): number {
 
 let nativeApplied = false;
 
-export function WindowMaterialMount() {
+// WebKit repaints a glass surface's blurred shadows and backdrop whenever anything inside it
+// changes, and on CPU painting that dominates scrolling and typing. Its children get their own
+// layers there (index.css, data-glass-layers); Chromium composites these already.
+const WEBKIT_LAYERS =
+  typeof navigator !== "undefined" &&
+  /AppleWebKit/.test(navigator.userAgent) &&
+  !/Chrom|Edg|Android/i.test(navigator.userAgent);
+// WebKitGTK (the Linux app) also runs every backdrop-filter again on each composite, on the CPU, so
+// there glass drops its live blur except the sidebar's (index.css, data-glass-cpu). macOS WebKit
+// composites backdrops on the GPU and keeps real frosted glass.
+const WEBKIT_GTK =
+  typeof navigator !== "undefined" &&
+  isWebKitGTK(navigator.platform, navigator.userAgent);
+
+export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   const material = useMaterialStore((s) => s.material);
   const menus = useMaterialStore((s) => s.menus);
+  const scope = useMaterialStore((s) => s.scope);
+  const welcome = useChatWelcomeShown();
   const strength = useGlassStrength();
+  // What the native shell settled on; the attribute also needs this route to be in scope.
+  const [shown, setShown] = useState<WindowMaterial>("solid");
+  const here =
+    !route || inScope(scope, route === "chat" && welcome ? "newChat" : route);
+  useEffect(() => {
+    useMaterialStore.setState({ here });
+  }, [here]);
+  useEffect(() => {
+    const root = document.documentElement;
+    const applied = shown === "solid" || !here ? null : shown;
+    // Transparent is the plain theme with see-through fills, so it takes none of the frosted glass rules.
+    if (applied && applied !== "transparent") root.setAttribute("data-glass", applied);
+    else root.removeAttribute("data-glass");
+    root.toggleAttribute("data-glass-clear", applied === "transparent");
+  }, [shown, here]);
   useEffect(() => {
     const root = document.documentElement;
     const blur =
@@ -166,23 +221,54 @@ export function WindowMaterialMount() {
       root.style.setProperty("--glass-strength", blur.toFixed(3));
       root.style.setProperty("--glass-opacity", opacity.toFixed(3));
     }
+    if (material === "transparent") {
+      root.style.setProperty("--glass-fill-alpha", `${strength}%`);
+    } else {
+      root.style.removeProperty("--glass-fill-alpha");
+    }
   }, [strength, material]);
   useEffect(() => {
     document.documentElement.toggleAttribute(
       "data-glass-menus",
-      menus && material !== "solid",
+      menus && material !== "solid" && here,
     );
-  }, [menus, material]);
+  }, [menus, material, here]);
+  useEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-glass-layers",
+      WEBKIT_LAYERS && material !== "solid" && material !== "transparent" && here,
+    );
+  }, [material, here]);
+  useEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-glass-cpu",
+      WEBKIT_GTK && material !== "solid" && material !== "transparent" && here,
+    );
+  }, [material, here]);
+  useEffect(() => {
+    // Only where compositing is in software, which recomputes every blur on every frame; with a GPU glass
+    // keeps its blur while things move. WebKitGTK already has no live blur outside the sidebar (data-glass-cpu).
+    // Transparent has no blur, except on Windows Desktop, where its menus and dialogs carry one.
+    const root = document.documentElement;
+    const clearBlur =
+      material === "transparent" &&
+      root.classList.contains("tauri") &&
+      root.classList.contains("client-windows");
+    const on =
+      !WEBKIT_GTK &&
+      material !== "solid" &&
+      (material !== "transparent" || clearBlur) &&
+      here &&
+      softwareCompositing();
+    document.documentElement.toggleAttribute("data-glass-motion", on);
+    return on ? startGlassMotion().stop : undefined;
+  }, [material, here]);
   useEffect(() => {
     const root = document.documentElement;
     const wantsNative = material === "macos" && nativeMaterialAvailable();
     let cancelled = false;
-    const show = (value: WindowMaterial) => {
-      if (value === "solid") root.removeAttribute("data-glass");
-      else root.setAttribute("data-glass", value);
-    };
     if (!wantsNative) {
-      show(material === "macos" ? "solid" : material);
+      setShown(material === "macos" ? "solid" : material);
       if (nativeApplied) {
         nativeApplied = false;
         void setNativeVibrancy(false).catch(() => undefined);
@@ -201,11 +287,11 @@ export function WindowMaterialMount() {
         }
         if (!applied) throw new Error("unsupported");
         nativeApplied = true;
-        show("macos");
+        setShown("macos");
       })
       .catch(() => {
         if (cancelled) return;
-        show("solid");
+        setShown("solid");
         useMaterialStore.setState({ nativeFailed: true });
       });
     return () => {

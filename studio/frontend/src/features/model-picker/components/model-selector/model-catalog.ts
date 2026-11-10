@@ -15,7 +15,7 @@ import {
   type GgufFitClass,
   type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
-  classifyGgufFitWithLookupTables,
+  classifyVariantFitOnCard,
   ggufVariantFitSizeBytes,
 } from "../../../../lib/gguf-fit.ts";
 import {
@@ -1348,11 +1348,12 @@ export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   variants: readonly T[],
   fitOf: (sizeBytes: number) => GgufFitClass,
   preferred: T | null = null,
+  gpuGb = 0,
 ): T | null {
   // Judged on the download footprint, which includes companion GGUFs (mmproj, drafter).
   // A `streamed` quant (tables left on disk) runs but never outranks one that fits fully resident.
   const fitOfVariant = (variant: T) =>
-    classifyGgufFitWithLookupTables(fitOf, variant);
+    classifyVariantFitOnCard(fitOf, variant, gpuGb);
   // Zero size means unknown (old backend or stat error) and must not compete as comfortable.
   const sized = variants.filter((variant) => ggufVariantFitSizeBytes(variant) > 0);
   if (sized.length === 0) return null;
@@ -1388,6 +1389,7 @@ export interface QuantVariant {
   size_bytes: number;
   downloaded?: boolean;
   lookup_table_bytes?: number;
+  estimated_resident_gb?: number | null;
 }
 
 /** The quant a bare group/repo click loads: largest downloaded non-OOM quant, else the repo default
@@ -1401,9 +1403,14 @@ export function pickDefaultQuant(
   const anyBudget = (budget.gpuGb || 0) > 0 || (budget.systemRamGb || 0) > 0;
   const runs = (v: QuantVariant) =>
     ggufFitRuns(
-      classifyGgufFitWithLookupTables(
+      classifyVariantFitOnCard(
         (bytes) => classifyGgufFit(bytes, budget),
-        { size_bytes: v.size_bytes, lookup_table_bytes: v.lookup_table_bytes },
+        {
+          size_bytes: v.size_bytes,
+          lookup_table_bytes: v.lookup_table_bytes,
+          estimated_resident_gb: v.estimated_resident_gb,
+        },
+        budget.gpuGb || 0,
       ),
     );
   const downloadedFitting = variants

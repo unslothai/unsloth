@@ -1529,6 +1529,22 @@ def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
         return DEVICE is not None and DETECTION_COMPLETE.is_set() and not CHAT_ONLY
 
 
+def _cuda_device_names() -> list:
+    from utils.hardware import nvidia
+
+    info = nvidia.cuda_device_info_or_torch()
+    if not info:
+        raise RuntimeError("the CUDA driver did not list the devices")
+    return [device[3] if device is not None else None for device in info]
+
+
+def _cuda_device0_name() -> str:
+    name = _cuda_device_names()[0]
+    if name is None:
+        raise RuntimeError("CUDA device 0 did not answer the driver query")
+    return name
+
+
 def _print_cuda_device_list(is_rocm: bool) -> None:
     """List every visible CUDA/ROCm GPU with its index at startup: the "Hardware detected" banner names only device 0, hiding the other cards. Indices are CUDA ordinals, matching `nvidia-smi -L` when no mask is set. CUDA_DEVICE_ORDER governs only CUDA, so it is shown for CUDA but not ROCm. Purely informational and never raises."""
     try:
@@ -1543,9 +1559,19 @@ def _print_cuda_device_list(is_rocm: bool) -> None:
             order = os.environ.get("CUDA_DEVICE_ORDER", "default")
             header = f"CUDA devices ({count}, CUDA_DEVICE_ORDER={order}):"
         lines = [header]
+        names = None
+        if not is_rocm:
+            try:
+                names = _cuda_device_names()
+            except Exception as e:
+                logger.debug("CUDA device name probe failed: %s", e)
+                names = []
         for i in range(count):
             try:
-                name = torch.cuda.get_device_properties(i).name
+                if names is not None:
+                    name = names[i] if i < len(names) and names[i] is not None else "<unavailable>"
+                else:
+                    name = torch.cuda.get_device_properties(i).name
             except Exception as e:
                 logger.debug("CUDA device %d property probe failed: %s", i, e)
                 name = "<unavailable>"
@@ -1748,8 +1774,14 @@ def _detect_hardware_locked() -> DeviceType:
         if not cuda_unavailable:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
+            # AMD SDK wheels omit torch.version.hip; ROCm label uses __version__; DEVICE stays CUDA
+            _hip_ver = getattr(torch.version, "hip", None)
+            _is_rocm = _hip_ver is not None or "rocm" in torch.__version__.lower()
             try:
-                device_name = torch.cuda.get_device_properties(0).name
+                # Not get_device_properties for NVIDIA: it initialises CUDA in the server.
+                device_name = (
+                    torch.cuda.get_device_properties(0).name if _is_rocm else _cuda_device0_name()
+                )
             except Exception as e:
                 # failed CUDA init can make later PyTorch calls segfault, so log the cause
                 from utils.allocator_conf import ALLOCATOR_CONF_ENV_VARS
@@ -1764,9 +1796,7 @@ def _detect_hardware_locked() -> DeviceType:
                 )
                 device_name = "<unavailable>"
 
-            # AMD SDK wheels omit torch.version.hip; ROCm label uses __version__; DEVICE stays CUDA
-            _hip_ver = getattr(torch.version, "hip", None)
-            if _hip_ver is not None or "rocm" in torch.__version__.lower():
+            if _is_rocm:
                 IS_ROCM = True
                 _configure_rocm_miopen(torch)
                 _hip_label = _hip_ver or torch.__version__
@@ -1994,9 +2024,8 @@ def _amd_permission_hint_for_mismatch(
     detail: Optional[str], vendors: "Optional[set[str]]" = None
 ) -> tuple[Optional[str], bool]:
     """``(node_hint, wheel_targets_amd)`` for a torch mismatch: the closed AMD device node sentence when it applies, and whether the wheel is a ROCm one it fully explains."""
-    # No reinstall changes group membership (#10466), so a closed node is not a mismatch.
-    # Recording AMD is necessary but not sufficient: a hybrid host on CUDA torch records
-    # both vendors, and there the verdict is about the NVIDIA card.
+    # No reinstall changes group membership (issue 10466), so a closed node is not a mismatch;
+    # recording AMD is necessary, not sufficient, as a hybrid CUDA host records both vendors.
     if vendors is None:
         vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
     # Worth MENTIONING is about the hardware; REPLACES the reinstall advice is about the
@@ -2136,8 +2165,7 @@ def export_capability() -> dict:
     # get_device() ran detect_hardware(), so IS_ROCM (hip field OR "rocm" tag) is settled.
     _windows_rocm = sys.platform == "win32" and IS_ROCM
     try:
-        # Metadata only: a torchao below 0.15 (older torch <= 2.8 installs) hides the formats
-        # everywhere, since transformers' TorchAoConfig refuses it.
+        # Metadata only: torchao < 0.15 hides the formats everywhere; TorchAoConfig refuses it.
         from core._torchao_stub import torchao_export_loadable
         torchao_export_supported = torchao_export_loadable()
     except Exception:
@@ -2457,10 +2485,8 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
 
 
 def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
-    """Physical indices of NVIDIA cards with MIG instances or MIG mode on (an instance-less one has no
-    CUDA device, so its row is no ordinal either), or None when discovery is unknown (a listing failed or
-    came back empty, unlike a confirmed set with no MIG card). Shares nvidia's caches, so a failed
-    listing backs off instead of re-running nvidia-smi per call."""
+    """Physical indices of NVIDIA cards with MIG instances or MIG mode on, None when discovery is
+    unknown (failed or empty listing); shares nvidia's caches so failures back off."""
     try:
         from . import nvidia
 
@@ -3115,10 +3141,42 @@ def _cuda_props_are_integrated(props: Any, backend: Optional[str] = "cuda") -> b
 
 
 def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any]]:
-    """Per-GPU name and total VRAM only, without creating a driver context: get_device_properties is answered from the driver's device list, while mem_get_info attaches a primary context worth ~612 MiB the process never gives back, and a telemetry poll must not be what pins that, so callers wanting live occupancy go to _torch_get_per_device_info instead. props.total_memory equals mem_get_info's total everywhere except a ROCm APU (see _rocm_props_total_is_carve_out), and used_gb is always None ("telemetry unavailable")."""
+    """Per-GPU name and total VRAM only, without creating a driver context: NVIDIA from the driver API (nvidia.cuda_device_info_or_torch), ROCm / XPU from get_device_properties, while mem_get_info attaches a primary context worth ~612 MiB the process never gives back, and a telemetry poll must not be what pins that, so callers wanting live occupancy go to _torch_get_per_device_info instead. props.total_memory equals mem_get_info's total everywhere except a ROCm APU (see _rocm_props_total_is_carve_out), and used_gb is always None ("telemetry unavailable")."""
     mod, backend = _torch_get_device_module()
     if mod is None:
         return []
+
+    torch_mod = sys.modules.get("torch")
+    if (
+        backend == "cuda"
+        and mod is getattr(torch_mod, "cuda", None)
+        and not IS_ROCM
+        and not getattr(getattr(torch_mod, "version", None), "hip", None)
+    ):
+        from utils.hardware import nvidia
+
+        info = nvidia.cuda_device_info_or_torch(torch_mod)
+        nvidia_devices = []
+        for ordinal, phys_idx in enumerate(device_indices):
+            device = info[ordinal] if info is not None and ordinal < len(info) else None
+            if device is None:
+                logger.debug("driver inventory probe got no answer for ordinal %d", ordinal)
+                continue
+            nvidia_devices.append(
+                {
+                    "index": phys_idx,
+                    "visible_ordinal": ordinal,
+                    "name": device[3],
+                    "total_gb": round(device[2] / (1024**3), 2),
+                    "used_gb": None,
+                    "shared_memory": False,
+                    "shared_memory_host_backed_gb": None,
+                    "_rocm_known_unified": False,
+                    "_rocm_gfx": "",
+                    "_cuda_integrated": bool(device[1]),
+                }
+            )
+        return nvidia_devices
 
     devices = []
     for ordinal, phys_idx in enumerate(device_indices):
@@ -4932,8 +4990,7 @@ def _cgroup_available_memory_gb() -> Optional[float]:
 
 
 def _host_memory_used_gb() -> Optional[float]:
-    """Host memory in use, or None. On one shared pool this is not an approximation of
-    the GPU's used half, it is the same measurement."""
+    """Host memory in use, or None; on a shared pool it is the GPU's used figure exactly."""
     try:
         import psutil
         vm = psutil.virtual_memory()
@@ -6350,8 +6407,7 @@ def estimate_required_model_memory_gb(
                     vram_config.optimizer,
                 )
                 breakdown.gradients += compute_gradient_bytes(extra_params)
-        # Text-diffusion objectives that run [noisy ; clean] or a second self-conditioning pass hold
-        # about twice an autoregressive model's activations.
+        # Text diffusion on [noisy ; clean] or self-conditioning holds about 2x AR activations.
         from utils.models.diffusion_lm import ACTIVATION_FACTOR, diffusion_lm_profile
 
         diffusion_profile = diffusion_lm_profile(
@@ -6688,9 +6744,8 @@ def auto_select_gpu_ids(
     elif parent_visible_spec.get("index_kind") != "cuda_device" and _mask_names_cuda_ordinals(
         parent_visible_spec
     ):
-        # The display keeps the CLI rows; ranking needs the cards the worker will get. Torch already
-        # reports a MIG slice's own memory, and these rows carry mask ids, not the physical rows the
-        # MIG correction keys on, so it must not run on them.
+        # Display keeps CLI rows; ranking needs the worker's cards. These rows carry mask ids, not
+        # the physical rows the MIG correction keys on, so it must not run on them.
         utilization = {
             "mig_corrected": True,
             "devices": [
@@ -6868,9 +6923,8 @@ def prepare_gpu_selection(
 
 
 def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    """Replace a MIG card's whole-card nvidia-smi memory with the slice CUDA exposes
-    for it (NVML), or drop the reading when no slice reading exists so the ranking
-    skips it. Devices on cards without MIG instances are returned unchanged."""
+    """Swaps a MIG card's whole-card nvidia-smi memory for the slice CUDA exposes (NVML), or drops
+    the reading when none exists so ranking skips it; other devices pass unchanged."""
     if IS_ROCM or not devices or get_device() != DeviceType.CUDA:
         return devices
     try:
@@ -7067,10 +7121,9 @@ def _vulkan_inference_device(row: Dict[str, Any], apply_igpu_host_reserve_mib) -
 def get_mixed_vulkan_inference_gpu_info(
     cuda_info: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """``cuda_info`` plus the Vulkan devices a llama.cpp build shipping both CUDA and Vulkan also
-    runs on (an AMD card beside NVIDIA ones), or None when it has none. llama.cpp skips a Vulkan
-    device whose PCI id a CUDA one already holds; a probe without ids falls back to the name.
-    Without a CUDA torch, ``cuda_info`` is not CUDA's and the nvidia-smi rows stand in for it."""
+    """Returns cuda_info plus the Vulkan devices a CUDA+Vulkan llama.cpp build also runs on, or
+    None; llama.cpp skips a Vulkan device whose PCI id a CUDA device holds; with no ids it falls
+    back to the name; without CUDA torch, nvidia-smi rows stand in for cuda_info."""
     try:
         from core.inference.llama_cpp import (
             LlamaCppBackend,

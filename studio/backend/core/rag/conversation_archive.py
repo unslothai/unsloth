@@ -32,16 +32,14 @@ logger = logging.getLogger(__name__)
 _ARCHIVE_EMBED_BATCH = 64
 # Per call; the rest is archived by later requests, which re-evict the same turns.
 _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
-# Background pre-embedding runs only while no inference runs (tool calls, between turns); small batches so
-# a new generation waits at most one of them.
+# Background embedding waits for idle inference; small batches bound a new generation's wait.
 _PREWARM_BATCH = 16
 _PREWARM_MAX_CHUNKS = 2048
 _VECTOR_CACHE_MAX = 8192
 _NOTED_MAX = 8
 _PAUSE_JOIN_S = 10.0
 
-# Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
-# user-authored text.
+# Skip system roles: an archived prompt quoted back would read as user-authored text.
 _SKIP_ROLES = frozenset({"system", "developer"})
 
 # Auto-inject/recall call ids: their results are retrieved passages, so archiving them would self-feed the index.
@@ -183,9 +181,7 @@ def _probe_text(message: dict) -> str:
         results.clear()
 
     def rendered(value) -> list[str]:
-        """A structured value as the strings a wire-format copy of it could look like. The store
-        keeps tool arguments as an object; the archived copy is the model's raw string, with its
-        own spacing. This is a haystack, so offering both is free."""
+        """Spellings a wire-format copy of a structured value could take; the store keeps an object."""
         if isinstance(value, str):
             return [value]
         try:
@@ -236,9 +232,7 @@ def _is_injected(message: dict) -> bool:
 
 
 def render_turn(group: list[dict]) -> str:
-    """Render one evicted turn group as the text that gets indexed and quoted back. Both sides go in
-    one document on purpose, so retrieval returns the question with its answer rather than a
-    floating fragment."""
+    """One indexed document per evicted turn group, question and answer together for retrieval."""
     lines: list[str] = []
     for message in group:
         role = str(message.get("role") or "")
@@ -452,9 +446,8 @@ def _embed_pending_chunks(
     cached: Optional[list] = None,
     max_encode: Optional[int] = None,
 ):
-    """``(vectors, identity, cancelled, error)``, partial after a cancel or a late failure:
-    write only groups ``vectors`` fully covers. A failing first batch raises. Only cache misses
-    are encoded."""
+    """Returns (vectors, identity, cancelled, error), partial after a cancel or late failure; a
+    failing first batch raises; only cache misses are encoded."""
     # `cached` is the lookup the caller's cap was computed from; a second lookup could see a later eviction.
     vectors = list(cached) if cached is not None else _cached_vectors(expected_identity, texts)
     identity = expected_identity if any(v is not None for v in vectors) else None
@@ -632,8 +625,7 @@ def _gap_closed() -> bool:
 
 
 def _requeue(jobs: list) -> None:
-    """Put back what a closed gap interrupted, behind nothing newer: a fresh note for the same chat wins, and a
-    stopped request stays dropped."""
+    """Requeue interrupted jobs; a newer note for the chat wins, and stopped ones stay gone."""
     with _gap:
         kept = {
             (job[0].account_id, job[1]): job
@@ -772,18 +764,8 @@ def archive_turns(
     branch: Optional[list[dict]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> int:
-    """Index the evicted turns for ``thread_id``. Returns how many were newly written.
-
-    Idempotent by content hash: the same turns are evicted again on every later request in the
-    session, so re-archiving has to be free. After the first write each repeat costs one indexed
-    SELECT and writes nothing.
-
-    ``live`` is the fitted conversation, i.e. what the model can still see. It bounds how many
-    copies of a repeated turn the archive is allowed to hold right now; see ``_write_budget``.
-    Optional, and omitting it keeps the previous behaviour.
-
-    ``cancel_check`` (Chat Stop) is polled before chunking and between embedding batches.
-    """
+    """Indexes evicted turns for thread_id and returns how many were newly written; idempotent by
+    content hash; live bounds repeat copies; cancel_check is polled."""
     if not thread_id or not evicted or not enabled():
         return 0
     # Incognito and API-only threads are skipped (see can_archive); compacted chats are always persisted.
@@ -804,8 +786,7 @@ def _archive_turns(
     branch: Optional[list[dict]],
     cancel_check: Optional[Callable[[], bool]],
 ) -> int:
-    # The evictor's own grouper, so an archived unit is exactly the unit the window drops. Imported lazily because the
-    # inference layer imports this module.
+    # Same grouper as the evictor so units match the window; lazy import avoids a cycle.
     from core.inference.context_window import group_turns
 
     # Track the turn's span separately: _archivable may drop messages, and the branch check needs it.
@@ -823,6 +804,10 @@ def _archive_turns(
     positions = _transcript_positions(thread_id, branch or live)
     live_positions = _live_positions(live)
     written = 0
+    # Only an embedder failure falls back to keyword copies; a failing store would refuse those too.
+    dense_failed = False
+    embedded = False
+    embed_error = None
     conn = None
     try:
         if cancel_check is not None and cancel_check():
@@ -922,8 +907,7 @@ def _archive_turns(
             len(texts),
             _ARCHIVE_EMBED_BATCH,
         )
-        # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
-        # with a space they were never in.
+        # Identity from the encode; a concurrent embedder swap would mislabel them.
         vectors, identity, cancelled, embed_error = _embed_pending_chunks(
             texts,
             model_name = model,
@@ -942,6 +926,7 @@ def _archive_turns(
         )
         if not vectors:
             return 0
+        embedded = True
 
         # Only fully embedded groups; a partial one is left for the next request.
         complete: list = []
@@ -1058,10 +1043,12 @@ def _archive_turns(
             raise embed_error
     except embeddings.EmbeddingModelDownloadRequiredError as exc:
         globals()["_INGEST_FAILED"] = True
+        dense_failed = True
         _log_embedder_pending(model, exc)
-    except Exception:
+    except Exception as exc:
         # Failing to archive must not raise; what was written before the failure stays searchable.
         globals()["_INGEST_FAILED"] = True
+        dense_failed = not embedded or exc is embed_error
         logger.warning("conversation_archive.ingest_failed thread_id=%s", thread_id, exc_info = True)
     finally:
         if conn is not None:
@@ -1070,12 +1057,115 @@ def _archive_turns(
             except Exception:
                 pass
 
+    if dense_failed and not (cancel_check is not None and cancel_check()):
+        # Without any copy there is no archive, so search_conversation is never offered (#16706).
+        # degraded() stays set: dense recall is still down.
+        written += _archive_turns_lexically(
+            thread_id, scope, groups, positions, live_positions, cancel_check
+        )
+
     # Re-check after commit: a concurrent delete sweep could strand deleted content. Delete drops rows first, sweeps archives last, so either order converges.
     if written and not can_archive(thread_id):
         logger.info("conversation_archive.thread_deleted_mid_ingest thread_id=%s", thread_id)
         delete_for_thread(thread_id)
         return 0
     return written
+
+
+# Matches no embedder, so `_stale_document` re-embeds the copy in place once one works.
+LEXICAL_ONLY_IDENTITY = rag_db.VECTORS_DROPPED + "none"
+
+
+def _rough_token_count(text: str) -> int:
+    return max(1, len(text or "") // 4)
+
+
+@_writes
+def _archive_turns_lexically(
+    thread_id: str,
+    scope: str,
+    groups: list,
+    positions: Optional[list[list[str]]],
+    live_positions: Optional[list[list[str]]],
+    cancel_check: Optional[Callable[[], bool]],
+) -> int:
+    """Keyword-only copies of evicted turns, one per evicted occurrence (``_write_budget``); returns how many were written."""
+    written = 0
+    conn = None
+    try:
+        conn = rag_db.get_connection()
+        for group, span in groups:
+            if cancel_check is not None and cancel_check():
+                break
+            text = render_turn(group)
+            if not text:
+                continue
+            digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
+            seats = _occurrences(positions, group)
+            budget = _write_budget(positions, seats, live_positions, group)
+            if len(store.documents_by_hash(conn, scope, digest)) >= budget:
+                # As the dense pre-check: re-seat, retire surplus copies after a rewind, widen the span.
+                _restamp(conn, scope, digest, seats[:budget], commit = True)
+                _widen_span(conn, scope, digest, span)
+                continue
+            chunks = _turn_chunks(text, max(1, int(config.CHUNK_TOKENS)), _rough_token_count)
+            if not chunks:
+                continue
+            roles = " + ".join(
+                dict.fromkeys(str(message.get("role") or "message") for message in group)
+            )
+            _write_lock = False
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                _write_lock = True
+            except Exception:
+                logger.debug("conversation_archive.no_write_lock", exc_info = True)
+            # Re-counted under the lock: a concurrent compaction may have written some.
+            have = len(store.documents_by_hash(conn, scope, digest))
+            if have >= budget:
+                if _write_lock:
+                    conn.rollback()
+                continue
+            try:
+                for n in range(have, budget):
+                    document_id = store.create_document(
+                        conn,
+                        scope = scope,
+                        thread_id = thread_id,
+                        filename = f"earlier turn ({roles})",
+                        sha256 = digest,
+                        status = "completed",
+                        embedding_model = LEXICAL_ONLY_IDENTITY,
+                        archive_messages = span,
+                        archive_ordinal = seats[n]
+                        if n < len(seats)
+                        else _fallback_ordinal(conn, scope, positions),
+                        commit = False,
+                    )
+                    store.add_lexical_chunks(conn, scope, document_id, chunks)
+            except Exception:
+                conn.rollback()
+                raise
+            conn.commit()
+            written += budget - have
+        if written:
+            logger.info(
+                "conversation_archive.archived_without_vectors thread_id=%s turns=%s",
+                thread_id,
+                written,
+            )
+        return written
+    except Exception:
+        logger.warning(
+            "conversation_archive.lexical_ingest_failed thread_id=%s", thread_id, exc_info = True
+        )
+        return written
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # A Settings pick whose download has not finished is not a fault; logged once, not per compaction.
@@ -1298,8 +1388,7 @@ def _active_chain(
 _EMPTY_TOOL_RESULT = '{"result":""}'
 
 
-# Mirrors SERVER_SIDE_BUILTIN_TOOL_NAMES (chat-adapter.ts); name alone never decides, as the frontend also
-# requires.
+# Mirrors SERVER_SIDE_BUILTIN_TOOL_NAMES (chat-adapter.ts); the name alone never decides.
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
 # `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._FILE_SENTINEL_TOOLS`. Only these wrap.
 _SANDBOX_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
@@ -1397,9 +1486,7 @@ def _sanitised_assistant_text(text: str) -> str:
 
 
 def _sanitised_assistant_content(content):
-    """`content` with every part `_probe_text` reads as text sanitised, others untouched. Keyed on
-    the `text` field rather than on the type, as `_probe_text` is, so a part shape it renders
-    cannot slip past this one."""
+    """Sanitises each part `_probe_text` reads as text, keyed on the text field so no shape slips past."""
     if isinstance(content, str):
         return _sanitised_assistant_text(content)
     if not isinstance(content, list):
@@ -1640,16 +1727,8 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     calls = [bool(message.get("tool_calls")) for message in group]
 
     def _same(stored: str, live: str, is_call: bool) -> bool:
-        # A tool call is compared as needle in haystack, never for equality: the store keeps arguments as an OBJECT
-        # and the request carries the model's raw string, so `_probe_text` offers both JSON spellings for the stored
-        # copy and one for the live one. Every other message is compared exactly.
-        # In two pieces when the whole needle does not fit, since the second spelling is inserted BETWEEN the
-        # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
-        # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
-        # the one insertion `_probe_text` makes.
-        # Space offsets keep split(" ") semantics. Head presence only falls and tail presence only rises as the cut
-        # moves right, so both bounds are binary-searched; the ordered match is not monotone, so every cut between
-        # them is still checked against the earliest head and the latest tail.
+        # Tool calls are matched as a needle in a haystack, never by equality; other messages
+        # compare exactly; one split point is tolerated.
         if not is_call:
             return stored == live
 
@@ -1940,9 +2019,7 @@ def branch_message_texts(
 
 
 def message_text(content) -> str:
-    """One stored message's content, normalised the way the branch check normalises it. Exposed so
-    the rolling window compares stored messages on exactly these terms rather than inventing a
-    second notion of "same text"."""
+    """Normalises stored content the way the branch check does, so the rolling window agrees with it."""
     return _normalise(_probe_text({"content": content}))
 
 

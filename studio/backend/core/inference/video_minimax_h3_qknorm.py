@@ -51,7 +51,7 @@ def _kernel() -> Any:
     _mul = libdevice.mul_rn
     _add = libdevice.add_rn
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_rows"])
     def _qk_norm_rope_kernel(
         x_ptr,
         w_ptr,

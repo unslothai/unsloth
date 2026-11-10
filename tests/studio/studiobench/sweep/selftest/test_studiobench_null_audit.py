@@ -585,8 +585,7 @@ def missed_slot_payload(tmp_path: Path, name: str, action: str, reps: tuple[str,
 
 
 def test_one_arm_missing_a_slot_in_every_repetition_is_still_not_a_build_difference(tmp_path):
-    # Slot misses are correlated through the runner, so corroboration cannot separate them from a
-    # build difference; `slot_missed` can.
+    # Slot misses are correlated, so corroboration cannot separate them; `slot_missed` can.
     path = missed_slot_payload(tmp_path, "slow", "settings", ("rep0", "rep1"))
     assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
 
@@ -1103,8 +1102,7 @@ def test_a_missing_composer_is_not_exempt_just_because_send_turn_can_be_queued(t
     assert U.report([gone], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
 
 
-# In-flight pairs are NOT_COMPARABLE; `SETTLED_MATCH` counts them as observations only once
-# scaffold, overlays, message set and every settled row agree.
+# In-flight pairs are NOT_COMPARABLE; `SETTLED_MATCH` counts them only once all parts agree.
 
 
 def streaming_pair_rows(

@@ -7,6 +7,11 @@ import type {
   ApiMonitorEntry,
   ApiMonitorResponse,
 } from "@/features/chat/types/api";
+import {
+  ANIMATION_HOLD_MS,
+  holdGlassMotion,
+  SETTLE_MS,
+} from "@/features/chat-background/glass-motion";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 import { useMonitorFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { useShortcut } from "@/features/settings/hooks/use-shortcut";
@@ -389,9 +394,13 @@ function ApiMonitorPanel({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
+        // A script-driven fade: without this its glass blur is computed again on every frame of it.
+        onAnimationStart={() => holdGlassMotion(monitorRef.current, ANIMATION_HOLD_MS)}
+        onAnimationComplete={() => holdGlassMotion(monitorRef.current, SETTLE_MS)}
         /* Panel language from the sidebar menu: soft surface, menu corner, heading font. */
         className={cn(
-          "menu-soft-surface pointer-events-auto absolute flex max-h-full w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border-0 p-2.5 font-heading ring-0",
+          // transition-none: see floating-monitor.tsx (a drop must not flash at the start spot).
+          "menu-soft-surface pointer-events-auto absolute flex max-h-full transition-none w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border-0 p-2.5 font-heading ring-0",
           // The CSS corner until it has been measured, so the first paint
           // is the corner it has always opened in rather than the top left.
           layout ? "top-0 left-0 resize" : "bottom-0 right-0",

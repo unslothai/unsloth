@@ -318,6 +318,49 @@ function redundantTorchBinFiles(names: string[]): Set<string> {
   return out;
 }
 
+// Mirrors pipeline_pickle_files (diffusers_safetensors.py, via diffusers_pickle_files in snapshot_filters.py):
+// a diffusers pipeline repo skips a .pt / .pth / .ckpt / .pkl inside a component folder or beside its same-stem
+// .safetensors twin (a root pickle with no twin is the only copy and stays), and a .bin beside safetensors weights.
+const PIPELINE_MANIFESTS = ["model_index.json", "modular_model_index.json"];
+const NEVER_READ_PICKLE_RE = /\.(pt|pth|ckpt|pkl|pickle)$/i;
+// Mirrors _MODEL_SAFETENSORS: only a component's own non-variant weights make its .bin redundant.
+const MODEL_SAFETENSORS_RE =
+  /^(diffusion_pytorch_model|model)(-\d+-of-\d+)?\.safetensors(\.index\.json)?$/;
+
+function folderOf(name: string): string {
+  const slash = name.lastIndexOf("/");
+  return slash >= 0 ? name.slice(0, slash) : "";
+}
+
+function diffusersPickleFiles(names: string[]): Set<string> {
+  const out = new Set<string>();
+  if (!names.some((n) => PIPELINE_MANIFESTS.includes(n))) return out;
+  const safetensorsFolders = new Set(
+    names
+      .filter((n) => MODEL_SAFETENSORS_RE.test(basename(n)))
+      .map(folderOf),
+  );
+  const safetensorsStems = new Set(
+    names
+      .filter((n) => n.toLowerCase().endsWith(".safetensors"))
+      .map((n) => n.slice(0, -".safetensors".length).toLowerCase()),
+  );
+  for (const n of names) {
+    const lower = n.toLowerCase();
+    if (NEVER_READ_PICKLE_RE.test(lower)) {
+      if (folderOf(n) !== "" || safetensorsStems.has(lower.slice(0, lower.lastIndexOf(".")))) {
+        out.add(n);
+      }
+    } else if (
+      (lower.endsWith(".bin") || lower.endsWith(".bin.index.json")) &&
+      safetensorsFolders.has(folderOf(n))
+    ) {
+      out.add(n);
+    }
+  }
+  return out;
+}
+
 // Mirrors PRECISION_FOLDER_SOURCE and precision_variant_subfolders in snapshot_filters.py.
 const PRECISION_FOLDER_SOURCE =
   "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)";
@@ -380,6 +423,7 @@ function isSnapshotIgnored(
   skipDuplicateFormats: boolean,
   redundantBins: Set<string>,
   precisionFolders: Set<string> = new Set(),
+  pipelinePickles: Set<string> = new Set(),
 ): boolean {
   const lower = filename.toLowerCase();
   const folder = filename.includes("/") ? filename.slice(0, filename.indexOf("/")) : "";
@@ -390,6 +434,7 @@ function isSnapshotIgnored(
     lower.startsWith("openvino/") ||
     lower.startsWith("mlx/") ||
     lower.endsWith(".bin.index.json.bak") ||
+    pipelinePickles.has(filename) ||
     (skipConsolidated && lower.startsWith("consolidated")) ||
     (skipDuplicateFormats &&
       (DUPLICATE_WEIGHT_FORMAT_RE.test(filename) || redundantBins.has(filename) ||
@@ -433,6 +478,7 @@ export function fetchModelSize(
       const precisionFolders = names.includes("config.json")
         ? precisionVariantFolders(names)
         : new Set<string>();
+      const pipelinePickles = diffusersPickleFiles(names);
       let total = 0;
       let weights = 0;
       for (const s of siblings) {
@@ -446,6 +492,7 @@ export function fetchModelSize(
             skipDuplicateFormats,
             redundantBins,
             precisionFolders,
+            pipelinePickles,
           )
         ) {
           continue;

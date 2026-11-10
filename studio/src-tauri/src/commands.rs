@@ -343,18 +343,27 @@ pub async fn start_managed_server(
     Ok(())
 }
 
-/// Stop the current desktop-owned backend if this app can safely control it.
+/// Stop the backend this app owns or is attached to, if it can safely control it.
 #[tauri::command]
 pub async fn stop_server(
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
+    port: Option<u16>,
 ) -> Result<(), String> {
     info!("stop_server command called");
     let state = state.inner().clone();
     let shutdown = shutdown.inner().clone();
     let diagnostics = diagnostics.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let attached_port = state
+            .lock()
+            .ok()
+            .filter(|proc| !proc.has_owned_backend())
+            .and_then(|proc| port.or(proc.port));
+        if let Some(port) = attached_port {
+            process::stop_attached_backend(port)?;
+        }
         process::stop_backend(&state, &shutdown, Some(&diagnostics))
     })
     .await

@@ -10,8 +10,7 @@ import json
 import os
 import sys
 
-# Code-interpreter convention prefixes. Remapping is gated on the prefix being ABSENT (see _remap) so a genuine host
-# mount / user dir is never shadowed.
+# Prefixes remapped only when ABSENT (see _remap), so a real host mount is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # /tmp exists on the host; separate only to note that. The absence gate applies alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
@@ -228,8 +227,7 @@ def _install():
     # Path.touch() and other low-level opens call os.open directly, so patch it too.
     os.open = _os_open
     os.makedirs = _makedirs
-    # Path.mkdir(parents=True) calls os.mkdir per component, so patch os.mkdir; patch Path.mkdir itself too so
-    # exist_ok/parents land on the mapped path.
+    # Path.mkdir calls os.mkdir per part; patch both, since exist_ok/parents need Path.mkdir.
     os.mkdir = _mkdir
     pathlib.Path.mkdir = _path_mkdir
 
@@ -390,10 +388,8 @@ if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.me
     sys.meta_path.append(_HostPackagesFinder(_host_packages))
 
 
-# Helper modules the approved script imports by name come from the chat folder, after everything
-# else, so they never shadow anything. Served by a last-resort finder for exactly those names rather
-# than sys.path: site imports `usercustomize` after this file, and a library probing an optional
-# import must not find a module an earlier sandboxed call planted there.
+# Helpers come from the chat folder via a last-resort finder, not sys.path, since site imports
+# usercustomize after this file and an earlier sandboxed call must not plant a module there.
 class _HostWorkdirFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
@@ -439,3 +435,69 @@ if (
     and not any(isinstance(f, _HostWorkdirFinder) for f in sys.meta_path)
 ):
     sys.meta_path.append(_HostWorkdirFinder(_host_workdir, _host_modules))
+
+
+# The static host check cannot see DNS aliases or redirects; every connect does see the final address.
+_METADATA_NAMES = frozenset(
+    (
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.tencentyun.com",
+        "instance-data.ec2.internal",
+    )
+)
+_METADATA_ADDRS = frozenset(("fd00:ec2::254", "fd20:ce::254", "100.100.100.200", "100.100.100.110"))
+
+
+def _metadata_address(host):
+    import ipaddress
+
+    if not isinstance(host, str):
+        return False
+    host = host.split("%", 1)[0].rstrip(".").lower()
+    if host in _METADATA_NAMES:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.version == 6:
+        ip = ip.ipv4_mapped or ip.sixtofour or ip
+    if ip.version == 4 and ip in ipaddress.ip_network("169.254.0.0/16"):
+        return True
+    return ip.compressed in _METADATA_ADDRS
+
+
+def _resolves_to_metadata(host):
+    import ipaddress
+    import socket
+
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return False
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return False
+    return any(_metadata_address(info[4][0]) for info in infos)
+
+
+def _metadata_connect_hook(event, args):
+    if event != "socket.connect":
+        return
+    address = args[1] if len(args) > 1 else None
+    if not (isinstance(address, tuple) and address and isinstance(address[0], str)):
+        return
+    # The event carries the caller's address, so a raw connect to a name is resolved here.
+    if _metadata_address(address[0]) or _resolves_to_metadata(address[0]):
+        raise PermissionError(f"Blocked: cloud-metadata host ({address[0]})")
+
+
+if os.environ.get("_UNSLOTH_SANDBOX_BLOCK_METADATA") == "1" and not getattr(
+    sys, "_unsloth_metadata_hook", False
+):
+    sys.addaudithook(_metadata_connect_hook)
+    sys._unsloth_metadata_hook = True
