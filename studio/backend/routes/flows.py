@@ -571,15 +571,19 @@ def get_asset(ref: str) -> Response:
     )
 
 
+_RUN_FIELDS = ("id", "flow_id", "status", "error", "outputs", "started_at", "finished_at")
+
+
+def _run_view(run: dict, *extra: str) -> dict:
+    return {k: run[k] for k in (*_RUN_FIELDS, *extra)}
+
+
 def _stored_snapshot(run_id: str) -> Optional[dict]:
     run = flows_db.get_run(run_id)
     if run is None:
         return None
     return {
-        "run": {
-            k: run[k]
-            for k in ("id", "flow_id", "status", "error", "outputs", "started_at", "finished_at")
-        },
+        "run": _run_view(run),
         "nodes": flows_db.node_results(run_id),
         "last_seq": run["last_seq"],
     }
@@ -922,24 +926,7 @@ async def start_run(request: Request, flow_id: str, body: RunBody) -> dict:
 @router.get("/{flow_id}/runs")
 def list_runs(flow_id: str) -> dict:
     runs = flows_db.list_runs(flow_id)
-    return {
-        "runs": [
-            {
-                k: r[k]
-                for k in (
-                    "id",
-                    "flow_id",
-                    "status",
-                    "error",
-                    "outputs",
-                    "started_at",
-                    "finished_at",
-                    "created_at",
-                )
-            }
-            for r in runs
-        ]
-    }
+    return {"runs": [_run_view(r, "created_at") for r in runs]}
 
 
 def _latest_outputs(flow_id: str) -> dict[str, dict]:

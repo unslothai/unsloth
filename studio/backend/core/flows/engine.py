@@ -703,7 +703,6 @@ class GpuLease:
         self._exclusive = False
         self._waiting = 0
         self._shared = 0
-        self._background = 0
         self._by_model: dict[Optional[str], list[int]] = {}
 
     def locked(self) -> bool:
@@ -725,9 +724,6 @@ class GpuLease:
         async with self._cond:
             self._exclusive = False
             self._cond.notify_all()
-
-    def exclusive(self) -> "GpuLease":
-        return self
 
     @contextlib.asynccontextmanager
     async def shared(
@@ -756,7 +752,6 @@ class GpuLease:
         async with self._cond:
             await self._cond.wait_for(admit)
             self._shared += 1
-            self._background += background
             held, held_bg = self._by_model.get(key, (0, 0))
             self._by_model[key] = [held + 1, held_bg + background]
         try:
@@ -764,7 +759,6 @@ class GpuLease:
         finally:
             async with self._cond:
                 self._shared -= 1
-                self._background -= background
                 counts = self._by_model[key]
                 counts[0] -= 1
                 counts[1] -= background
@@ -1832,9 +1826,7 @@ class FlowEngine:
         state.error = None
         inputs, skip = self._gather_inputs(rs, nid, env)
         if skip:
-            env.values[nid] = SKIPPED
-            rs.set_status(nid, "skipped", skip)
-            self._record(rs, nid, "skipped", None, None, iteration)
+            self._stop(rs, nid, env, iteration, "skipped", skip)
             return
         fired = (rs.options.get("params") or {}).get("__trigger")
         if (
@@ -1843,9 +1835,7 @@ class FlowEngine:
             and spec["type"] in TRIGGER_TYPES
             and nid not in fired
         ):
-            env.values[nid] = SKIPPED
-            rs.set_status(nid, "skipped", "Another trigger started this run")
-            self._record(rs, nid, "skipped", None, None, iteration)
+            self._stop(rs, nid, env, iteration, "skipped", "Another trigger started this run")
             return
         bound = {p["param"] for p in spec["inputs"] if p.get("param") and p["id"] in inputs}
         params = param_values(spec, node)
@@ -1883,33 +1873,19 @@ class FlowEngine:
             try:
                 await self._rounds(rs, nid, env, ctx, iteration)
             except (FlowCancelled, asyncio.CancelledError):
-                env.values[nid] = SKIPPED
-                rs.set_status(nid, "cancelled")
-                self._record(rs, nid, "cancelled", None, None, iteration)
+                self._stop(rs, nid, env, iteration, "cancelled")
             except Exception as exc:
-                env.values[nid] = SKIPPED
                 if rs.cancelled:
-                    rs.set_status(nid, "cancelled")
+                    self._stop(rs, nid, env, iteration, "cancelled")
                 else:
-                    if not isinstance(exc, FlowNodeError):
-                        logger.exception("flows: %s (%s) failed", nid, spec["type"])
-                    rs.node(nid).error = (
-                        str(exc)
-                        if isinstance(exc, FlowNodeError)
-                        else f"{spec['title']} failed: {exc}"
-                    )
-                    rs.set_status(nid, "failed")
-                self._record(rs, nid, rs.node(nid).status, None, rs.node(nid).error, iteration)
+                    self._stop(rs, nid, env, iteration, "failed", error = _failure(nid, spec, exc))
             return
 
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
         # Before the cache: a run that may not use a capability does not get another run's output of it.
         for cap, detail in capabilities.node_needs(spec, params):
             if refused := capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"]):
-                state.error = refused
-                env.values[nid] = SKIPPED
-                rs.set_status(nid, "failed")
-                self._record(rs, nid, "failed", None, refused, iteration)
+                self._stop(rs, nid, env, iteration, "failed", error = refused)
                 return
         if params.get(model_settings.USE_SAVED) and spec.get("model_kind"):
             await _apply_saved_settings(ctx, spec, params, bound)
@@ -1971,10 +1947,8 @@ class FlowEngine:
 
         handler = self._handlers().get(spec["type"])
         if handler is None:
-            state.error = f"{spec['title']} cannot run in this version of Unsloth Studio"
-            env.values[nid] = SKIPPED
-            rs.set_status(nid, "failed")
-            self._record(rs, nid, "failed", None, state.error, iteration)
+            missing = f"{spec['title']} cannot run in this version of Unsloth Studio"
+            self._stop(rs, nid, env, iteration, "failed", error = missing)
             return
         # A recipe on Chat's loaded model is keyed on the model it ran on, read while the GPU is still
         # held: the one read above, before the wait, may have been swapped by another GPU step since.
@@ -2038,25 +2012,15 @@ class FlowEngine:
                 rs.set_status(nid, "running")
                 outputs = await handler(ctx)
         except (FlowCancelled, asyncio.CancelledError):
-            env.values[nid] = SKIPPED
             rs.flush(nid)
-            rs.set_status(nid, "cancelled")
-            self._record(rs, nid, "cancelled", None, None, iteration)
+            self._stop(rs, nid, env, iteration, "cancelled")
             return
         except Exception as exc:
-            env.values[nid] = SKIPPED
             rs.flush(nid)
             if rs.cancelled:
-                rs.set_status(nid, "cancelled")
-                self._record(rs, nid, "cancelled", None, None, iteration)
-                return
-            if isinstance(exc, FlowNodeError):
-                state.error = str(exc)
+                self._stop(rs, nid, env, iteration, "cancelled")
             else:
-                logger.exception("flows: %s (%s) failed", nid, spec["type"])
-                state.error = f"{spec['title']} failed: {exc}"
-            rs.set_status(nid, "failed")
-            self._record(rs, nid, "failed", None, state.error, iteration)
+                self._stop(rs, nid, env, iteration, "failed", error = _failure(nid, spec, exc))
             return
         finally:
             rs.cancel_hooks.pop((nid, iteration), None)
@@ -2124,6 +2088,23 @@ class FlowEngine:
             rs.fresh.add(nid)
         rs.set_status(nid, status, message)
         self._record(rs, nid, status, outputs, None, iteration)
+
+    def _stop(
+        self,
+        rs: RunState,
+        nid: str,
+        env: Env,
+        iteration: Optional[tuple],
+        status: str,
+        message: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """The node ends without outputs: skipped, cancelled, or failed with ``error``."""
+        env.values[nid] = SKIPPED
+        if error is not None:
+            rs.node(nid).error = error
+        rs.set_status(nid, status, message)
+        self._record(rs, nid, status, None, error, iteration)
 
     def _record(
         self,
@@ -2695,31 +2676,20 @@ class FlowEngine:
                 if got is None:
                     return value
                 data, mime = got
-            refs[digest] = {
-                "id": f"sha256:{digest}",
-                "mime": mime,
-                "bytes": len(data),
-                "name": None,
-            }
-            embedded = {
+            refs[digest] = _asset_entry(digest, mime, data)
+            return {
                 **value,
                 "ref": f"sha256:{digest}",
                 "url": asset_store.url_for(digest),
                 "mime": mime,
             }
-            return embedded
         if value.get("kind") in ("table", "heatmap", "tensor") and isinstance(
             value.get("ref"), str
         ):
             digest = asset_store.parse_ref(value["ref"])
             got = await asyncio.to_thread(asset_store.read, digest) if digest else None
             if got is not None:
-                refs[digest] = {
-                    "id": f"sha256:{digest}",
-                    "mime": got[1],
-                    "bytes": len(got[0]),
-                    "name": None,
-                }
+                refs[digest] = _asset_entry(digest, got[1], got[0])
             return value
         return {k: await self._embed(rs, v, refs) for k, v in value.items()}
 
@@ -2732,6 +2702,17 @@ class FlowEngine:
         finished.sort(key = lambda r: r.finished_at or 0)
         for rs in finished[: len(finished) - FINISHED_RUNS_KEPT]:
             self.runs.pop(rs.id, None)
+
+
+def _asset_entry(digest: str, mime: str, data: bytes) -> dict:
+    return {"id": f"sha256:{digest}", "mime": mime, "bytes": len(data), "name": None}
+
+
+def _failure(nid: str, spec: dict, exc: Exception) -> str:
+    if isinstance(exc, FlowNodeError):
+        return str(exc)
+    logger.exception("flows: %s (%s) failed", nid, spec["type"])
+    return f"{spec['title']} failed: {exc}"
 
 
 async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[str]) -> None:

@@ -169,29 +169,6 @@ class MediaValue(_Strict):
     prompt: Optional[str] = None
 
 
-class DatasetValue(_Strict):
-    kind: Literal["dataset"] = "dataset"
-    source: Literal["hf", "recipe", "local"]
-    ref: str
-    rows: Optional[int] = None
-    columns: Optional[list[str]] = None
-    # Which block wrote a local upload, for its label: a recipe preview, a full recipe, Rows to Dataset.
-    made_by: Optional[Literal["preview", "recipe", "rows"]] = None
-
-
-class ModelValue(_Strict):
-    kind: Literal["model"] = "model"
-    model_kind: str
-    repo: str
-    variant: Optional[str] = None
-
-
-class CheckpointValue(_Strict):
-    kind: Literal["checkpoint"] = "checkpoint"
-    name: str
-    base_model: Optional[str] = None
-
-
 # Expressions: a JSON tree, evaluated by core/flows/expr.py and src/features/flows/expr.ts
 # Expr := null | bool | number | string | {"var": "name"} | {"op": OP, "args": [Expr, ...]} | {"list": [Expr...]}
 EXPR_OPS = (
@@ -347,15 +324,6 @@ EventType = Literal[
     "snapshot",  # data: full run state, sent first on (re)connect
     "heartbeat",
 ]
-
-
-class RunEvent(BaseModel):
-    seq: int
-    run_id: str
-    type: EventType
-    node_id: Optional[str] = None
-    ts: float
-    data: dict[str, Any] = Field(default_factory = dict)
 
 
 JsonValue = Union[None, bool, int, float, str, list, dict]
