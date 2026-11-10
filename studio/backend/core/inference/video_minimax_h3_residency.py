@@ -513,7 +513,7 @@ class H3Residency:
         # bytes of slabs the last ``apply`` compacted; a compaction that could not fit every slab retries next re-fit
         self.compacted_bytes = 0
         self.compact_pending = False
-        # video_minimax_h3_te.H3TeDeviceShare: the conditioner's share of what the budget leaves past every block
+        # video_minimax_h3_te.H3TeDeviceShare
         self.te_share: Any = None
 
     @property
@@ -533,13 +533,11 @@ class H3Residency:
         return total + sum(b for g, b in zip(self.blocks, self.block_bytes) if is_resident(g))
 
     def device_bytes(self) -> int:
-        """Device bytes the budget may re-spend: the resident denoiser groups and the conditioner's device share."""
         te = getattr(self, "te_share", None)
         return self.resident_bytes() + (te.resident_bytes() if te is not None else 0)
 
     def te_budget(self, budget_bytes: int, top: bool, n: int) -> int:
-        """What ``budget_bytes`` leaves the conditioner beside the planned denoiser set: nothing unless every block
-        (and the top-level group) is resident, as the denoiser is read every step and the conditioner once."""
+        """Zero unless the whole denoiser is resident: it is read every step, the conditioner once."""
         if n < len(self.blocks) or (self.top is not None and not top):
             return 0
         planned = (self.top_bytes if top else 0) + sum(self.block_bytes[:n])

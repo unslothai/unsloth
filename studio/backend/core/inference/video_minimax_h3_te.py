@@ -498,9 +498,7 @@ def _pinned_arena(size: int, fill: Any) -> Any:
     return arena
 
 
-# Each arena is sized to what it holds, not a whole 2 GiB arena (the 0.61 GB audio VAE pinned 2.15 GB), and the
-# streamed conditioner's vocabulary table, looked up on the host, stays on its mapping instead of the pin (1.56 GB).
-# ``UNSLOTH_H3_HOST_PIN_TRIM=0`` pins full arenas and the table again.
+# Arenas sized to their payload (0.61 GB audio VAE pinned 2.15 GB); the host-looked-up vocab table stays mapped. =0 reverts.
 H3_HOST_PIN_TRIM_ENV = "UNSLOTH_H3_HOST_PIN_TRIM"
 _PIN_PAGE = 4096
 
@@ -523,8 +521,7 @@ def pin_module_in_place(
     repoint: bool = False,
     skip: tuple = (),
 ) -> int:
-    """Replaces tensors in _parameters/_buffers rather than .data, which would keep the mmap alive. ``skip``: tensors
-    left where they are."""
+    """Replaces tensors in _parameters/_buffers rather than .data, which would keep the mmap alive."""
     import torch
 
     skipped = {id(t) for t in skip if t is not None}
@@ -663,7 +660,7 @@ def _host_rows_forward(self: Any, input: Any) -> Any:
 
 
 def _host_rows_table(target: Any) -> Any:
-    """The vocabulary table ``keep_h3_embedding_on_host`` will take out of the stream (its static checks), or None."""
+    """The table ``keep_h3_embedding_on_host`` will take out of the stream (same static checks), or None."""
     try:
         import torch
 
@@ -688,7 +685,7 @@ def _host_rows_table(target: Any) -> Any:
 
 
 def _pin_streamed_table(target: Any, weight: Any) -> None:
-    """The table stayed in the stream after all: pin it in place, as the whole-module pin would have."""
+    """The table stayed in the stream after all: pin it as the whole-module pin would have."""
     from .diffusion_memory import _offload_groups
 
     owner = next(m for m in target.modules() if m._parameters.get("weight") is weight)
@@ -1099,10 +1096,8 @@ def _copy_host_tensors_(entries: list, undo: Optional[list] = None) -> int:
     return copied
 
 
-# A card that holds every denoiser block still streamed the whole conditioner every encode (48 GB: ~0.8 s per render
-# with ~15 GB idle). Its leaf groups stay on the device, in the order the encode reads them, out of what the residency
-# budget leaves once every denoiser block is resident; a request needing more takes it back first. The vision tower
-# (image prompts only) keeps streaming. ``UNSLOTH_H3_TE_DEVICE_RESIDENT=0`` streams the whole conditioner again.
+# Once every denoiser block is resident, leftover budget keeps conditioner leaf groups on device in read order (48 GB:
+# ~0.8 s per render saved); requests needing more take it back first. Vision tower keeps streaming. =0 disables.
 H3_TE_DEVICE_RESIDENT_ENV = "UNSLOTH_H3_TE_DEVICE_RESIDENT"
 _TE_DEVICE_ATTR = "_unsloth_te_device"
 _TE_SAVED_IO_ATTR = "_unsloth_te_saved_io"
@@ -1122,7 +1117,6 @@ def h3_te_device_resident_enabled() -> bool:
 
 
 def _planned_device_bytes(group: Any) -> int:
-    """Upper bound of what onloading ``group`` adds to the allocator's allocated bytes."""
     from .video_minimax_h3_residency import _group_tensors, _tensor_bytes
 
     total = 0
@@ -1145,8 +1139,7 @@ def _allocated_bytes(device: Any) -> Optional[int]:
 
 
 def _te_resident_onload(group: Any) -> Any:
-    """A resident group's onload: the side-stream sync a real onload starts with, nothing moved. The group running next
-    may still be arriving on that stream (the one before it prefetched it), so the sync must stay."""
+    """Keep the side-stream sync: the next group may still be arriving via the previous group's prefetch."""
     stream = getattr(group, "stream", None)
 
     def onload_(*_a: Any, **_k: Any) -> None:
@@ -1217,7 +1210,7 @@ class H3TeDeviceShare:
         return n
 
     def resident_bytes(self) -> int:
-        """Allocated device bytes the resident groups hold (measured at onload; planned bytes off CUDA)."""
+        """Measured at onload; planned bytes off CUDA."""
         return sum(
             int(group.__dict__.get(_TE_DEVICE_ATTR) or 0)
             for group in self.groups
@@ -1225,7 +1218,6 @@ class H3TeDeviceShare:
         )
 
     def plan(self, budget_bytes: int) -> int:
-        """Groups of the read-order prefix that fit ``budget_bytes`` (planned bytes are an upper bound)."""
         n = 0
         left = int(budget_bytes)
         while n < len(self.groups) and self.planned[n] <= left:
@@ -1234,9 +1226,7 @@ class H3TeDeviceShare:
         return n
 
     def shrink(self, n: int) -> None:
-        """Demote every resident group past the first ``n`` (last first)."""
         import torch
-
         demoted = False
         for group in reversed(self.groups[n:]):
             if not group.__dict__.get(_TE_DEVICE_ATTR):
@@ -1254,7 +1244,6 @@ class H3TeDeviceShare:
             demoted = True
 
     def grow(self, n: int) -> None:
-        """Make the first ``n`` groups resident."""
         import torch
         for group in self.groups[:n]:
             if group.__dict__.get(_TE_DEVICE_ATTR):
@@ -1321,8 +1310,7 @@ def h3_te_device_share(
     *,
     logger: Any = None,
 ) -> Optional[H3TeDeviceShare]:
-    """The device share of a conditioner ``stream_h3_text_encoder`` streams with a side stream, or None (switched off,
-    synchronous / integrated GPU, nothing streamed). Never raises."""
+    """None unless the conditioner streams with a side stream. Never raises."""
     try:
         if mode not in ("stream", "stream_lazy") or not h3_te_device_resident_enabled():
             return None

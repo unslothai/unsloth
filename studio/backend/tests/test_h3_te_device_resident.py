@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU tests: the streamed MiniMax-H3 conditioner keeps leaf groups on the device out of what the residency budget
-leaves once every denoiser block is resident, gives them back before any block is demoted, and never changes the
-denoiser's residency or the admitted device peak."""
+"""CPU tests: MiniMax-H3 conditioner device share takes only leftover budget and yields before any block demotes."""
 
 from __future__ import annotations
 
@@ -66,8 +64,6 @@ class _Block(_TeGroup):
 
 
 class _Model(torch.nn.Module):
-    """``text_encoder.model``: a vision tower registered first, then three decoder layers."""
-
     def __init__(
         self,
         n_layers = 3,
@@ -102,7 +98,6 @@ def _share(
     events = None,
     logger = None,
 ):
-    """``H3TeDeviceShare`` over fake streamed groups (one per leaf, module order, vision first)."""
     import core.inference.diffusion_memory as dm
     from core.inference.video_minimax_h3_te import H3TeDeviceShare
 
@@ -244,8 +239,7 @@ def test_output_is_bit_identical_resident_or_streamed(monkeypatch):
 
 
 def test_the_budget_counts_the_share_as_demotable(monkeypatch):
-    """The share sits in the allocator, so free VRAM drops by it: the budget must add it back or every request would
-    shrink it (and a later one demote a block the base kept)."""
+    """The share lowers free VRAM, so the budget must add it back or every request would shrink it."""
     import core.inference.diffusion_memory as dm
     from core.inference import video as vid
 
@@ -267,8 +261,7 @@ def test_the_budget_counts_the_share_as_demotable(monkeypatch):
 
 
 def test_randomized_requests_keep_the_denoiser_and_the_device_peak_of_the_base(monkeypatch):
-    """Simulated card: every request's budget comes from what the device holds. With the share the denoiser's resident
-    set is the base's at every request, and resident set + phase need never passes the card."""
+    """Simulated card: denoiser residency matches base at every request and never overcommits the card."""
     rng = random.Random(7)
     for trial in range(40):
         blocks = [rng.choice([4096, 8192]) for _ in range(rng.randint(1, 5))]

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU tests: MiniMax-H3 host pins take what they hold (no whole 2 GiB arena for a 0.61 GB audio VAE) and the streamed
-conditioner's vocabulary table, looked up on the host, stays on its mapping instead of the pin."""
+"""CPU tests: MiniMax-H3 host pin arenas trimmed to payload; the host-looked-up vocab table stays mapped."""
 
 from __future__ import annotations
 
@@ -67,7 +66,6 @@ def test_trim_kill_switch_pins_whole_arenas(monkeypatch):
 
 
 def _host(monkeypatch, *, total_gb, available_gb, limit_gib, used_gib):
-    """A 94 GB host whose server runs under ``MemoryMax`` (cgroup v2 ``memory.max``)."""
     import psutil
     from utils import host_memory
 
@@ -85,8 +83,7 @@ def _host(monkeypatch, *, total_gb, available_gb, limit_gib, used_gib):
 
 
 def test_pins_stay_inside_the_cgroup_budget_they_were_admitted_against(monkeypatch):
-    """The pin budget reads memory.max, not the host; what is then pinned is the admitted payload, not arena-rounded
-    (a 2 GiB arena for 0.61 GB overran the headroom the check had just granted)."""
+    """Pinned bytes = admitted payload, not arena-rounded (which overran the granted cgroup headroom)."""
     import core.inference.diffusion_memory as dm
 
     monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
@@ -122,7 +119,6 @@ class _TE(torch.nn.Module):
 
 
 def _stream_pinned(monkeypatch):
-    """``stream_h3_text_encoder(pin=True)`` on CPU: arenas are plain tensors, the stream a CPU leaf-level offload."""
     pytest.importorskip("diffusers.hooks")
     import diffusers.hooks as hooks
 
