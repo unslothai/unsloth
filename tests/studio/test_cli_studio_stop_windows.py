@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""stop used os.kill(pid, 0), which raises WinError 87 on Windows; _pid_alive uses tasklist there."""
+"""stop used os.kill(pid, 0), which raises WinError 87 on Windows; _pid_alive uses psutil, else tasklist, there."""
 
 import ast
 import os
@@ -40,7 +40,6 @@ def _load_pid_alive(platform: str, fake_run = None):
 
 @pytest.fixture(autouse = True)
 def _no_psutil(monkeypatch):
-    """The tasklist tests below need the psutil-less path; psutil tests opt back in."""
     monkeypatch.setitem(sys.modules, "psutil", None)
 
 
@@ -102,6 +101,21 @@ def test_pid_alive_windows_psutil_raises_and_tasklist_fails_means_alive(monkeypa
     _fake_psutil(monkeypatch, raises = OSError("denied"))
     pid_alive = _load_pid_alive("win32", fake_run = _fake_tasklist(None, raises = True))
     assert pid_alive(4242) is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "real psutil on Windows")
+def test_pid_alive_windows_real_psutil_without_spawning(monkeypatch):
+    monkeypatch.delitem(sys.modules, "psutil")
+    pytest.importorskip("psutil")
+    run, spawns = _counting_tasklist(None)
+    pid_alive = _load_pid_alive("win32", fake_run = run)
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_pid = child.pid
+    child.wait()
+    del child  # drops the process handle, else Windows keeps the exited process listed
+    assert pid_alive(os.getpid()) is True
+    assert pid_alive(dead_pid) is False
+    assert spawns == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "os.kill(pid, 0) terminates on Windows")
