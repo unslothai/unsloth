@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FastModel decode CUDA graphs (_generic_decode_graphs): gating, keying, the static-cache layer
-checks, refusal / fallback, fingerprint invalidation and compile inertness on the host, through a
-stand-in backend whose "graph" re-runs the captured step into the same static outputs. The real
-capture is the gpu-marked test at the end."""
+"""FastModel decode CUDA graphs on the host, through a stand-in backend whose "graph" re-runs the
+captured step into the same static outputs. The real capture is the gpu-marked test."""
 
 import contextlib
+import functools
+import inspect
 import os
 import sys
 import types
@@ -21,12 +21,14 @@ import unsloth.models._decode_graphs as G
 import unsloth.models._generic_decode_graphs as GG
 from unsloth.models import vision
 
+from torch._dynamo.utils import counters
 from transformers import AutoModelForCausalLM, DynamicCache, StaticCache
 from transformers import cache_utils
 
 LLAMA = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 GEMMA3 = "hf-internal-testing/tiny-random-Gemma3ForCausalLM"
 QWEN3_VL = "trl-internal-testing/tiny-Qwen3VLForConditionalGeneration"
+NO_ROLL = "no static sliding layer with the host-built roll index in this transformers"
 
 
 def test_imports_this_tree():
@@ -38,11 +40,8 @@ class _FakeStream:
     class device:
         index = None
 
-    def wait_stream(self, other):
-        pass
-
-    def synchronize(self):
-        pass
+    wait_stream = lambda self, other: None
+    synchronize = lambda self: None
 
 
 def _copy_into(dst, src):
@@ -54,12 +53,12 @@ def _copy_into(dst, src):
 
 class _FakeGraph:
     """Replay = the captured step run again into the captured outputs; host counters are left
-    as a real replay leaves them (unchanged)."""
+    as a real replay leaves them (unchanged). perturb: True = every replay, an int n = from the
+    n-th replay on (drift after validation)."""
 
     def __init__(self, fn, outputs, cache, perturb):
         self.fn, self.outputs, self.cache, self.perturb = fn, outputs, cache, perturb
         self.replays = 0
-        # perturb: True = every replay, an int n = from the n-th replay on (drift after validation).
 
     def replay(self):
         self.replays += 1
@@ -78,42 +77,23 @@ class _Host(GG._Cuda):
     graphs = []
     # As a real capture: no host-to-device copies (torch.tensor(..., device=...)) while recording.
     recording = False
-
-    @staticmethod
-    def current_device():
-        return None
-
-    @staticmethod
-    def device(index):
-        return contextlib.nullcontext()
+    current_device = staticmethod(lambda: None)
+    device = staticmethod(lambda index: contextlib.nullcontext())
+    pool = staticmethod(lambda: object())
+    new_stream = staticmethod(lambda: _FakeStream())
+    stream = staticmethod(lambda stream: contextlib.nullcontext())
+    current_stream = staticmethod(lambda: _FakeStream())
 
     @classmethod
     def capturing(cls):
         return cls.recording
-
-    @staticmethod
-    def pool():
-        return object()
-
-    @staticmethod
-    def new_stream():
-        return _FakeStream()
-
-    @staticmethod
-    def stream(stream):
-        return contextlib.nullcontext()
-
-    @staticmethod
-    def current_stream():
-        return _FakeStream()
 
     @classmethod
     def record(cls, pool, fn, cache):
         if cls.fail:
             error = cls.fail if isinstance(cls.fail, BaseException) else None
             raise error or RuntimeError("operation not permitted when stream is capturing")
-        # A capture launches nothing: host and device length counters and every cache row are left as they were
-        # (this stand-in runs the step, so it puts back all of them, full-attention rows included).
+        # A capture launches nothing: put back the length counters and every cache row the step wrote.
         snapshot = GG._snapshot(cache)
         rows = [
             (t, t.clone())
@@ -168,7 +148,6 @@ def gemma3():
 
 
 def _fresh(model):
-    # Counters and refused keys start from zero.
     model.__dict__.pop(GG._ATTR, None)
 
 
@@ -211,15 +190,39 @@ def _generate(
         )
 
 
-@pytest.mark.parametrize("bsz,pad", [(1, 0), (3, 2)])
-def test_greedy_tokens_match_eager_llama(host, llama, bsz, pad):
-    _fresh(llama)
-    ids, mask = _ids(llama, bsz, pad = pad)
-    eager = _generate(llama, ids, mask, False)
-    graphed = _generate(llama, ids, mask, True)
-    assert torch.equal(eager, graphed)
-    s = GG.stats(llama)
-    # Step 1 = prefill, step 2 eager warm-up + capture, step 3 validated replay, then replays.
+def _both(
+    model,
+    ids,
+    mask,
+    new = 10,
+):
+    """Eager then graphed tokens for a fresh model state; asserts they match, returns stats."""
+    _fresh(model)
+    eager = _generate(model, ids, mask, False, new)
+    assert torch.equal(eager, _generate(model, ids, mask, True, new))
+    return GG.stats(model)
+
+
+def _scope(model, forward, eager):
+    scope = vision._GraphDecodeSteps.__new__(vision._GraphDecodeSteps)
+    scope.model, scope.forward = model, forward
+    scope.eager_decodes = scope.eager_regions = eager
+    return scope
+
+
+def _sliding_layer(cls):
+    try:
+        return cls(max_cache_len = 32, sliding_window = 4)
+    except TypeError:
+        return cls(sliding_window = 4)
+
+
+@pytest.mark.parametrize("bsz,pad,length", [(1, 0, 6), (3, 2, 6), (1, 0, 1)])
+def test_greedy_tokens_match_eager_llama(host, llama, bsz, pad, length):
+    s = _both(llama, *_ids(llama, bsz, length, pad))
+    # Step 1 = prefill (eager, also for a one-token prompt), step 2 eager warm-up + capture, step 3
+    # validated replay, then replays: 9 decode steps take the graph path.
+    assert GG._state(llama).step == 9
     assert s["captures"] == 1 and s["validations"] == 1 and s["replays"] == 8, s
     assert s["refusals"] == {}, s
     assert s["graphs"] == 0  # freed when generate() returns
@@ -227,11 +230,9 @@ def test_greedy_tokens_match_eager_llama(host, llama, bsz, pad):
 
 
 def test_batches_over_the_knob_decode_eagerly(host, llama, monkeypatch):
-    _fresh(llama)
     monkeypatch.setattr(GG, "MAX_BSZ", 2)
     ids, mask = _ids(llama, 3, pad = 1)
-    assert torch.equal(_generate(llama, ids, mask, False), _generate(llama, ids, mask, True))
-    s = GG.stats(llama)
+    s = _both(llama, ids, mask)
     assert s["captures"] == 0 and s["refusals"] == {"batch over max": 9}, s
     monkeypatch.setattr(GG, "MAX_BSZ", 3)
     _generate(llama, ids, mask, True)
@@ -239,8 +240,6 @@ def test_batches_over_the_knob_decode_eagerly(host, llama, monkeypatch):
 
 
 def test_counts_captures_refusals_and_recompiles_separately(host, llama):
-    from torch._dynamo.utils import counters
-
     def compiles():
         return counters["stats"]["unique_graphs"], sum(counters["recompiles"].values())
 
@@ -257,11 +256,12 @@ def test_counts_captures_refusals_and_recompiles_separately(host, llama):
     # Decode graphs add no Dynamo graph and no recompile of an existing compiled region.
     assert compiles() == before
     s = GG.stats(llama)
-    # One capture per key per call; refusals counted on their own.
     assert s["captures"] == 1 and s["max_captures_per_key"] == 1 and s["refusals"] == {}, s
+    # A second call captures again but does not revalidate the key.
     _generate(llama, ids, mask, True)
     s = GG.stats(llama)
-    assert s["captures"] == 2 and s["max_captures_per_key"] == 1, s
+    assert s["captures"] == 2 and s["max_captures_per_key"] == 1 and s["validations"] == 1, s
+    assert sum(g.replays for g in host.graphs) == 2 * 8
 
 
 def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
@@ -269,8 +269,6 @@ def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
     inference-ness and strides: the graph path must hit the variant the eager step compiled, never
     a new one, and give the eager logits. (Dynamo's global-state guard also covers the autocast cache
     flag, so the step keeps the ambient autocast; CUDA autocast is not reachable on the host.)"""
-    from torch._dynamo.utils import counters
-
     seen, calls = [], []
 
     @torch.compile(backend = "eager", dynamic = False)
@@ -305,7 +303,6 @@ def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
         assert calls, "the compiled region never ran: the check would be vacuous"
         before = counters["stats"]["unique_graphs"]
         graphed = _generate(llama, ids, mask, True)
-        # No Dynamo variant beyond the eager step's: same inference-ness / strides / global state.
         assert counters["stats"]["unique_graphs"] == before
         assert torch.equal(eager, graphed)
         s = GG.stats(llama)
@@ -315,54 +312,59 @@ def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
             h.remove()
 
 
-def test_static_buffers_match_their_arguments(host):
+@pytest.mark.parametrize("make", ["dense", "sliced", "broadcast", "sliced_broadcast"])
+def test_static_buffers_keep_eager_strides(host, make):
+    base = torch.arange(64, dtype = torch.float32).view(2, 32)
+    leaf = {
+        "dense": base,
+        "sliced": base[:, ::2],  # shape (2, 16), strides (32, 2)
+        "broadcast": base[:1].expand(4, 32),  # as Qwen3-VL positions
+        "sliced_broadcast": base[:1, ::2].expand(3, 16),
+    }[make]
+    compact = GG._compact(leaf)
+    if "broadcast" in make:
+        assert compact.shape[0] == 1
+    buffer = GG._buffer_like(compact)
+    buffer.copy_(compact)
+    replayed = buffer.expand(leaf.shape)
+    assert replayed.stride() == leaf.stride() and torch.equal(replayed, leaf)
     with torch.inference_mode():
         x = torch.arange(6.0).view(2, 3)
-        wide = torch.zeros(1, 4).expand(3, 4)  # broadcast, as Qwen3-VL positions
-    assert GG._buffer_like(x).is_inference()
-    assert not GG._buffer_like(torch.zeros(2)).is_inference()
+    assert GG._buffer_like(x).is_inference() and not GG._buffer_like(base).is_inference()
     t = torch.zeros(4, 6).t()  # non-contiguous
     assert GG._buffer_like(t).stride() == t.stride()
-    compact = GG._compact(wide)
-    assert compact.shape == (1, 4)
-    assert GG._buffer_like(compact).expand(wide.shape).stride() == wide.stride()
     spec = GG._spec(t, [], None)
     assert t.stride() in spec and False in spec
 
 
-def test_second_call_recaptures_without_revalidating(host, llama):
-    _fresh(llama)
-    ids, mask = _ids(llama)
-    _generate(llama, ids, mask, True)
-    _generate(llama, ids, mask, True)
-    s = GG.stats(llama)
-    assert s["captures"] == 2 and s["validations"] == 1, s
-    assert sum(g.replays for g in host.graphs) == 2 * 8
-
-
-def test_sliding_window_layers_until_the_window_fills(host, gemma3):
-    window = gemma3.config.sliding_window
-    assert "sliding_attention" in gemma3.config.layer_types
-    ids, mask = _ids(gemma3, 2, length = 3, pad = 1)
-    # Inside the window: every sliding layer updates by index, so every step after the first two replays.
-    _fresh(gemma3)
-    new = window - 3
-    assert torch.equal(
-        _generate(gemma3, ids, mask, False, new), _generate(gemma3, ids, mask, True, new)
-    )
-    s = GG.stats(gemma3)
-    assert s["replays"] == new - 2 and not s["refusals"], s
+@pytest.mark.parametrize("past", [False, True])
+def test_sliding_window_roll_is_captured_without_host_copies(host, gemma3, monkeypatch, past):
+    # Inside the window every sliding layer updates by index: one key, every step after the first two replays.
     # Past the window the sliding layers roll by one slot per step: a second key (window full) is captured and
-    # validated (its rolled rows restored between the replay and the eager step), then replays; tokens unchanged.
-    _fresh(gemma3)
-    new = window + 5
-    assert torch.equal(
-        _generate(gemma3, ids, mask, False, new), _generate(gemma3, ids, mask, True, new)
-    )
-    s = GG.stats(gemma3)
+    # validated (its rolled rows restored between the replay and the eager step), then replays. transformers
+    # rolls a full window with an index made by torch.tensor(..., device=...), a host-to-device copy a real
+    # capture refuses; the warm-up and recording run that branch on an index made outside the capture. The
+    # recording runs no device work, so the capture holds no copy of the full windows' rows while it records.
+    taken = []
+    snapshot = GG._snapshot
+
+    def recorder(cache, *args, **kwargs):
+        out = snapshot(cache, *args, **kwargs)
+        if sys._getframe(1).f_code.co_name == "_capture":
+            taken.append(max((e[1].numel() for e in out[1]), default = 0))
+        return out
+
+    monkeypatch.setattr(GG, "_snapshot", recorder)
+    assert "sliding_attention" in gemma3.config.layer_types
+    new = gemma3.config.sliding_window + (12 if past else -3)
+    keys = 1 + past
+    s = _both(gemma3, *_ids(gemma3, 2, length = 3, pad = 1), new)
     assert not s["refusals"], s
-    assert s["captures"] == 2 and s["validations"] == 2, s
-    assert s["replays"] == new - 1 - 2 * 1, s
+    assert s["captures"] == keys and s["validations"] == keys, s
+    assert s["replays"] == new - 1 - keys, s
+    assert len(taken) == keys and max(taken) <= 1, taken
+    for cls, _ in GG._rolling_update_classes():
+        assert not getattr(cls.__dict__["update"], "_unsloth_graphable_roll", False)
 
 
 def test_beam_search_reordering_the_cache_stays_eager(host, llama):
@@ -383,13 +385,12 @@ def test_beam_search_reordering_the_cache_stays_eager(host, llama):
     ] == 7, s
 
 
-def test_qwen3_vl_text_decode_positions_match_the_model(host):
+def test_qwen3_vl_text_decode_positions_match_the_model(host, monkeypatch):
+    import transformers
     from transformers import AutoModelForImageTextToText
 
     torch.manual_seed(0)
     model = AutoModelForImageTextToText.from_pretrained(QWEN3_VL, dtype = torch.float32).eval()
-    _fresh(model)
-    ids, mask = _ids(model, 2, length = 5, pad = 1)
     seen = []
     real = GG._mrope_positions
 
@@ -398,30 +399,18 @@ def test_qwen3_vl_text_decode_positions_match_the_model(host):
         seen.append(out is not kwargs)
         return out
 
-    GG._mrope_positions = spy
-    try:
-        eager = _generate(model, ids, mask, False)
-        graphed = _generate(model, ids, mask, True)
-    finally:
-        GG._mrope_positions = real
-    assert torch.equal(eager, graphed)
-    s = GG.stats(model)
+    monkeypatch.setattr(GG, "_mrope_positions", spy)
+    s = _both(model, *_ids(model, 2, length = 5, pad = 1))
     assert s["replays"] == 8 and not s["refusals"], s
-    import transformers
-
     if transformers.__version__.startswith("4."):
         # 4.x leaves decode positions to the forward, which reads cache_position[0] on the host.
         assert seen and all(seen)
 
 
 def test_validation_mismatch_refuses_the_key(host, llama):
-    _fresh(llama)
     host.perturb = True
     ids, mask = _ids(llama)
-    eager = _generate(llama, ids, mask, False)
-    graphed = _generate(llama, ids, mask, True)
-    assert torch.equal(eager, graphed)
-    s = GG.stats(llama)
+    s = _both(llama, ids, mask)
     assert s["refusals"].get("validation mismatch", 0) >= 1 and s["replays"] == 0, s
     # Refused for the process: the next call does not capture again.
     _generate(llama, ids, mask, True)
@@ -450,31 +439,22 @@ def test_validate_all_pinpoints_a_later_drift(host, llama, monkeypatch):
 
 def test_graph_path_runs_the_eager_path_regions(monkeypatch):
     seen = []
-
-    def decode_step(model, forward, kwargs, regions):
-        seen.append(regions)
-        return None
-
-    monkeypatch.setattr(vision._generic_decode_graphs, "decode_step", decode_step)
+    monkeypatch.setattr(
+        vision._generic_decode_graphs,
+        "decode_step",
+        lambda model, forward, kwargs, regions: seen.append(regions),
+    )
     model = torch.nn.Linear(1, 1)
     model.forward = lambda **kw: 0
     for compiled_decode in (False, True):
-        scope = vision._GraphDecodeSteps.__new__(vision._GraphDecodeSteps)
-        scope.model, scope.forward = model, model.forward
-        scope.eager_decodes = scope.eager_regions = compiled_decode
-        scope._forward(input_ids = torch.zeros(1, 1))
+        _scope(model, model.forward, compiled_decode)._forward(input_ids = torch.zeros(1, 1))
     # Compiled regions stay compiled unless this model's eager decode already leaves them.
     assert seen == [None, vision.unsloth_eager_decode]
 
 
 def test_capture_failure_falls_back_for_the_key(host, llama):
-    _fresh(llama)
     host.fail = True
-    ids, mask = _ids(llama)
-    eager = _generate(llama, ids, mask, False)
-    graphed = _generate(llama, ids, mask, True)
-    assert torch.equal(eager, graphed)
-    s = GG.stats(llama)
+    s = _both(llama, *_ids(llama))
     assert s["captures"] == 0 and s["replays"] == 0, s
     # Refused once for the process; every later step of the key counts as a refused eager step.
     reason = "capture failed: RuntimeError: operation not permitted when stream is capturing"
@@ -485,16 +465,36 @@ def test_capture_failure_falls_back_for_the_key(host, llama):
     assert s["eager_steps"] == 8, s
 
 
+def test_out_of_memory_capture_stops_the_call_not_the_key(host, llama):
+    host.fail = torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")
+    ids, mask = _ids(llama)
+    s = _both(llama, ids, mask)
+    assert s["captures"] == 0 and s["refused_keys"] == 0, s
+    assert s["refusals"] == {"capture failed: out of memory": 9}, s
+    host.fail = False
+    assert torch.equal(_generate(llama, ids, mask, False), _generate(llama, ids, mask, True))
+    s = GG.stats(llama)
+    assert s["captures"] == 1 and s["replays"] == 8, s
+
+
+def test_capture_setup_failure_runs_eagerly(host, llama, monkeypatch):
+    def no_pool():
+        raise torch.OutOfMemoryError("pool")
+
+    monkeypatch.setattr(host, "pool", staticmethod(no_pool))
+    s = _both(llama, *_ids(llama))
+    assert s["replays"] == 0 and any("capture setup failed" in r for r in s["refusals"]), s
+
+
 def test_fingerprint_invalidation(host, llama, monkeypatch):
+    from unsloth.kernels import utils as K
+
     _fresh(llama)
     first = GG._fingerprint(llama)
     assert first is not None and first == GG._fingerprint(llama)
-    p = next(llama.parameters())
     with torch.no_grad():
-        p.add_(0)  # in-place edit (merge, optimizer step): bumps the version
+        next(llama.parameters()).add_(0)  # in-place edit (merge, optimizer step): bumps the version
     assert GG._fingerprint(llama) != first
-    from unsloth.kernels import utils as K
-
     before = GG._fingerprint(llama)
     monkeypatch.setattr(K, "_OPTIMIZER_STEPS", K._OPTIMIZER_STEPS + 1)
     assert GG._fingerprint(llama) != before
@@ -503,8 +503,7 @@ def test_fingerprint_invalidation(host, llama, monkeypatch):
     state.fingerprint = ("stale",)
     state.graphs["k"] = object()
     state.recheck = False
-    ids, mask = _ids(llama)
-    _generate(llama, ids, mask, True)
+    _generate(llama, *_ids(llama), True)
     assert state.fingerprint != ("stale",)
 
 
@@ -529,37 +528,33 @@ def test_lora_scale_changes_the_fingerprint(host, llama):
         peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["o_proj"]),
     )
     first = GG._fingerprint(model)
-    layer = model.base_model.model.model.layers[0].self_attn.o_proj
-    layer.set_scale("default", 0.0)
+    model.base_model.model.model.layers[0].self_attn.o_proj.set_scale("default", 0.0)
     assert GG._fingerprint(model) != first
 
 
 def test_model_on_two_devices_stays_eager_for_the_call(host, llama, monkeypatch):
-    _fresh(llama)
     monkeypatch.setattr(GG, "_fingerprint", lambda model, state = None: None)
-    ids, mask = _ids(llama)
-    assert torch.equal(_generate(llama, ids, mask, False), _generate(llama, ids, mask, True))
-    s = GG.stats(llama)
+    s = _both(llama, *_ids(llama))
     assert s["captures"] == 0 and s["refusals"] == {"not one CUDA device / adapters": 9}, s
 
 
-def test_release_and_invalidate_clear_generic_state(host, llama):
+@pytest.mark.parametrize("drop", [GG.release, G.invalidate, G.release])
+def test_weight_changes_revoke_graphs_and_key_decisions(host, llama, drop):
     _fresh(llama)
     state = GG._state(llama)
     state.graphs["k"] = object()
-    state.fingerprint = ("x",)
-    G.release(llama)
-    assert not state.graphs and state.fingerprint is None
-    state.graphs["k"] = object()
-    G.invalidate(llama)
-    assert not state.graphs
+    state.validated.add("key")
+    state.refused["other"] = "validation mismatch"
+    state.fingerprint = ("old",)
+    drop(llama)
+    assert not state.graphs and not state.validated and not state.refused
+    assert state.fingerprint is None
 
 
 def test_cache_layer_checks(host, llama):
-    config = llama.config
     assert GG._cache_reason(None) == "no cache"
     assert GG._cache_reason(DynamicCache()) == "cache DynamicCache"
-    cache = StaticCache(config = config, max_cache_len = 16)
+    cache = StaticCache(config = llama.config, max_cache_len = 16)
     assert GG._cache_reason(cache) == "uninitialized layer"
     with torch.inference_mode():
         llama(input_ids = torch.tensor([[5, 6, 7]]), past_key_values = cache, use_cache = True)
@@ -576,18 +571,14 @@ def test_cache_layer_checks(host, llama):
     assert GG._cache_reason(cache) == "offloaded cache"
     cache.offloading = False
     # Real backend: a host cache is not replayable.
-    GG._BACKEND.device_type = "cuda"
-    try:
-        assert GG._cache_reason(cache) == "cache not on CUDA"
-    finally:
-        GG._BACKEND.device_type = "cpu"
+    host.device_type = "cuda"
+    assert GG._cache_reason(cache) == "cache not on CUDA"
 
 
 def test_window_and_host_state_checks():
     layer = cache_utils.StaticSlidingWindowLayer(max_cache_len = 32, sliding_window = 4)
     layer.keys = torch.zeros(1)
-    cache = type("C", (), {})()
-    cache.layers = [layer]
+    cache = types.SimpleNamespace(layers = [layer])
     name = (
         "cumulative_length_int"
         if "cumulative_length_int" in layer.__dict__
@@ -645,8 +636,7 @@ def test_argument_keys(host):
 
 
 def test_wanted_gating(monkeypatch):
-    model = type("M", (), {})()
-    model.device = torch.device("cuda", 0)
+    model = types.SimpleNamespace(device = torch.device("cuda", 0))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.delenv("UNSLOTH_DECODE_GENERIC_GRAPHS", raising = False)
@@ -674,41 +664,26 @@ def test_wanted_gating(monkeypatch):
 
 
 def test_inert_when_compiling(host):
-    calls = []
-
     def forward(**kwargs):
-        calls.append(1)
         return kwargs["input_ids"] * 2
 
     model = torch.nn.Linear(1, 1)
     model.forward = forward
-    scope = vision._GraphDecodeSteps.__new__(vision._GraphDecodeSteps)
-    scope.model, scope.forward, scope.eager_decodes, scope.eager_regions = (
-        model,
-        forward,
-        False,
-        False,
-    )
+    scope = _scope(model, forward, False)
 
     def step(x):
-        out = GG.decode_step(model, forward, {"input_ids": x})
-        assert out is None
+        assert GG.decode_step(model, forward, {"input_ids": x}) is None
         assert not GG.wanted(model)
         return scope._forward(input_ids = x) + 1
 
-    from torch._dynamo.utils import counters
-
     counters.clear()
-    compiled = torch.compile(step, backend = "eager", fullgraph = True)
     x = torch.ones(2, 1)
-    assert torch.equal(compiled(x), x * 2 + 1)
+    assert torch.equal(torch.compile(step, backend = "eager", fullgraph = True)(x), x * 2 + 1)
     assert not counters["graph_break"]
     assert GG._ATTR not in model.__dict__
 
 
 def test_generate_routes_only_static_cache_calls():
-    import inspect
-
     source = inspect.getsource(vision.unsloth_base_fast_generate)
     # plan() checks wanted() itself; only static-cache, non-compiled-decode calls reach it.
     call = "_generic_decode_graphs.plan(self, args, kwargs, input_ids)"
@@ -748,62 +723,7 @@ def test_real_capture_matches_eager(name, monkeypatch):
     assert s["captures"] == 1 and s["replays"] == 22 and not s["refusals"], s
 
 
-@pytest.mark.parametrize("make", ["dense", "sliced", "broadcast", "sliced_broadcast"])
-def test_static_buffers_keep_eager_strides(make):
-    base = torch.arange(64, dtype = torch.float32).view(2, 32)
-    leaf = {
-        "dense": base,
-        "sliced": base[:, ::2],  # shape (2, 16), strides (32, 2)
-        "broadcast": base[:1].expand(4, 32),
-        "sliced_broadcast": base[:1, ::2].expand(3, 16),
-    }[make]
-    compact = GG._compact(leaf)
-    buffer = GG._buffer_like(compact)
-    buffer.copy_(compact)
-    replayed = buffer.expand(leaf.shape)
-    assert replayed.stride() == leaf.stride() and torch.equal(replayed, leaf)
-
-
-def test_weight_changes_revoke_key_decisions(host, llama):
-    from unsloth.models import _decode_graphs as G
-    for drop in (GG.release, G.invalidate, G.release):
-        _fresh(llama)
-        state = GG._state(llama)
-        state.validated.add("key")
-        state.refused["other"] = "validation mismatch"
-        state.fingerprint = ("old",)
-        drop(llama)
-        assert not state.validated and not state.refused and state.fingerprint is None, drop
-
-
-def test_one_token_prompt_prefill_runs_eagerly(host, llama):
-    _fresh(llama)
-    ids, mask = _ids(llama, 1, length = 1)
-    eager = _generate(llama, ids, mask, False)
-    graphed = _generate(llama, ids, mask, True)
-    assert torch.equal(eager, graphed)
-    # 10 new tokens: the first forward (prefill) stays eager; only the 9 decode steps take the graph path.
-    assert GG._state(llama).step == 9 and GG.stats(llama)["replays"] > 0
-
-
-def test_capture_setup_failure_runs_eagerly(host, llama, monkeypatch):
-    _fresh(llama)
-    ids, mask = _ids(llama, 1)
-    eager = _generate(llama, ids, mask, False)
-
-    def no_pool():
-        raise torch.OutOfMemoryError("pool")
-
-    monkeypatch.setattr(host, "pool", staticmethod(no_pool))
-    graphed = _generate(llama, ids, mask, True)
-    assert torch.equal(eager, graphed)
-    s = GG.stats(llama)
-    assert s["replays"] == 0 and any("capture setup failed" in r for r in s["refusals"]), s
-
-
 def test_grpo_hidden_states_wrapper_keeps_graphs_eligible():
-    import types
-
     class M(torch.nn.Module):
         def forward(self, x):
             return x
@@ -814,7 +734,6 @@ def test_grpo_hidden_states_wrapper_keeps_graphs_eligible():
     assert GG._plain_forward(m)
     m.forward = types.MethodType(M.forward, M())  # bound to another module: not plain
     assert not GG._plain_forward(m)
-    import functools
 
     @functools.wraps(M.forward)
     def autocast_forward(self, *args, **kwargs):  # accelerate's mixed-precision wrapper shape
@@ -837,64 +756,28 @@ def test_grpo_hidden_states_wrapper_keeps_graphs_eligible():
     m.forward = lambda *a, **k: None  # e.g. an accelerate device hook: stays eager
     assert not GG._plain_forward(m)
 
-
-def test_decode_scope_restores_an_instance_forward():
-    import types
-
-    class M(torch.nn.Module):
-        def forward(self, x):
-            return x
-
+    # The decode scope puts back whatever instance forward was there before (none: none).
     m = M()
     with vision._EagerDecodeSteps(m):
         assert "forward" in m.__dict__
-    assert "forward" not in m.__dict__  # none before: none after
-
-    def wrapper(self, *args, **kwargs):  # e.g. accelerate's autocast wrapper
-        return M.forward(self, *args, **kwargs)
-
-    m.forward = types.MethodType(wrapper, m)
+    assert "forward" not in m.__dict__
+    m.forward = types.MethodType(autocast_forward, m)
     previous = m.__dict__["forward"]
     with vision._EagerDecodeSteps(m):
         assert m.__dict__["forward"] is not previous
     assert m.__dict__["forward"] is previous
 
 
-def test_full_sliding_window_roll_is_captured_without_host_copies(host, gemma3):
-    # transformers rolls a full window with an index made by torch.tensor(..., device=...), a host-to-device copy a
-    # real capture refuses; the warm-up and recording run that branch on an index made outside the capture.
-    window = gemma3.config.sliding_window
-    ids, mask = _ids(gemma3, 2, length = 3, pad = 1)
-    _fresh(gemma3)
-    new = window + 12
-    eager = _generate(gemma3, ids, mask, False, new)
-    assert torch.equal(eager, _generate(gemma3, ids, mask, True, new))
-    s = GG.stats(gemma3)
-    assert not s["refusals"], s
-    assert s["captures"] == 2 and s["validations"] == 2, s
-    assert s["replays"] == new - 1 - 2 * 1, s
-    # transformers' own update is back after the capture.
-    for cls, _ in GG._rolling_update_classes():
-        assert not getattr(cls.__dict__["update"], "_unsloth_graphable_roll", False)
-
-
 def test_rolling_update_matches_transformers_rows(host):
     classes = GG._rolling_update_classes()
-    assert classes, "no static sliding layer with the host-built roll index in this transformers"
+    assert classes, NO_ROLL
     for cls, counter in classes:
         torch.manual_seed(0)
-        layers = []
-        for _ in range(2):
-            try:
-                layer = cls(max_cache_len = 32, sliding_window = 4)
-            except TypeError:
-                layer = cls(sliding_window = 4)
-            layers.append(layer)
+        layers = [_sliding_layer(cls), _sliding_layer(cls)]
         prefill = torch.randn(2, 3, 6, 8), torch.randn(2, 3, 6, 8)
         steps = [(torch.randn(2, 3, 1, 8), torch.randn(2, 3, 1, 8)) for _ in range(5)]
-        kwargs = {"cache_position": torch.arange(6)}
         for layer in layers:
-            layer.update(*prefill, kwargs)
+            layer.update(*prefill, {"cache_position": torch.arange(6)})
         for i, (k, v) in enumerate(steps):
             step_kwargs = {"cache_position": torch.tensor([6 + i])}
             a = layers[0].update(k, v, step_kwargs)
@@ -908,14 +791,11 @@ def test_full_window_snapshot_keeps_slot_zero_and_undoes_the_roll(host):
     # Validation replays a step that rolls every full window, then puts the rows back for the eager step: keeping
     # the slot the roll drops is enough, not a clone of every window (bsz x 116 MiB on Gemma-3-4B).
     classes = GG._rolling_update_classes()
-    assert classes, "no static sliding layer with the host-built roll index in this transformers"
+    assert classes, NO_ROLL
     for cls, counter in classes:
         for graphable in (False, True):
             torch.manual_seed(0)
-            try:
-                layer = cls(max_cache_len = 32, sliding_window = 4)
-            except TypeError:
-                layer = cls(sliding_window = 4)
+            layer = _sliding_layer(cls)
             layer.update(
                 torch.randn(2, 3, 6, 8),
                 torch.randn(2, 3, 6, 8),
@@ -927,7 +807,7 @@ def test_full_window_snapshot_keeps_slot_zero_and_undoes_the_roll(host):
                 count = layer.__dict__[counter]
                 snapshot = GG._snapshot(cache)
                 rows = [e[1] for e in snapshot[1] if e[0] is layer.keys or e[0] is layer.values]
-                assert len(rows) == 2 and all(saved.shape[-2] == 1 for saved in rows), [
+                assert len(rows) == 2 and all(r.shape[-2] == 1 for r in rows), [
                     r.shape for r in rows
                 ]
                 step = (
@@ -946,62 +826,19 @@ def test_full_window_snapshot_keeps_slot_zero_and_undoes_the_roll(host):
             assert all(e[1].numel() == 1 for e in GG._snapshot(cache, rows = False)[1])
 
 
-def test_capture_takes_no_window_copies(host, gemma3, monkeypatch):
-    # The recording runs no device work: the capture puts back the host counters only and holds no copy of the
-    # full windows' rows while it records.
-    window = gemma3.config.sliding_window
-    ids, mask = _ids(gemma3, 1, length = 3)
-    _fresh(gemma3)
-    taken = []
-    snapshot = GG._snapshot
-
-    def recorder(cache, *args, **kwargs):
-        out = snapshot(cache, *args, **kwargs)
-        if sys._getframe(1).f_code.co_name == "_capture":
-            taken.append(max((e[1].numel() for e in out[1]), default = 0))
-        return out
-
-    monkeypatch.setattr(GG, "_snapshot", recorder)
-    new = window + 6
-    eager = _generate(gemma3, ids, mask, False, new)
-    assert torch.equal(eager, _generate(gemma3, ids, mask, True, new))
-    assert GG.stats(gemma3)["captures"] == 2 and len(taken) == 2, (GG.stats(gemma3), taken)
-    assert max(taken) <= 1, taken
-
-
 def test_keys_changing_every_step_stop_capturing_for_the_call(host, llama, monkeypatch):
     # An argument whose shape or value moves every step gives every step a new key: each capture is an eager
     # warm-up plus a recording that is never replayed. After a few in a row the call decodes eagerly.
-    _fresh(llama)
     ids, mask = _ids(llama)
-    eager = _generate(llama, ids, mask, False, 16)
     step = iter(range(10**6))
     real = GG._window_state
     monkeypatch.setattr(GG, "_window_state", lambda cache: real(cache) + (next(step),))
-    assert torch.equal(eager, _generate(llama, ids, mask, True, 16))
-    s = GG.stats(llama)
+    s = _both(llama, ids, mask, 16)
     assert s["captures"] == GG._MAX_UNREPLAYED_CAPTURES and s["replays"] == 0, s
     assert s["graphs"] == 0, s
     assert s["refusals"] == {"graph key changes every step": 15 - GG._MAX_UNREPLAYED_CAPTURES}, s
-    # The next call starts capturing again (and stops again).
     _generate(llama, ids, mask, True, 16)
     assert GG.stats(llama)["captures"] == 2 * GG._MAX_UNREPLAYED_CAPTURES
-
-
-def test_out_of_memory_capture_stops_the_call_not_the_key(host, llama):
-    _fresh(llama)
-    ids, mask = _ids(llama)
-    eager = _generate(llama, ids, mask, False)
-    host.fail = torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")
-    assert torch.equal(eager, _generate(llama, ids, mask, True))
-    s = GG.stats(llama)
-    assert s["captures"] == 0 and s["refused_keys"] == 0, s
-    assert s["refusals"] == {"capture failed: out of memory": 9}, s
-    # Room again: the next call captures the same key.
-    host.fail = False
-    assert torch.equal(eager, _generate(llama, ids, mask, True))
-    s = GG.stats(llama)
-    assert s["captures"] == 1 and s["replays"] == 8, s
 
 
 def test_full_length_type_ids_from_a_trainer_still_replay(host, gemma3, monkeypatch):
@@ -1012,9 +849,7 @@ def test_full_length_type_ids_from_a_trainer_still_replay(host, gemma3, monkeypa
 
     def prepare(self, input_ids, *args, **kwargs):
         out = real(self, input_ids, *args, **kwargs)
-        out["mm_token_type_ids"] = torch.zeros(
-            input_ids.shape[0], input_ids.shape[1], dtype = torch.long
-        )
+        out["mm_token_type_ids"] = torch.zeros(input_ids.shape, dtype = torch.long)
         return out
 
     monkeypatch.setattr(type(gemma3), "prepare_inputs_for_generation", prepare)
@@ -1028,14 +863,9 @@ def test_full_length_type_ids_from_a_trainer_still_replay(host, gemma3, monkeypa
         return out
 
     monkeypatch.setattr(GG, "_spec", spec)
-    ids, mask = _ids(gemma3, 2, length = 3)
-    _fresh(gemma3)
     new = 6
-    eager = _generate(gemma3, ids, mask, False, new)
-    assert torch.equal(eager, _generate(gemma3, ids, mask, True, new))
-    s = GG.stats(gemma3)
+    s = _both(gemma3, *_ids(gemma3, 2, length = 3), new)
     assert s["captures"] == 1 and s["replays"] == new - 2 and not s["refusals"], s
-    # Every graphed step saw one column of type ids, not the growing history.
     assert seen and all(shape[-1] == 1 for shape in seen), seen
 
 
@@ -1060,16 +890,11 @@ def test_step_that_fills_the_window_is_never_captured(host, gemma3):
     # roll a window that is still filling. That step runs eagerly; the window-full key is captured after it.
     window = gemma3.config.sliding_window
     # A call past the window first: the roll index exists, so a capture of the rolling branch would succeed.
-    short, short_mask = _ids(gemma3, 2, length = 3)
     _fresh(gemma3)
-    _generate(gemma3, short, short_mask, True, window + 4)
+    _generate(gemma3, *_ids(gemma3, 2, length = 3), True, window + 4)
     assert GG._ROLL_INDEX
-    ids, mask = _ids(gemma3, 2, length = window - 1)
-    _fresh(gemma3)
     new = 8
-    eager = _generate(gemma3, ids, mask, False, new)
-    assert torch.equal(eager, _generate(gemma3, ids, mask, True, new))
-    s = GG.stats(gemma3)
+    s = _both(gemma3, *_ids(gemma3, 2, length = window - 1), new)
     assert s["refusals"] == {"sliding window fills in this step": 1}, s
     assert s["captures"] == 1 and s["validations"] == 1 and s["replays"] == new - 3, s
     state = gemma3.__dict__[GG._ATTR]

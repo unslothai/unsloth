@@ -6,6 +6,7 @@ through the stand-in backend of test_generic_decode_graphs: kill switches, the s
 out-of-memory eager redo, the per-call plan the LoRA fold reads, the graph + StaticCache kept between
 inference calls (released by training), and the BlockMask graph-argument contract."""
 
+import functools
 import os
 import sys
 import types
@@ -22,19 +23,14 @@ from unsloth.models import vision
 from transformers import AutoModelForCausalLM
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_generic_decode_graphs import LLAMA, _Host  # noqa: E402
+from test_generic_decode_graphs import LLAMA, _Host, _ids  # noqa: E402
 
 ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
 
 
 class _DefaultHost(_Host):
-    @staticmethod
-    def available():
-        return True
-
-    @staticmethod
-    def free_bytes(device):
-        return 1 << 40
+    available = staticmethod(lambda: True)
+    free_bytes = staticmethod(lambda device: 1 << 40)
 
 
 @pytest.fixture
@@ -45,9 +41,8 @@ def host(monkeypatch):
     monkeypatch.setattr(G, "ENABLED", None)
     monkeypatch.setattr(G, "_DEFAULT_OK", True)
     monkeypatch.setattr(G, "_STUDIO_DEFAULT_OK", True)
-    monkeypatch.delenv(ENV, raising = False)
-    monkeypatch.delenv("UNSLOTH_DECODE_GENERIC_GRAPHS", raising = False)
-    monkeypatch.delenv("UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP", raising = False)
+    for name in (ENV, "UNSLOTH_DECODE_GENERIC_GRAPHS", "UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP"):
+        monkeypatch.delenv(name, raising = False)
     return backend
 
 
@@ -58,16 +53,6 @@ def llama():
     model._old_generate = model.generate
     model.generate = types.MethodType(vision.unsloth_base_fast_generate, model)
     return model
-
-
-def _ids(
-    model,
-    bsz = 1,
-    length = 6,
-):
-    g = torch.Generator().manual_seed(1)
-    ids = torch.randint(3, 1000, (bsz, length), generator = g)
-    return ids, torch.ones_like(ids)
 
 
 def _gen(
@@ -88,20 +73,19 @@ def _gen(
     )
 
 
+def _eager(
+    model,
+    monkeypatch,
+    new = 10,
+):
+    monkeypatch.setenv(ENV, "0")
+    out = _gen(model, new)
+    monkeypatch.delenv(ENV)
+    return out
+
+
 def _stats(model):
     return GG.stats(model) or {"captures": 0, "replays": 0, "graphs": 0}
-
-
-def test_plain_generate_uses_graphs_by_default(host, llama, monkeypatch):
-    monkeypatch.setenv(ENV, "0")
-    eager = _gen(llama)
-    assert _stats(llama)["replays"] == 0
-    monkeypatch.delenv(ENV)
-    graphed = _gen(llama)
-    s = _stats(llama)
-    assert s["captures"] == 1 and s["replays"] >= 8, s
-    assert torch.equal(eager, graphed)
-    assert "forward" not in llama.__dict__
 
 
 @pytest.mark.parametrize("name", [ENV, "UNSLOTH_DECODE_GENERIC_GRAPHS"])
@@ -137,9 +121,7 @@ def test_call_plan_follows_the_call(host, llama, monkeypatch):
 
 
 def test_out_of_memory_redoes_the_call_eagerly_without_the_wrapper(host, llama, monkeypatch):
-    monkeypatch.setenv(ENV, "0")
-    eager = _gen(llama)
-    monkeypatch.delenv(ENV)
+    eager = _eager(llama, monkeypatch)
     calls = []
     real = GG.decode_step
 
@@ -176,26 +158,20 @@ def test_out_of_memory_with_a_streamer_reraises(host, llama, monkeypatch):
         raise torch.cuda.OutOfMemoryError("CUDA out of memory (test)")
 
     monkeypatch.setattr(GG, "decode_step", oom)
-
-    class Streamer:
-        def put(self, value):
-            pass
-
-        def end(self):
-            pass
-
+    streamer = types.SimpleNamespace(put = lambda value: None, end = lambda: None)
     with pytest.raises(torch.cuda.OutOfMemoryError):
-        _gen(llama, streamer = Streamer())
+        _gen(llama, streamer = streamer)
     assert "forward" not in llama.__dict__
 
 
 def test_kept_graph_replays_the_next_call_and_training_releases_it(host, llama, monkeypatch):
-    monkeypatch.setenv(ENV, "0")
-    eager = _gen(llama)
-    monkeypatch.delenv(ENV)
+    eager = _eager(llama, monkeypatch)
+    assert _stats(llama)["replays"] == 0
+    # Plain generate() graphs by default.
     first = _gen(llama)
     s1 = _stats(llama)
-    assert s1["captures"] == 1 and s1["graphs"] == 1, s1
+    assert s1["captures"] == 1 and s1["graphs"] == 1 and s1["replays"] >= 8, s1
+    assert "forward" not in llama.__dict__
     kept = GG.kept_cache(llama)
     assert kept is not None
     second = _gen(llama)
@@ -205,13 +181,11 @@ def test_kept_graph_replays_the_next_call_and_training_releases_it(host, llama, 
     assert s2["replays"] - s1["replays"] == 9, (s1, s2)
     assert GG.kept_cache(llama) is kept
     assert torch.equal(first, eager) and torch.equal(second, eager)
-    # A short call replays the kept graph too.
     _gen(llama, new = 4)
     assert _stats(llama)["captures"] == 1
     # Training forward without for_training() frees the graph and the cache.
     llama.train()
-    ids, _ = _ids(llama)
-    llama(input_ids = ids)
+    llama(input_ids = _ids(llama)[0])
     assert GG.kept_cache(llama) is None and _stats(llama)["graphs"] == 0
     assert "_cache" not in llama.__dict__
     llama.eval()
@@ -249,14 +223,11 @@ def test_a_short_call_after_a_long_one_replays_the_kept_graph(host, llama, monke
     monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "0")
     _gen(llama, new = 40)
     s1 = _stats(llama)
-    kept = GG.kept_cache(llama)
-    assert s1["captures"] == 1 and kept is not None, s1
+    assert s1["captures"] == 1 and GG.kept_cache(llama) is not None, s1
     monkeypatch.setattr(
         llama, "_previous_max_cache_length", GG._kept_len(llama.__dict__[GG._ATTR]), raising = False
     )
-    monkeypatch.setenv(ENV, "0")
-    eager = _gen(llama, new = 10)
-    monkeypatch.delenv(ENV)
+    eager = _eager(llama, monkeypatch)
     # The eager call dropped the kept graph; capture again, then short calls reuse it.
     _gen(llama, new = 40)
     s2 = _stats(llama)
@@ -271,24 +242,19 @@ def test_other_batch_or_returned_cache_drops_the_kept_graph(host, llama):
     _gen(llama)
     assert GG.kept_cache(llama) is not None
     _gen(llama, bsz = 2)
-    s = _stats(llama)
-    assert s["captures"] == 2, s
+    assert _stats(llama)["captures"] == 2, _stats(llama)
     # A returned cache belongs to the caller: never kept, never reset by a later call.
     out = _gen(llama, return_dict_in_generate = True)
     assert out.past_key_values is not None
     assert GG.kept_cache(llama) is None
 
 
-def test_weights_changed_revokes_the_kept_graph(host, llama):
+def test_weights_changed_and_release_for_training_drop_the_kept_graph(host, llama):
     _gen(llama)
     assert _stats(llama)["captures"] == 1
     G.weights_changed()
     _gen(llama)
     assert _stats(llama)["captures"] == 2
-
-
-def test_release_for_training_drops_the_kept_cache(host, llama):
-    _gen(llama)
     assert GG.kept_cache(llama) is not None
     G.release_for_training(llama)
     assert GG.kept_cache(llama) is None and "_cache" not in llama.__dict__
@@ -299,11 +265,7 @@ def _block_mask(offset, contract = True):
 
     def rebuild(tensors):
         (off,) = tensors
-
-        def mask_mod(b, h, q_idx, kv_idx):
-            return q_idx + off >= kv_idx
-
-        return mask_mod
+        return lambda b, h, q_idx, kv_idx: q_idx + off >= kv_idx
 
     n = 2
     mask = BlockMask.from_kv_blocks(
@@ -323,8 +285,7 @@ def test_block_mask_contract_round_trip(host):
     mask = _block_mask(offset)
     leaves = []
     spec = GG._spec({"full_attention": mask}, leaves, None)
-    again = []
-    assert GG._spec({"full_attention": _block_mask(torch.tensor(7))}, again, None) == spec
+    assert GG._spec({"full_attention": _block_mask(torch.tensor(7))}, [], None) == spec
     assert any(leaf is offset for leaf in leaves)
 
     def at(t):
@@ -339,47 +300,63 @@ def test_block_mask_contract_round_trip(host):
     assert not bool(built.mask_mod(0, 0, q, k))
     static.fill_(5)  # a refill reaches the rebuilt mask_mod
     assert bool(built.mask_mod(0, 0, q, k))
-
-
-def test_block_mask_without_the_contract_is_refused(host):
     with pytest.raises(GG._Refuse, match = "argument BlockMask"):
         GG._spec(_block_mask(torch.tensor(3), contract = False), [], None)
 
 
-def test_placeholder_masking_models_embed_outside_the_graph():
-    """Muse-Glimmer / Muse-Spark / Kimi-K2.5 zero placeholder ids with ids[mask] = 0 (a boolean index_put_, a
-    host sync): their decode step gets the same embeddings computed before the graph, from the same ops."""
+class _Muse(torch.nn.Module):
+    """A Muse-Glimmer-like decoder: the embedding is trainable and may answer on another device."""
 
-    class Model(torch.nn.Module):
-        def __init__(self, model_type):
-            super().__init__()
-            self.config = types.SimpleNamespace(
-                model_type = model_type, image_token_id = 5, video_token_id = 6
-            )
-            self.embed = torch.nn.Embedding(10, 4)
+    def __init__(
+        self,
+        answer_on = None,
+        model_type = "muse_glimmer",
+    ):
+        super().__init__()
+        self.config = types.SimpleNamespace(
+            model_type = model_type, image_token_id = 5, video_token_id = 6
+        )
+        self.embed = torch.nn.Embedding(10, 4)
+        self.answer_on = answer_on
 
-        def get_input_embeddings(self):
+    def get_input_embeddings(self):
+        if self.answer_on is None:
             return self.embed
+        return lambda ids: torch.zeros(*ids.shape, 4, device = self.answer_on)
 
+
+def test_placeholder_masking_models_embed_outside_the_graph(host):
+    """Muse-Glimmer / Muse-Spark / Kimi-K2.5 zero placeholder ids with ids[mask] = 0 (a boolean index_put_, a
+    host sync): their decode step gets the same embeddings computed before the graph, from the same ops, never
+    tracking grad (the embedding is trainable) so they pass the argument check."""
     ids = torch.tensor([[5], [3], [6]])
-    model = Model("muse_glimmer")
-    out = GG._placeholder_embeds(
-        model, {"input_ids": ids, "inputs_embeds": None, "use_cache": True}
-    )
+    model = _Muse()
+    assert model.embed.weight.requires_grad
+    with torch.enable_grad():
+        out = GG._placeholder_embeds(
+            model, {"input_ids": ids, "inputs_embeds": None, "use_cache": True}
+        )
     llm = ids.clone()
     llm[(ids == 5) | (ids == 6)] = 0  # what the model's forward does
     assert out["input_ids"] is None and out["use_cache"] is True
-    assert torch.equal(out["inputs_embeds"], model.embed(llm))
+    embeds = out["inputs_embeds"]
+    assert torch.equal(embeds, model.embed(llm)) and not embeds.requires_grad
+    leaves = []
+    GG._spec(out, leaves, None)  # not "tensor argument requires grad"
+    assert any(leaf is embeds for leaf in leaves)
     # Other models, media steps and an explicit inputs_embeds are left alone.
     kwargs = {"input_ids": ids}
-    assert GG._placeholder_embeds(Model("gemma4"), kwargs) is kwargs
+    assert GG._placeholder_embeds(_Muse(model_type = "gemma4"), kwargs) is kwargs
     media = {"input_ids": ids, "pixel_values": torch.ones(1)}
     assert GG._placeholder_embeds(model, media) is media
+    # The lookup answers on the host while the ids live elsewhere (meta stands in for the card).
+    ids = torch.tensor([[5], [3]], device = "meta")
+    out = GG._placeholder_embeds(_Muse(answer_on = "cpu"), {"input_ids": ids})
+    assert out["inputs_embeds"].device == ids.device
 
 
 def _hooked(model, hook):
     """What accelerate's add_hook_to_module leaves on a module (without moving its parameters)."""
-    import functools
 
     def new_forward(module, *args, **kwargs):
         args, kwargs = module._hf_hook.pre_forward(module, *args, **kwargs)
@@ -403,72 +380,32 @@ def test_a_single_device_accelerate_hook_keeps_graphs_eligible(monkeypatch):
         def device(self):
             return torch.device("cuda", 1)
 
+    def wanted(hook):
+        return GG.wanted(_hooked(OnCard1(2, 2), hook))
+
     monkeypatch.setattr(G, "ENABLED", True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.delenv("UNSLOTH_DECODE_GENERIC_GRAPHS", raising = False)
-    assert GG.wanted(
-        _hooked(OnCard1(2, 2), AlignDevicesHook(execution_device = 1, io_same_device = True))
-    )
-    assert GG.wanted(_hooked(OnCard1(2, 2), AlignDevicesHook(execution_device = "cuda:1")))
+    assert wanted(AlignDevicesHook(execution_device = 1, io_same_device = True))
+    assert wanted(AlignDevicesHook(execution_device = "cuda:1"))
     # Hooks that move weights or run elsewhere stay eager.
-    assert not GG.wanted(_hooked(OnCard1(2, 2), AlignDevicesHook(execution_device = 0)))
-    assert not GG.wanted(_hooked(OnCard1(2, 2), AlignDevicesHook(execution_device = 1, offload = True)))
-    assert not GG.wanted(_hooked(OnCard1(2, 2), ModelHook()))
+    assert not wanted(AlignDevicesHook(execution_device = 0))
+    assert not wanted(AlignDevicesHook(execution_device = 1, offload = True))
+    assert not wanted(ModelHook())
 
 
 def test_generate_through_a_single_device_hook_uses_graphs(host, llama, monkeypatch):
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
-    monkeypatch.setenv(ENV, "0")
-    eager = _gen(llama)
-    monkeypatch.delenv(ENV)
+    eager = _eager(llama, monkeypatch)
     add_hook_to_module(llama, AlignDevicesHook(execution_device = "cpu", io_same_device = True))
     hooked = llama.__dict__["forward"]
     graphed = _gen(llama)
     s = _stats(llama)
     assert s["captures"] == 1 and s["replays"] >= 8, s
     assert torch.equal(eager, graphed)
-    # The hook's forward is put back after the call.
     assert llama.__dict__["forward"] is hooked
-
-
-class _Muse(torch.nn.Module):
-    """A Muse-Glimmer-like decoder: the embedding is trainable and may answer on another device."""
-
-    def __init__(self, answer_on = None):
-        super().__init__()
-        self.config = types.SimpleNamespace(
-            model_type = "muse_glimmer", image_token_id = 5, video_token_id = 6
-        )
-        self.embed = torch.nn.Embedding(10, 4)
-        self.answer_on = answer_on
-
-    def get_input_embeddings(self):
-        if self.answer_on is None:
-            return self.embed
-        return lambda ids: torch.zeros(*ids.shape, 4, device = self.answer_on)
-
-
-def test_placeholder_embeds_never_track_grad_and_pass_the_argument_check(host):
-    model = _Muse()
-    assert model.embed.weight.requires_grad
-    ids = torch.tensor([[5], [3]])
-    with torch.enable_grad():
-        out = GG._placeholder_embeds(model, {"input_ids": ids})
-    embeds = out["inputs_embeds"]
-    assert not embeds.requires_grad
-    leaves = []
-    GG._spec(out, leaves, None)  # not "tensor argument requires grad"
-    assert any(leaf is embeds for leaf in leaves)
-
-
-def test_placeholder_embeds_land_on_the_decode_step_device():
-    # The lookup answers on the host while the ids live elsewhere (meta stands in for the card).
-    model = _Muse(answer_on = "cpu")
-    ids = torch.tensor([[5], [3]], device = "meta")
-    out = GG._placeholder_embeds(model, {"input_ids": ids})
-    assert out["inputs_embeds"].device == ids.device
 
 
 def test_refusal_reasons_name_the_argument(host, llama, monkeypatch):
@@ -476,8 +413,6 @@ def test_refusal_reasons_name_the_argument(host, llama, monkeypatch):
 
     def with_grad_tensor(model, kwargs):
         return {**real(model, kwargs), "extra": torch.zeros(1, requires_grad = True)}
-
-    import functools
 
     monkeypatch.setattr(GG, "_mrope_positions", with_grad_tensor)
     cls_forward = type(llama).forward
@@ -552,9 +487,7 @@ def _offload(
 
 
 def test_offloaded_input_embedding_is_looked_up_outside_the_graph(host, llama, monkeypatch):
-    monkeypatch.setenv(ENV, "0")
-    eager = _gen(llama)
-    monkeypatch.delenv(ENV)
+    eager = _eager(llama, monkeypatch)
     embedding = _offload(host, llama, monkeypatch)
     graphed = _gen(llama)
     s = _stats(llama)
@@ -564,12 +497,18 @@ def test_offloaded_input_embedding_is_looked_up_outside_the_graph(host, llama, m
     assert embedding.calls and not any(embedding.calls)
 
 
-def test_offloaded_input_embedding_swap_recaptures(host, llama, monkeypatch):
+def test_offloaded_input_embedding_swap_recaptures_and_unhooked_is_refused(
+    host, llama, monkeypatch
+):
     embedding = _offload(host, llama, monkeypatch)
     first = GG._fingerprint(llama)
     assert first is not None
     embedding.weight = torch.nn.Parameter(torch.empty_like(embedding.weight), requires_grad = False)
     assert GG._fingerprint(llama) not in (None, first)
+    # An off-device embedding without Unsloth's offload hooks stays refused.
+    embedding._unsloth_offload_hooks_installed = False
+    assert GG._offloaded_input_embedding(llama) is None
+    assert GG._fingerprint(llama) is None
 
 
 def test_another_offloaded_parameter_is_still_refused(host, llama, monkeypatch):
@@ -578,10 +517,3 @@ def test_another_offloaded_parameter_is_still_refused(host, llama, monkeypatch):
     _gen(llama)
     s = _stats(llama)
     assert s["replays"] == 0 and "not one CUDA device / adapters" in s["refusals"], s
-
-
-def test_an_unhooked_off_device_embedding_is_still_refused(host, llama, monkeypatch):
-    embedding = _offload(host, llama, monkeypatch)
-    embedding._unsloth_offload_hooks_installed = False
-    assert GG._offloaded_input_embedding(llama) is None
-    assert GG._fingerprint(llama) is None
