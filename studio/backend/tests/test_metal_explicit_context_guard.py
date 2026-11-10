@@ -135,7 +135,6 @@ def _launch(
         "_apple_metal_memory_budget_bytes",
         staticmethod(lambda: budget_bytes if metal else 0),
     )
-    # real_wired keeps the backend's own wired readers; the caller stubs the system probe.
     if not real_wired:
         monkeypatch.setattr(
             LlamaCppBackend,
@@ -1923,8 +1922,6 @@ class TestAutoOnAMacWithRoomToSpare:
 
 
 class TestOneWiredReadingPerLoad:
-    """Each wired reading spawns sysctl and ioreg; one placement asks up to six times."""
-
     _ROOMY = dict(real_fit = True, budget_bytes = _BUDGET, weights_bytes = 1024**3, kv_per_token = _FAT_KV)
 
     @staticmethod
@@ -1961,7 +1958,6 @@ class TestOneWiredReadingPerLoad:
         assert len(calls) == 2
 
     def test_the_reused_reading_places_the_load_the_same(self, tmp_path, monkeypatch):
-        """Same argv as a load that reads the probe afresh every time."""
         import core.inference.llama_cpp as _llama_cpp
 
         self._count_probes(monkeypatch, [17 * 1024**3 // 2])
