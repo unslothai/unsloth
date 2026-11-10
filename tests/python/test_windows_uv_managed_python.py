@@ -7,11 +7,13 @@ A system 3.12 must never silently replace a requested 3.13 (the cu130 torch rout
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -39,6 +41,7 @@ if ($args[0] -eq 'python' -and $args[1] -eq 'find') {
     if ($facts -and $facts.PSObject.Properties.Name -contains $key) {
         Set-Content -LiteralPath $env:FAKE_PY_FACTS_FILE -Value $facts.$key
         Write-Output $env:FAKE_PY
+        if ($env:FAKE_UV_STDERR) { & $env:PROBE_PYTHON -c 'import os, sys; print(os.environ["FAKE_UV_STDERR"], file=sys.stderr)' }
         exit 0
     }
     exit 2
@@ -63,22 +66,30 @@ def _fake_python(tmp_path: Path) -> Path:
     """An interpreter stand-in that prints whatever facts the fake uv last wrote."""
     if os.name == "nt":
         exe = tmp_path / "python.cmd"
-        exe.write_text('@type "%FAKE_PY_FACTS_FILE%"\r\n', encoding = "utf-8")
+        exe.write_text(
+            '@type "%FAKE_PY_FACTS_FILE%"\r\n'
+            "@if defined FAKE_PY_STDERR echo %FAKE_PY_STDERR% 1>&2\r\n",
+            encoding = "utf-8",
+        )
     else:
         exe = tmp_path / "python"
-        exe.write_text('#!/bin/sh\ncat "$FAKE_PY_FACTS_FILE"\n', encoding = "utf-8")
+        exe.write_text(
+            '#!/bin/sh\ncat "$FAKE_PY_FACTS_FILE"\n'
+            'if [ -n "$FAKE_PY_STDERR" ]; then printf "%s\\n" "$FAKE_PY_STDERR" >&2; fi\n',
+            encoding = "utf-8",
+        )
         exe.chmod(0o755)
     return exe
 
 
-def _pwsh(shell: str, script: str, env: dict[str, str]) -> str:
+def _pwsh(shell: str, script: str, env: dict[str, str | None]) -> str:
     return run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
         text = True,
         encoding = "utf-8",
-        env = dict(os.environ, **env),
+        env = {key: value for key, value in dict(os.environ, **env).items() if value is not None},
         timeout = 60,
     ).stdout.strip()
 
@@ -92,6 +103,7 @@ def _resolve(
     patch: str = "",
     skip: list[str] | None = None,
     install_exit: int = 0,
+    stderr: str = "",
 ):
     (tmp_path / "uv.ps1").write_text(FAKE_UV, encoding = "utf-8")
     log = tmp_path / "uv.log"
@@ -125,6 +137,9 @@ if ($r) {{ $r | ConvertTo-Json -Compress }} else {{ 'null' }}
             "FAKE_UV_FACTS": json.dumps(facts),
             "FAKE_PY": str(fake_py),
             "FAKE_PY_FACTS_FILE": str(tmp_path / "facts.txt"),
+            "FAKE_UV_STDERR": stderr,
+            "FAKE_PY_STDERR": stderr,
+            "PROBE_PYTHON": sys.executable,
         },
     )
     calls = log.read_text(encoding = "utf-8").splitlines() if log.exists() else []
@@ -316,7 +331,6 @@ function Write-TauriLog {{ param($a, $b) }}
 function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) }}
 function step {{ param($a, $b, $c) }}
 function substep {{ param($a, $b) }}
-function step {{ param($a, $b) }}
 function Remove-IndexUrlCredentials {{ param($u) return $u }}
 function Get-HostMachineArch {{ return "{host}" }}
 function Initialize-WoaNativeCudaTorch {{
@@ -405,6 +419,7 @@ function Resolve-UvManagedPython {{
     }}
     return $null
 }}
+function Resolve-SignedManagedPython {{ param($Minor, $Patch, $Arch, [switch]$CacheOnly) return $null }}
 {_function("Test-Arm64PythonOptOut")}
 function Probe {{
     $PythonVersion = "3.13"; $PythonPatchRequest = ""; $PythonRequestLabel = "3.13"
@@ -564,7 +579,14 @@ $r = Invoke-PythonSelectionProbe -Executable $env:PROBE_CHILD
     "managed, blocked, signed, expected, calls",
     [
         (True, False, True, "managed", 0),
-        (False, False, True, "failed", 0),  # offline is not a reason to change interpreter source
+        (
+            False,
+            False,
+            True,
+            "signed-managed",
+            1,
+        ),  # reuse a validated cache after uv's runtime was removed
+        (False, False, False, "failed", 1),
         (False, True, True, "signed-managed", 1),
         (False, True, False, "failed", 1),
     ],
@@ -586,7 +608,8 @@ function Resolve-UvManagedPython {{
     if (${str(managed).lower()}) {{ return @{{ Full = '3.13.17'; Arch = $Arch; Source = 'managed' }} }}
 }}
 function Resolve-SignedManagedPython {{
-    param($Minor, $Patch, $Arch)
+    param($Minor, $Patch, $Arch, [switch]$CacheOnly)
+    if ([bool]$CacheOnly -ne (-not ${str(blocked).lower()})) {{ throw 'Downloads require policy evidence' }}
     $script:Calls++
     if (${str(signed).lower()}) {{ return @{{ Full = '3.13.17'; Arch = $Arch; Source = 'signed-managed' }} }}
 }}
@@ -657,8 +680,9 @@ if ($r) {{ $r | ConvertTo-Json -Compress }} else {{ 'null' }}
         ("", "policy refused a runtime DLL", False, False, True),
     ],
 )
+@pytest.mark.parametrize("hidden", [False, True])
 def test_signed_runtime_checks_libraries_and_launchers_before_execution(
-    shell, tmp_path, bad_file, facts, success, expected, probed
+    shell, tmp_path, bad_file, facts, success, expected, probed, hidden
 ):
     files = [
         "python.exe",
@@ -679,6 +703,11 @@ def test_signed_runtime_checks_libraries_and_launchers_before_execution(
     script = f"""
 $ErrorActionPreference = 'Stop'
 $script:Probed = $false
+if (${str(hidden).lower()}) {{
+    foreach ($file in Get-ChildItem -LiteralPath $env:RUNTIME -Recurse -File) {{
+        $file.Attributes = $file.Attributes -bor [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System
+    }}
+}}
 function substep {{ param($Message, $Color) }}
 function Redact-InstallOutput {{ param($Text) $Text }}
 function Get-AuthenticodeSignature {{
@@ -691,7 +720,7 @@ function Get-AuthenticodeSignature {{
 function Invoke-PythonSelectionProbe {{
     param($Executable, $Arguments)
     $script:Probed = $true
-    @{{ Success = ${str(success).lower()}; Diagnostic = '{facts}' }}
+    @{{ Success = ${str(success).lower()}; Output = @('{facts}'); Diagnostic = '{facts}' }}
 }}
 {_function('Test-SignedPythonRuntime')}
 $r = Test-SignedPythonRuntime -Root $env:RUNTIME -Package @{{ Version='3.13.17'; Minor='3.13'; Arch='x86_64' }}
@@ -738,6 +767,7 @@ function Expand-Archive {{
     [IO.Directory]::CreateDirectory((Join-Path $DestinationPath 'tools')) | Out-Null
 }}
 function Test-SignedPythonRuntime {{ param($Root,$Package) return $null }}
+function Test-SignedPythonDownloadAllowed {{ return (-not (Test-UvEnvFlag 'UV_OFFLINE') -and $env:UV_PYTHON_DOWNLOADS -ne 'never') }}
 {_function('Test-UvEnvFlag')}
 {_function('Resolve-SignedManagedPython')}
 $r = Resolve-SignedManagedPython -Minor '3.13'
@@ -773,7 +803,10 @@ def test_policy_block_installs_private_signed_runtime_and_reuses_it_offline(shel
     # signatures, native imports, install, cache reuse, and venv creation are real.
     uv = tmp_path / "blocked-uv.cmd"
     uv.write_text(
-        "@echo uv trampoline failed to spawn Python child process: os error 4551 1>&2\n@exit /b 1\n",
+        '@if "%~3"=="--show-settings" goto settings\n'
+        "@echo uv trampoline failed to spawn Python child process: os error 4551 1>&2\n@exit /b 1\n"
+        ":settings\n@echo GlobalSettings {\n@echo     connectivity: Online,\n"
+        "@echo     python_downloads: Automatic,\n@echo }\n@exit /b 0\n",
         encoding = "utf-8",
     )
     create_venv = _between(
@@ -789,6 +822,7 @@ def test_policy_block_installs_private_signed_runtime_and_reuses_it_offline(shel
             "Resolve-UvManagedPython",
             "Get-SignedPythonPackage",
             "Test-SignedPythonRuntime",
+            "Test-SignedPythonDownloadAllowed",
             "Resolve-SignedManagedPython",
             "Test-UvEnvFlag",
             "Test-LegacyVenvReusable",
@@ -845,3 +879,314 @@ if ($LASTEXITCODE -ne 0) {{ throw 'venv launch failed' }}
     assert r["Status"] == "Valid" and r["Facts"] == "3.13.17 1"
     assert Path(r["Path"]).is_relative_to(home / "python-signed")
     assert r["Downloads"] == 1 and r["Stages"] == 0 and not r["Legacy"]
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_discovery_and_version_facts_ignore_trailing_native_stderr(shell, tmp_path):
+    result, _, fake_py = _resolve(
+        shell,
+        tmp_path,
+        facts = {X64: "3.13.17 win-amd64 0"},
+        stderr = "TRACE Released lock at the uv cache",
+    )
+    assert result["Path"] == fake_py
+    assert result["Full"] == "3.13.17"
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("stderr_first", [False, True])
+def test_probe_keeps_stdout_separate_without_losing_diagnostics(shell, stderr_first):
+    writes = [
+        "print('the interpreter path', flush=True)",
+        "print('diagnostic', file=sys.stderr, flush=True)",
+    ]
+    if stderr_first:
+        writes.reverse()
+    code = "import sys, time; " + "; time.sleep(0.05); ".join(writes)
+    script = f"""
+{_function('Test-ApplicationControlBlock')}
+{_function('Invoke-PythonSelectionProbe')}
+$r = Invoke-PythonSelectionProbe -Executable $env:PROBE_PYTHON -Arguments @('-c', $env:PROBE_CODE)
+$r | ConvertTo-Json -Compress
+"""
+    r = json.loads(_pwsh(shell, script, {"PROBE_PYTHON": sys.executable, "PROBE_CODE": code}))
+    assert r["Success"] and not r["Blocked"]
+    assert r["Output"] == ["the interpreter path"]
+    assert "diagnostic" in r["Diagnostic"]
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "arm_blocked, x64_blocked", [(False, False), (True, False), (False, True), (True, True)]
+)
+def test_policy_evidence_does_not_leak_between_architectures(shell, arm_blocked, x64_blocked):
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$PythonSkip = @()
+$script:Selections = @()
+function Invoke-InstallCommand {{ param($Command, $Label) return 1 }}
+function Write-StudioLine {{ param($Message, $ForegroundColor) }}
+function substep {{ param($Message, $Color) }}
+function step {{ param($Name, $Message) }}
+function Exit-InstallFailure {{ param($Message) return $null }}
+function Test-Arm64PythonOptOut {{ return $false }}
+function Invoke-PythonSelectionProbe {{
+    param($Executable, $Arguments)
+    $blocked = if ($Arguments[-1] -match 'aarch64') {{ ${str(arm_blocked).lower()} }} else {{ ${str(x64_blocked).lower()} }}
+    return @{{ Success=$false; Blocked=$blocked; Diagnostic='' }}
+}}
+function Resolve-SignedManagedPython {{
+    param($Minor, $Patch, $Arch, [switch]$CacheOnly)
+    $script:Selections += @{{ Arch=$Arch; CacheOnly=[bool]$CacheOnly }}
+    return $null
+}}
+{_function('Resolve-UvManagedPython')}
+function Run {{
+    $PythonVersion='3.13'; $PythonPatchRequest=''; $PythonArch='arm64'; $PythonRequestLabel='3.13'
+{RESOLVE_SITE}
+}}
+$null = Run
+ConvertTo-Json -InputObject $script:Selections -Compress
+"""
+    assert json.loads(_pwsh(shell, script, {})) == [
+        {"Arch": "arm64", "CacheOnly": not arm_blocked},
+        {"Arch": "x86_64", "CacheOnly": not x64_blocked},
+    ]
+
+
+SETTINGS = "GlobalSettings {\n    connectivity: Online,\n    python_downloads: Automatic,\n}"
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "output, diagnostic, success, allowed",
+    [
+        (SETTINGS, "", True, True),
+        (SETTINGS.replace("Automatic", "Manual"), "", True, True),
+        (SETTINGS.replace("Automatic", "Never"), "", True, False),
+        (SETTINGS.replace("Online", "Offline"), "", True, False),
+        (SETTINGS, "TRACE Released lock at cache", True, True),
+        (
+            SETTINGS,
+            "warning: Failed to parse `pyproject.toml` during settings discovery:",
+            True,
+            False,
+        ),
+        (SETTINGS, "error: invalid settings", False, False),
+        ("", "", True, False),
+        (SETTINGS + "\n" + SETTINGS, "", True, False),
+        (
+            SETTINGS.replace("    connectivity:", "    connectivity: Offline,\n    connectivity:"),
+            "",
+            True,
+            False,
+        ),
+        (
+            SETTINGS.replace(
+                "    python_downloads:", "    python_downloads: Unknown,\n    python_downloads:"
+            ),
+            "",
+            True,
+            False,
+        ),
+        (SETTINGS.replace("Automatic", "Unknown"), "", True, False),
+        (SETTINGS.replace("    python_downloads: Automatic,\n", ""), "", True, False),
+        (SETTINGS.replace("\n", "\r\n"), "", True, True),
+    ],
+)
+def test_download_policy_requires_recognized_effective_settings(
+    shell, output, diagnostic, success, allowed
+):
+    script = f"""
+function substep {{ param($Message, $Color) }}
+function Invoke-PythonSelectionProbe {{
+    param($Executable, $Arguments)
+    if (($Arguments -join ' ') -ne 'python install --show-settings --color never') {{ throw 'Wrong settings query' }}
+    @{{ Success = ${str(success).lower()}; Output = @($env:SETTINGS); Diagnostic = $env:DIAGNOSTIC }}
+}}
+{_function('Test-SignedPythonDownloadAllowed')}
+Test-SignedPythonDownloadAllowed | ConvertTo-Json -Compress
+"""
+    assert (
+        json.loads(_pwsh(shell, script, {"SETTINGS": output, "DIAGNOSTIC": diagnostic})) is allowed
+    )
+
+
+@needs_pwsh
+@pytest.mark.skipif(not shutil.which("uv"), reason = "requires uv to resolve real configuration")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "config, env, allowed",
+    [
+        ("", {}, True),
+        ('offline = true\npython-downloads = "never"\n', {}, False),
+        ("offline = true\n", {}, False),
+        ('python-downloads = "never"\n', {}, False),
+        ('python-downloads = "manual"\n', {}, True),
+        ('python-downloads = "never"\n', {"UV_PYTHON_DOWNLOADS": "automatic"}, True),
+        ('python-downloads = "automatic"\n', {"UV_PYTHON_DOWNLOADS": "never"}, False),
+        ("offline = false\n", {"UV_OFFLINE": "true"}, False),
+        ("offline = not-valid-toml\n", {}, False),
+        ("", {"RUST_LOG": "trace"}, True),
+    ],
+)
+@pytest.mark.parametrize("location", ["explicit", "project", "pyproject", "user"])
+def test_download_policy_uses_real_uv_configuration(
+    shell, tmp_path, config, env, allowed, location
+):
+    project = tmp_path / "project"
+    user = tmp_path / "config" / "uv"
+    project.mkdir()
+    user.mkdir(parents = True)
+    config_path = (
+        user / "uv.toml"
+        if location == "user"
+        else project / ("pyproject.toml" if location == "pyproject" else "uv.toml")
+    )
+    config_path.write_text(
+        ("[tool.uv]\n" if location == "pyproject" else "") + config, encoding = "utf-8"
+    )
+    script = f"""
+$script:UvExe = $env:TEST_UV
+function substep {{ param($Message, $Color) }}
+{_function('Test-ApplicationControlBlock')}
+{_function('Invoke-PythonSelectionProbe')}
+{_function('Test-SignedPythonDownloadAllowed')}
+Test-SignedPythonDownloadAllowed | ConvertTo-Json -Compress
+"""
+    isolated = {
+        "TEST_UV": shutil.which("uv"),
+        "UV_WORKING_DIR": str(project),
+        "UV_WORKING_DIRECTORY": None,
+        "UV_PROJECT": None,
+        "UV_CONFIG_FILE": str(config_path) if location == "explicit" else None,
+        "UV_NO_CONFIG": None,
+        "UV_NO_SYSTEM_CONFIG": "1",
+        "UV_OFFLINE": None,
+        "UV_PYTHON_DOWNLOADS": None,
+        "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
+        "UV_PYTHON_INSTALL_DIR": str(tmp_path / "python"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "APPDATA": str(tmp_path / "config"),
+        "RUST_LOG": "",
+        **env,
+    }
+    assert json.loads(_pwsh(shell, script, isolated)) is allowed
+    assert not (tmp_path / "python").exists()
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "initial, blocked, offline, failure, downloads, accepted",
+    [
+        ("missing", True, False, "", 1, True),
+        ("missing", False, False, "", 0, False),
+        ("missing", True, True, "", 0, False),
+        ("valid", False, True, "", 0, True),
+        ("damaged", True, False, "", 1, True),
+        ("unreadable", True, False, "", 1, True),
+        ("file", True, False, "", 1, True),
+        ("damaged", False, False, "", 0, False),
+        ("damaged", True, True, "", 0, False),
+        ("damaged", True, False, "download", 1, False),
+        ("damaged", True, False, "checksum", 1, False),
+        ("damaged", True, False, "signature", 1, False),
+    ],
+)
+def test_signed_runtime_repair_preserves_old_bases_and_reuses_replacements(
+    shell, tmp_path, initial, blocked, offline, failure, downloads, accepted
+):
+    archive = tmp_path / "package.zip"
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("tools/python.exe", "new runtime")
+        package.writestr("tools/valid.txt", "validated runtime")
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    name = f"cpython-3.13.17-x86_64-{checksum[:12]}"
+    home = tmp_path / "Studio home"
+    root = home / "python-signed" / name
+    old = home / "unsloth_studio" / "pyvenv.cfg"
+    old.parent.mkdir(parents = True)
+    old.write_text(f"home = {root}\nversion = 3.13.17\n", encoding = "utf-8")
+    before = old.read_bytes()
+    if initial == "file":
+        root.parent.mkdir(parents = True)
+        root.write_text("occupied path")
+    elif initial != "missing":
+        root.mkdir(parents = True)
+        (root / "python.exe").write_text("old runtime")
+        if initial == "valid":
+            (root / "valid.txt").touch()
+        if initial == "unreadable":
+            (root / "unreadable.txt").touch()
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$StudioHome = $env:TEST_HOME
+$script:Downloads = 0
+$script:Blocked = ${str(blocked).lower()}
+function substep {{ param($Message, $Color) }}
+function step {{ param($Name, $Message) }}
+function Write-StudioLine {{ param($Message, $ForegroundColor) }}
+function Redact-InstallOutput {{ param($Text) return $Text }}
+function Exit-InstallFailure {{ param($Message) return $null }}
+function Resolve-UvManagedPython {{ param($Minor, $Patch, $Arch) $script:PythonPolicyBlocked = $script:Blocked; return $null }}
+function Get-SignedPythonPackage {{ param($Minor, $Patch, $Arch) @{{ Version='3.13.17'; Minor='3.13'; Arch='x86_64'; Sha256='{checksum}'; Url='https://example.invalid/python.nupkg' }} }}
+function Test-SignedPythonDownloadAllowed {{ return (-not (Test-UvEnvFlag 'UV_OFFLINE')) }}
+function Invoke-WebRequest {{
+    param([switch]$UseBasicParsing, $Uri, $OutFile, $TimeoutSec, $ErrorAction)
+    $script:Downloads++
+    if ('{failure}' -eq 'download') {{ throw 'network unavailable' }}
+    if ('{failure}' -eq 'checksum') {{ [IO.File]::WriteAllText($OutFile, 'wrong bytes'); return }}
+    Copy-Item -LiteralPath $env:PACKAGE -Destination $OutFile
+}}
+function Test-SignedPythonRuntime {{
+    param($Root, $Package)
+    if (Test-Path -LiteralPath (Join-Path $Root 'unreadable.txt')) {{ throw 'unreadable runtime' }}
+    if ('{failure}' -eq 'signature' -or -not (Test-Path -LiteralPath (Join-Path $Root 'valid.txt'))) {{ return $null }}
+    return @{{ Version='3.13'; Full='3.13.17'; Arch='x86_64'; Source='signed-managed'; Path=(Join-Path $Root 'python.exe') }}
+}}
+{_function('Test-UvEnvFlag')}
+{_function('Test-Arm64PythonOptOut')}
+{_function('Resolve-SignedManagedPython')}
+function Run {{
+    $PythonVersion='3.13'; $PythonPatchRequest=''; $PythonArch='x86_64'; $PythonRequestLabel='3.13'
+{RESOLVE_SITE}
+    return $DetectedPython
+}}
+$result = Run
+$again = $null
+if ($result) {{
+    $env:UV_OFFLINE='1'
+    $script:Blocked=$false
+    $again = Run
+}}
+@{{ Accepted=[bool]$result; Path=$result.Path; Reused=([bool]$again -and $again.Path -eq $result.Path); Downloads=$script:Downloads; Stages=@(Get-ChildItem -LiteralPath (Join-Path $StudioHome 'python-signed') -Filter '.stage-*' -ErrorAction SilentlyContinue).Count }} | ConvertTo-Json -Compress
+"""
+    r = json.loads(
+        _pwsh(
+            shell,
+            script,
+            {
+                "TEST_HOME": str(home),
+                "PACKAGE": str(archive),
+                "UV_OFFLINE": "1" if offline else "",
+                "UNSLOTH_ALLOW_ARM64_PYTHON": "",
+            },
+        )
+    )
+    assert r["Accepted"] is accepted
+    assert r["Downloads"] == downloads
+    assert r["Stages"] == 0
+    assert r["Reused"] is accepted
+    assert old.read_bytes() == before
+    if initial == "file":
+        assert root.read_text() == "occupied path"
+    elif initial != "missing":
+        assert (root / "python.exe").read_text() == "old runtime"
+    if accepted and initial in ("damaged", "unreadable", "file"):
+        assert Path(r["Path"]).parent != root
+        assert re.fullmatch(re.escape(name) + r"-[0-9a-f]{32}", Path(r["Path"]).parent.name)

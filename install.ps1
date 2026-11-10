@@ -6650,7 +6650,10 @@ exit 0
         if (-not $ok -and $diagnostic -match '(?i)\b(?:os error|WinError)\s+(?:4551|1260)\b') {
             $blocked = $true
         }
-        return @{ Success = $ok; Blocked = $blocked; Output = $output; Diagnostic = $diagnostic }
+        # Native stderr remains an ErrorRecord after 2>&1 in both supported shells.
+        # Keep it for diagnostics, never as an interpreter path or version response.
+        $stdout = @($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+        return @{ Success = $ok; Blocked = $blocked; Output = $stdout; Diagnostic = $diagnostic }
     }
 
     # Official CPython NuGet distributions: https://docs.python.org/3.13/using/windows.html#the-nuget-org-packages
@@ -6682,7 +6685,7 @@ exit 0
         # The six distlib executables are pip's launcher *templates*, not runtime
         # components. Unsloth uses uv for packages and CPython's signed venv launchers.
         # Do not exempt any other native binary, including other site-packages content.
-        foreach ($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction Stop |
+        foreach ($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction Stop |
                            Where-Object { $_.Extension -in @('.exe', '.dll', '.pyd') })) {
             $relative = $file.FullName.Substring($Root.TrimEnd('\', '/').Length + 1)
             if ($relative -match '^Lib\\site-packages\\pip\\_vendor\\distlib\\[tw](32|64|64-arm)\.exe$') { continue }
@@ -6704,12 +6707,38 @@ exit 0
             return $null
         }
         $wantTag = if ($Package.Arch -eq 'arm64') { 'win-arm64' } else { 'win-amd64' }
-        if ($probe.Diagnostic.Trim() -ne "$($Package.Version) $wantTag 0") { return $null }
+        if (($probe.Output -join "`n").Trim() -ne "$($Package.Version) $wantTag 0") { return $null }
         return @{ Version = $Package.Minor; Full = $Package.Version; Path = $exe; Arch = $Package.Arch; Source = 'signed-managed' }
     }
 
+    function Test-SignedPythonDownloadAllowed {
+        # Let uv resolve TOML, discovery paths, and environment precedence itself.
+        # --show-settings exits before installing or accessing the network.
+        $settings = Invoke-PythonSelectionProbe -Executable $script:UvExe -Arguments @('python', 'install', '--show-settings', '--color', 'never')
+        $text = $settings.Output -join "`n"
+        $blocks = [regex]::Matches($text, '(?ms)^GlobalSettings \{\r?\n(?<body>.*?)^\}\r?$')
+        $body = if ($blocks.Count -eq 1) { $blocks[0].Groups['body'].Value } else { '' }
+        $connectivity = [regex]::Matches($body, '(?m)^[ \t]+connectivity: ([^\r\n]*)\r?$')
+        $downloads = [regex]::Matches($body, '(?m)^[ \t]+python_downloads: ([^\r\n]*)\r?$')
+        # uv can warn about invalid pyproject.toml and continue with defaults.
+        # An unrecognized debug-output format must not authorize a download.
+        if (-not $settings.Success -or $blocks.Count -ne 1 -or
+            $connectivity.Count -ne 1 -or $downloads.Count -ne 1 -or
+            $settings.Diagnostic -match '(?im)^\s*(warning|error):' -or
+            $connectivity[0].Groups[1].Value -cnotin @('Online,', 'Offline,') -or
+            $downloads[0].Groups[1].Value -cnotin @('Automatic,', 'Manual,', 'Never,')) {
+            substep "Could not determine uv's Python download policy; signed Python will not be downloaded." "Yellow"
+            return $false
+        }
+        if ($connectivity[0].Groups[1].Value -ceq 'Offline,' -or $downloads[0].Groups[1].Value -ceq 'Never,') {
+            substep "Signed Python is not cached and Python downloads are disabled." "Yellow"
+            return $false
+        }
+        return $true
+    }
+
     function Resolve-SignedManagedPython {
-        param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
+        param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64", [switch]$CacheOnly)
         $package = Get-SignedPythonPackage -Minor $Minor -Patch $Patch -Arch $Arch
         if (-not $package) {
             substep "No pinned signed Python build matches the requested version and architecture." "Yellow"
@@ -6718,17 +6747,28 @@ exit 0
         # App-owned and versioned: never install globally, discover a system Python,
         # overwrite uv's store, or replace a runtime an existing environment depends on.
         $parent = [System.IO.Path]::GetFullPath((Join-Path $StudioHome 'python-signed'))
-        $destination = Join-Path $parent "cpython-$($package.Version)-$Arch-$($package.Sha256.Substring(0, 12))"
+        $name = "cpython-$($package.Version)-$Arch-$($package.Sha256.Substring(0, 12))"
+        $destination = Join-Path $parent $name
         $work = $null
         try {
-            if (Test-Path -LiteralPath $destination) {
-                $cached = Test-SignedPythonRuntime -Root $destination -Package $package
-                if (-not $cached) { substep "The cached signed Python could not be validated; leaving it unchanged." "Yellow" }
-                return $cached
+            if (Test-Path -LiteralPath $parent -PathType Container) {
+                $shape = '^' + [regex]::Escape($name) + '(-[0-9a-f]{32})?$'
+                foreach ($candidate in @(Get-ChildItem -LiteralPath $parent -Directory -Force -ErrorAction Stop |
+                                         Where-Object { $_.Name -match $shape -and -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) })) {
+                    $cached = $null
+                    try { $cached = Test-SignedPythonRuntime -Root $candidate.FullName -Package $package }
+                    catch { substep "Signed Python validation failed: $(Redact-InstallOutput $_.Exception.Message)" "Yellow" }
+                    if ($cached) { return $cached }
+                    substep "Leaving the invalid signed Python runtime unchanged at $($candidate.FullName)." "Yellow"
+                }
             }
-            if ((Test-UvEnvFlag 'UV_OFFLINE') -or $env:UV_PYTHON_DOWNLOADS -eq 'never') {
-                substep "Signed Python is not cached and Python downloads are disabled." "Yellow"
-                return $null
+            # Reusing a verified runtime needs no new policy refusal; a download does.
+            if ($CacheOnly) { return $null }
+            if (-not (Test-SignedPythonDownloadAllowed)) { return $null }
+            # A damaged base may still be referenced by a live or rollback environment.
+            # Publish its replacement separately and discover it on subsequent repairs.
+            if (Test-Path -LiteralPath $destination) {
+                $destination = Join-Path $parent ($name + '-' + [guid]::NewGuid().ToString('N'))
             }
             [System.IO.Directory]::CreateDirectory($parent) | Out-Null
             $work = Join-Path $parent ('.stage-' + [guid]::NewGuid().ToString('N'))
@@ -6757,7 +6797,8 @@ exit 0
                 # Remove only this invocation's staging directory, never a runtime or
                 # a reparse point supplied in place of the staging tree.
                 $full = [System.IO.Path]::GetFullPath($work)
-                if ($full.StartsWith($parent.TrimEnd('\') + '\.stage-', [StringComparison]::OrdinalIgnoreCase) -and
+                if ([System.IO.Path]::GetDirectoryName($full) -eq $parent -and
+                    [System.IO.Path]::GetFileName($full) -match '^\.stage-[0-9a-f]{32}$' -and
                     -not ((Get-Item -LiteralPath $work -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
                     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
                 }
@@ -6769,6 +6810,7 @@ exit 0
     # --managed-python never returns an interpreter uv did not install.
     function Resolve-UvManagedPython {
         param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
+        $script:PythonPolicyBlocked = $false
         $uvArch = if ($Arch -eq "arm64") { "aarch64" } else { "x86_64" }
         $wantTag = if ($Arch -eq "arm64") { "win-arm64" } else { "win-amd64" }
         # Arch-qualified keys take no range: past a skipped patch try the next, then an older (cached) one.
@@ -6800,7 +6842,7 @@ exit 0
                 if ($probe.Diagnostic) { Write-StudioLine "        Python probe failed: $(Redact-InstallOutput $probe.Diagnostic)" -ForegroundColor Yellow }
                 return $null
             }
-            $facts = $probe.Diagnostic
+            $facts = $probe.Output -join "`n"
             $parts = @("$facts".Trim() -split '\s+')
             if ($parts.Count -ne 3) { return $null }
             $full = $parts[0]
@@ -6855,10 +6897,9 @@ exit 0
     if ($script:StudioKeepsTools -and [string]::IsNullOrWhiteSpace($env:UV_PYTHON_INSTALL_DIR)) {
         $env:UV_PYTHON_INSTALL_DIR = Join-Path $StudioHome "python"
     }
-    $script:PythonPolicyBlocked = $false
     $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
-    if (-not $DetectedPython -and $script:PythonPolicyBlocked) {
-        $DetectedPython = Resolve-SignedManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+    if (-not $DetectedPython) {
+        $DetectedPython = Resolve-SignedManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch -CacheOnly:(-not $script:PythonPolicyBlocked)
     }
     if (-not $DetectedPython -and $PythonArch -eq "arm64" -and -not (Test-Arm64PythonOptOut)) {
         substep "could not get a native ARM64 Python; falling back to the x64 stack." "Yellow"
@@ -6866,8 +6907,8 @@ exit 0
         $script:WoaTorchIndexUrl = $null
         $PythonArch = "x86_64"
         $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
-        if (-not $DetectedPython -and $script:PythonPolicyBlocked) {
-            $DetectedPython = Resolve-SignedManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+        if (-not $DetectedPython) {
+            $DetectedPython = Resolve-SignedManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch -CacheOnly:(-not $script:PythonPolicyBlocked)
         }
     }
     if (-not $DetectedPython) {
