@@ -38,6 +38,13 @@ def test_shape_supported_needs_aligned_features():
     assert not rdna.shape_supported(3000, 3072, 0)
 
 
+@pytest.mark.parametrize("group", [8, 16, 32, 64, 128, 512])
+def test_rotation_groups_the_probe_does_not_check_keep_the_stock_path(group):
+    # Group 16 with BLOCK_K 32 ran the rotation loop zero times and quantised every activation to zero.
+    assert rdna._rotq_tile(3072, group) is None
+    assert not rdna.shape_supported(3072, 512, group)
+
+
 def test_prepare_off_rocm_and_kill_switch(monkeypatch):
     monkeypatch.setattr(
         rdna, "_STATE", {"devices": {}, "on": {}, "broken": None, "rotq": None, "mm": None}

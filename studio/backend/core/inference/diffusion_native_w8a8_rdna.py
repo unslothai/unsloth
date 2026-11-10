@@ -211,7 +211,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 def _rotq_tile(k: int, group: int) -> Optional[tuple]:
     """(group width, groups per row, BLOCK_M, rows per program), or None if K does not fit."""
     g = int(group) if group else _QUANT_CHUNK
-    if k <= 0 or k % g:
+    # Only the group the per-card probe checks: a group below BLOCK_K skips the rotation loop and quantises zeros.
+    if k <= 0 or g != _QUANT_CHUNK or k % g:
         return None
     ng = k // g
     if ng > _ROTQ_MAX_GROUPS:
