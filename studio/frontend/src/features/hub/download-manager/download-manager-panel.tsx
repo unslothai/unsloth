@@ -27,7 +27,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-  type DownloadRequest,
   type ManagedDownload,
   downloadManager,
   hydrateDownloadManager,
@@ -35,6 +34,7 @@ import {
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
+import { isRetryableDownload, retryRequestFor } from "./retry-download";
 import {
   type PendingStart,
   usePendingStarts,
@@ -210,24 +210,10 @@ function DownloadRow({
     job.state === "cancelled" ||
     job.state === "error";
   const canRetry =
-    (job.state === "error" || job.state === "cancelled") && !starting;
+    (job.state === "error" || job.state === "cancelled") &&
+    !starting &&
+    isRetryableDownload(job);
   const progress = presentedProgress(job);
-
-  function handleRetry() {
-    const request: DownloadRequest = {
-      kind: job.kind,
-      repoId: job.repoId,
-      variant: job.variant,
-      expectedBytes: job.expectedBytes,
-      ...(job.inventoryKind ? { inventoryKind: job.inventoryKind } : {}),
-      ...(job.presentation ? { presentation: job.presentation } : {}),
-      ...(job.scopedFiles ? { files: job.scopedFiles } : {}),
-      ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
-      ...(job.downloadDir !== undefined ? { downloadDir: job.downloadDir } : {}),
-    };
-    downloadManager.dismiss(job.key);
-    void downloadManager.requestStart(request);
-  }
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
@@ -252,7 +238,10 @@ function DownloadRow({
               <button
                 type="button"
                 aria-label="Retry download"
-                onClick={handleRetry}
+                // No dismiss first: a refused start must leave the failed row in place.
+                onClick={() =>
+                  void downloadManager.requestStart(retryRequestFor(job))
+                }
                 className={cn(
                   "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
                   "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
