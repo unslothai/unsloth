@@ -4968,13 +4968,16 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 }
 
+/* scrollbar-color is set in legacy rgb(), never oklch(): Chromium reads an oklch scrollbar-color back
+   as oklab after a transition, so under Reduce motion's 0.01ms `all` transition every restyle starts a
+   new one on every element (about 10,000 at 40 turns in Glass). rgb() is the same grey. */
 * {
 	scrollbar-width: thin;
-	scrollbar-color: oklch(0.5 0 0 / 0.54) transparent;
+	scrollbar-color: rgb(99 99 99 / 0.54) transparent;
 }
 
 .dark * {
-	scrollbar-color: oklch(0.67 0 0 / 0.5) transparent;
+	scrollbar-color: rgb(149 149 149 / 0.5) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -5323,7 +5326,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 /* Faint until hovered, so a tall draft never shows a heavy dark rail. */
 .composer-input,
 .unsloth-composer-input {
-	scrollbar-color: oklch(0.5 0 0 / 0.16) transparent;
+	scrollbar-color: rgb(99 99 99 / 0.16) transparent;
 	/* At fractional zoom a 1px overflow otherwise shows a stray scrollbar. */
 	overflow-x: hidden;
 }
@@ -5342,7 +5345,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 .dark .composer-input,
 .dark .unsloth-composer-input {
-	scrollbar-color: oklch(0.72 0 0 / 0.18) transparent;
+	scrollbar-color: rgb(164 164 164 / 0.18) transparent;
 }
 
 .dark .composer-input::-webkit-scrollbar-thumb,
@@ -5375,7 +5378,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .run-settings-scroll:hover,
 .aui-thread-viewport:hover,
 .hover-scrollbar:hover {
-	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
+	scrollbar-color: rgb(99 99 99 / 0.4) transparent;
 }
 
 .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
@@ -5389,7 +5392,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .dark .run-settings-scroll:hover,
 .dark .aui-thread-viewport:hover,
 .dark .hover-scrollbar:hover {
-	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
+	scrollbar-color: rgb(164 164 164 / 0.4) transparent;
 }
 
 .dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
@@ -5459,12 +5462,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 
 	:root.client-windows .aui-thread-viewport:hover {
-		scrollbar-color: oklch(0.5 0 0 / 0.4) transparent !important;
+		scrollbar-color: rgb(99 99 99 / 0.4) transparent !important;
 	}
 
 	.dark:root.client-windows .aui-thread-viewport:hover,
 	:root.client-windows .dark .aui-thread-viewport:hover {
-		scrollbar-color: oklch(0.72 0 0 / 0.4) transparent !important;
+		scrollbar-color: rgb(164 164 164 / 0.4) transparent !important;
 	}
 
 	@media screen and (forced-colors: none) {
