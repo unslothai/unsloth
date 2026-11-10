@@ -123,7 +123,7 @@ def _gen(
 
 def _both(model, monkeypatch, **kwargs):
     """Tokens with a plain StaticCache, then with the growable one (same graph path)."""
-    monkeypatch.delenv("UNSLOTH_GROWABLE_KV", raising = False)
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "0")
     GG.release(model)
     static = _gen(model, **kwargs)
     GG.release(model)
@@ -221,7 +221,7 @@ def test_kept_cache_grows_for_a_longer_call(host, llama, monkeypatch):
     ):  # 5.x plans the call's cache; 4.x reuses model._cache itself
         assert GG.PLANS["reused kept cache"] == before + 1
     assert GG.kept_cache(llama) is kept and KV.capacity(kept) == 35
-    monkeypatch.delenv("UNSLOTH_GROWABLE_KV")
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "0")
     GG.release(llama)
     llama.__dict__.pop(GG._ATTR, None)
     assert torch.equal(longer, _gen(llama, new = 30))
@@ -319,7 +319,7 @@ def test_kept_cache_grows_from_a_clamped_bucket(host, llama, monkeypatch):
     longer = _gen(llama, new = 30)
     assert GG.kept_cache(llama) is kept and KV.capacity(kept) == 35
     _no_growth_in_graphs(host)
-    monkeypatch.delenv("UNSLOTH_GROWABLE_KV")
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "0")
     GG.release(llama)
     llama.__dict__.pop(GG._ATTR, None)
     llama.__dict__.pop("_cache", None)
@@ -362,7 +362,7 @@ def _gen_embeds(model, new, length):
 
 def test_inputs_embeds_prompt_that_fills_its_bucket(host, llama, monkeypatch):
     # inputs_embeds-only prompt (16 = first bucket) must still count, or decode writes past the bucket.
-    monkeypatch.delenv("UNSLOTH_GROWABLE_KV", raising = False)
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "0")
     static = _gen_embeds(llama, 10, 16)
     GG.release(llama)
     llama.__dict__.pop(GG._ATTR, None)
@@ -382,7 +382,7 @@ def test_kept_cache_with_short_sliding_layers_is_not_reused(host, monkeypatch):
     assert KV.short_layers(short, 45) and not KV.short_layers(short, 15)
     grown = _gen(model, new = 40)
     assert GG.kept_cache(model) is not short
-    monkeypatch.delenv("UNSLOTH_GROWABLE_KV")
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "0")
     GG.release(model)
     model.__dict__.pop(GG._ATTR, None)
     assert torch.equal(grown, _gen(model, new = 40))
