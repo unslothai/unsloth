@@ -3,6 +3,10 @@
 
 import "@xyflow/react/dist/style.css";
 import "./flows-editor.css";
+import {
+  LazyImportBoundary,
+  LazyImportFailure,
+} from "@/components/lazy-import-boundary";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +30,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { useT } from "@/i18n";
 import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
@@ -104,7 +109,9 @@ function EditorBody({
   // Mounted from its first use on, so it keeps its state across closes.
   const [inspectorUsed, setInspectorUsed] = useState(false);
   if (inspecting && !inspectorUsed) setInspectorUsed(true);
-  useEffect(() => void loadInspector(), []);
+  // A failed preload is shown when the Inspector first renders.
+  useEffect(() => void loadInspector().catch(() => undefined), []);
+  const t = useT();
   const { screenToFlowPosition } = useReactFlow();
   const sidebar = useOptionalSidebar();
   const sidebarBeside = !!sidebar?.open && !sidebar.isMobile;
@@ -164,9 +171,20 @@ function EditorBody({
           <RunDrawer />
         </div>
         {inspectorUsed && (
-          <Suspense fallback={null}>
-            <Inspector />
-          </Suspense>
+          <LazyImportBoundary
+            fallback={
+              <LazyImportFailure
+                message={t("settings.dialog.panelFailed")}
+                reloadLabel={t("settings.dialog.panelReload")}
+                testId="flows-inspector-load-failure"
+                className="w-72 shrink-0 border-l p-4 text-muted-foreground"
+              />
+            }
+          >
+            <Suspense fallback={null}>
+              <Inspector />
+            </Suspense>
+          </LazyImportBoundary>
         )}
         {/* Over the whole editor body, not the canvas, so it stays put as panels open. */}
         <RunBar
