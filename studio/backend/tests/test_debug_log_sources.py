@@ -268,7 +268,7 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
 
 
 def test_a_huge_directory_builds_paths_only_for_the_presort_slice(monkeypatch):
-    """The 1 Hz poll lists names, not a Path per file: Path.glob over 12k logs was ~40 ms a call."""
+    """The 1 Hz poll lists names instead of building a Path per directory entry."""
     directory = _home() / "logs" / "llama-server"
     directory.mkdir(parents = True, exist_ok = True)
     for i in range(400):
@@ -280,16 +280,15 @@ def test_a_huge_directory_builds_paths_only_for_the_presort_slice(monkeypatch):
         raise AssertionError("glob builds a Path per directory entry")
 
     monkeypatch.setattr(Path, "glob", _no_glob)
-    files = debug_log_sources._family_files("llama-server")
-    expected = sorted((f"llama-17660000{i:03d}-port-8080.log" for i in range(400)), reverse = True)[
-        : debug_log_sources.MAX_SOURCES_PER_FAMILY
-    ]
-    if os.name == "nt":  # glob and fnmatch both fold case on Windows only.
-        expected = None
-    names = [path.name for path in files]
+    names = sorted(
+        (path.name for path in debug_log_sources._family_files("llama-server")), reverse = True
+    )
     assert len(names) == debug_log_sources.MAX_SOURCES_PER_FAMILY
-    if expected is not None:
-        assert sorted(names, reverse = True) == expected
+    if os.name != "nt":  # Case folds on Windows only, so LLAMA-... is newest there.
+        expected = sorted(
+            (f"llama-17660000{i:03d}-port-8080.log" for i in range(400)), reverse = True
+        )
+        assert names == expected[: debug_log_sources.MAX_SOURCES_PER_FAMILY]
 
 
 def test_a_literal_tilde_home_is_scanned_both_ways(tmp_path, monkeypatch):

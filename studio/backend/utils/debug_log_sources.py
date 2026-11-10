@@ -114,7 +114,7 @@ def _family_files(family: str) -> list[Path]:
         except OSError:
             continue
         try:
-            # Names only: a Path per file cost ~40 ms per poll at 12k files. fnmatch.filter folds case like glob does (Windows only).
+            # Names, not a Path per file; fnmatch.filter folds case exactly as glob does (Windows only).
             names = fnmatch.filter(os.listdir(directory), pattern)
         except OSError:
             continue
