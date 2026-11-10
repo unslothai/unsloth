@@ -565,7 +565,7 @@ def test_family_routing_and_defaults():
     assert df.default_generation_params("MiniMaxAI/MiniMax-H3-Image") == (6, 1.0)
     assert fam.reference and fam.reference_edit and fam.max_condition_images == 16
     assert not fam.uses_guidance and not fam.uses_negative_prompt
-    assert fam.te_quant_auto == "int8" and fam.dimension_multiple == 32
+    assert fam.te_quant_auto is None and fam.dimension_multiple == 32
     assert df.in_tree_pipeline("MiniMaxH3ImagePipeline")
     # The video registry shares the "minimax-h3" token: it must not claim the image model.
     assert vf.detect_video_family("MiniMaxAI/MiniMax-H3-Image") is None

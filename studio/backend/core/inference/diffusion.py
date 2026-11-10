@@ -8566,7 +8566,8 @@ class DiffusionBackend:
                         hf_token = hf_token,
                         local_files_only = local_files_only,
                         transformer_quant = transformer_quant,
-                        text_encoder_quant = text_encoder_quant,
+                        # the raw request: "none" (keep bf16) and unset must stay apart
+                        text_encoder_quant = text_encoder_quant_requested,
                         text_encoder_quant_explicit = bool(text_encoder_quant_requested),
                         load_token = _load_token,
                     )
@@ -11768,7 +11769,9 @@ class DiffusionBackend:
             load_minimax_h3_image_pipeline,
         )
 
-        te_scheme = "int8" if str(text_encoder_quant or "").strip().lower() == "int8" else None
+        # Unset = Studio's hosted int8 encoder (the bf16 one is 66.7 GB); only an explicit dense ask keeps bf16.
+        requested_te = str(text_encoder_quant or "").strip().lower()
+        te_scheme = None if requested_te in ("none", "off", "bf16", "dense", "bfloat16") else "int8"
         pipe = load_minimax_h3_image_pipeline(
             fetch_base,
             dtype = target.dtype,

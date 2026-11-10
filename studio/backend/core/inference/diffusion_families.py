@@ -1498,15 +1498,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_output_side = 6272,
         max_output_pixels = 20 * 1024 * 1024,
         prompt_hint = (
-            "MiniMax-H3-Image reads long, complete English descriptions verbatim (up to 4096 tokens); for edits name "
-            "what to keep, then what to change, and refer to the inputs as <Picture 1>, <Picture 2>, ..."
+            "MiniMax-H3-Image follows long, complete descriptions of the whole image. For edits, refer to the inputs"
+            " as <Picture 1>, <Picture 2> and say what to keep and what to change."
         ),
         # The in-tree loader reads the native shards; no single-file / GGUF denoiser load.
         pipeline_only = True,
         gguf_loadable = False,
         supports_torch_compile = False,
-        # Studio's hosted int8 ConvRot Qwen3-VL (unsloth/MiniMax-H3-FP8, the H3 video family's file) by default.
-        te_quant_auto = "int8",
+        # No te_quant_auto: the in-tree loader picks Studio's hosted int8 ConvRot Qwen3-VL (unsloth/MiniMax-H3-FP8, the
+        # H3 video family's file) itself when the request leaves the encoder unset; the generic TE prequant table
+        # never runs for this family.
         # Hosted table-form DiT checkpoints plug in here (repo, filename per scheme); none are published yet.
         prequant_repos = (),
     ),
