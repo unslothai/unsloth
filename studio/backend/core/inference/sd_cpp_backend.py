@@ -2907,7 +2907,6 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
-    # The family's sd-cli --scheduler, sent unless the kill switch is off or a shipped grid replaces the schedule.
     scheduler: Optional[str] = None
     # The base's shipped ``sample_sigmas`` grid, sent as custom sigmas; None keeps sd.cpp's own schedule.
     sample_sigmas: Optional[tuple[float, ...]] = None
@@ -3130,8 +3129,7 @@ def _request_scheduler(state: Any) -> Optional[str]:
 
 
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
-    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size, and a per-checkpoint
-    shift under the family scheduler (FLUX.1-schnell's mu 0)."""
+    """The family's ``--flow-shift``; Krea 2 Raw follows output size, variants apply under the family scheduler."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
         state.gguf_filename,
         getattr(state, "display_repo_id", None),

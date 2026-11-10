@@ -242,12 +242,9 @@ class DiffusionFamily:
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
-    # sd-cli --scheduler. "simple" gives the diffusers / baseline grid: N sigmas from 1 down to the shifted 1/N, then 0.
-    # sd.cpp's default discrete grid spends the last step at sigma ~0.003, and its FLUX.1 schedule reads the unpacked
-    # latent size (mu 3.23 at 1024 px). None keeps sd.cpp's own (Qwen-Image-2.1's official config, FLUX.2, FLUX.3).
+    # sd-cli --scheduler; "simple" matches the diffusers grid (sd.cpp's default ends at sigma ~0.003). None = sd.cpp's.
     sd_cpp_scheduler: Optional[str] = None
-    # (lowercased id substring, shift) replacing sd_cpp_flow_shift while sd_cpp_scheduler is sent; first match wins,
-    # None = sd.cpp's own shift.
+    # (id substring, shift) overriding sd_cpp_flow_shift under sd_cpp_scheduler; first match wins, None = sd.cpp's.
     sd_cpp_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
@@ -544,8 +541,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
-        # Baseline / Studio diffusers: schnell unshifted (mu 0); dev and Krea-dev fixed mu 1.15, which sd.cpp reads
-        # off the guidance weights. The dev rows stop a dev GGUF from matching a schnell id later in the list.
+        # schnell mu 0; dev rows (sd.cpp's mu 1.15) stop a dev GGUF matching a schnell id later in the list.
         sd_cpp_scheduler = "simple",
         sd_cpp_flow_shift_variants = tuple(
             (f"{prefix}-{model}", shift)
@@ -844,7 +840,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
-        # Fixed mu 1.15 (from the guidance weights), as the baseline and Studio diffusers.
         sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(

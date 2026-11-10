@@ -1181,7 +1181,7 @@ H3_SERVER_REFS_ENV = "UNSLOTH_H3_SERVER_REFS"
 _SD_CLI_FRAME_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
-# "0" sends no family --scheduler (nor its flow-shift variants): sd.cpp's default schedule, as before.
+# "0" = no family --scheduler / flow-shift variants (sd.cpp default schedule).
 FAMILY_SCHEDULER_ENV = "UNSLOTH_SD_CPP_FAMILY_SCHEDULER"
 
 

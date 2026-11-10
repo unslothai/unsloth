@@ -23,7 +23,6 @@ CASES = [
     ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", "simple", None),
     ("unsloth/MOSS-Image-SFT-GGUF", "MOSS-Image-SFT-Q8_0.gguf", "simple", None),
     ("vantagewithai/Krea-2-Turbo-GGUF", "krea2_turbo-Q4_K_M.gguf", "simple", None),
-    # schnell is unshifted (mu 0); dev keeps sd.cpp's mu 1.15 from its guidance weights.
     ("unsloth/FLUX.1-schnell-GGUF", "flux1-schnell-Q2_K.gguf", "simple", 0.0),
     ("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", "simple", None),
     ("unsloth/Qwen-Image-GGUF", "qwen-image-Q4_K_M.gguf", "simple", 3.0),
@@ -128,7 +127,6 @@ def test_a_shipped_grid_sends_no_scheduler():
 
 
 def test_a_dev_gguf_never_takes_the_schnell_shift_from_its_base():
-    # An unnamed dev file in a dev repo: flux.1's base_repo is schnell, which must not leak in.
     state = _state("someone/FLUX.1-dev-gguf", "model-Q4_K_M.gguf")
     assert state.base_repo.lower().endswith("schnell")
     assert bk._request_flow_shift(state, 1024, 1024) is None
