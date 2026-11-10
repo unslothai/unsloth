@@ -6949,24 +6949,25 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        images = None,
     ) -> int:
         """Prompt tokens this model would receive for these messages. Renders and tokenizes exactly
         as generation does."""
         if self._model is None:
             raise RuntimeError("No model loaded")
-        full_messages = self._with_system_prompt(messages, system_prompt)
+        full_messages = self._conversation_to_render(messages, system_prompt, images or None)
 
         if self._is_vlm:
-            # images=None: an image anywhere makes the structured-item check raise.
+            # One image per marker, else the structured-item check raises.
             prompt, _target, _markers = self._render_vlm_prompt(
                 full_messages,
-                None,
+                images or None,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
-            return self._count_prompt_tokens(prompt)
+            return self._count_prompt_tokens(prompt, images)
 
         render_result = self._render_text_prompt(
             full_messages,

@@ -35502,10 +35502,8 @@ async def produce_openai_chat_completions(
         if "kwargs" in _sf_fit_cache:
             return _sf_fit_cache["kwargs"], ()
         fitted_kwargs, events = gen_kwargs, ()
-        # The count cannot price pictures or video, so those prompts are left alone.
-        if _sf_fit_overflow and all(
-            gen_kwargs.get(key) is None for key in ("image", "images", "videos")
-        ):
+        # The count cannot price video, or an attachment beside replayed pictures.
+        if _sf_fit_overflow and all(gen_kwargs.get(key) is None for key in ("images", "videos")):
             fitted = backend.compact_chat_context(
                 gen_kwargs.get("messages") or [],
                 system_prompt = gen_kwargs.get("system_prompt") or "",
@@ -35522,12 +35520,15 @@ async def produce_openai_chat_completions(
                 preserve_thinking = gen_kwargs.get("preserve_thinking"),
                 continue_final_message = bool(gen_kwargs.get("continue_final_message", False)),
                 recall_reachable = _sf_recall_reachable,
+                images = [image] if image is not None else None,
             )
             fitted_kwargs = {
                 **gen_kwargs,
                 "messages": fitted["messages"],
                 "system_prompt": fitted["system_prompt"],
             }
+            if fitted.get("dropped_images"):
+                fitted_kwargs["image"] = None
             events = fitted.get("events") or ()
         if _sf_call_prefix:
             # After fitting: compaction leaves a prompt ending in a continuation untouched.
@@ -35976,14 +35977,19 @@ async def produce_openai_chat_completions(
                                 # Mark the owning turn before the correction is appended,
                                 # or the reverse scan attaches the picture to it (#10092).
                                 # The fitted prompt: the retry extends it and is not refitted.
-                                _nudge_base = _sf_fit_request()[0]["messages"]
-                                if _sf_renders_image or _video_clips:
+                                _nudge_fitted = _sf_fit_request()[0]
+                                _nudge_base = _nudge_fitted["messages"]
+                                # A picture the fit dropped with its turn is not marked again.
+                                _nudge_image = (
+                                    _sf_renders_image and _nudge_fitted.get("image") is image
+                                )
+                                if _nudge_image or _video_clips:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,
                                     )
                                     _nudge_base = _nudge_attach(
                                         _nudge_base,
-                                        image = _sf_renders_image,
+                                        image = _nudge_image,
                                         video = len(_video_clips),
                                     )
                                 retry_messages = [
