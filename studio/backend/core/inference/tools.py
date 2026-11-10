@@ -6680,8 +6680,11 @@ _BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?
 _HERESTRING_TO_INTERPRETER_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
 )
+# Groups: interpreter, <<- dash, quote, quoted delimiter, bare delimiter.
 _HEREDOC_TO_INTERPRETER_RE = re.compile(
-    r"\b(python[0-9.]*|node|ruby|perl|php)\b(?:[ \t]+-[\w-]*)*[ \t]*<<(-?)[ \t]*([\"']?)([A-Za-z_]\w*)\3"
+    r"\b((?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php))\b"
+    r"(?:[ \t]+(?:-[WX][ \t]*[^\s<>;&|-]\S*|-[\w-]*|run|/dev/stdin))*"
+    r"[ \t]*<<(-?)[ \t]*(?:([\"'])([^\"'\n]+)\3|\\?([^\s<>;&|()\"']+))"
 )
 # Generated script content is unscreenable; diff <(...) only reads and stays out.
 _PROC_SUBST_EXEC_RE = re.compile(
@@ -7414,13 +7417,14 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     if _herestring:
         return True
     for heredoc in _HEREDOC_TO_INTERPRETER_RE.finditer(command):
-        if not heredoc.group(1).startswith("python") or _depth >= 3:
+        if not heredoc.group(1).lower().startswith(("python", "pypy")) or _depth >= 3:
             return True
+        delimiter = heredoc.group(4) or heredoc.group(5)
         body = []
         for line in command[heredoc.end() :].splitlines()[1:]:
             if heredoc.group(2):
                 line = line.lstrip("\t")
-            if line == heredoc.group(4):
+            if line == delimiter:
                 break
             body.append(line)
         if _inline_python_is_high_risk("\n".join(body)):
