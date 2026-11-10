@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""_strip_tool_xml_for_display returns text with no sentinel and no ``call:`` without running the strip chain,
-and still strips every markup family it did before."""
-
 import pytest
 
 from core.inference import tool_call_parser
