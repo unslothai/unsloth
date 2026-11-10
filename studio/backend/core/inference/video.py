@@ -14374,6 +14374,9 @@ class VideoBackend:
                         getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ()
                     )
                     video_stream_residency.stream_after_oom(state.pipe, logger = logger)
+                    from .diffusion_nvfp4_protect import restart_protect_generation
+
+                    restart_protect_generation(pipe)
                     if state.transformer_cache:
                         self._reset_step_cache(pipe)
                     seeded = kwargs.get("generator")

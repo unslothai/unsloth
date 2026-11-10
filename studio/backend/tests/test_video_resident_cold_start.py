@@ -173,3 +173,27 @@ def test_video_render_runs_through_the_oom_retry():
     assert body.index("video_stream_residency.stream_after_oom(") < body.index(
         "manual_seed(int(seed))"
     )
+    assert (
+        body.index("video_stream_residency.stream_after_oom(")
+        < body.index("restart_protect_generation(pipe)")
+        < body.rindex("render_call()")
+    )
+
+
+def test_a_retried_render_restarts_the_nvfp4_protect_schedule():
+    from core.inference.diffusion_nvfp4_protect import NVFP4StepController
+
+    ctl = NVFP4StepController("0,-1")
+    assert ctl.begin(5) == (0, 4)
+    ctl.advance()
+    ctl.advance()  # OOM after two steps
+    ctl.restart()
+    seen = [ctl.protected]
+    for _ in range(4):
+        ctl.advance()
+        seen.append(ctl.protected)
+    assert seen == [True, False, False, False, True]
+    assert ctl.protected_steps_seen == 2
+    idle = NVFP4StepController("0,-1")
+    idle.restart()  # no generation begun: stays idle
+    assert idle.index == 0 and not idle.protected
