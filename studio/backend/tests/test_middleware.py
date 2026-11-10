@@ -1747,6 +1747,64 @@ def test_every_api_write_route_is_body_capped(main_module):
         assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
 
 
+def _walk_routes(routes):
+    from fastapi import routing
+    included = getattr(routing, "_IncludedRouter", None)
+    for route in routes:
+        if included is not None and isinstance(route, included):
+            yield from _walk_routes(route.effective_candidates())
+        else:
+            yield route
+
+
+def test_every_write_route_is_body_capped_or_an_explicit_upload(main_module, monkeypatch):
+    # Walks every route the app serves, root ones included (/models/load), so a new route outside
+    # the old prefix list can't come back uncapped. Upload passthroughs carry their own cap.
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(main_module, "default_request_body_limit_bytes", lambda: 1024)
+    monkeypatch.setattr(main_module, "STT_AUDIO_RAW_MAX_BYTES", 1024)
+    monkeypatch.setattr(main_module, "STT_AUDIO_JSON_MAX_BYTES", 1024)
+    targets = set()
+    for route in _walk_routes(main_module.app.routes):
+        methods = getattr(route, "methods", None)
+        # Mounts (/mcp, static assets) have no methods; they take POSTs too.
+        writes = (methods or {"POST"}) & {"POST", "PUT", "PATCH", "DELETE"}
+        if not writes:
+            continue
+        path = re.sub(r"\{[^}]+\}", "x", route.path)
+        for form in {path.rstrip("/") or "/", path.rstrip("/") + "/"}:
+            for method in writes:
+                targets.add((method, form))
+    assert ("POST", "/models/load") in targets and ("POST", "/models/unload/") in targets
+
+    def is_upload(method, path):
+        return method != "DELETE" and (
+            path.rstrip("/") in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+            or path.startswith(main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES)
+            or main_module._UPLOAD_PASSTHROUGH_RE.match(path) is not None
+        )
+
+    def body():
+        for _ in range(4):
+            yield b"x" * 1000
+
+    uncapped = []
+    with_uploads = 0
+    client = TestClient(main_module.app, base_url = "http://127.0.0.1", follow_redirects = False)
+    for method, path in sorted(targets):
+        if is_upload(method, path):
+            with_uploads += 1
+            continue
+        r = client.request(
+            method, path, content = body(), headers = {"content-type": "application/json"}
+        )
+        if r.status_code != 413:
+            uncapped.append((method, path, r.status_code))
+    assert with_uploads
+    assert uncapped == []
+
+
 def test_rag_document_uploads_pass_through_on_their_own_cap(main_module, monkeypatch):
     from core.rag import config as rag_config
     from utils.upload_limits import upload_request_limit_bytes
