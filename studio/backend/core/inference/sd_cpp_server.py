@@ -194,8 +194,7 @@ class SdCppServer:
         return self._scratch_dir
 
     def vid_gen_accepts(self, features: tuple[str, ...]) -> bool:
-        """True when the live server advertises every ``features`` key for vid_gen; read once per server, idle only
-        (capabilities can block behind a job). Older builds lack the keys and get False."""
+        """Read once per server, idle only (capabilities can block behind a job); older builds get False."""
         if not features:
             return True
         caps = self._vid_gen_features

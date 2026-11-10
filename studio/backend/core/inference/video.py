@@ -14631,7 +14631,6 @@ class VideoBackend:
                 return None
             return base64.b64encode(Path(path).read_bytes()).decode("ascii")
 
-        # Same bytes sd-cli would read: each video's frame files in its order, each WAV as written.
         payload = build_vid_gen_request(
             params,
             images_b64 = {

@@ -1176,13 +1176,11 @@ _SD_CLI_FRAME_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
 def h3_server_refs_enabled() -> bool:
-    """Kill switch: ``UNSLOTH_H3_SERVER_REFS=0`` sends reference video / audio renders back to sd-cli."""
     value = os.environ.get(H3_SERVER_REFS_ENV, "").strip().lower()
     return value not in ("0", "false", "no", "off")
 
 
 def h3_reference_media_keys(params: "SdCppVideoGenParams") -> tuple[str, ...]:
-    """The ``vid_gen`` feature names this render's reference video / audio needs."""
     keys = []
     if params.ref_videos:
         keys.append("ref_videos")
@@ -1194,12 +1192,10 @@ def h3_reference_media_keys(params: "SdCppVideoGenParams") -> tuple[str, ...]:
 
 
 def h3_server_eligible(params: "SdCppVideoGenParams", *, server_refs: bool = False) -> bool:
-    """Reference video / audio go to sd-server only when ``server_refs`` (the server advertises those fields)."""
     return server_refs or not h3_reference_media_keys(params)
 
 
 def sd_cli_frame_files(directory: str) -> list[str]:
-    """The frame files sd-cli reads for ``--ref-video directory``, in its order."""
     entries = [
         entry
         for entry in os.scandir(directory)
@@ -1219,8 +1215,7 @@ def build_vid_gen_request(
     ref_video_audios_b64: Optional[list[str]] = None,
     ref_audios_b64: Optional[list[str]] = None,
 ) -> dict:
-    """POST body equal to build_sd_cpp_video_command (same pixels per seed); writes AVI, which needs no WebM build; --rng cpu is a server flag passed at spawn.
-    Reference video / audio travel inline: per video its frames in sd-cli's order, WAV bytes per clip."""
+    """POST body equal to build_sd_cpp_video_command (same pixels per seed); writes AVI, which needs no WebM build; --rng cpu is a server flag passed at spawn."""
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
     if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
