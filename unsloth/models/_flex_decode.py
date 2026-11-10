@@ -145,6 +145,13 @@ def register():
         # generate() calls .contiguous() on masks; class-level so it is not a BlockMask field in the graph key.
         if not hasattr(BlockMask, "contiguous"):
             BlockMask.contiguous = lambda self, *args, **kwargs: self
+        try:
+            # Accelerate moves a split model's layer arguments with BlockMask.to(), which leaves mask_mod's
+            # offsets / padding on the first card; zoo's transfer rebuilds the mask on the target card.
+            from unsloth_zoo.flex_attention.decode import install_block_mask_transfer
+            install_block_mask_transfer()
+        except Exception:
+            pass
         AttentionInterface.register(ATTN_KEY, _attention)
         AttentionMaskInterface.register(ATTN_KEY, _mask)
         _REGISTERED = True
@@ -357,6 +364,9 @@ def _mask(
 
 
 def _count(module, reason):
+    if torch.compiler.is_compiling():
+        # Python counters under trace become guards: every increment would recompile.
+        return
     stats = module.__dict__.get("_unsloth_flex_decode_stats")
     if stats is None:
         stats = module.__dict__["_unsloth_flex_decode_stats"] = {"flex": 0, "fallback": {}}

@@ -305,3 +305,37 @@ def test_softcapped_fallback_keeps_the_softcap(monkeypatch, path):
     scores = scores.masked_fill(~dense, float("-inf"))
     ref = (torch.softmax(scores, -1) @ rep(v)).transpose(1, 2)
     torch.testing.assert_close(out, ref, rtol = 0, atol = 1e-12)
+
+
+def test_register_installs_the_block_mask_device_transfer(monkeypatch):
+    # accelerate moves a split model's layer arguments with BlockMask.to(): the routed registration must install
+    # zoo's transfer (rebuilds mask_mod's offsets / padding on the target card) even if gpt-oss never registered.
+    decode = pytest.importorskip("unsloth_zoo.flex_attention.decode")
+    if not hasattr(decode, "install_block_mask_transfer") or not FD.available():
+        pytest.skip("unsloth_zoo without the shared BlockMask transfer")
+    from torch.nn.attention.flex_attention import BlockMask
+
+    plain = getattr(BlockMask.to, "__wrapped__", BlockMask.to)
+    monkeypatch.setattr(BlockMask, "to", plain)
+    monkeypatch.setattr(FD, "_REGISTERED", False)
+    assert FD.register()
+    assert getattr(BlockMask.to, "_unsloth_gpt_oss", False)
+
+
+def test_stats_counter_does_not_recompile_a_compiled_caller():
+    from torch._dynamo.utils import counters
+
+    module = torch.nn.Module()
+    FD._count(module, None)
+
+    @torch.compile(backend = "eager", fullgraph = True)
+    def step(x):
+        FD._count(module, None)
+        return x + 1
+
+    torch._dynamo.reset()
+    before = sum(counters["recompiles"].values())
+    for _ in range(12):
+        step(torch.ones(2))
+    assert sum(counters["recompiles"].values()) == before
+    assert module.__dict__["_unsloth_flex_decode_stats"]["flex"] == 1

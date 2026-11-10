@@ -16,7 +16,7 @@ pytest.importorskip("transformers.models.qwen3_5_moe.modeling_qwen3_5_moe")
 import unsloth.models._flex_decode as FD
 from unsloth.models.vision import _NonFlexGenerate
 
-from test_flex_decode_gemma4 import _generate, _inputs, flex  # noqa: F401  (fixture)
+from tests.test_flex_decode_gemma4 import _generate, _inputs, flex  # noqa: F401  (fixture)
 
 
 def _qwen(moe):
