@@ -4,20 +4,22 @@
 // A wire can be removed by selecting it, by its × button, or by dragging its end off the port.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { doc, edge, node } from "./helpers/flows.ts";
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { doc, edge, node, specs } from "./helpers/flows.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const catalog = JSON.parse(readFileSync(new URL("./fixtures/flows-catalog.json", import.meta.url), "utf8"));
 const { useCatalogStore } = await import("../src/features/flows/stores/catalog-store.ts");
-useCatalogStore.setState({ specs: Object.fromEntries(catalog.nodes.map((s: { type: string }) => [s.type, s])) });
+useCatalogStore.setState({ specs });
 const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
 const { inHandle, outHandle } = await import("../src/features/flows/editor/connection-rules.ts");
-const { reconnectWire } = await import("../src/features/flows/editor/use-wire-reconnect.ts");
+const { dropRemovesWire, reconnectWire, wireEdgeOptions } = await import(
+  "../src/features/flows/editor/use-wire-reconnect.ts"
+);
+const { wireDeleteShown } = await import("../src/features/flows/editor/wire-live.ts");
+const { RfDeriver } = await import("../src/features/flows/editor/derive-rf.ts");
 
 const fanIn = () =>
   useDocStore.getState().load(
@@ -79,23 +81,54 @@ test("a refused move puts the wire back untouched", () => {
   assert.equal(useDocStore.getState().past.length, depth);
 });
 
-test("drag-off removes through the canvas delete path; inputs are the reconnectable end", () => {
-  const hook = readSrc("features/flows/editor/use-wire-reconnect.ts");
-  // Removed only when dropped on empty canvas; a port that refused the drop keeps the wire.
-  assert.match(hook, /if \(!moved\.current && !state\?\.toHandle\)\s*void deleteElements\(\{ edges: \[\{ id: edge\.id \}\] \}\)/);
-  assert.match(hook, /reconnectable: "target"/);
-  assert.match(hook, /LOCKED_OPTIONS = \{ reconnectable: false, deletable: false \}/, "read-only: no × and no drag-off");
-  const canvas = readSrc("features/flows/editor/canvas.tsx");
-  assert.match(canvas, /\{\.\.\.wireReconnect\}/);
-  assert.match(canvas, /readOnly \|\|\s*\/\/[^\n]*\n\s*reconnecting\.current \|\|/, "a reconnect drag never opens Quick Add");
-  assert.match(canvas, /\}: \{ nodes: RfNode\[\]; edges: RfEdge\[\] \}\) => \{\n\s*if \(readOnly\) return;/);
+const drops: [string, boolean, unknown, boolean][] = [
+  ["on empty canvas removes the wire", false, null, true],
+  ["on a port that refused it keeps the wire", false, { id: "in:value" }, false],
+  ["after moving it to another port keeps the moved wire", true, { id: "in:value" }, false],
+  ["after a move, off any port, keeps the moved wire", true, null, false],
+];
+for (const [name, moved, toHandle, removes] of drops) {
+  test(`a dragged wire end let go ${name}`, () => {
+    assert.equal(dropRemovesWire(moved, toHandle), removes);
+  });
+}
+
+test("only a wire's input end drags; a read-only canvas gives no × and no drag-off", () => {
+  assert.deepEqual(wireEdgeOptions(true), { reconnectable: "target" });
+  assert.deepEqual(wireEdgeOptions(false), { reconnectable: false, deletable: false });
 });
 
-test("each wire draws its own × at its midpoint on hover or selection, and a selected wire gets a halo", () => {
-  const del = readSrc("features/flows/editor/wire-delete.tsx");
-  assert.match(del, /deleteElements\(\{ edges: \[\{ id \}\] \}\)/);
-  assert.match(del, /aria-label="Remove wire"/);
-  const curved = readSrc("features/flows/editor/flow-edge.tsx");
-  assert.match(curved, /<WireDelete[\s\S]*show=\{deletable !== false && \(hover \|\| !!selected\)\}/, "no × on a wire that cannot be removed");
-  assert.match(curved, /\{selected && <WireHalo path=\{path\} \/>\}/);
+const shown: [string, boolean | undefined, boolean, boolean | undefined, boolean][] = [
+  ["hovered", undefined, true, false, true],
+  ["selected", true, false, true, true],
+  ["neither hovered nor selected", true, false, false, false],
+  ["locked, though hovered and selected", false, true, true, false],
+];
+for (const [name, deletable, hover, selected, visible] of shown) {
+  test(`a wire's × button: ${name} -> ${visible ? "shown" : "hidden"}`, () => {
+    assert.equal(wireDeleteShown(deletable, hover, selected), visible);
+  });
+}
+
+test("a reroute's wire segments have no draggable end; they move with the reroute", () => {
+  fanIn();
+  useDocStore.getState().addReroute({ id: "r1", pos: [250, 0] }, "e1");
+  const before = useDocStore.getState().graph;
+  const segments = Object.keys((before as { wires?: Record<string, unknown> }).wires ?? {});
+  assert.ok(segments.length > 0, "the reroute split e1 into segments");
+  const rf = new RfDeriver().edges(before, new Set(), () => "any");
+  for (const id of segments)
+    assert.equal(rf.find((e) => e.id === id)?.reconnectable, false, `${id} is not reconnectable`);
+  // Even when React Flow offers a segment's end, the move is refused and nothing changes; this
+  // segment keeps the wire's own id, so it is a graph edge too.
+  const depth = useDocStore.getState().past.length;
+  const segment = rf.find((e) => e.id === "e1");
+  assert.ok(segments.includes("e1") && before.edges.e1);
+  assert.ok(segment);
+  assert.equal(
+    reconnectWire(segment, { source: "a", sourceHandle: outHandle("text"), target: "q", targetHandle: inHandle("value") }),
+    null,
+  );
+  assert.equal(useDocStore.getState().graph, before);
+  assert.equal(useDocStore.getState().past.length, depth);
 });

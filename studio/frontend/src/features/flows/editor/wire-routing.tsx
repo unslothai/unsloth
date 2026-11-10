@@ -18,7 +18,7 @@ import type { RfEdge, RfNode } from "./derive-rf";
 import { portInk } from "./theme-colors";
 import { WireDelete, WireHalo, useWireHover, wireStroke } from "./wire-delete";
 import { routingVersion } from "./wire-obstacles";
-import { stretchToHandles, wireMidpoint } from "./wire-live";
+import { stretchToHandles, wireDeleteShown, wireMidpoint } from "./wire-live";
 import type { RouteRequest, RouteResponse } from "./wire-router.worker";
 import { buildWirePath, wireEmphasis } from "./wire-path";
 import type { WirePoint, WireRoute } from "./wire-router";
@@ -277,7 +277,7 @@ function BusEdgeImpl({
       id={id}
       x={x}
       y={y}
-      show={deletable !== false && (hover || !!selected)}
+      show={wireDeleteShown(deletable, hover, selected)}
       onEnter={enter}
       onLeave={leave}
     />

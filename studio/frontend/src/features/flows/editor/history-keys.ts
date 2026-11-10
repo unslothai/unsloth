@@ -31,3 +31,22 @@ export function isTyping(target: EventTarget | null): boolean {
     el.tagName === "SELECT"
   );
 }
+
+/** R (or Shift+R) with the reroute tool armed turns the reroute; an R typed in a field stays in the field. */
+export function turnsArmedReroute(
+  event: {
+    key: string;
+    target: EventTarget | null;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    altKey: boolean;
+  },
+  rerouteArmed: boolean,
+): boolean {
+  return (
+    !isTyping(event.target) &&
+    rerouteArmed &&
+    (event.key === "r" || event.key === "R") &&
+    !(event.metaKey || event.ctrlKey || event.altKey)
+  );
+}

@@ -163,3 +163,28 @@ test("routing passes reuse one set of grid buffers", () => {
   assert.ok(wireGridStats.built > before.built);
   assert.equal(wireGridStats.allocated, before.allocated);
 });
+
+test("no routing pass until every visible card has its size; a hidden one does not hold it up", () => {
+  const c = canvas(6);
+  const unmeasured = (id: string, hidden: boolean) => {
+    const n = c.state.nodeLookup.get(id) as Node;
+    c.state.nodeLookup.set(id, { ...n, hidden, measured: { width: 0, height: 0 } });
+  };
+  unmeasured("n2", false);
+  c.update();
+  assert.deepEqual(c.scheduler.stats, { full: 0, partial: 0, skipped: 0 });
+  unmeasured("n2", true);
+  c.update();
+  assert.deepEqual(c.scheduler.stats, { full: 1, partial: 0, skipped: 0 });
+});
+
+test("dragging a note or a frame on its own sends no pass, not even a partial one", () => {
+  const c = canvas(6);
+  c.update();
+  for (const id of ["note:n1", "group:g1"]) {
+    c.setMoving([id]);
+    c.update();
+    c.frame();
+  }
+  assert.deepEqual(c.scheduler.stats, { full: 1, partial: 0, skipped: 0 });
+});

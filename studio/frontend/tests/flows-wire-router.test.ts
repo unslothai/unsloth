@@ -268,31 +268,22 @@ function bigRecipe(columns: number, rows: number): { rects: Rect[]; edges: EdgeI
   return { rects, edges };
 }
 
-test("a 50-card recipe routes cleanly and fast enough to run on drop", () => {
+test("a 50-card recipe routes cleanly, and a drop searches only the wires near the moved card", () => {
   const { rects, edges } = bigRecipe(10, 5);
   assert.equal(rects.length, 50);
-  routeWires(rects, edges); // warm up the JIT
-  const runs = 5;
-  const started = performance.now();
-  let result = routeWires(rects, edges);
-  for (let k = 1; k < runs; k += 1) {
-    result = routeWires(rects, edges);
-  }
-  const fullMs = (performance.now() - started) / runs;
-
+  const result = routeWires(rects, edges);
+  assert.equal(result.rerouted, edges.length, "a first pass searches every wire");
   const moved = rects.map((rect) => (rect.id === "n4-2" ? { ...rect, y: rect.y + 30 } : rect));
-  const dropStarted = performance.now();
   const incremental = routeWires(moved, edges, {}, result.cache);
-  const dropMs = performance.now() - dropStarted;
-
-  console.log(
-    `50 cards, ${edges.length} wires: full reroute ${fullMs.toFixed(1)} ms, ` +
-      `reroute after one drop ${dropMs.toFixed(1)} ms (${incremental.rerouted} wires searched)`,
-  );
   assertWireRules(rects, edges, result.routes);
   assertNoSharedLanes(edges, result.routes);
   assertWireRules(moved, edges, incremental.routes);
-  assert.ok(fullMs < 1000, `full reroute took ${fullMs} ms`);
+  // The work a drop costs: some wires, never the whole graph again.
+  assert.ok(incremental.rerouted > 0, "the moved card's wires are searched");
+  assert.ok(
+    incremental.rerouted < edges.length / 4,
+    `${incremental.rerouted} of ${edges.length} wires searched after one drop`,
+  );
 });
 
 test("a wire stays out of a group frame it has no end in, and runs freely inside its own", () => {

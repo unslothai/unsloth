@@ -18,6 +18,16 @@ const EDGE_OPTIONS = { reconnectable: "target" as const };
 // A read-only canvas: no ×, no drag-off, nothing deletes a wire.
 const LOCKED_OPTIONS = { reconnectable: false, deletable: false };
 
+/** The wire options a canvas gives React Flow: only a wire's input end drags; read-only locks both. */
+export function wireEdgeOptions(enabled: boolean) {
+  return enabled ? EDGE_OPTIONS : LOCKED_OPTIONS;
+}
+
+/** A dragged wire end let go: removed only when it moved nowhere and landed on no port. */
+export function dropRemovesWire(moved: boolean, toHandle: unknown): boolean {
+  return !moved && !toHandle;
+}
+
 /** Moves a wire to another input as one undo step; restores it if the new input refuses. */
 export function reconnectWire(
   old: RfEdge,
@@ -98,7 +108,7 @@ export function useWireReconnect(enabled: boolean) {
     ) => {
       reconnecting.current = false;
       // Dropped on empty canvas: remove. Dropped on a port that refused it: keep the wire.
-      if (!moved.current && !state?.toHandle)
+      if (dropRemovesWire(moved.current, state?.toHandle))
         void deleteElements({ edges: [{ id: edge.id }] });
       moved.current = false;
     },
@@ -111,9 +121,9 @@ export function useWireReconnect(enabled: boolean) {
             onReconnect,
             onReconnectStart,
             onReconnectEnd,
-            defaultEdgeOptions: EDGE_OPTIONS,
+            defaultEdgeOptions: wireEdgeOptions(true),
           }
-        : { defaultEdgeOptions: LOCKED_OPTIONS },
+        : { defaultEdgeOptions: wireEdgeOptions(false) },
     [enabled, onReconnect, onReconnectStart, onReconnectEnd],
   );
   return { props, reconnecting };

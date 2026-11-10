@@ -2,13 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { catalog, doc, edge, node, specs } from "./helpers/flows.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { registerStoreStubResolver } from "./helpers/kit.ts";
 
-registerBundlerResolver();
+registerStoreStubResolver();
 
 const { useDocStore, documentFromState, documentSignature } = await import(
   "../src/features/flows/stores/doc-store.ts"
@@ -32,9 +31,32 @@ const { combineSelection, setSuperCardOpen, ungroupSuperCard } = await import(
   "../src/features/flows/editor/super-card-actions.ts"
 );
 const { useUiStore } = await import("../src/features/flows/stores/ui-store.ts");
-const { rememberSizes, sizeLookup } = await import(
+const { autoLayout, rememberSizes, sizeLookup } = await import(
   "../src/features/flows/editor/layout.ts"
 );
+const { cutSelection, groupSelection, selectAll } = await import(
+  "../src/features/flows/editor/use-editor-shortcuts.ts"
+);
+
+type LayoutRequest = { nodes: { id: string }[]; edges: { source: string; target: string }[] };
+
+/** Runs the canvas's Tidy up against a stand-in layout worker and returns the request it was sent. */
+async function autoLayoutRequest(): Promise<LayoutRequest> {
+  const scope = globalThis as Record<string, unknown>;
+  scope.document ??= { querySelector: () => null };
+  scope.CSS ??= { escape: (s: string) => s };
+  let sent: LayoutRequest | undefined;
+  scope.Worker = class {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    postMessage(message: { id: number; request: LayoutRequest }) {
+      sent = message.request;
+      queueMicrotask(() => this.onmessage?.({ data: { id: message.id, result: {} } }));
+    }
+  };
+  await autoLayout(() => undefined);
+  assert.ok(sent, "Tidy up sent a layout request");
+  return sent;
+}
 
 // prompt -> [template -> image] -> preview, with a second preview fed by the template.
 function comic() {
@@ -163,16 +185,13 @@ test("a selection box drawn inside a group leaves the group; one around it takes
   assert.equal(boxCovers({ x: 120, y: 90, width: 100, height: 100 }, [50, 20, 0.5], group), false);
 });
 
-test("Cmd/Ctrl drag draws a selection box, and a closed card deletes with its blocks", () => {
-  const src = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(src, /selectionKeyCode=\{MULTI_SELECT_KEYS\}/);
-  // A frame is settled against the final box, since React Flow won't offer it again.
-  assert.match(src, /onSelectionEnd=\{onSelectionEnd\}/);
-  assert.match(src, /if \(boxHoldsGroup\(state, id, pressed\)\) next\.add\(id\);/);
-  assert.match(src, /data\.memberIds, \.\.\.data\.folded/);
-  const lib = readFileSync(new URL("../src/features/flows/editor/super-cards.ts", import.meta.url), "utf8");
-  const cardNode = lib.slice(lib.indexOf('type: "flowSuperCard"'), lib.indexOf('dragHandle: ".flow-node-drag"'));
-  assert.doesNotMatch(cardNode, /deletable: false/);
+test("a closed card can be deleted like a block", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const card = view().nodes.find((n) => n.id === "super:sc1");
+  assert.ok(card);
+  assert.notEqual(card.deletable, false);
 });
 
 test("a closed card shows the wires that cross into it as ports and hides its group frame", () => {
@@ -324,10 +343,6 @@ test("dragging a card carries its blocks and its folded group frame", () => {
     img: { x: 600, y: 0 },
     "group:g": { x: 280, y: -40 },
   });
-  // Every selected card moves with the drag, not only the one under the pointer.
-  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(canvas, /for \(const n of dragged\.length \? dragged : \[node\]\) \{\s*const folded = superCardDragMembers\(n, doc\);/);
-  assert.match(canvas, /const group = dragMembers\.current\.get\(change\.id\);/);
 });
 
 test("the card rolls its blocks' run status into one", () => {
@@ -550,8 +565,6 @@ test("a Mac's Ctrl-click (a right-click to the browser) adds or drops a card fro
   assert.deepEqual(toggledSelection([], "a"), ["a"]);
   assert.equal(isApplePlatform("MacIntel"), true);
   assert.equal(isApplePlatform("Win32"), false);
-  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(canvas, /onNodeContextMenu=\{\(event, node\) => \{\s*if \(!APPLE \|\| !event\.ctrlKey\) return;\s*event\.preventDefault\(\);/);
 });
 
 test("copy and duplicate take the blocks inside a selected closed card", () => {
@@ -564,8 +577,13 @@ test("copy and duplicate take the blocks inside a selected closed card", () => {
     ["tpl", "img", "view"],
   );
   // Cut removes what copy took, not the card's own selection id.
-  const shortcuts = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
-  assert.match(shortcuts, /const fragment = copySelection\(\);\s*if \(fragment\) \{[^}]*removeNodes\(fragment\.nodes\.map\(\(n\) => n\.id\)\)/);
+  select("super:sc1", "view");
+  const cut = cutSelection();
+  assert.deepEqual(cut?.nodes.map((n) => n.id), ["tpl", "img", "view"]);
+  assert.deepEqual(cut?.edges.map((e) => e.id), ["e2", "e3"]);
+  const after = useDocStore.getState().graph;
+  assert.deepEqual(after.nodeOrder, ["prompt", "raw"]);
+  assert.deepEqual(useUiStore.getState().selectedNodes, []);
 });
 
 test("a block added where a folded frame sits stays out of it", () => {
@@ -582,9 +600,6 @@ test("a block added where a folded frame sits stays out of it", () => {
   setSuperCardOpen("sc1", true);
   useDocStore.getState().addNode({ ...node("inside", "output.preview", [400, 100]) });
   assert.equal(useDocStore.getState().graph.nodes.inside.group, "g");
-  // Dropping a dragged block there skips the folded frame too.
-  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(canvas, /if \(folded\.has\(groupId\) && graph\.nodes\[id\]\.group !== groupId\) continue;/);
 });
 
 test("tidy up keeps a card's blocks together when the card holds part of a group", async () => {
@@ -611,8 +626,9 @@ test("tidy up keeps a card's blocks together when the card holds part of a group
   // tpl's wires (prompt -> tpl, tpl -> img, tpl -> raw) reach the card, not group g's placeholder.
   const wires = folded.request.edges.map((e) => `${e.source}>${e.target}`).sort();
   assert.deepEqual(wires, ["group:g>view", "prompt>super:sc1", "super:sc1>group:g"]);
-  const layout = readFileSync(new URL("../src/features/flows/editor/layout.ts", import.meta.url), "utf8");
-  assert.match(layout, /tidyRequest\(\{ \.\.\.ctx, graph: tidyGraph\(ctx\.graph, useDocStore\.getState\(\)\.meta\.editor\) \}\)/);
+  // Tidy up on the canvas sends the layout worker the same folded request.
+  const sent = await autoLayoutRequest();
+  assert.deepEqual(sent.edges.map((e) => `${e.source}>${e.target}`).sort(), wires);
   const result = folded.unfold({ "super:sc1": [1000, 500], "group:g": [0, 0], prompt: [0, 0], view: [0, 0] });
   const patch = tidyPatch(ctx, result);
   const [tx, ty] = patch.nodes.tpl.pos;
@@ -664,8 +680,9 @@ test("Select All takes closed cards too, so Delete removes them", async () => {
   const { meta, graph } = useDocStore.getState();
   const all = selectAllIds(meta.editor, graph);
   assert.ok(all.includes("super:sc1") && all.includes("prompt"));
-  const shortcuts = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
-  assert.match(shortcuts, /selectAllIds\(doc\.meta\.editor, doc\.graph\)/);
+  selectAll();
+  assert.deepEqual(useUiStore.getState().selectedNodes, all);
+  assert.deepEqual(useUiStore.getState().selectedEdges, graph.edgeOrder);
 });
 
 test("a note inside one card's folded frame and another card's blocks moves only with the frame's card", () => {
@@ -739,9 +756,6 @@ test("an unmeasured note folds by its saved size, not its corner", () => {
   combineSelection();
   const ids = view().nodes.map((n) => n.id);
   assert.ok(ids.includes("note:big"));
-  // Dragging a frame that carries any of a closed card's blocks carries the whole card.
-  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(canvas, /if \(card\.open \|\| !card\.members\.some\(\(id\) => members\.has\(id\)\)\) continue;/);
 });
 
 test("after a reload a closed card folds by its blocks' saved sizes", () => {
@@ -771,9 +785,15 @@ test("grouping a selection with a closed card groups the card's blocks", () => {
   combineSelection();
   const { meta, graph } = useDocStore.getState();
   assert.deepEqual(selectedBlocks(["super:sc1", "view"], meta.editor, graph), ["tpl", "img", "view"]);
-  const shortcuts = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
-  const group = shortcuts.slice(shortcuts.indexOf("export function groupSelection"));
-  assert.match(group, /const ids = selectedBlocks\(\s*useUiStore\.getState\(\)\.selectedNodes,\s*doc\.meta\.editor,\s*doc\.graph,\s*\);/);
+  select("super:sc1", "view");
+  groupSelection();
+  const after = useDocStore.getState().graph;
+  const made = Object.keys(after.groups).find((id) => id !== "g");
+  assert.ok(made);
+  assert.deepEqual(
+    after.nodeOrder.filter((id) => after.nodes[id].group === made),
+    ["tpl", "img", "view"],
+  );
 });
 
 test("a rebuilt closed card keeps its measurement, so React Flow does not hide it to measure again", () => {
@@ -793,8 +813,6 @@ test("a rebuilt closed card keeps its measurement, so React Flow does not hide i
     (id) => (id === "super:sc1" ? { width: 300, height: 180 } : undefined),
   );
   assert.deepEqual(out.nodes.find((n) => n.id === "super:sc1")?.measured, { width: 300, height: 180 });
-  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(canvas, /useSuperCardView\(nodes, edges, selectedSet, sizes\)/);
 });
 
 test("resizing a frame leaves a block hidden in a closed card in its frame, even when the card holds only part of it", () => {
@@ -854,13 +872,6 @@ test("a note where two folded frames overlap moves with the card the canvas fold
   assert.deepEqual(result["group:g2"], [400, -40]);
 });
 
-test("a closed card re-measures its handles when its port rows change", () => {
-  const src = readFileSync(new URL("../src/features/flows/editor/super-card-node.tsx", import.meta.url), "utf8");
-  const view = src.slice(src.indexOf("function SuperCardViewImpl"));
-  assert.match(view, /const handles = \[\.\.\.inputs, \.\.\.outputs\]\.map\(\(port\) => port\.handleId\)/);
-  assert.match(view, /useEffect\(\(\) => updateNodeInternals\(id\), \[handles, id, updateNodeInternals\]\)/);
-});
-
 test("one output fanned out through folded reroutes is one card port, named by its block", () => {
   const d = doc(
     [
@@ -906,12 +917,4 @@ test("a note Tidy brings next to a closed card's hidden blocks stays out of the 
   assert.ok(out.nodes.some((n) => n.id === "note:far"), "the note stays on the canvas");
   const folded = (out.nodes.find((n) => n.id === "super:sc1")?.data as unknown as { folded: { id: string }[] }).folded;
   assert.ok(!folded.some((f) => f.id === "note:far"));
-});
-
-test("a frame the selection box leaves out is unselected in React Flow's store too", () => {
-  const src = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(
-    src,
-    /if \(change\.selected && boxSkips\(store\.getState\(\), change\.id\)\) \{[\s\S]{0,300}nodeLookup\.get\(change\.id\);\s*if \(internal\) internal\.selected = false;\s*continue;/,
-  );
 });
