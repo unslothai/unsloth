@@ -14359,10 +14359,9 @@ class VideoBackend:
                 )
 
                 def _render_streamed_after_oom() -> Any:
-                    """A render that ran out of memory with denoiser groups resident runs once more streamed."""
                     try:
                         return render_call()
-                    except Exception as exc:  # noqa: BLE001 - reraised unless retried
+                    except Exception as exc:  # noqa: BLE001
                         if static_skip or cancel.is_set() or not is_oom_error(exc):
                             raise
                         from . import video_stream_residency
@@ -14370,8 +14369,7 @@ class VideoBackend:
                             raise
                     from . import diffusion_cuda_graph, video_stream_residency
 
-                    # outside the handler, so the failed attempt's frames and tensors are gone; graph pools hold
-                    # memory empty_cache() cannot reclaim
+                    # outside the handler so the failed attempt's tensors are freed; graph pools escape empty_cache()
                     diffusion_cuda_graph.reset_all(
                         getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ()
                     )

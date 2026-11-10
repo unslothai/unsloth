@@ -152,8 +152,7 @@ def measured_room_mib(
 
 # calibration key -> {work (pixels x frames): peak MiB above the request's start}; survives a reload of the same model
 _PEAKS: dict = {}
-# Keys this process completed a render under. A process's first render of a key compiles, loads its kernels and grows
-# a fresh allocator; a peak stored by a warm process counts none of that, so it widens only later renders.
+# keys rendered in this process; a stored warm peak omits first-render compile/allocator cost, so only widens later renders
 _WARM: set = set()
 
 
@@ -619,7 +618,6 @@ def fit_for_request(
 
 
 def may_stream_after_oom(pipe: Any) -> bool:
-    """Whether ``stream_after_oom`` has denoiser groups to stream; cheap, safe inside an exception handler."""
     try:
         return oom_retry_enabled() and resident_mib(getattr(pipe, "transformer", None)) > 0
     except Exception:  # noqa: BLE001
@@ -627,8 +625,7 @@ def may_stream_after_oom(pipe: Any) -> bool:
 
 
 def stream_after_oom(pipe: Any, *, logger: Any = None) -> bool:
-    """After a render ran out of memory with denoiser groups resident: stream them all for the rest of the request and
-    re-arm its peak measurement. True when the caller may render once more. Never raises."""
+    """Stream all resident groups for the rest of the request after an OOM; True = caller may retry. Never raises."""
     module = getattr(pipe, "transformer", None)
     if module is None or not oom_retry_enabled():
         return False

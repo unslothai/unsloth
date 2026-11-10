@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A returning Studio home: a peak stored by an earlier (warm) process must not widen the streamed denoiser's
-residency on a new process's first, compiling render; an out-of-memory render with groups resident runs once more
-streamed."""
+"""A stored warm peak must not widen residency on a new process's first render; an OOM with groups resident retries streamed."""
 
 from __future__ import annotations
 
@@ -40,7 +38,6 @@ def _env(monkeypatch):
 
 
 def _card(monkeypatch):
-    """The 16 GiB L4 cell before its first render: 7863 MiB free, an empty cache, nothing resident."""
     kept = []
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (7863 << 20, 23034 << 20))
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 7000 << 20)
@@ -82,12 +79,8 @@ def _fit(pipe):
 def test_a_stored_peak_does_not_widen_the_first_render_of_a_new_process(monkeypatch):
     pipe, kept = _card(monkeypatch)
     _fit(pipe)
-    assert (
-        kept == []
-    )  # streamed like a fresh home's first render (main: 4529 MiB room from the stored peak)
-    assert (
-        vr.record_request_peak(pipe) == 2031
-    )  # that render completes: this process is warm for the key
+    assert kept == []
+    assert vr.record_request_peak(pipe) == 2031
     _fit(pipe)
     assert (
         kept and kept[-1] == 7863 + 25 - int(2031 * vr.MEASURED_PEAK_MARGIN) - vr.MEASURED_SLACK_MIB
@@ -174,7 +167,6 @@ def test_video_render_runs_through_the_oom_retry():
         if isinstance(n, ast.FunctionDef) and n.name == "_render_streamed_after_oom"
     )
     body = ast.unparse(retry)
-    # the release runs after the handler (the failed attempt's tensors are gone), then the seed is restored
     assert body.index("may_stream_after_oom") < body.index(
         "video_stream_residency.stream_after_oom("
     )
