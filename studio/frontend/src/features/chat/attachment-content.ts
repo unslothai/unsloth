@@ -1805,15 +1805,12 @@ export async function extractOfficeAttachmentText(
       parts.push(`[Truncated: only the first ${deck.slides.length} slides are included.]`);
     }
   } else {
-    for (const sheet of readXlsx(bytes)) {
+    for (const sheet of readXlsx(bytes, undefined, { keepHidden: true })) {
       if (budget.cut) break;
       const lines = [budget.take(`Sheet: ${sheet.name}`)];
       for (const row of sheet.rows) {
         if (!row || budget.cut) continue;
-        const line = Array.from(row, (cell) => budget.take(cell?.text ?? ""))
-          .filter((_, index) => !sheet.hidden?.columns.has(index))
-          .join("\t")
-          .trimEnd();
+        const line = Array.from(row, (cell) => budget.take(cell?.text ?? "")).join("\t").trimEnd();
         if (line) lines.push(line);
       }
       if (sheet.truncated) {
