@@ -7,6 +7,7 @@ streamed."""
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
@@ -1333,3 +1334,114 @@ def install_pinned_swap(
             sum(t.numel() * t.element_size() for t in host.values()) / 1e9,
         )
     return True
+
+
+H3_ROTATION_PARK_ENV = "UNSLOTH_H3_ROTATION_PARK"
+_PARK_ATTR = "_unsloth_h3_rotation_park"
+_COMPONENTS_MANAGER_LOGGER = "diffusers.modular_pipelines.components_manager"
+_FALLBACK_WARNING = "no combination of models to offload to cpu is found"
+
+
+def h3_rotation_park_enabled() -> bool:
+    return str(os.environ.get(H3_ROTATION_PARK_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+class _DropFallbackWarning(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return _FALLBACK_WARNING not in record.getMessage()
+        except Exception:  # noqa: BLE001 -- an unformattable record is not ours to drop
+            return True
+
+
+class H3QuietOffloadStrategy:
+    """The wrapped strategy's decisions, verbatim, minus its "offloading all models" warning: with only the VAEs in
+    the rotation, evicting every resident component before the next one onloads is this tier's policy."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        inner = self.__dict__.get("inner")
+        if inner is None:
+            raise AttributeError(name)
+        return getattr(inner, name)
+
+    def __call__(self, hooks: Any, model_id: Any, model: Any, execution_device: Any) -> Any:
+        log = logging.getLogger(_COMPONENTS_MANAGER_LOGGER)
+        quiet = _DropFallbackWarning()
+        log.addFilter(quiet)
+        try:
+            return self.inner(
+                hooks = hooks, model_id = model_id, model = model, execution_device = execution_device
+            )
+        finally:
+            log.removeFilter(quiet)
+
+
+def install_h3_rotation_park(
+    pipe: Any,
+    *,
+    park: bool,
+    logger: Any = None,
+) -> bool:
+    """Streamed tiers only. ``park`` (a streamed denoiser, whose pre-hook evicts every rotating component at each
+    render's first forward, prompt-cache hit or not): park them when a render returns instead, so the next request's
+    VRAM floor and resident-set fit stop counting the last decode's audio VAE as used. A park is a re-point under
+    the pinned swap and moves nothing the next render would not. UNSLOTH_H3_ROTATION_PARK=0 keeps both as before."""
+    if pipe is None or not h3_rotation_park_enabled():
+        return False
+    manager = getattr(pipe, "_components_manager", None)
+    hooks = list(getattr(manager, "model_hooks", None) or ())
+    if not hooks or getattr(manager, "_auto_offload_device", None) is None:
+        return False
+    wrapped: dict[int, Any] = {}
+
+    def _quiet(strategy: Any) -> Any:
+        if strategy is None or isinstance(strategy, H3QuietOffloadStrategy):
+            return strategy
+        if id(strategy) not in wrapped:
+            wrapped[id(strategy)] = H3QuietOffloadStrategy(strategy)
+        return wrapped[id(strategy)]
+
+    for hook in hooks:
+        inner = getattr(hook, "hook", None)
+        if inner is not None and hasattr(inner, "offload_strategy"):
+            inner.offload_strategy = _quiet(inner.offload_strategy)
+    if hasattr(manager, "_offload_strategy"):
+        manager._offload_strategy = _quiet(manager._offload_strategy)
+    setattr(pipe, _PARK_ATTR, bool(park))
+    if logger is not None:
+        logger.info(
+            "video.h3_rotation: evicting every resident component is this tier's policy, so the diffusers "
+            "fallback warning is muted; %s %s (%s=0 keeps both as before)",
+            ", ".join(str(getattr(hook, "model_id", "?")) for hook in hooks),
+            "park on the host when a render returns, so the next request's VRAM floor and resident set see that "
+            "room free"
+            if park
+            else "stay until they are evicted (the conditioner's pre-hook may be skipped by a prompt-cache hit)",
+            H3_ROTATION_PARK_ENV,
+        )
+    return True
+
+
+def park_h3_rotation(pipe: Any) -> bool:
+    """Evict every rotating component resident on the execution device (the pre-hooks' own eviction); never raises."""
+    if pipe is None or not getattr(pipe, _PARK_ATTR, False):
+        return False
+    try:
+        manager = getattr(pipe, "_components_manager", None)
+        device = getattr(manager, "_auto_offload_device", None)
+        if manager is None or device is None:
+            return False
+        from .diffusion_prequant import _evict_rotation_hook
+
+        _evict_rotation_hook(manager, device)(None, None)
+        return True
+    except Exception:  # noqa: BLE001 -- the next render's pre-hook evicts them as before
+        return False
