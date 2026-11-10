@@ -1225,7 +1225,6 @@ class _PPStageModule(nn.Module):
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
                 if ctx.trainer_aux is not None:
-                    # TRL's SFTTrainer.compute_loss: loss + its router_aux_loss_coef x aux / accumulation steps.
                     coef, divisor = ctx.trainer_aux
                     loss = loss + coef * aux.to(loss.device) / divisor
                 else:

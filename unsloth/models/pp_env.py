@@ -900,12 +900,8 @@ def _trainer_router_aux(
     chunked,
     train = True,
 ):
-    """(coefficient, divisor) of the router aux loss when the Trainer's compute_loss adds it in one process,
-    else None (the model forward adds it: pp_native._forward_aux_weighting).
-
-    CPU backend: zoo's compute_loss falls through to stock TRL unless the chunked CE arms (never under no_grad),
-    and TRL >= 1.15 adds its own coefficient x aux / current_gradient_accumulation_steps (/ 1 without a window
-    token count); the coefficient MoE CausalLMs cached at init can be stale."""
+    """(coef, divisor) when stock TRL's compute_loss adds the router aux loss in one process (CPU backend, zoo's
+    chunked CE not armed), else None: the model forward adds it. Its coef, not the CausalLM's stale cached one."""
     if getattr(getattr(stage, "ctx", None), "moe", None) is None or (train and chunked is not None):
         return None
     compute_loss = getattr(type(trainer), "compute_loss", None)
