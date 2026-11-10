@@ -193,7 +193,8 @@ SETTLED = """async ([quietMs, timeoutMs]) => {
     await frame();
   }
   w.mo.disconnect(); w.stop = true; const end = w.lastMut ?? w.t0;
-  const long = w.frames.filter(([ts]) => ts <= end + 20).reduce((m, [, d]) => Math.max(m, d), 0);
+  // Frames that started by the last mutation, so the one rendering it counts even when it ends long after.
+  const long = w.frames.filter(([ts, d]) => ts - d <= end + 20).reduce((m, [, d]) => Math.max(m, d), 0);
   return [end - w.t0, long];
 }"""
 # Thread scroll: the matrix's 20-step scroll; the time is the whole scroll, the frame its longest.

@@ -3,6 +3,7 @@
 
 """The long-chat gate's Firefox leg: its limits, surfaces and fail-closed runs (CI wiring: test_firefox_leg_ci.py)."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -145,3 +146,24 @@ def test_the_webkit_leg_keeps_its_own_limits():
     assert wk.WEBKIT.browser == "webkit" and wk.WEBKIT.engines is wk.ENGINES
     assert wk.WEBKIT.ratio == wk.RATIO and wk.WEBKIT.known is wk.KNOWN
     assert "type" not in wk.WEBKIT.surfaces
+
+
+def test_settled_counts_the_frame_that_renders_the_last_mutation():
+    # A slow layout / paint after the final typing mutation ends its frame long after the mutation; that
+    # frame must still be the "longest frame" (last mutation at 160 ms, a 316 ms frame ending at 460 ms).
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    script = (
+        "globalThis.performance = {now: () => 10000};"
+        "globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(10000), 0);"
+        "globalThis.window = {__wk: {t0: 0, lastMut: 160, stop: false, mo: {disconnect() {}},"
+        " frames: [[128, 16], [144, 16], [460, 316], [476, 16]]}};"
+        f"const settled = ({wk.SETTLED});"
+        "settled([300, 60000]).then((r) => console.log(JSON.stringify(r)));"
+    )
+    out = subprocess.run([node, "-e", script], capture_output = True, text = True, check = True).stdout
+    assert json.loads(out) == [160, 316]
