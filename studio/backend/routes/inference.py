@@ -26879,8 +26879,10 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
 # base64 inflates ~4/3; _MAX_AUDIO_SECONDS bounds decoded length of compressed files.
 _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
-# Padded base64 of the composer's 64 MB, rounded up (flooring refused exact-size files).
-_MAX_VIDEO_BYTES = 64 * 1024 * 1024
+# Padded base64 of the composer's 256 MB, rounded up (flooring refused exact-size files).
+_MAX_VIDEO_BYTES = 256 * 1024 * 1024
+# llama-server's HTTP layer refuses bodies over 100 MB, so a clip larger than this is transcoded first.
+_LLAMA_VIDEO_FORWARD_BYTES = 64 * 1024 * 1024
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil(_MAX_VIDEO_BYTES / 3)
 # Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
 _MAX_VIDEO_SCHEME_CHARS = 16
@@ -27637,7 +27639,7 @@ def _video_size_rejection(clip: str) -> Optional[tuple[int, str]]:
     if not payload_len:
         return (400, "Could not read the provided video file.")
     if payload_len > _MAX_VIDEO_B64_CHARS:
-        return (413, "Video file is too large (max 64 MB).")
+        return (413, "Video file is too large (max 256 MB).")
     return None
 
 
@@ -27648,7 +27650,7 @@ def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]
     if not video_b64:
         return "", (400, "Could not read the provided video file.")
     if len(video_b64) > _MAX_VIDEO_B64_CHARS:
-        return video_b64, (413, "Video file is too large (max 64 MB).")
+        return video_b64, (413, "Video file is too large (max 256 MB).")
     return video_b64, None
 
 
@@ -27858,7 +27860,7 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
         total += _video_payload_chars(clip)
         # And bytes bound the per-clip transcode cost the count cannot see.
         if total > _MAX_VIDEO_B64_CHARS:
-            return (413, "Videos are too large (max 64 MB per request).")
+            return (413, "Videos are too large (max 256 MB per request).")
     return None
 
 
@@ -27874,7 +27876,7 @@ async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
         return await asyncio.to_thread(
             shrink_video_for_llama,
             video_b64,
-            _MAX_VIDEO_BYTES,
+            _LLAMA_VIDEO_FORWARD_BYTES,
             sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
             ffmpeg_dir = getattr(llama_backend, "_video_ffmpeg_dir", None),
             env = child_env,

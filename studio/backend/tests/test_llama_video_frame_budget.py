@@ -329,6 +329,19 @@ def test_a_clip_already_within_the_budget_is_forwarded_untouched(tmp_path):
 
 
 @needs_ffmpeg
+def test_a_small_frame_clip_over_the_forward_budget_is_transcoded(tmp_path):
+    clip = _clip(tmp_path, "heavy.mp4", "640x360", rate = 30, seconds = 2)
+    raw_bytes = len(base64.b64decode(clip))
+
+    shrunk = shrink_video_for_llama(clip, raw_bytes - 1)
+
+    assert shrunk is not clip
+    assert len(base64.b64decode(shrunk)) < raw_bytes
+    info = _probe(tmp_path, shrunk)
+    assert (info["width"], info["height"]) == (640, 360)
+
+
+@needs_ffmpeg
 def test_a_shrunk_clip_that_outgrows_the_cap_is_forwarded_untouched(tmp_path):
     clip = _clip(tmp_path, "wide.mp4", "1280x720")
 
