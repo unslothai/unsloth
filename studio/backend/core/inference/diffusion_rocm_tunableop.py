@@ -23,7 +23,7 @@ MAX_TUNING_ITERS = 20
 _HOOK_ATTR = "_unsloth_tunableop_hooks"
 _OWNER_ATTR = "_unsloth_tunableop_owner"
 
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 _STATE: dict = {
     "active": False,
     "depth": 0,
@@ -297,9 +297,14 @@ def install_for_pipe(
             uninstall(None)
         return False
     dits = _denoisers(pipe)
-    if not dits or not _activate(why, logger):
+    if not dits:
         return False
-    _claim(pipe)
+    with (
+        _LOCK
+    ):  # activation and the claim are one step, so a concurrent last release cannot undo them
+        if not _activate(why, logger):
+            return False
+        _claim(pipe)
     if not _STATE.get("tune"):
         return True
     for dit in dits:
@@ -319,15 +324,24 @@ def uninstall(pipe: Any = None) -> None:
     except Exception:  # noqa: BLE001
         return
     with _LOCK:
-        if _STATE["active"]:
-            _write(tunable)
-            try:
-                tunable.tuning_enable(False)
-                tunable.enable(bool(_STATE.get("prev_enabled")))
-            except Exception:  # noqa: BLE001
-                pass
-        _STATE["owners"].clear()
-        _STATE.update(active = False, depth = 0)
+        _restore(tunable)
+    _remove_hooks(pipe)
+
+
+def _restore(tunable: Any) -> None:
+    # Caller holds _LOCK.
+    if _STATE["active"]:
+        _write(tunable)
+        try:
+            tunable.tuning_enable(False)
+            tunable.enable(bool(_STATE.get("prev_enabled")))
+        except Exception:  # noqa: BLE001
+            pass
+    _STATE["owners"].clear()
+    _STATE.update(active = False, depth = 0)
+
+
+def _remove_hooks(pipe: Any) -> None:
     for dit in _denoisers(pipe) if pipe is not None else ():
         for h in dit.__dict__.pop(_HOOK_ATTR, None) or ():
             try:
@@ -360,18 +374,17 @@ def release(pipe: Any) -> None:
         delattr(pipe, _OWNER_ATTR)
     except Exception:  # noqa: BLE001
         pass
-    with _LOCK:
+    with (
+        _LOCK
+    ):  # the last-owner check and the restore must not interleave with another load's claim
         _STATE["owners"].discard(token)
-        last = _STATE["active"] and not _STATE["owners"]
-    if last:
-        uninstall(pipe)
-    else:
-        for dit in _denoisers(pipe):
-            for h in dit.__dict__.pop(_HOOK_ATTR, None) or ():
-                try:
-                    h.remove()
-                except Exception:  # noqa: BLE001
-                    pass
+        if _STATE["active"] and not _STATE["owners"]:
+            try:
+                import torch
+                _restore(torch.cuda.tunable)
+            except Exception:  # noqa: BLE001
+                pass
+    _remove_hooks(pipe)
 
 
 def is_active() -> bool:

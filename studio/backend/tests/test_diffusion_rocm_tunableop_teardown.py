@@ -139,3 +139,53 @@ def test_image_and_video_teardown_release_tunableop():
             if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
         }
         assert "_release_rocm_tunableop" in called, fname
+
+
+def test_a_load_racing_the_last_release_keeps_its_claim(fake, monkeypatch):
+    # A load that lands between the last-owner check and the restore must stay installed.
+    image, video = _pipe(), _pipe()
+    assert rt.install_for_pipe(image)
+    raced = []
+    real_uninstall = rt.uninstall
+
+    def racing_uninstall(pipe = None):
+        if not raced:
+            raced.append(rt.install_for_pipe(video))
+        return real_uninstall(pipe)
+
+    monkeypatch.setattr(rt, "uninstall", racing_uninstall)
+    diffusion_speed.release_rocm_tunableop(image)
+    if not raced:
+        raced.append(rt.install_for_pipe(video))
+    assert raced == [True]
+    assert rt.is_active() and fake.enabled and rt._STATE["owners"]
+
+
+def test_install_waits_for_a_release_in_progress(fake):
+    import threading
+
+    image, video = _pipe(), _pipe()
+    assert rt.install_for_pipe(image)
+    entered, go = threading.Event(), threading.Event()
+
+    class SlowOwners(set):
+        def discard(self, x):
+            entered.set()
+            go.wait(5)
+            return super().discard(x)
+
+    rt._STATE["owners"] = SlowOwners(rt._STATE["owners"])
+    try:
+        t = threading.Thread(target = diffusion_speed.release_rocm_tunableop, args = (image,))
+        t.start()
+        assert entered.wait(5)
+        result = []
+        u = threading.Thread(target = lambda: result.append(rt.install_for_pipe(video)))
+        u.start()
+        go.set()
+        t.join(5)
+        u.join(5)
+        assert result == [True]
+        assert rt.is_active() and fake.enabled and rt._STATE["owners"]
+    finally:
+        rt._STATE["owners"] = set(rt._STATE["owners"])
