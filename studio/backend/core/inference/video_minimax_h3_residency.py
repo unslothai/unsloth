@@ -428,19 +428,137 @@ def _host_empty_cache() -> None:
         pass
 
 
+# A load whose initial fit holds the top-level group and every block skips the up-front block pin (an 18 s, 20 GB
+# pinned transient on a 48 GB card): each block is promoted straight from its pageable host copy, which the fit then
+# releases. Blocks the fit leaves streamed are pinned afterwards. ``UNSLOTH_H3_DEFER_RESIDENT_PIN=0`` pins up front.
+H3_DEFER_RESIDENT_PIN_ENV = "UNSLOTH_H3_DEFER_RESIDENT_PIN"
+_PIN_DEFERRED_ATTR = "_unsloth_pin_deferred"
+
+
+def h3_defer_resident_pin_enabled() -> bool:
+    return str(os.environ.get(H3_DEFER_RESIDENT_PIN_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _onload_pageable(group: Any) -> bool:
+    """diffusers' stream onload of a pin-deferred group, read from its pageable host copy (it would pin each tensor
+    first): same copy stream, same record_stream, so the device weights land where a pinned onload puts them."""
+    from contextlib import nullcontext
+
+    cpu = getattr(group, "cpu_param_dict", None)
+    process = getattr(group, "_process_tensors_from_modules", None)
+    if not isinstance(cpu, dict) or not cpu or not callable(process):
+        return False
+    import torch
+
+    stream = getattr(group, "stream", None)
+    if stream is not None:
+        stream.synchronize()
+    current = torch.cuda.current_stream() if stream is not None else None
+    with nullcontext() if stream is None else torch.cuda.stream(stream):
+        process(cpu, default_stream = current)
+    return True
+
+
+def _host_alias(tensor: Any) -> Any:
+    """A host-copy object distinct from ``tensor`` over the same storage. diffusers' lazy copy of a torchao weight is
+    the weight itself, so the onload's swap_tensors would carry that "host copy" to the device as well."""
+    if _is_wrapper(tensor):
+        names, ctx = tensor.__tensor_flatten__()
+        inner = {name: getattr(tensor, name) for name in names}
+        return type(tensor).__tensor_unflatten__(inner, ctx, tensor.size(), tensor.stride())
+    return tensor.detach()
+
+
+def defer_resident_block_pins(
+    residency: "H3Residency",
+    budget_bytes: int,
+    logger: Any = None,
+) -> bool:
+    """Engage the deferral when ``budget_bytes`` holds the top-level group and every (lazily streamed) block group.
+    Run before the stream prefetch is installed and the initial fit; returns whether it engaged."""
+    if not h3_defer_resident_pin_enabled() or not h3_resident_unpin_enabled():
+        return False
+    if not residency.usable:
+        return False
+    top, n = residency.plan(budget_bytes)
+    if (residency.top is not None and not top) or n != len(residency.blocks):
+        return False
+    for group in residency.blocks:
+        cpu = getattr(group, "cpu_param_dict", None)
+        if (
+            not getattr(group, "low_cpu_mem_usage", False)
+            or getattr(group, "stream", None) is None
+            or getattr(group, "offload_to_disk_path", None)
+            or not isinstance(cpu, dict)
+            or not cpu
+            or is_resident(group)
+        ):
+            return False
+    try:
+        aliases = [
+            {t: _host_alias(src) for t, src in group.cpu_param_dict.items() if src is t}
+            for group in residency.blocks
+        ]
+    except Exception:  # noqa: BLE001 -- unknown wrapper: pin as the lazy path does
+        return False
+    for group, alias in zip(residency.blocks, aliases):
+        group.cpu_param_dict.update(alias)
+        # The prefetch then engages for a later demote; its host copy is rebuilt pinned.
+        group.low_cpu_mem_usage = False
+        setattr(group, _PIN_DEFERRED_ATTR, True)
+    if logger is not None:
+        logger.info(
+            "video.h3_block_pin: %d block groups will be resident, pin deferred (%.2f GB)",
+            len(residency.blocks),
+            sum(residency.block_bytes) / 1e9,
+        )
+    return True
+
+
+def pin_deferred_block_groups(transformer: Any, logger: Any = None) -> tuple[int, int]:
+    """Pin the pin-deferred blocks the initial fit left streamed (a failed or smaller fit), as the lazy path does.
+    Returns (groups pinned, block groups); (0, n) when every deferred block went resident."""
+    _top, blocks = h3_offload_groups(transformer)
+    left = [g for g in blocks if getattr(g, _PIN_DEFERRED_ATTR, False) and not is_resident(g)]
+    if not left:
+        return 0, len(blocks)
+    for group in left:
+        group.low_cpu_mem_usage = True
+        setattr(group, _PIN_DEFERRED_ATTR, False)
+    if logger is not None:
+        logger.info(
+            "video.h3_block_pin: %d of %d pin-deferred block groups stay streamed, pinning them now",
+            len(left),
+            len(blocks),
+        )
+    return pin_streamed_block_groups(transformer, logger = logger)
+
+
 def make_resident(group: Any) -> None:
     """Onload ``group`` once and make its hooks' onload / offload no-ops, so it stays on the device."""
     import torch
 
     if is_resident(group):
         return
-    # Instance attribute: an instance override is an onload path too, except the prefetcher's own.
-    prefetcher = getattr(group, "_unsloth_prefetcher", None)
-    owns = getattr(prefetcher, "owns", None)
-    if callable(owns) and owns(group):
-        _outside_inference_mode(type(group).onload_)(group)
-    else:
-        group.onload_()
+    promoted = False
+    if getattr(group, _PIN_DEFERRED_ATTR, False):
+        try:
+            promoted = _outside_inference_mode(_onload_pageable)(group)
+        except Exception:  # noqa: BLE001 -- diffusers' onload re-copies every tensor from the host copy
+            promoted = False
+    if not promoted:
+        # Instance attribute: an instance override is an onload path too, except the prefetcher's own.
+        prefetcher = getattr(group, "_unsloth_prefetcher", None)
+        owns = getattr(prefetcher, "owns", None)
+        if callable(owns) and owns(group):
+            _outside_inference_mode(type(group).onload_)(group)
+        else:
+            group.onload_()
     stream = getattr(group, "stream", None)
     if stream is not None:
         stream.synchronize()
@@ -450,6 +568,8 @@ def make_resident(group: Any) -> None:
     group.onload_ = _resident_onload(group)
     group.offload_ = _noop
     group._unsloth_resident = True
+    if getattr(group, _PIN_DEFERRED_ATTR, False):
+        setattr(group, _PIN_DEFERRED_ATTR, False)
 
 
 def demote(
