@@ -6421,6 +6421,10 @@ html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]
   pointer-events: none;
   background: radial-gradient(ellipse, color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 70%), transparent) 0%, transparent 72%);
 }
+/* Dark glass already provides contrast; the greeting scrim creates visible gradient bands. */
+html.dark:is([data-glass], [data-glass-clear]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting::before {
+  content: none;
+}
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-composer-surface,
 .wallpaper-preview-composer {
   background: color-mix(in srgb, var(--background) max(92%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
@@ -6447,6 +6451,10 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
   inset: 0 0 auto;
   height: 150px;
   background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
+}
+/* Glass chat surfaces do not need a second tint fading down from the header. */
+html:is([data-glass], [data-glass-clear]) :is([data-wallpaper-workspace], [data-chat-content-root]):not([data-wallpaper-route="page"]) > .chat-wallpaper::after {
+  content: none;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] [data-side-panel-inset]:not(.chat-header-fade),
 html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] {
@@ -7196,6 +7204,11 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
 html[data-glass^="liquid"][data-glass-menus] [data-slot="dialog-content"] {
   background-image: var(--glass-glow, none), var(--glass-sheen);
   box-shadow: var(--glass-rim);
+}
+/* Keep Settings translucent without the decorative sheen or inset shadow bands. */
+html:is([data-glass], [data-glass-clear])[data-glass-menus] [data-slot="dialog-content"][data-settings-dialog] {
+  background-image: none;
+  box-shadow: none;
 }
 /* These panes clear the surface token, so ink drawn in the page colour (dark buttons' labels) takes the opaque one back. */
 html[data-glass][data-glass-menus] :is([data-slot="dialog-content"], [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) [class*="text-background"],
