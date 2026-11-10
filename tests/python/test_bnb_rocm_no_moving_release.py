@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
 """bitsandbytes for ROCm / XPU comes from PyPI, never from bnb's continuous-release_main.
 
 That release is deleted and re-uploaded under the same file names on every push to bnb main,
