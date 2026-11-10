@@ -858,12 +858,20 @@ async def _test_custom_provider_connectivity(
                 async def consume_response_stream():
                     nonlocal received_response, model_failure
                     async for line in response_stream:
-                        if line.startswith("data: ") and line[6:].strip() != "[DONE]":
-                            event = json.loads(line[6:])
+                        if line.startswith("data:") and line[5:].strip() != "[DONE]":
+                            try:
+                                event = json.loads(line[5:])
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(event, dict):
+                                continue
                             received_response = received_response or bool(event.get("choices"))
                             if event.get("error"):
-                                model_failure = event["error"].get(
-                                    "message", "Responses request failed"
+                                err = event["error"]
+                                model_failure = (
+                                    err.get("message", "Responses request failed")
+                                    if isinstance(err, dict)
+                                    else str(err)
                                 )
 
                 try:

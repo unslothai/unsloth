@@ -530,7 +530,12 @@ async def managed_tool_chat(
                 return JSONResponse(line)
             if not line.startswith("data:") or line[5:].strip() == "[DONE]":
                 continue
-            event = json.loads(line[5:])
+            try:
+                event = json.loads(line[5:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
             if event.get("error"):
                 raise HTTPException(status_code = 502, detail = event)
             if event.get("usage"):
@@ -539,6 +544,8 @@ async def managed_tool_chat(
                 result["context_truncated"] = event["context_truncated"]
             message = result["choices"][0]["message"]
             for choice in event.get("choices", []):
+                if not isinstance(choice, dict):
+                    continue
                 delta = choice.get("delta") or {}
                 message["content"] += delta.get("content") or ""
                 if delta.get("reasoning_content"):
