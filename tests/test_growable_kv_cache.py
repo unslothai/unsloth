@@ -244,6 +244,17 @@ def test_left_padding(host, llama, monkeypatch):
     assert torch.equal(static, grown)
 
 
+def test_a_directly_built_layer_grows_past_its_first_bucket(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV_MIN", "16")
+    layer = KV.GrowableLayer(max_cache_len = 64)
+    k = torch.randn(1, 2, 12, 8)
+    layer.update(k, k, {"cache_position": torch.arange(12)})
+    k = torch.randn(1, 2, 8, 8)
+    layer.update(k, k, {"cache_position": torch.arange(12, 20)})
+    assert layer.capacity == 32 and layer.keys.shape[-2] == 32
+    assert torch.equal(layer.keys[:, :, 12:20], k)
+
+
 def test_compiled_update_is_one_graph_per_bucket(monkeypatch):
     monkeypatch.setenv("UNSLOTH_GROWABLE_KV_MIN", "16")
     torch._logging.set_logs(graph_breaks = True, recompiles = True)
@@ -251,7 +262,6 @@ def test_compiled_update_is_one_graph_per_bucket(monkeypatch):
 
     torch._dynamo.reset()
     layer = KV.GrowableLayer(max_cache_len = 64)
-    layer.group.members.append(weakref.ref(layer))
     k = torch.randn(1, 2, 4, 8)
     layer.update(
         k, k, {"cache_position": torch.arange(4)}

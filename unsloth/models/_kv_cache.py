@@ -78,6 +78,7 @@ if _StaticLayer is not None:
             self.capacity = None
             self.cumulative_length_int = 0
             self.group = group if group is not None else _Group()
+            self.group.members.append(weakref.ref(self))
 
         def _plan(self, q_len):
             """Capacity for q_len more tokens; grows the group if short. Never during a capture: the host counter is
@@ -222,7 +223,6 @@ def make_growable(cache):
         if group is None:
             group = _Group()
         grown = GrowableLayer(max_cache_len = layer.max_cache_len, group = group)
-        group.members.append(weakref.ref(grown))
         layers[i] = grown
     return cache
 
