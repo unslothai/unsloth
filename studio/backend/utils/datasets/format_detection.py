@@ -879,8 +879,7 @@ def video_sample(
             )
         return value is not None and not isinstance(value, (str, int, float, bool))
 
-    # Whole rows decode every media cell, so read only the missing columns; text-only rows are cheaper whole.
-    # Only when rows are exactly the known columns and no custom transform can derive a missing one.
+    # Whole rows decode every media cell; a schema mismatch or custom transform could change what a subset sees.
     missing_keys = set(missing)
     if len(missing) < len(sample) and any(
         _is_media(v) for k, v in sample.items() if k not in missing_keys

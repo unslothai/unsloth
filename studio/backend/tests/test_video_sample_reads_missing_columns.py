@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""video_sample fills a sparse first row from the next rows reading only the columns that are still missing, so an
-image column is not decoded 31 times; the filled sample is the same as a full-row scan."""
+"""video_sample reads only the still-missing columns and fills the same sample as a full-row scan."""
 
 import io
 
