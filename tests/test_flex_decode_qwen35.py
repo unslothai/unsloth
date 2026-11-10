@@ -28,6 +28,23 @@ from unsloth.models.vision import _NonFlexGenerate
 from tests.test_flex_decode_gemma4 import _generate, _inputs, flex  # noqa: F401  (fixture)
 
 
+def _torch_linear_attention(monkeypatch):
+    # The CPU float64 stand-in must not reach FLA / causal-conv1d Triton kernels where those packages are installed
+    # (GPU hosts): transformers picks them by import, not by device, and they reject CPU tensors.
+    import importlib
+    for name in ("qwen3_5", "qwen3_5_moe"):
+        module = importlib.import_module(f"transformers.models.{name}.modeling_{name}")
+        for fn in (
+            "torch_chunk_gated_delta_rule",
+            "torch_recurrent_gated_delta_rule",
+            "causal_conv1d_fn",
+            "causal_conv1d_update",
+        ):
+            original = getattr(getattr(module, fn, None), "__wrapped__", None)
+            if original is not None:
+                monkeypatch.setattr(module, fn, original)
+
+
 def _qwen(moe):
     from transformers import (
         Qwen3_5ForCausalLM,
@@ -82,6 +99,7 @@ def test_qwen35_flex_decode_matches_sdpa(flex, monkeypatch, moe, batch, zoo_mask
     if zoo_mask:
         zoo = pytest.importorskip("unsloth_zoo.flex_attention.decode")
         monkeypatch.setattr(FD, "decode_block_mask", zoo.decode_block_mask)
+    _torch_linear_attention(monkeypatch)
     model = _qwen(moe)
     assert FD._model_type(model.config) in FD.MODEL_TYPES
     ids, mask = _inputs(48, batch)
