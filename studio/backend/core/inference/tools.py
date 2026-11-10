@@ -6709,7 +6709,7 @@ _HEREDOC_INTERPRETER_MENTION_RE = re.compile(
     r"(?<![\w.-])(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)(?![\w-])"
 )
 _COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
-_PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVxR?")
+_PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
 
 def _shell_line_tokens(line: str) -> "list | None":
@@ -6803,12 +6803,14 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
     the body screened. Other interpreters, a second stdin redirection, expansions in an unquoted
     body, or any owner or terminator this cannot resolve while an interpreter is named fail closed."""
     mentioned = bool(_HEREDOC_INTERPRETER_MENTION_RE.search(command))
-    lines = command.splitlines()
+    lines = command.split("\n")
     i = 0
     while i < len(lines):
         line = lines[i]
         i += 1
         while i < len(lines) and (len(line) - len(line.rstrip("\\"))) % 2:
+            if "#" in line and mentioned:
+                return True
             line = line[:-1] + lines[i]
             i += 1
         if "<<" not in line:
@@ -6877,6 +6879,8 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
             if stdin_redirects > 1 or any("PYTHONINSPECT" in w for w in names[:at]):
                 return True
             if not os.path.basename(names[at]).lower().startswith(("python", "pypy")) or depth >= 3:
+                return True
+            if any(_HEREDOC_INTERPRETER_RE.fullmatch(os.path.basename(w)) for w in names[at + 1 :]):
                 return True
             reads = _python_reads_stdin_program(names[at + 1 :])
             if reads is None:
