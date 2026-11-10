@@ -1815,6 +1815,21 @@ _ZSTD_MAX_RATIO = 64
 _ZSTD_MAX_FRAMES = 1024
 
 
+# Decoding runs before the route's auth check, so an unauthenticated ~8 MiB frame can inflate to the full body
+# cap: one decode at a time per event loop keeps concurrent bombs from multiplying that.
+_ZSTD_DECODE_GATES: dict = {}
+
+
+def _zstd_decode_gate() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    gate = _ZSTD_DECODE_GATES.get(loop)
+    if gate is None:
+        for stale in [k for k in _ZSTD_DECODE_GATES if k.is_closed()]:
+            _ZSTD_DECODE_GATES.pop(stale, None)
+        gate = _ZSTD_DECODE_GATES[loop] = asyncio.Semaphore(1)
+    return gate
+
+
 def _zstd_decode(zstd, data: bytes, limit: int) -> Optional[bytes]:
     view = memoryview(data)
     frames = []
@@ -1983,7 +1998,8 @@ class MaxBodyMiddleware:
                     return
             limit = min(max_bytes, max(_ZSTD_MIN_DECODED_BYTES, len(body) * _ZSTD_MAX_RATIO))
             try:
-                body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
+                async with _zstd_decode_gate():
+                    body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
             except zstd.ZstdError:
                 await JSONResponse({"detail": "Request body is not valid zstd."}, status_code = 400)(
                     scope, receive, send

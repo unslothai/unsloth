@@ -1992,3 +1992,50 @@ def test_a_withheld_body_is_not_counted_as_running_inference(main_module, health
                     continue
                 headers = {"Content-Type": "application/json", **framing, **credential}
                 assert asyncio.run(counted_while_withheld(path, headers)) == 0, (path, headers)
+
+
+def test_zstd_decodes_run_one_at_a_time(main_module, monkeypatch):
+    # Decoding happens before the route's auth check, so concurrent unauthenticated bombs must not
+    # each inflate to the full cap at once.
+    import types
+    import httpx
+
+    fake = types.ModuleType("backports.zstd")
+
+    class ZstdError(Exception):
+        pass
+
+    fake.ZstdError = ZstdError
+    pkg = types.ModuleType("backports")
+    pkg.zstd = fake
+    monkeypatch.setitem(sys.modules, "backports", pkg)
+    monkeypatch.setitem(sys.modules, "backports.zstd", fake)
+    monkeypatch.setitem(sys.modules, "compression", None)
+    state = {"now": 0, "peak": 0}
+
+    import time
+
+    def slow_decode(zstd, data, limit):
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.2)
+        state["now"] -= 1
+        return json.dumps({"text": "x"}).encode()
+
+    monkeypatch.setattr(main_module, "_zstd_decode", slow_decode)
+    app = _make_protected_app(4096, main_module)
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as client:
+            headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"}
+            return await asyncio.gather(
+                *(
+                    client.post("/v1/systemone", content = b"z" * 64, headers = headers)
+                    for _ in range(4)
+                )
+            )
+
+    responses = asyncio.run(run())
+    assert [r.status_code for r in responses] == [200] * 4
+    assert state["peak"] == 1
