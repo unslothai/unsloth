@@ -1677,11 +1677,12 @@ def quantize_block_(block: Any, scheme: str, *, device: Any) -> int:
     return len(names)
 
 
-# cuBLAS int8 GEMMs (torch._int_mm) refuse a row count that is not a multiple of 8, and torchao then falls back to an
-# fp32 matmul without a word: measured 0.21 s for one 33B block at 4396 rows on an A100 vs 6.8 ms for the int8 GEMM
-# at 4352. A packed H3 sequence has as many rows as the prompt has tokens plus the image rows, so it is rarely a
-# multiple of 8. 16 also suits the fp8 row-wise GEMM.
-ROW_MULTIPLE = 16
+# cuBLASLt int8 GEMMs (torch._int_mm) refuse some row counts (A100, CUDA 13: 4396 and 4432 rows raise
+# CUBLAS_STATUS_NOT_SUPPORTED, 4352 and 6880 run), and torchao then falls back to an fp32 matmul without a word:
+# 0.21 s for one 33B block vs 6.8 ms for the int8 GEMM, 64.9 s vs 36.0 s for a 2048 render. A packed H3 sequence has
+# as many rows as the prompt has tokens plus the image rows, so it rarely lands on a supported count. Every count
+# measured as a multiple of 32 ran; 32 also suits the fp8 row-wise GEMM.
+ROW_MULTIPLE = 32
 
 
 def _row_pad_class() -> Any:

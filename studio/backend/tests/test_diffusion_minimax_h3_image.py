@@ -637,7 +637,7 @@ def test_release_drops_components_and_hooks(h3i, release):
     assert torch.is_tensor(next(blocks[0].parameters()))
 
 
-def test_int8_linears_pad_rows_to_a_multiple_of_16_exactly(h3i):
+def test_int8_linears_pad_rows_to_the_supported_multiple_exactly(h3i):
     import torch
 
     pytest.importorskip("torchao")
@@ -656,5 +656,6 @@ def test_int8_linears_pad_rows_to_a_multiple_of_16_exactly(h3i):
     block[0].inner.register_forward_pre_hook(lambda m, a: seen.append(a[0].shape[0]))
     with torch.no_grad():
         got = block[0](x)
-    assert seen == [48] and got.shape == want.shape
+    assert h3i.ROW_MULTIPLE == 32
+    assert seen == [64] and got.shape == want.shape
     assert torch.equal(got, want)
