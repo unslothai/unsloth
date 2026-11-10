@@ -6955,7 +6955,12 @@ class MLXInferenceBackend:
         as generation does."""
         if self._model is None:
             raise RuntimeError("No model loaded")
+        images = list(images or ())
         full_messages = self._conversation_to_render(messages, system_prompt, images or None)
+        if len(images) > 1 and not self._multi_image_marker:
+            # Generation serves the newest picture alone.
+            full_messages = list(full_messages)
+            trim_image_turns(full_messages, images, limit = 1, keep = (len(images) - 1,))
 
         if self._is_vlm:
             # One image per marker, else the structured-item check raises.
@@ -6976,6 +6981,17 @@ class MLXInferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
         )
+        if images and self._reads_vision_input():
+            from unsloth_zoo.mlx.loader import _mlx_lm_image_inputs
+
+            # The ids generation embeds, without running the vision tower.
+            expanded = _mlx_lm_image_inputs(
+                self._tokenizer,
+                self._tokenizer._unsloth_image_processor,
+                images,
+                render_result.prompt,
+            )
+            return len(expanded["input_ids"][0])
         return self._count_prompt_tokens(render_result.prompt)
 
     def generate_chat_response(
