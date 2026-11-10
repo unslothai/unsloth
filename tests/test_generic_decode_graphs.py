@@ -247,9 +247,11 @@ def test_counts_captures_refusals_and_recompiles_separately(host, llama):
     layer = torch.nn.Linear(4, 4)
     compiled = torch.compile(lambda x: layer(x).relu(), backend = "eager")
     compiled(torch.ones(2, 4))
+    ids, mask = _ids(llama, 2, pad = 1)
+    # Warm the compiled mask builder for these shapes eagerly first, so the count does not depend on test order.
+    _generate(llama, ids, mask, False)
     before = compiles()
     _fresh(llama)
-    ids, mask = _ids(llama, 2, pad = 1)
     _generate(llama, ids, mask, True)
     compiled(torch.ones(2, 4))
     # Decode graphs add no Dynamo graph and no recompile of an existing compiled region.
