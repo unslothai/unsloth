@@ -7,8 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-// package.json `overrides` force one copy of these; npm applies an override silently even when a
-// dependent pins a newer version, so a Radix bump must not leave the override below what it needs.
+// npm overrides win silently even over a dependent pinning a newer version: none may be downgraded.
 const HELPERS = ["@radix-ui/react-primitive", "@radix-ui/react-slot", "@radix-ui/react-context"];
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
