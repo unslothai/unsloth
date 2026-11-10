@@ -51,6 +51,7 @@ _REAL_WIRED_READERS = {
 }
 _ENV = LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV
 _REAL_POPEN = subprocess.Popen
+_REAL_RUN = subprocess.run
 
 CEILING = 8192
 NATIVE = 262144
@@ -1990,3 +1991,25 @@ class TestOneWiredReadingPerLoad:
         assert LlamaCppBackend._apple_metal_wired_headroom_bytes() == _WIRED
         assert LlamaCppBackend._apple_metal_wired_ceiling_bytes() == _WIRED // 2
         assert len(calls) == 2
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason = "spawns the real sysctl")
+    def test_on_a_mac_a_load_spawns_sysctl_once(self, monkeypatch):
+        import core.inference.llama_cpp as _llama_cpp
+
+        spawned = []
+
+        def run(argv, *args, **kwargs):
+            spawned.append(argv[0])
+            return _REAL_RUN(argv, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", run)
+        for name, reader in _REAL_WIRED_READERS.items():
+            monkeypatch.setattr(LlamaCppBackend, name, reader)
+        with _llama_cpp._load_probe_memo_scope():
+            _llama_cpp._arm_load_probe_memo()
+            first = LlamaCppBackend._apple_metal_wired_headroom_bytes()
+            for _ in range(4):
+                assert LlamaCppBackend._apple_metal_wired_headroom_bytes() == first
+        assert spawned.count("sysctl") == 1
+        LlamaCppBackend._apple_metal_wired_headroom_bytes()
+        assert spawned.count("sysctl") == 2
