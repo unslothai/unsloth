@@ -4,9 +4,8 @@
 """Permission modes in the tool loop: only high-risk calls pause in auto; full never pauses."""
 
 import os
-import uuid
-
 import time
+import uuid
 
 import pytest
 
