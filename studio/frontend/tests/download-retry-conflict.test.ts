@@ -46,7 +46,7 @@ after(() => {
 const { calls } = await import("./helpers/toast-stub.mjs");
 const { retryDownload } =
   await import("../src/features/hub/download-manager/retry-start.ts");
-const { getState, jobKeyOf } =
+const { getState, jobKeyOf, putJob, removeJob } =
   await import("../src/features/hub/download-manager/download-manager-state.ts");
 
 test("a retry that hits a transport conflict tells the user where to resolve it", async () => {
@@ -78,4 +78,51 @@ test("a retry that hits a transport conflict tells the user where to resolve it"
         call.title === "Resume this download from Models",
     ),
   );
+});
+
+test("a retry refused because another job owns the repo says so", async () => {
+  calls.length = 0;
+  starts.length = 0;
+  const running = jobKeyOf("model", "Org/Busy", null);
+  putJob({
+    key: running,
+    kind: "model",
+    repoId: "Org/Busy",
+    variant: null,
+    state: "running",
+    downloadedBytes: 0,
+    completedBytes: 0,
+    completeOnDisk: false,
+    expectedBytes: 4096,
+    fraction: 0,
+    bytesPerSec: 0,
+    etaSeconds: 0,
+    error: null,
+    startedAt: 2,
+  });
+  await retryDownload({
+    key: jobKeyOf("model", "Org/Busy", "@hub-assets"),
+    kind: "model",
+    repoId: "Org/Busy",
+    variant: "@hub-assets",
+    scopedFiles: ["vae.safetensors"],
+    state: "error",
+    downloadedBytes: 0,
+    completedBytes: 0,
+    completeOnDisk: false,
+    expectedBytes: 1024,
+    fraction: 0,
+    bytesPerSec: 0,
+    etaSeconds: 0,
+    error: "Connection reset",
+    startedAt: 1,
+  });
+  assert.equal(starts.length, 0);
+  assert.ok(
+    calls.some(
+      (call: { kind: string; title?: string }) =>
+        call.kind === "info" && call.title === "Download already in progress",
+    ),
+  );
+  removeJob(running);
 });
