@@ -1188,6 +1188,13 @@ export function acceptOffer(b: Board, s: RivalsState, id: number): ActResult {
   const o = s.offers.find((x) => x.id === id);
   if (!o) return { state: s, ok: false, why: "that offer is gone" };
   const rest = { ...s, offers: s.offers.filter((x) => x.id !== id) };
+  // Offers outlive the day they were made; a leader now set against the player withdraws an alliance.
+  if (o.action.kind === "ally" && s.factions[o.from]?.target === o.to)
+    return {
+      state: rest,
+      ok: false,
+      why: `${nameOf(b, o.from)} no longer wants an alliance`,
+    };
   const r = act(b, rest, o.to, { ...o.action, with: o.from } as RivalAction);
   return r.ok ? r : { ...r, state: rest };
 }

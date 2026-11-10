@@ -368,6 +368,26 @@ test("a pending alliance deal is refused once the leader targets the player", ()
   assert.equal(R.relationOf(r.state, "us", "oak"), "peace");
 });
 
+test("an alliance the leader offered is withdrawn once it targets the player", () => {
+  let s = R.applyPlan(
+    B,
+    fresh(),
+    "oak",
+    plan({ economy: 0.2, expansion: 0.1, military: 0.1, diplomacy: 0.6 }),
+  );
+  s = R.runManagers(B, s, "oak");
+  const offer = s.offers.find((o) => o.from === "oak");
+  assert.ok(offer && offer.action.kind === "ally");
+  const hostile = R.applyPlan(B, s, "oak", plan(MILITARY, "us"));
+  const r = R.acceptOffer(B, hostile, offer.id);
+  assert.equal(r.ok, false);
+  assert.equal(R.relationOf(r.state, "us", "oak"), "peace");
+  assert.equal(
+    r.state.offers.some((o) => o.id === offer.id),
+    false,
+  );
+});
+
 test("AI proposals to the player run through the same gate when accepted", () => {
   let s = R.applyPlan(
     B,
