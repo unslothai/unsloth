@@ -42,19 +42,17 @@ from utils.account_context import (
 
 
 def __getattr__(name):
-    # huggingface_hub.hf_api costs ~0.1 s at import and only Hub lookups need it.
+    # huggingface_hub.hf_api costs ~0.2 s at boot. The submodule, not the package attribute, so a patched
+    # huggingface_hub.HfApi live at first use is never cached here.
     if name == "HfApi":
-        from huggingface_hub import HfApi
+        from huggingface_hub.hf_api import HfApi
         globals()["HfApi"] = HfApi
         return HfApi
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _hf_api(*args, **kwargs):
-    api = globals().get("HfApi")
-    if api is None:
-        api = __getattr__("HfApi")
-    return api(*args, **kwargs)
+    return (globals().get("HfApi") or __getattr__("HfApi"))(*args, **kwargs)
 
 
 _ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")

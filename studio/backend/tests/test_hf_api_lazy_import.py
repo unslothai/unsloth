@@ -16,6 +16,8 @@ def test_boot_modules_do_not_import_hf_api():
         f"sys.path.insert(0, {str(BACKEND)!r})\n"
         "import hub.services.models.account_access as access, utils.hf_token_validation\n"
         "assert 'huggingface_hub.hf_api' not in sys.modules\n"
+        "import huggingface_hub\n"
+        "huggingface_hub.HfApi = object\n"
         "assert access.HfApi.__module__ == 'huggingface_hub.hf_api'\n"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 300)
