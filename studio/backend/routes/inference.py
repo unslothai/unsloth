@@ -38837,7 +38837,6 @@ async def _studio_embeddings(
         content = json.dumps({**payload, "data": []}).replace('"data": []', f'"data": [{rows}]', 1)
         return payload, content
 
-    # Rows and dumps take ~0.6 s per 1000x1024 floats: off the loop so streams keep flowing.
     try:
         payload, content = await asyncio.to_thread(_serialize)
     except asyncio.CancelledError:
@@ -38923,6 +38922,28 @@ def _embedding_response_json(resp):
         return resp.json()
     except Exception as exc:  # noqa: BLE001
         return exc
+
+
+def _embedding_tail_usage(content: bytes) -> Optional[dict]:
+    """``usage`` when it is the body's last top-level key, else None.
+
+    llama-server's json keeps keys sorted, so usage follows the data rows (format_embeddings_response_oaicompat).
+    """
+    start = content.rfind(b'"usage"')
+    before = start - 1
+    while before >= 0 and content[before] in b" \t\r\n":
+        before -= 1
+    if before < 0 or content[before] not in b",{":
+        return None
+    try:
+        tail = content[start + 7 :].decode().lstrip()
+        if not tail.startswith(":"):
+            return None
+        tail = tail[1:].lstrip()
+        usage, end = json.JSONDecoder().raw_decode(tail)
+    except ValueError:
+        return None
+    return usage if isinstance(usage, dict) and tail[end:].strip() == "}" else None
 
 
 def _embedding_width(data) -> Optional[int]:
@@ -39062,9 +39083,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
             body["input"] = inputs
             resp = await upstream.post(body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
-    # Parse a 200 body at most once, off the loop (~1 s for wide batches), and only when read.
+    # A full parse holds the GIL ~1 s for wide batches even in a thread: the monitor alone reads only the tail's usage.
     data = None
-    if resp.status_code == 200 and (dimensions is not None or monitor_id):
+    if resp.status_code == 200 and monitor_id and dimensions is None:
+        usage = _embedding_tail_usage(resp.content)
+        data = None if usage is None else {"usage": usage}
+    if resp.status_code == 200 and data is None and (dimensions is not None or monitor_id):
         try:
             data = await asyncio.to_thread(_embedding_response_json, resp)
         except asyncio.CancelledError:

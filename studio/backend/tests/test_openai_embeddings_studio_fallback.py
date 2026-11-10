@@ -1803,3 +1803,38 @@ def test_studio_payload_is_serialized_off_the_loop_with_the_same_bytes(
     }
     assert response.body == json.dumps(expected).encode()
     assert threads and threading.get_ident() not in threads
+
+
+_USAGE = {"prompt_tokens": 3, "total_tokens": 3}
+_ROWS = [{"embedding": [0.25] * 4, "index": 0, "object": "embedding"}]
+
+
+@pytest.mark.parametrize(
+    "upstream, full_parses",
+    [
+        # llama-server's sorted keys: usage is read from the tail, the rows are never parsed.
+        (json.dumps({"data": _ROWS, "model": "m", "object": "list", "usage": _USAGE}), 0),
+        (json.dumps({"data": _ROWS, "model": '"usage": {}', "usage": _USAGE}, indent = 2), 0),
+        # Anything else falls back to the one full parse.
+        (json.dumps({"usage": _USAGE, "data": _ROWS}), 1),
+        (json.dumps({"data": _ROWS, "x": {"usage": _USAGE}}), 1),
+        (json.dumps({"data": _ROWS}), 1),
+    ],
+)
+def test_gguf_proxy_monitor_reads_usage_from_the_tail(studio_embedder, upstream, full_parses):
+    upstream = upstream.encode()
+    parses = _counting_gguf_proxy(studio_embedder, upstream)
+    monitor, seen = _Monitor(), []
+    studio_embedder.setattr(inference_route, "api_monitor", monitor)
+    studio_embedder.setattr(inference_route, "_request_used_api_key", lambda request: False)
+    studio_embedder.setattr(
+        inference_route,
+        "_monitor_openai_chunk",
+        lambda monitor_id, data, context_length = None, **_: seen.append(data.get("usage")),
+    )
+    request = _Request({"input": "alpha"})
+    request.state.skip_api_monitor = False
+    response = asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert response.body == upstream
+    assert seen == [json.loads(upstream).get("usage")]
+    assert len(parses) == full_parses and monitor.calls == [("finish",)]
