@@ -870,8 +870,7 @@ def video_sample(
                 break
         return filled
 
-    # Read only the missing columns (whole rows decode every image/audio cell of up to 31 rows); only when
-    # the rows hold exactly the known columns, else fall back to the full-row scan.
+    # Read only the missing columns when rows hold exactly the known columns (whole rows decode every media cell).
     select_columns = getattr(dataset, "select_columns", None)
     columns = getattr(dataset, "column_names", None)
     fmt = getattr(dataset, "format", None)
