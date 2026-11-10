@@ -709,6 +709,29 @@ def is_device_oom_text(text: Optional[str]) -> bool:
     return False
 
 
+# sd.cpp's first segment stage: the model manager could not stage the segment's weights on the device.
+_WEIGHT_PREPARATION_MARKER = "failed during weight preparation"
+# Share of the free VRAM sd-server planned with that the image retry may use. sd.cpp fills its budget (free less
+# 512 MiB) with cached weights, so each phase needs memory the previous one just released. Half leaves that much
+# unclaimed while the driver still reports the release as in use (Windows defers the destruction of allocations).
+IMAGE_VRAM_RETRY_SCALE = 0.5
+
+
+def is_vram_refusal_text(text: Optional[str]) -> bool:
+    """A failed render whose output shows sd.cpp declining the work for device memory."""
+    return is_device_oom_text(text) or _WEIGHT_PREPARATION_MARKER in str(text or "").lower()
+
+
+def image_vram_retry_budget_gib(planned_free_mib: Optional[int]) -> Optional[float]:
+    """``--max-vram`` GiB for the one image retry after a VRAM refusal; None when the free VRAM sd-server
+    planned with is unknown or its share is below ``GRAPH_CUT_MIN_BUDGET_BYTES``."""
+    if not planned_free_mib or int(planned_free_mib) <= 0:
+        return None
+    return graph_cut_budget_gib(
+        int(planned_free_mib) << 20, reserve_bytes = 0, scale = IMAGE_VRAM_RETRY_SCALE
+    )
+
+
 def device_backend_flags(
     device_name: Optional[str],
     offload: Optional[list[str]] = None,

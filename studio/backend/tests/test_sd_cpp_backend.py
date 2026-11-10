@@ -3133,6 +3133,125 @@ def test_a_single_vulkan_device_loss_stays_on_vulkan(monkeypatch):
     assert not persisted
 
 
+# What sd-server returned for MOSS-Image Q8_0 on an 8 GB card whose driver reported a release late: the text
+# encoder finished, then the first denoiser segment was refused.
+_VRAM_REFUSAL = (
+    "sd-server generation failed: generation_failed: generate_image returned no results\n"
+    "Last output:\n"
+    "[E] MOSS-Image segment 1/43 (moss_image.layers.0) failed during weight preparation --- ggml_runner.cpp:934\n"
+    "[E] diffusion model compute failed --- diffusion_engine.cpp:2729\n"
+    "[E] Diffusion model sampling failed --- diffusion_engine.cpp:2976\n"
+    "[E] sampling for image 1/1 failed after 0.09s --- image.cpp:1007"
+)
+
+
+def _vram_refusal_backend(
+    monkeypatch,
+    *,
+    refusals,
+    planned_free_mib = 6666,
+    error = _VRAM_REFUSAL,
+    max_vram_supported = True,
+    policy_flags = (),
+    device = "cuda",
+):
+    """A CUDA server load whose first ``refusals`` jobs fail with ``error``, on whichever server runs them."""
+    events: list = []
+    remaining = {"refusals": refusals}
+
+    class _FakeServer:
+        lora_dir = None
+
+        def __init__(self, binary):
+            self.binary = binary
+            self.planned_free_vram_mib = planned_free_mib
+
+        def start(self, files, **kwargs):
+            events.append(
+                ("start", tuple(kwargs.get("extra_args") or ()), tuple(kwargs.get("offload") or ()))
+            )
+
+        def stop(self):
+            events.append(("stop",))
+
+        def is_alive(self):
+            return True
+
+        def img_gen(self, payload, **_kw):
+            if remaining["refusals"]:
+                remaining["refusals"] -= 1
+                raise RuntimeError(error)
+            return [_png_bytes()]
+
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = policy_flags, device = device)
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server"))
+    object.__setattr__(b._state, "mode", "server")
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+    monkeypatch.setattr(
+        bk,
+        "sd_cpp_graph_cut_options",
+        lambda binary: frozenset({"--max-vram"}) if max_vram_supported else frozenset(),
+    )
+    return b, events
+
+
+def test_a_vram_refusal_restarts_once_under_half_the_planned_free_vram(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 1)
+    flags = b._state.offload_flags
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    # Same placement flags, plus the explicit budget: 6666 MiB planned, half of it rounded down to 0.01 GiB.
+    assert [e for e in events if e[0] == "start"] == [("start", ("--max-vram", "3.25"), flags)]
+    assert b._state.vram_budget_gib == 3.25
+    assert b._state.device == "cuda" and b._state.offload_flags == flags
+    # Later requests on this load keep the restarted server.
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert len([e for e in events if e[0] == "start"]) == 1
+
+
+def test_a_second_vram_refusal_is_surfaced(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 2)
+    with pytest.raises(RuntimeError, match = "failed during weight preparation"):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert len([e for e in events if e[0] == "start"]) == 1
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        # sd-server printed no auto-fit plan, so there is no free VRAM to halve.
+        {"planned_free_mib": None},
+        # Half of it is below the 1 GiB floor.
+        {"planned_free_mib": 1800},
+        # A build without --max-vram rejects the flag.
+        {"max_vram_supported": False},
+        # A CPU render is not short of VRAM.
+        {"device": "cpu"},
+        # Not a memory refusal.
+        {"error": "sd-server generation failed: generation_failed: invalid sampler"},
+    ],
+    ids = ["no_plan", "below_floor", "old_build", "cpu", "other_error"],
+)
+def test_a_vram_refusal_without_a_usable_budget_is_surfaced_unchanged(monkeypatch, kwargs):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 1, **kwargs)
+    with pytest.raises(RuntimeError):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert not [e for e in events if e[0] in ("start", "stop")]
+    assert b._state.vram_budget_gib is None
+
+
+def test_a_device_loss_respawn_keeps_the_reduced_vram_budget(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 0, device = "vulkan")
+    object.__setattr__(b._state, "vram_budget_gib", 3.25)
+    server = b._respawn_server_after_device_loss(
+        b._state, "sd-server job failed: vk::Queue::submit: ErrorDeviceLost", threading.Event()
+    )
+    assert server is not None
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "3.25")]
+
+
 @pytest.mark.parametrize("why", ["explicit_gpu", "no_cpu_rung", "fallback_disabled"])
 def test_a_repeated_vulkan_device_loss_without_a_cpu_rung_errors_with_a_hint(monkeypatch, why):
     # A user-picked GPU is never moved to CPU behind their back, and an Arc / ROCm host (no CPU rung) or a disabled

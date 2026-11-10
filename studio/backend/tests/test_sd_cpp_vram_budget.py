@@ -951,3 +951,37 @@ def test_h3_card_probes_never_fall_back_to_a_torch_context(monkeypatch):
     assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None)
     assert video_mod._h3_card_free_bytes("cuda", 0, allow_context = False) is None
     assert touched == []
+
+
+def test_image_vram_refusal_text_covers_every_segment_stage():
+    for stage in (
+        "weight preparation",
+        "workspace capacity check",
+        "workspace allocation",
+        "allocated capacity check",
+    ):
+        assert args_mod.is_vram_refusal_text(
+            f"[E] MOSS-Image segment 1/43 (moss_image.layers.0) failed during {stage} --- ggml_runner.cpp:934"
+        )
+    assert args_mod.is_vram_refusal_text(_AUDIT_OOM)
+    assert not args_mod.is_vram_refusal_text("generation_failed: invalid sampler")
+    assert not args_mod.is_vram_refusal_text(None)
+    # Weight preparation is not one of the video path's retry markers.
+    assert not args_mod.is_device_oom_text("segment 1/43 failed during weight preparation")
+
+
+def test_image_vram_retry_budget_is_half_the_planned_free_vram():
+    assert args_mod.image_vram_retry_budget_gib(6666) == 3.25
+    assert args_mod.image_vram_retry_budget_gib(24176) == 11.8
+    # 1 GiB floor: below it sd.cpp has no room for a segment plus its margin.
+    assert args_mod.image_vram_retry_budget_gib(2048) == 1.0
+    assert args_mod.image_vram_retry_budget_gib(2047) is None
+    assert args_mod.image_vram_retry_budget_gib(None) is None
+    assert args_mod.image_vram_retry_budget_gib(0) is None
+
+
+def test_planned_free_vram_is_read_from_the_auto_fit_device_lines():
+    cuda = "[I]     CUDA0        NVIDIA GeForce RTX 3090          free   6387 MiB, budget   5875 MiB --- backend_fit.cpp:326"
+    ram = "[I]     RAM          free  60697 MiB, params budget  54627 MiB --- backend_fit.cpp:333"
+    assert srv._AUTO_FIT_DEVICE_FREE_RE.search(cuda).group(1) == "6387"
+    assert srv._AUTO_FIT_DEVICE_FREE_RE.search(ram) is None
