@@ -6,8 +6,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 
-// Execute the actual picker row with lightweight UI boundaries so its displayed
-// size and the separate model-weight estimate can be checked independently.
 const source = ts.createSourceFile(
   "pickers.tsx",
   readFileSync(
@@ -22,7 +20,6 @@ const source = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 
-/** Find an existing top-level declaration without copying its implementation. */
 function declaration(name: string): string {
   for (const statement of source.statements) {
     if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) {
@@ -60,8 +57,6 @@ const React = {
   Fragment: "fragment",
 };
 
-// These boundaries only provide neighboring UI and event plumbing; the row
-// itself and its byte formatter are the shipped implementations above.
 const names = [
   "React",
   "memo",
@@ -118,7 +113,6 @@ const renderRow = new Function(
   `${compiled}\nreturn SoleQuantGgufDeviceRow;`,
 )(...values) as (props: unknown) => Node;
 
-/** Render a single cached quant and return its actual ModelRow properties. */
 function modelProperties(cachedBytes: number): Record<string, unknown> {
   const tree = renderRow({
     repo: {
