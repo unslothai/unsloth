@@ -1534,8 +1534,7 @@ def renderable_tool_catalog(
         return safe if active_renders_tools else _unadvertised()
     if not active_renders_tools and not _template_reads_tools(native_tpl, tools):
         return _unadvertised()
-    # Include special tokens too: native render resolves bos_token; else a dropped tool stays
-    # listed.
+    # Profiled with special tokens: the native render resolves bos_token.
     native = _native_markup_for_tokenizer(tokenizer, native_tpl, tools)
     if native is None:
         return safe

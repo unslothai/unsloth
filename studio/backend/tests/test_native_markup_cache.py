@@ -79,7 +79,6 @@ def test_native_markup_is_built_once_for_repeated_requests(monkeypatch):
     assert catalog_tool_names(first) == {"ok"}
     assert catalog_tool_names(second) == {"other", "ok"}
     assert len(calls) == 1
-    # The cached profile equals a fresh one built from the same inputs.
     fresh = model_markup(
         _NATIVE,
         helpers._vocabulary_of(tok),
@@ -102,12 +101,10 @@ def test_a_different_template_or_vocabulary_is_not_served_from_the_cache(monkeyp
     other = _NATIVE.replace("<zeta_turn>", "<|im_start|>")
     renderable_tool_catalog(tools, tok, {"native_chat_template": other})
     assert calls == [_NATIVE, _NATIVE, other]
-    # A dict template differing only in a named entry is a different key too.
     named = {"default": _NATIVE, "tool_use": _NATIVE}
     renamed = {"default": _NATIVE, "tool_use": other}
     renderable_tool_catalog(tools, tok, {"native_chat_template": named})
     renderable_tool_catalog(tools, tok, {"native_chat_template": renamed})
     assert calls[3:] == [named, renamed]
-    # Separate tokenizers never share an entry.
     renderable_tool_catalog(tools, _Tok(["a", "<|im_end|>"]), {"native_chat_template": _NATIVE})
     assert len(calls) == 6
