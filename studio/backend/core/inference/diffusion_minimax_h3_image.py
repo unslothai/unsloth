@@ -1104,6 +1104,20 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             gc.collect()
             _empty_cache()
 
+    def release(self) -> None:
+        """Drop every component and streaming hook so an unload frees the card and the host at once (the hooks hold
+        the host copies of the streamed blocks)."""
+        for streamer in list(self._unsloth_h3_streamers):
+            streamer.remove()
+            streamer._host.clear()
+        self._unsloth_h3_streamers.clear()
+        self._unsloth_h3_te_loader = None
+        for name in ("transformer", "text_encoder", "vae"):
+            if getattr(self, name, None) is not None:
+                setattr(self, name, None)
+        gc.collect()
+        _empty_cache()
+
     # -- encoders ----------------------------------------------------------------------------------------------------
 
     def _processor(self) -> Any:
@@ -1659,7 +1673,72 @@ def quantize_block_(block: Any, scheme: str, *, device: Any) -> int:
         rotate_linears_(block, rotatable, CONVROT_GROUP)
     wanted = set(names)
     quantize_(block, _make_quant_config(scheme), filter_fn = lambda module, fqn: fqn in wanted)
+    wrap_row_multiple(block, names)
     return len(names)
+
+
+# cuBLAS int8 GEMMs (torch._int_mm) refuse a row count that is not a multiple of 8, and torchao then falls back to an
+# fp32 matmul without a word: measured 0.21 s for one 33B block at 4396 rows on an A100 vs 6.8 ms for the int8 GEMM
+# at 4352. A packed H3 sequence has as many rows as the prompt has tokens plus the image rows, so it is rarely a
+# multiple of 8. 16 also suits the fp8 row-wise GEMM.
+ROW_MULTIPLE = 16
+
+
+def _row_pad_class() -> Any:
+    from torch import nn
+    class H3ImageRowPad(nn.Module):
+        """Pads a quantized Linear's rows to a multiple of ``ROW_MULTIPLE`` by repeating row 0, then drops them. Exact:
+        every row's activation scale is its own (per-row dynamic quantization), so the kept rows are unchanged."""
+
+        def __init__(self, inner: Any) -> None:
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, x: Any) -> Any:
+            import torch
+
+            lead = x.shape[:-1]
+            flat = x.reshape(-1, x.shape[-1])
+            m = flat.shape[0]
+            pad = (-m) % ROW_MULTIPLE
+            if pad and m:
+                flat = torch.cat([flat, flat[:1].expand(pad, -1)], dim = 0)
+                out = self.inner(flat)[:m]
+            else:
+                out = self.inner(flat)
+            return out.reshape(*lead, out.shape[-1])
+
+        def __getattr__(self, name: str) -> Any:
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                if name == "inner":
+                    raise
+                return getattr(self._modules["inner"], name)
+
+    return H3ImageRowPad
+
+
+_ROW_PAD_CLASS: Any = None
+
+
+def wrap_row_multiple(module: Any, names: Sequence[str]) -> int:
+    """Wrap each named quantized Linear (per-row activation scales only) in the row pad; returns the count."""
+    global _ROW_PAD_CLASS
+    from .diffusion_quant_pad import activation_granularity_is_per_row, is_quantized_linear
+
+    if _ROW_PAD_CLASS is None:
+        _ROW_PAD_CLASS = _row_pad_class()
+    wrapped = 0
+    for fqn in names:
+        parent_name, _, leaf = fqn.rpartition(".")
+        parent = module.get_submodule(parent_name) if parent_name else module
+        linear = getattr(parent, leaf)
+        if not is_quantized_linear(linear) or activation_granularity_is_per_row(linear) is not True:
+            continue
+        setattr(parent, leaf, _ROW_PAD_CLASS(linear))
+        wrapped += 1
+    return wrapped
 
 
 def resolve_dit_scheme(
@@ -2205,6 +2284,8 @@ def load_minimax_h3_image_pipeline(
             keep_on_device = plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT),
         )
         if transformer is not None:
+            for block in transformer.transformer_blocks:
+                wrap_row_multiple(block, QUANT_LINEAR_SUFFIXES)
             stats = {"layout": "hosted_prequant", "quantized_linears": 0, "bytes_read": 0}
     if transformer is None:
         root = _hub_files(

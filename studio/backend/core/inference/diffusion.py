@@ -16175,6 +16175,12 @@ class DiffusionBackend:
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
         prompt_cache.release(state.pipe)
+        if getattr(state.family, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+            # Its streaming hooks hold the host copies of the streamed blocks: drop them with the components.
+            try:
+                state.pipe.release()
+            except Exception as exc:  # noqa: BLE001 - teardown is best effort; the pipe is dropped below anyway
+                logger.debug("minimax_h3_image release skipped: %r", exc)
         if state.te_releaser is not None:
             state.te_releaser.close()
         for aux in (*self._aux_pipes.values(), *self._cn_pipes.values()):

@@ -619,3 +619,42 @@ def test_read_layer_hook_equals_hidden_states_50(h3i, release, layers):
             input_ids = x, attention_mask = torch.ones_like(x), output_hidden_states = True
         ).hidden_states[50]
     assert torch.equal(got, want)
+
+
+def test_release_drops_components_and_hooks(h3i, release):
+    import torch
+
+    root, _ref, te = release
+    import copy
+
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = copy.deepcopy(te))
+    blocks = p.transformer.transformer_blocks
+    p._unsloth_h3_streamers.append(h3i.ModuleListStreamer(blocks, "cpu", resident = 0))
+    assert any(b._forward_pre_hooks for b in blocks)
+    p.release()
+    assert p.transformer is None and p.text_encoder is None and p.vae is None
+    assert not any(b._forward_pre_hooks for b in blocks)
+    assert torch.is_tensor(next(blocks[0].parameters()))
+
+
+def test_int8_linears_pad_rows_to_a_multiple_of_16_exactly(h3i):
+    import torch
+
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+
+    torch.manual_seed(0)
+    block = torch.nn.Sequential(torch.nn.Linear(256, 64, bias = False)).to(torch.bfloat16)
+    quantize_(block, _make_quant_config("int8"))
+    x = torch.randn(1, 37, 256, dtype = torch.bfloat16)
+    with torch.no_grad():
+        want = block[0](x)
+    assert h3i.wrap_row_multiple(block, ["0"]) == 1
+    seen = []
+    block[0].inner.register_forward_pre_hook(lambda m, a: seen.append(a[0].shape[0]))
+    with torch.no_grad():
+        got = block[0](x)
+    assert seen == [48] and got.shape == want.shape
+    assert torch.equal(got, want)
