@@ -291,8 +291,7 @@ export const removeProp = (
   id: string,
 ): WorldProp3d[] => props.filter((p) => p.id !== id);
 
-// Binary glTF checks, the same as the backend's core/flows/glb.py: everything embedded, glTF 2.0, under the size
-// and triangle budgets, no geometry or texture codec the player does not ship.
+// Binary glTF checks; keep in sync with the backend's core/flows/glb.py.
 
 const UNSUPPORTED: Record<string, string> = {
   KHR_draco_mesh_compression: "Draco compression",

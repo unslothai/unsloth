@@ -279,7 +279,6 @@ export function additionsOf(raw: unknown, spec: WorldSpec): WorldAdditions {
 	return { npcs, items, quests };
 }
 
-/** Minds for villagers the director adds, with the same life fields as the starting cast. */
 function newMinds(
 	spec: WorldSpec,
 	npcs: WorldSpec["npcs"],
