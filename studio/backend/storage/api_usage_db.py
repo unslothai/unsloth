@@ -138,9 +138,8 @@ def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
 
 
 def record_api_usage(receipt: ApiUsageReceipt) -> bool:
-    """Insert one external request receipt, returning whether a row was added. The monitor id is the
-    idempotency key, so repeated completion notification cannot inflate profile totals. Invalid or
-    zero-usage receipts are ignored."""
+    """Keyed by monitor id so repeated completions cannot double-count; invalid or zero-usage
+    receipts are ignored"""
     if receipt.kind != "request" or receipt.via_api_key is not True:
         return False
     counts = (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens)
@@ -204,9 +203,8 @@ class ApiUsageWriter:
             return True
 
     def stop(self, timeout: float = _WORKER_DRAIN_TIMEOUT_SECONDS) -> bool:
-        """Stop accepting receipts and wait boundedly for the queue to drain. Returns ``True`` once the
-        daemon consumed the stop sentinel. On timeout, the daemon keeps retrying the already
-        accepted head receipt and exits after it succeeds and drains the remaining queue."""
+        """Stops intake; True once the daemon reads the stop sentinel; on timeout the daemon keeps
+        retrying the accepted head receipt, then drains the rest of the queue and exits"""
         with self._state_lock:
             if not self._stopped:
                 self._stopped = True
@@ -279,9 +277,8 @@ def enqueue_api_usage(receipt: ApiUsageReceipt) -> None:
 
 
 def release_api_usage_writer(lease: str) -> None:
-    """Release one lifespan and boundedly drain after the last owner exits. A timed-out daemon retains its
-    accepted queue, but the global gate is always cleared so a successor lifespan can start a fresh writer.
-    """
+    """Drains boundedly after the last owner exits; the gate is always cleared so a successor
+    lifespan gets a fresh writer, and a timed-out daemon keeps its accepted queue"""
     global _writer, _writer_stopping
     writer = None
     with _writer_condition:

@@ -754,6 +754,8 @@ export const uk = {
       "Закриття цього вікна не зупиняє налаштування. Результат з’явиться в розділі «Налаштування > Безпека».",
   },
   composerSettings: {
+    shareDraft: "Спільна чернетка для чатів",
+    shareDraftDescription: "Використовувати одну чернетку в чатах і порівнянні. Типово вимкнено; кожен чат зберігає власну чернетку.",
     title: "Поле введення",
     plainText: "Поле введення простого тексту",
     plainTextDescription:
@@ -1840,6 +1842,13 @@ export const uk = {
         audioUploadCancel: "Скасувати транскрибування",
         audioUploadTranscribing: "Транскрибування аудіо…",
         sectionTitle: "Диктування",
+        micTargetLabel: "Кнопка мікрофона",
+        micTargetAsr: "Розпізнавати через ASR",
+        micTargetModel: "Надсилати аудіо моделі",
+        micTargetAsrDescription: "Кнопка мікрофона вводить сказане в поле повідомлення.",
+        micTargetModelDescription: "Якщо завантажено модель зі звуковим введенням, мікрофон записує кліп і додає його до повідомлення. Для інших моделей і далі працює диктування.",
+        micTargetModelUnavailable: "Завантажте модель зі звуковим введенням (наприклад, LFM3-Omni), щоб надсилати їй свій голос.",
+        micRecordForModel: "Записати аудіо для моделі",
         engineLabel: "Рушій диктування",
         engineBrowser: "Браузер",
         engineBrowserDescription:
@@ -1865,6 +1874,13 @@ export const uk = {
         sttQuantDescription:
           "Виберіть або знайдіть модель STT для локального запуску, а потім її квантування.",
         sttDeviceLabel: "Завантажувати в",
+        sttContextLabel: "Контекст голосу",
+        sttContextAuto: "Авто (рекомендовано)",
+        sttContextAutoDescription:
+          "Підлаштовується під кожен запис і використовує більше пам'яті для довшого аудіо. Старішим середовищам виконання може знадобитися фіксований розмір, щоб зменшити використання пам'яті. Стосується Qwen3-ASR у розділах Голос і Транскрибувати.",
+        sttContextFixedDescription:
+          "Менші ліміти використовують менше пам'яті. Записам, які не вміщуються, потрібен вищий ліміт або Авто. Стосується Qwen3-ASR у розділах Голос і Транскрибувати.",
+        sttContextTokens: "токени: {count}",
         sttDeviceAuto: "GPU, якщо доступний",
         sttDeviceCpu: "RAM CPU",
         sttDeviceAutoDescription:
@@ -3469,12 +3485,10 @@ export const uk = {
       exportingAction: "Експортування...",
       exportConversations: "Експортувати «Нещодавні» та «Проєкти»",
       exportConversationsDescription:
-        "Завантажити «Нещодавні» або «Нещодавні» разом із чатами проєктів у форматі Training JSONL, CSV, ShareGPT JSONL або Markdown, одним файлом чи окремо для кожного чату. Message JSONL доступний для окремих чатів.",
+        "Завантажити «Нещодавні» або «Нещодавні» разом із чатами проєктів у форматі Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML або PDF, одним файлом чи окремо для кожного чату. Message JSONL доступний для окремих чатів.",
       exportConversationsAction: "Експортувати",
       exportScopeRecents: "Нещодавні",
       exportScopeAll: "Нещодавні + Проєкти",
-      exportCombinedSuffix: "(одним файлом)",
-      exportPerChatSuffix: "(для кожного чату)",
       importChats: "Імпортувати чати",
       importChatsDescription:
         "Імпортувати файли JSON, JSONL, NDJSON, CSV або Markdown у «Нещодавні».",

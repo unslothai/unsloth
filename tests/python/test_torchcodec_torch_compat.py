@@ -169,8 +169,7 @@ def _load_install_python_stack():
 
 
 def _reload_install_python_stack():
-    """A private instance: _PYTORCH_WHL_BASE is read from the environment at import, so the
-    cached module answers with whatever was set on first import."""
+    """A fresh private module, since _PYTORCH_WHL_BASE is read from the environment at import."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -350,9 +349,8 @@ _INDEX_INVENTORY = {
 
 
 def test_torchcodec_index_follows_the_resident_torch_build():
-    """torchcodec ships one wheel per accelerator, so the right version from the wrong index
-    is a codec that cannot dlopen. Upstream's install docs say to pass --index-url and match
-    it to the torch build; docker/Dockerfile pins cu128 by hand for exactly this reason."""
+    """torchcodec has one wheel per accelerator, so a version from the wrong index fails to dlopen;
+    the index must match the torch build."""
     ips = _load_install_python_stack()
     base = "https://download.pytorch.org/whl/"
     assert ips._torchcodec_index_url("2.11.0+cu128") == base + "cu128"
@@ -393,8 +391,7 @@ def _starved_index_cells():
 
 
 def test_pinning_the_index_starves_only_where_the_retry_covers_it():
-    """Pinning the index starves only cells the unpinned retry covers; a new starved cell fails this
-    test."""
+    """Only cells the unpinned retry covers may starve from the pin; a new starved cell fails."""
     starved = {(tag, minor) for tag, minor, _ in _starved_index_cells()}
     assert starved == {("cu129", 9)}, sorted(starved)
 
@@ -580,8 +577,7 @@ def test_compat_matrix_matches_the_published_upstream_table():
 
 
 def test_installer_never_selects_a_torchcodec_built_against_another_torch():
-    """Pip's window must exclude torchcodec releases built for another torch, since pip takes the
-    highest."""
+    """Pip's window must skip torchcodec builds for other torch, since pip takes the highest."""
     from packaging.specifiers import SpecifierSet
 
     ips = _load_install_python_stack()
@@ -774,8 +770,7 @@ def test_the_installer_never_selects_a_spec_with_no_wheel_here(monkeypatch):
                 )
 
 
-# Hand-written answers; the sweep only checks against the history table.
-# (host, python, torch minor, must the gate install?)
+# Hand-written; the sweep checks only the history table. Columns: host, python, minor, install.
 _WHEEL_GATE_ANCHORS = [
     ("linux-aarch64", (3, 12), 11, True),
     ("linux-aarch64", (3, 12), 10, False),
@@ -829,8 +824,7 @@ def test_the_torchcodec_step_cannot_end_the_install():
 
 
 def test_the_runtime_hint_pins_the_index_it_tells_you_to_install_from(monkeypatch):
-    """The installer pins the torch index for torchcodec, so a remedy that omits it hands
-    back the wrong accelerator build and audio stays broken."""
+    """The remedy must pin the torch index, or it hands back the wrong accelerator build."""
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
@@ -858,9 +852,8 @@ def test_the_runtime_hint_pins_the_index_it_tells_you_to_install_from(monkeypatc
 
 
 def test_the_remedy_drops_the_extra_when_an_index_pin_is_needed(monkeypatch):
-    """An extra cannot carry an index: the marker picks the version, and putting
-    --index-url on the whole command would resolve unsloth itself from the torch index. On a
-    tagged venv the extra would hand back the same unloadable wheel the warning is about."""
+    """An extra cannot carry an index, and --index-url on the whole command would resolve unsloth
+    from the torch index; on a tagged venv the extra gives the unloadable wheel"""
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
@@ -1043,8 +1036,7 @@ def test_the_provenance_hint_does_not_assert_a_cause_it_has_not_established(monk
 
 
 def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
-    """PowerShell is Studio's supported Windows shell and does not expand `$NAME`, so the
-    POSIX spelling pasted there produced an empty `--index-url`."""
+    """PowerShell does not expand `$NAME`, so the pasted POSIX form left --index-url empty."""
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
@@ -1070,9 +1062,8 @@ def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
 
 
 def test_the_provenance_remedy_pins_the_compatible_window(monkeypatch):
-    """The accelerator indexes carry the whole codec line, so a bare `torchcodec` on a torch
-    2.9 host installs the newest release there and trades a wrong-accelerator build for a
-    wrong-version one, leaving audio just as disabled."""
+    """The accelerator indexes carry the whole codec line, so a bare `torchcodec` on torch 2.9 gets
+    a wrong-version wheel and audio stays off; pin the compatible window."""
     import sys
     import types
 
@@ -1256,8 +1247,7 @@ def test_an_untagged_torch_without_an_explicit_index_stays_unpinned(monkeypatch)
 
 
 def test_the_installed_codec_reports_the_cuda_major_it_actually_links(monkeypatch, tmp_path):
-    """torchcodec 0.16.0 links libcudart.so.13 on PyPI and .12 on the cu126 leaf, so the NPP
-    choice reads the wheel rather than the torch tag."""
+    """0.16.0 links libcudart.so.13 on PyPI, .12 on cu126; read the wheel, not the torch tag."""
     mod = _load_install_python_stack()
 
     class _Dist:
@@ -1305,9 +1295,8 @@ def test_the_remedy_spells_the_variable_for_the_shell_it_will_be_pasted_into(mon
 
 
 def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
-    """No URL shape pins a query-auth index, and building a broken one is worse than
-    declining: --index-url makes _install_env_for_cmd strip pip.conf and ~/.netrc, the only
-    channel that can carry that credential."""
+    """No URL shape pins a query-auth index; declining beats a broken one, since --index-url makes
+    _install_env_for_cmd strip pip.conf and ~/.netrc, the only credential channel."""
     for base in ("https://mirror.example/whl?token=abc", "https://mirror.example/whl#tok"):
         monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", base)
         mod = _reload_install_python_stack()
@@ -1515,9 +1504,8 @@ def test_every_pytorch_mirror_leaf_goes_through_the_guarded_helper():
 
 
 def test_an_explicit_family_is_honoured_when_torch_carries_no_tag(monkeypatch):
-    """As explicit as the full URL, and needed by the same host: a mirror that rebuilds torch
-    bare. _explicit_unknown_family_torch_index_url treats a custom leaf as authoritative, so a
-    None here is never corrected later."""
+    """A mirror that rebuilds torch bare needs the explicit family; a None here is never corrected,
+    since a custom leaf is authoritative."""
     monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl")
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "current")
     mod = _reload_install_python_stack()

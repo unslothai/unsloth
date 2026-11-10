@@ -145,9 +145,7 @@ def _string_arg_key_from_schema(schema: Any) -> Optional[str]:
 def _coerce_promoted_arguments(
     raw_args: Any, tool_name: str, tool_schemas: Optional[dict]
 ) -> Optional[dict]:
-    """Promoted arguments, typed against the client's declared schema: the call was TEXT a
-    moment ago, so its XML parameters arrive as raw strings and closing a truncated container
-    is this healer's own job rather than something to gate."""
+    """Promoted args are typed to the schema; XML arrives as raw strings and truncation is healed here."""
     parameters = (tool_schemas or {}).get(tool_name)
     properties = parameters.get("properties") if isinstance(parameters, Mapping) else None
     parsed = raw_args
@@ -325,6 +323,29 @@ _NATIVE_TOOL_FORMATS = (
         ),
     ),
 )
+
+
+_FORCED_CALL_OPENERS = {
+    "hermes": ('<tool_call>\n{"name":', lambda name: f' {json.dumps(name)}, "arguments":'),
+    "qwen3_coder": ("<tool_call>\n<function=", lambda name: f"{name}>\n"),
+}
+
+
+def forced_call_prefix(names: Optional[set], *templates: Any) -> str:
+    """Opening of the model's own call markup for a forced tool_choice (in-process engines have no
+    grammar to force one); empty unless every template body with a call format agrees on it."""
+    from core.inference.engine_adapters import tool_parser_for_template
+
+    parsers = {
+        tool_parser_for_template(body, "vllm")
+        for template in templates
+        for body in _template_strings(template)
+    } - {None}
+    opener = _FORCED_CALL_OPENERS.get(parsers.pop()) if len(parsers) == 1 else None
+    if not names or opener is None:
+        return ""
+    head, named = opener
+    return head + named(next(iter(names))) if len(names) == 1 else head
 
 
 def native_tool_format(*templates: Any) -> Optional[NativeToolFormat]:

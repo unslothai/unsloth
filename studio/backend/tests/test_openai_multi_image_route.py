@@ -288,8 +288,7 @@ def test_the_image_budget_counts_repeats_not_distinct_payloads(monkeypatch):
 
 
 def test_the_image_budget_refusal_goes_through_the_callers_reject(monkeypatch):
-    """_reject fails the open API monitor row before raising; a raw HTTPException would leave
-    it reported as running."""
+    """Use _reject, which closes the monitor row; a raw HTTPException leaves it running."""
     import asyncio
 
     from routes import inference as inference_route

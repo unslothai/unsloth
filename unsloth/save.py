@@ -584,6 +584,38 @@ def _loaded_via_remote_code(obj):
     return False
 
 
+def _gguf_remote_code_approved(model, tokenizer = None):
+    """Did the load consent to remote code? A `trust_remote_code=True` stamp from the loader, or a model / tokenizer class that came from auto_map code (which only runs after consent)."""
+    try:
+        if getattr(model, "_unsloth_trust_remote_code", False) is True:
+            return True
+    except Exception:
+        pass
+    return _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)
+
+
+@contextmanager
+def _gguf_converter_remote_code(approved):
+    """Keep convert_hf_to_gguf.py to the load's trust decision, as Studio's export does.
+
+    The converter loads several architectures' tokenizers with trust_remote_code=True, so a
+    checkpoint loaded without consent could run its auto_map code there. Transformers imports
+    that code only from its HF_MODULES_CACHE copy, which the converter child inherits: a path no
+    directory can be created at refuses it. Checkpoints without auto_map never read it."""
+    if approved:
+        yield
+        return
+    existing = os.environ.get("HF_MODULES_CACHE")
+    os.environ["HF_MODULES_CACHE"] = os.path.join(os.path.abspath(__file__), "no_remote_code")
+    try:
+        yield
+    finally:
+        if existing is None:
+            os.environ.pop("HF_MODULES_CACHE", None)
+        else:
+            os.environ["HF_MODULES_CACHE"] = existing
+
+
 def _normalize_compressed_method(save_method):
     """(scheme, needs_calibration, suffix) if `save_method` is an FP8/FP4 compressed export, else None. Near-miss unsupported FP8/FP4 names raise a precise error instead of falling through to the generic "unknown save_method"."""
     if not isinstance(save_method, str):
@@ -1884,8 +1916,7 @@ def unsloth_save_model(
         raise ValueError(
             "Unsloth: a model with a trained MTP head saves as safetensors; drop `safe_serialization = False`."
         )
-    # Already `True` from the normalisation at the top of this function; the caller having
-    # passed `None` is what keeps the downgrade below from undoing it.
+    # Already True above; the caller passing None keeps the downgrade below from undoing it.
     if _force_safe_serialization:
         save_pretrained_settings["safe_serialization"] = safe_serialization
 
@@ -5086,6 +5117,8 @@ def unsloth_save_pretrained_gguf(
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
+    # Read before the processor is unwrapped to its tokenizer below.
+    remote_code_approved = _gguf_remote_code_approved(self, tokenizer)
     save_directory = os.path.normpath(os.fspath(save_directory))
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
@@ -5183,6 +5216,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
     del arguments["_gguf_prewarm_ok"]  # a local decision, not a save_pretrained kwarg
     del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
+    del arguments["remote_code_approved"]  # gates the converter, not a save_pretrained kwarg
 
     # Preserve the requested output before reusing a non-PEFT checkpoint as input. Same definition the preflight sized, so it measured the disk these files land on.
     gguf_directory = _gguf_output_directory(save_directory)
@@ -5337,21 +5371,22 @@ def unsloth_save_pretrained_gguf(
         raise
 
     try:
-        all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
-            model_name = model_name,
-            model_type = model_type,
-            model_dtype = model_dtype,
-            is_sentencepiece = False,
-            model_directory = save_directory,
-            quantization_method = quantization_methods,
-            first_conversion = first_conversion,
-            is_vlm = is_vlm,
-            is_gpt_oss = is_gpt_oss,
-            imatrix = imatrix_path,
-            gguf_directory = gguf_directory,
-            merge_is_disposable = merge_is_disposable,
-            preexisting_weights = preexisting_weights,
-        )
+        with _gguf_converter_remote_code(remote_code_approved):
+            all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
+                model_name = model_name,
+                model_type = model_type,
+                model_dtype = model_dtype,
+                is_sentencepiece = False,
+                model_directory = save_directory,
+                quantization_method = quantization_methods,
+                first_conversion = first_conversion,
+                is_vlm = is_vlm,
+                is_gpt_oss = is_gpt_oss,
+                imatrix = imatrix_path,
+                gguf_directory = gguf_directory,
+                merge_is_disposable = merge_is_disposable,
+                preexisting_weights = preexisting_weights,
+            )
     except Exception as e:
         if _gguf_child_was_oom_killed(e):
             raise RuntimeError(
@@ -6619,11 +6654,12 @@ def save_to_gguf_generic(
             raise RuntimeError(error)
 
     for quantization_type in new_quantization_methods:
-        metadata = _convert_to_gguf(
-            save_directory,
-            print_output = True,
-            quantization_type = quantization_type,
-        )
+        with _gguf_converter_remote_code(_gguf_remote_code_approved(model, tokenizer)):
+            metadata = _convert_to_gguf(
+                save_directory,
+                print_output = True,
+                quantization_type = quantization_type,
+            )
         if repo_id is not None:
             from unsloth_zoo.saving_utils import prepare_saving
 
@@ -6876,9 +6912,7 @@ def unsloth_generic_save(
             'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
             "model and load it again) before `get_peft_model`."
         )
-    # The pruned base REAP saved is a local folder: an adapter pushed against it names a path no one
-    # else can load. In this process the marker says so (even if the folder moved since); after a
-    # reload from that folder, the provenance file reap_prune wrote there does.
+    # Pushing an adapter against a local pruned base names a path others cannot load.
     if (
         push_to_hub
         and isinstance(model, PeftModel)
@@ -7259,9 +7293,8 @@ def _fsdp2_merged_gather_options(model, args, kwargs):
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
-    # Packed 4-bit weights are staged on the CPU as they are gathered. merged_4bit merges with PEFT
-    # one layer at a time on the GPU the packed weight came from, so those layers' LoRA weights stay
-    # on that device; every other gathered weight goes to the CPU.
+    # Packed 4-bit weights are staged on CPU as gathered; merged_4bit keeps those layers LoRA
+    # weights on the packed weight GPU; every other gathered weight goes to CPU.
     offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
     gather_options = _fsdp2_merged_gather_options,
 )

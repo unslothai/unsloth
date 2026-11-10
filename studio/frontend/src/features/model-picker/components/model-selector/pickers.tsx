@@ -2067,7 +2067,8 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
             )}
             meta={[
               "GGUF",
-              formatBytes(variant.size_bytes),
+              // Match the Hub's cached inventory size; the weight-only size remains in the memory estimate.
+              formatBytes(c.size_bytes > 0 ? c.size_bytes : variant.size_bytes),
               variant.estimated_resident_gb && audioCardGb > 0
                 ? `${residentGbLabel(variant.estimated_resident_gb)} to run`
                 : null,

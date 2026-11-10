@@ -430,6 +430,16 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_flux3_rope import uninstall
         uninstall()
 
+    def flux3_fp16_attn(ctx: PatchContext) -> bool:
+        from ..diffusion_flux3_half_attn import install_for_pipe
+        return install_for_pipe(
+            ctx.pipe, ctx.device, ctx.speed_mode, ctx.logger, explicit_off = ctx.explicit_off
+        )
+
+    def flux3_fp16_attn_uninstall() -> None:
+        from ..diffusion_flux3_half_attn import uninstall
+        uninstall()
+
     def rocm_fused(ctx: PatchContext) -> dict:
         from ..diffusion_rocm_fused import install_for_pipe
 
@@ -482,6 +492,24 @@ def _builtin_specs() -> list[PatchSpec]:
 
     def q21_fused_uninstall() -> None:
         from ..diffusion_qwenimage21_fused import uninstall
+        uninstall()
+
+    def q21_dense_fused(ctx: PatchContext) -> Any:
+        from ..diffusion_qwenimage21_dense_fused import install
+        return install(
+            ctx.transformer,
+            ctx.logger,
+            offload_active = ctx.offload_active
+            if ctx.denoiser_offloaded is None
+            else bool(ctx.denoiser_offloaded),
+        )
+
+    def flux_convrot_fused(ctx: PatchContext) -> Any:
+        from ..diffusion_flux_convrot_fused import install
+        return install(ctx.transformer, ctx.logger)
+
+    def flux_convrot_fused_uninstall() -> None:
+        from ..diffusion_flux_convrot_fused import uninstall
         uninstall()
 
     def moss_fused(ctx: PatchContext) -> Any:
@@ -553,6 +581,15 @@ def _builtin_specs() -> list[PatchSpec]:
             env = "UNSLOTH_DIFFUSION_FLUX3_FUSED_ROPE",
         ),
         PatchSpec(
+            "flux3_fp16_attn",
+            STAGE_LOAD,
+            flux3_fp16_attn,
+            flux3_fp16_attn_uninstall,
+            group = GROUP_FUSED_DIT,
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_FLUX3_FP16_ATTN",
+        ),
+        PatchSpec(
             "rocm_fused",
             STAGE_LOAD,
             rocm_fused,
@@ -610,6 +647,26 @@ def _builtin_specs() -> list[PatchSpec]:
             classes = ("QwenImage21Transformer2DModel",),
             warn = "qwen-image-2.1 convrot sharing",
             env = "UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED",
+        ),
+        PatchSpec(
+            "qwenimage21_dense_fused",
+            STAGE_PRE_COMPILE,
+            q21_dense_fused,
+            None,
+            group = GROUP_FUSED_DIT,
+            classes = ("QwenImage21Transformer2DModel",),
+            warn = "qwen-image-2.1 dense gate/value GEMM",
+            env = "UNSLOTH_DIFFUSION_Q21_DENSE_FUSED",
+        ),
+        PatchSpec(
+            "flux_convrot_fused",
+            STAGE_PRE_COMPILE,
+            flux_convrot_fused,
+            flux_convrot_fused_uninstall,
+            group = GROUP_FUSED_DIT,
+            classes = ("Flux2Transformer2DModel", "Flux3Transformer2DModel"),
+            warn = "flux convrot producer fusion",
+            env = "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED",
         ),
         PatchSpec(
             "moss_fused",

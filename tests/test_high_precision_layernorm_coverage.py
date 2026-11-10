@@ -42,8 +42,7 @@ def test_non_norm_modules_are_not_selected():
 
 
 def test_custom_rmsnorm_still_matched_by_name():
-    """Model-specific RMSNorm classes are not torch.nn types, so the name rule
-    still has to carry them."""
+    """Model-specific RMSNorm classes are not torch.nn types, so the name rule must still match them."""
 
     class RMSNorm(nn.Module):
         def __init__(self):
