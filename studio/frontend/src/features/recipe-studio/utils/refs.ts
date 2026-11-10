@@ -70,8 +70,8 @@ export function findInvalidJinjaReferences(
   return Array.from(invalid);
 }
 
-const JINJA_TAG_RE = /\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g;
-const QUOTED_RE = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
+export const JINJA_TAG_RE = /\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g;
+export const QUOTED_RE = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
 const LOOP_RE = /^for\s+(.+?)\s+in\b([\s\S]*)$/;
 const SET_RE = /^set\s+([^=]+?)\s*=([\s\S]*)$/;
 const NESTED_RE = /\([^()]*\)|\[[^[\]]*\]|\{[^{}]*\}/g;
