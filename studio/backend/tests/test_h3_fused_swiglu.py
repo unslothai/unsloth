@@ -151,7 +151,7 @@ def test_h3_blocks_are_eligible(env):
 
 
 def test_video_installs_it_before_the_first_forward():
-    src = (_BACKEND / "core" / "inference" / "video.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
     i = src.index("from .video_minimax_h3_ffn import install as install_h3_ffn")
     assert src.index("compile_blocks_below_offload_hooks(", src.index("install_int8_gemm(")) < i
     assert '"h3_fused_swiglu"' in src[i : i + 600]
