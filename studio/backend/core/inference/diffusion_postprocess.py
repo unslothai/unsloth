@@ -10,6 +10,8 @@ import os
 from typing import Any, Optional
 
 DEVICE_POSTPROCESS_ENV = "UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS"
+STRIP_UINT8_ENV = "UNSLOTH_DIFFUSION_UINT8_STRIPS"
+_STRIP_BYTES = 32 << 20
 _MARK = "_unsloth_device_postprocess"
 NAN_IMAGE_MESSAGE = (
     "The decoded image contains NaN values and would be saved as a blank image. The model or VAE overflowed at this "
@@ -77,10 +79,25 @@ def has_nan(image: Any) -> bool:
     )
 
 
+def _strips_disabled() -> bool:
+    return (os.environ.get(STRIP_UINT8_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
 def uint8_hwc(image: Any) -> Any:
     """Values must lie in [0, 1]: the uint8 cast of anything else is undefined."""
     import torch
-    return (image.float() * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+
+    if _strips_disabled() or image.ndim != 4:
+        return (image.float() * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+    batch, channels, height, width = image.shape
+    out = torch.empty((batch, height, width, channels), dtype = torch.uint8, device = image.device)
+    rows = max(1, _STRIP_BYTES // max(1, batch * channels * width * 4))
+    for start in range(0, height, rows):
+        piece = image[:, :, start : start + rows].to(torch.float32, copy = True)
+        piece.mul_(255).round_()
+        out[:, start : start + rows].copy_(piece.permute(0, 2, 3, 1))
+        del piece
+    return out
 
 
 def install(pipe: Any, logger: Any = None) -> bool:

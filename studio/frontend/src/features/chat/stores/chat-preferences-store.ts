@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { adoptCurrentDraft } from "../utils/composer-draft.ts";
 import { persist } from "zustand/middleware";
 import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 import {
@@ -28,6 +29,8 @@ import {
 export interface ChatPreferencesState {
   titlePrompt: string;
   setTitlePrompt: (value: string) => void;
+  shareComposerDraft: boolean;
+  setShareComposerDraft: (value: boolean) => void;
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
   showContextWindowUsage: boolean;
@@ -99,6 +102,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       titlePrompt: "",
       setTitlePrompt: (titlePrompt) => set({ titlePrompt }),
       ...normalizeComposerPreferences(null),
+      shareComposerDraft: false,
+      setShareComposerDraft: (shareComposerDraft) => set({ shareComposerDraft }),
       setPlainTextComposer: (plainTextComposer) => set({ plainTextComposer }),
       setShowContextWindowUsage: (showContextWindowUsage) =>
         set({ showContextWindowUsage }),
@@ -174,6 +179,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           ...current,
           titlePrompt: typeof saved?.titlePrompt === "string" ? saved.titlePrompt : "",
           ...normalizeComposerPreferences(saved),
+          shareComposerDraft: saved?.shareComposerDraft === true,
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
@@ -216,3 +222,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
 );
 
 syncAcrossWindows(useChatPreferencesStore);
+// Here, not in the setter: another window's switch arrives as a rehydrate, which skips setters.
+useChatPreferencesStore.subscribe((state, prev) => {
+  if (state.shareComposerDraft && !prev.shareComposerDraft) adoptCurrentDraft();
+});

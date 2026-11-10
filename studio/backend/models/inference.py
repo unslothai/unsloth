@@ -587,7 +587,32 @@ class SearchImagesLookupRequest(BaseModel):
     )
 
 
-class TranscribeRequest(BaseModel):
+def validate_stt_context_length(value: Any) -> int:
+    """A zero selects Auto; fixed lengths are multiples of 256, since llama-server pads n_ctx to that."""
+    if type(value) is not int or (value != 0 and not (1024 <= value <= 65536 and value % 256 == 0)):
+        raise ValueError(
+            "Voice context length must be 0 (Auto) or a multiple of 256 from 1024 to 65536."
+        )
+    return value
+
+
+class SttContextSettings(BaseModel):
+    context_length: int = Field(
+        0,
+        ge = 0,
+        le = 65536,
+        description = (
+            "Qwen3-ASR on llama.cpp only: 0 (Auto) sizes context for the recording; "
+            "a multiple of 256 from 1024 to 65536 fixes the context limit. Ignored by other STT engines."
+        ),
+    )
+
+    _validate_context_length = field_validator("context_length", mode = "before")(
+        validate_stt_context_length
+    )
+
+
+class TranscribeRequest(SttContextSettings):
     """Speech-to-text request for the dictation STT sidecar."""
 
     audio: str = Field(..., description = "Base64-encoded audio (any common format)")
@@ -612,7 +637,7 @@ class TranscribeRequest(BaseModel):
     )
 
 
-class SttLoadRequest(BaseModel):
+class SttLoadRequest(SttContextSettings):
     """Warm the STT sidecar with a model without transcribing."""
 
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
@@ -4022,9 +4047,7 @@ class ResponsesUnknownInputItem(BaseModel):
 
 
 def _responses_input_item_discriminator(v: Any) -> str:
-    """Route a Responses input item to the correct tagged variant. Pydantic's smart-union matching
-    misreports errors when a strict-``Literal`` variant doesn't match; an explicit discriminator
-    makes routing deterministic and falls through to the catch-all."""
+    """Explicit discriminator, since pydantic smart-union misreports errors when a strict Literal misses."""
     if isinstance(v, dict):
         t = v.get("type")
         r = v.get("role")
@@ -5904,6 +5927,50 @@ class GalleryListResponse(BaseModel):
     has_more: bool = Field(False, description = "Whether older images remain past this page")
 
 
+class ImageQueueJob(BaseModel):
+    """One job in the image generation queue: the settings that tell it apart, its state and, once done, its images."""
+
+    id: str
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
+    position: Optional[int] = Field(
+        None, description = "0-based place among your queued jobs; null once started"
+    )
+    prompt: str
+    width: int
+    height: int
+    steps: Optional[int] = Field(
+        None, description = "Requested steps; null follows the loaded model's default"
+    )
+    seed: Optional[int] = Field(
+        None, description = "Requested seed; null draws one when the job runs"
+    )
+    batch_size: int
+    workflow: Optional[str] = None
+    loras: list[str] = Field(default_factory = list, description = "Applied adapters as id:weight")
+    created_at: float
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    error: Optional[str] = None
+    image_ids: list[str] = Field(
+        default_factory = list, description = "Gallery ids of the finished images"
+    )
+    seed_used: Optional[int] = Field(
+        None, description = "The run's base seed once done, for Reuse last seed"
+    )
+
+
+class ImageQueueResponse(BaseModel):
+    """Your image jobs in run order: running first, then queued, then the most recent finished ones."""
+
+    jobs: list[ImageQueueJob] = Field(default_factory = list)
+
+
+class ImageQueueMoveRequest(BaseModel):
+    """Body of POST /images/queue/{job_id}/move."""
+
+    index: int = Field(..., ge = 0, description = "New 0-based place among your queued jobs (clamped)")
+
+
 class PromptUpsamplerDownloadRequest(BaseModel):
     """Body of POST /images/prompt-upsampler/download (optional)."""
 
@@ -6967,7 +7034,7 @@ class AudioInputRecord(BaseModel):
     expires_at: str
 
 
-class AudioInputTranscribeRequest(BaseModel):
+class AudioInputTranscribeRequest(SttContextSettings):
     model_config = ConfigDict(extra = "forbid")
 
     model: str = Field(..., min_length = 1, max_length = 512)
@@ -7000,7 +7067,7 @@ class TranscribeSourceRef(BaseModel):
         return self
 
 
-class TranscribeSourceRequest(BaseModel):
+class TranscribeSourceRequest(SttContextSettings):
     """``POST /audio/transcribe/source``: Audio page audio named by id, transcribed and saved."""
 
     model_config = ConfigDict(extra = "forbid")

@@ -209,9 +209,8 @@ INIT = ROOT / "unsloth" / "__init__.py"
 
 
 def test_the_mlx_path_applies_the_fix_too():
-    """The MLX branch imports unsloth_zoo directly and never reaches
-    _gpu_init, so without the fix there Apple Silicon hits the same dead
-    import."""
+    """The MLX branch imports unsloth_zoo directly without reaching _gpu_init, so without the fix
+    Apple Silicon hits the same dead import."""
     lines = INIT.read_text(encoding = "utf-8").splitlines()
     fix = next(i for i, l in enumerate(lines) if "_fix_torchao()" in l)
     zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")

@@ -51,6 +51,8 @@ import {
   needsHighlightBatches,
   retainHighlightProgress,
 } from "./fence-highlight-progress";
+import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
+import { installTokenClasses, tokenClassesFor } from "./fence-token-classes";
 import {
   EMPTY_LINE_WINDOW,
   HYSTERESIS_VIEWPORTS,
@@ -231,7 +233,7 @@ type FenceGate = {
   outer: HTMLElement | null;
   language: string | null;
   chars: number;
-  warm: (tokens: boolean) => void;
+  warm: (tokens: boolean, inView?: boolean) => void;
   speculate: (settle: (seeded: boolean) => void) => (() => void) | null;
   latch: () => void;
   /** A no-op state write that gives React sync work to do (see latchNow). */
@@ -257,19 +259,27 @@ const gateOpen = (gate: FenceGate): boolean =>
   inBand(gate.node, gate.near)
   && (gate.near === gate.outer || inBand(gate.near as HTMLElement, gate.outer));
 
+const gateInView = (gate: FenceGate): boolean =>
+  inBand(gate.node, gate.near, 0)
+  && (gate.near === gate.outer || inBand(gate.near as HTMLElement, gate.outer, 0));
+
+const LATCH_INLINE_MS = 8;
+
 /*
  * Upgrade inside this task so the browser never paints the plain shell. All three steps are needed:
- * warm(true) so render is a cache hit, flushSync(latch), and flushSync(poke) nested in an outer
- * flushSync so React runs the pending passive effect at discrete priority.
+ * warm(true) so render is a cache hit (tokens the worker seeded, or for a fence already on screen
+ * tokenized here), flushSync(latch), and flushSync(poke) nested in an outer flushSync so React runs
+ * the pending passive effect at discrete priority.
  */
 const latchNow = (arrived: readonly FenceGate[]): void => {
   if (arrived.length === 0) return;
+  const started = performance.now();
   for (const gate of arrived) {
     pendingReaches.get(gate)?.();
     pendingReaches.delete(gate);
     unreached.delete(gate);
     fenceSpeculator.remove(gate);
-    gate.warm(true);
+    gate.warm(true, performance.now() - started < LATCH_INLINE_MS && gateInView(gate));
   }
   flushSync(() => {
     flushSync(() => {
@@ -441,9 +451,10 @@ const rankGates = (gates: readonly FenceGate[]): number[] => {
 };
 
 const SPECULATION_IN_FLIGHT = 3;
+const SPECULATION_VIEWPORTS = 3;
 
 const fenceSpeculator = createFenceSpeculator<FenceGate>({
-  idle: (callback, timeout) => scheduleQuietIdleTask(callback, timeout),
+  idle: (callback, timeout) => scheduleIdleTask(callback, timeout),
   wait: (callback, ms) => {
     const timer = setTimeout(callback, ms);
     return () => clearTimeout(timer);
@@ -451,13 +462,15 @@ const fenceSpeculator = createFenceSpeculator<FenceGate>({
   enabled: () =>
     fenceMode() !== "off" && highlightWorkerState() !== "unavailable",
   busy: () => streamActive() || highlightWorkerState() === "stalled"
-    || inputPointerHeld() || inputQuietIn() > 0,
-  eligible: (gate) => grammarsWarmed.has(grammarOf(gate)),
+    || inputPointerHeld() || nonScrollInputQuietIn() > 0,
+  eligible: (gate) =>
+    highlightWorkerState() === "ready" || grammarsWarmed.has(grammarOf(gate)),
   rank: rankGates,
   maxChars: MAX_HIGHLIGHT_CHARS,
   budgetChars: MAX_CACHED_CHARACTERS / 2,
   budgetFences: MAX_FENCES / 2,
   maxInFlight: SPECULATION_IN_FLIGHT,
+  maxDistance: () => SPECULATION_VIEWPORTS * window.innerHeight,
 });
 
 // One capturing listener flags a code body scrolled off its first line, for the fade under its header.
@@ -544,13 +557,12 @@ const outermostScrollerOf = (node: HTMLElement): HTMLElement | null => {
   return found;
 };
 
-/** Is `node` inside `scroller`'s box grown by one of its own heights, the observer's margin? */
-const inBand = (node: HTMLElement, scroller: HTMLElement | null): boolean => {
+const inBand = (node: HTMLElement, scroller: HTMLElement | null, margin = 1): boolean => {
   const bounds = scroller?.getBoundingClientRect();
   const top = bounds ? bounds.top : 0;
   const height = bounds ? bounds.height : window.innerHeight;
   const rect = node.getBoundingClientRect();
-  return rect.bottom > top - height && rect.top < top + height * 2;
+  return rect.bottom > top - height * margin && rect.top < top + height * (1 + margin);
 };
 
 /**
@@ -598,7 +610,7 @@ export function useFenceReached(
   language: string | null,
   chars: number,
   source: string,
-  warm: (tokens: boolean) => void,
+  warm: (tokens: boolean, inView?: boolean) => void,
   speculate: (settle: (seeded: boolean) => void) => (() => void) | null,
 ): boolean {
   const speculateRef = useRef(speculate);
@@ -676,7 +688,7 @@ export function useFenceReached(
       outer,
       language,
       chars,
-      warm: (tokens) => warmRef.current(tokens),
+      warm: (tokens, inView) => warmRef.current(tokens, inView),
       speculate: (settle) => speculateRef.current(settle),
       latch: () => setLatched(true),
       // Reuses `generation`: this fence just latched, so the bump costs one render.
@@ -760,6 +772,19 @@ const parseDeclarations = (text: string): Record<string, string> => {
   return style;
 };
 
+installTokenClasses([unslothLightTheme, unslothDarkTheme]);
+
+const styledSpan = (
+  base: string,
+  style: Record<string, string>,
+): { className: string; style?: CSSProperties } => {
+  if (Object.keys(style).length === 0) return { className: base };
+  const classes = tokenClassesFor(style);
+  return classes === null
+    ? { className: base, style: style as CSSProperties }
+    : { className: base + classes };
+};
+
 const tokenStyle = (
   token: FenceToken,
 ): { style: Record<string, string>; hasBackground: boolean } => {
@@ -805,23 +830,17 @@ export const FenceLine = memo(function FenceLine({
   const foreground = fenceLineForeground(line);
   return (
     <span
-      className={foreground ? `${lineClass} ${TOKEN_CLASS}` : lineClass}
-      style={
-        foreground
-          ? { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark } as CSSProperties
-          : undefined
-      }
+      {...(foreground
+        ? styledSpan(`${lineClass} ${TOKEN_CLASS}`, { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark })
+        : { className: lineClass })}
     >
       {(highlighted >= line.length ? line : line.slice(0, highlighted)).map((token, index) => {
         if (foreground?.inherited[index]) return token.content;
         const { style, hasBackground } = tokenStyle(token);
         return (
           <span
-            className={
-              hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS
-            }
+            {...styledSpan(hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS, style)}
             key={index}
-            style={style}
             {...token.htmlAttrs}
           >
             {token.content}
@@ -847,9 +866,8 @@ const FenceTokenChunk = memo(function FenceTokenChunk({
     if (foreground?.inherited[start + index]) return token.content;
     const { style, hasBackground } = tokenStyle(token);
     return <span
-      className={hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS}
+      {...styledSpan(hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS, style)}
       key={index}
-      style={style}
       {...token.htmlAttrs}
     >{token.content}</span>;
   })}{highlighted < tokens.length ? tokens.slice(highlighted).map((token) => token.content).join("") : null}</>;
@@ -865,10 +883,9 @@ const DenseFenceLine = memo(function DenseFenceLine({
   const chunks = useMemo(() => updateFenceChunks(null, line), [line]);
   const foreground = useMemo(() => fenceLineForeground(line), [line]);
   return <span
-    className={foreground ? `${LINE_CLASS} ${TOKEN_CLASS}` : LINE_CLASS}
-    style={foreground
-      ? { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark } as CSSProperties
-      : undefined}
+    {...(foreground
+      ? styledSpan(`${LINE_CLASS} ${TOKEN_CLASS}`, { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark })
+      : { className: LINE_CLASS })}
   >{chunks.map((tokens, index) => <FenceTokenChunk
     key={index}
     tokens={tokens}
@@ -1105,13 +1122,18 @@ const highlightQuietIn = (duringScroll: boolean): number =>
     300 - (performance.now() - highlightResizedAt),
   );
 
+const NO_IDLE_CALLBACK = typeof window !== "undefined"
+  && typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback !== "function";
+const HIGHLIGHT_RUN_MS = 6;
+
 const highlightQueue = createFenceHighlightQueue({
   schedule: (run, duringScroll) => {
     let frame = 0;
     let cancelIdle: (() => void) | undefined;
     const timer = setTimeout(() => {
       frame = requestAnimationFrame(() => {
-        cancelIdle = (duringScroll ? scheduleIdleTask : scheduleQuietIdleTask)(run, 100);
+        cancelIdle = (duringScroll ? scheduleIdleTask : scheduleQuietIdleTask)(
+          run, duringScroll && NO_IDLE_CALLBACK ? 0 : 100);
       });
     }, Math.max(0, highlightQuietIn(duringScroll), inputPointerHeld() || selectionInFence(liveSelection()) ? 80 : 0));
     return () => {
@@ -1123,6 +1145,7 @@ const highlightQueue = createFenceHighlightQueue({
   blocked: (duringScroll) =>
     inputPointerHeld() || highlightQuietIn(duringScroll) > 0 || selectionInFence(liveSelection()),
   commit: (run) => flushSync(run),
+  budgetMs: HIGHLIGHT_RUN_MS,
 });
 
 const watchHighlighting = (): void => {

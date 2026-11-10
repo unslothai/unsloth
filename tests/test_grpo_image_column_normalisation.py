@@ -146,9 +146,8 @@ def test_guard_is_injected_when_no_anchor_matches():
 
 
 def test_guard_is_injected_when_the_legacy_reference_calls_drift():
-    """Rewriting the cell is half the job. A legacy TRL also has to carry the image counts
-    into the reference logprob calls; without them the images are sliced by sample index and
-    all but the first are dropped, which the model reports as a token/feature mismatch."""
+    """A legacy TRL must also pass image counts into the reference logprob calls, or images are
+    sliced by sample index and dropped, showing as a token/feature mismatch."""
     source = (
         "    def _generate_and_score_completions(self, inputs):\n"
         '        has_images = "image" in inputs[0]\n'
@@ -228,10 +227,8 @@ def _legacy_source(*, with_placeholder_helper):
 
 
 def test_a_trl_that_cannot_size_its_placeholders_refuses_the_multi_image_row():
-    """The cell rewrite alone would hand the processor two images while the prompt still
-    carries one placeholder, and nothing else in the batch disagrees, because the prologue
-    counts the same cells. That surfaces inside the processor naming neither the column nor
-    the fix, which is exactly what the guard exists to replace."""
+    """Without the guard, a TRL that cannot size its placeholders gets two images for one
+    placeholder and fails inside the processor, naming neither the column nor the fix."""
     patched = grpo_trainer__generate_and_score_completions(
         "_generate_and_score_completions", _legacy_source(with_placeholder_helper = False)
     )
@@ -277,9 +274,8 @@ def _run_legacy_placeholders(cells):
 
 
 def test_an_empty_cell_takes_no_placeholder_so_a_mixed_batch_stays_in_step():
-    """One placeholder for a row with no image leaves the prompt a token ahead of the pixels,
-    which the processor rejects. Measured against a real Gemma 3 processor: this batch fails
-    with one placeholder for the empty row and succeeds with none."""
+    """An image-less row must take no placeholder: one placeholder leaves the prompt a token ahead
+    of the pixels, which a real Gemma 3 processor rejects."""
     a, b = _Img("a"), _Img("b")
     assert _run_legacy_placeholders([a, []]) == ([[a], []], [1, 0])
     assert _run_legacy_placeholders([[a, b], []]) == ([[a, b], []], [2, 0])

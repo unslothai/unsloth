@@ -226,9 +226,8 @@ def test_a_gate_adding_its_bias_in_place_still_backpropagates():
 
 
 def test_shims_reach_a_module_behind_an_accelerate_hook():
-    """A device_map load wraps forward with an accelerate hook that keeps the original as
-    `_old_forward`; the class-level shim alone is never called from `module(...)`. Kimi-K2.7-Code
-    on four GPUs still hit the gate's training assert this way."""
+    """A device_map load wraps forward in an accelerate hook keeping the original as _old_forward,
+    so a class-level shim is never called; Kimi-K2.7-Code on four GPUs hit the training assert."""
     from accelerate.hooks import ModelHook, add_hook_to_module
 
     torch.manual_seed(0)
@@ -892,7 +891,9 @@ def _moe_ddp_worker(rank, world, cp_active, lora):
                 if not got.requires_grad:
                     continue
                 expert = int(name.split(".")[1]) if name.startswith("experts.") else None
-                assert got.grad is not None, name  # a zero gradient, never None, for DDP
+                assert (
+                    got.grad is not None
+                ), f"{name}: no gradient"  # a zero gradient, never None, for DDP
                 if want.grad is None:
                     assert expert is not None and expert not in used, name
                     assert not got.grad.any(), name
@@ -917,7 +918,11 @@ def test_context_parallel_ranks_routing_disjoint_experts_train_under_ddp(lora):
 def test_without_context_parallelism_idle_experts_stall_ddp():
     # Negative control: the CP-off dispatch leaves idle experts' gradients None, so DDP without
     # find_unused_parameters never reduces that bucket (local gradients) and refuses the next step.
-    with pytest.raises(Exception, match = "not close|finished reduction|did not receive grad"):
+    # Whichever rank fails first is the error spawn reports: the rank that used an expert sees its
+    # unreduced gradient (not close), the rank that left it idle sees no gradient at all.
+    with pytest.raises(
+        Exception, match = "not close|finished reduction|did not receive grad|no gradient"
+    ):
         _moe_spawn(_moe_ddp_worker, 2, False, False)
 
 

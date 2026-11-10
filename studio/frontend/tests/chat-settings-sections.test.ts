@@ -48,6 +48,7 @@ test("Chat defaults keeps the everyday rows: send and follow-up, scrolling, past
   assert.deepEqual(composerLabels(composerBody("ComposerSettings")), [
     "composerSettings.sendShortcut",
     "composerSettings.followUp",
+    "composerSettings.shareDraft",
   ]);
 });
 

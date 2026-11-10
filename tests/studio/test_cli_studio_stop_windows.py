@@ -29,8 +29,7 @@ def _func_source(name: str) -> str:
 
 
 def _load_pid_alive(platform: str, fake_run = None):
-    """Exec just `_pid_alive` with injectable sys/subprocess, so the win32 branch runs
-    on any host."""
+    """Execs only _pid_alive with injectable sys and subprocess, so the win32 branch runs on any host."""
     src = _func_source("_pid_alive")
     fake_sys = types.SimpleNamespace(platform = platform)
     fake_sub = types.SimpleNamespace(run = fake_run) if fake_run is not None else subprocess

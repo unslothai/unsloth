@@ -42,12 +42,7 @@ try:
 except ImportError:
 
     def is_tracing(tensor = None) -> bool:  # type: ignore[no-redef]
-        """Local fallback for transformers < 5.0.0.
-
-        True under ``torch.jit.trace``, ``torch.fx.symbolic_trace`` or Dynamo.
-        The 5.x helper also detects CUDA stream capture, FakeTensor and JAX via
-        torchax; 4.x itself detects none of those, so behaviour on 4.x matches.
-        """
+        """Fallback for transformers < 5.0: true under jit trace, fx symbolic trace or Dynamo."""
         if torch.jit.is_tracing():
             return True
         if tensor is not None and isinstance(tensor, torch.fx.Proxy):
@@ -183,9 +178,8 @@ class AttentionMaskConverter:
 
         expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
 
-        # 0-dim tensor, not a Python float: a float literal lowers to an fp32 scalar and breaks ExecuTorch
-        # edge-dialect export on fp16/bf16 masks. Matches upstream from 4.53.0
-        # (huggingface/transformers#38637).
+        # 0-dim tensor, not a float: a float literal lowers to fp32 and breaks ExecuTorch export on
+        # fp16/bf16 masks; matches transformers 4.53.0 upstream (issue 38637)
         inverted_mask = torch.tensor(1.0, dtype = dtype) - expanded_mask
 
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
