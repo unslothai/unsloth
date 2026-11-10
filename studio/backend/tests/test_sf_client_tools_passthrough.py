@@ -555,10 +555,22 @@ _HERMES_TEMPLATE = (
     '{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>{% endif %}'
     "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
 )
+_QWEN_XML_TEMPLATE = (
+    "{% if tools %}<tools>{{ tools | tojson }}</tools>\n<tool_call>\n<function=example>\n"
+    "<parameter=example>\nvalue\n</parameter>\n</function>\n</tool_call>"
+    "{% for t in tools %}{{ t.arguments }}{% endfor %}{% endif %}"
+    "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+)
+_ARGS = {"lookup": ("q", "cats"), "search": ("query", "dogs")}
 
 
 def _model_that_answers_in_prose(messages, tools):
     opener = messages[-1]["content"] if messages[-1]["role"] == "assistant" else ""
+    if opener.startswith("<tool_call>\n<function="):
+        name = opener[len("<tool_call>\n<function=") :].rstrip(">\n") or "lookup"
+        key, value = _ARGS[name]
+        body = f"<parameter={key}>\n{value}\n</parameter>\n</function>\n</tool_call>"
+        return [body if opener.endswith(">\n") else f"{name}>\n{body}"]
     if not opener.startswith("<tool_call>"):
         return ["Hello!"]
     if opener.endswith('"arguments":'):
@@ -567,6 +579,9 @@ def _model_that_answers_in_prose(messages, tools):
     return [' "lookup", "arguments": {"q": "cats"}}\n</tool_call>']
 
 
+@pytest.mark.parametrize(
+    "template", [_HERMES_TEMPLATE, _QWEN_XML_TEMPLATE], ids = ["hermes", "qwen_xml"]
+)
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     "tools, tool_choice, forced",
@@ -581,10 +596,10 @@ def _model_that_answers_in_prose(messages, tools):
     ],
 )
 def test_forced_tool_choice_makes_the_model_call_a_tool(
-    monkeypatch, stream, tools, tool_choice, forced
+    monkeypatch, template, stream, tools, tool_choice, forced
 ):
     backend = _ScriptedBackend(_model_that_answers_in_prose)
-    backend.models["sf-model"]["chat_template_info"] = {"template": _HERMES_TEMPLATE}
+    backend.models["sf-model"]["chat_template_info"] = {"template": template}
     payload = _request(tools = tools, tool_choice = tool_choice, stream = stream)
     response = _call(payload, monkeypatch, backend)
 
@@ -595,11 +610,15 @@ def test_forced_tool_choice_makes_the_model_call_a_tool(
         deltas = [c.get("delta") or {} for c in choices]
         calls = [tc for d in deltas for tc in d.get("tool_calls") or []]
         finish = [c["finish_reason"] for c in choices if c.get("finish_reason")][-1]
+        arguments = "".join(tc["function"].get("arguments") or "" for tc in calls)
     else:
         choice = _json_body(response)["choices"][0]
         calls, finish = choice["message"].get("tool_calls") or [], choice["finish_reason"]
+        arguments = "".join(tc["function"]["arguments"] for tc in calls)
     assert finish == "tool_calls"
-    assert [call["function"]["name"] for call in calls] == [forced]
+    assert [call["function"]["name"] for call in calls if call["function"].get("name")] == [forced]
+    key, value = _ARGS[forced]
+    assert json.loads(arguments) == {key: value}
 
 
 def test_auto_tool_choice_leaves_the_reply_to_the_model(monkeypatch):
@@ -610,6 +629,24 @@ def test_auto_tool_choice_leaves_the_reply_to_the_model(monkeypatch):
     assert choice["finish_reason"] == "stop"
     assert choice["message"]["content"] == "Hello!"
     assert backend.calls[0]["messages"][-1]["role"] == "user"
+
+
+@pytest.mark.parametrize(
+    "names, templates, expected",
+    [
+        ({"lookup"}, [_HERMES_TEMPLATE], '<tool_call>\n{"name": "lookup", "arguments":'),
+        ({"lookup", "search"}, [_HERMES_TEMPLATE, None], '<tool_call>\n{"name":'),
+        ({"lookup"}, [_QWEN_XML_TEMPLATE], "<tool_call>\n<function=lookup>\n"),
+        ({"lookup", "search"}, [{"tool_use": _QWEN_XML_TEMPLATE}], "<tool_call>\n<function="),
+        # Bodies disagreeing on the format, or a format with no opener, are not forced.
+        ({"lookup"}, [_HERMES_TEMPLATE, _QWEN_XML_TEMPLATE], ""),
+        ({"lookup"}, ["{% if tools %}[TOOL_CALLS]{% endif %}"], ""),
+        (None, [_HERMES_TEMPLATE], ""),
+    ],
+)
+def test_forced_call_prefix(names, templates, expected):
+    from core.inference.passthrough_healing import forced_call_prefix
+    assert forced_call_prefix(names, *templates) == expected
 
 
 def test_parallel_cap_non_streaming(monkeypatch):

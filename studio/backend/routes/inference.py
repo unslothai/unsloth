@@ -35223,21 +35223,13 @@ async def produce_openai_chat_completions(
     )
     _sf_call_prefix = ""
     if _sf_heal and payload.tool_choice not in (None, "auto") and not _sf_continue:
-        from core.inference.chat_template_helpers import _template_strings
-        from core.inference.engine_adapters import tool_parser_for_template
-
-        _sf_bodies = _template_strings(
-            [
-                _sf_image_tpl,
-                (_sf_model_info.get("chat_template_info") or {}).get("template"),
-                *(getattr(target, "chat_template", None) for target in _sf_chat_targets),
-            ]
+        from core.inference.passthrough_healing import forced_call_prefix
+        _sf_call_prefix = forced_call_prefix(
+            _sf_heal,
+            _sf_image_tpl,
+            (_sf_model_info.get("chat_template_info") or {}).get("template"),
+            *(getattr(target, "chat_template", None) for target in _sf_chat_targets),
         )
-        # In-process engines have no grammar to force a call, so open the model's own call markup.
-        if any(tool_parser_for_template(body, "vllm") == "hermes" for body in _sf_bodies):
-            _sf_call_prefix = '<tool_call>\n{"name":'
-            if len(_sf_heal) == 1:
-                _sf_call_prefix += f' {json.dumps(next(iter(_sf_heal)))}, "arguments":'
     if _sf_client_tools:
         # Re-derive from messages to keep tool history; fold system and developer into one system message; tool_choice none drops tools or markup leaks as prose
         _sf_tc = payload.tool_choice
