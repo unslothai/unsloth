@@ -407,6 +407,7 @@ def test_external_fit_reserves_tool_schemas():
 class _ServedWindowHandler(_Handler):
     models: list[dict] = []
     props: dict | None = None
+    ps: list[dict] | None = None
     key: str | None = None
     gets: list[str] = []
 
@@ -418,6 +419,8 @@ class _ServedWindowHandler(_Handler):
             status, body = 200, {"object": "list", "data": self.models}
         elif self.path.startswith("/props") and self.props is not None:
             status, body = 200, self.props
+        elif self.path == "/api/ps" and self.ps is not None:
+            status, body = 200, {"models": self.ps}
         else:
             status, body = 404, {"error": "not found"}
         raw = json.dumps(body).encode()
@@ -564,6 +567,105 @@ def test_a_hosted_provider_is_not_probed_for_a_window():
         model = "qwen3-next",
         context_overflow = "truncate_oldest",
     )
+    assert len(sent["messages"]) == len(_long_chat())
+    assert server.gets == []
+
+
+def _ollama(context_length: int = 4_096):
+    loaded = {"name": "qwen3:1.7b", "model": "qwen3:1.7b", "context_length": context_length}
+    return _served(ps = [loaded])
+
+
+def test_an_ollama_connection_compacts_to_the_window_ollama_loaded():
+    chunks, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert len(sent["messages"]) < len(_long_chat())
+    assert sent["messages"][-1]["content"] == "latest question"
+    assert _fits(sent, 4_096)
+    [truncation] = _truncations(chunks)
+    assert truncation["fits"] is True
+
+
+def test_an_ollama_window_above_the_catalogued_one_does_not_raise_it():
+    _, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = _ollama(262_144),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_144,
+        context_window = 8_192,
+    )
+    assert len(sent["messages"]) < len(_long_chat())
+    assert _fits(sent, 8_192)
+
+
+def test_an_ollama_model_not_loaded_yet_keeps_the_catalogued_window():
+    idle = _served(ps = [])
+    chunks, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = idle,
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert len(sent["messages"]) == len(_long_chat())
+    assert _truncations(chunks) == []
+    assert idle.gets == ["/api/ps"]
+
+
+def test_an_ollama_model_is_read_again_once_it_has_loaded():
+    server = _served(ps = [])
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = [{"name": "qwen3:1.7b", "context_length": 4_096}]
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [None, 4_096, 4_096]
+    assert server.gets == ["/api/ps", "/api/ps"]
+
+
+def test_an_idle_ollama_model_keeps_the_window_it_last_loaded(monkeypatch):
+    monkeypatch.setattr(ep_mod, "_SERVED_WINDOW_TTL_S", 0.0)
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = []
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [4_096, 4_096]
+    assert server.gets == ["/api/ps", "/api/ps"]
+
+
+def test_auto_compact_off_never_asks_ollama_for_its_window():
+    server = _ollama()
+    _, sent = _proxy("ollama", _long_chat(), handler = server, model = "qwen3:1.7b")
     assert len(sent["messages"]) == len(_long_chat())
     assert server.gets == []
 

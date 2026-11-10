@@ -75,7 +75,7 @@ def _json_object_refused_for_schema(
 
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
-_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
+_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom", "ollama"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
@@ -7547,7 +7547,23 @@ class ExternalProviderClient:
             token = page.get("nextPageToken")
         return {**data, "models": models}
 
+    async def _read_ollama_loaded_window(self, model: str) -> Optional[int]:
+        response = await _client().get(
+            f"{self.base_url.removesuffix('/v1').rstrip('/')}/api/ps",
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        body = response.json()
+        loaded = body.get("models") if isinstance(body, dict) else None
+        for entry in loaded if isinstance(loaded, list) else []:
+            if isinstance(entry, dict) and model in (entry.get("name"), entry.get("model")):
+                return _positive_int(entry.get("context_length"))
+        return None
+
     async def _read_served_window(self, model: str) -> Optional[int]:
+        if self.provider_type == "ollama":
+            return await self._read_ollama_loaded_window(model)
         _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
         by_id = {e["id"]: e for e in entries if isinstance(e.get("id"), str)}
         entry = by_id.get(model) or next(
@@ -7621,6 +7637,9 @@ class ExternalProviderClient:
             window = await asyncio.wait_for(
                 self._read_served_window(model), timeout = _SERVED_WINDOW_TIMEOUT_S
             )
+            if window is None and self.provider_type == "ollama":
+                # /api/ps lists a model only while it is loaded; an idle one reloads the same window.
+                return cached[1] if cached else None
         except httpx.ConnectError as exc:
             # retry a down or restarting server next turn instead of caching the miss for a minute.
             logger.info("No served context window from %s: %s", self.provider_type, exc)
