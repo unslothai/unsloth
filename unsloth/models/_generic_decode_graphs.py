@@ -23,6 +23,7 @@ import contextlib
 import warnings
 import copy
 import functools
+import threading
 import os
 import traceback
 import weakref
@@ -250,6 +251,9 @@ class _Segments:
                 a.copy_(b)
 
 
+_RECORDING = threading.Lock()
+
+
 class _SegmentRecorder:
     """Captures fn() as per-card segments. accelerate's AlignDevicesHook pre_forward / post_forward move
     tensors through accelerate.hooks.send_to_device; while recording, that name points at self.send:
@@ -346,6 +350,12 @@ class _SegmentRecorder:
         return self._move(tensor, card, self.backend.card_device(card), skip_keys)
 
     def run(self, fn):
+        # accelerate's hooks are process-global: two overlapping recordings (threads) would restore each
+        # other's replacements, leaving a finished recorder installed.
+        with _RECORDING:
+            return self._run(fn)
+
+    def _run(self, fn):
         import accelerate.hooks as hooks
 
         original_send = hooks.send_to_device

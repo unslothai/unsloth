@@ -418,3 +418,43 @@ def test_graph_block_mask_moves_its_closure_tensors_to_the_layer_card(monkeypatc
     assert all(any(t is s for s in sources) for t in closure), "closure tensors not handed off"
     assert any(s is built.kv_num_blocks for s in sources)
     assert recorder.pending == 1
+
+
+def test_overlapping_recordings_from_two_threads_restore_accelerates_hooks():
+    # accelerate's hooks are process-global: overlapping recordings used to restore each other's replacements and
+    # leave a finished recorder's send_to_device installed.
+    import threading
+    import time
+
+    import accelerate.hooks as hooks
+
+    originals = (
+        hooks.send_to_device,
+        hooks.AlignDevicesHook.pre_forward,
+        hooks.AlignDevicesHook.post_forward,
+    )
+    active, peak, errors = [0], [0], []
+
+    def body():
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        time.sleep(0.05)
+        active[0] -= 1
+
+    def record():
+        try:
+            GG._SegmentRecorder(_HostCards(), {0: "pool0"}, 0).run(body)
+        except BaseException as error:
+            errors.append(repr(error))
+
+    threads = [threading.Thread(target = record) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert not errors and peak[0] == 1, (errors, peak)
+    assert (
+        hooks.send_to_device,
+        hooks.AlignDevicesHook.pre_forward,
+        hooks.AlignDevicesHook.post_forward,
+    ) == originals
