@@ -850,13 +850,13 @@ class TestRocmEntrypoint:
         assert "-> RDNA 2" not in err and "than gfx1030: 10.3.0" in err, err
 
     def test_an_igpu_spoofs_only_on_an_apu_only_host(self, tmp_path):
-        """Studio skips a kernel-less gfx1036 iGPU beside a usable card by itself; spoofing
-        it would make it selectable. Alone, it is run as gfx1030 like a gfx1031."""
-        for name, gtvs, want in [
-            ("beside-gfx1100", ("100306", "110000"), "unset"),
-            ("beside-gfx1030", ("100306", "100300"), "unset"),
-            ("alone", ("100306",), "10.3.0"),
-            ("beside-gfx1031", ("100301", "100306"), "10.3.0"),
+        """A spoofed gfx1036 iGPU reads as covered and Studio could then select it over the
+        card, so beside any card it is left alone (a gfx1031 is warned); alone, it is run as gfx1030."""
+        for name, gtvs, want, warned in [
+            ("beside-gfx1100", ("100306", "110000"), "unset", False),
+            ("beside-gfx1030", ("100306", "100300"), "unset", False),
+            ("beside-gfx1031", ("100301", "100306"), "unset", True),
+            ("alone", ("100306",), "10.3.0", False),
         ]:
             d = tmp_path / name
             d.mkdir()
@@ -864,7 +864,8 @@ class TestRocmEntrypoint:
             rc, ran, err = _entrypoint(d, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(d / "topo")}, **kw)
             assert rc == 0 and ran, (name, err)
             assert (d / "ran").read_text().strip() == want, (name, err)
-            assert ("has no kernels" in err) == (want == "10.3.0"), (name, err)
+            assert ("running it as" in err) == (want == "10.3.0"), (name, err)
+            assert ("also apply to gfx1036" in err) == warned, (name, err)
 
     def test_a_per_arch_image_on_a_generic_card_points_at_the_generic_image(self, tmp_path):
         """Dockerfile.rocm refuses ROCM_GFX outside the per-arch families, so the advice

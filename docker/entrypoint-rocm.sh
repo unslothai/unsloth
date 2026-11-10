@@ -154,8 +154,8 @@ fi
 # Generic wheels carry gfx1030 but not its RDNA 2 siblings, which segfault on the first kernel
 # unless run as gfx1030 (#17147). KFD, not torch: the override cannot spoof it. Never on a mixed
 # host (a global override misreports the other cards) or for gfx1033, which check 4 refuses.
-# A gfx1035/gfx1036 iGPU alone triggers it only on an APU-only host (Studio skips it beside a
-# covered card); beside a gfx1031/2/4 it is spoofed too, as one global override must.
+# A gfx1035/gfx1036 iGPU counts only on an APU-only host; beside a card it counts as mixed, since
+# a spoofed iGPU reads as covered and Studio would then select it.
 if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DEV_PATH" == "kfd" ]]; then
     _gfx_all=()
     _gfx103x=()
@@ -181,7 +181,9 @@ if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DE
             *) _gfx_other+=("$_gfx") ;;
         esac
     done
-    if [[ ${#_gfx103x[@]} -eq 0 && ${#_gfx_igpu[@]} -eq ${#_gfx_all[@]} ]]; then
+    if [[ ${#_gfx103x[@]} -gt 0 ]]; then
+        _gfx_other+=("${_gfx_igpu[@]}")
+    elif [[ ${#_gfx_igpu[@]} -eq ${#_gfx_all[@]} ]]; then
         _gfx103x=("${_gfx_igpu[@]}")
     fi
     if [[ ${#_gfx103x[@]} -gt 0 ]]; then
