@@ -99,15 +99,7 @@ def failure_row(
 
     prompt = pick(prompt_column, PROMPT_KEYS, None)
     reference = pick(reference_column, REFERENCE_KEYS, prompt)
-    if mapped and mapped.get("kind") == "rl":
-        from core.benchmark.recipe_heldout import prompt_text
-        from core.flows.nodes.benchmark import rl_format
-
-        # The prompt training's RL formatter gives the row, as Benchmark asked it.
-        own = {k: v for k, v in failure.items() if str(k).lower() not in (*OUTPUT_KEYS, *_SCORED)}
-        formatted = rl_format([own], mapped.get("objective"), mapped.get("mapping"))
-        question = prompt_text(formatted[0]["prompt"], False) if formatted else ""
-    elif mapped:
+    if mapped:
         from core.benchmark.recipe_heldout import prompt_text
         from core.flows.nodes.benchmark import mapped_question
 

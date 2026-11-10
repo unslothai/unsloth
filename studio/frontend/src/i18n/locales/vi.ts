@@ -4370,7 +4370,6 @@ export const vi = {
             "Tập dữ liệu này có vẻ là hình ảnh, loại không thể truyền trực tuyến.",
           audioDataset:
             "Tập dữ liệu này có vẻ là âm thanh, loại không thể truyền trực tuyến.",
-          rlObjective: "Chưa hỗ trợ truyền phát cho DPO, ORPO hoặc GRPO.",
         },
         options: {
           trainOnCompletions: "chỉ phần trả lời của trợ lý",

@@ -26,8 +26,6 @@ export interface TrainView {
   state: TrainState;
   detail: string | null;
   history: number[];
-  /** True when `history` is the GRPO reward rather than the loss. */
-  reward: boolean;
 }
 
 interface Metrics {
@@ -37,10 +35,6 @@ interface Metrics {
   loss_history?: unknown;
   train_rows?: unknown;
   holdout_rows?: unknown;
-  reward?: unknown;
-  reward_start?: unknown;
-  reward_max?: unknown;
-  reward_history?: unknown;
 }
 
 const num = (v: unknown): number | null =>
@@ -51,27 +45,12 @@ function lossText(m: Metrics): string | null {
   return loss === null ? null : `loss ${loss.toFixed(3)}`;
 }
 
-/** "1.80 / 2.5": the reward against the best a completion can score, never a bare number. */
-export function rewardText(reward: number, max: number | null): string {
-  const best = max === null ? "" : ` / ${Number(max.toFixed(2))}`;
-  return `reward ${reward.toFixed(2)}${best}`;
-}
-
 function numbers(values: unknown): number[] {
   return Array.isArray(values)
     ? values.filter((v): v is number => num(v) !== null)
     : [];
 }
 
-function historyOf(m: Metrics): number[] {
-  const rewards = numbers(m.reward_history);
-  return rewards.length ? rewards : numbers(m.loss_history);
-}
-
-function progressText(m: Metrics): string | null {
-  const reward = num(m.reward);
-  return reward === null ? lossText(m) : rewardText(reward, num(m.reward_max));
-}
 
 export function trainView(input: {
   status: NodeStatus;
@@ -89,58 +68,44 @@ export function trainView(input: {
     const total = num(live.total);
     const parts = [
       step !== null && total ? `Step ${step} of ${total}` : "Starting",
-      progressText(live),
+      lossText(live),
     ].filter(Boolean);
     return withKind("training", parts.join(" · "), live);
   }
   if (status === "failed") return withKind("failed", input.error, live);
   if (status === "cancelled")
-    return withKind("stopped", progressText(live), live);
+    return withKind("stopped", lossText(live), live);
   if ((status === "done" || status === "cached") && input.outputs?.checkpoint) {
     const train = num(done.train_rows);
     const held = num(done.holdout_rows);
-    const start = num(done.reward_start);
     const parts = [
       status === "cached" ? "Reused, not retrained" : null,
-      progressText(done),
-      start !== null && num(done.reward) !== null ? `from ${start.toFixed(2)}` : null,
+      lossText(done),
       train !== null && held !== null ? `${train} trained / ${held} held out` : null,
     ].filter(Boolean);
     return withKind("adapter_ready", parts.join(" · ") || null, done);
   }
   if (!input.hasDataset)
-    return { state: "needs_dataset", detail: "Connect a dataset", history: [], reward: false };
+    return { state: "needs_dataset", detail: "Connect a dataset", history: [] };
   if (!String(params.base_model ?? "").trim())
-    return { state: "setup", detail: "Name a base model", history: [], reward: false };
-  const objective = String(params.objective ?? "sft");
+    return { state: "setup", detail: "Name a base model", history: [] };
   const prompt = String(params.prompt_column ?? "").trim();
   const response = String(params.response_column ?? "").trim();
   const mapping = params.custom_format_mapping;
   const mapped = !!mapping && typeof mapping === "object" && Object.keys(mapping).length > 0;
-  const sftColumns = objective === "sft" && !mapped;
-  if (sftColumns && !!prompt !== !!response)
+  if (!mapped && !!prompt !== !!response)
     return {
       state: "setup",
       detail: "Set both columns, or leave both blank",
       history: [],
-      reward: false,
     };
-  if (sftColumns && prompt && prompt === response)
-    return { state: "setup", detail: "Use two different columns", history: [], reward: false };
-  // Unset means the node's default rewards, as the backend trains with.
-  const rewards = Array.isArray(params.rewards)
-    ? params.rewards.filter((r) => String(r?.name ?? "").trim())
-    : params.rewards == null
-      ? [null]
-      : [];
-  if (objective === "grpo" && !rewards.length)
-    return { state: "setup", detail: "Pick a reward", history: [], reward: false };
+  if (!mapped && prompt && prompt === response)
+    return { state: "setup", detail: "Use two different columns", history: [] };
   const pct = num(params.holdout_percent) ?? 0;
   return {
     state: "ready",
     detail: pct > 0 ? `${pct}% held out for scoring` : null,
     history: [],
-    reward: false,
   };
 }
 
@@ -148,35 +113,8 @@ function withKind(state: TrainState, detail: string | null, m: Metrics): TrainVi
   return {
     state,
     detail,
-    history: historyOf(m),
-    reward: numbers(m.reward_history).length > 0,
+    history: numbers(m.loss_history),
   };
-}
-
-/** Best and worst a reward rule (GET /api/rewards `rule`) can score. */
-export function ruleRange(rule: Record<string, unknown> | null | undefined): [number, number] | null {
-  if (!rule) return null;
-  const scores = [
-    ...Object.values((rule.score ?? {}) as Record<string, unknown>),
-    ...(Array.isArray(rule.bands) ? rule.bands.map((b) => (b as { score?: unknown })?.score) : []),
-    rule.missing,
-    rule.else,
-  ].filter((v): v is number => num(v) !== null);
-  return scores.length ? [Math.min(...scores), Math.max(...scores)] : null;
-}
-
-/** Best weighted total for these rewards; null when a rule is unknown. */
-export function rewardMax(
-  picked: { name: string; weight: number }[],
-  rules: Record<string, Record<string, unknown> | null | undefined>,
-): number | null {
-  let total = 0;
-  for (const { name, weight } of picked) {
-    const range = ruleRange(rules[name]);
-    if (!range) return null;
-    total += weight * (weight >= 0 ? range[1] : range[0]);
-  }
-  return total;
 }
 
 /** SVG path for a sparkline in a width x height box; flat when every value is the same. */

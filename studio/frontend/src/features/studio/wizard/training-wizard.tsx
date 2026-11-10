@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { NewBadge } from "@/components/new-badge";
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
 import { SectionBox, SectionField } from "@/components/section-box";
 import { SegmentedTabsList } from "@/components/segmented-tabs";
@@ -28,16 +27,12 @@ import {
   TRAINING_METHOD_META,
   TRAINING_METHOD_ORDER,
   useTrainingConfigStore,
-  effectiveTrainingObjective,
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { ChipIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
-  AiBrain01Icon,
-  Award01Icon,
-  BubbleChatEditIcon,
   Database02Icon,
   Edit03Icon,
 } from "@hugeicons/core-free-icons";
@@ -46,11 +41,6 @@ import { DatasetPanel } from "../sections/dataset-section";
 import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
 import { ParamsSection } from "../sections/params-section";
-import { ObjectiveSelect } from "../sections/rl/objective-select";
-import { PromptFormatSection } from "../sections/rl/prompt-format-section";
-import { RewardsSection } from "../sections/rl/rewards-section";
-import { RlDatasetRoles } from "../sections/rl/rl-dataset-roles";
-import { RlParamsSection } from "../sections/rl/rl-params-section";
 import { ConfigActions } from "./config-actions";
 import type { ParamMode } from "./training-param-mode";
 
@@ -87,23 +77,16 @@ function ParamModeToggle({
 function SetupField({
   label,
   hint,
-  badge,
   children,
 }: {
   label: string;
   hint?: string;
-  badge?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <SectionField
       label={label}
-      hint={
-        <>
-          {hint ? <FieldHint text={hint} label={label} /> : null}
-          {badge}
-        </>
-      }
+      hint={hint ? <FieldHint text={hint} label={label} /> : null}
     >
       {children}
     </SectionField>
@@ -292,9 +275,6 @@ function ModelPanel() {
   const decisionCheckpoints = useTrainingConfigStore((s) =>
     s.modelType === "decision" ? s.decisionCheckpoints : null,
   );
-  const isDecisionModel = useTrainingConfigStore(
-    (s) => s.modelType === "decision",
-  );
   // Text and vision LLMs can also train as decision models; Laya, Clef, audio and embeddings cannot.
   const canTrainAsDecision = useTrainingConfigStore(
     (s) =>
@@ -344,17 +324,6 @@ function ModelPanel() {
           <CheckpointSelect checkpoints={decisionCheckpoints} />
         </SetupField>
       ) : null}
-      {isDecisionModel ? null : (
-        <div className="@md/train-section:col-span-2 @2xl/train-section:col-span-3">
-          <SetupField
-            label={t("rl.objective.label")}
-            hint={t("rl.objective.tooltip")}
-            badge={<NewBadge />}
-          >
-            <ObjectiveSelect />
-          </SetupField>
-        </div>
-      )}
     </div>
   );
 }
@@ -367,9 +336,6 @@ export function TrainingWizard({
   onParamModeChange: (next: ParamMode) => void;
 }) {
   const t = useT();
-  const objective = useTrainingConfigStore((s) =>
-    effectiveTrainingObjective(s),
-  );
   return (
     <div className="flex flex-col gap-6">
       <SectionBox
@@ -390,36 +356,7 @@ export function TrainingWizard({
         titleAction={<DatasetSourceToggleAction />}
       >
         <DatasetPanel />
-        {objective !== "sft" && (
-          <div className="mt-5">
-            <RlDatasetRoles objective={objective} />
-          </div>
-        )}
       </SectionBox>
-
-      {objective === "grpo" && (
-        <SectionBox
-          title={t("rl.prompt.title")}
-          titleBadge={<NewBadge />}
-          description={t("rl.prompt.description")}
-          icon={BubbleChatEditIcon}
-          chipTint="var(--chart-1)"
-        >
-          <PromptFormatSection />
-        </SectionBox>
-      )}
-
-      {objective === "grpo" && (
-        <SectionBox
-          title={t("rl.rewards.title")}
-          titleBadge={<NewBadge />}
-          description={t("rl.rewards.description")}
-          icon={Award01Icon}
-          chipTint="var(--chart-1)"
-        >
-          <RewardsSection />
-        </SectionBox>
-      )}
 
       <SectionBox
         title={t("studio.wizard.paramsTitle")}
@@ -432,11 +369,6 @@ export function TrainingWizard({
         }
       >
         <ParamsSection mode={paramMode} />
-        {objective !== "sft" && paramMode === "simple" && (
-          <div className="mt-5">
-            <RlParamsSection objective={objective} />
-          </div>
-        )}
       </SectionBox>
 
       <SectionBox

@@ -13,19 +13,13 @@ import {
 } from "@/features/training";
 import { translate, useT } from "@/i18n";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, Suspense, lazy, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
 import { mapRunConfigToOverride } from "./sections/run-config-override";
 import { PlayIcon } from "lucide-react";
 
 type StudioT = ReturnType<typeof useT>;
-
-const RlChartsGrid = lazy(() =>
-  import("./sections/charts/rl-charts").then((module) => ({
-    default: module.RlChartsGrid,
-  })),
-);
 
 interface HistoricalTrainingViewProps {
   runId: string;
@@ -200,9 +194,6 @@ export function HistoricalTrainingView({
   }
 
   const viewData = mapToViewData(detail, t);
-  const rlHistory = (detail.metrics.rl_history ?? []).map(
-    ({ step, ...values }) => ({ step, values }),
-  );
   const configOverride = mapRunConfigToOverride(detail.config);
 
   return (
@@ -246,11 +237,6 @@ export function HistoricalTrainingView({
         gradNormHistory={viewData.gradNormHistory}
         evalLossHistory={viewData.evalLossHistory}
       />
-      {rlHistory.length > 0 ? (
-        <Suspense fallback={null}>
-          <RlChartsGrid history={rlHistory} />
-        </Suspense>
-      ) : null}
     </div>
   );
 }

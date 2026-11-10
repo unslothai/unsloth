@@ -44,7 +44,6 @@ import { FlowHfDatasetFields, HF_DATASET_NODE } from "./dataset-picker-field";
 import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
 import { paramVisible } from "./param-visible";
-import { RewardTryPanel } from "./reward-try";
 import { CATEGORY_TONES } from "./node-tones";
 import { TriggerPanel } from "./trigger-panel";
 
@@ -371,8 +370,6 @@ function InspectorImpl() {
         </section>
         )}
         {node.type === GENERATE_TYPE && <RecipePanel node={node} />}
-        {spec.type === "train.finetune" &&
-          node.params.objective === "grpo" && <RewardTryPanel node={node} />}
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
         )}

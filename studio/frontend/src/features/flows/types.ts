@@ -143,8 +143,7 @@ export type ParamKind =
   | "story"
   | "world"
   | "schema"
-  | "lora_list"
-  | "reward_list";
+  | "lora_list";
 
 export interface ParamSpec {
   id: string;

@@ -4422,7 +4422,6 @@ export const nl = {
             "Deze dataset lijkt uit afbeeldingen te bestaan, die niet kunnen worden gestreamd.",
           audioDataset:
             "Deze dataset lijkt uit audio te bestaan, die niet kan worden gestreamd.",
-          rlObjective: "Streaming wordt nog niet ondersteund voor DPO, ORPO of GRPO.",
         },
         options: {
           trainOnCompletions: "alleen assistentaanvullingen",

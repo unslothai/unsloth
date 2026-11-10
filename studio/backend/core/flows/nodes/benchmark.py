@@ -19,7 +19,6 @@ from urllib.parse import quote
 from core.benchmark.recipe_heldout import (
     cell_messages,
     prompt_text,
-    reference_text,
     row_reference,
     split_answer,
 )
@@ -168,7 +167,6 @@ def _same_model(loaded: str, ref: str) -> bool:
 async def _require_primary(ctx: NodeContext, ref: str, label: str) -> None:
     """The scoring requests reach Chat's main model. A target already kept in another slot stays
     there when loaded again, so it would not be the model scored: refuse instead."""
-    from hub.utils.host_paths import resolve_host_path_reference
     from studio_mcp import loading
 
     try:
@@ -380,7 +378,7 @@ async def _read_rows(ctx: NodeContext, dataset: Any, limit: int) -> list[dict]:
 async def _samples(ctx: NodeContext, run_id: Optional[str]) -> list[dict]:
     if not run_id:
         return []
-    detail = await ctx.call("GET", f"{EVALS}/runs/{quote(run_id, safe = '')}")
+    detail = await ctx.call("GET", f"{EVALS}/runs/{quote(run_id, safe='')}")
     samples = detail.get("samples") if isinstance(detail, dict) else None
     return sorted(
         (s for s in samples or [] if isinstance(s, dict)), key = lambda s: s.get("doc_id", 0)
@@ -465,72 +463,12 @@ def system_message(row: dict, columns: Any) -> str:
     return "\n\n".join(t for t in (cell_text(row.get(c)).strip() for c in names) if t)
 
 
-class _Rows:
-    """Rows as format_rl_dataset reads a dataset: its columns, and a map over every row (each with
-    every column, None where it has none, as a datasets table reads it)."""
-
-    def __init__(self, rows: list[dict]):
-        self.column_names = sorted({k for r in rows for k in r})
-        self.rows = [{c: r.get(c) for c in self.column_names} for r in rows]
-
-    def map(self, convert, **_kwargs) -> list[dict]:
-        return [convert(dict(r)) for r in self.rows]
-
-
-def rl_format(rows: list[dict], objective: Any, mapping: Any) -> Optional[list[dict]]:
-    """``rows`` through training's own GRPO, DPO or ORPO formatter, or None (not RL, or rows it
-    refuses)."""
-    if objective not in ("grpo", "dpo", "orpo") or not rows:
-        return None
-    from core.training.rl import format_rl_dataset
-
-    try:
-        formatted, _roles = format_rl_dataset(
-            _Rows(rows), objective, mapping if isinstance(mapping, dict) else None
-        )
-    except Exception:
-        return None
-    return list(formatted)
-
-
-def _rl_rows(rows: list[dict], facts: dict) -> Optional[list[dict]]:
-    """Held-out rows of a GRPO, DPO or ORPO checkpoint shaped by training's own formatter: the
-    prompt it trained on (an implicit prompt, an assistant prefill, the row's system message) and
-    the answer, the preferred reply's closing turn. None when the checkpoint is not RL or the rows
-    do not format."""
-    objective = facts.get("rl_objective")
-    formatted = rl_format(rows, objective, facts.get("rl_mapping"))
-    if formatted is None:
-        return None
-    shaped = []
-    for row, out in zip(rows, formatted):
-        found = {**row, MAPPED_PROMPT: out["prompt"]}
-        if objective != "grpo":
-            found[MAPPED_REFERENCE] = reference_text(out["chosen"])
-        elif "answer" in out:
-            found[MAPPED_REFERENCE] = "" if out["answer"] is None else str(out["answer"])
-        shaped.append(found)
-    return shaped
-
-
 def _asked_spec(
-    prompt_col: str,
-    reference_col: Optional[str],
-    rl: Optional[list],
-    mapped: Optional[dict],
-    facts: dict,
-    asked: list[dict],
+    prompt_col: str, reference_col: Optional[str], mapped: Optional[dict], asked: list[dict]
 ) -> Any:
-    """How a Loop rebuilds each row's question as Benchmark asked it: through training's RL
-    formatter, from several mapped columns, as one column (a conversation whole, or a prompt with
-    its assistant prefill when a reference column holds the answer), or "" for the Loop's own
-    Alpaca reading."""
-    if prompt_col == MAPPED_PROMPT and rl is not None:
-        return {
-            "kind": "rl",
-            "objective": facts.get("rl_objective"),
-            "mapping": facts.get("rl_mapping"),
-        }
+    """How a Loop rebuilds each row's question as Benchmark asked it: from several mapped columns,
+    as one column (a conversation whole, or a prompt with its assistant prefill when a reference
+    column holds the answer), or "" for the Loop's own Alpaca reading."""
     if prompt_col == MAPPED_PROMPT:
         return mapped
     if prompt_col == ALPACA_PROMPT:
@@ -628,12 +566,7 @@ async def _recipe_heldout(
     conversation = (
         conversation if isinstance(conversation, str) and conversation in columns else None
     )
-    rl = None if named_prompt else _rl_rows(rows, facts)
-    if rl is not None:
-        asked, prompt_col = rl, MAPPED_PROMPT
-        # Training's prompt carries the row's own system message.
-        system_col, systems = None, []
-    elif not named_prompt and not users and conversation:
+    if not named_prompt and not users and conversation:
         prompt_col = conversation
     elif named_prompt or not users:
         prompt_col = guess_column(
@@ -662,9 +595,7 @@ async def _recipe_heldout(
         prompt_col = ALPACA_PROMPT
         columns = [c for c in columns if c != "input"]
     named_reference = str(ctx.params.get("reference_column") or "").strip()
-    if not named_reference and rl is not None and any(MAPPED_REFERENCE in r for r in rl):
-        reference_col = MAPPED_REFERENCE
-    elif not named_reference and conversation and prompt_col == conversation:
+    if not named_reference and conversation and prompt_col == conversation:
         reference_col = None
     elif not named_reference and len(answers) == 1 and not converted:
         reference_col = answers[0]
@@ -794,7 +725,7 @@ async def _recipe_heldout(
         "failures": failures,
         # The column asked, so a Loop reads failures and test questions as they were scored; an
         # Alpaca row's question is its instruction plus input, which the Loop rebuilds itself.
-        "prompt_column": _asked_spec(prompt_col, reference_col, rl, mapped, facts, asked),
+        "prompt_column": _asked_spec(prompt_col, reference_col, mapped, asked),
         # Rows sharing a question can ask different tasks through their own system message.
         "system_column": systems if system_col == MAPPED_SYSTEM else (system_col or ""),
     }
@@ -842,7 +773,7 @@ async def _lm_eval(
     if not done.get("success"):
         raise FlowNodeError(str(done.get("message") or "The benchmark did not finish"))
     run_id = details.get("run_id")
-    detail = await ctx.call("GET", f"{EVALS}/runs/{quote(run_id, safe = '')}") if run_id else {}
+    detail = await ctx.call("GET", f"{EVALS}/runs/{quote(run_id, safe='')}") if run_id else {}
     detail = detail if isinstance(detail, dict) else {}
     score, metric = headline(detail.get("metrics") or [])
     samples = sorted(

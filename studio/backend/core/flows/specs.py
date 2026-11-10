@@ -96,7 +96,7 @@ def adv(group: str) -> dict:
 
 
 LORA = {"training_type": ["lora", "cpt"]}
-DRAFTER = {"objective": ["sft"], "drafter_enabled": ["true"]}
+DRAFTER = {"drafter_enabled": ["true"]}
 LORA_TARGET_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 OPTIMIZERS = (
     ("adamw_8bit", "AdamW 8-bit"),
@@ -105,10 +105,6 @@ OPTIMIZERS = (
     ("paged_adamw_32bit", "Paged AdamW 32-bit"),
     ("adamw_torch", "AdamW (PyTorch)"),
     ("adamw_torch_fused", "AdamW (PyTorch Fused)"),
-)
-
-GRPO_SYSTEM_PROMPT = (
-    "Respond in the following format:\n<reasoning>\n...\n</reasoning>\n<answer>\n...\n</answer>"
 )
 
 
@@ -1583,7 +1579,7 @@ NODE_SPECS: list[dict] = [
         "train.finetune",
         "Fine-tune",
         "data",
-        "Fine-tune a model on a dataset (SFT, or GRPO, DPO and ORPO), optionally holding out rows to score later. Waits for training to finish. "
+        "Fine-tune a model on a dataset, optionally holding out rows to score later. Waits for training to finish. "
         "Wire a checkpoint into Continue from to keep training that LoRA instead of starting from the base model.",
         inputs = [
             inp("dataset", "dataset"),
@@ -1596,59 +1592,12 @@ NODE_SPECS: list[dict] = [
         ],
         params = [
             P("base_model", "text", "unsloth/Qwen3-0.6B", "Base model"),
-            P(
-                "objective",
-                "select",
-                "sft",
-                "Objective",
-                options = ["sft", "grpo", "dpo", "orpo"],
-                option_labels = {
-                    "sft": "SFT: learn the responses",
-                    "grpo": "GRPO: learn from rewards",
-                    "dpo": "DPO: prefer chosen over rejected",
-                    "orpo": "ORPO: prefer chosen, no reference model",
-                },
-            ),
             P("prompt_column", "text", "", "Prompt column (blank = detect the format)"),
             P(
                 "response_column",
                 "text",
                 "",
                 "Response column (blank = detect the format)",
-                show_when = {"objective": ["sft"]},
-            ),
-            P(
-                "answer_column",
-                "text",
-                "",
-                "Answer column the rewards check (blank = detect)",
-                show_when = {"objective": ["grpo"]},
-            ),
-            P(
-                "chosen_column",
-                "text",
-                "",
-                "Chosen column (blank = detect)",
-                show_when = {"objective": ["dpo", "orpo"]},
-            ),
-            P(
-                "rejected_column",
-                "text",
-                "",
-                "Rejected column (blank = detect)",
-                show_when = {"objective": ["dpo", "orpo"]},
-            ),
-            P(
-                "rewards",
-                "reward_list",
-                [
-                    {"name": "exact-answer", "weight": 1.0},
-                    {"name": "soft-xml-format", "weight": 1.0},
-                ],
-                "Rewards",
-                options_from = "/api/rewards",
-                options_path = "[].name",
-                show_when = {"objective": ["grpo"]},
             ),
             P(
                 "max_steps",
@@ -1794,7 +1743,7 @@ NODE_SPECS: list[dict] = [
                 "Learning Rate",
                 min = 0,
                 step = 0.00001,
-                help = "Step size for weight updates. Lower values train slower but more stably. Recommended: 2e-4 for LoRA, 5e-5 for CPT, 2e-5 for full fine-tune; 5e-6 for GRPO and DPO.",
+                help = "Step size for weight updates. Lower values train slower but more stably. Recommended: 2e-4 for LoRA, 5e-5 for CPT, 2e-5 for full fine-tune.",
                 **adv("Training"),
             ),
             P(
@@ -1911,7 +1860,7 @@ NODE_SPECS: list[dict] = [
                 "Batch Size",
                 min = 1,
                 max = 1024,
-                help = "Samples processed per step. Higher uses more VRAM. Leave empty for 4 (GRPO: one prompt group).",
+                help = "Samples processed per step. Higher uses more VRAM. Leave empty for 4.",
                 **adv("Optimization"),
             ),
             P(
@@ -1921,7 +1870,7 @@ NODE_SPECS: list[dict] = [
                 "Grad Accum",
                 min = 1,
                 max = 1024,
-                help = "Simulates larger batch sizes without extra VRAM. Leave empty for 8 (GRPO: 1).",
+                help = "Simulates larger batch sizes without extra VRAM. Leave empty for 8.",
                 **adv("Optimization"),
             ),
             P(
@@ -2066,123 +2015,11 @@ NODE_SPECS: list[dict] = [
                 **adv("Memory"),
             ),
             P(
-                "system_prompt",
-                "textarea",
-                GRPO_SYSTEM_PROMPT,
-                "System prompt",
-                help = "Added to every prompt that has no system message. The default asks for the <reasoning>/<answer> format the bundled rewards grade, as in the Unsloth GRPO notebooks.",
-                show_when = {"objective": ["grpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "enable_thinking",
-                "bool",
-                False,
-                "Thinking",
-                help = "For models whose chat template has a thinking switch, like Qwen3. Off keeps answers inside the completion budget instead of spending it on a hidden thinking block.",
-                show_when = {"objective": ["grpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "grpo_variant",
-                "select",
-                "dapo",
-                "Loss variant",
-                options = ["dapo", "dr_grpo", "bnpo", "grpo", "gspo"],
-                option_labels = {
-                    "dapo": "DAPO (default)",
-                    "dr_grpo": "Dr. GRPO",
-                    "bnpo": "BNPO",
-                    "grpo": "GRPO",
-                    "gspo": "GSPO",
-                },
-                help = "How each answer's loss is weighted. DAPO is the Unsloth default; Dr. GRPO and GSPO are what the vision GRPO notebooks use, BNPO what the Gemma 4 RL notebooks use.",
-                show_when = {"objective": ["grpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "num_generations",
-                "int",
-                4,
-                "Generations per prompt",
-                min = 2,
-                max = 16,
-                help = "Answers sampled for each prompt and compared against each other.",
-                show_when = {"objective": ["grpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "max_completion_length",
-                "int",
-                None,
-                "Max completion length",
-                min = 16,
-                help = "Tokens each generated answer may use. Empty uses what the prompt leaves.",
-                show_when = {"objective": ["grpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "temperature",
-                "number",
-                1.0,
-                "Temperature",
-                min = 0.1,
-                max = 2,
-                step = 0.1,
-                help = "Sampling temperature for generated answers.",
-                show_when = {"objective": ["grpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "epsilon_high",
-                "number",
-                None,
-                "Clip high",
-                min = 0.01,
-                max = 1,
-                step = 0.01,
-                help = "Upper clip bound (DAPO clip-higher, e.g. 0.28). Empty uses the regular clip of 0.2.",
-                show_when = {"objective": ["grpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "mask_truncated_completions",
-                "bool",
-                False,
-                "Mask cut-off answers",
-                help = "Leave answers that hit the completion length limit out of the loss.",
-                show_when = {"objective": ["grpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "max_prompt_length",
-                "int",
-                None,
-                "Max prompt length",
-                min = 16,
-                help = "Tokens kept from each prompt. Empty derives it from the context length.",
-                show_when = {"objective": ["grpo", "dpo", "orpo"]},
-                **adv("RL settings"),
-            ),
-            P(
-                "beta",
-                "number",
-                None,
-                "Beta",
-                min = 0,
-                max = 10,
-                step = 0.01,
-                help = "How far training may move from the starting model. Empty uses the objective's default (GRPO 0, DPO 0.1, ORPO 0.1).",
-                show_when = {"objective": ["grpo", "dpo", "orpo"]},
-                **adv("RL settings"),
-            ),
-            P(
                 "drafter_enabled",
                 "bool",
                 False,
                 "Train a speculative decoding drafter",
                 help = "Trains a small draft head after fine-tuning so inference runs faster in llama.cpp and vLLM; outputs are unchanged. SFT text runs only, not CPT.",
-                show_when = {"objective": ["sft"]},
                 **adv("Speculative Decoding Drafter"),
             ),
             P(

@@ -4421,7 +4421,6 @@ export const pl = {
             "Ten zbiór danych wygląda na obrazy, których nie można strumieniować.",
           audioDataset:
             "Ten zbiór danych wygląda na audio, którego nie można strumieniować.",
-          rlObjective: "Strumieniowanie nie jest jeszcze obsługiwane dla DPO, ORPO ani GRPO.",
         },
         options: {
           trainOnCompletions: "tylko odpowiedzi asystenta",

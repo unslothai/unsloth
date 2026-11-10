@@ -4369,7 +4369,6 @@ export const id = {
             "Dataset ini tampaknya berupa gambar, yang tidak dapat di-streaming.",
           audioDataset:
             "Dataset ini tampaknya berupa audio, yang tidak dapat di-streaming.",
-          rlObjective: "Streaming belum didukung untuk DPO, ORPO, atau GRPO.",
         },
         options: {
           trainOnCompletions: "hanya completion asisten",

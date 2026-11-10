@@ -4441,7 +4441,6 @@ export const es419 = {
             "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
           audioDataset:
             "Este conjunto de datos parece contener audio, que no se puede transmitir.",
-          rlObjective: "El streaming todavía no es compatible con DPO, ORPO ni GRPO.",
         },
         options: {
           trainOnCompletions: "solo respuestas del asistente",

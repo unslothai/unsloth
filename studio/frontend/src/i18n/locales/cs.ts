@@ -4391,7 +4391,6 @@ export const cs = {
             "Tato datová sada vypadá jako obrázky, které nelze streamovat.",
           audioDataset:
             "Tato datová sada vypadá jako zvuk, který nelze streamovat.",
-          rlObjective: "Streamování zatím není podporováno pro DPO, ORPO ani GRPO.",
         },
         options: {
           trainOnCompletions: "pouze odpovědi asistenta",
