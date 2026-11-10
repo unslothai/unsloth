@@ -2926,7 +2926,6 @@ class _SdState:
     gpu_explicit: bool = False
     multi_gpu: Optional[dict[str, Any]] = None
     split_physical_gpu_id: Optional[int] = None
-    # ``--max-vram`` from a VRAM-refusal restart; kept for the load.
     vram_budget: Optional[str] = None
 
     def spawn_env(self) -> Optional[dict[str, str]]:

@@ -3133,7 +3133,6 @@ def test_a_single_vulkan_device_loss_stays_on_vulkan(monkeypatch):
     assert not persisted
 
 
-# MOSS-Image Q8_0 on an 8 GB card whose driver reported a release late.
 _VRAM_REFUSAL = (
     "sd-server generation failed: generation_failed: generate_image returned no results\n"
     "Last output:\n"
