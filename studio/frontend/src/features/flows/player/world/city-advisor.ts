@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Mayor mode LLM boundary: the exact numbers the model sees, and what may come back (advice, petitions, one event
-// from a fixed menu, one zone name). The model never places tiles.
+// Mayor mode LLM boundary: the numbers the model sees and what may come back. The model never places tiles.
 
 import type { WorldSpec } from "../../types";
 import {

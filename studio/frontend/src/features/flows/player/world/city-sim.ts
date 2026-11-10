@@ -486,7 +486,6 @@ export class CitySim {
     return this.state.residents;
   }
 
-  /** Census and overlays for a brand new city (DoSimInit without a map scan: nothing is zoned yet). */
   init(): void {
     this.setValves();
     this.clearCensus();
