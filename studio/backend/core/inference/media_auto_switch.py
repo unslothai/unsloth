@@ -112,10 +112,8 @@ def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
 
 
 def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
-    """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
-    ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
-    not the copy's snapshot, and the resident match compares the id the status publishes. A copy complete on disk stays
-    itself, as the load route keeps it (``retired_copy_loads_from_disk``)."""
+    """A retired FLUX.3 full copy loads as its base; locality is proven for the files that load
+    fetches (the FP8 mirror files), not the copy's snapshot; a complete on-disk copy stays itself"""
     from core.inference.diffusion_families import (
         retired_copy_loads_from_disk,
         retired_full_copy_base,
@@ -292,9 +290,8 @@ async def _gated_start_load(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     try:
-        # Under Always a chat load's GPUs aren't known yet, so it overlaps every card: refuse now
-        # (retryable) instead of queueing on chat's gate behind it. Off and fit keep the wait, and
-        # so does a CPU chat load (no GPU claim) or one on known GPUs (the arbiter checks overlap).
+        # Under Always, a chat load's GPUs are unknown: refuse now (retryable) rather than queue
+        # behind it.
         if (
             takes_the_gpu
             and gpu_residency.chat_load_in_flight()
