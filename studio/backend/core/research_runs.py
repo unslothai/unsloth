@@ -2615,8 +2615,7 @@ class ResearchSupervisor:
                 rag_result = ""
             else:
                 used_queries.add(argument)
-                # The knowledge base and MCP lookups don't depend on the web result: run them alongside it,
-                # then take the results in the old order so a web error is still the one raised.
+                # Side lookups overlap the web search; awaited after it so a web error still wins.
                 rag_task = (
                     asyncio.ensure_future(
                         asyncio.to_thread(

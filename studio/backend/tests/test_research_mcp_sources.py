@@ -492,7 +492,6 @@ def test_step_lookups_run_alongside_the_web_search(notes_server, monkeypatch):
 
     def fake_tool(name, arguments, *args, **kwargs):
         if name == "web_search":
-            # Both side lookups must be under way before the web search returns.
             seen_during_web["kb"] = kb_started.wait(5)
             seen_during_web["mcp"] = mcp_started.wait(5)
             return "No results found."
