@@ -12,6 +12,15 @@ import torch
 
 transformers = pytest.importorskip("transformers")
 pytest.importorskip("transformers.models.qwen3_5_moe.modeling_qwen3_5_moe")
+if "linear_attention" not in getattr(
+    pytest.importorskip("transformers.masking_utils"),
+    "LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING",
+    {"linear_attention": 1},
+):
+    # Early 5.x: generate() builds no mask for linear-attention layers, so a Qwen3.5 static-cache call cannot run.
+    pytest.skip(
+        "transformers without linear_attention masks for generate()", allow_module_level = True
+    )
 
 import unsloth.models._flex_decode as FD
 from unsloth.models.vision import _NonFlexGenerate
