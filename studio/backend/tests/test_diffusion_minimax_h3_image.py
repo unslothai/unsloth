@@ -815,8 +815,84 @@ def test_the_backend_refuses_a_cpu_host_before_loading(h3i, release, monkeypatch
     from core.inference.diffusion import DiffusionBackend
 
     monkeypatch.delenv(h3i.ALLOW_ANY_DEVICE_ENV, raising = False)
-    root, _ref, _te = release
+    root, _ref, te = release
+    if not (root / "text_encoder" / "config.json").is_file():
+        te.save_pretrained(
+            str(root / "text_encoder")
+        )  # a complete local pipeline, so only the device can refuse
     backend = DiffusionBackend()
     with pytest.raises(ValueError, match = "needs an NVIDIA or AMD GPU"):
         backend.validate_load_request(str(root), model_kind = "pipeline")
     assert backend._state is None
+
+
+# -- routing between the Images and Video pages ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "repo_id",
+    [
+        "MiniMaxAI/MiniMax-H3-Image",
+        "unsloth/MiniMax-H3-Image-FP8",
+        "minimaxai/minimax_h3_image",
+        "/models/MiniMax-H3-Image",
+    ],
+)
+def test_h3_image_ids_route_to_the_image_family_not_the_video_one(repo_id):
+    from core.inference import diffusion_families as df
+    from core.inference import video_families as vf
+
+    assert vf.detect_video_family(repo_id) is None
+    assert "Images page" in (vf.unsupported_video_checkpoint_reason(repo_id) or "")
+    assert df.detect_family(repo_id).name == "minimax-h3-image"
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"model_index.json": {"_class_name": "MiniMaxH3ImagePipeline"}},
+        {"model_index.json": {"_class_name": "Other", "_minimax_h3": {"partition": "image"}}},
+        {
+            "modular_model_index.json": {
+                "_class_name": "X",
+                "_blocks_class_name": "MiniMaxH3ImageBlocks",
+            }
+        },
+        {"transformer_diffusers/config.json": {"_class_name": "MiniMaxH3ImageTransformer2DModel"}},
+    ],
+)
+def test_a_folder_that_says_h3_image_is_never_a_video_pick(tmp_path, files):
+    import json
+
+    from core.inference import diffusion_families as df
+    from core.inference import video_families as vf
+
+    # Named only "h3", the video family's alias: the folder's own metadata decides.
+    root = tmp_path / "h3"
+    for name, payload in files.items():
+        (root / name).parent.mkdir(parents = True, exist_ok = True)
+        (root / name).write_text(json.dumps(payload))
+    assert vf.is_minimax_h3_image_folder(str(root))
+    assert vf.detect_video_family(str(root)) is None
+    assert "Images page" in (vf.unsupported_video_checkpoint_reason(str(root)) or "")
+    if (
+        "model_index.json" in files
+        and files["model_index.json"]["_class_name"] == "MiniMaxH3ImagePipeline"
+    ):
+        assert df.detect_family_for_pick(str(root)).name == "minimax-h3-image"
+
+
+def test_the_h3_video_release_and_its_folders_stay_video(tmp_path):
+    import json
+
+    from core.inference import video_families as vf
+
+    for repo_id in ("MiniMaxAI/MiniMax-H3", "unsloth/MiniMax-H3-FP8", "unsloth/MiniMax-H3-GGUF"):
+        assert vf.detect_video_family(repo_id).name == "minimax-h3"
+    root = tmp_path / "MiniMax-H3"
+    root.mkdir()
+    (root / "modular_model_index.json").write_text(
+        json.dumps({"_class_name": "MiniMaxH3ModularPipeline"})
+    )
+    assert not vf.is_minimax_h3_image_folder(str(root))
+    assert vf.detect_video_family(str(root)).name == "minimax-h3"
