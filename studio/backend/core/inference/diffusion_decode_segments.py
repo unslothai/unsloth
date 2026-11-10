@@ -5,10 +5,9 @@
 activations and cuDNN workspaces otherwise each map a new fixed segment (SDXL 1024^2: 11.3 -> 10.1 GiB reserved).
 UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off.
 
-A placement whose resident blocks were sized from the denoise phase runs in expandable segments for the whole load
-(``engage_streamed``): its encode / prefetch window / decode churn otherwise left ~1.9 GiB cached in fixed segments
-(FLUX.3 Klein int8, L4 at 6 GiB: 5.3 GiB reserved for 3.4 GiB allocated), so the guards streamed resident blocks out
-and pinned them back every render. UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE=0 turns it off."""
+Denoise-phase-sized streamed placements use expandable segments for the whole load (``engage_streamed``): fixed
+segments cached ~1.9 GiB of churn (FLUX.3 Klein int8, L4 6 GiB), evicting resident blocks every render.
+UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE=0 turns it off."""
 
 from __future__ import annotations
 
@@ -29,7 +28,7 @@ _lock = threading.Lock()
 _depth = 0
 _usable: Optional[bool] = None
 _restore: Optional[str] = None
-# settings to put back when the streamed placement's load goes; None = not engaged by it
+# settings restored by release_streamed; None = not engaged
 _streamed: Optional[str] = None
 STATS = {"engaged": 0, "skipped": 0, "streamed": 0}
 
@@ -195,8 +194,7 @@ def streamed_enabled() -> bool:
 
 
 def engage_streamed() -> bool:
-    """Switch the allocator to expandable segments until ``release_streamed`` (Linux CUDA, native allocator, nothing
-    else configured). True when this call or an earlier one engaged it."""
+    """Expandable segments until ``release_streamed`` (Linux CUDA, native allocator). True if engaged."""
     global _usable, _streamed
     if not streamed_enabled():
         return False
@@ -224,7 +222,6 @@ def engage_streamed() -> bool:
 
 
 def release_streamed() -> bool:
-    """Put back what ``engage_streamed`` replaced. True when something was put back."""
     global _usable, _streamed
     torch = _torch()
     with _lock:

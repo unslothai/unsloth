@@ -118,7 +118,7 @@ def allocator(monkeypatch):
 
 def test_streamed_placement_engages_expandable_segments_until_released(allocator):
     assert seg.engage_streamed()
-    assert seg.engage_streamed()  # once per load
+    assert seg.engage_streamed()
     assert allocator == ["expandable_segments:True"]
     assert seg.release_streamed()
     assert allocator == ["expandable_segments:True", "expandable_segments:False", ""]
