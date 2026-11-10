@@ -29,39 +29,30 @@ const backend = (id: string, createdAt: number, status: string, kind = "full") =
   artifact_path: status === "completed" ? "/x/recipes/run" : null,
   lastEventId: 3,
 });
+const TRANSFORM_REF = "recipes/run-9/processors-files/chat";
+/** One backend record as the runs view holds it. */
+const record = (...args: Parameters<typeof backend>) => toRunRecords([backend(...args)])[0];
 
 test("backend run records come out complete and newest first, running ones on top", () => {
-  const records = toRunRecords([
-    backend("a", 1, "completed"),
-    backend("b", 3, "completed", "preview"),
-    backend("c", 2, "active"),
-  ]);
+  const runs = [backend("a", 1, "completed"), backend("b", 3, "completed", "preview"), backend("c", 2, "active")];
+  const records = toRunRecords(runs);
   assert.deepEqual(
     records.map((r) => r.id),
     ["c", "b", "a"],
   );
-  const done = records[2];
-  assert.deepEqual(done.completed_columns, []);
-  assert.deepEqual(done.log_lines, []);
-  assert.equal(done.datasetPage, 1);
-  assert.equal(done.datasetPageSize, 20);
-  assert.equal(done.batch, null);
-  assert.equal(done.run_name, null);
+  const { completed_columns, log_lines, datasetPage, datasetPageSize, batch, run_name, jobId, artifact_path } =
+    records[2];
+  assert.deepEqual(
+    { completed_columns, log_lines, datasetPage, datasetPageSize, batch, run_name },
+    { completed_columns: [], log_lines: [], datasetPage: 1, datasetPageSize: 20, batch: null, run_name: null },
+  );
   // What Recipe Studio's executions view needs to offer Publish and Download.
-  assert.equal(done.jobId, "job-a");
-  assert.equal(done.artifact_path, "/x/recipes/run");
+  assert.deepEqual({ jobId, artifact_path }, { jobId: "job-a", artifact_path: "/x/recipes/run" });
 });
 
 test("Preview shows the newest run alone, Runs shows all of them", () => {
-  const records = toRunRecords([
-    backend("a", 1, "completed"),
-    backend("b", 3, "error"),
-    backend("c", 2, "active"),
-  ]);
-  assert.deepEqual(
-    visibleRuns(records, "preview").map((r) => r.id),
-    ["b"],
-  );
+  const records = toRunRecords([backend("a", 1, "completed"), backend("b", 3, "error"), backend("c", 2, "active")]);
+  assert.deepEqual(visibleRuns(records, "preview").map((r) => r.id), ["b"]);
   assert.equal(visibleRuns(records, "runs").length, 3);
   assert.deepEqual(visibleRuns([], "preview"), []);
 });
@@ -78,7 +69,7 @@ test("runs refresh while the flow or a recipe job is still going", () => {
   const done = toRunRecords([backend("a", 1, "completed")]);
   assert.equal(runsAreLive(done, false), false);
   assert.equal(runsAreLive(done, true), true);
-  assert.equal(runsAreLive(toRunRecords([backend("b", 1, "pending")]), false), true);
+  assert.equal(runsAreLive([record("b", 1, "pending")], false), true);
 });
 
 test("the Runs view stays a lazy chunk of the editor page", () => {
@@ -98,9 +89,9 @@ test("an older run pages from its saved parquet once its recipe job is gone", ()
   assert.equal(savedRunDataset({ artifact_path: null }), null);
   // A schema transform's run pages its own output, never the job's untransformed rows.
   const transformed = toRunRecords([
-    { ...backend("t", 1, "completed"), artifact_path: "/x/recipes/run-9", output_ref: "recipes/run-9/processors-files/chat" },
+    { ...backend("t", 1, "completed"), artifact_path: "/x/recipes/run-9", output_ref: TRANSFORM_REF },
   ])[0];
-  assert.equal(savedRunDataset(transformed)?.ref, "recipes/run-9/processors-files/chat");
+  assert.equal(savedRunDataset(transformed)?.ref, TRANSFORM_REF);
 });
 
 /** Page readers that log what they were asked; the job reader fails when `jobGone`. */
@@ -124,30 +115,29 @@ function pageReaders(jobGone: boolean) {
 
 test("a run page reads the live job while it is there", async () => {
   const { calls, read } = pageReaders(false);
-  const page = await readRunPage(toRunRecords([backend("a", 1, "completed")])[0], 20, 10, read);
+  const page = await readRunPage(record("a", 1, "completed"), 20, 10, read);
   assert.deepEqual(page, { dataset: [{ from: "job" }], total: 20 });
   assert.deepEqual(calls, ["job:job-a:20:10"]);
 });
 
 test("a run page falls back to the saved parquet, capped at the reader's view window", async () => {
   const { calls, read } = pageReaders(true);
-  const page = await readRunPage(toRunRecords([backend("a", 1, "completed")])[0], 20, 10, read);
+  const page = await readRunPage(record("a", 1, "completed"), 20, 10, read);
   assert.deepEqual(page, { dataset: [{ from: "saved" }], total: 100 });
   assert.deepEqual(calls, ["job:job-a:20:10", "saved:recipes/run/parquet-files:20:10"]);
 });
 
 test("a schema transform's run page never reads the job's untransformed rows", async () => {
   const { calls, read } = pageReaders(false);
-  const record = { ...toRunRecords([backend("t", 1, "completed")])[0], output_ref: "recipes/run-9/processors-files/chat" };
-  const page = await readRunPage(record, 0, 20, read);
+  const page = await readRunPage({ ...record("t", 1, "completed"), output_ref: TRANSFORM_REF }, 0, 20, read);
   assert.deepEqual(page.dataset, [{ from: "saved" }]);
-  assert.deepEqual(calls, ["saved:recipes/run-9/processors-files/chat:0:20"]);
+  assert.deepEqual(calls, [`saved:${TRANSFORM_REF}:0:20`]);
 });
 
 test("a run page with no live job and nothing saved fails", async () => {
   const { read } = pageReaders(true);
-  const record = toRunRecords([{ ...backend("p", 1, "active"), artifact_path: null }])[0];
-  await assert.rejects(readRunPage(record, 0, 20, read), /job gone/);
+  const active = toRunRecords([{ ...backend("p", 1, "active"), artifact_path: null }])[0];
+  await assert.rejects(readRunPage(active, 0, 20, read), /job gone/);
 });
 
 const stubs = await import("./helpers/module-stubs.ts");
@@ -187,29 +177,23 @@ function loadDownloadRun() {
   return { downloadRun: mod.downloadRun, calls };
 }
 
-const TRANSFORM_REF = "recipes/run-9/processors-files/chat";
-const downloadCases: {
-  name: string;
-  record: () => Record<string, unknown>;
-  outcome: string;
-  calls: unknown[][];
-}[] = [
+const downloadCases: { name: string; record: () => Record<string, unknown>; outcome: string; calls: unknown[][] }[] = [
   {
     name: "a plain run downloads the job's own export",
-    record: () => toRunRecords([backend("a", 1, "completed")])[0],
+    record: () => record("a", 1, "completed"),
     outcome: "started",
     calls: [["job export", "a"]],
   },
   {
     name: "a schema transform's full run downloads its own saved output, not the job's",
-    record: () => ({ ...toRunRecords([backend("t", 1, "completed")])[0], output_ref: TRANSFORM_REF, run_name: "my run" }),
+    record: () => ({ ...record("t", 1, "completed"), output_ref: TRANSFORM_REF, run_name: "my run" }),
     outcome: "saved",
     calls: [["file", `export of ${TRANSFORM_REF}`, "my-run.jsonl", "application/x-ndjson"]],
   },
   {
     name: "a schema transform's preview downloads the transformed rows it holds",
     record: () => ({
-      ...toRunRecords([backend("p", 1, "completed", "preview")])[0],
+      ...record("p", 1, "completed", "preview"),
       output_ref: TRANSFORM_REF,
       dataset: [{ text: "a" }, { text: "b" }],
     }),
@@ -258,14 +242,14 @@ function renderExecutions(record: Record<string, unknown>) {
 }
 
 test("a finished run can be published; a schema transform's run cannot", () => {
-  const plain = toRunRecords([backend("a", 1, "completed")])[0];
+  const plain = record("a", 1, "completed");
   assert.equal(renderExecutions(plain).publishable, plain);
   const transformed = { ...plain, output_ref: TRANSFORM_REF };
   assert.equal(renderExecutions(transformed).publishable, null);
 });
 
 test("the executions view's Download hands the run to the Flows downloader", () => {
-  const transformed = { ...toRunRecords([backend("t", 1, "completed")])[0], output_ref: TRANSFORM_REF };
+  const transformed = { ...record("t", 1, "completed"), output_ref: TRANSFORM_REF };
   const view = renderExecutions(transformed);
   assert.ok(view.download, "Download is offered");
   (view.download.props.onClick as () => void)();

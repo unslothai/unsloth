@@ -22,67 +22,45 @@ const { buildDialogOptions } = await import(
   "../src/features/recipe-studio/utils/recipe-studio-view.ts"
 );
 
-type Payload = LearningRecipe;
-const learning = learningRecipe;
-
-function group(payload: Payload) {
+function group(payload: LearningRecipe) {
   const { group, nodes } = recipeGroup(payload);
   return { group: { ...group, ui: structuredClone(payload.ui ?? {}) }, nodes };
 }
 
-function withTools(): Payload {
-  const payload = learning("text-to-sql.json");
+/** The SQL recipe with a "web" tool profile on one "docs" MCP server, opened in the Studio view. */
+function withTools() {
+  const payload = learningRecipe("text-to-sql.json");
   payload.recipe.mcp_providers = [
-    {
-      name: "docs",
-      provider_type: "streamable_http",
-      endpoint: "https://mcp.example/mcp",
-    },
+    { name: "docs", provider_type: "streamable_http", endpoint: "https://mcp.example/mcp" },
   ];
-  payload.recipe.tool_configs = [
-    { tool_alias: "web", providers: ["docs"], max_tool_call_turns: 3 },
-  ];
+  payload.recipe.tool_configs = [{ tool_alias: "web", providers: ["docs"], max_tool_call_turns: 3 }];
   payload.recipe.columns[4].tool_alias = "web";
   payload.ui = {
-    nodes: [
-      {
-        id: "web",
-        x: 0,
-        y: 0,
-        node_type: "tool_config",
-        tools_by_provider: { docs: ["search"] },
-      },
-    ],
+    nodes: [{ id: "web", x: 0, y: 0, node_type: "tool_config", tools_by_provider: { docs: ["search"] } }],
   };
-  return payload;
+  const { group: g, nodes } = group(payload);
+  const view = studioView(g, nodes);
+  const tool = Object.values(view.configs).find((c) => c.kind === "tool_config");
+  assert.ok(tool);
+  /** Commits `patch` on the tool profile and returns the group config it produced. */
+  const editTool = (patch: Record<string, unknown>) => {
+    const edit = commitStudioEdit(g, nodes, view, applyConfigPatch(view.configs, tool.id, patch as never));
+    return { edit, config: edit.group?.config as Record<string, unknown> };
+  };
+  return { g, nodes, view, tool, editTool };
 }
 
 test("a tool profile opens in Recipe Studio's dialog and the AI columns can pick it", () => {
-  const { group: g, nodes } = group(withTools());
-  const view = studioView(g, nodes);
-  const tool = Object.values(view.configs).find((c) => c.kind === "tool_config");
-  assert.ok(tool);
+  const { view, tool } = withTools();
   assert.equal(tool.name, "web");
-  assert.deepEqual(
-    (tool as { fetched_tools_by_provider?: unknown }).fetched_tools_by_provider,
-    { docs: ["search"] },
-  );
-  assert.deepEqual(
-    buildDialogOptions(Object.values(view.configs)).toolProfileAliases,
-    ["web"],
-  );
+  assert.deepEqual((tool as { fetched_tools_by_provider?: unknown }).fetched_tools_by_provider, {
+    docs: ["search"],
+  });
+  assert.deepEqual(buildDialogOptions(Object.values(view.configs)).toolProfileAliases, ["web"]);
 });
 
 test("editing a tool profile keeps it, its servers and its tool list on the group", () => {
-  const { group: g, nodes } = group(withTools());
-  const view = studioView(g, nodes);
-  const tool = Object.values(view.configs).find((c) => c.kind === "tool_config");
-  assert.ok(tool);
-  const configs = applyConfigPatch(view.configs, tool.id, {
-    max_tool_call_turns: "7",
-  } as never);
-  const edit = commitStudioEdit(g, nodes, view, configs);
-  const config = edit.group?.config as Record<string, unknown>;
+  const { edit, config } = withTools().editTool({ max_tool_call_turns: "7" });
   assert.deepEqual(
     (config.mcp_providers as { name: string }[]).map((p) => p.name),
     ["docs"],
@@ -99,28 +77,22 @@ test("editing a tool profile keeps it, its servers and its tool list on the grou
 });
 
 test("a GitHub seed edited from Flows lands in the group's seed config", () => {
-  const payload = learning("github-support-bot.json");
-  const { group: g, nodes } = group(payload);
+  const { group: g, nodes } = group(learningRecipe("github-support-bot.json"));
   const view = studioView(g, nodes);
   const seed = Object.values(view.configs).find((c) => c.kind === "seed");
   assert.ok(seed);
-  assert.equal(
-    (seed as { seed_source_type?: string }).seed_source_type,
-    "github_repo",
-  );
+  assert.equal((seed as { seed_source_type?: string }).seed_source_type, "github_repo");
   const configs = applyConfigPatch(view.configs, seed.id, {
     github_repo_slug: "unslothai/unsloth\nunslothai/unsloth-zoo",
   } as never);
   const edit = commitStudioEdit(g, nodes, view, configs);
-  const source = (edit.group?.config?.seed_config as Record<string, unknown>)
-    .source as Record<string, unknown>;
+  const source = (edit.group?.config?.seed_config as { source: Record<string, unknown> }).source;
   assert.equal(source.seed_type, "github_repo");
   assert.deepEqual(source.repos, ["unslothai/unsloth", "unslothai/unsloth-zoo"]);
 });
 
 test("an uploaded CSV seed keeps its path, file name and preview rows", () => {
-  const payload = learning("text-to-sql.json");
-  const { group: g, nodes } = group(payload);
+  const { group: g, nodes } = group(learningRecipe("text-to-sql.json"));
   const view = studioView(g, nodes);
   // What the seed dialog writes after an upload is inspected.
   const add = {
@@ -138,10 +110,7 @@ test("an uploaded CSV seed keeps its path, file name and preview rows", () => {
   const configs = { ...view.configs, [add.id]: add as never };
   const edit = commitStudioEdit(g, nodes, view, configs);
   const seed = edit.group?.config?.seed_config as Record<string, unknown>;
-  assert.deepEqual(seed.source, {
-    seed_type: "local",
-    path: "/srv/uploads/seed.csv",
-  });
+  assert.deepEqual(seed.source, { seed_type: "local", path: "/srv/uploads/seed.csv" });
   assert.equal(edit.group?.ui?.local_file_name, "seed.csv");
   assert.deepEqual(edit.group?.ui?.seed_preview_rows, [{ topic: "joins" }]);
   const reopened = studioView(edit.group as never, nodes);
@@ -177,11 +146,7 @@ test("run settings round-trip through the group's run like Recipe Studio's dialo
   assert.equal(back.mergeBatches, true);
   assert.equal(back.llmParallelRequests, 16);
   assert.equal(back.shutdownErrorRate, 0.25);
-  const off = runWithSettings(
-    run,
-    { ...back, batchEnabled: false, llmParallelRequests: null },
-    "",
-  );
+  const off = runWithSettings(run, { ...back, batchEnabled: false, llmParallelRequests: null }, "");
   assert.equal("buffer_size" in (off.run_config as object), false);
   assert.equal(off.merge_batches, false);
   assert.equal("llm_parallel_requests" in off, false);
@@ -189,14 +154,10 @@ test("run settings round-trip through the group's run like Recipe Studio's dialo
 });
 
 test("recipe JSON is told apart from a flow and from junk", () => {
-  const sql = learning("text-to-sql.json");
+  const sql = learningRecipe("text-to-sql.json");
   assert.ok("payload" in parseRecipeJson(JSON.stringify(sql)));
   assert.ok("payload" in parseRecipeJson(JSON.stringify(sql.recipe)));
-  assert.match(
-    (parseRecipeJson('{"format": "unsloth-flow", "nodes": []}') as { error: string })
-      .error,
-    /flow/,
-  );
+  assert.match((parseRecipeJson('{"format": "unsloth-flow", "nodes": []}') as { error: string }).error, /flow/);
   assert.ok("error" in parseRecipeJson("{nope"));
   assert.ok("error" in parseRecipeJson('{"recipe": {}}'));
   assert.equal(recipeFileName("Text to SQL"), "text-to-sql.recipe.json");
@@ -210,29 +171,18 @@ test("a full run is named after its group unless it has a name, like the Run but
 });
 
 test("a tool server whose endpoint is cleared to retype keeps the profile and its settings as saved", () => {
-  const { group: g, nodes } = group(withTools());
-  const view = studioView(g, nodes);
-  const tool = Object.values(view.configs).find((c) => c.kind === "tool_config") as never as {
-    id: string;
-    mcp_providers: Record<string, unknown>[];
-  };
-  assert.ok(tool);
-  const cleared = tool.mcp_providers.map((p) => ({ ...p, url: "", endpoint: "" }));
-  const edit = commitStudioEdit(g, nodes, view, applyConfigPatch(view.configs, tool.id, { mcp_providers: cleared } as never));
-  const config = edit.group?.config as Record<string, unknown>;
-  assert.deepEqual(config.tool_configs, (g.config as Record<string, unknown>).tool_configs);
-  assert.deepEqual(config.mcp_providers, (g.config as Record<string, unknown>).mcp_providers);
+  const { g, nodes, tool, editTool } = withTools();
+  const servers = (tool as never as { mcp_providers: Record<string, unknown>[] }).mcp_providers;
+  const { edit, config } = editTool({ mcp_providers: servers.map((p) => ({ ...p, url: "", endpoint: "" })) });
+  const saved = g.config as Record<string, unknown>;
+  assert.deepEqual(config.tool_configs, saved.tool_configs);
+  assert.deepEqual(config.mcp_providers, saved.mcp_providers);
   const reopened = studioView({ ...g, ...edit.group } as never, nodes);
   assert.ok(Object.values(reopened.configs).some((c) => c.kind === "tool_config" && c.name === "web"));
 });
 
 test("removing a tool profile's last server removes it from the recipe", () => {
-  const { group: g, nodes } = group(withTools());
-  const view = studioView(g, nodes);
-  const tool = Object.values(view.configs).find((c) => c.kind === "tool_config");
-  assert.ok(tool);
-  const edit = commitStudioEdit(g, nodes, view, applyConfigPatch(view.configs, tool.id, { mcp_providers: [] } as never));
-  const config = edit.group?.config as Record<string, unknown>;
+  const { config } = withTools().editTool({ mcp_providers: [] });
   assert.deepEqual(config.mcp_providers ?? [], []);
   assert.ok(!((config.tool_configs ?? []) as { tool_alias: string }[]).some((t) => t.tool_alias === "web"));
 });
