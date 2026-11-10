@@ -715,8 +715,7 @@ _SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
     "failed during workspace capacity check",
     "failed during allocated capacity check",
 )
-# Allocator failures on any memory: the host RAM that weight preparation stages into (ggml's CPU buffer, the model
-# manager's params buffer) as well as the device.
+# Allocator failures on the host RAM that weight preparation stages into, as well as on the device.
 _ALLOCATION_FAILURE_MARKERS: tuple[str, ...] = (
     *_HOST_OOM_MARKERS,
     "erroroutofhostmemory",

@@ -984,7 +984,6 @@ def test_image_vram_refusal_text_leaves_failed_allocations_alone():
         + segment.format("weight preparation")
     )
     assert not args_mod.is_vram_refusal_text(_AUDIT_OOM)
-    # Host RAM running out while weights are staged is not cured by a smaller VRAM budget.
     for host in (
         "[E] ggml: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 220288512\n",
         "[E] model manager alloc params backend buffer failed, size = 210.08MB --- model_manager.cpp:964\n",
@@ -992,7 +991,6 @@ def test_image_vram_refusal_text_leaves_failed_allocations_alone():
         "[E] ggml_vulkan: host malloc failed\n",
     ):
         assert not args_mod.is_vram_refusal_text(host + segment.format("weight preparation"))
-    # The video path's markers are unchanged.
     assert args_mod.is_device_oom_text(_AUDIT_OOM)
     assert args_mod.is_device_oom_text(segment.format("workspace allocation"))
     assert not args_mod.is_device_oom_text(segment.format("weight preparation"))
@@ -1001,7 +999,6 @@ def test_image_vram_refusal_text_leaves_failed_allocations_alone():
 def test_image_vram_retry_budget_is_half_the_planned_free_vram():
     assert args_mod.image_vram_retry_budget({"CUDA0": 6666}) == "3.25"
     assert args_mod.image_vram_retry_budget({"Vulkan0": 24176}) == "11.80"
-    # 1 GiB floor.
     assert args_mod.image_vram_retry_budget({"CUDA0": 2048}) == "1.00"
     assert args_mod.image_vram_retry_budget({"CUDA0": 2047}) is None
     assert args_mod.image_vram_retry_budget({"CUDA0": 0}) is None
