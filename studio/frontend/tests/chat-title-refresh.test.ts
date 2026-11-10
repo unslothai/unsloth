@@ -20,8 +20,6 @@ const {
   buildTitleRefreshRequest,
   buildTitleRequest,
   heuristicChatTitle,
-  latestAnsweredCheckpoint,
-  regenerateTitleCheckpoint,
   titleCheckpoint,
   titleRefreshExcerpt,
 } = await import("../src/features/chat/utils/chat-title.ts");
@@ -147,21 +145,17 @@ test("a refresh follows the connection that answered, and asks a local model onl
     source.indexOf("/** The sandbox"),
   );
   assert.match(body, /const selected = !modelLoading \? params\.checkpoint : "";/);
-  // Newest stamped assistant on the branch (trailing user turns must not blank the connection).
-  assert.match(body, /const answeredWith = latestAnsweredCheckpoint\(branch\);/);
+  // The latest answer on the branch names the connection; never the live selection alone.
+  assert.match(body, /const lastMessage = branch\.at\(-1\);/);
   assert.match(
     body,
-    /const checkpoint = regenerateTitleCheckpoint\(answeredWith, selected, branch\);/,
+    /lastMessage\?\.role === "assistant" \? answeringCheckpoint\(lastMessage\.metadata\?\.custom\) : "";/,
   );
+  assert.match(body, /const checkpoint = titleCheckpoint\(answeredWith, selected\);/);
   assert.match(
     body,
-    /const fromModel = serving \? await titleFromModel\(checkpoint, excerpt\) : null;/,
+    /\(serving \? await titleFromModel\(checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
   );
-  assert.match(
-    body,
-    /const title = fromModel \?\? \(serving \? null : heuristicChatTitle\(branch\)\);/,
-  );
-  assert.match(body, /if \(!title\) return serving \? "failed" : "empty";/);
   // One deadline over the whole regeneration releases the busy mark whichever step stalls.
   assert.match(body, /return await Promise\.race\(\[regenerateChatTitleNow\(item, run\), deadline\]\);/);
   // A run that lost the race never writes: a retry may already own the chat.
@@ -185,41 +179,6 @@ test("a locally answered chat is never sent to a selected external provider", ()
   assert.equal(titleCheckpoint(LOCAL, LOCAL), LOCAL);
   // External answer: the connection that already has these messages.
   assert.equal(titleCheckpoint(external, LOCAL), external);
-});
-
-test("regenerate title still asks an unstamped remote chat's selected external connection", () => {
-  const external = buildExternalModelId("prov-1", "qwen-remote");
-  // No stamps: explicit regenerate may use the selected external (#17332).
-  assert.equal(regenerateTitleCheckpoint("", external, []), external);
-  assert.equal(
-    regenerateTitleCheckpoint("", external, [
-      message(0, "user", text("hello")),
-      message(1, "assistant", text("hi")),
-    ]),
-    external,
-  );
-  // A locally stamped answer still blocks the selected external (#13274).
-  const localAnswer = message(1, "assistant", text("hi"));
-  (localAnswer as { metadata?: { custom?: { responseDetails?: { modelId?: string } } } }).metadata = {
-    custom: { responseDetails: { modelId: LOCAL } },
-  };
-  assert.equal(
-    regenerateTitleCheckpoint("", external, [message(0, "user", text("hello")), localAnswer]),
-    "",
-  );
-  // A trailing user turn still finds the newest stamped assistant.
-  const remoteAnswer = message(1, "assistant", text("hi"));
-  (remoteAnswer as { metadata?: { custom?: { responseDetails?: { modelId?: string } } } }).metadata = {
-    custom: { responseDetails: { modelId: external } },
-  };
-  assert.equal(
-    latestAnsweredCheckpoint([
-      message(0, "user", text("hello")),
-      remoteAnswer,
-      message(2, "user", text("and another thing")),
-    ]),
-    external,
-  );
 });
 
 const DRIFTED: MessageRecord[] = [

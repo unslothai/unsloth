@@ -320,41 +320,6 @@ export function titleCheckpoint(
     : "";
 }
 
-/** Stamp on the newest assistant turn, even when a trailing user message is last (#17332). */
-export function latestAnsweredCheckpoint(
-  messages: readonly MessageRecord[],
-): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message?.role !== "assistant") continue;
-    const stamped = answeringCheckpoint(message.metadata?.custom);
-    if (stamped) return stamped;
-  }
-  return "";
-}
-
-/**
- * Explicit "Regenerate title": same routing as {@link titleCheckpoint}, but when the branch never
- * stamped a local model and the selection is external, ask that connection instead of falling
- * straight to the heuristic (unstamped remote chats, #17332). Still refuses to send a locally
- * answered chat to a selected external provider (#13274).
- */
-export function regenerateTitleCheckpoint(
-  answeredWith: string,
-  activeCheckpoint: string,
-  messages: readonly MessageRecord[],
-): string {
-  const primary = titleCheckpoint(answeredWith, activeCheckpoint);
-  if (primary) return primary;
-  if (parseExternalModelId(activeCheckpoint) === null) return "";
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    const stamped = answeringCheckpoint(message.metadata?.custom);
-    if (stamped && parseExternalModelId(stamped) === null) return "";
-  }
-  return activeCheckpoint;
-}
-
 const VERBATIM_EFFORT_PROVIDER_TYPES = new Set(["openai", "openai_codex"]);
 
 type TitleReasoningFields = Pick<
@@ -391,11 +356,17 @@ function titleReasoningFields(
   };
 }
 
-/** Forced reasoning counts toward the cap (Gemini 2.5 Pro forces 128), so add headroom. */
+/** Forced reasoning counts toward the cap (Gemini 2.5 Pro forces 128), so add headroom. A Custom
+ *  connection without a reasoning dialect gets no thinking-off control, so a thinking model there
+ *  spent a small cap before the title (#17332). */
 function titleMaxTokens(connection: ResolvedExternalConnection): number {
-  const floor = getExternalMinOutputTokens(connection.provider.providerType);
+  const { provider } = connection;
+  const floor = getExternalMinOutputTokens(provider.providerType);
   const caps = titleReasoningCaps(connection);
-  const forcedReasoning = caps.supportsReasoning && !caps.supportsReasoningOff;
+  const uncontrolled =
+    toExternalBackendProviderType(provider.providerType) === "custom" &&
+    provider.apiType !== "responses";
+  const forcedReasoning = (caps.supportsReasoning || uncontrolled) && !caps.supportsReasoningOff;
   return Math.max(24, floor, forcedReasoning ? 1024 : 0);
 }
 

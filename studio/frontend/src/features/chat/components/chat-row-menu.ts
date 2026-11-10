@@ -40,10 +40,10 @@ import {
 import { savedBranchHead } from "../utils/branch-head";
 import { orderByParentChain } from "../utils/message-order";
 import {
+  answeringCheckpoint,
   buildTitleRefreshRequest,
   heuristicChatTitle,
-  latestAnsweredCheckpoint,
-  regenerateTitleCheckpoint,
+  titleCheckpoint,
   titleFromStream,
   titleRefreshExcerpt,
 } from "../utils/chat-title";
@@ -267,15 +267,16 @@ async function regenerateChatTitleNow(
       : raw;
     const excerpt = titleRefreshExcerpt(branch);
     if (!excerpt) return "empty";
-    // Newest stamped assistant on the branch (a trailing user turn must not blank the connection).
-    const answeredWith = latestAnsweredCheckpoint(branch);
-    const checkpoint = regenerateTitleCheckpoint(answeredWith, selected, branch);
+    // Only a stamped final answer names a recipient: never fall back to an older answer's provider,
+    // which never saw the later turns.
+    const lastMessage = branch.at(-1);
+    const answeredWith =
+      lastMessage?.role === "assistant" ? answeringCheckpoint(lastMessage.metadata?.custom) : "";
+    const checkpoint = titleCheckpoint(answeredWith, selected);
     const serving = checkpoint ? await titleModelServing(checkpoint) : false;
-    const fromModel = serving ? await titleFromModel(checkpoint, excerpt) : null;
-    // Explicit regenerate: do not quietly paste a user-message snippet when the model path ran
-    // and failed (#17332). Heuristic only when no model was eligible to ask.
-    const title = fromModel ?? (serving ? null : heuristicChatTitle(branch));
-    if (!title) return serving ? "failed" : "empty";
+    const title =
+      (serving ? await titleFromModel(checkpoint, excerpt) : null) ?? heuristicChatTitle(branch);
+    if (!title) return "empty";
     if (panes ? panes.every((pane) => pane.title === title) : title === startTitle) return "unchanged";
     if (run.expired) return "failed";
     const targets = panes
