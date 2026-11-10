@@ -515,3 +515,19 @@ test("natural order: the named character answers, an open line gets one voice, r
   const self = planReplies({ cast: cast.slice(0, 2), order: "natural", userText: "", lastSpeakerId: "elara", seed: "q" });
   assert.equal(self[0], "rin");
 });
+
+test("a card's regex keys share one matching budget per prompt", () => {
+  const entries = Array.from({ length: 400 }, (_, i) =>
+    entry({ id: `r${i}`, keys: [`/(x|y|z)*${i}q/`], content: `lore ${i}` }),
+  );
+  const lore = book([...entries, entry({ id: "word", keys: ["dragon"], content: "a keyword still fires" })], {
+    token_budget: 1_000_000,
+  });
+  const text = `${"xyz".repeat(5000)} dragon ${Array.from({ length: 400 }, (_, i) => `${i}q`).join(" ")}`;
+  const started = performance.now();
+  const fired = activateLorebook(lore, [text]);
+  const elapsed = performance.now() - started;
+  assert.equal(fired.fired.filter((f) => String(f.id).startsWith("r")).length, 128);
+  assert.ok(fired.fired.some((f) => f.id === "word"));
+  assert.ok(elapsed < 5_000, `took ${elapsed} ms`);
+});

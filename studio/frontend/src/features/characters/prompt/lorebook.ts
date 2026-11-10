@@ -23,13 +23,22 @@ const MAX_LITERAL_KEY = 500;
 // Scan only the tail of recent messages: keys are matched on every send and token count.
 const MAX_SCAN_CHARS = 16_000;
 
-function keyMatcher(key: string, caseSensitive: boolean, useRegex = false): ((text: string) => boolean) | null {
-  const trimmed = key.trim();
-  if (!trimmed) return null;
+// Regex keys matched per character per prompt: each is linear in the text, but a card can carry thousands.
+const MAX_REGEX_KEYS_PER_SCAN = 128;
+const MAX_CACHED_MATCHERS = 4096;
+
+type Matcher = { regex: boolean; test: (text: string) => boolean };
+// Compiled once per key: keys are matched on every send and every token count.
+const matchers = new Map<string, Matcher | null>();
+
+function buildMatcher(trimmed: string, caseSensitive: boolean, useRegex: boolean): Matcher | null {
   const slashed = REGEX_KEY.exec(trimmed);
   const regex = slashed ? [slashed[1], slashed[2]] : useRegex ? [trimmed, caseSensitive ? "" : "i"] : null;
   // Card keys run on every send on the UI thread, so they never reach the backtracking RegExp engine.
-  if (regex) return trimmed.length > MAX_REGEX_KEY ? null : linearRegex(regex[0], regex[1].replace("g", ""));
+  if (regex) {
+    const test = trimmed.length > MAX_REGEX_KEY ? null : linearRegex(regex[0], regex[1].replace("g", ""));
+    return test ? { regex: true, test } : null;
+  }
   // A keyword is a word or phrase; a card's oversized one is skipped rather than abort the prompt.
   if (trimmed.length > MAX_LITERAL_KEY) return null;
   const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -42,16 +51,41 @@ function keyMatcher(key: string, caseSensitive: boolean, useRegex = false): ((te
   } catch {
     return null;
   }
-  return (text) => pattern.test(text);
+  return { regex: false, test: (text) => pattern.test(text) };
 }
 
-function anyKey(keys: string[], text: string, caseSensitive: boolean, useRegex = false): boolean {
-  return keys.some((key) => keyMatcher(key, caseSensitive, useRegex)?.(text) ?? false);
+function keyMatcher(key: string, caseSensitive: boolean, useRegex: boolean): Matcher | null {
+  const trimmed = key.trim();
+  if (!trimmed) return null;
+  const cacheKey = `${caseSensitive ? 1 : 0}${useRegex ? 1 : 0}${trimmed}`;
+  let matcher = matchers.get(cacheKey);
+  if (matcher === undefined) {
+    if (matchers.size >= MAX_CACHED_MATCHERS) matchers.clear();
+    matcher = buildMatcher(trimmed, caseSensitive, useRegex);
+    matchers.set(cacheKey, matcher);
+  }
+  return matcher;
 }
 
-function secondaryPasses(entry: LorebookEntry, text: string): boolean {
+type Scan = { text: string; regexLeft: number };
+
+function keyHits(key: string, scan: Scan, caseSensitive: boolean, useRegex = false): boolean {
+  const matcher = keyMatcher(key, caseSensitive, useRegex);
+  if (!matcher) return false;
+  if (matcher.regex) {
+    if (scan.regexLeft <= 0) return false;
+    scan.regexLeft -= 1;
+  }
+  return matcher.test(scan.text);
+}
+
+function anyKey(keys: string[], scan: Scan, caseSensitive: boolean, useRegex = false): boolean {
+  return keys.some((key) => keyHits(key, scan, caseSensitive, useRegex));
+}
+
+function secondaryPasses(entry: LorebookEntry, scan: Scan): boolean {
   if (!entry.selective || entry.secondary_keys.length === 0) return true;
-  const hits = entry.secondary_keys.map((key) => keyMatcher(key, entry.case_sensitive, entry.use_regex)?.(text) ?? false);
+  const hits = entry.secondary_keys.map((key) => keyHits(key, scan, entry.case_sensitive, entry.use_regex));
   switch (entry.selective_logic) {
     case "and_all":
       return hits.every(Boolean);
@@ -100,7 +134,10 @@ export function activateLorebook(
   if (!book || !Array.isArray(book.entries) || book.entries.length === 0) return result;
   const depth = Math.max(1, book.scan_depth || 4);
   // Oldest to newest, keeping the tail: an over-long window drops the oldest text, not a reply's ending.
-  const scanText = recentNewestFirst.slice(0, depth).reverse().join("\n").slice(-MAX_SCAN_CHARS);
+  const scan: Scan = {
+    text: recentNewestFirst.slice(0, depth).reverse().join("\n").slice(-MAX_SCAN_CHARS),
+    regexLeft: MAX_REGEX_KEYS_PER_SCAN,
+  };
   const candidates: { entry: LorebookEntry; reason: "constant" | "keyword" }[] = [];
   for (const entry of book.entries) {
     if (entry.enabled === false || !entry.content?.trim()) continue;
@@ -108,7 +145,7 @@ export function activateLorebook(
       candidates.push({ entry, reason: "constant" });
       continue;
     }
-    if (anyKey(entry.keys ?? [], scanText, entry.case_sensitive, entry.use_regex) && secondaryPasses(entry, scanText)) {
+    if (anyKey(entry.keys ?? [], scan, entry.case_sensitive, entry.use_regex) && secondaryPasses(entry, scan)) {
       candidates.push({ entry, reason: "keyword" });
     }
   }
