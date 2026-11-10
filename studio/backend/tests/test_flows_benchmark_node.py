@@ -723,8 +723,10 @@ def test_a_stop_during_the_load_keeps_the_slot_until_that_load_has_ended(monkeyp
     events = []
 
     async def scenario():
+        load_may_end = asyncio.Event()
+
         async def physical_load():
-            await asyncio.sleep(0.05)
+            await load_may_end.wait()
             events.append("load ended")
 
         job = SimpleNamespace(task = asyncio.ensure_future(physical_load()))
@@ -735,6 +737,8 @@ def test_a_stop_during_the_load_keeps_the_slot_until_that_load_has_ended(monkeyp
         async def stopped(ctx):
             # Stop pressed mid-load: the hook runs, the waiter gives up, the load job runs on.
             await ctx.cancel()
+            # The load can end now, but only after the node has given up waiting for it.
+            load_may_end.set()
             raise FlowCancelled()
 
         monkeypatch.setattr(benchmark, "_load_target", stopped)
@@ -754,7 +758,7 @@ def test_a_stop_during_the_load_keeps_the_slot_until_that_load_has_ended(monkeyp
 
         ctx.call = call
         with pytest.raises(FlowCancelled):
-            await benchmark.benchmark(ctx)
+            await asyncio.wait_for(benchmark.benchmark(ctx), 10)
 
     asyncio.run(scenario())
     assert events == ["load ended", "slot freed"]

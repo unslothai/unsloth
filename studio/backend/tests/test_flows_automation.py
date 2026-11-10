@@ -396,13 +396,25 @@ def test_a_skipped_schedule_time_is_not_started_late(client, monkeypatch):
     assert row["last_fired_at"] == at
 
 
-def test_a_trigger_off_in_the_saved_flow_never_fires_even_if_the_index_lags(client, monkeypatch):
+def _switch_off(trigger: dict) -> None:
+    trigger["params"]["enabled"] = False
+
+
+def _make_schedule(trigger: dict) -> None:
+    trigger["type"] = "trigger.schedule"
+
+
+@pytest.mark.parametrize("edit", [_switch_off, _make_schedule], ids = ["off", "other_kind"])
+def test_a_webhook_fires_only_as_the_saved_flow_has_it_even_if_the_index_lags(
+    client, monkeypatch, edit
+):
     path = _webhook_flow(client)
     _approve(client, "hook1")
-    d = client.get("/api/flows/hook1").json()
-    d["doc"]["nodes"][0]["params"]["enabled"] = False
+    d = client.get("/api/flows/hook1").json()["doc"]
+    edit(d["nodes"][0])
+    # The trigger index is not updated, so only the saved flow can refuse the call.
     monkeypatch.setattr(triggers, "sync", lambda *a: (_ for _ in ()).throw(RuntimeError("db")))
-    assert client.put("/api/flows/hook1", json = {"doc": d["doc"]}).status_code == 200
+    assert client.put("/api/flows/hook1", json = {"doc": d}).status_code == 200
     assert client.post(path, json = {}).status_code == 409
 
 
@@ -440,10 +452,30 @@ def test_a_long_log_does_not_cut_the_python_result():
     assert result == {"n": 2} and log.startswith("xxx")
 
 
-def test_http_body_read_stops_at_the_deadline(monkeypatch):
+class _Clock:
+    """automation's monotonic clock, moved by the test instead of by waiting."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    found = _Clock()
+    monkeypatch.setattr(automation, "time", found)
+    return found
+
+
+def test_http_body_read_stops_at_the_deadline(monkeypatch, clock):
     import threading
+    import urllib.request
 
     from core.inference import tools as web
+
+    reads = []
 
     class Slow:
         status = 200
@@ -456,7 +488,8 @@ def test_http_body_read_stops_at_the_deadline(monkeypatch):
             return False
 
         def read(self, n):
-            time.sleep(0.4)
+            reads.append(n)
+            clock.now += 0.4  # each read takes 0.4 s of the 1 s budget
             return b"x"
 
     class Opener:
@@ -466,13 +499,10 @@ def test_http_body_read_stops_at_the_deadline(monkeypatch):
     monkeypatch.setattr(
         web, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
     )
-    import urllib.request
-
     monkeypatch.setattr(urllib.request, "build_opener", lambda *a: Opener())
-    started = time.monotonic()
     with pytest.raises(FlowNodeError, match = "longer than"):
         automation.guarded_request("GET", "https://example.com", {}, None, 1, threading.Event())
-    assert time.monotonic() - started < 3
+    assert len(reads) == 3, "the read that crosses the deadline is the last one"
 
 
 def test_deleting_a_flow_removes_its_python_sandbox(client, monkeypatch):
@@ -553,20 +583,34 @@ def test_owner_approval_indexes_a_trigger_an_api_key_added(client):
     ]
 
 
-def test_a_trigger_fires_only_as_the_kind_the_saved_flow_has(client, monkeypatch):
-    path = _webhook_flow(client)
-    _approve(client, "hook1")
-    d = client.get("/api/flows/hook1").json()["doc"]
-    d["nodes"][0]["type"] = "trigger.schedule"
-    monkeypatch.setattr(triggers, "sync", lambda *a: (_ for _ in ()).throw(RuntimeError("db")))
-    client.put("/api/flows/hook1", json = {"doc": d})
-    assert client.post(path, json = {}).status_code == 409
+@pytest.mark.parametrize(
+    "body, data",
+    [
+        (b'{"a": 1.5, "b": [1, 2]}', {"a": 1.5, "b": [1, 2]}),
+        (b'{"a": NaN}', None),
+        (b'{"a": Infinity}', None),
+        (b"[-Infinity]", None),
+    ],
+)
+def test_http_json_with_nan_is_not_parsed(monkeypatch, body, data):
+    class Ctx:
+        params = {"method": "GET", "url": "https://api.example.com/x"}
+        inputs = {}
 
+        def capability_refusal(
+            self,
+            cap,
+            detail = None,
+        ):
+            return None
 
-def test_http_json_with_nan_is_not_parsed():
-    assert automation._no_constant
-    import inspect
-    assert "parse_constant = _no_constant" in inspect.getsource(automation.http_request)
+        def on_cancel(self, fn):
+            pass
+
+    monkeypatch.setattr(automation, "guarded_request", lambda *a: (200, "application/json", body))
+    out = asyncio.run(automation.http_request(Ctx()))
+    assert out["status"] == 200 and out["text"] == body.decode()
+    assert out["data"] == data, "NaN and Infinity are not JSON, so the reply has no parsed data"
 
 
 def test_export_drops_signed_url_credentials_and_approvals_bind_the_full_digest():
@@ -626,15 +670,18 @@ def test_run_flow_runs_a_called_flows_python_only_with_that_flows_approval(clien
     )
 
 
-@pytest.mark.parametrize("stop_after", [None, 0.2])
-def test_a_trickling_body_cannot_outlast_the_deadline_or_stop(monkeypatch, stop_after):
+@pytest.mark.parametrize("stopped", [False, True], ids = ["deadline", "stop"])
+def test_a_stalled_body_cannot_outlast_the_deadline_or_stop(monkeypatch, clock, stopped):
     import threading
     import urllib.request
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     from core.inference import tools as web
 
-    class Trickle(BaseHTTPRequestHandler):
+    stop, release = threading.Event(), threading.Event()
+    timeout = 5  # also the socket timeout: a reader that only gave up there took real seconds
+
+    class Stall(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
@@ -643,15 +690,19 @@ def test_a_trickling_body_cannot_outlast_the_deadline_or_stop(monkeypatch, stop_
             self.send_header("Content-Length", "100")
             self.end_headers()
             try:
-                for _ in range(100):
-                    self.wfile.write(b"x")
-                    self.wfile.flush()
-                    time.sleep(0.1)
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                # One byte of 100 and then nothing: the deadline passes or the user presses Stop.
+                if stopped:
+                    stop.set()
+                else:
+                    clock.now += timeout + 1
+                release.wait(30)
             except OSError:
                 pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Trickle)
-    threading.Thread(target = server.serve_forever, daemon = True).start()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Stall)
+    threading.Thread(target = server.serve_forever, args = (0.01,), daemon = True).start()
     real = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     class Local:
@@ -662,14 +713,13 @@ def test_a_trickling_body_cannot_outlast_the_deadline_or_stop(monkeypatch, stop_
         web, "_validate_and_resolve_host", lambda host, port: (True, "", ["127.0.0.1"])
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *a: Local())
-    stop = threading.Event()
-    if stop_after is not None:
-        threading.Timer(stop_after, stop.set).start()
     started = time.monotonic()
     try:
-        with pytest.raises(FlowNodeError, match = "Stopped" if stop_after else "longer than"):
-            automation.guarded_request("GET", "http://example.com/", {}, None, 1, stop)
-        assert time.monotonic() - started < (0.8 if stop_after else 1.6)
+        with pytest.raises(FlowNodeError, match = "Stopped" if stopped else "longer than"):
+            automation.guarded_request("GET", "http://example.com/", {}, None, timeout, stop)
+        # The watcher shuts the socket at once; without it the read blocks until the socket timeout.
+        assert time.monotonic() - started < timeout - 1
     finally:
+        release.set()
         server.shutdown()
         server.server_close()

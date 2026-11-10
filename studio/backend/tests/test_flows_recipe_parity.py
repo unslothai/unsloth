@@ -20,8 +20,16 @@ from core.flows.recipe_compile import compile_recipe, recipe_graph
 from core.flows.recipe_import import flow_from_recipe
 from core.flows.registry import FlowNodeError
 
-from .test_flows_recipe_groups import LEARNING, SQL, _column, _compiled, _flow
-from .test_flows_recipes import _Ctx
+from ._flows_recipe_helpers import (  # noqa: F401
+    LEARNING,
+    SQL,
+    RecipeCtx,
+    compiled_recipe,
+    fast_recipe_poll,
+    group_job_routes,
+    recipe_column,
+    recipe_flow,
+)
 
 from ._flows_helpers import flows_test_client
 
@@ -94,14 +102,12 @@ def _routes(seen_jobs):
 
 def _run(compiled, **params):
     jobs: list = []
-    ctx = _Ctx(_routes(jobs), params = {RECIPE_PARAM: compiled, **params})
+    ctx = RecipeCtx(_routes(jobs), params = {RECIPE_PARAM: compiled, **params})
     asyncio.run(data.recipe_group(ctx))
     return jobs[0]
 
 
-@pytest.fixture(autouse = True)
-def _fast_poll(monkeypatch):
-    monkeypatch.setattr(data, "POLL_S", 0)
+pytestmark = pytest.mark.usefixtures("fast_recipe_poll")
 
 
 # Seeds
@@ -117,21 +123,21 @@ def _fast_poll(monkeypatch):
 )
 def test_every_seed_kind_reaches_the_job_as_saved(name, seed_type):
     payload = json.loads((LEARNING / name).read_text(encoding = "utf-8"))
-    doc = _flow(payload)
+    doc = recipe_flow(payload)
     group = doc["groups"][0]
     assert group["config"]["seed_config"] == payload["recipe"]["seed_config"]
     assert group["ui"].get("seed_source_type", seed_type) == seed_type
     if seed_type == "unstructured":
         # The learning recipe ships without its document: it runs once one is picked, as in Recipe Studio.
         with pytest.raises(FlowNodeError, match = "Load the seed first"):
-            _run(_compiled(doc), mode = "preview", rows = 2)
+            _run(compiled_recipe(doc), mode = "preview", rows = 2)
         group["config"]["seed_config"]["source"]["path"] = "/srv/uploads/book.pdf"
         payload["recipe"]["seed_config"]["source"]["path"] = "/srv/uploads/book.pdf"
     if seed_type == "hf":
         # Shipped as the bare repo id; resolved for the reader as Recipe Studio's seed Load does.
         source = payload["recipe"]["seed_config"]["source"]
         source["path"] = f"datasets/{source['path']}/**/*.parquet"
-    sent = _run(_compiled(doc), mode = "preview", rows = 2)
+    sent = _run(compiled_recipe(doc), mode = "preview", rows = 2)
     assert sent["recipe"]["seed_config"] == payload["recipe"]["seed_config"]
     assert sent["recipe"]["seed_config"]["source"]["seed_type"] == seed_type
 
@@ -150,10 +156,10 @@ def test_an_uploaded_csv_seed_and_its_preview_rows_survive_the_group():
         "seed_preview_rows": [{"topic": "joins"}],
         "seed_total_rows": 40,
     }
-    doc = _flow(payload)
+    doc = recipe_flow(payload)
     ui = doc["groups"][0]["ui"]
     assert ui["seed_preview_rows"] == [{"topic": "joins"}] and ui["local_file_name"] == "seed.csv"
-    sent = _run(_compiled(doc), mode = "full", rows = 3)
+    sent = _run(compiled_recipe(doc), mode = "full", rows = 3)
     assert sent["recipe"]["seed_config"]["source"] == {
         "seed_type": "local",
         "path": "/srv/uploads/seed.csv",
@@ -164,7 +170,7 @@ def test_an_uploaded_csv_seed_and_its_preview_rows_survive_the_group():
 
 
 def test_tool_profiles_ride_import_compile_and_run():
-    doc = _flow(_with_tools())
+    doc = recipe_flow(_with_tools())
     group = doc["groups"][0]
     assert [p["name"] for p in group["config"]["mcp_providers"]] == ["docs", "fs"]
     assert [n["id"] for n in group["ui"]["nodes"]] == ["web", "files"]
@@ -172,7 +178,7 @@ def test_tool_profiles_ride_import_compile_and_run():
         column = node["params"]["column"]
         if column["name"] == SQL["recipe"]["columns"][4]["name"]:
             assert column["tool_alias"] == "web"
-    compiled = _compiled(doc)
+    compiled = compiled_recipe(doc)
     assert compiled["recipe"]["tool_configs"][0]["tool_alias"] == "web"
     assert compiled["recipe"]["model_providers"][0]["api_key"].startswith("sk-live")
 
@@ -182,12 +188,14 @@ def test_an_http_tool_server_runs_and_a_stdio_one_is_refused_before_any_call():
     payload["recipe"]["mcp_providers"] = [HTTP]
     payload["recipe"]["tool_configs"] = payload["recipe"]["tool_configs"][:1]
     del payload["recipe"]["columns"][5]["tool_alias"]
-    sent = _run(_compiled(_flow(payload)), mode = "preview")
+    sent = _run(compiled_recipe(recipe_flow(payload)), mode = "preview")
     assert sent["recipe"]["mcp_providers"][0]["api_key"] == "mcp-secret"
     assert sent["recipe"]["tool_configs"][0]["providers"] == ["docs"]
     assert sent["recipe"]["model_providers"][0]["api_key"].startswith("sk-live")
     jobs: list = []
-    ctx = _Ctx(_routes(jobs), params = {RECIPE_PARAM: _compiled(_flow(_with_tools()))})
+    ctx = RecipeCtx(
+        _routes(jobs), params = {RECIPE_PARAM: compiled_recipe(recipe_flow(_with_tools()))}
+    )
     with pytest.raises(FlowNodeError, match = "fs is a local"):
         asyncio.run(data.recipe_group(ctx))
     assert ctx.calls == []
@@ -216,7 +224,7 @@ def test_exporting_a_flow_drops_keys_stdio_servers_and_upload_paths():
         "source": {"seed_type": "github_repo", "repos": ["a/b"], "token": "ghp_" + "x" * 30},
     }
     payload["ui"]["seed_preview_rows"] = [{"title": "private-issue-body"}]
-    doc = _flow(payload)
+    doc = recipe_flow(payload)
 
     async def no_media(_):
         raise AssertionError("no media")
@@ -241,7 +249,7 @@ def test_exporting_a_flow_drops_keys_stdio_servers_and_upload_paths():
 
 
 def test_a_flow_package_from_elsewhere_cannot_bring_a_stdio_server():
-    doc = _flow(_with_tools())
+    doc = recipe_flow(_with_tools())
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         zf.writestr("flow.json", json.dumps(doc))
@@ -259,8 +267,8 @@ def client(monkeypatch):
 
 
 def test_recipe_json_round_trips_out_of_flows_and_back(client):
-    doc = _flow()
-    _column(doc, "sql")["params"]["column"]["prompt"] = "Edited in Flows {{ sql_prompt }}"
+    doc = recipe_flow()
+    recipe_column(doc, "sql")["params"]["column"]["prompt"] = "Edited in Flows {{ sql_prompt }}"
     step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
     step["params"].update(rows = 250, mode = "full")
     out = client.post("/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"})
@@ -284,7 +292,7 @@ def test_recipe_json_round_trips_out_of_flows_and_back(client):
 
 
 def test_recipe_json_export_reads_the_enabled_recipe_dataset_step(client):
-    doc = _flow()
+    doc = recipe_flow()
     step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
     old = {**copy.deepcopy(step), "id": "old_step", "disabled": True}
     old["params"].update(rows = 3, mode = "preview")
@@ -297,7 +305,7 @@ def test_recipe_json_export_reads_the_enabled_recipe_dataset_step(client):
 
 
 def test_recipe_json_export_keeps_the_recipes_notes(client):
-    doc = _flow()
+    doc = recipe_flow()
     notes = [n["text"] for n in doc["notes"]]
     assert notes, "the learning recipe brings its notes in as flow notes"
     exported = client.post(
@@ -312,7 +320,7 @@ def test_recipe_json_export_keeps_the_recipes_notes(client):
 
 
 def test_recipe_json_export_follows_the_sharing_rule(client):
-    doc = _flow(_with_tools())
+    doc = recipe_flow(_with_tools())
     exported = client.post(
         "/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}
     ).json()
@@ -350,7 +358,7 @@ def test_a_stdio_server_nested_in_pasted_recipe_json_needs_the_ui_too(client):
 
 
 def test_run_settings_follow_recipe_studios_run_dialog():
-    doc = _flow()
+    doc = recipe_flow()
     doc["groups"][0]["run"] = {
         "rows": 5,
         "run_config": {
@@ -366,7 +374,7 @@ def test_run_settings_follow_recipe_studios_run_dialog():
         "llm_parallel_requests": 16,
         "run_name": "nightly sql",
     }
-    full = _run(_compiled(doc), mode = "full", rows = 1000)
+    full = _run(compiled_recipe(doc), mode = "full", rows = 1000)
     assert full["run"]["run_config"]["buffer_size"] == 250
     assert full["run"]["run_config"]["non_inference_max_parallel_workers"] == 8
     assert full["run"]["merge_batches"] is True and full["run"]["run_name"] == "nightly sql"
@@ -375,11 +383,11 @@ def test_run_settings_follow_recipe_studios_run_dialog():
         m["inference_parameters"]["max_parallel_requests"] == 16
         for m in full["recipe"]["model_configs"]
     )
-    preview = _run(_compiled(doc), mode = "preview", rows = 4)
+    preview = _run(compiled_recipe(doc), mode = "preview", rows = 4)
     assert preview["run"]["run_config"]["buffer_size"] == 4
     assert preview["run"]["merge_batches"] is False and "run_name" not in preview["run"]
     # Nothing saved: what Recipe Studio's run dialog shows and sends.
-    plain = _run(_compiled(_flow()), mode = "preview", rows = 2)
+    plain = _run(compiled_recipe(recipe_flow()), mode = "preview", rows = 2)
     assert plain["run"] == {
         "execution_type": "preview",
         "rows": 2,
@@ -390,10 +398,10 @@ def test_run_settings_follow_recipe_studios_run_dialog():
 
 
 def test_run_settings_change_the_cache_key_of_the_step():
-    doc = _flow()
-    before = _compiled(doc)
+    doc = recipe_flow()
+    before = compiled_recipe(doc)
     doc["groups"][0]["run"] = {"llm_parallel_requests": 2}
-    assert _compiled(doc) != before
+    assert compiled_recipe(doc) != before
 
 
 def test_sharing_keeps_a_full_hf_seed_path(client):
@@ -401,7 +409,7 @@ def test_sharing_keeps_a_full_hf_seed_path(client):
     path = payload["recipe"]["seed_config"]["source"]["path"]
     assert path == "datasets/ylecun/mnist/mnist/**/*.parquet"
     payload["recipe"]["seed_config"]["source"]["token"] = "hf_" + "x" * 30
-    doc = _flow(payload)
+    doc = recipe_flow(payload)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         zf.writestr("flow.json", json.dumps(doc))
@@ -424,16 +432,18 @@ def test_a_recipe_with_mcp_servers_needs_the_flows_mcp_approval():
         {"tool_alias": "web", "providers": [HTTP["name"]], "max_tool_call_turns": 3}
     ]
     with_web["recipe"]["columns"][4]["tool_alias"] = "web"
-    doc = _flow(with_web)
+    doc = recipe_flow(with_web)
     assert capabilities.doc_needs(doc)["mcp"] is True
-    assert capabilities.doc_needs(_flow())["mcp"] is False
+    assert capabilities.doc_needs(recipe_flow())["mcp"] is False
     step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
     step["disabled"] = True
     assert capabilities.doc_needs(doc)["mcp"] is False, "a disabled step runs nothing"
     step["disabled"] = False
 
     jobs: list = []
-    ctx = _Ctx(_routes(jobs), params = {RECIPE_PARAM: _compiled(doc), "mode": "preview", "rows": 2})
+    ctx = RecipeCtx(
+        _routes(jobs), params = {RECIPE_PARAM: compiled_recipe(doc), "mode": "preview", "rows": 2}
+    )
     ctx.refuse["mcp"] = (
         "Recipe Dataset only runs when the Studio owner starts this flow in Unsloth Studio"
     )
@@ -450,16 +460,20 @@ def test_a_recipe_provider_endpoint_needs_the_owners_host_approval():
 
     remote = copy.deepcopy(SQL)
     remote["recipe"]["model_providers"][0]["endpoint"] = "http://169.254.169.254/v1"
-    doc = _flow(remote)
+    doc = recipe_flow(remote)
     imported, _, _ = package.read_package(json.dumps(doc).encode())
     assert capabilities.doc_needs(imported)["hosts"] == ["169.254.169.254"]
-    assert capabilities.doc_needs(_flow())["hosts"] == [], "no endpoint, nothing to approve"
+    assert capabilities.doc_needs(recipe_flow())["hosts"] == [], "no endpoint, nothing to approve"
     local = copy.deepcopy(remote)
     local["recipe"]["model_providers"][0]["is_local"] = True
-    assert capabilities.doc_needs(_flow(local))["hosts"] == [], "Studio's own model is not a host"
+    assert (
+        capabilities.doc_needs(recipe_flow(local))["hosts"] == []
+    ), "Studio's own model is not a host"
 
     jobs: list = []
-    ctx = _Ctx(_routes(jobs), params = {RECIPE_PARAM: _compiled(doc), "mode": "preview", "rows": 2})
+    ctx = RecipeCtx(
+        _routes(jobs), params = {RECIPE_PARAM: compiled_recipe(doc), "mode": "preview", "rows": 2}
+    )
     ctx.refuse["http"] = "Recipe Dataset only calls hosts the Studio owner approved"
     with pytest.raises(FlowNodeError, match = "approved"):
         asyncio.run(data.recipe_group(ctx))
@@ -467,13 +481,11 @@ def test_a_recipe_provider_endpoint_needs_the_owners_host_approval():
 
 
 def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_path):
-    from .test_flows_recipe_groups import _routes as _job_routes
-
     monkeypatch.setattr(data, "POLL_S", 0)
     seed = tmp_path / "seed.jsonl"
     seed.write_text('{"origin": "fresh"}\n')
     monkeypatch.setattr(data, "local_seed_path", lambda ref: str(seed))
-    routes, _ = _job_routes(["job1"])
+    routes, _ = group_job_routes(["job1"])
     checked = []
 
     def recording(method, path, params, body):
@@ -481,9 +493,9 @@ def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_pa
             checked.append(copy.deepcopy(body))
         return routes(method, path, params, body)
 
-    ctx = _Ctx(
+    ctx = RecipeCtx(
         recording,
-        params = {RECIPE_PARAM: _compiled(_flow()), "rows": 1},
+        params = {RECIPE_PARAM: compiled_recipe(recipe_flow()), "rows": 1},
         inputs = {"seed": {"kind": "dataset", "source": "local", "ref": "loop-seed"}},
     )
     asyncio.run(data.recipe_group(ctx))

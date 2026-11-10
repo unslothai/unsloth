@@ -8,46 +8,33 @@ import copy
 import io
 import json
 import zipfile
-from pathlib import Path
 
 import pytest
 
 from core.flows import compiler, package
 from core.flows.compiler import RECIPE_PARAM, CompileError, compile_flow, parse_document
 from core.flows.nodes import data
-from core.flows.recipe_import import COLUMN_TYPE, GENERATE_TYPE, flow_from_recipe
+from core.flows.recipe_import import GENERATE_TYPE, flow_from_recipe
 from core.flows.registry import FlowCancelled, FlowNodeError
 from routes import flows as flows_routes
 from storage import data_recipes_db
 
-from .test_flows_recipes import _Ctx
+from ._flows_recipe_helpers import (  # noqa: F401
+    BACKEND,
+    LEARNING,
+    SQL,
+    RecipeCtx,
+    compiled_recipe,
+    fast_recipe_poll,
+    group_job_routes,
+    recipe_column,
+    recipe_flow,
+)
 
-from ._flows_helpers import flows_test_client, make_engine
+from ._flows_helpers import flows_test_client, make_engine, wait_until
 
-BACKEND = Path(__file__).resolve().parents[1]
-LEARNING = BACKEND.parent / "frontend" / "src" / "features" / "data-recipes" / "learning-recipes"
-SQL = json.loads((LEARNING / "text-to-sql.json").read_text(encoding = "utf-8"))
-
-
-def _flow(payload = SQL) -> dict:
-    doc, _ = flow_from_recipe(payload, name = "Text to SQL")
-    parsed, errors = parse_document(doc)
-    assert not errors, errors
-    return parsed
-
-
-def _column(doc: dict, name: str) -> dict:
-    return next(
-        n
-        for n in doc["nodes"]
-        if n["type"] == COLUMN_TYPE and n["params"]["column"]["name"] == name
-    )
-
-
-def _compiled(doc: dict) -> dict:
-    plan = compile_flow(doc)
-    generate = next(n for n in plan.nodes.values() if n["type"] == GENERATE_TYPE)
-    return generate["params"][RECIPE_PARAM]
+# Old names, still imported by test_flows_loop.py.
+_compiled, _flow, _routes = compiled_recipe, recipe_flow, group_job_routes
 
 
 def test_the_backend_learning_recipes_are_the_frontend_files():
@@ -62,7 +49,7 @@ def test_the_backend_learning_recipes_are_the_frontend_files():
 
 
 def test_a_recipe_group_survives_a_save_and_a_plain_group_saves_as_before():
-    doc = _flow()
+    doc = recipe_flow()
     again, errors = parse_document(json.loads(json.dumps(doc)))
     assert not errors and again == doc
     group = doc["groups"][0]
@@ -72,22 +59,22 @@ def test_a_recipe_group_survives_a_save_and_a_plain_group_saves_as_before():
 
 
 def test_references_are_typed_wires_between_columns():
-    doc = _flow()
+    doc = recipe_flow()
     wires = {
         (e["source"], e["target"])
         for e in doc["edges"]
         if e["source_port"] == "out" and e["target_port"] == "in"
     }
-    assert (_column(doc, "sql_prompt")["id"], _column(doc, "sql")["id"]) in wires
-    assert (_column(doc, "sql")["id"], _column(doc, "sql-validator")["id"]) in wires
+    assert (recipe_column(doc, "sql_prompt")["id"], recipe_column(doc, "sql")["id"]) in wires
+    assert (recipe_column(doc, "sql")["id"], recipe_column(doc, "sql-validator")["id"]) in wires
     assert compiler.validate(doc)["ok"]
 
 
 def test_the_generate_step_runs_the_group_as_edited():
-    doc = _flow()
-    _column(doc, "sql")["params"]["column"]["prompt"] = "Write SQL for {{ sql_prompt }}"
-    _column(doc, "sql-validator")["disabled"] = True
-    recipe = _compiled(doc)["recipe"]
+    doc = recipe_flow()
+    recipe_column(doc, "sql")["params"]["column"]["prompt"] = "Write SQL for {{ sql_prompt }}"
+    recipe_column(doc, "sql-validator")["disabled"] = True
+    recipe = compiled_recipe(doc)["recipe"]
     names = [c["name"] for c in recipe["columns"]]
     assert "sql-validator" not in names
     assert next(c for c in recipe["columns"] if c["name"] == "sql")["prompt"].startswith(
@@ -98,8 +85,8 @@ def test_the_generate_step_runs_the_group_as_edited():
 
 
 def test_column_wires_stay_inside_their_recipe():
-    doc = _flow()
-    sql = _column(doc, "sql")
+    doc = recipe_flow()
+    sql = recipe_column(doc, "sql")
     doc["edges"].append(
         {
             "id": "leak",
@@ -112,15 +99,15 @@ def test_column_wires_stay_inside_their_recipe():
     )
     with pytest.raises(CompileError, match = "own recipe"):
         compile_flow(doc)
-    doc = _flow()
-    _column(doc, "sql")["group"] = None
+    doc = recipe_flow()
+    recipe_column(doc, "sql")["group"] = None
     with pytest.raises(CompileError, match = "inside a Data Recipe group"):
         compile_flow(doc)
 
 
 def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
-    doc = _flow()
-    _column(doc, "domain")["params"]["column"] = {
+    doc = recipe_flow()
+    recipe_column(doc, "domain")["params"]["column"] = {
         "column_type": "expression",
         "name": "domain",
         "expr": "{{ sql }}",
@@ -128,16 +115,16 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
     with pytest.raises(CompileError) as caught:
         compile_flow(doc)
     assert any("loop" in i["message"] and i.get("node_id") for i in caught.value.issues)
-    doc = _flow()
-    _column(doc, "instruction_phrase")["disabled"] = True
+    doc = recipe_flow()
+    recipe_column(doc, "instruction_phrase")["disabled"] = True
     with pytest.raises(CompileError) as caught:
         compile_flow(doc)
     assert any(
         "reads instruction_phrase, which is disabled" in i["message"] for i in caught.value.issues
     )
-    doc = _flow()
+    doc = recipe_flow()
     for name, other in (("left", "right"), ("right", "left")):
-        column = copy.deepcopy(_column(doc, "domain"))
+        column = copy.deepcopy(recipe_column(doc, "domain"))
         column.update(id = name, label = name, disabled = True)
         column["params"]["column"] = {
             "column_type": "expression",
@@ -156,8 +143,8 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
             }
         )
     assert compiler.validate(doc)["ok"], compiler.validate(doc)
-    doc = _flow()
-    doc["nodes"].remove(_column(doc, "domain"))
+    doc = recipe_flow()
+    doc["nodes"].remove(recipe_column(doc, "domain"))
     with pytest.raises(CompileError) as caught:
         compile_flow(doc)
     assert any("follows the category 'domain'" in i["message"] for i in caught.value.issues)
@@ -201,7 +188,7 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
 
     body = flows_routes.RecipeExportBody(doc = doc, group_id = doc["groups"][0]["id"])
     assert flows_routes.export_recipe(body)["recipe"]["columns"]
-    doc = _flow()
+    doc = recipe_flow()
     extra = copy.deepcopy(next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE))
     extra["id"] = "extra_generate"
     doc["nodes"].append(extra)
@@ -210,7 +197,7 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
     assert any("one Recipe Dataset step" in i["message"] for i in caught.value.issues)
     extra["disabled"] = True
     assert compiler.validate(doc)["ok"], compiler.validate(doc)
-    doc = _flow()
+    doc = recipe_flow()
     doc["groups"][0]["kind"] = None
     with pytest.raises(CompileError):
         compile_flow(doc)
@@ -268,35 +255,13 @@ def test_importing_keeps_tool_profiles_and_keys_and_flags_stdio():
     assert "sk-live" in text and "stdio" in text and "fs-tools" in text
 
 
-def _routes(job_ids, *, valid = True):
-    started = iter(job_ids)
-    seen = []
-
-    def routes(method, path, params, body):
-        seen.append(path)
-        if path == "/api/data-recipe/validate":
-            problems = [] if valid else [{"message": "Model alias sql-pro: no endpoint"}]
-            return {"valid": valid, "errors": problems}
-        if path == "/api/data-recipe/jobs":
-            return {"job_id": next(started)}
-        if path.endswith("/status"):
-            return {"status": "completed", "rows": 2, "artifact_path": "/x/recipes/recipe_sql"}
-        if path.endswith("/dataset"):
-            return {"dataset": [{"sql_prompt": "Find", "sql": "SELECT 1"}], "total": 1}
-        raise AssertionError(path)
-
-    return routes, seen
-
-
-@pytest.fixture(autouse = True)
-def _fast_poll(monkeypatch):
-    monkeypatch.setattr(data, "POLL_S", 0)
+pytestmark = pytest.mark.usefixtures("fast_recipe_poll")
 
 
 def test_the_group_runs_as_one_validated_job():
-    routes, seen = _routes(["job1"])
-    compiled = _compiled(_flow())
-    ctx = _Ctx(routes, params = {RECIPE_PARAM: compiled, "rows": 2, "mode": "preview"})
+    routes, seen = group_job_routes(["job1"])
+    compiled = compiled_recipe(recipe_flow())
+    ctx = RecipeCtx(routes, params = {RECIPE_PARAM: compiled, "rows": 2, "mode": "preview"})
     out = asyncio.run(data.recipe_group(ctx))
     assert seen[:2] == ["/api/data-recipe/validate", "/api/data-recipe/jobs"]
     sent = [c[3] for c in ctx.calls if c[1] == "/api/data-recipe/jobs"][0]
@@ -326,7 +291,9 @@ def test_the_dataset_counts_every_batch_not_the_last_one():
             return {"dataset": [{"sql": "SELECT 1"}], "total": 6}
         raise AssertionError(path)
 
-    ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(_flow()), "rows": 6, "mode": "full"})
+    ctx = RecipeCtx(
+        routes, params = {RECIPE_PARAM: compiled_recipe(recipe_flow()), "rows": 6, "mode": "full"}
+    )
     out = asyncio.run(data.recipe_group(ctx))
     assert out["dataset"]["rows"] == 6
 
@@ -369,7 +336,7 @@ def test_a_schema_transform_is_the_recipe_output(tmp_path, monkeypatch):
     full = {"status": "completed", "rows": 1, "artifact_path": str(run)}
     ctx = _FlowCtx(
         routes(run, full),
-        params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "full"},
+        params = {RECIPE_PARAM: compiled_recipe(recipe_flow(payload)), "rows": 1, "mode": "full"},
     )
     out = asyncio.run(data.recipe_group(ctx))
     assert out["dataset"]["ref"] == "recipes/recipe_sql/processors-files/chat"
@@ -396,9 +363,9 @@ def test_a_schema_transform_is_the_recipe_output(tmp_path, monkeypatch):
         "artifact_path": None,
         "processor_artifacts": artifacts,
     }
-    ctx = _Ctx(
+    ctx = RecipeCtx(
         routes(run, preview),
-        params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "preview"},
+        params = {RECIPE_PARAM: compiled_recipe(recipe_flow(payload)), "rows": 1, "mode": "preview"},
     )
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(data, "upload_rows", upload)
@@ -432,8 +399,9 @@ def test_a_bare_hub_seed_is_resolved_before_validate_like_recipe_studios_load():
             return {"dataset": [{"output": "x"}], "total": 1}
         raise AssertionError(path)
 
-    ctx = _Ctx(
-        routes, params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "preview"}
+    ctx = RecipeCtx(
+        routes,
+        params = {RECIPE_PARAM: compiled_recipe(recipe_flow(payload)), "rows": 1, "mode": "preview"},
     )
     asyncio.run(data.recipe_group(ctx))
     assert sent["inspect"]["dataset_name"] == "unsloth/alpaca-cleaned"
@@ -446,8 +414,8 @@ def test_a_bare_hub_seed_is_resolved_before_validate_like_recipe_studios_load():
 
 
 def test_an_invalid_recipe_never_starts_a_job():
-    routes, seen = _routes([], valid = False)
-    ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(_flow())})
+    routes, seen = group_job_routes([], valid = False)
+    ctx = RecipeCtx(routes, params = {RECIPE_PARAM: compiled_recipe(recipe_flow())})
     with pytest.raises(FlowNodeError, match = "no endpoint"):
         asyncio.run(data.recipe_group(ctx))
     assert "/api/data-recipe/jobs" not in seen
@@ -468,27 +436,26 @@ def test_stop_cancels_the_recipe_job():
             return {"job_id": "job7"}
         raise AssertionError(path)
 
-    class Stoppable(_Ctx):
+    class Stoppable(RecipeCtx):
         def check_cancelled(self):
             if cancelled:
                 raise FlowCancelled()
 
-    ctx = Stoppable(routes, params = {RECIPE_PARAM: _compiled(_flow())})
+    ctx = Stoppable(routes, params = {RECIPE_PARAM: compiled_recipe(recipe_flow())})
 
     async def press_stop():
         task = asyncio.create_task(data.recipe_group(ctx))
-        while not ctx.hooks:
-            await asyncio.sleep(0)
+        await wait_until(lambda: ctx.hooks, what = "the recipe job's Stop hook")
         for hook in ctx.hooks:
             await hook()
-        await task
+        await asyncio.wait_for(task, 10)
 
     with pytest.raises(FlowCancelled):
         asyncio.run(press_stop())
     assert cancelled == ["/api/data-recipe/jobs/job7/cancel"]
 
 
-class _FlowCtx(_Ctx):
+class _FlowCtx(RecipeCtx):
     flow_id = "f1"
     node_id = "gen"
 
@@ -531,7 +498,7 @@ def test_each_run_is_kept_as_a_recipe_studio_execution_record(monkeypatch):
     )
     ctx = _FlowCtx(
         _job_routes("completed", preview_rows = 30),
-        params = {RECIPE_PARAM: _compiled(_flow()), "rows": 30, "mode": "preview"},
+        params = {RECIPE_PARAM: compiled_recipe(recipe_flow()), "rows": 30, "mode": "preview"},
     )
     out = asyncio.run(data.recipe_group(ctx))
     assert [r["status"] for _, _, r in saved] == ["pending", "active", "active", "completed"]
@@ -555,7 +522,7 @@ def test_a_long_preview_keeps_every_row(monkeypatch):
     monkeypatch.setattr(flows_db, "save_recipe_run", lambda f, n, record: saved.append(record))
     ctx = _FlowCtx(
         _job_routes("completed", preview_rows = 700),
-        params = {RECIPE_PARAM: _compiled(_flow()), "rows": 700, "mode": "preview"},
+        params = {RECIPE_PARAM: compiled_recipe(recipe_flow()), "rows": 700, "mode": "preview"},
     )
     asyncio.run(data.recipe_group(ctx))
     assert len(saved[-1]["dataset"]) == 700 and saved[-1]["datasetTotal"] == 700
@@ -566,7 +533,7 @@ def test_a_failed_run_is_kept_with_its_error(monkeypatch):
     from storage import flows_db
 
     monkeypatch.setattr(flows_db, "save_recipe_run", lambda f, n, record: saved.append(record))
-    ctx = _FlowCtx(_job_routes("error"), params = {RECIPE_PARAM: _compiled(_flow())})
+    ctx = _FlowCtx(_job_routes("error"), params = {RECIPE_PARAM: compiled_recipe(recipe_flow())})
     with pytest.raises(FlowNodeError, match = "went away"):
         asyncio.run(data.recipe_group(ctx))
     assert saved[-1]["status"] == "error" and saved[-1]["error"] == "llama-server went away"
@@ -588,7 +555,7 @@ def test_a_run_whose_rows_cannot_be_read_is_kept_as_failed(monkeypatch):
             raise FlowNodeError("dataset fetch failed")
         return out
 
-    ctx = _FlowCtx(routes, params = {RECIPE_PARAM: _compiled(_flow())})
+    ctx = _FlowCtx(routes, params = {RECIPE_PARAM: compiled_recipe(recipe_flow())})
     with pytest.raises(FlowNodeError, match = "dataset fetch failed"):
         asyncio.run(data.recipe_group(ctx))
     assert saved[-1]["status"] == "error" and saved[-1]["error"] == "dataset fetch failed"
@@ -706,8 +673,8 @@ def test_a_shared_recipe_without_its_seed_file_says_so_and_does_not_run():
     payload["recipe"]["seed_config"] = {"source": {"seed_type": "local", "path": ""}}
     doc, notices = flow_from_recipe(payload, name = "SQL")
     assert any(n.startswith("Load the seed first") for n in notices)
-    routes, seen = _routes(["job1"])
-    ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(doc)})
+    routes, seen = group_job_routes(["job1"])
+    ctx = RecipeCtx(routes, params = {RECIPE_PARAM: compiled_recipe(doc)})
     with pytest.raises(FlowNodeError, match = "Load the seed first"):
         asyncio.run(data.recipe_group(ctx))
     assert seen == []
@@ -722,11 +689,11 @@ def test_a_full_run_keeps_its_run_name(monkeypatch):
     monkeypatch.setattr(
         flows_db, "save_recipe_run", lambda flow, node, record: saved.append(record)
     )
-    doc = _flow()
+    doc = recipe_flow()
     doc["groups"][0]["run"] = {"run_name": "nightly sql"}
     ctx = _FlowCtx(
         _job_routes("completed", preview_rows = 3),
-        params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"},
+        params = {RECIPE_PARAM: compiled_recipe(doc), "rows": 3, "mode": "full"},
     )
     asyncio.run(data.recipe_group(ctx))
     assert saved and all(r["run_name"] == "nightly sql" for r in saved)
@@ -736,7 +703,7 @@ def test_a_recipe_dataset_lists_its_generated_columns_first(monkeypatch):
     from storage import flows_db
 
     monkeypatch.setattr(flows_db, "save_recipe_run", lambda flow, node, record: None)
-    compiled = _compiled(_flow())
+    compiled = compiled_recipe(recipe_flow())
     generated = data.generated_columns(compiled["recipe"])
     base = _job_routes("completed")
 
@@ -757,7 +724,7 @@ def test_an_unnamed_full_run_is_named_after_its_group(monkeypatch):
     monkeypatch.setattr(
         flows_db, "save_recipe_run", lambda flow, node, record: saved.append(record)
     )
-    doc = _flow()
+    doc = recipe_flow()
     step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
 
     class Ctx(_FlowCtx):
@@ -766,7 +733,8 @@ def test_an_unnamed_full_run_is_named_after_its_group(monkeypatch):
     for mode, name in (("full", "Text to SQL"), ("preview", None)):
         saved.clear()
         ctx = Ctx(
-            _job_routes("completed"), params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": mode}
+            _job_routes("completed"),
+            params = {RECIPE_PARAM: compiled_recipe(doc), "rows": 3, "mode": mode},
         )
         ctx.doc = doc
         asyncio.run(data.recipe_group(ctx))
@@ -855,7 +823,10 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeyp
     }
     eng = engine_mod.FlowEngine()
     # The shape compile_flow stores under RECIPE_PARAM.
-    assert "recipe" in _compiled(_flow()) and "model_configs" in _compiled(_flow())["recipe"]
+    assert (
+        "recipe" in compiled_recipe(recipe_flow())
+        and "model_configs" in compiled_recipe(recipe_flow())["recipe"]
+    )
     key = lambda: asyncio.run(  # noqa: E731
         eng._model_key(Ctx(), spec, {RECIPE_PARAM: {"recipe": recipe, "run": {}}})
     )
@@ -905,7 +876,7 @@ def test_a_recipe_on_chats_model_is_cached_under_the_model_it_ran_on(monkeypatch
     payload = copy.deepcopy(SQL)
     for provider in payload["recipe"]["model_providers"]:
         provider["is_local"] = True
-    doc = _flow(payload)
+    doc = recipe_flow(payload)
     ran = []
 
     async def generate(ctx):
@@ -953,7 +924,7 @@ def test_a_preview_over_100k_rows_keeps_every_row_it_made(monkeypatch):
         return await real(ctx, job_id, limit = 2)
 
     monkeypatch.setattr(data, "recipe_rows", recording)
-    doc = _flow()
+    doc = recipe_flow()
     routes = _job_routes("completed", preview_rows = 150_000)
 
     def no_artifact(method, path, params, body):
@@ -964,8 +935,8 @@ def test_a_preview_over_100k_rows_keeps_every_row_it_made(monkeypatch):
             found["artifact_path"] = None
         return found
 
-    ctx = _Ctx(
-        no_artifact, params = {RECIPE_PARAM: _compiled(doc), "rows": 150_000, "mode": "preview"}
+    ctx = RecipeCtx(
+        no_artifact, params = {RECIPE_PARAM: compiled_recipe(doc), "rows": 150_000, "mode": "preview"}
     )
     ctx.doc = doc
     asyncio.run(data.recipe_group(ctx))
@@ -981,7 +952,7 @@ def test_a_stop_while_a_finished_recipe_is_read_back_still_closes_its_run_record
         flows_db, "save_recipe_run", lambda flow, node, record: saved.append(dict(record))
     )
     monkeypatch.setattr(data, "POLL_S", 0)
-    doc = _flow()
+    doc = recipe_flow()
     step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
     routes = _job_routes("completed")
 
@@ -993,7 +964,7 @@ def test_a_stop_while_a_finished_recipe_is_read_back_still_closes_its_run_record
     class Ctx(_FlowCtx):
         node_id = step["id"]
 
-    ctx = Ctx(stopped, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"})
+    ctx = Ctx(stopped, params = {RECIPE_PARAM: compiled_recipe(doc), "rows": 3, "mode": "full"})
     ctx.doc = doc
     with pytest.raises(FlowCancelled):
         asyncio.run(data.recipe_group(ctx))
@@ -1029,7 +1000,7 @@ def test_a_refused_preview_upload_leaves_the_run_record_failed_not_completed(mon
         flows_db, "save_recipe_run", lambda flow, node, record: saved.append(dict(record))
     )
     monkeypatch.setattr(data, "POLL_S", 0)
-    doc = _flow()
+    doc = recipe_flow()
     step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
     routes = _job_routes("completed")
 
@@ -1044,7 +1015,7 @@ def test_a_refused_preview_upload_leaves_the_run_record_failed_not_completed(mon
     class Ctx(_FlowCtx):
         node_id = step["id"]
 
-    ctx = Ctx(refused, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "preview"})
+    ctx = Ctx(refused, params = {RECIPE_PARAM: compiled_recipe(doc), "rows": 3, "mode": "preview"})
     ctx.doc = doc
     with pytest.raises(FlowNodeError, match = "upload limit"):
         asyncio.run(data.recipe_group(ctx))
@@ -1068,7 +1039,7 @@ def test_a_recipe_naming_a_local_model_loads_it_before_its_job(monkeypatch):
     for preset in payload["recipe"]["model_configs"]:
         preset["model"] = "unsloth/Qwen3-1.7B-GGUF"
         preset["gguf_variant"] = "Q4_K_M"
-    doc = _flow(payload)
+    doc = recipe_flow(payload)
     order = []
     routes = _job_routes("completed")
 
@@ -1086,7 +1057,7 @@ def test_a_recipe_naming_a_local_model_loads_it_before_its_job(monkeypatch):
         ):
             order.append(("load", kind, choice["repo"], choice["variant"], primary))
 
-    ctx = Ctx(recording, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"})
+    ctx = Ctx(recording, params = {RECIPE_PARAM: compiled_recipe(doc), "rows": 3, "mode": "full"})
     ctx.doc = doc
     asyncio.run(data.recipe_group(ctx))
     # Into Chat's main slot: the job's local provider reaches only that one.

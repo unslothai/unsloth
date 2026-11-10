@@ -306,7 +306,8 @@ def test_parallel_adds_to_a_new_knowledge_base_create_it_once(monkeypatch):
         ):
             if path == "/api/rag/knowledge-bases" and method == "GET":
                 listed = {"knowledgeBases": list(kbs), "ragAvailable": True}
-                await asyncio.sleep(0.01)
+                # One loop turn before answering: an unlocked second caller would list now, before kb1 exists.
+                await asyncio.sleep(0)
                 return listed
             if path == "/api/rag/knowledge-bases":
                 kbs.append({"id": f"kb{len(kbs) + 1}", "name": json["name"]})

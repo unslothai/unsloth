@@ -3,7 +3,6 @@
 
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
@@ -12,73 +11,15 @@ from core.flows.recipe_compile import RecipeCompileError, compile_recipe, normal
 from core.flows.recipe_import import COLUMN_TYPE, import_recipe, column_references
 from core.flows.registry import FlowNodeError
 
-from ._flows_helpers import RouteCtx
+from ._flows_recipe_helpers import LEARNING, RecipeCtx, fast_recipe_poll, saved_recipe_routes  # noqa: F401
 
-LEARNING = (
-    Path(__file__).resolve().parents[2]
-    / "frontend"
-    / "src"
-    / "features"
-    / "data-recipes"
-    / "learning-recipes"
-)
+# Old names, still imported by test_flows_loop.py.
+_Ctx, _recipe_routes = RecipeCtx, saved_recipe_routes
+
 RECIPES = sorted(LEARNING.glob("*.json"))
 
 
-class _Ctx(RouteCtx):
-    seed = 7
-
-    def __init__(
-        self,
-        routes,
-        params = None,
-        inputs = None,
-    ):
-        super().__init__(routes, inputs = inputs or {}, recipe_id = "r1", mode = "full", rows = 10)
-        self.params.update(params or {})
-        self.caller = None
-        self.refuse: dict[str, str] = {}
-
-    def capability_refusal(
-        self,
-        cap,
-        detail = None,
-    ):
-        return self.refuse.get(cap)
-
-    async def ensure_model(
-        self,
-        kind,
-        choice,
-        options = None,
-        primary = False,
-    ):
-        self.loaded = choice
-        self.primary = primary
-
-
-def _recipe_routes(job_ids, artifacts):
-    started = iter(job_ids)
-    saved = {"recipe": {"columns": [{"name": "q", "column_type": "expression", "expr": "x"}]}}
-
-    def routes(method, path, params, body):
-        if path == "/api/data-recipe/recipes/r1":
-            return {"payload": saved}
-        if path == "/api/data-recipe/jobs":
-            return {"job_id": next(started)}
-        if path.endswith("/status"):
-            job = path.split("/")[-2]
-            return {"status": "completed", "rows": 3, "artifact_path": artifacts.get(job)}
-        if path.endswith("/dataset"):
-            return {"dataset": [{"q": 1}], "total": 1}
-        raise AssertionError(path)
-
-    return routes
-
-
-@pytest.fixture(autouse = True)
-def _fast_poll(monkeypatch):
-    monkeypatch.setattr(data, "POLL_S", 0)
+pytestmark = pytest.mark.usefixtures("fast_recipe_poll")
 
 
 def test_two_recipes_then_finetune_trains_on_the_first_recipes_parquet():
@@ -86,9 +27,9 @@ def test_two_recipes_then_finetune_trains_on_the_first_recipes_parquet():
         "job1": "/x/assets/datasets/recipes/recipe_one",
         "job2": "/x/assets/datasets/recipes/recipe_two",
     }
-    routes = _recipe_routes(["job1", "job2"], artifacts)
-    first = asyncio.run(data.recipe(_Ctx(routes)))["dataset"]
-    second = asyncio.run(data.recipe(_Ctx(routes)))["dataset"]
+    routes = saved_recipe_routes(["job1", "job2"], artifacts)
+    first = asyncio.run(data.recipe(RecipeCtx(routes)))["dataset"]
+    second = asyncio.run(data.recipe(RecipeCtx(routes)))["dataset"]
     assert first["ref"] == "recipes/recipe_one/parquet-files" and first["job_id"] == "job1"
     assert second["ref"] == "recipes/recipe_two/parquet-files"
 
@@ -97,21 +38,21 @@ def test_two_recipes_then_finetune_trains_on_the_first_recipes_parquet():
             raise RuntimeError(f"started with {body['local_datasets']}")
         raise AssertionError(f"the first recipe's rows were re-read through {path}")
 
-    ctx = _Ctx(train_routes, params = {"base_model": "unsloth/tiny"}, inputs = {"dataset": first})
+    ctx = RecipeCtx(train_routes, params = {"base_model": "unsloth/tiny"}, inputs = {"dataset": first})
     with pytest.raises(RuntimeError, match = "recipes/recipe_one/parquet-files"):
         asyncio.run(training.finetune(ctx))
 
 
 def test_a_preview_recipe_is_saved_while_its_rows_are_still_in_memory(monkeypatch):
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: "ref:preview")
-    base = _recipe_routes(["job9"], {})
+    base = saved_recipe_routes(["job9"], {})
 
     def routes(method, path, params, body):
         if path == "/api/hub/datasets/upload":
             return {"stored_path": "/cache/recipe-job9.jsonl"}
         return base(method, path, params, body)
 
-    out = asyncio.run(data.recipe(_Ctx(routes, params = {"mode": "preview"})))
+    out = asyncio.run(data.recipe(RecipeCtx(routes, params = {"mode": "preview"})))
     assert out["dataset"]["source"] == "local" and out["dataset"]["ref"] == "ref:preview"
 
 
@@ -122,7 +63,7 @@ def test_an_old_job_id_ref_still_trains_through_the_rows():
 
 
 def test_an_upstream_hub_dataset_becomes_the_recipes_seed():
-    routes = _recipe_routes(["job1"], {"job1": "/r/recipe_a"})
+    routes = saved_recipe_routes(["job1"], {"job1": "/r/recipe_a"})
     inner = routes
 
     def with_seed(method, path, params, body):
@@ -132,7 +73,7 @@ def test_an_upstream_hub_dataset_becomes_the_recipes_seed():
         return inner(method, path, params, body)
 
     seed = {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "test"}
-    ctx = _Ctx(with_seed, inputs = {"seed": seed})
+    ctx = RecipeCtx(with_seed, inputs = {"seed": seed})
     asyncio.run(data.recipe(ctx))
     sent = [c[3] for c in ctx.calls if c[1] == "/api/data-recipe/jobs"][0]["recipe"]["seed_config"]
     assert sent == {
@@ -259,7 +200,7 @@ def test_a_managed_account_never_sends_a_provider_env_name(monkeypatch):
 
 def test_a_hub_seed_fails_early_when_the_job_would_refuse_it(monkeypatch):
     seed = {"kind": "dataset", "source": "hf", "ref": "imdb"}
-    ctx = _Ctx(_recipe_routes(["job1"], {}), inputs = {"seed": seed})
+    ctx = RecipeCtx(saved_recipe_routes(["job1"], {}), inputs = {"seed": seed})
     with pytest.raises(FlowNodeError, match = "owner/imdb"):
         asyncio.run(data.seed_config(ctx, seed, None))
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: True)
@@ -331,7 +272,7 @@ def test_a_base_model_picked_on_device_trains_on_that_copy(tmp_path, exists):
         "base_model": "unsloth/tiny",
         "base_model_cache": {"known_cached": True, "local_path": str(copy)},
     }
-    ctx = _Ctx(train_routes, params = params, inputs = {"dataset": dataset})
+    ctx = RecipeCtx(train_routes, params = params, inputs = {"dataset": dataset})
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     assert sent["model_name"] == "unsloth/tiny"
