@@ -815,3 +815,35 @@ def test_a_charx_icon_that_does_not_decode_is_skipped():
         archive.writestr("assets/icon/b.png", _png((9, 9, 9)))
     _card, icon = cards.read_charx(buffer.getvalue())
     assert icon is not None and Image.open(io.BytesIO(icon)).getpixel((0, 0)) == (9, 9, 9)
+
+
+def test_an_existing_studio_db_gains_the_character_tables_and_keeps_its_chats(client):
+    created = client.post("/api/characters", json = {"name": "Ann", "firstMes": "Hi."}).json()
+    chat = client.post("/api/characters/chats", json = {"characterIds": [created["id"]]}).json()
+    tables = ("chat_cast", "chat_scene", "character_starters", "characters", "personas")
+    with studio_db.get_connection() as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        for table in tables:
+            conn.execute(f"DROP TABLE {table}")
+        conn.commit()
+        threads = conn.execute("SELECT id, title FROM chat_threads ORDER BY id").fetchall()
+        messages = conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0]
+    # A Studio from before characters: the next open adds the tables and leaves every chat as it was.
+    studio_db.reset_schema_state_for_tests()
+    with studio_db.get_connection() as conn:
+        present = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert set(tables) <= present
+        assert conn.execute("SELECT id, title FROM chat_threads ORDER BY id").fetchall() == threads
+        assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == messages
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        studio_db._ensure_schema(conn)
+    # The chat survives as an ordinary one; the library and new chats work again.
+    assert client.get(f"/api/characters/chats/{chat['threadId']}").status_code == 204
+    assert client.get("/api/characters").status_code == 200
+    again = client.post("/api/characters", json = {"name": "Bea"}).json()
+    assert (
+        client.post("/api/characters/chats", json = {"characterIds": [again["id"]]}).status_code
+        == 201
+    )
