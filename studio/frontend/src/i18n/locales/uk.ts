@@ -754,6 +754,8 @@ export const uk = {
       "Закриття цього вікна не зупиняє налаштування. Результат з’явиться в розділі «Налаштування > Безпека».",
   },
   composerSettings: {
+    shareDraft: "Спільна чернетка для чатів",
+    shareDraftDescription: "Використовувати одну чернетку в чатах і порівнянні. Типово вимкнено; кожен чат зберігає власну чернетку.",
     title: "Поле введення",
     plainText: "Поле введення простого тексту",
     plainTextDescription:
@@ -1840,6 +1842,13 @@ export const uk = {
         audioUploadCancel: "Скасувати транскрибування",
         audioUploadTranscribing: "Транскрибування аудіо…",
         sectionTitle: "Диктування",
+        micTargetLabel: "Кнопка мікрофона",
+        micTargetAsr: "Розпізнавати через ASR",
+        micTargetModel: "Надсилати аудіо моделі",
+        micTargetAsrDescription: "Кнопка мікрофона вводить сказане в поле повідомлення.",
+        micTargetModelDescription: "Якщо завантажено модель зі звуковим введенням, мікрофон записує кліп і додає його до повідомлення. Для інших моделей і далі працює диктування.",
+        micTargetModelUnavailable: "Завантажте модель зі звуковим введенням (наприклад, LFM3-Omni), щоб надсилати їй свій голос.",
+        micRecordForModel: "Записати аудіо для моделі",
         engineLabel: "Рушій диктування",
         engineBrowser: "Браузер",
         engineBrowserDescription:

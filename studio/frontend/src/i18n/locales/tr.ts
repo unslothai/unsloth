@@ -747,6 +747,8 @@ export const tr = {
       "Bunu kapatmak kurulumu durdurmaz. Sonuç, Ayarlar > Güvenlik bölümünde görünür.",
   },
   composerSettings: {
+    shareDraft: "Taslakları sohbetler arasında paylaş",
+    shareDraftDescription: "Sohbetler ve karşılaştırmalar için tek bir taslak kullan. Varsayılan olarak kapalıdır; her sohbet kendi taslağını tutar.",
     title: "Yazma alanı",
     plainText: "Düz metin yazma alanı",
     plainTextDescription:
@@ -1825,6 +1827,13 @@ export const tr = {
         audioUploadCancel: "Metne dönüştürmeyi iptal et",
         audioUploadTranscribing: "Ses metne dönüştürülüyor…",
         sectionTitle: "Dikte",
+        micTargetLabel: "Mikrofon düğmesi",
+        micTargetAsr: "ASR ile yazıya dök",
+        micTargetModel: "Sesi modele gönder",
+        micTargetAsrDescription: "Mikrofon düğmesi söylediklerinizi mesaj kutusuna yazar.",
+        micTargetModelDescription: "Ses girişi alan bir model yüklüyken mikrofon bir klip kaydeder ve mesajınıza ekler. Diğer modeller dikte almaya devam eder.",
+        micTargetModelUnavailable: "Sesinizi göndermek için ses girişi kabul eden bir model yükleyin (örneğin LFM3-Omni).",
+        micRecordForModel: "Model için ses kaydet",
         engineLabel: "Dikte motoru",
         engineBrowser: "Tarayıcı",
         engineBrowserDescription:

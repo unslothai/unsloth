@@ -745,6 +745,8 @@ export const fa = {
       "بستن این پنجره راه‌اندازی را متوقف نمی‌کند. نتیجهٔ آن در «تنظیمات > امنیت» نمایش داده می‌شود.",
   },
   composerSettings: {
+    shareDraft: "اشتراک‌گذاری پیش‌نویس‌ها بین گفتگوها",
+    shareDraftDescription: "از یک پیش‌نویس برای گفتگوها و مقایسه استفاده کنید. به‌طور پیش‌فرض خاموش است؛ هر گفتگو پیش‌نویس خودش را نگه می‌دارد.",
     title: "کادر نوشتن",
     plainText: "کادر نوشتن متن ساده",
     plainTextDescription:
@@ -1819,6 +1821,13 @@ export const fa = {
         audioUploadCancel: "لغو رونویسی",
         audioUploadTranscribing: "در حال رونویسی صدا…",
         sectionTitle: "دیکته",
+        micTargetLabel: "دکمه میکروفون",
+        micTargetAsr: "رونویسی با ASR",
+        micTargetModel: "ارسال صدا به مدل",
+        micTargetAsrDescription: "دکمه میکروفون آنچه می‌گویید را در کادر پیام تایپ می‌کند.",
+        micTargetModelDescription: "وقتی مدلی با ورودی صوتی بارگذاری شده باشد، میکروفون یک کلیپ ضبط کرده و به پیام شما پیوست می‌کند. مدل‌های دیگر همچنان دیکته دریافت می‌کنند.",
+        micTargetModelUnavailable: "برای ارسال صدای خود، مدلی را بارگذاری کنید که ورودی صوتی می‌پذیرد (برای مثال LFM3-Omni).",
+        micRecordForModel: "ضبط صدا برای مدل",
         engineLabel: "موتور دیکته",
         engineBrowser: "مرورگر",
         engineBrowserDescription:

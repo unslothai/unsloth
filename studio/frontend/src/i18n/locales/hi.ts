@@ -665,6 +665,8 @@ export const hi = {
     keepsRunning: "इसे बंद करने से सेटअप नहीं रुकता। इसका परिणाम सेटिंग्स > सुरक्षा में दिखता है।",
   },
   composerSettings: {
+    shareDraft: "चैट के बीच ड्राफ़्ट साझा करें",
+    shareDraftDescription: "चैट और तुलना में एक ही ड्राफ़्ट का उपयोग करें। डिफ़ॉल्ट रूप से बंद; हर चैट अपना ड्राफ़्ट रखती है।",
     title: "संदेश लिखना",
     plainText: "सादा टेक्स्ट इनपुट",
     plainTextDescription: "कोड, Markdown और लिंक को मूल टेक्स्ट के रूप में रखें। फ़ॉर्मैट किया हुआ पूर्वावलोकन दिखाने के लिए इसे बंद करें।",
@@ -1665,6 +1667,13 @@ export const hi = {
         audioUploadCancel: "ट्रांसक्रिप्शन रद्द करें",
         audioUploadTranscribing: "ऑडियो को टेक्स्ट में बदला जा रहा है…",
         sectionTitle: "डिक्टेशन",
+        micTargetLabel: "माइक बटन",
+        micTargetAsr: "ASR से ट्रांसक्राइब करें",
+        micTargetModel: "मॉडल को ऑडियो भेजें",
+        micTargetAsrDescription: "माइक बटन आप जो बोलते हैं उसे संदेश बॉक्स में टाइप करता है।",
+        micTargetModelDescription: "ऑडियो इनपुट वाला मॉडल लोड होने पर माइक एक क्लिप रिकॉर्ड करके आपके संदेश में जोड़ता है। अन्य मॉडलों के लिए डिक्टेशन ही चलता है।",
+        micTargetModelUnavailable: "अपनी आवाज़ भेजने के लिए ऑडियो इनपुट स्वीकार करने वाला मॉडल लोड करें (जैसे LFM3-Omni)।",
+        micRecordForModel: "मॉडल के लिए ऑडियो रिकॉर्ड करें",
         engineLabel: "डिक्टेशन इंजन",
         engineBrowser: "ब्राउज़र",
         engineBrowserDescription:

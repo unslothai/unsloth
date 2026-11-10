@@ -494,8 +494,7 @@ def load_preview_slice(
         refuse_unauthorized_dataset_preview(
             hf_token,
             request.dataset_name,
-            # A prefer-local request reads the cache or 404s below, either way without
-            # the network, so the probe would be a round trip it had ruled out.
+            # Prefer-local requests read the cache or 404 with no network, so skip the probe.
             offline = bool(request.prefer_local_cache),
         )
     if dataset_exists:
