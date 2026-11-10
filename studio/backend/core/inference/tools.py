@@ -6688,13 +6688,15 @@ _HEREDOC_TO_INTERPRETER_RE = re.compile(
 
 
 def _heredoc_is_program(args: str) -> bool:
-    """Whether the interpreter reads its program from stdin: only flags (-W/-X take a value), `-`,
-    `run` or /dev/stdin before the heredoc; a script operand makes the heredoc plain data."""
+    """Whether the interpreter reads its program from stdin: `-` or /dev/stdin (later words are
+    program arguments), or only flags before the heredoc; -c / -m or a script operand make it data."""
     words = iter(args.split())
     for word in words:
+        if word in ("-", "/dev/stdin"):
+            return True
         if word in ("-W", "-X"):
             next(words, None)
-        elif not (word.startswith("-") or word in ("run", "/dev/stdin")):
+        elif word[:2] in ("-c", "-m") or not (word.startswith("-") or word == "run"):
             return False
     return True
 
@@ -7432,6 +7434,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     for heredoc in _HEREDOC_TO_INTERPRETER_RE.finditer(command):
         if not _heredoc_is_program(heredoc.group(2)):
             continue
+        # Another stdin redirection on the line (a second heredoc, `< file`) is what actually runs.
+        if "<" in command[heredoc.end() :].split("\n", 1)[0]:
+            return True
         if not heredoc.group(1).lower().startswith(("python", "pypy")) or _depth >= 3:
             return True
         delimiter = heredoc.group(5) or heredoc.group(6)
