@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -707,6 +707,60 @@ def is_device_oom_text(text: Optional[str]) -> bool:
         if "out of memory" in line and any(word in line for word in _DEVICE_OOM_CONTEXT):
             return True
     return False
+
+
+# sd.cpp ``fail_segment`` capacity-check stages (ggml_runner.cpp); "workspace allocation" is an allocator failure.
+_SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
+    "failed during weight preparation",
+    "failed during workspace capacity check",
+    "failed during allocated capacity check",
+)
+# Allocator failures on the host RAM that weight preparation stages into, as well as on the device.
+_ALLOCATION_FAILURE_MARKERS: tuple[str, ...] = (
+    *_HOST_OOM_MARKERS,
+    "erroroutofhostmemory",
+    "failed to allocate",
+    "backend buffer failed",
+)
+# sd.cpp fills free-512 MiB with cached weights, so each phase needs memory the last one released; half leaves it
+# unclaimed when the driver reports the release late (Windows may defer destroying allocations).
+IMAGE_VRAM_RETRY_SCALE = 0.5
+
+
+def is_vram_refusal_text(text: Optional[str]) -> bool:
+    """sd.cpp's model manager declined a segment for VRAM, and no allocation failed outright (that keeps its error)."""
+    lines = str(text or "").lower().splitlines()
+    if not any(marker in line for line in lines for marker in _SEGMENT_REFUSAL_MARKERS):
+        return False
+    return not any(
+        "failed during" not in line
+        and (
+            is_device_oom_text(line)
+            or any(marker in line for marker in _ALLOCATION_FAILURE_MARKERS)
+        )
+        for line in lines
+    )
+
+
+def image_vram_retry_budget(
+    planned_free_mib: Optional[Mapping[str, int]], render_devices: Iterable[str] = ()
+) -> Optional[str]:
+    """``--max-vram`` for the image retry: half of each planned card's free VRAM (``CUDA0=..,CUDA1=..`` for several),
+    skipping cards under the floor. None if none qualifies or a ``render_devices`` card does not."""
+    planned = dict(planned_free_mib or {})
+    budgets: dict[str, float] = {}
+    for name, mib in planned.items():
+        gib = graph_cut_budget_gib(int(mib) << 20, reserve_bytes = 0, scale = IMAGE_VRAM_RETRY_SCALE)
+        if gib is not None:
+            budgets[name] = gib
+    if not budgets:
+        return None
+    known = {name.lower() for name in budgets}
+    if any(str(device).lower() not in known for device in render_devices):
+        return None
+    if len(planned) == 1:
+        return _format_gib(next(iter(budgets.values())))
+    return ",".join(f"{name}={_format_gib(gib)}" for name, gib in budgets.items())
 
 
 def device_backend_flags(
