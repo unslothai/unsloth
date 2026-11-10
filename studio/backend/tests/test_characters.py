@@ -14,7 +14,7 @@ import zlib
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageFile
 
 from auth.authentication import get_current_subject
 from core.characters import cards
@@ -773,3 +773,45 @@ def test_a_chat_with_a_missing_member_is_refused(client):
     ann = client.post("/api/characters", json = {"name": "Ann"}).json()
     created = client.post("/api/characters/chats", json = {"characterIds": [ann["id"], "missing"]})
     assert created.status_code == 404
+
+
+def _oversized_png() -> bytes:
+    """A small file whose header claims a picture far past the pixel limit."""
+    png = _png(size = (1, 1))
+    ihdr = png[16:29]
+    body = struct.pack(">II", 20_000, 20_000) + ihdr[8:]
+    return png[:8] + _chunk(b"IHDR", body) + png[33:]
+
+
+@pytest.mark.parametrize(
+    "picture",
+    [cards.PNG_SIGNATURE + b"<html><script>alert(1)</script>", b"\xff\xd8\xff" + b"\0" * 64],
+)
+def test_a_portrait_must_decode_not_just_start_like_an_image(client, picture):
+    created = client.post("/api/characters", json = {"name": "Rowan"}).json()
+    assert client.put(f"/api/characters/{created['id']}/avatar", content = picture).status_code == 400
+    persona = client.post("/api/characters/personas", json = {"name": "Alex"}).json()
+    assert (
+        client.put(f"/api/characters/personas/{persona['id']}/avatar", content = picture).status_code
+        == 400
+    )
+
+
+def test_a_portrait_past_the_pixel_limit_is_refused_before_it_is_decoded(client, monkeypatch):
+    bomb = _oversized_png()
+    assert struct.unpack(">II", bomb[16:24]) == (20_000, 20_000)
+    monkeypatch.setattr(ImageFile.ImageFile, "load", lambda self: pytest.fail("decoded a bomb"))
+    created = client.post("/api/characters", json = {"name": "Rowan"}).json()
+    assert client.put(f"/api/characters/{created['id']}/avatar", content = bomb).status_code == 400
+    parsed = cards.parse_card_file(_with_text(bomb, "chara", V2), "bomb.png")
+    assert parsed.fields["name"] == "Mira" and parsed.avatar is None and parsed.warnings
+
+
+def test_a_charx_icon_that_does_not_decode_is_skipped():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("card.json", json.dumps(V2))
+        archive.writestr("assets/icon/a.png", cards.PNG_SIGNATURE + b"not really")
+        archive.writestr("assets/icon/b.png", _png((9, 9, 9)))
+    _card, icon = cards.read_charx(buffer.getvalue())
+    assert icon is not None and Image.open(io.BytesIO(icon)).getpixel((0, 0)) == (9, 9, 9)

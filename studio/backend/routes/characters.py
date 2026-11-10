@@ -190,13 +190,13 @@ def _image_response(data: bytes, media_type: Optional[str]) -> Response:
     )
 
 
-def _checked_image(data: bytes) -> str:
-    media_type = cards.sniff_image_type(data)
-    if media_type is None:
+def _checked_image(data: bytes) -> tuple[bytes, str]:
+    checked = cards.checked_portrait(data)
+    if checked is None:
         raise HTTPException(
             status_code = 400, detail = "The picture must be a PNG, JPEG, WebP or GIF image."
         )
-    return media_type
+    return checked
 
 
 @router.get("")
@@ -313,9 +313,7 @@ async def put_character_avatar(
 ):
     _character_or_404(character_id)
     data = await _read_body(request, db.MAX_AVATAR_BYTES)
-    media_type = _checked_image(data)
-    if media_type == "image/png":
-        data = cards.strip_png_text(data)
+    data, media_type = await asyncio.to_thread(_checked_image, data)
     updated = await asyncio.to_thread(db.set_character_avatar, character_id, data, media_type)
     if updated is None:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)
@@ -416,9 +414,7 @@ async def put_persona_avatar(
 ):
     _persona_or_404(persona_id)
     data = await _read_body(request, db.MAX_AVATAR_BYTES)
-    media_type = _checked_image(data)
-    if media_type == "image/png":
-        data = cards.strip_png_text(data)
+    data, media_type = await asyncio.to_thread(_checked_image, data)
     updated = await asyncio.to_thread(db.set_persona_avatar, persona_id, data, media_type)
     if updated is None:
         raise HTTPException(status_code = 404, detail = _PERSONA_NOT_FOUND)

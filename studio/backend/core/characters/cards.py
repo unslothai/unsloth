@@ -27,6 +27,14 @@ MAX_FIELD_CHARS = 200_000
 MAX_GREETINGS = 64
 MAX_TAGS = 64
 MAX_TAG_CHARS = 100
+# Every stored portrait is decoded once on import; this bounds what a browser will later decode.
+MAX_PORTRAIT_PIXELS = 40_000_000
+_PORTRAIT_FORMATS = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
 _CARD_CHUNK_KEYS = ("ccv3", "chara")
 _ARCHIVE_URIS = ("embeded://", "embedded://", "__asset:")
 # Fields Studio edits; everything else in a card's data is carried through untouched.
@@ -80,6 +88,27 @@ def sniff_image_type(data: bytes) -> Optional[str]:
     if data[:6] in (b"GIF87a", b"GIF89a"):
         return "image/gif"
     return None
+
+
+def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
+    """The portrait as stored and its type: a PNG, JPEG, WebP or GIF that decodes within the pixel limit,
+    PNG text chunks removed. None for anything else, including a decompression bomb."""
+    media_type = sniff_image_type(data) if data else None
+    if media_type is None:
+        return None
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(data), formats = tuple(_PORTRAIT_FORMATS)) as image:
+            width, height = image.size
+            if _PORTRAIT_FORMATS.get(image.format) != media_type or not (
+                0 < width * height <= MAX_PORTRAIT_PIXELS
+            ):
+                return None
+            image.load()
+    except Exception:
+        return None
+    return (strip_png_text(data) if media_type == "image/png" else data), media_type
 
 
 def character_fields(parsed: "ParsedCard") -> dict:
@@ -331,9 +360,9 @@ def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
             info = names.get(candidate)
             if info is not None and 0 < info.file_size <= budget:
                 budget -= info.file_size
-                blob = _read_member(archive, info)
-                if sniff_image_type(blob):
-                    icon_bytes = blob
+                checked = checked_portrait(_read_member(archive, info))
+                if checked:
+                    icon_bytes = checked[0]
                     break
         return card, icon_bytes
 
@@ -540,9 +569,10 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
         card, chunks = read_png_card(data)
         if card is None:
             raise CardError("This PNG has no character card inside it.")
-        avatar = strip_png_text(data)
+        checked = checked_portrait(data)
+        avatar = checked[0] if checked else None
         source_format = "png"
-        warnings = []
+        warnings = [] if checked else ["The picture could not be read, so the character has none."]
         if chunks == ["ccv3", "chara"]:
             warnings.append("Read the V3 data; the file also carries V2 data for older apps.")
     elif data[:2] == b"PK" or lower.endswith(".charx") or zipfile.is_zipfile(io.BytesIO(data)):
@@ -550,7 +580,7 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
         card, avatar = read_charx(data)
         source_format = "charx"
         warnings = []
-        if avatar is None and sniff_image_type(data):
+        if avatar is None and checked_portrait(data):
             # No icon asset: the cover image in front of the archive is the portrait.
             avatar = to_png(data)
     else:
