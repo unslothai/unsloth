@@ -1508,8 +1508,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # No te_quant_auto: the in-tree loader picks Studio's hosted int8 ConvRot Qwen3-VL (unsloth/MiniMax-H3-FP8, the
         # H3 video family's file) itself when the request leaves the encoder unset; the generic TE prequant table
         # never runs for this family.
-        # Hosted table-form DiT checkpoints plug in here (repo, filename per scheme); none are published yet.
-        prequant_repos = (),
+        # Hosted pre-quantized DiTs (curve-form AdaLN, the H3 video recipe). The in-tree loader checks the file exists
+        # before using it and quantizes the release on the fly otherwise, so the row is safe before the upload.
+        prequant_repos = (
+            ("int8", "unsloth/MiniMax-H3-Image-FP8"),
+            ("fp8", "unsloth/MiniMax-H3-Image-FP8"),
+        ),
+        prequant_filenames = (
+            ("int8", "MiniMax-H3-Image-INT8-ConvRot.safetensors"),
+            ("fp8", "MiniMax-H3-Image-FP8.safetensors"),
+        ),
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.

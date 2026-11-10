@@ -692,3 +692,104 @@ def test_int8_linears_pad_rows_to_the_supported_multiple_exactly(h3i):
     assert h3i.ROW_MULTIPLE == 32
     assert seen == [64] and got.shape == want.shape
     assert torch.equal(got, want)
+
+
+# -- hosted pre-quantized DiT ---------------------------------------------------------------------------------------
+
+
+def test_the_family_declares_the_hosted_dits(h3i):
+    from core.inference.diffusion_families import (
+        detect_family,
+        family_prequant_filename,
+        family_prequant_repo,
+    )
+
+    fam = detect_family("MiniMaxAI/MiniMax-H3-Image")
+    assert fam.name == "minimax-h3-image"
+    for scheme, filename in (
+        ("int8", "MiniMax-H3-Image-INT8-ConvRot.safetensors"),
+        ("fp8", "MiniMax-H3-Image-FP8.safetensors"),
+    ):
+        assert (
+            family_prequant_repo(fam, scheme, "MiniMaxAI/MiniMax-H3-Image")
+            == "unsloth/MiniMax-H3-Image-FP8"
+        )
+        assert family_prequant_filename(fam, scheme) == filename
+
+
+def test_an_unpublished_hosted_dit_falls_back_without_fetching(h3i, monkeypatch):
+    import huggingface_hub
+
+    from core.inference import diffusion_prequant
+
+    calls = []
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(huggingface_hub, "file_exists", lambda *a, **k: calls.append(a) or False)
+    monkeypatch.setattr(
+        diffusion_prequant, "load_prequantized_transformer", lambda *a, **k: pytest.fail("fetched")
+    )
+    h3i._hub_file_exists.cache_clear()
+    kwargs = dict(
+        base = "MiniMaxAI/MiniMax-H3-Image",
+        device = "cpu",
+        dtype = None,
+        hf_token = None,
+        cache_dir = None,
+        keep_on_device = False,
+    )
+    assert h3i.load_hosted_prequant_transformer("int8", local_files_only = False, **kwargs) is None
+    assert calls == [("unsloth/MiniMax-H3-Image-FP8", "MiniMax-H3-Image-INT8-ConvRot.safetensors")]
+    # Offline: the cache alone decides, never the Hub.
+    assert h3i.load_hosted_prequant_transformer("fp8", local_files_only = True, **kwargs) is None
+    assert len(calls) == 1
+    h3i._hub_file_exists.cache_clear()
+
+
+def test_a_published_hosted_dit_loads_through_the_curve_hook(h3i, monkeypatch):
+    import huggingface_hub
+
+    from core.inference import diffusion_prequant
+
+    seen = {}
+
+    def _load(cls, base, source, **kwargs):
+        seen.update(cls = cls, base = base, source = source, **kwargs)
+        return "model"
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/cache/file")
+    monkeypatch.setattr(diffusion_prequant, "load_prequantized_transformer", _load)
+    got = h3i.load_hosted_prequant_transformer(
+        "int8",
+        base = "MiniMaxAI/MiniMax-H3-Image",
+        device = "cpu",
+        dtype = None,
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        keep_on_device = False,
+    )
+    assert got == "model"
+    assert seen["source"].location == "unsloth/MiniMax-H3-Image-FP8"
+    assert seen["source"].filename == "MiniMax-H3-Image-INT8-ConvRot.safetensors"
+    assert seen["family"] == "minimax-h3-image" and seen["scheme"] == "int8"
+
+
+def test_the_prepare_hook_installs_the_curve_form(h3i):
+    import torch
+
+    from _minimax_h3_image_tiny import TINY_TRANSFORMER_NATIVE
+
+    cfg = h3i.transformer_config_from_native(TINY_TRANSFORMER_NATIVE)
+    model = h3i.transformer_class()(**cfg).eval()
+    prepare = h3i.h3_image_prepare_prequant_model()
+    prepare(model, {"adaln_form": "curve", "curve_dim": "8", "curve_grid": "17"})
+    assert model.transformer_blocks[0].adaln_proj.linear.in_features == 8
+    assert model.norm_out.linear.in_features == 8
+    assert tuple(model.time_embedder.table.shape) == (17, 8)
+    # The pipeline's raw float32 timesteps (0.999 reference rows included) drive the curve directly.
+    t = torch.tensor([0.25, 0.999], dtype = torch.float32)
+    assert torch.equal(model.time_proj(t), t)
+    # A dense checkpoint (no form) is left alone.
+    dense = h3i.transformer_class()(**cfg).eval()
+    prepare(dense, {})
+    assert dense.transformer_blocks[0].adaln_proj.linear.in_features != 8

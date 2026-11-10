@@ -1860,12 +1860,20 @@ def build_transformer_skeleton(config: dict, *, table_grid: Optional[Sequence[fl
 
 
 def h3_image_prepare_prequant_model(logger_: Any = None) -> Callable:
-    """``prepare_model`` for ``load_prequantized_transformer``: a hosted table-form checkpoint declares
-    ``adaln_form=grid_table`` and its grid; the skeleton is reshaped to it before ``load_state_dict``."""
+    """``prepare_model`` for ``load_prequantized_transformer``: reshapes the skeleton to a hosted checkpoint's AdaLN
+    form before ``load_state_dict``: the H3 video curve form (``adaln_form=curve``) or this module's table form
+    (``adaln_form=grid_table`` + its grid)."""
 
     def _prepare(transformer: Any, metadata: Optional[dict]) -> None:
         import torch
 
+        from .video_minimax_h3_adaln import apply_h3_adaln_curve, is_curve_checkpoint
+
+        if is_curve_checkpoint(metadata):
+            # The hosted H3-Image files use the H3 video curve form: the raw timestep indexes the curve, so the
+            # pipeline's float32 timesteps (0.999 reference rows included) drive it unchanged.
+            apply_h3_adaln_curve(transformer, metadata, logger = logger_)
+            return
         if not isinstance(metadata, dict) or metadata.get(ADALN_FORM_KEY) != ADALN_GRID_FORM:
             return
         grid = metadata.get(ADALN_GRID_KEY)
@@ -1913,6 +1921,38 @@ def native_config_transformer_class() -> Any:
     return MiniMaxH3ImageNativeConfigTransformer
 
 
+def hosted_prequant_available(
+    repo: str,
+    filename: Optional[str],
+    *,
+    hf_token: Optional[str],
+    cache_dir: Optional[str],
+    local_files_only: bool,
+) -> bool:
+    """Whether the hosted file exists: the local cache first, then (online) one Hub lookup per process. A failed
+    lookup reads as absent, so the load quantizes on the fly instead of failing."""
+    if not filename:
+        return False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        if isinstance(try_to_load_from_cache(repo, filename, cache_dir = cache_dir), str):
+            return True
+    except Exception:  # noqa: BLE001 - a cache probe only
+        pass
+    if local_files_only:
+        return False
+    return _hub_file_exists(repo, filename, hf_token)
+
+
+@functools.lru_cache(maxsize = 32)
+def _hub_file_exists(repo: str, filename: str, hf_token: Optional[str]) -> bool:
+    try:
+        from huggingface_hub import file_exists
+        return bool(file_exists(repo, filename, token = hf_token))
+    except Exception:  # noqa: BLE001 - offline / gated / not yet created: quantize on the fly
+        return False
+
+
 def load_hosted_prequant_transformer(
     scheme: str,
     *,
@@ -1927,9 +1967,9 @@ def load_hosted_prequant_transformer(
     """A hosted pre-quantized DiT for ``scheme`` when the family declares one (``prequant_repos`` /
     ``prequant_filenames``, the H3 video mechanism), else None and the caller quantizes on the fly.
 
-    The checkpoint is Studio's prequant container over the diffusers-layout model INCLUDING ``pdd_proj_out.*``; it may
-    be table form (metadata ``adaln_form=grid_table`` + ``adaln_grid``), which ``h3_image_prepare_prequant_model``
-    installs on the skeleton before the state dict is assigned."""
+    The checkpoint is Studio's prequant container over the diffusers-layout model INCLUDING ``pdd_proj_out.*``, with a
+    curve-form or table-form AdaLN that ``h3_image_prepare_prequant_model`` installs on the skeleton before the state
+    dict is assigned. Nothing is fetched unless ``hosted_prequant_available`` finds the file."""
     try:
         from .diffusion_families import (
             detect_family,
@@ -1946,6 +1986,20 @@ def load_hosted_prequant_transformer(
         from .diffusion_prequant import PrequantSource, load_prequantized_transformer
 
         filename = family_prequant_filename(fam, scheme)
+        if not hosted_prequant_available(
+            repo,
+            filename,
+            hf_token = hf_token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        ):
+            logger.info(
+                "diffusion.minimax_h3_image: no hosted %s DiT at %s/%s yet; quantizing the release on the fly",
+                scheme,
+                repo,
+                filename,
+            )
+            return None
         source = PrequantSource(
             kind = "repo",
             location = repo,
@@ -2423,7 +2477,7 @@ def load_minimax_h3_image_pipeline(
         plan = plan,
         classes = classes_source(),
         layout = stats.get("layout", "native"),
-        table = table and stats.get("layout") != "supplied",
+        table = table and stats.get("layout") not in ("supplied", "hosted_prequant"),
         load_s = time.perf_counter() - t0,
         quantized_linears = int(stats.get("quantized_linears", 0)),
         bytes_read = int(stats.get("bytes_read", 0)),
