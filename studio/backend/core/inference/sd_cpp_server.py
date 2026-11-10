@@ -57,6 +57,7 @@ _READY_PATH = "/v1/models"
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
 _VID_GEN_PATH = "/sdcpp/v1/vid_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
+_CAPABILITIES_PATH = "/sdcpp/v1/capabilities"
 
 # Compute-buffer lines excluded: they vary per generation, params stay until exit.
 _TOTAL_PARAMS_VRAM_RE = re.compile(
@@ -178,6 +179,7 @@ class SdCppServer:
         # trust_env=False: loopback-only client must not route through HTTP(S)_PROXY.
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
         self._scratch_dir: Optional[str] = None
+        self._vid_gen_features: Optional[dict] = None
         self._stopped = False
         atexit.register(self.stop)
 
@@ -190,6 +192,24 @@ class SdCppServer:
         """Server rescans this dir per request; reference staged files via the lora field, not
         prompt tags."""
         return self._scratch_dir
+
+    def vid_gen_accepts(self, features: tuple[str, ...]) -> bool:
+        """True when the live server advertises every ``features`` key for vid_gen; read once per server, idle only
+        (capabilities can block behind a job). Older builds lack the keys and get False."""
+        if not features:
+            return True
+        caps = self._vid_gen_features
+        if caps is None:
+            try:
+                resp = self._client.get(f"{self.base_url}{_CAPABILITIES_PATH}", timeout = 10.0)
+                data = resp.json() if resp.status_code == 200 else {}
+            except (*_TRANSPORT_ERRORS, httpx.TimeoutException, ValueError):
+                return False
+            modes = data.get("features_by_mode") if isinstance(data, dict) else None
+            caps = modes.get("vid_gen") if isinstance(modes, dict) else None
+            caps = caps if isinstance(caps, dict) else {}
+            self._vid_gen_features = caps
+        return all(caps.get(key) is True for key in features)
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
