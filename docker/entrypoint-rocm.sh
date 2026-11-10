@@ -154,7 +154,8 @@ fi
 # Generic wheels carry gfx1030 but not its RDNA 2 siblings, which segfault on the first kernel
 # unless run as gfx1030 (#17147). KFD, not torch: the override cannot spoof it. Never on a mixed
 # host (a global override misreports the other cards) or for gfx1033, which check 4 refuses.
-# A gfx1035/gfx1036 iGPU decides only on an APU-only host: beside a usable card Studio skips it.
+# A gfx1035/gfx1036 iGPU alone triggers it only on an APU-only host (Studio skips it beside a
+# covered card); beside a gfx1031/2/4 it is spoofed too, as one global override must.
 if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DEV_PATH" == "kfd" ]]; then
     _gfx_all=()
     _gfx103x=()

@@ -856,6 +856,7 @@ class TestRocmEntrypoint:
             ("beside-gfx1100", ("100306", "110000"), "unset"),
             ("beside-gfx1030", ("100306", "100300"), "unset"),
             ("alone", ("100306",), "10.3.0"),
+            ("beside-gfx1031", ("100301", "100306"), "10.3.0"),
         ]:
             d = tmp_path / name
             d.mkdir()
