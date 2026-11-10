@@ -673,13 +673,28 @@ def prefer_cached_pickle_twins(
                     return True
             return False
 
+        prefer_safetensors = (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        def _reusable(name: str) -> bool:
+            if not _ok(name) or not _cached(name):
+                return False
+            # same pickle trust rule as below
+            if name.lower().endswith(_PICKLE_SUFFIXES):
+                return not prefer_safetensors and _verified(name)
+            return True
+
         # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
             stem = _artifact_stem(comfy)
             twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
             if not twins:
                 continue
-            hit = next((t for t in twins if _ok(t) and _cached(t)), None)
+            hit = next((t for t in twins if _reusable(t)), None)
             if _cached(comfy):
                 if hit is None and _ok(comfy) and out.index(comfy) > out.index(twins[0]):
                     out.remove(comfy)
@@ -703,12 +718,7 @@ def prefer_cached_pickle_twins(
                     hit,
                     comfy,
                 )
-        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if prefer_safetensors:
             return out
 
         for st in [
