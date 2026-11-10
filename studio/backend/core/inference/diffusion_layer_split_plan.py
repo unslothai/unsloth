@@ -1015,6 +1015,9 @@ def apply_layer_split_plan(
     split = getattr(plan, "layer_split", None)
     if split is None:
         return False
+    with contextlib.suppress(Exception):
+        from .diffusion_flux3_attn import verify_cards
+        verify_cards(pipe, [o for o in split.cards if int(o) != int(split.primary)], logger)
     try:
         place_layer_split(pipe, primary = placement, split = split, logger = logger)
     except Exception as exc:  # noqa: BLE001 - fall back to one card
