@@ -671,7 +671,7 @@ export function FlowsGalleryPage(): ReactElement {
                 onClick={() => setCategory(chip.id)}
                 className={`rounded-full border px-3 py-1 text-xs transition-colors ${
                   category === chip.id
-                    ? "border-foreground/30 bg-foreground text-background"
+                    ? "border-foreground bg-foreground text-background"
                     : "text-muted-foreground hover:bg-muted"
                 }`}
                 data-testid="flows-category"
