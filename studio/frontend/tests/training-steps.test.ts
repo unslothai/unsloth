@@ -37,7 +37,6 @@ test("the guided tour opens the step that holds its anchor", () => {
   assert.equal(trainingStepForTourTarget("studio-method"), "model");
   assert.equal(trainingStepForTourTarget("studio-dataset"), "dataset");
   assert.equal(trainingStepForTourTarget("studio-params"), "parameters");
-  // The run preview column sits beside every step.
   assert.equal(trainingStepForTourTarget("studio-run-preview"), null);
   assert.equal(trainingStepForTourTarget("studio-nav"), null);
 });

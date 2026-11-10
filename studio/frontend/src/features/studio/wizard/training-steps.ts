@@ -32,7 +32,6 @@ const TOUR_TARGET_STEP: Record<string, TrainingStep> = {
   "studio-params": "parameters",
 };
 
-/** The step holding a guided-tour anchor; null for anchors outside the steps. */
 export function trainingStepForTourTarget(target: string): TrainingStep | null {
   return TOUR_TARGET_STEP[target] ?? null;
 }

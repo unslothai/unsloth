@@ -172,10 +172,7 @@ function ExtractionField({
   );
 }
 
-/**
- * Create, edit or copy a rule reward. The draft is scored by the backend as it changes, so it
- * can be tested before it has a name, and only a save writes it to the library.
- */
+/** Create, edit or copy a rule reward; the draft is scored live and only a save writes it. */
 export function RewardEditorDialog({
   record,
   library,

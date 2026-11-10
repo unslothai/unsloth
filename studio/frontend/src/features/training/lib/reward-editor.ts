@@ -5,8 +5,7 @@ import yaml from "js-yaml";
 import type { RewardRecord } from "../api/rewards-api";
 import type { RuleType } from "./reward-summary";
 
-// Rule bodies follow validate_rule in studio/backend/core/training/rewards.py, which stays the
-// only validator: number inputs are kept as typed and sent as numbers when they parse.
+// validate_rule in backend rewards.py stays the only validator; numbers are sent as typed when they parse.
 export type DraftRule = Record<string, unknown> & { type: RuleType };
 
 export interface RewardDraft {
@@ -75,7 +74,6 @@ export function defaultRewardRule(
   }
 }
 
-/** A free name for an editable copy of a bundled reward. */
 export function copyRewardName(name: string, library: RewardRecord[]): string {
   const base = `${name.slice(0, 52)}-copy`;
   let next = base;

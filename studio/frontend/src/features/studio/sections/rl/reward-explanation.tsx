@@ -14,7 +14,6 @@ import type { ReactElement } from "react";
 
 type Row = [TranslationKey, string | number | null | undefined];
 
-/** The values the evaluator compared, behind an info icon next to a score. */
 export function RewardExplanationHint({
   explanation,
 }: {

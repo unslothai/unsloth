@@ -39,7 +39,6 @@ except ImportError:  # pragma: no cover
 
 MAX_REWARD_MD_BYTES = 64 * 1024
 MAX_REWARDS_PER_ROOT = 500
-# A ZIP of a full library of maximum-size rewards.
 MAX_REWARD_ZIP_BYTES = MAX_REWARD_MD_BYTES * MAX_REWARDS_PER_ROOT
 MAX_PATTERN_CHARS = 2_000
 # regex compiles {n} repeats by unrolling them, nested counts multiplying.

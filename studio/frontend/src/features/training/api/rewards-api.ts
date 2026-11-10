@@ -48,7 +48,6 @@ export interface RewardPreviewResponse {
   total: number;
 }
 
-/** A library reward by name, or an unsaved draft as REWARD.md text. */
 export type RewardPreviewItem =
   | { name: string; weight: number }
   | { markdown: string; weight: number };

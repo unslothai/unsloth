@@ -56,7 +56,6 @@ export function StudioPage(): ReactElement {
   const setImagesPageMode = useImageWorkflowStore((s) => s.setPageMode);
   const [paramMode, setParamMode] = useParamMode();
   const [trainingStep, setTrainingStep] = useState<TrainingStep>("model");
-  // Each tour stop first opens the step that holds its anchor.
   const configTourSteps = useMemo(
     () =>
       studioTourSteps.map((tourStep) => {

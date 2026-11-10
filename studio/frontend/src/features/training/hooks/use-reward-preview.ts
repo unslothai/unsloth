@@ -14,10 +14,7 @@ export interface RewardPreviewGroup {
   reference: string | null;
 }
 
-/**
- * Scores a sample completion (with explanations) shortly after the inputs settle. `revision`
- * stands for anything else the scores depend on, such as a library rule edited in place.
- */
+/** Debounced preview scoring; `revision` covers other inputs, e.g. a library rule edited in place. */
 export function useRewardPreview(
   groups: RewardPreviewGroup[],
   completion: string,
