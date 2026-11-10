@@ -6790,7 +6790,8 @@ def _python_reads_stdin_program(words: list) -> "bool | None":
         if posixpath.normpath(word).startswith(("/dev/", "/proc/")):
             return None
         if word == "--check-hash-based-pycs":
-            next(words, None)
+            if re.search(r"[$`]", next(words, "")):
+                return None
         elif word.startswith("--"):
             if not word.startswith("--check-hash-based-pycs="):
                 return None
@@ -6802,8 +6803,8 @@ def _python_reads_stdin_program(words: list) -> "bool | None":
                     module = word[i + 1 :] or next(words, "")
                     return interactive if module in _PYTHON_STDIN_DATA_MODULES else None
                 if ch in "WX":
-                    if i == len(word) - 1:
-                        next(words, None)
+                    if i == len(word) - 1 and re.search(r"[$`]", next(words, "")):
+                        return None
                     break
                 if ch == "i":
                     interactive = True
@@ -6900,13 +6901,8 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 body_text = "\n".join(body)
                 if (
                     depth >= 3
-                    or _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names))
-                    or (
-                        not quoted
-                        and re.search(r"[$`]", body_text)
-                        and _HEREDOC_INTERPRETER_MENTION_RE.search(body_text)
-                    )
-                    or _terminal_is_high_risk("\n".join(body), depth + 1)
+                    or _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names) + "\n" + body_text)
+                    or _terminal_is_high_risk(body_text, depth + 1)
                 ):
                     return True
                 continue
