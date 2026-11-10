@@ -544,8 +544,6 @@ class FlowEngine:
         run_origin = _origin(account, origin)
         options["origin"] = run_origin["kind"]
         run_id = uuid.uuid4().hex
-        await asyncio.to_thread(flows_db.create_run, run_id, flow_id, _stored_options(options))
-        approvals = await asyncio.to_thread(flows_db.get_capabilities, flow_id)
         rs = RunState(
             id = run_id,
             flow_id = flow_id,
@@ -555,12 +553,18 @@ class FlowEngine:
             options = options,
             app = app,
             origin = run_origin,
-            approvals = approvals,
         )
         rs.hf_token = hf_token
         for nid in plan.order:
             rs.node(nid)
+        # Listed before the first await: a trigger's busy check and a flow delete must see a run being started.
         self.runs[run_id] = rs
+        try:
+            await asyncio.to_thread(flows_db.create_run, run_id, flow_id, _stored_options(options))
+            rs.approvals = await asyncio.to_thread(flows_db.get_capabilities, flow_id)
+        except BaseException:
+            self.runs.pop(run_id, None)
+            raise
         rs.emit("run.queued")
         rs.task = asyncio.create_task(arun_as(account, self._run(rs)), name = f"flow-run-{run_id}")
         self._trim_finished()

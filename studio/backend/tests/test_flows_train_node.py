@@ -1542,3 +1542,13 @@ def test_poll_job_polls_at_once_unless_told_to_settle(monkeypatch, settle, waite
         )
     )
     assert slept == waited
+
+
+def test_a_fine_tune_saved_with_an_rl_objective_is_refused_not_trained_as_sft():
+    started = []
+    ctx = FinetuneCtx(
+        finetune_job_routes(started), base_model = "unsloth/Qwen3-0.6B", objective = "grpo"
+    )
+    with pytest.raises(FlowNodeError, match = "GRPO, DPO or ORPO"):
+        asyncio.run(training.finetune(ctx))
+    assert started == []

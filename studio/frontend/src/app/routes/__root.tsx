@@ -238,7 +238,7 @@ const AudioPage = lazy(() =>
   import("@/features/audio").then((m) => ({ default: m.AudioPage })),
 );
 
-// The Flows player gets the same persistent mount so a game keeps its state when you step back into the editor.
+// Lazy like the other pages; it mounts only on its own route (see RootLayout).
 const FlowPlayerPage = lazy(() =>
   import("@/features/flows/player/flow-player-page").then((m) => ({ default: m.FlowPlayerPage })),
 );

@@ -1558,7 +1558,8 @@ def _seed_region(candidates: Any, x: int, y: int) -> Any:
     except ImportError:
         return _flood_region(candidates, x, y)
     labels, _ = ndimage.label(candidates)
-    return labels == labels[y, x]
+    # Label 0 is the unfilled background; a seed outside the candidates fills nothing.
+    return labels == labels[y, x] if labels[y, x] else labels < 0
 
 
 def _flood_region(candidates: Any, x: int, y: int) -> Any:

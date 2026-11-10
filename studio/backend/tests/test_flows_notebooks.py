@@ -116,8 +116,8 @@ def test_import_notebook_route(flows_client):
 def test_catalog_marks_what_studio_can_train():
     entry = catalog._entry("Llama3.1_(8B)-Alpaca.ipynb", {}, {})
     assert entry["category"] == "sft" and entry["studio_task"] == "text"
-    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] == "text"
-    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] == "text"
+    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] is None
+    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] is None
     assert (
         catalog._entry("gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb", {}, {})[
             "studio_task"
