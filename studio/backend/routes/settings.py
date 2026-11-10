@@ -5073,7 +5073,7 @@ class PersonalizationCustomization(BaseModel):
     composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
     elementOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "off"
+    reduceMotion: Literal["system", "on", "off"] = "on"
     fontSmoothing: bool = True
     codeLineNumbers: bool = False
     codeWordWrap: bool = False
