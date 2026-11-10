@@ -742,14 +742,12 @@ def int8_convrot_te_runs_on(target: Any) -> bool:
 
 
 TE_INT8_FP16_ENV = "UNSLOTH_TE_INT8_FP16"
-# Families whose hosted int8 ConvRot encoder was measured in float16 compute (T4 and other cards without bf16).
+# Families whose hosted int8 ConvRot encoder was validated in float16 compute.
 _TE_INT8_FP16_FAMILIES = frozenset({"qwen-image-2.1"})
 
 
 def int8_convrot_te_runs_fp16(fam: Any, target: Any) -> bool:
-    """A float16 CUDA target (no bf16, so no fp8 file) runs the family's hosted int8 ConvRot encoder as plain tensors,
-    each weight scaled to float16 per call. Half the bytes of the bf16 encoder, nothing converted per prompt.
-    ``UNSLOTH_TE_INT8_FP16=0`` keeps the dense encoder."""
+    """float16 CUDA (no bf16/fp8) runs the hosted int8 ConvRot encoder; ``UNSLOTH_TE_INT8_FP16=0`` keeps the dense one."""
     import os
 
     if os.environ.get(TE_INT8_FP16_ENV, "1").strip().lower() in ("0", "false", "no", "off"):

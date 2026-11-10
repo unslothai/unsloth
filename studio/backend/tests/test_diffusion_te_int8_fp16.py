@@ -40,7 +40,6 @@ def test_fp16_card_resolves_only_the_int8_file():
         "text_encoder"
     ]
     assert (src.kind, src.location, src.filename) == ("repo", REPO, INT8_NAME)
-    # No fp8 file behind it: fp8 does not run on a float16 card.
     assert tpq.te_candidate_filenames(src) == (INT8_NAME,)
 
 
@@ -60,8 +59,7 @@ def test_fp16_scales_the_weight_before_the_matmul():
     lin = _int8_convrot_linear_class()(256, 4, bias = False, group_size = 256)
     lin.weight = torch.full((4, 256), 127, dtype = torch.int8)
     lin.weight_scale = torch.full((4, 1), 1e-4, dtype = torch.float32)
-    # The rotation puts a constant input in one channel (40 * 16 = 640): the unscaled int8 sum is 640 * 127 = 81280,
-    # past float16's 65504, while the true output is 8.13.
+    # Unscaled sum 640 * 127 = 81280 overflows float16; true output is 8.13.
     x = torch.full((1, 256), 40.0, dtype = torch.float16)
     h = build_convrot_hadamard(256, dtype = torch.float32)
     expected = torch.nn.functional.linear(x.float(), (lin.weight.float() * lin.weight_scale) @ h)

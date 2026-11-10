@@ -130,8 +130,7 @@ def _int8_convrot_linear_class() -> Any:
                 )
             else:
                 self.bias = None
-            # float16 compute: scale the weight before the matmul. The unscaled int8 sum is the output over its scale
-            # (~1000x) and overflows float16's 65504; set by the loader for float16 encoders only.
+            # float16: scale the weight before the matmul; the unscaled int8 sum overflows 65504.
             self.scale_weight_first = False
 
         def forward(self, x: Any) -> Any:  # noqa: D102
