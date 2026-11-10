@@ -108,9 +108,7 @@ def test_the_extent_is_reconstructed_so_both_checks_answer_about_one_scrollbar()
 
 
 def test_a_payload_with_no_client_height_falls_back_and_says_so():
-    """A row from a checkout that predates the field, or one whose census failed. It compares
-    `bottom` as before rather than refusing, and the detail names which of the two it compared so
-    the tighter effective allowance is not silent."""
+    """No client height (old checkout or failed census): compares `bottom`, and the detail says so."""
     base = _scroll_row(18, bottom = 9_200)
     treat = _scroll_row(6, bottom = 9_100)
     checks = {c["invariant"]: c for c in B.compare_behaviour(base, treat)["checks"]}
@@ -222,9 +220,7 @@ def test_the_ceiling_and_the_extent_check_enforce_one_tolerance_on_one_quantity(
 
 
 def test_an_arm_with_no_extent_does_not_borrow_its_partners_ceiling():
-    """The degradation stays a degradation. Bounding an arm this check has always left unbounded
-    above is the one direction that could INVENT a red rather than retire one, so an arm carrying
-    no extent of its own still gets the lower bound alone and says so."""
+    """An arm with no extent gets the lower bound alone and says so; a ceiling could INVENT a red."""
     base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
     treat = _scroll_row(6, fraction = 2.0, bottom = None, client = 800)
     treat["census"]["viewport_scroll_height"] = None
@@ -243,8 +239,7 @@ def test_the_lower_bound_still_catches_a_gesture_that_was_snapped_back():
 
 
 def test_a_row_with_no_extent_gets_the_lower_bound_and_no_ceiling():
-    """Degrades to no ceiling rather than to a guess. A ceiling of zero would fail every correct
-    arm; the row says which of the two it applied."""
+    """Degrades to no ceiling, not a guess: a zero ceiling would fail every correct arm."""
     base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
     treat = _scroll_row(6, fraction = 2.0, bottom = 9_200, client = 800)
     del treat["expect"]["bottom"]

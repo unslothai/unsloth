@@ -6,6 +6,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { AUTH_SESSION_STORED_EVENT, getAuthSessionEpoch, hasSettledAuthSession } from "@/features/auth";
 import { notifyChatHistoryUpdated } from "@/features/chat/api/chat-api";
 import { useChatNavigationStore } from "@/features/chat/stores/chat-navigation-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { translate } from "@/i18n";
 import { browserAccountKey } from "@/lib/account-transition";
 import { isTauri } from "@/lib/api-base";
@@ -128,10 +129,16 @@ export function ScheduledTaskRunNotifier() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const pathnameRef = useRef(pathname);
   const openThread = useRouterState({
-    select: (state) => (state.location.search as { thread?: unknown }).thread,
+    select: (state) => {
+      const search = state.location.search as { thread?: unknown; compare?: unknown };
+      return state.location.pathname === "/chat" && !search.compare && typeof search.thread === "string"
+        ? search.thread
+        : null;
+    },
   });
   useEffect(() => {
-    if (typeof openThread === "string") useUnseenScheduledRuns.getState().clearThread(openThread);
+    const { ttsEnabled, autoReadAloud } = useVoiceSettingsStore.getState();
+    useUnseenScheduledRuns.getState().openThread(openThread, ttsEnabled && autoReadAloud);
   }, [openThread]);
   // Recents' unread marks follow the account's stored unseen results, so every tab and a reload
   // show them, and opening one anywhere clears it everywhere.

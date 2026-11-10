@@ -50,7 +50,8 @@ def _clean(monkeypatch):
         ((12, 0), True),
     ],
 )
-def test_arch_gate_auto(cap, on):
+def test_arch_gate_auto(monkeypatch, cap, on):
+    monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: False)  # the pre-3.8 table
     assert (g8.arch_config(cap, "auto") is not None) is on
 
 
@@ -66,6 +67,52 @@ def test_force_enables_unmeasured_sm80_plus_only(monkeypatch):
     assert g8.arch_config((9, 0)) == g8._FALLBACK_CONFIG
     assert g8.arch_config((10, 0)) == g8._FALLBACK_CONFIG
     assert g8.arch_config((7, 5)) is None
+
+
+@pytest.mark.parametrize("newer", [False, True])
+def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer):
+    monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: newer)
+    for cap, cfg in g8._ARCH_CONFIG.items():
+        stock = newer and cap[0] == 8
+        assert g8.arch_config(cap, "auto") == (None if stock else cfg)
+        assert g8.arch_config(cap, "force") == cfg  # forcing still runs the kernel
+        assert not g8.unlisted_arch(cap) and not g8.unlisted_wanted(cap, "auto")
+    for cap in ((8, 6), (8, 7)):  # unlisted sm8x: no probe / latency check either
+        assert g8.unlisted_wanted(cap, "auto") is not newer
+        assert g8.unlisted_wanted(cap, "force")
+    for cap in ((9, 0), (12, 1)):  # no spill there: unchanged
+        assert g8.unlisted_wanted(cap, "auto")
+    assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
+    assert g8._gates((8, 9))[0] is not newer
+
+
+@pytest.mark.parametrize(
+    "version, newer", [("3.7.1", False), ("3.8.0", True), ("3.9.0+git1", True), ("4.0", True)]
+)
+def test_triton_at_least_parses_the_installed_version(monkeypatch, version, newer):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "triton", types.SimpleNamespace(__version__ = version))
+    g8._triton_at_least.cache_clear()
+    try:
+        assert g8._triton_at_least(3, 8) is newer
+    finally:
+        g8._triton_at_least.cache_clear()
+
+
+def test_triton38_runtime_turns_sm80_sm89_stock(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "triton", types.SimpleNamespace(__version__ = "3.8.0"))
+    clear = getattr(getattr(g8, "_triton_at_least", None), "cache_clear", lambda: None)
+    clear()
+    try:
+        assert g8.arch_config((8, 0), "auto") is None
+        assert g8.arch_config((8, 9), "auto") is None
+        assert not g8.unlisted_wanted((8, 6), "auto")
+        assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
+    finally:
+        clear()
 
 
 def test_install_is_a_noop_when_killed(monkeypatch):
@@ -1216,9 +1263,7 @@ def _swapped_unfused(ff):
 def test_swiglu_mlp_fuses_the_product_into_the_down_quant_eager_and_compiled(
     h16_rotq, monkeypatch, version
 ):
-    """The patched MLP: gate / value share one act quant, the down projection takes its codes from the halves.
-    Output within the stock MLP's own int8 rounding (codes_close upstream), compiled fullgraph, one graph, no
-    recompile on a second input, uninstall restores the class forward."""
+    """Patched MLP: gate/value share one act quant, down takes the halves' codes; one fullgraph graph."""
     from torch._dynamo.utils import counters
 
     if not cq._SWIGLU_DEVICE.get(torch.cuda.current_device()):
@@ -1500,8 +1545,7 @@ def test_replaced_activation_declines_the_swiglu_fusion(monkeypatch):
 
 
 def test_codes_close_rejects_non_finite_scales():
-    """NaN compares false against every tolerance: a NaN / inf scale on one row (e.g. the probe's all-zero row) must
-    still fail, on either side."""
+    """NaN compares false to all tolerances: NaN or inf scales must still fail, on either side."""
     rq = torch.randint(-120, 120, (64, 1024), dtype = torch.int8)
     rs = torch.rand(64) + 0.5
     for bad in (float("nan"), float("inf"), float("-inf")):
@@ -1513,8 +1557,7 @@ def test_codes_close_rejects_non_finite_scales():
 
 @needs_cuda
 def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
-    """The per-device probe runs both ``rotq_h16`` branches (one pass, two pass) on v1 / v2, and a kernel that returns
-    a NaN scale on one row is refused."""
+    """Per-device probe runs both rotq_h16 branches and refuses a kernel returning a NaN scale."""
     index = torch.cuda.current_device()
     real = cq._h16_launch
     seen = set()

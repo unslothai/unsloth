@@ -425,6 +425,85 @@ def test_a_video_refusal_carries_a_plain_detail(catalog, enabled, loads):
     assert isinstance(excinfo.value.detail, str)
 
 
+@pytest.mark.parametrize("takes_the_gpu, evicts", [(True, True), (True, False), (False, True)])
+def test_a_chat_tools_key_switches_media_only_when_the_chat_model_stays(
+    flux, enabled, loads, monkeypatch, takes_the_gpu, evicts
+):
+    from dataclasses import replace
+
+    from utils.account_context import OWNER, run_as
+
+    key = replace(OWNER, via_api_key = True, load_policy = "beside_only")
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: takes_the_gpu)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: takes_the_gpu)
+    monkeypatch.setattr(arb, "would_evict", lambda owner, **_kw: evicts)
+    problem, refused = "", takes_the_gpu and evicts
+    try:
+        run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
+    except HTTPException as exc:
+        problem = exc.headers["X-Unsloth-Problem"]
+    assert problem.startswith("needs_user_load kind=image") == refused and len(loads) == 1 - refused
+
+
+@pytest.mark.parametrize(
+    "key_policy, parent_counted, chats, switched",
+    [
+        ("beside_only", True, 1, True),  # the one counted chat is the caller's own
+        ("beside_only", True, 2, False),  # another chat is still busy
+        (
+            "beside_only",
+            False,
+            1,
+            False,
+        ),  # an external-provider parent is not counted: the 1 is someone else
+        ("any", True, 1, False),
+    ],
+)
+def test_a_chat_tools_switch_does_not_wait_on_the_chat_that_called_it(
+    flux, enabled, loads, monkeypatch, key_policy, parent_counted, chats, switched
+):
+    from dataclasses import replace
+
+    from core.inference import load_policy
+    from utils.account_context import OWNER, run_as
+
+    key = replace(OWNER, via_api_key = True, load_policy = key_policy, key_id = 41)
+    if parent_counted:
+        load_policy.note_counted_parent(41)
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.2)
+    monkeypatch.setattr(arb, "would_evict", lambda owner, **_kw: False)
+    monkeypatch.setattr(chat, "other_inference_request_count", lambda **kw: chats)
+    try:
+        run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
+        problem = ""
+    except HTTPException as exc:
+        problem = (exc.headers or {}).get("X-Unsloth-Problem", str(exc.detail))
+    finally:
+        load_policy.forget_counted_parent(41)
+    assert (len(loads) == 1) == switched, problem
+
+
+def test_a_chat_model_that_lands_before_the_gates_still_refuses_a_chat_tools_switch(
+    flux, enabled, loads, monkeypatch, takes_the_gpu
+):
+    from dataclasses import replace
+
+    from utils.account_context import OWNER, run_as
+
+    key = replace(OWNER, via_api_key = True, load_policy = "beside_only")
+    # The precheck sees no chat model; one is resident by the time the media gates are held.
+    checks: list = []
+    monkeypatch.setattr(
+        arb, "would_evict", lambda owner, **_kw: checks.append(owner) or len(checks) > 1
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
+    assert excinfo.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=image")
+    assert loads == [] and len(checks) == 2
+
+
 @pytest.mark.parametrize("resident", ["repo id", "path"])
 def test_a_resident_model_is_not_reloaded(flux, enabled, backend, loads, resident):
     backend.repo_id = "black-forest-labs/FLUX.1-dev" if resident == "repo id" else str(flux)
@@ -1199,8 +1278,7 @@ def test_a_local_hidream_is_accepted_once_its_encoder_is_cached(
 def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
     flux, enabled, backend, loads, monkeypatch
 ):
-    # A CPU diffusion device releases ownership, so the switch evicts nobody.
-    # Patch both bindings: the drain and the switch each read it.
+    # A CPU diffusion load frees ownership, so nothing is evicted; patch both bindings.
     monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(backends, "chat_busy", lambda *a, **k: True)
@@ -2055,8 +2133,7 @@ def test_a_cached_single_checkpoint_the_loader_cannot_open_is_not_advertised(cat
 
 
 def test_a_stalled_load_probe_still_answers_inside_the_budget(flux, enabled, backend, monkeypatch):
-    # load_progress can stall on a slow filesystem; timed inside the loop because asyncio.run
-    # joins the executor on exit.
+    # load_progress can stall, so time it in the loop: asyncio.run joins the executor.
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
 
     async def _start(

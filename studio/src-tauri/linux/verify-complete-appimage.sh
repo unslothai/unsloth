@@ -62,6 +62,12 @@ if ((${#missing_components[@]} > 0)); then
   exit 1
 fi
 
+# The tray loader tries the Ayatana name first; without a bundled one it loads the host's (#16605).
+if [[ -e "$appdir/usr/lib/libappindicator3.so.1" && ! -e "$appdir/usr/lib/libayatana-appindicator3.so.1" ]]; then
+  echo "Complete AppImage has no bundled libayatana-appindicator3.so.1, so its tray loader reaches the host's Ayatana" >&2
+  exit 1
+fi
+
 launchers=("$appdir/AppRun")
 [[ ! -e "$appdir/AppRun.wrapped" ]] || launchers+=("$appdir/AppRun.wrapped")
 if grep -aEq '^[[:space:]]*(export[[:space:]]+)?LD_LIBRARY_PATH=' "${launchers[@]}" \

@@ -3336,10 +3336,9 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
-          // The same substitution applyPerModelConfigToRuntime makes at load: a model with no per-model
-          // override sends null, which the backend reads as Auto, while the selector has been showing
-          // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
-          // charged the sidecar for a load that disables it.
+          // Same substitution as applyPerModelConfigToRuntime: no per-model override sends null
+          // (read as Auto) while the selector shows the global fallback, so a global Off row
+          // charged an 11 GB DSpark sidecar.
           speculativeType: resolveSpeculativeType(
             runtimeConfig.speculativeType,
             speculativeFallback,
@@ -3752,11 +3751,10 @@ export function ModelConfigPage({
       : forgets
         ? deletePerModelConfig(configId, target.ggufVariant)
         : true;
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
-    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
-    // native-path lease is the same.
-    // A forget also drops the local records for every other spelling the server reports clearing.
+    // Best-effort mirror for API loads, skipped if the localStorage write failed (they would
+    // disagree); gated on auto-switch reach, not GGUF-ness, since the resolver skips materialized
+    // Ollama links and native-path leases; a forget also clears local records for every other
+    // spelling the server reports.
     if (
       saved &&
       (keep || forgets) &&
@@ -4163,6 +4161,12 @@ export function ModelConfigPage({
             <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
+            <div
+              className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"
+              aria-live="polite"
+            >
+              {saveStatus || "\u00a0"}
+            </div>
           </div>
         </div>
       )}
@@ -4494,7 +4498,7 @@ export function ModelConfigPage({
             }
             onClick={() => pickSet(pinnedSet)}
           >
-            Reset
+            Reset all
           </Button>
           {target.isGguf && (
             <SharedRunConfigControls

@@ -53,8 +53,7 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Stub only if httpx is not installed: a stub without Response breaks later
-# starlette.testclient imports for the whole session.
+# Stub httpx only if missing: one without Response breaks later starlette.testclient imports.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -94,8 +93,7 @@ def _fake_proc_reader(rss_kb):
 
 
 class TestPlatformMatrix:
-    """Linux-first via /proc. On macOS/Windows must degrade to None
-    rather than crash."""
+    """Linux-first via /proc: on macOS and Windows the read must degrade to None, not crash."""
 
     def test_linux_live_proc_is_self_pid(self, tmp_path):
         """Self-pid /proc read uses the real kernel interface."""
@@ -194,8 +192,7 @@ class TestVmRSSParsing:
         assert out["fraction"] == 0.0
 
     def test_malformed_vmrss_value(self, tmp_path):
-        """Non-integer VmRSS is treated like an absent line (ValueError
-        caught)."""
+        """Non-integer VmRSS is treated like an absent line (ValueError is caught)."""
         gguf = tmp_path / "m.gguf"
         _sparse(gguf, 1 * 1024**3)
         inst = _make()
@@ -214,8 +211,7 @@ class TestVmRSSParsing:
 
 class TestFilesystemEdges:
     def test_symlink_primary_follows_to_blob(self, tmp_path):
-        """HF cache stores blobs under blobs/ and symlinks them from
-        snapshots/. Must follow the symlink."""
+        """HF cache symlinks snapshots/ to blobs/, so sizing must follow the symlink."""
         blob = tmp_path / "blob"
         _sparse(blob, 12 * 1024**3)
         snap = tmp_path / "snap"
@@ -252,8 +248,7 @@ class TestFilesystemEdges:
         assert out["bytes_total"] == 0
 
     def test_relative_gguf_path(self, tmp_path):
-        """Relative paths shouldn't crash; behaviour depends on CWD but
-        must not raise."""
+        """Relative paths must not raise; behaviour depends on the CWD."""
         cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
@@ -271,8 +266,7 @@ class TestFilesystemEdges:
 
 class TestShardAggregation:
     def test_partial_multi_shard_download(self, tmp_path):
-        """Primary present but shards 2..N still ``.incomplete``. Sums
-        only the fully-arrived ``.gguf`` files."""
+        """Shards 2..N still ``.incomplete``: sums only fully-arrived ``.gguf`` files."""
         _sparse(tmp_path / "m-00001-of-00004.gguf", 30 * 1024**3)
         _sparse(tmp_path / "m-00002-of-00004.gguf", 30 * 1024**3)
         _sparse(tmp_path / "m-00003-of-00004.gguf.incomplete", 5 * 1024**3)
@@ -284,8 +278,7 @@ class TestShardAggregation:
         assert out["bytes_total"] == 60 * 1024**3
 
     def test_two_shard_series_in_same_dir(self, tmp_path):
-        """Defensive: when two quant series share a dir, the prefix
-        filter sums only siblings of the chosen primary."""
+        """Two quant series share a dir: the prefix filter sums only the primary's siblings."""
         for i in range(1, 3):
             _sparse(tmp_path / f"m_q4-{i:05d}-of-00002.gguf", 10 * 1024**3)
             _sparse(tmp_path / f"m_q8-{i:05d}-of-00002.gguf", 20 * 1024**3)
@@ -297,8 +290,7 @@ class TestShardAggregation:
         assert out["bytes_total"] == 40 * 1024**3
 
     def test_mmproj_sibling_not_counted(self, tmp_path):
-        """Vision models drop an ``mmproj-*.gguf`` alongside. For a
-        single-file (non-sharded) primary, count only the primary."""
+        """Vision ``mmproj-*.gguf`` sidecars must not count toward a single-file primary."""
         _sparse(tmp_path / "m.gguf", 8 * 1024**3)
         _sparse(tmp_path / "mmproj-BF16.gguf", 2 * 1024**3)
         inst = _make()

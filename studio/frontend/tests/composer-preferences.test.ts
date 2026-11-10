@@ -12,6 +12,8 @@ import {
 } from "../src/features/chat/utils/composer-preferences.ts";
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
+const preferenceStorage = installLocalStorageFake();
+
 const enter: ComposerKeyEvent = {
   key: "Enter",
   metaKey: false,
@@ -178,7 +180,7 @@ test("legacy and malformed saved settings retain usable defaults", () => {
   }
 });
 test("the real preference store persists all controls and restores them on reload", async () => {
-  const { store } = installLocalStorageFake();
+  const { store } = preferenceStorage;
   const { useChatPreferencesStore: prefs } = await import(
     "../src/features/chat/stores/chat-preferences-store.ts"
   );
@@ -202,4 +204,37 @@ test("the real preference store persists all controls and restores them on reloa
   await prefs.persist.rehydrate();
   assert.deepEqual(normalizeComposerPreferences(prefs.getState()), expected);
   assert.equal(typeof prefs.getState().setFollowUpBehavior, "function");
+});
+
+test("draft sharing is opt-in for existing preferences and survives an explicit choice", async () => {
+  const { store } = preferenceStorage;
+  const { useChatPreferencesStore: prefs } = await import(
+    "../src/features/chat/stores/chat-preferences-store.ts"
+  );
+  for (const shareComposerDraft of [undefined, false, "true", 1]) {
+    store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft } }));
+    await prefs.persist.rehydrate();
+    assert.equal(prefs.getState().shareComposerDraft, false);
+  }
+  prefs.getState().setShareComposerDraft(true);
+  const saved = store.get("unsloth_chat_preferences")!;
+  prefs.getState().setShareComposerDraft(false);
+  store.set("unsloth_chat_preferences", saved);
+  await prefs.persist.rehydrate();
+  assert.equal(prefs.getState().shareComposerDraft, true);
+});
+
+test("sharing switched on by another window's rehydrate still adopts this tab's draft", async () => {
+  const { store } = preferenceStorage;
+  const { useChatPreferencesStore: prefs } = await import(
+    "../src/features/chat/stores/chat-preferences-store.ts"
+  );
+  const drafts = await import("../src/features/chat/utils/composer-draft.ts");
+  store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft: false } }));
+  await prefs.persist.rehydrate();
+  drafts.stageComposerDraft(drafts.composerDraftKey("rehydrated-chat"), "typed here");
+  store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft: true } }));
+  await prefs.persist.rehydrate();
+  assert.equal(prefs.getState().shareComposerDraft, true);
+  assert.equal(drafts.latestDraft(drafts.composerDraftKey("", true)), "typed here");
 });

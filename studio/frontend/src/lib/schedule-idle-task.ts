@@ -10,10 +10,13 @@ const INPUT_EVENTS = [
   "touchstart",
   "touchmove",
 ] as const;
+const SCROLL_EVENTS: ReadonlySet<string> = new Set(["wheel", "scroll", "touchmove"]);
 let lastInputAt = Number.NEGATIVE_INFINITY;
+let lastNonScrollInputAt = Number.NEGATIVE_INFINITY;
 let watchingInput = false;
-const noteInput = (): void => {
+const noteInput = (event?: Event): void => {
   lastInputAt = performance.now();
+  if (!(event && SCROLL_EVENTS.has(event.type))) lastNonScrollInputAt = lastInputAt;
 };
 const watchInput = (): void => {
   if (watchingInput || typeof document === "undefined") return;
@@ -28,10 +31,15 @@ export const inputQuietIn = (): number => {
   return INPUT_QUIET_MS - (performance.now() - lastInputAt);
 };
 
+/** Like inputQuietIn, but wheel and touch scrolling do not count: work sliced per frame can run under them. */
+export const nonScrollInputQuietIn = (): number => {
+  watchInput();
+  return INPUT_QUIET_MS - (performance.now() - lastNonScrollInputAt);
+};
+
 /**
- * Run `callback` once the main thread is idle, or after `timeout` at the latest; returns a
- * canceller. Falls back to setTimeout without requestIdleCallback (Safari, the WebKitGTK webview
- * the desktop app embeds on Linux), and runs synchronously with no window.
+ * Runs callback when the main thread is idle or after timeout, returning a canceller; falls back to
+ * setTimeout without requestIdleCallback (Safari, WebKitGTK) and runs synchronously with no window.
  */
 export function scheduleIdleTask(
   callback: () => void,

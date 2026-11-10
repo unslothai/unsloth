@@ -591,6 +591,23 @@ def test_mlx_epoch_steps_divide_by_world_size_only_when_derived():
     assert steps(7, 16, 2, 2, 3, 2) == 7
 
 
+# Expected = transformers 4.57.6 get_warmup_steps / TrainerState.compute_steps.
+@pytest.mark.parametrize(
+    "ratio, max_steps, expected",
+    [(0.05, 10, 1), (0.03, 15, 1), (0.1, 25, 3), (0.1, 45, 5), (0.15, 30, 5), (0.29, 100, 29)],
+)
+def test_mlx_ratio_schedule_rounds_up_like_transformers(ratio, max_steps, expected):
+    trainer = types.SimpleNamespace(
+        distributed_world_size = 1,
+        args = types.SimpleNamespace(max_steps = 0, warmup_steps = 0, eval_steps = 0),
+    )
+    _worker._configure_mlx_training_schedule(
+        trainer, max_steps, None, 1, 1, 1, warmup_ratio = ratio, eval_steps_ratio = ratio
+    )
+    assert trainer.args.warmup_steps == expected
+    assert trainer.args.eval_steps == expected
+
+
 @pytest.mark.parametrize("rank", [0, 1])
 def test_mlx_final_save_is_rank0_owned(rank):
     trainer = _FakeRankTrainer(rank = rank, world_size = 2)
@@ -904,7 +921,9 @@ def test_mlx_audio_dataset_formats_both_splits_as_audio_rows(image_col):
         "custom_format_mapping": None,
         "_send": lambda *_a, **_kw: None,
         "vision_image_size": None,
-        "_mlx_audio_rows": lambda ds, processor, mapping, *column: formatted.append((ds, *column))
+        "_mlx_audio_rows": lambda ds, processor, mapping, *column, **_kw: formatted.append(
+            (ds, *column)
+        )
         or ([ds], image_col),
         "_adapt_for_mlx_vlm": lambda rows, **_kw: adapted.append(rows) or [*rows, "lifted"],
         "format_and_template_dataset": lambda *_a, **_kw: pytest.fail(
@@ -1009,6 +1028,52 @@ def test_mlx_audio_rows_carry_each_rows_images(monkeypatch):
     # An eval split whose train split had no images trains on audio alone.
     eval_rows, eval_image_col = _worker._mlx_audio_rows(dataset, "processor", None, None)
     assert eval_image_col is None and "images" not in eval_rows[0]
+
+
+def test_mlx_audio_rows_skip_blank_transcripts(monkeypatch):
+    from utils.datasets import audio_decode
+
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: True)
+    monkeypatch.setattr(_worker, "logger", types.SimpleNamespace(warning = lambda *a: None))
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.audio_extractor_sampling_rate = lambda processor: 16000
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", zoo_utils)
+    clip = {"array": [0.1], "sampling_rate": 16000}
+
+    def dataset(texts):
+        return _AudioRowsDataset([{"audio": clip, "text": text} for text in texts])
+
+    rows, _ = _worker._mlx_audio_rows(dataset(["hi", None, " "]), "processor")
+
+    assert [row["messages"][2]["content"][0]["text"] for row in rows] == ["hi"]
+    with pytest.raises(ValueError, match = "blank"):
+        _worker._mlx_audio_rows(dataset([None, ""]), "processor")
+    assert _worker._mlx_audio_rows(dataset([None, ""]), "processor", None, None) == ([], None)
+
+
+def test_mlx_blank_audio_eval_split_disables_eval_not_training():
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    branch = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If) and ast.unparse(n.test) == "is_dataset_audio"
+    )
+    events = []
+    namespace = {
+        "is_dataset_audio": True,
+        "_send": lambda kind, **kw: events.append((kind, kw)),
+        "_mlx_audio_rows": lambda ds, *a, **kw: (ds, None),
+        "tokenizer": None,
+        "custom_format_mapping": None,
+        "dataset": [{"messages": []}],
+        "eval_dataset": [],
+        "eval_enabled": True,
+    }
+    exec(compile(ast.Module(body = [branch], type_ignores = []), "<audio>", "exec"), namespace)
+
+    assert namespace["eval_dataset"] is None and namespace["eval_enabled"] is False
+    assert namespace["dataset"] == [{"messages": []}]
+    assert [kind for kind, _ in events].count("warning") == 1
 
 
 @pytest.mark.parametrize("is_dataset_audio", [True, False])

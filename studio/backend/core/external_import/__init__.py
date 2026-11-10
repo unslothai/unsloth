@@ -216,12 +216,13 @@ def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict
     }
 
 
-def _pending_messages(source: Source, transcript: Transcript, existing: bool) -> list[dict]:
+def _pending_messages(
+    source: Source, transcript: Transcript, existing: bool, stored: list[dict]
+) -> list[dict]:
     # Only turns appended since the last import. The ledger count, not the message rows,
     # says which those are: a message deleted in Studio leaves no row behind.
     if not existing:
         return list(transcript.messages)
-    stored = studio_db.list_chat_messages(transcript.thread_id)
     mark = studio_db.get_external_import_mark(source.key, transcript.session_id)
     if mark is None:
         # No rows and no mark = shell thread from an interrupted import.
@@ -244,9 +245,9 @@ def _pending_messages(source: Source, transcript: Transcript, existing: bool) ->
     return reseated
 
 
-def _late_tool_results(transcript: Transcript) -> list[dict]:
+def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[dict]:
     """Stored messages whose tool calls were imported while open and have a result now."""
-    stored = {m["id"]: m for m in studio_db.list_chat_messages(transcript.thread_id)}
+    stored = {m["id"]: m for m in stored_rows}
     patched = []
     for message in transcript.messages:
         current = stored.get(message["id"])
@@ -294,9 +295,11 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
     except studio_db.ChatThreadDeletedError:
         summary.skipped += 1
         return False
-    pending = _pending_messages(source, transcript, bool(existing))
+    # One read of the thread's rows serves both passes; nothing writes between them.
+    stored = studio_db.list_chat_messages(thread_id) if existing else []
+    pending = _pending_messages(source, transcript, bool(existing), stored)
     if existing:
-        pending = _late_tool_results(transcript) + pending
+        pending = _late_tool_results(transcript, stored) + pending
     mark = studio_db.ExternalImportMark(
         source = source.key,
         session_id = session_id,

@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import hashlib
+import re
 import sqlite3
 import sys
 import threading
@@ -62,12 +63,95 @@ def test_client_preferences_start_unsaved_and_merge_by_section(client):
     assert isinstance(body["updatedAt"], int)
 
 
+def test_download_prompts_follow_the_account(client):
+    prompts = {"askBeforeDownloading": False, "askBeforeProgramDownloads": False}
+    client.put("/api/settings/client-preferences", json = {"browser": prompts})
+    body = client.get("/api/settings/client-preferences").json()
+    assert {k: body["browser"][k] for k in prompts} == prompts
+
+
+_FRONTEND = _BACKEND.parent / "frontend" / "src" / "features"
+
+
+def _synced_store_fields(
+    store: str,
+    interface: str,
+    skip = frozenset(),
+) -> set[str]:
+    source = (_FRONTEND / store).read_text(encoding = "utf-8")
+    body = re.search(rf"interface {interface} \{{\n(.*?)\n\}}", source, re.S).group(1)
+    fields = re.findall(r"^  (\w+)\??: (?!\()", body, re.M)
+    return set(fields) - skip
+
+
+# The sync hook sends every store field and the server ignores unknown keys, so a field missing here never syncs.
+def test_every_synced_store_field_is_saved():
+    hook = (_FRONTEND / "settings/hooks/use-device-settings-sync.ts").read_text(encoding = "utf-8")
+    local_chat = set(
+        re.findall(r'"(\w+)"', re.search(r"LOCAL_CHAT_PREFS = new Set\(\[(.*?)\]", hook).group(1))
+    )
+    stores = {
+        settings_routes.BrowserPrefsPayload: (
+            "browser/prefs-store.ts",
+            "BrowserPrefsState",
+            frozenset(),
+        ),
+        settings_routes.ChatPrefsPayload: (
+            "chat/stores/chat-preferences-store.ts",
+            "ChatPreferencesState",
+            frozenset(local_chat),
+        ),
+        settings_routes.PlusMenuPrefsPayload: (
+            "chat/stores/plus-menu-prefs-store.ts",
+            "PlusMenuPrefsState",
+            frozenset(),
+        ),
+    }
+    for model, args in stores.items():
+        fields = _synced_store_fields(*args)
+        assert fields, args
+        assert fields <= set(model.model_fields), (model.__name__, fields - set(model.model_fields))
+
+
 def test_client_preferences_reject_out_of_range_values(client):
     assert (
         client.put("/api/settings/client-preferences", json = {"interfaceScale": 400}).status_code
         == 422
     )
     bad = {"browser": {"searchEngine": "javascript:alert(1)"}}
+    assert client.put("/api/settings/client-preferences", json = bad).status_code == 422
+
+
+def test_chat_menu_time_and_spellcheck_preferences_follow_the_account(client):
+    chat = {
+        "sendShortcut": "mod-enter",
+        "showReplyTimes": True,
+        "pastedTextMinChars": 8000,
+        "generationStatsUpdates": "realtime",
+    }
+    plus_menu = {"pins": {"mcp": True}, "order": ["mcp", "skills"], "pinnedPromptIds": ["p1"]}
+    client.put("/api/settings/client-preferences", json = {"chat": chat, "plusMenu": plus_menu})
+    client.put("/api/settings/client-preferences", json = {"timeFormat": "24h", "spellcheck": False})
+    body = client.get("/api/settings/client-preferences").json()
+    assert {k: body["chat"][k] for k in chat} == chat
+    assert body["plusMenu"]["pins"] == {"mcp": True}
+    assert body["plusMenu"]["order"] == ["mcp", "skills"]
+    assert body["plusMenu"]["pinnedPromptIds"] == ["p1"]
+    assert body["timeFormat"] == "24h"
+    assert body["spellcheck"] is False
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"chat": {"sendShortcut": "alt-enter"}},
+        {"chat": {"newChatComposerPosition": 101}},
+        {"plusMenu": {"order": "mcp"}},
+        {"timeFormat": "36h"},
+        {"chat": {"generationStatsUpdates": "live"}},
+    ],
+)
+def test_synced_preferences_reject_invalid_values(client, bad):
     assert client.put("/api/settings/client-preferences", json = bad).status_code == 422
 
 

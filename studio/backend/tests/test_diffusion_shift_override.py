@@ -41,9 +41,8 @@ def _comfy_model_sampling_flux_shift(max_shift, base_shift, width, height):
     return (width * height / (8 * 8 * 2 * 2)) * mm + b
 
 
-# The node a ComfyUI workflow for each family sets shift with: the model's native model_sampling (comfy/model_base.py
-# ModelType.FLUX -> ModelSamplingFlux, ModelType.FLOW -> ModelSamplingDiscreteFlow), except Qwen-Image / Edit /
-# Layered whose templates patch ModelSamplingAuraFlow over the FLUX-type QwenImage.
+# Node each ComfyUI workflow uses for shift: native ModelSampling per model type, but
+# Qwen-Image/Edit/Layered patch ModelSamplingAuraFlow.
 EXPECTED_NODES = {
     "flux.1": SHIFT_NODE_FLUX,
     "flux.1-kontext": SHIFT_NODE_FLUX,
@@ -61,7 +60,9 @@ EXPECTED_NODES = {
     "hunyuanimage-2.1": SHIFT_NODE_SD3,
     "hidream-i1": SHIFT_NODE_SD3,
     "moss-image": SHIFT_NODE_SD3,
-    # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching.
+    "chroma": SHIFT_NODE_SD3,  # the template's ModelSamplingAuraFlow is the same time_snr_shift
+    # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching, Anima keeps its shift 3.
+    "anima": None,
     "ideogram-4": None,
     "sdxl": None,
 }
