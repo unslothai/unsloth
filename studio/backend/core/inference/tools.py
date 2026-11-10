@@ -6683,7 +6683,8 @@ _HERESTRING_TO_INTERPRETER_RE = re.compile(
 _HEREDOC_INTERPRETER_RE = re.compile(
     r"(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)"
 )
-_HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;"})
+_HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;", "\n"})
+_PYTHON_STDIN_DATA_MODULES = frozenset({"json.tool", "base64"})
 _SHELL_LINE_OPERATORS = (
     "<<-",
     "<<<",
@@ -6704,6 +6705,7 @@ _SHELL_LINE_OPERATORS = (
     ")",
     "<",
     ">",
+    "\n",
 )
 _HEREDOC_INTERPRETER_MENTION_RE = re.compile(
     r"(?<![\w.-])(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)(?![\w-])"
@@ -6731,7 +6733,10 @@ def _shell_line_tokens(line: str) -> "list | None":
             flush()
             i += 1
         elif ch == "#" and not active:
-            break
+            j = line.find("\n", i)
+            if j < 0:
+                break
+            i = j
         elif ch == "\\":
             word.append(line[i + 1 : i + 2])
             quoted = active = True
@@ -6784,8 +6789,11 @@ def _python_reads_stdin_program(words: list) -> "bool | None":
                 return None
         elif word.startswith("-"):
             for i, ch in enumerate(word[1:], 1):
-                if ch in "cm":
+                if ch == "c":
                     return interactive
+                if ch == "m":
+                    module = word[i + 1 :] or next(words, "")
+                    return interactive if module in _PYTHON_STDIN_DATA_MODULES else None
                 if ch in "WX":
                     if i == len(word) - 1:
                         next(words, None)
@@ -6814,12 +6822,18 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 return True
             line = line[:-1] + lines[i]
             i += 1
-        if "<<" not in line:
+        if "<<" not in line and "'" not in line and '"' not in line:
             continue
         tokens = _shell_line_tokens(line)
+        while tokens is None and i < len(lines):
+            line += "\n" + lines[i]
+            i += 1
+            tokens = _shell_line_tokens(line)
         if tokens is None:
             if mentioned:
                 return True
+            continue
+        if not any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens):
             continue
         commands, current = [], []
         for token in tokens:
@@ -6873,10 +6887,16 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 ),
                 None,
             )
-            if _HEREDOC_SHELL_RE.fullmatch(os.path.basename(command_word)):
+            if any(_HEREDOC_SHELL_RE.fullmatch(os.path.basename(w)) for w in names):
+                body_text = "\n".join(body)
                 if (
                     depth >= 3
                     or _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names))
+                    or (
+                        not quoted
+                        and re.search(r"[$`]", body_text)
+                        and _HEREDOC_INTERPRETER_MENTION_RE.search(body_text)
+                    )
                     or _terminal_is_high_risk("\n".join(body), depth + 1)
                 ):
                     return True

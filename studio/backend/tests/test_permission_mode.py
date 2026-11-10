@@ -1152,6 +1152,18 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("python3 - <<PY\nprint(1) #\\\nPY\nimport shutil; shutil.rmtree('build')\nPY", True),
         ("bash <<'SH'\npython3 - <<'PY'\nimport shutil; shutil.rmtree('build')\nPY\nSH", True),
         ("bash <<'SH'\npython3 - <<'PY'\nprint(1)\nPY\nSH", False),
+        ("env bash <<'SH'\npython3 - <<'PY'\nimport shutil; shutil.rmtree('build')\nPY\nSH", True),
+        (
+            'OP=rmtree\nbash <<SH\npython3 - <<\'PY\'\nimport shutil; getattr(shutil, "$OP")("build")\nPY\nSH',
+            True,
+        ),
+        (
+            "note='example:\ncat <<EOF\n'\npython3 - <<'PY'\nimport shutil; shutil.rmtree('build')\nPY\n: <<EOF\nEOF",
+            True,
+        ),
+        ("python3 -m code <<'PY'\nimport shutil; shutil.rmtree('build')\nPY", True),
+        ("python3 -m json.tool <<'EOF'\n{\"a\": 1}\nEOF", False),
+        ("bash <<EOF\necho $HOME\nEOF", False),
         ("python3 - build <<'PY'\nimport shutil; shutil.rmtree('build')\nPY", True),
         ("python3 - <<'A' <<'B'\nprint(1)\nA\nimport shutil; shutil.rmtree('build')\nB", True),
         ("python3 - <<'A' < job.py\nprint(1)\nA", True),
