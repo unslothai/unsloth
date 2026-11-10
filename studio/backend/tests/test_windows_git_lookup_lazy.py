@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""_resolve_trusted_windows_git scans PATH lazily: same verdict as the eager scan, fewer stats."""
-
 import os
 import shutil
 import sys
