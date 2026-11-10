@@ -382,7 +382,6 @@ def test_the_block_split_pin_lists_both_cards_and_their_budgets(monkeypatch):
     ]
 
 
-# --help lines as ArgOptions::print renders them before and after upstream 80bac2d5.
 _OLD_BOOL_AUTO_FIT_HELP = (
     "  --max-vram <string>    maximum VRAM budget in GiB for graph-cut segmented execution.\n"
     "  --auto-fit             pick the diffusion/te/vae device placements automatically from the model size\n"
