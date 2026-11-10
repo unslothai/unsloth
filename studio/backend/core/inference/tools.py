@@ -6712,6 +6712,7 @@ _HEREDOC_INTERPRETER_MENTION_RE = re.compile(
     r"(?<![\w.-])(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)(?![\w-])"
 )
 _COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
+_COMMAND_WRAPPERS = frozenset({"env", "command", "nohup", "time", "nice", "stdbuf", "sudo"})
 _HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
 # Commands that only read a heredoc as data; any other owner may forward stdin to an interpreter.
 _HEREDOC_DATA_COMMANDS = frozenset(
@@ -6910,7 +6911,14 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 return True
             if mentioned and not quoted and re.search(r"[$`]|\\\n", "\n".join(body) + "\n"):
                 return True
-            command_word = next((w for w in names if not re.match(r"\w+=", w)), "")
+            command_word, wrapped = "", False
+            for w in names:
+                if re.match(r"\w+=", w) or (wrapped and w.startswith("-")):
+                    continue
+                if os.path.basename(w) not in _COMMAND_WRAPPERS:
+                    command_word = w
+                    break
+                wrapped = True
             if mentioned and names[-1:] == ["exec"]:
                 return True
             if os.path.basename(command_word) in _HEREDOC_DATA_COMMANDS:
