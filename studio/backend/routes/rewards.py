@@ -3,12 +3,14 @@
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
+from starlette.concurrency import run_in_threadpool
 
 from auth.authentication import get_current_subject
 from core.training.rewards import (
     MAX_REWARD_MD_BYTES,
+    MAX_REWARD_ZIP_BYTES,
     RewardError,
     RewardExistsError,
     RewardNotFoundError,
@@ -16,6 +18,7 @@ from core.training.rewards import (
     export_reward,
     get_reward,
     import_reward,
+    import_reward_zip,
     list_rewards,
     parse_reward_markdown,
     preview_scores,
@@ -62,12 +65,14 @@ class RewardPreviewRequest(BaseModel):
     rewards: list[RewardPreviewItem] = Field(..., min_length = 1, max_length = 16)
     completion: StrictStr = Field(..., max_length = 64 * 1024)
     reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    explain: StrictBool = False
 
 
 class RewardPreviewScore(BaseModel):
     name: str
     score: float
     weighted: float
+    explanation: Optional[dict[str, Any]] = None
 
 
 class RewardPreviewResponse(BaseModel):
@@ -101,7 +106,25 @@ def import_reward_route(
         raise _http_error(exc) from exc
 
 
-@router.post("/preview", response_model = RewardPreviewResponse)
+@router.post("/import-zip", response_model = list[RewardRecord], status_code = 201)
+async def import_reward_zip_route(
+    request: Request,
+    overwrite: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
+) -> list[dict[str, Any]]:
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > MAX_REWARD_ZIP_BYTES:
+            raise HTTPException(status_code = 413, detail = "The ZIP is too large.")
+    try:
+        return await run_in_threadpool(import_reward_zip, bytes(data), overwrite = overwrite)
+    except RewardError as exc:
+        raise _http_error(exc) from exc
+
+
+# Unset explanations are left out, so callers that do not ask keep the old response shape.
+@router.post("/preview", response_model = RewardPreviewResponse, response_model_exclude_unset = True)
 def preview_rewards(
     payload: RewardPreviewRequest, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
@@ -114,7 +137,9 @@ def preview_rewards(
                 spec = get_reward(item.name)
             else:
                 raise RewardError("Each preview item needs a name or markdown.")
-            [result] = preview_scores([spec], payload.completion, payload.reference)
+            [result] = preview_scores(
+                [spec], payload.completion, payload.reference, explain = payload.explain
+            )
             scores.append({**result, "weighted": result["score"] * item.weight})
     except RewardError as exc:
         raise _http_error(exc) from exc
