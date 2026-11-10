@@ -3174,6 +3174,113 @@ def test_external_connection_error_is_a_502_with_the_upstream_reason(client, mon
     assert client.get("/api/inference/images/gallery").json()["images"] == []
 
 
+def _png_b64(size = (64, 48), mode = "RGB"):
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new(mode, size).save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_external_connection_edits_one_image_through_images_edits(client, monkeypatch):
+    import io
+
+    import httpx
+    from PIL import Image
+
+    sent = []
+
+    def handler(req):
+        sent.append(req)
+        return httpx.Response(200, json = {"data": [{"b64_json": _png_b64((64, 48))}]})
+
+    _external_image_connection(monkeypatch, handler)
+    resp = _post_generate(
+        client,
+        prompt = "make it blue",
+        workflow = "edit",
+        # A palette image: re-encoded so the endpoint always gets an RGB/RGBA PNG.
+        init_image = "data:image/png;base64," + _png_b64((64, 48), "P"),
+        provider_id = "conn-1",
+        model = "flux-kontext",
+    )
+    assert resp.status_code == 200, resp.text
+    (image,) = resp.json()["images"]
+    assert (image["prompt"], image["model"], image["workflow"]) == (
+        "make it blue",
+        "flux-kontext",
+        "edit",
+    )
+    (req,) = sent
+    assert str(req.url) == "http://127.0.0.1:8000/v1/images/edits"
+    assert req.headers["authorization"] == "Bearer sk-test"
+    assert req.headers["content-type"].startswith("multipart/form-data")
+    body = req.read()
+    for field, value in (
+        ("model", b"flux-kontext"),
+        ("prompt", b"make it blue"),
+        ("n", b"1"),
+        ("response_format", b"b64_json"),
+    ):
+        assert b'name="' + field.encode() + b'"\r\n\r\n' + value in body
+    # No mask, no size: the provider keeps the source size.
+    assert b'name="mask"' not in body and b'name="size"' not in body
+    boundary = req.headers["content-type"].split("boundary=")[1].encode()
+    (part,) = [p for p in body.split(b"--" + boundary) if b'name="image"' in p]
+    png = part.split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n", 1)[0]
+    source = Image.open(io.BytesIO(png))
+    assert (source.format, source.size, source.mode) == ("PNG", (64, 48), "RGB")
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"workflow": "edit", "init_image": "IMG", "mask_image": "IMG"},
+        {"workflow": "edit", "init_image": "IMG", "reference_images": ["IMG"]},
+        {"workflow": "edit", "init_image": "IMG", "strength": 0.5},
+        {"workflow": "reference", "init_image": "IMG"},
+        {"init_image": "IMG", "strength": 0.5},
+    ],
+)
+def test_external_connection_refuses_masks_extra_images_and_other_workflows(
+    client, monkeypatch, fields
+):
+    looked_up = []
+    monkeypatch.setattr(
+        inference_routes.providers_db, "get_provider", lambda pid: looked_up.append(pid)
+    )
+    fields = {
+        k: ([_png_b64()] if isinstance(v, list) else _png_b64() if v == "IMG" else v)
+        for k, v in fields.items()
+    }
+    resp = _post_generate(client, prompt = "p", provider_id = "conn-1", model = "m", **fields)
+    assert resp.status_code in (400, 422), resp.text
+    if resp.status_code == 400:
+        assert resp.json()["detail"] == inference_routes._EXTERNAL_IMAGE_UNSUPPORTED
+    assert looked_up == []
+
+
+def test_external_connection_edit_with_an_unreadable_image_is_a_400(client, monkeypatch):
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    resp = _post_generate(
+        client,
+        prompt = "p",
+        workflow = "edit",
+        init_image = "bm90IGFuIGltYWdl",
+        provider_id = "conn-1",
+        model = "m",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Could not read the source image."
+    assert sent == []
+
+
 def test_external_connection_does_not_hold_local_chat_swaps(client, monkeypatch):
     import base64
     import io

@@ -49792,6 +49792,25 @@ def _decode_external_images(encoded: list) -> list:
     return images
 
 
+_EXTERNAL_IMAGE_UNSUPPORTED = (
+    "An external image connection only supports text to image and single-image edits."
+)
+
+
+def _external_edit_source_png(init_image: str) -> bytes:
+    """Decode a base64/data-URL source image and re-encode it as PNG for /images/edits."""
+    from PIL import Image
+
+    data = init_image.split(",", 1)[1] if init_image.startswith("data:") else init_image
+    image = Image.open(io.BytesIO(base64.b64decode(data, validate = True)))
+    image.load()
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+    out = io.BytesIO()
+    image.save(out, format = "PNG")
+    return out.getvalue()
+
+
 async def _external_image_generation(
     body: DiffusionGenerateRequest, request: Request
 ) -> DiffusionGenerateResponse:
@@ -49810,8 +49829,13 @@ async def _external_image_generation(
             status_code = 400,
             detail = "model is required when using an external image connection.",
         )
+    # A connection does plain text to image, or an edit of one source image through /images/edits.
+    # Masks and extra images stay off: an /images/edits endpoint does not mean the model handles them.
+    editing = body.workflow == "edit"
     if (
-        body.init_image
+        (body.workflow is not None and not editing)
+        or (body.init_image and not editing)
+        or (editing and not body.init_image)
         or body.reference_images
         or body.loras
         or body.controlnet
@@ -49821,7 +49845,6 @@ async def _external_image_generation(
         or body.mask_image
         or body.strength is not None
         or body.upscale is not None
-        or body.workflow
         or body.localized_edit
         or body.sampler
         or body.schedule_type
@@ -49837,8 +49860,16 @@ async def _external_image_generation(
     ):
         raise HTTPException(
             status_code = 400,
-            detail = "An external image connection only supports text to image.",
+            detail = _EXTERNAL_IMAGE_UNSUPPORTED,
         )
+    source_png = None
+    if editing:
+        try:
+            source_png = await asyncio.to_thread(_external_edit_source_png, body.init_image)
+        except Exception:
+            raise HTTPException(
+                status_code = 400, detail = "Could not read the source image."
+            ) from None
 
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
@@ -49896,7 +49927,15 @@ async def _external_image_generation(
     owner = current_account_id()
     generation_started = time.perf_counter()
     task = asyncio.create_task(
-        client.create_images(
+        # No size on an edit: the provider keeps the source image's size.
+        client.edit_images(
+            prompt = body.prompt,
+            model = external_model,
+            image_png = source_png,
+            n = body.batch_size,
+        )
+        if editing
+        else client.create_images(
             prompt = body.prompt,
             model = external_model,
             n = body.batch_size,
@@ -49959,6 +49998,7 @@ async def _external_image_generation(
                             "generation_count": len(images),
                             "model": external_model,
                             "model_kind": "connection",
+                            "workflow": "edit" if editing else None,
                             "created_at": created_at,
                         },
                     )

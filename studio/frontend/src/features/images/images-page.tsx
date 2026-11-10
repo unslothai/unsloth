@@ -5896,7 +5896,8 @@ export function ImagesPage({
 
   useEffect(() => {
     if (external) {
-      setSupported(["create"]);
+      // A connection runs /images/generations or a single-image /images/edits; no masks or extra images.
+      setSupported(["create", "edit"]);
       return;
     }
     if (!status?.loaded) {
@@ -7064,7 +7065,8 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {!unifiedEditActive && sizeControls}
+            {/* A connection edit keeps the source size, so the size controls would do nothing. */}
+            {!unifiedEditActive && !(external && workflow === "edit") && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
             {!external && (

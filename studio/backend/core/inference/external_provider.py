@@ -7356,6 +7356,25 @@ class ExternalProviderClient:
         response.raise_for_status()
         return [item["b64_json"] for item in response.json()["data"]]
 
+    async def edit_images(self, prompt: str, model: str, image_png: bytes, n: int) -> list[str]:
+        """Post one source image to an OpenAI-compatible /images/edits (multipart, no mask)."""
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _client().post(
+            _append_provider_path(self.base_url, "/images/edits"),
+            headers = headers,
+            files = {"image": ("image.png", image_png, "image/png")},
+            data = {
+                "model": model,
+                "prompt": prompt,
+                "n": str(n),
+                "response_format": "b64_json",
+            },
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return [item["b64_json"] for item in response.json()["data"]]
+
     async def create_transcription(
         self,
         audio: bytes,
