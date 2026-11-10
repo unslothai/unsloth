@@ -284,13 +284,9 @@ TE_PREQUANT_BUDGET_SCALE = 0.65
 # The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
 # 17,534,339,488 for the dense encoder, 0.533, rounded up.
 TE_INT8_CONVROT_BUDGET_SCALE = 0.56
-# Per family where the default under-states: an encoder whose bf16 embedding table is a large share of it keeps more
-# bytes dense. Lumina-2's Gemma-2-2B file is 3,207,382,688 bytes against the 5.23 GB bf16 equivalent of its fp32 Hub
-# copy (0.613), Krea-2's Qwen3-VL-4B 5,247,054,376 against 8.88 GB dense (0.591); both rounded up.
-# FLUX.3's Qwen3-VL-4B file is 5,247,076,320 bytes against 8,875,719,344 dense (0.591), rounded up the same way.
-# Wan's UMT5 keeps its 256k-row embedding dense: its int8 file is 6,735,404,944 bytes against 11,361,851,208 dense,
-# 0.593, rounded up the same way.
-# HunyuanImage-2.1 loads Qwen-Image's 8,974,915,168-byte file against a 15.5 GB table price (0.579), rounded up.
+# Per-family int8 ConvRot budget scales where the default understates (an encoder whose bf16
+# embedding table is a large share keeps more bytes dense): measured ratios, rounded up: Lumina-2
+# 0.613, Krea-2 0.591, FLUX.3 0.591, Wan UMT5 0.593, HunyuanImage-2.1 0.579 (its Qwen-Image file).
 _TE_INT8_CONVROT_BUDGET_SCALES = {
     "hunyuanimage-2.1": 0.60,
     "lumina-2": 0.62,
@@ -1218,6 +1214,7 @@ def load_prequant_text_encoder(
                 encoder_cls, config, state_dict, dtype = dtype, trim = trim
             )
             setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "int8")
+            _tag_weight_files(encoder, path)
             if logger is not None:
                 logger.info(
                     "diffusion.te_prequant: loaded %s int8 ConvRot weight-only checkpoint (%s)",
@@ -1264,6 +1261,7 @@ def load_prequant_text_encoder(
         target.dtype = dtype
         _cast_fp8(encoder, target)
         setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "fp8")
+        _tag_weight_files(encoder, path)
         if logger is not None:
             # The FILE's scheme, not the request's (an fp8 fallback used to log int8).
             logger.info(
@@ -1563,6 +1561,9 @@ def _fetch_dense_components(
         fetched = snapshot_download(
             repo_id,
             allow_patterns = [f"{c}/*" for c in components],
+            ignore_patterns = _dense_component_pickles(
+                repo_id, components, revision, hf_token, cache_dir
+            ),
             token = hf_token,
             cache_dir = cache_dir,
             revision = revision,
@@ -1573,6 +1574,60 @@ def _fetch_dense_components(
     except Exception as exc:  # noqa: BLE001 - the strict refusal below still explains the load
         _warn(logger, "dense_fallback_fetch", exc)
         return False
+
+
+def _dense_component_pickles(
+    repo_id: str,
+    components: list,
+    revision: Optional[str],
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
+) -> list:
+    """ignore_patterns for a dense encoder fetch: every .pt / .pth / .ckpt / .pkl, plus a component's .bin shards when
+    the repo lists a safetensors weight for it. A component whose .bin is already cached and matches the Hub's sha256
+    (and whose safetensors is not cached) skips its safetensors instead, so nothing is downloaded twice. Without a
+    listing only the never-read pickles are dropped, so a component whose only copy is a .bin still loads."""
+    from .diffusers_safetensors import (
+        _is_model_safetensors,
+        pipeline_pickle_files,
+        verified_bin_components,
+    )
+
+    patterns = [
+        f"{c}/*{suffix}"
+        for c in components
+        for suffix in (".pt", ".pth", ".ckpt", ".pkl", ".pickle")
+    ]
+    try:
+        from huggingface_hub import HfApi
+        names = HfApi().list_repo_files(repo_id, revision = revision, token = hf_token)
+    except Exception:  # noqa: BLE001 - no listing: the .bin of a component without safetensors must stay fetchable
+        return patterns
+    reused: set = set()
+    try:
+        import os
+
+        from huggingface_hub import try_to_load_from_cache
+
+        hit = try_to_load_from_cache(
+            repo_id, "model_index.json", cache_dir = cache_dir, revision = revision
+        )
+        if isinstance(hit, str):
+            reused = verified_bin_components(
+                os.path.dirname(hit), components, token = hf_token, revision = revision
+            )
+    except Exception:  # noqa: BLE001 - unverified: safetensors stays first
+        reused = set()
+    wanted = tuple(f"{c}/" for c in components)
+    for n in pipeline_pickle_files(list(names) + ["model_index.json"]):
+        if n.startswith(wanted) and n.split("/", 1)[0] not in reused:
+            patterns.append(n)
+    for n in names:
+        if n.split("/", 1)[0] in reused and (
+            _is_model_safetensors(n) or n.endswith(".safetensors.index.json")
+        ):
+            patterns.append(n)
+    return patterns
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:
@@ -1736,6 +1791,13 @@ def _build_int8_convrot_encoder(
     encoder.requires_grad_(False)
     encoder.eval()
     return encoder
+
+
+def _tag_weight_files(encoder: Any, path: Any) -> None:
+    """Record the source file so a release reloads matching tensors from it instead of snapshotting."""
+    from .diffusion_te_release import WEIGHT_FILES_ATTR
+    if str(path).endswith(".safetensors"):
+        setattr(encoder, WEIGHT_FILES_ATTR, (str(path),))
 
 
 def _fill_tied_aliases(encoder: Any, state_dict: dict) -> None:

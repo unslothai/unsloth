@@ -269,9 +269,8 @@ def test_the_direct_diffusion_loader_records_it_too():
 
 
 def test_the_request_is_read_from_the_model_not_the_environment():
-    """A process-global would describe whichever model loaded last, so a
-    program that loads two before building a trainer would train the first
-    with the second's precision."""
+    """The request is stored on each model, since a process-global would describe whichever model
+    loaded last and train the first with the second's precision."""
     assert "_unsloth_user_float32" in MP_SRC
     assert "UNSLOTH_USER_FLOAT32" not in MP_SRC
 

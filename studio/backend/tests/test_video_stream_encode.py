@@ -404,9 +404,7 @@ def _audio(frames):
 
 
 def _mp4_layout(data):
-    """What two encodes of the same frames and soundtrack with the same settings must share. Video packet bytes
-    are not in it: libx264 through PyAV is not run-to-run byte-reproducible here (two stock exports of one clip
-    can differ in a rate-control decision), so they would make the comparison flaky."""
+    """Compare stream layout, not packet bytes: libx264 via PyAV is not run-to-run byte-reproducible."""
     import re
 
     with av.open(io.BytesIO(data)) as c:

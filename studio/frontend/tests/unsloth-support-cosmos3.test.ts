@@ -50,3 +50,13 @@ test("the Nano row carries a visible cosmos-guardrail chip; Edge carries none", 
   assert.deepEqual(curatedRowLabelFor("nvidia/Cosmos3-Nano", VIDEO_CATALOG)?.tags, ["needs cosmos-guardrail"]);
   assert.deepEqual(curatedRowLabelFor("nvidia/Cosmos3-Edge", VIDEO_CATALOG)?.tags, []);
 });
+
+test("a video-to-video pipeline tag is not routed to the Video page (Nano's continuation is gated on status)", () => {
+  const result = classifyUnslothSupport({
+    modelId: "someone/any-video-to-video",
+    pipelineTag: "video-to-video",
+    libraryName: "diffusers",
+    tags: ["diffusers"],
+  }) as { supportedIn?: string };
+  assert.notEqual(result.supportedIn, "video");
+});

@@ -162,8 +162,7 @@ _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
 
 def _model_wait_budget(run: dict) -> float:
-    """Share of the request budget one model wait may spend, clamped so an unlimited or
-    oversized budget still leaves the poll loop bounded."""
+    """One model wait's share of the request budget, clamped so the poll loop stays bounded."""
     timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
     capped = min(timeout or _DEFAULT_MODEL_TIMEOUT_SECONDS, _MAX_MODEL_WAIT_BUDGET_SECONDS)
     return capped / (_MAX_MODEL_WAITS + 1)
@@ -190,9 +189,8 @@ _NATURAL_FINISH_REASONS = frozenset({"stop"})
 
 
 def _auto_scrape_default() -> int:
-    """Server default for ``budgets["maxAutoScrape"]``: 0 (off) unless
-    ``UNSLOTH_RESEARCH_AUTO_SCRAPE`` enables it (``1``/``true`` -> ``_AUTO_SCRAPE_TOP_K``, or an
-    explicit count clamped to ``[0, _AUTO_SCRAPE_TOP_K]``)."""
+    """Default maxAutoScrape is 0 unless UNSLOTH_RESEARCH_AUTO_SCRAPE is 1/true (top-K) or an
+    explicit count clamped to [0, _AUTO_SCRAPE_TOP_K]."""
     raw = os.environ.get("UNSLOTH_RESEARCH_AUTO_SCRAPE", "").strip().lower()
     if not raw:
         return 0
@@ -666,9 +664,7 @@ def _stream_rate_limit_delay(head: str | None) -> float | None:
 
 
 async def _with_head(head: str | None, rest: AsyncIterator[str]) -> AsyncIterator[str]:
-    """``rest`` with the line already read off it put back in front.
-
-    Explicitly against None, not truthiness: a blank SSE separator line is a line."""
+    """Yields ``head`` (if not None) then ``rest``; a blank SSE separator line is still a line."""
     if head is not None:
         yield head
     async for line in rest:
@@ -1309,9 +1305,8 @@ class ResearchSupervisor:
     async def _finish_terminal(
         self, run_id: str, status: str, error: str | None, report: str
     ) -> str | None:
-        """Commit the terminal status, waiting a bounded while for a writer lock held elsewhere.
-        Gives up by raising, not by standing in a lease-expired row that would discard the run's
-        report and its real error; the run stays claimable once its lease runs out."""
+        """Commits terminal status with a bounded lock wait; raises rather than overwrite an expired
+        lease."""
         deadline = time.monotonic() + _TERMINAL_WRITE_DEADLINE_SECONDS
         while True:
             try:
@@ -2180,7 +2175,9 @@ class ResearchSupervisor:
                 await heartbeat
             except asyncio.CancelledError:
                 pass
+            # Stops side lookups that outlive a failed step.
             self._cancel_events.pop(account_key(run["id"]), None)
+            cancel_event.set()
             self._lost_leases.discard(account_key(run["id"]))
             self._report_drafts.pop(account_key(run["id"]), None)
 
@@ -2613,28 +2610,46 @@ class ResearchSupervisor:
                 rag_result = ""
             else:
                 used_queries.add(argument)
-                result = await asyncio.to_thread(
-                    execute_tool,
-                    "web_search",
-                    {"query": argument},
-                    cancel_event = self._cancel_event(run["id"]),
-                    timeout = tool_timeout,
-                    website_policy = website_policy,
+                # Side lookups overlap the web search; awaited after it so a web error still wins.
+                rag_task = (
+                    asyncio.ensure_future(
+                        asyncio.to_thread(
+                            execute_tool,
+                            "search_knowledge_base",
+                            {"query": argument},
+                            cancel_event = self._cancel_event(run["id"]),
+                            timeout = tool_timeout,
+                            rag_scope = run["config"]["ragScope"],
+                        )
+                    )
+                    if run["config"].get("ragScope")
+                    else None
                 )
-                rag_result = ""
-                if run["config"].get("ragScope"):
-                    rag_result = await asyncio.to_thread(
+                mcp_task = (
+                    asyncio.ensure_future(
+                        self._search_mcp_tools(run, mcp_tools, argument, position, tool_timeout)
+                    )
+                    if mcp_tools
+                    else None
+                )
+                side_tasks = [task for task in (rag_task, mcp_task) if task is not None]
+                try:
+                    result = await asyncio.to_thread(
                         execute_tool,
-                        "search_knowledge_base",
+                        "web_search",
                         {"query": argument},
                         cancel_event = self._cancel_event(run["id"]),
                         timeout = tool_timeout,
-                        rag_scope = run["config"]["ragScope"],
+                        website_policy = website_policy,
                     )
-                if mcp_tools:
-                    mcp_sources = await self._search_mcp_tools(
-                        run, mcp_tools, argument, position, tool_timeout
-                    )
+                    rag_result = await rag_task if rag_task is not None else ""
+                    if mcp_task is not None:
+                        mcp_sources = await mcp_task
+                except BaseException:
+                    for task in side_tasks:
+                        task.cancel()
+                    await asyncio.gather(*side_tasks, return_exceptions = True)
+                    raise
             rag_result, rag_sources = _split_rag_result(rag_result)
             await self._check_active(run["id"])
             document_source_keys = {

@@ -51,9 +51,8 @@ class _pretend_cuda:
 
 
 def test_bfloat16_autocast_raises_without_hardware_support():
-    """Guards everything below: if torch ever downgraded this to a warning,
-    the bug would be a silent precision change instead of a crash, and these
-    tests would be asserting the wrong thing."""
+    """Guards everything below: if torch ever downgraded this to a warning, the bug would be a
+    silent precision change instead of a crash and these tests would assert the wrong thing."""
     with _pretend_cuda(has_bf16 = False):
         with pytest.raises(RuntimeError, match = "does not support bfloat16"):
             with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
@@ -74,8 +73,7 @@ def _prepare_inputs_snippet() -> str:
 
 
 def _autocast_helper_source() -> str:
-    """Module level helpers the header calls, mirrored into the generated
-    trainer through RL_PRE_ITEMS."""
+    """Module level helpers the header calls, mirrored into the generated trainer through RL_PRE_ITEMS."""
     parts = [
         ast.get_source_segment(SRC, node)
         for node in ast.parse(SRC).body
@@ -86,9 +84,8 @@ def _autocast_helper_source() -> str:
 
 
 def _namespace(env):
-    """What the generated trainer module offers the header. `self` carries no
-    args here, which is the fallback path; a trainer with args is covered in
-    test_grpo_autocast_per_trainer.py."""
+    """What the generated trainer module offers the header; with self carrying no args this is the
+    fallback path, and a trainer with args is covered in test_grpo_autocast_per_trainer.py."""
     from contextlib import nullcontext
 
     namespace = {
