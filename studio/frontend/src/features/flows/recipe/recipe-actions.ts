@@ -150,8 +150,7 @@ function commitDisconnect(plan: Disconnect, coalesceKey?: string): void {
     );
 }
 
-/** Removes the references behind deleted column wires; returns the edge ids it handled. A reference a
- * `{% ... %}` tag holds is not rewritten: that wire stays, with a note on how to remove it. */
+/** A reference held by a `{% ... %}` tag is not rewritten: that wire stays, with a note. */
 export function disconnectColumns(
   edgeIds: string[],
   coalesceKey?: string,
@@ -162,7 +161,6 @@ export function disconnectColumns(
   return plan.handled;
 }
 
-/** The wires from deleted nodes into kept ones. */
 function wiresOut(graph: DocGraph, nodeIds: string[]): string[] {
   const drop = new Set(nodeIds);
   return graph.edgeOrder.filter((id) => {
@@ -171,8 +169,7 @@ function wiresOut(graph: DocGraph, nodeIds: string[]): string[] {
   });
 }
 
-/** Deletes nodes, taking a deleted column's `{{ reference }}` out of the columns that read it. A column a
- * `{% ... %}` tag still reads is not deleted, so no template is left naming a missing column. */
+/** A column still read by a `{% ... %}` tag is not deleted, so no template names a missing column. */
 export function removeNodes(nodeIds: string[]): void {
   const graph = useDocStore.getState().graph;
   const plan = planDisconnect(graph, wiresOut(graph, nodeIds));
@@ -302,7 +299,6 @@ export function starterRecipeGraph(
   return { group, nodes: [...nodes, generate], generate };
 }
 
-/** A starter recipe group at `at`, or the nearest free space below it. */
 export function insertStarterRecipe(
   at: [number, number],
   generateParams: Record<string, unknown>,
@@ -319,8 +315,7 @@ export function insertStarterRecipe(
   return generate;
 }
 
-/** Where the next column of a group goes: the first free cell of the frame's column grid, else a new row
- *  below its columns, the frame grown to hold it. The Recipe Dataset step's lane stays clear for its cards. */
+/** First free cell of the frame grid, else a new row; the Recipe Dataset step's lane stays clear. */
 export function nextColumnSlot(
   graph: DocGraph,
   groupId: string,

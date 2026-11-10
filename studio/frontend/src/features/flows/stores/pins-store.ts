@@ -94,7 +94,6 @@ export type HistoryKind =
   | "json"
   | "dataset";
 
-/** A history entry as a small Library-style card: what it is, a name, and one line of detail. */
 export function historyCard(outputs: Record<string, unknown>): {
   kind: HistoryKind;
   title: string;

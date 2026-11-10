@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Ctrl/Cmd+Z undoes; Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y redo. Matched on `code` too, so a
- *  non-Latin layout or Shift's uppercase key still lands. */
+/** Matched on `code` too, so non-Latin layouts and Shift's uppercase key still land. */
 export function historyAction(event: {
   key: string;
   code?: string;
@@ -20,7 +19,6 @@ export function historyAction(event: {
   return null;
 }
 
-/** A keydown meant for a text field, which canvas shortcuts leave alone. */
 export function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el) return false;

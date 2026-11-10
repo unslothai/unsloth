@@ -25,7 +25,6 @@ const HINT: Record<string, string> = {
   tool_config: "Tools an AI column may call. Local (stdio) tool servers only run from the Data Recipes page.",
 };
 
-/** The inspector for a recipe group's seed, provider connection, model preset or tool profile card. */
 export function SetupInspector() {
   const target = useUiStore((s) => s.recipeSetup);
   const formKey = useUiStore((s) => s.recipeSetupKey);

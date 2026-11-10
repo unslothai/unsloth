@@ -206,7 +206,6 @@ export const datasetRows = (value: unknown, offset: number, limit: number) => {
   );
 };
 
-/** Every row of a saved Data Recipe output (a schema transform's) as JSONL. */
 export async function datasetExport(value: unknown): Promise<Blob> {
   const response = await transport(
     `${FLOWS_API}/dataset-export`,
@@ -274,7 +273,6 @@ export async function importNotebook(
   };
 }
 
-/** A saved Data Recipe (by id) or recipe JSON as a new flow with one Recipe group. */
 export const importRecipe = (
   source: { recipe_id: string } | { payload: unknown; name?: string },
 ) =>
@@ -283,7 +281,7 @@ export const importRecipe = (
     json("POST", source),
   );
 
-/** One recipe group as recipe JSON Recipe Studio imports, without keys, local tool servers or upload paths. */
+/** Strips keys, local tool servers and upload paths. */
 export const exportRecipe = (doc: FlowDocument, groupId: string) =>
   request<{
     recipe: Record<string, unknown>;
@@ -304,7 +302,7 @@ export interface RecipeMigration {
   failed: { recipe_id: string; name: string; error: string }[];
 }
 
-/** One flow per saved Data Recipe not in Flows yet, or edited since; repeating it creates nothing new. */
+/** Idempotent: only recipes not in Flows yet or edited since. */
 export const importAllRecipes = () =>
   request<RecipeMigration>("/import/recipes", { method: "POST" });
 
@@ -393,7 +391,6 @@ export async function fetchMediaBlob(
 }
 
 /**
- * Follow a run's events from `afterSeq`, reconnecting on a dropped stream until a terminal event.
  * Every reconnect starts with a `snapshot`, so a gap is never silent.
  */
 export async function followRunEvents(

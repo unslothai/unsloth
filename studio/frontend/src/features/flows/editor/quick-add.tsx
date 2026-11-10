@@ -135,7 +135,6 @@ export function QuickAdd() {
               value="Reroute wire waypoint"
               onSelect={() => {
                 const { flow, from } = quickAdd;
-                // Centre the reroute where the wire was dropped.
                 const x = from?.side === "in" ? flow.x + 260 : flow.x;
                 const y = from ? flow.y + 20 : flow.y;
                 addNodeConnected(REROUTE_TYPE, [x - 130, y - 20], from, "in");

@@ -3,7 +3,6 @@
 
 // Recipe JSON in and out of Flows; the backend builds and checks the payloads (`/import/recipe`, `/export/recipe`).
 
-/** The recipe in pasted text, or why it is not one. */
 export function parseRecipeJson(
   text: string,
 ): { payload: Record<string, unknown> } | { error: string } {

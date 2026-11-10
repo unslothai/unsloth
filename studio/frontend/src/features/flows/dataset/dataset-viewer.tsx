@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A flow `dataset` value shown with Recipe Studio's own run views: the Data tab table, the Columns tab, Raw.
-// Lazy: loads the first time a dataset output is on screen.
+// Lazy-loaded the first time a dataset output is on screen.
 
 import { Button } from "@/components/ui/button";
 import {
@@ -110,7 +109,6 @@ function ExpandableCell({ value, dense }: { value: unknown; dense?: boolean }) {
 
 type ViewerProps = { value: DatasetValue; pageSize?: number; dense?: boolean };
 
-/** Data, Columns and Raw for one dataset, paged from the backend; another dataset starts on page 1. */
 export function DatasetViewer(props: ViewerProps): ReactElement {
   return <DatasetPages key={JSON.stringify(props.value)} {...props} />;
 }
@@ -234,7 +232,6 @@ function DatasetDialog({
   );
 }
 
-/** The inspector and app outputs: the full viewer, cells clamped, with Open for a bigger one. */
 export function DatasetPanel({ value }: { value: DatasetValue }): ReactElement {
   const [open, setOpen] = useState(false);
   return (
@@ -254,7 +251,6 @@ const COMPACT_ROWS = 5;
 // Wide enough to read a value; the rest of the columns scroll sideways.
 const COMPACT_COLUMN_WIDTH = 96;
 
-/** A node's inline output: the first rows and columns, and Open for the full view. */
 export function DatasetPreview({ value }: { value: DatasetValue }): ReactElement {
   const [open, setOpen] = useState(false);
   const load = useDatasetPage(value, 0, COMPACT_ROWS);

@@ -44,7 +44,6 @@ export function datasetTitle(value: DatasetValue): string {
     : name.replace(/^[0-9a-f]{32}_/, ""); // uploads are stored as `<uuid>_<name>`
 }
 
-// A local upload is labelled by the block that wrote it, when it says.
 const MADE_BY_LABEL: Record<string, string> = {
   preview: "Preview",
   recipe: "Data Recipe",
@@ -61,7 +60,6 @@ export function datasetSummary(value: DatasetValue, total?: number | null): stri
   return parts.join(" · ");
 }
 
-/** Row count to page by: the reader's total, the value's own count, or as far as rows have come back. */
 export function knownTotal(
   value: DatasetValue,
   page: Pick<DatasetRowsPage, "total" | "offset" | "rows"> | null,
@@ -95,7 +93,6 @@ function dtypeOf(value: unknown): string {
   return "dict";
 }
 
-/** Every column in the rows, those the value lists first (a recipe's generated columns ahead of its seed's). */
 export function columnNames(
   rows: Record<string, unknown>[],
   order?: readonly string[] | null,
@@ -106,7 +103,6 @@ export function columnNames(
   return [...new Set([...lead, ...names])];
 }
 
-/** Per-column type, distinct values and nulls over the rows shown, in Recipe Studio's Columns-tab shape. */
 export function columnStats(
   rows: Record<string, unknown>[],
 ): DatasetColumnStat[] {
@@ -139,7 +135,7 @@ export function columnDtypes(rows: Record<string, unknown>[]): Record<string, st
   );
 }
 
-/** A table column that reads its name as a literal key: `accessorKey` would read `a.b` as nested and turn its id into `a_b`. */
+/** Not `accessorKey`: it would read `a.b` as nested and turn the id into `a_b`. */
 export function literalColumn(name: string): {
   id: string;
   accessorFn: (row: Record<string, unknown>) => unknown;

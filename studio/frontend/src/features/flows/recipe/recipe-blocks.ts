@@ -58,7 +58,6 @@ export function setupConfig(view: StudioView, target: RecipeSetupTarget) {
   );
 }
 
-/** Takes a seed, provider, preset or tool profile out of the recipe. */
 export function removeSetup(target: RecipeSetupTarget): void {
   const view = viewOf(target.groupId);
   const config = view && setupConfig(view, target);
@@ -119,9 +118,7 @@ export function addRecipeBlock(
   });
 }
 
-/** Whether another block of the recipe (a column, seed, provider, preset or tool profile: they share one
- * namespace) has this name. A recipe with two blocks of one name does not open again, so such a name
- * stays a draft in the form. */
+/** Blocks share one namespace and a recipe with duplicate names does not reopen, so such a name stays a draft. */
 export function nameTaken(
   configs: Record<string, NodeConfig>,
   id: string,

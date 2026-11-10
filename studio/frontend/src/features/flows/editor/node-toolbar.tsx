@@ -22,8 +22,7 @@ import { downloadNodeOutput, rerollNode, runToNode } from "./node-actions";
 // Room the one-row toolbar needs above a card.
 const TOOLBAR_ROOM = 48;
 
-/** Actions, plus the button that opens the block's settings panel. Non-scaling by design: NodeToolbar sits outside the zoomed viewport, so it keeps its screen
- *  size at any zoom while staying anchored to the card. */
+/** NodeToolbar sits outside the zoomed viewport, so it keeps its screen size at any zoom. */
 function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
   const nodeId = useUiStore((s) =>
     toolbarNodeId(

@@ -30,7 +30,6 @@ function nextId(cards: SuperCard[]): string {
   return `sc${max + 1}`;
 }
 
-/** Combine the selected blocks into one closed super card and select it. */
 export function combineSelection(): string | null {
   const doc = useDocStore.getState();
   const ui = useUiStore.getState();
@@ -60,7 +59,6 @@ export function setSuperCardOpen(id: string, open: boolean): void {
     .setSelection(open ? card.members : [SUPER_PREFIX + id], []);
 }
 
-/** Drop the card; its blocks stay exactly where they are. */
 export function ungroupSuperCard(id: string): void {
   const doc = useDocStore.getState();
   const card = readSuperCards(doc.meta.editor, doc.graph).find(

@@ -37,7 +37,6 @@ function nearestLength(
   return best;
 }
 
-/** The wire (edge id) under a screen point, skipping `ignore`. */
 export function wireUnder(
   x: number,
   y: number,
@@ -50,8 +49,6 @@ export function wireUnder(
   return null;
 }
 
-/** Where on wire `id` a reroute dropped at flow point `p` sits, in flow coordinates, and which way
- *  the wire runs there. */
 export function snapToWire(
   id: string,
   p: Point,

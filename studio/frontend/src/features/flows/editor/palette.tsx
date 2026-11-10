@@ -29,8 +29,7 @@ type Ghost = { spec: NodeSpec | null; body: ReactNode; x: number; y: number };
 type DropFn = (type: string, x: number, y: number) => void;
 const DRAG_SLOP = 5;
 
-/** Click arms `type` for placing; a drag past the slop drops one. Pointer events, not HTML5
- *  drag, which Tauri's macOS webview eats. */
+/** Pointer events, not HTML5 drag, which Tauri's macOS webview eats. */
 function usePlacementPress(
   type: string,
   ghostOf: () => Pick<Ghost, "spec" | "body">,

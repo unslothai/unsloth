@@ -4,8 +4,6 @@
 import { create } from "zustand";
 import type { RerouteDir } from "../stores/reroute-graph";
 
-/** The Nodes panel's placement tool: the node type armed for click-to-place, if any, and which way
- *  the next free reroute faces (R turns it). */
 export const usePlacement = create<{
   armed: string | null;
   rerouteDir: RerouteDir;

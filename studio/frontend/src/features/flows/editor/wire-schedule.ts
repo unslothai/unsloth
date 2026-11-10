@@ -104,7 +104,6 @@ export function busEdges(edges: RfEdge[], global: "bus" | "curved"): RfEdge[] {
   return edges.filter((edge) => (edge.data?.wireStyle ?? global) === "bus");
 }
 
-/** Same scope and the same cards, frames and wires: a full pass would give the same routes. */
 export function sameRequest(a: RouteRequest, b: RouteRequest): boolean {
   return (
     a.scope === b.scope &&
@@ -124,19 +123,12 @@ export type RouteResult = {
 };
 
 export type SchedulerIO = {
-  /** Starts a routing pass; `done` runs when it lands. */
   route: (request: RouteRequest, done: (result: RouteResult) => void) => void;
-  /** Runs `run` on the next animation frame; false when there is none. */
   nextFrame: (run: () => void) => boolean;
   apply: (result: RouteResult) => void;
 };
 
-/**
- * One routing pass in flight; while it runs, only the latest graph is kept, and built when it is
- * sent. A drag sends at most one partial pass per frame. A full pass whose cards, frames and wires
- * match the last one sent is skipped: a selection or a doc edit away from the wires re-derives the
- * edges without changing a route.
- */
+// One pass in flight, latest graph queued; an unchanged full pass is skipped since selection re-derives edges.
 export class WireScheduler {
   stats = { full: 0, partial: 0, skipped: 0 };
   private io: SchedulerIO;
@@ -160,7 +152,6 @@ export class WireScheduler {
     if (!this.frame) this.pump();
   }
 
-  /** The routes were cleared: the next full pass must run. */
   reset(): void {
     this.pending = null;
     this.lastFull = null;
@@ -193,10 +184,6 @@ export class WireScheduler {
 
 let nextId = 0;
 
-/**
- * Queues a pass for the canvas as it is now. While cards move (`moving`), only their wires and the
- * ones sharing a lane with them re-route, once per frame, on the cards around them.
- */
 export function requestRouting(
   scheduler: WireScheduler,
   getState: () => { nodeLookup: Lookup; edges: RfEdge[] },

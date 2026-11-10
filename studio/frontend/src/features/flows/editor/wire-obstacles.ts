@@ -18,11 +18,7 @@ type RoutingNode = {
 
 const FIELDS = 8;
 
-/**
- * A counter that moves only when something the router reads changes: a non-note node's box or
- * visibility, or the direction of a reroute, which a turn can flip without changing its box.
- * It runs on every canvas store update (each pan frame), so it compares in place and builds nothing.
- */
+// Runs on every store update (each pan frame), so it compares in place and allocates nothing.
 export function routingVersion(): (nodes: Iterable<RoutingNode>) => number {
   let version = 0;
   const seen: RoutingNode[] = [];

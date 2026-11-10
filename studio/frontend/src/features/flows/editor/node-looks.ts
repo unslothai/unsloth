@@ -10,13 +10,11 @@ import { BENCHMARK_LOOK } from "./benchmark-node";
 import { LOOP_LOOK } from "./loop-node";
 import { TRAIN_LOOK } from "./train-node";
 
-/** Per-type content for the shared node card. Anything left out falls back to the
- *  spec: category icon and tone, typed ports, key fields and "Show inputs". */
+/** Anything left out falls back to the spec. */
 export interface NodeLook {
   icon?: (node: FlowNode) => IconSvgElement;
   /** Icon tile classes, e.g. one of Recipe Studio's `RECIPE_STUDIO_NODE_TONES`. */
   tone?: (node: FlowNode) => string | undefined;
-  /** Hex accent for the tile when there is no tone class. */
   accent?: (node: FlowNode) => string | undefined;
   subtitle?: (node: FlowNode, spec: NodeSpec) => string;
   HeaderExtra?: ComponentType<{ node: FlowNode }>;

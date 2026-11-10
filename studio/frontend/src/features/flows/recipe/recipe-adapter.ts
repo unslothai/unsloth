@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A Recipe group seen through Recipe Studio's own configs, so its block dialogs, reference sync and payload
-// builders edit a flow without the Recipe Studio store. Loaded with the editor dialogs, not with the canvas.
+// Recipe Studio configs without its store. Loaded with the editor dialogs, not the canvas.
 
 import { syncConfigsForPatch } from "@/features/recipe-studio/stores/helpers/config-patch";
 import { renameRoot, replaceRef } from "@/features/recipe-studio/utils/refs";
@@ -96,8 +95,7 @@ export function studioView(group: FlowGroup, columns: FlowNode[]): StudioView {
   };
 }
 
-/** A tool server is one recipe-wide definition shared by name: an edit made through one tool profile is
- * made in every profile that names it, so the copies never disagree (the payload keeps only one). */
+/** Tool servers are shared by name, so an edit via one profile is applied to every profile naming it. */
 function withSharedMcpProviders(
   configs: Record<string, NodeConfig>,
   before: ToolProfileConfig,
@@ -175,13 +173,11 @@ function asNodes(configs: Record<string, NodeConfig>): RecipeNode[] {
 }
 
 export interface RecipeEdit {
-  /** column nodes whose params (and label) change */
   nodes: FlowNode[];
   group: FlowGroup | null;
 }
 
-/** The schema transform's templates name columns too: a column renamed in this edit is renamed
- * there, so the transform still reads it. Unchanged processors keep their identity. */
+/** Renames carry into schema transform templates so the transform still reads the column. */
 function columnRenames(
   before: StudioView,
   configs: Record<string, NodeConfig>,
@@ -193,8 +189,7 @@ function columnRenames(
   });
 }
 
-/** A schema transform's template (JSON text) with a column renamed in its Jinja strings: read as
- * JSON first, so a quoted key in an expression (`record["topic"]`) is not escaped out of reach. */
+/** Parsed as JSON first so a quoted key in an expression (`record["topic"]`) is not escaped out of reach. */
 function renamedTemplate(template: string, from: string, to: string): string {
   let parsed: unknown;
   try {
@@ -233,8 +228,7 @@ function renamedProcessors(
   return processors;
 }
 
-/** The group's processors the forms do not show (a named drop_columns), with renamed columns
- * renamed in their column lists; null when none changed. */
+/** Processors the forms do not show, with renamed columns renamed; null when none changed. */
 function renamedDrops(
   group: FlowGroup,
   renames: [string, string][],
@@ -268,8 +262,7 @@ const ENTRY_NAME: Record<string, string> = {
   tool_configs: "tool_alias",
 };
 
-/** Fields the forms edit (builders-model.ts): an edited entry takes these from the form, set or
- * left out; every other saved field stays. Lists not named here are taken from the form whole. */
+/** Fields the forms edit (builders-model.ts); every other saved field survives an edit. */
 const FORM_FIELDS: Record<string, string[]> = {
   // biome-ignore lint/style/useNamingConvention: api schema
   model_providers: ["name", "endpoint", "provider_type", "api_key_env", "api_key", "extra_headers", "extra_body", "is_local"],
@@ -288,8 +281,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/** `form` with each field the form left as it was (`prior` = the form's value before the edit) taken from
- * `original`, so a value the form cannot show (a uniform temperature) survives an edit of another field. */
+/** Keeps values the form cannot show (a uniform temperature) when another field is edited. */
 function untouchedFromSaved(
   form: Record<string, unknown>,
   prior: Record<string, unknown> | null,
@@ -305,8 +297,7 @@ function untouchedFromSaved(
   return next;
 }
 
-/** `built` with every part the edit left as it was (`prior` = the same thing built before the edit)
- * taken from `saved`, nested objects part by part. */
+/** Untouched parts of `built` come from `saved`, nested objects part by part. */
 function keepUntouched(built: unknown, saved: unknown, prior: unknown): unknown {
   if (saved === undefined) return built;
   if (jsonEqual(prior, built)) return saved;
@@ -322,9 +313,7 @@ function keepUntouched(built: unknown, saved: unknown, prior: unknown): unknown 
   return next;
 }
 
-/** A provider, preset or tool profile the edit did not touch is kept exactly as saved, settings the
- * forms do not show included (a preset's max_parallel_requests, a uniform temperature); an edited
- * or renamed one keeps those settings and every field its form left alone, and takes what the form changed. */
+/** Keeps settings the forms do not show (max_parallel_requests, a uniform temperature) across edits and renames. */
 function keepUnshown(
   key: string,
   built: unknown,
@@ -379,8 +368,7 @@ function keepUnshown(
   });
 }
 
-/** The view an open form compares its next edit against once `configs` is saved: the saved configs,
- * with their names and renamed processors, so a later edit is told apart from this one. */
+/** Baseline for the next edit, so a later edit is told apart from this one. */
 export function savedView(before: StudioView, configs: Record<string, NodeConfig>): StudioView {
   return { ...before, configs, processors: renamedProcessors(before, configs) };
 }
@@ -445,8 +433,7 @@ export function commitStudioEdit(
     const conditions = renamedConditions(saved.conditional_params, renames);
     if (!config) continue;
     if (config === before.configs[id]) {
-      // What the forms do not show (a second image context, a numeric sampler's conditions) is
-      // renamed in place.
+      // Hidden fields (a second image context, numeric sampler conditions) are renamed in place.
       if (images !== saved.multi_modal_context || conditions !== saved.conditional_params)
         nodes.push({
           ...node,
@@ -473,8 +460,7 @@ export function commitStudioEdit(
         ) as typeof built)
       : built;
     const kept = column as Record<string, unknown>;
-    // A form that changed one setting of a sampler of the same type keeps the settings it does not
-    // show (a uniform's decimal_places, a uuid's short_form).
+    // Keep hidden sampler settings (a uniform's decimal_places, a uuid's short_form).
     if (
       prior &&
       jsonEqual(prior.column_type, built.column_type) &&
@@ -483,8 +469,7 @@ export function commitStudioEdit(
       kept.params = keepUntouched(kept.params, saved.params, (prior as Record<string, unknown>).params);
     if (kept.conditional_params === saved.conditional_params && conditions !== undefined)
       kept.conditional_params = conditions;
-    // Only a rename changed the form's image context: the saved list keeps its other images and
-    // their attributes, renamed where they name the column.
+    // On rename only, keep the saved image list and its attributes.
     const formImages = (c: unknown) => (c as Record<string, unknown> | null)?.multi_modal_context;
     if (
       Array.isArray(saved.multi_modal_context) &&
@@ -524,8 +509,7 @@ export function commitStudioEdit(
   for (const [key, value] of Object.entries(recipe)) {
     const saved = group.config?.[key];
     if (!ENTRY_NAME[key] && key !== "processors") {
-      // The seed and other single settings: what the edit left alone stays as saved (an HF seed's
-      // split and subset, which the form does not hold), what it changed comes from the form.
+      // Keep fields the form does not hold (an HF seed's split and subset).
       const kept = keepUntouched(value, saved, priorRecipe[key]);
       if (kept === undefined) delete config[key];
       else config[key] = kept;
@@ -540,8 +524,7 @@ export function commitStudioEdit(
         priorRecipe[key],
       );
   }
-  // Recipe Studio's forms carry schema transforms and the seed's drop list only; any other
-  // processor (a named drop_columns) is kept as it was, not lost to an unrelated edit.
+  // Other processors (a named drop_columns) must not be lost to an unrelated edit.
   const others = (
     drops ?? (Array.isArray(group.config?.processors) ? group.config.processors : [])
   ).filter((p): p is Record<string, unknown> => {
@@ -557,8 +540,7 @@ export function commitStudioEdit(
   keepIncompleteTools(config, group.config ?? {}, configs);
   const seed = Object.values(configs).find((c) => c.kind === "seed");
   if (seed?.kind === "seed" && config.seed_config === undefined) {
-    // A seed whose form is mid-edit (an End cleared to retype) builds nothing: keep its last
-    // valid config, so the card and its form stay; only removing the seed block deletes it.
+    // A mid-edit seed builds nothing: keep its last valid config so the card and form stay.
     const kept = group.config?.seed_config as
       | { source?: { seed_type?: string } }
       | undefined;
@@ -583,9 +565,7 @@ export function commitStudioEdit(
   return { nodes, group: { ...group, config, ui } };
 }
 
-/** A tool profile whose form is mid-edit (a server's endpoint cleared to retype) builds without
- * that server, or not at all: it keeps its last saved profile and servers, so the card and its
- * settings stay. Only removing the profile or a server deletes them. */
+/** A mid-edit tool profile keeps its last saved servers; only explicit removal deletes them. */
 function keepIncompleteTools(
   config: Record<string, unknown>,
   saved: Record<string, unknown>,
@@ -623,7 +603,6 @@ function keepIncompleteTools(
   }
 }
 
-/** A new column node for a config made by a Recipe Studio block factory. */
 export function columnNode(
   config: NodeConfig,
   configs: Record<string, NodeConfig>,

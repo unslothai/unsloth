@@ -15,7 +15,6 @@ import { edgeHandles } from "./connection-rules";
 import { rerouteSize, wireHandles } from "./reroutes";
 
 export type FlowNodeData = { nodeId: string };
-/** Dashes a Loop's feeds-the-next-round wire in either wire style. */
 const FEEDBACK_EDGE_CLASS = "[&_path]:[stroke-dasharray:7_5]";
 export type FlowEdgeData = {
   kind: EdgeKind;
@@ -43,12 +42,10 @@ export const GROUP_PREFIX = GROUP_KEY;
 export const NOTE_PREFIX = NOTE_KEY;
 
 type Positions = Record<string, { x: number; y: number }>;
-/** A size set live by a resize handle, before it is committed on release. */
 export type Boxes = Record<string, { width: number; height: number }>;
 
 /**
- * How many frames enclose each frame. Frames sit under the cards, nested ones above the frames
- * around them, so an outer frame drawn later never covers an inner frame's header.
+ * Nesting depth, so an outer frame drawn later never covers an inner frame's header.
  */
 export function groupDepths(graph: DocGraph): Map<string, number> {
   const depths = new Map<string, number>();
@@ -225,7 +222,6 @@ export class RfDeriver {
         position: pos,
         data: { noteId },
         selected: isSelected,
-        // The box the user drew; long text scrolls inside it.
         style: box ?? { width: note.rect[2], height: note.rect[3] },
         ...(size ? { measured: size } : {}),
       };
@@ -361,7 +357,6 @@ export class RfDeriver {
     const next: RfEdge[] = [];
     let changed = false;
     for (const id of graph.edgeOrder) {
-      // Drawn as its segments below.
       if (graph.wires[id]) continue;
       const edge = graph.edges[id];
       const isSelected = selected.has(id);

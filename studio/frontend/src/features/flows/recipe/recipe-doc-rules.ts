@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The recipe rules the document store applies to framing, pasting and rerouting. Plain functions over
-// flow records: no React and none of the recipe editor, so the store stays light.
+// Plain functions with no React or editor code, so the doc store stays light.
 
 import { renameRoot, replaceRef } from "@/features/recipe-studio/utils/refs";
 import type { FlowEdge, FlowGroup, FlowNode } from "../types";
@@ -20,15 +19,13 @@ export function recipeOwned(
   );
 }
 
-/** A recipe column's name, from its params. */
 export function columnNameOf(node: FlowNode): string | null {
   const column = (node.params as { column?: { name?: unknown } } | undefined)
     ?.column;
   return typeof column?.name === "string" ? column.name : null;
 }
 
-/** A column pasted or duplicated into a recipe that already has its name gets the next free one,
- * since a recipe's column names are unique. */
+/** Column names are unique within a recipe. */
 export function uniqueColumn(
   node: FlowNode,
   group: string | null,
@@ -75,8 +72,7 @@ function setupNames(config: Record<string, unknown> | undefined): unknown[] {
   ];
 }
 
-/** Fields that name another column outright, not through a Jinja reference (`column_name` is an
- * AI column's image context). */
+/** Fields naming a column outright, not via Jinja (`column_name` is an AI column's image context). */
 const COLUMN_NAME_FIELDS = new Set([
   "category",
   "reference_column_name",
@@ -84,8 +80,6 @@ const COLUMN_NAME_FIELDS = new Set([
   "column_name",
 ]);
 
-/** A column's definition with column ``from`` renamed to ``to`` wherever it reads it: Jinja
- * references, the fields that name a column, a validator's target list and sampler conditions. */
 function renameInColumn(
   value: unknown,
   from: string,
@@ -121,7 +115,6 @@ export function isRecipeWire(
   );
 }
 
-/** A column or Recipe Dataset step landing outside a recipe frame. */
 export function outsideRecipe(
   node: FlowNode,
   group: string | null,
@@ -161,8 +154,7 @@ export function renamePastedColumn(
   if (node.type !== COLUMN_TYPE) return node;
   const own = columnNameOf(node);
   let column = (node.params as { column: Record<string, unknown> }).column;
-  // Through placeholders, so a new name that is another copy's old name (topic -> topic_2 while
-  // topic_2 -> topic_2_2) is not renamed a second time.
+  // Via placeholders so chained renames (topic -> topic_2, topic_2 -> topic_2_2) apply once.
   const held = pairs.map((_, i) => `__flows_paste_${i}__`);
   pairs.forEach(([from], i) => {
     column = renameInColumn(column, from, held[i]) as Record<string, unknown>;
@@ -174,8 +166,7 @@ export function renamePastedColumn(
   return { ...node, params: { ...node.params, column } };
 }
 
-/** A pasted column reading one that was not copied with it reads the recipe's own: it gets that
- * wire too, so deleting the column it reads reaches it. The edges come without ids. */
+/** Wires a pasted reader to the recipe's own column so deleting that column reaches it. */
 export function pastedReferenceEdges(
   nodes: Record<string, FlowNode>,
   nodeOrder: string[],

@@ -63,9 +63,7 @@ export function savedRunDataset(
     : null;
 }
 
-/** One page of a full run's rows. The recipe job manager keeps only the newest job, so an older run
- * pages from its saved parquet; a schema transform's pages always read its own output, since the
- * job's dataset is the untransformed one. */
+/** The job manager keeps only the newest job, and transform output differs from the job dataset, so read saved parquet. */
 export async function readRunPage(
   record: Pick<RecipeExecutionRecord, "jobId" | "artifact_path" | "output_ref">,
   offset: number,

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// LLM cards edit their settings in Chat's panel. With "Use the model's saved settings" on they read
-// Chat's per-model memory (paramsByModel, the same row the engine reads at run time in
-// core/flows/model_settings.py); any edit forks the card onto its own copy. No React or store
-// imports, so the rules stay unit-testable.
+// Saved settings = Chat's paramsByModel, the row core/flows/model_settings.py reads. No React/store imports, to stay unit-testable.
 
 // eslint-disable-next-line no-restricted-imports -- pure parser, not exported by the barrel.
 import { parseExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
@@ -35,8 +32,7 @@ export const PANEL_PARAMS: ReadonlySet<string> = new Set([
   "load",
 ]);
 
-/** Chat's saved launch settings for a model, in the override shape the server stores and loads with. A card keeps
- *  its own load settings in the same shape, so one mapping on the server turns either into the load request. */
+/** Same shape as a card's own load settings, so one server mapping handles both. */
 export type LoadSettings = Record<string, unknown>;
 
 /** The subset of Chat's remembered params a card maps onto. */
@@ -88,14 +84,12 @@ export function isOn(params: Params): boolean {
   return params[USE_SAVED] === true;
 }
 
-/** New cards start on: they have no values of their own to protect yet. Flows saved before this
- *  setting existed have no key and stay off, so they run with the values they were saved with. */
+/** On for new cards; older flows lack the key and stay off, keeping their saved values. */
 export function newCardParams(type: string, params: Params): Params {
   return LLM_SETTINGS_NODES.has(type) ? { ...params, [USE_SAVED]: true } : params;
 }
 
-/** The model a card with no model picked runs on: what the server reports resident (as the run resolves it),
- *  not Chat's picker, which may hold an external model. Chat's pick only until the first status read. */
+/** The resident model, as the run resolves it; Chat's picker may hold an external model. */
 export function implicitModel(
   resident: string | null | undefined,
   picked: string | null | undefined,
@@ -243,8 +237,7 @@ export function loadPatch(
   };
 }
 
-/** Chat's context pin. The loader reads it before `max_seq_length`, and alone under Manual GPU memory with
- *  Auto layers, so the Context Length control writes this one. */
+/** The loader reads this before `max_seq_length` (and alone under Manual GPU memory + Auto layers). */
 export const CONTEXT_PIN = "custom_context_length";
 
 export function contextPin(load: LoadSettings | null | undefined): number | undefined {
@@ -290,8 +283,7 @@ function tokens(n: number): string {
   return n >= 1024 && n % 1024 === 0 ? `${n / 1024}k` : n.toLocaleString();
 }
 
-/** The quiet hint on a card whose model or load settings differ from what is loaded, or null. Only what the
- *  loaded status reports is compared, so a setting it cannot see never claims a reload. */
+/** Compares only what the loaded status reports, so an unseen setting never claims a reload. */
 export function reloadHint(
   params: Params,
   loaded: LoadedModel,
@@ -320,8 +312,7 @@ export function reloadHint(
   return diffs.length > 0 ? `Reloads the model: ${diffs.join(", ")}` : null;
 }
 
-/** "Save as model defaults": the card's values as a patch for Chat's memory. Unset knobs and an
- *  empty system prompt are left out, so saving never wipes what Chat already has for them. */
+/** Unset knobs and an empty system prompt are left out, so saving never wipes Chat's values. */
 export function paramsAsSaved(params: Params): SavedModelSettings {
   const out: SavedModelSettings = {};
   for (const [key, pid] of SAVED_TO_PARAM) {
@@ -362,8 +353,7 @@ export function savedLoadFor(
   return saved?.at === at ? saved.load : null;
 }
 
-/** Extra llama-server arguments commit on every keystroke (a keyboard run sends what is shown),
- *  except while a quote is still open. `commit: false` leaves the card as it was. */
+/** Commits per keystroke so a keyboard run sends what is shown, except inside an open quote. */
 export function extraArgsEdit(
   text: string,
 ): { commit: true; value: string[] | undefined } | { commit: false } {

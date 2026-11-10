@@ -32,7 +32,7 @@ export function readSuperCards(
   for (const item of raw) {
     let card: SuperCard | null = null;
     if (typeof item === "string" && graph.groups[item]) {
-      // Earlier builds of this branch saved a collapsed group's id.
+      // Older saves stored a collapsed group's id.
       card = {
         id: item,
         title: superCardTitle(graph.groups[item]),

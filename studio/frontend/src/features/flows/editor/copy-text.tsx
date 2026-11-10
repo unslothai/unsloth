@@ -7,7 +7,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import { Copy01Icon } from "./icon-data";
 
-/** Small copy icon for a text value; on a card it shows on hover, elsewhere always. */
 export function CopyTextButton({
   text,
   label = "Copy",

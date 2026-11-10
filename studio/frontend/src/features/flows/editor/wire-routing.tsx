@@ -144,11 +144,6 @@ const scheduler = new WireScheduler({
     applyRoutes(routes ?? [], ms ?? null, partial),
 });
 
-/**
- * Routes the canvas wires off the main thread whenever nodes or edges change. Bus mode only.
- * While cards move (`moving`), only their wires and the ones sharing a lane with them re-route,
- * once per frame; the rest keep their routes. One full pass runs on release.
- */
 export const WireRouterController = memo(function WireRouterController({
   scope,
   moving = null,
@@ -212,7 +207,6 @@ function alignToHandles(
 const upright = (position: Position) =>
   position === Position.Top || position === Position.Bottom;
 
-/** A routed wire: rounded bus corners, hops over crossings, a dot where a wire fans out. */
 function BusEdgeImpl({
   id,
   source,
@@ -301,7 +295,6 @@ function BusEdgeImpl({
       </g>
     );
   }
-  // Hops and junction dots belong to the settled route only.
   const path = buildWirePath(
     points,
     exact ? route.hops : [],

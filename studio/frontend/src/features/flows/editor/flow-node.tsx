@@ -66,7 +66,6 @@ function shortText(value: unknown): string {
   return text.length > 60 ? `${text.slice(0, 60)}…` : text;
 }
 
-/** Up to three key settings as inline fields; long text goes behind "Show inputs". */
 function nodeFields(
   node: FlowNode,
   spec: NodeSpec,
@@ -161,7 +160,6 @@ function OutputPreview({
   return <OutputValues outputs={outputs} spec={spec} expanded={expanded} low={low} />;
 }
 
-/** A list or object written out in full, for a card resized big enough to read it. */
 export function expandedText(value: unknown): string {
   if (Array.isArray(value))
     return value
@@ -265,7 +263,7 @@ const CORNERS: ControlPosition[] = [
   "bottom-left",
   "bottom-right",
 ];
-/** Invisible edge and corner handles; one undo step per resize, committed on release. */
+/** One undo step per resize, committed on release. */
 function CardResizer({
   id,
   minHeight,
@@ -328,8 +326,7 @@ function FlowNodeViewImpl({ id, width }: NodeProps<RfNode>) {
   const lowDetail = useStore(lowDetailSelector);
   const cardRef = useRef<HTMLDivElement>(null);
   const [contentMin, setContentMin] = useState(0);
-  // Re-measured when the content or the width changes: an error or a new field row grows the floor
-  // without resizing the card. Not on a drag frame or a selection, which would force a layout.
+  // Content can grow the floor without a resize; skip drag frames and selection, which would force layout.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the deps are what the card's content reads
   useLayoutEffect(() => {
     const card = cardRef.current;

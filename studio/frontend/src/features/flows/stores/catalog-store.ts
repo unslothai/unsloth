@@ -44,7 +44,6 @@ export function findPort(
   );
 }
 
-/** What a new node starts with. */
 export function defaultParams(spec: NodeSpec): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   for (const param of spec.params) {

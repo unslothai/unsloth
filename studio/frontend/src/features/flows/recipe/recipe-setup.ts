@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A recipe group's seed, provider connections, model presets and tool profiles as canvas cards. They are not
-// flow nodes: the group's recipe config is their source, and a dragged card keeps its spot in the group's `ui`.
+// Setup cards are not flow nodes: the recipe config is their source; dragged spots live in the group's `ui`.
 
 import type { RfEdge } from "../editor/derive-rf";
 import type { DocGraph } from "../stores/doc-store";
@@ -72,7 +71,6 @@ export function isSetupId(id: string): boolean {
   return id.startsWith(SETUP_PREFIX);
 }
 
-/** The group, kind and name inside a card id. */
 export function parseSetupId(
   id: string,
 ): { groupId: string; kind: SetupKind; name: string } | null {
@@ -123,7 +121,6 @@ function seedCard(group: FlowGroup): SetupCard | null {
   };
 }
 
-/** A group's setup as cards, wired to what uses them. */
 export function recipeSetup(
   graph: DocGraph,
   group: FlowGroup,
@@ -283,8 +280,7 @@ const NO_SETUP: {
   heights: Object.freeze({}),
 });
 
-/** Where each card sits: its saved spot in the group, else under the group's Recipe Dataset step, in the
- * first free space (clear of every node, note and earlier card). */
+/** Saved spot, else the first free space under the Recipe Dataset step. */
 export function setupLayout(
   graph: DocGraph,
   drag: Record<string, Point> | null,
@@ -425,11 +421,7 @@ export function withSetupPosition(
 /** Reference edge class: dashed and neutral (styled in index.css), so a link to a preset never reads as data. */
 export const REFERENCE_EDGE_CLASS = "flows-reference-edge";
 
-/**
- * Setup links as canvas edges of the flow's own edge type, so they follow the wire style like every
- * other edge (Curved, or routed on the bus lanes where the router is present). Not selectable or
- * deletable: the recipe config is their source.
- */
+/** Same edge type as other wires so they follow the wire style; recipe config is their source. */
 export function setupEdges(
   links: SetupLink[],
   graph: DocGraph,

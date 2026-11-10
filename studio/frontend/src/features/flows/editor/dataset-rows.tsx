@@ -45,7 +45,6 @@ function cell(value: unknown) {
   return <span className="line-clamp-4 whitespace-pre-wrap break-words">{text}</span>;
 }
 
-/** Rows a dataset output carries inline, in the same table the dataset preview uses. */
 export function DatasetRows({ value }: { value: DatasetPreviewValue }) {
   const columns = useMemo<ColumnDef<Row>[]>(() => {
     const keys: string[] = [];

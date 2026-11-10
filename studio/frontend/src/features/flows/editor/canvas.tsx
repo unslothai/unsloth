@@ -139,7 +139,6 @@ const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1, minZoom: FIT_MIN_ZOOM };
 const pointer = { x: 0, y: 0 };
 const pressed = { x: 0, y: 0 };
 
-/** Whether the box from `from` to the pointer (client coords) encloses the whole frame `id`. */
 function boxHoldsGroup(
   state: ReactFlowState<RfNode, RfEdge>,
   id: string,
@@ -280,13 +279,11 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
   const [drag, setDrag] = useState<Positions | null>(null);
-  // Every dragged frame or closed super card, keyed by its React Flow id, with its contents' start.
   const dragMembers = useRef<
     Map<
       string,
       {
         card: boolean;
-        /** Blocks of a closed card carried along: they keep their groups, like a card drag. */
         keep?: string[];
         origin: { x: number; y: number };
         members: Map<string, { x: number; y: number }>;
@@ -303,7 +300,6 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   }, [sizes]);
   const dragRef = useRef<Positions | null>(null);
   dragRef.current = drag;
-  // Sizes under a resize handle, drawn live and committed by the card on release.
   const [boxes, setBoxes] = useState<Boxes | null>(null);
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
@@ -427,7 +423,6 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
             !change.dragging &&
             (resizing.has(change.id) || boxes?.[change.id])
           ) {
-            // A resize from a top or left handle moves the card too.
             nextDrag ??= { ...(drag ?? {}) };
             nextDrag[change.id] = change.position;
           } else if (change.dragging) {
@@ -457,8 +452,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           delete nextDrag[change.id];
           ended = true;
         }
-        // Every new size reaches `measured`, a resize's too: the DOM already has the final size
-        // when the handle is released, so no later measurement would report it.
+        // The DOM already has the final size on release, so no later measurement would report it.
         if (change.type === "dimensions" && change.dimensions) {
           const current = (nextSizes ?? sizes).get(change.id);
           if (
@@ -474,8 +468,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           }
         } else if (change.type === "select") {
           if (change.selected && boxSkips(store.getState(), change.id)) {
-            // React Flow marks the frame selected in its own store before telling us; undo that
-            // too, or dragging the boxed blocks would carry the frame and its other blocks.
+            // React Flow selects the frame in its store before telling us; undo it or the drag carries the frame.
             const internal = store.getState().nodeLookup.get(change.id);
             if (internal) internal.selected = false;
             continue;
@@ -486,8 +479,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       }
       if (nextBoxes) {
         setBoxes(Object.keys(nextBoxes).length ? nextBoxes : null);
-        // Handles move with a resize; React Flow re-reads their positions only when asked,
-        // since the size it holds is already the new one.
+        // React Flow re-reads handle positions only when asked.
         const resized = changes.flatMap((c) =>
           c.type === "dimensions" && c.resizing !== undefined ? [c.id] : [],
         );
@@ -577,8 +569,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     },
     [],
   );
-  // React Flow only reports a box's changes when its picked set changes, so a frame dropped while the
-  // box only touched it is never offered again; settle every frame against the final box.
+  // React Flow reports box changes only when the picked set changes; settle frames against the final box.
   const onSelectionEnd = useCallback(() => {
     const state = store.getState();
     const ui = useUiStore.getState();
@@ -645,7 +636,6 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       const doc = useDocStore.getState().graph;
       const reroute = doc.reroutes[node.id];
       if (!reroute || hasWires(doc, node.id)) return;
-      // A free reroute dropped on a wire threads itself into it.
       const size = rerouteSize(reroute.dir);
       const centre = flowToScreenPosition({
         x: reroute.pos[0] + size.width / 2,
@@ -654,7 +644,6 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       const wire = wireUnder(centre.x, centre.y, node.id);
       if (!(wire && (doc.wires[wire] || doc.edges[wire]?.kind === "data")))
         return;
-      // Turned to run along the wire where it lands, and centred on it.
       const at = snapToWire(wire, {
         x: reroute.pos[0] + size.width / 2,
         y: reroute.pos[1] + size.height / 2,
@@ -805,7 +794,6 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         reroutes: [] as string[],
       };
       const { reroutes, groups, nodes, nodeOrder } = useDocStore.getState().graph;
-      // A closed super card goes with its blocks and everything folded into it.
       const removed = rfNodes.flatMap((node) => {
         if (!node.id.startsWith(SUPER_PREFIX)) return [node.id];
         const data = node.data as unknown as SuperCardData;

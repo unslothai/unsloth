@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Recipe Studio's run dialog settings <-> a recipe group's `run`. The backend (`nodes/data.run_settings`) turns the
-// saved `run_config` into the job's run: `buffer_size` only batches a full run, otherwise it is the row count.
+// Backend `nodes/data.run_settings` reads `run_config`: `buffer_size` batches a full run, else is the row count.
 
 import { normalizeRunSettings } from "@/features/recipe-studio/executions/run-settings";
 import type { RecipeRunSettings } from "@/features/recipe-studio/stores/recipe-executions";

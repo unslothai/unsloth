@@ -117,8 +117,7 @@ export function FlowModelPicker({
 /** The On device copy a Fine-tune base model was picked from, as the run sends it. */
 export type BaseModelCache = { known_cached: true; local_path: string | null };
 
-/** Fine-tune's base model: the Train page's own picker (trainable weights, VRAM fit), kept as a
- * plain repo string, with the On device copy it was picked from beside it. */
+/** The Train page's picker; stored as a plain repo string. */
 export function FlowTrainModelPicker({
   value,
   onChange,

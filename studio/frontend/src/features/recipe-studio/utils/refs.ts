@@ -162,10 +162,7 @@ export function inRaw(spans: [number, number][], at: number): boolean {
 
 export type JinjaScope = { name: string; from: number; to: number };
 
-/** Where a template's own variables are in scope: a `{% for %}` loop's up to its `{% endfor %}` (or
- * its own `{% else %}`), a `with`'s, macro's or call block's names up to its end tag, a `{% set %}`'s
- * from there on, each starting after its own tag (whose right side reads the scope before it).
- * Inside them the name is that variable, not a column. */
+/** Where template-bound names (for/with/macro/call/set) shadow columns; each scope starts after its own tag. */
 export function jinjaScopes(text: string): JinjaScope[] {
   const scopes: JinjaScope[] = [];
   // A block's own names, and the `set`s made inside it: both end at its end tag.
@@ -350,10 +347,7 @@ export function replaceRef(template: string, from: string, to: string): string {
   );
 }
 
-/** Rename a variable in a Jinja expression (a tag's inside, or a sampler condition such as
- * `topic == 'science'`) where it is a root: outside string literals, not after a dot (spaced or not) or inside a
- * longer name. A filter (`| length`), test (`is defined`) or keyword argument (`length=10`) of the
- * same name is not the column. */
+/** Rename a root variable outside string literals; attributes, filters, tests and kwargs of the same name are not the column. */
 export function renameRoot(
   expression: string,
   from: string,

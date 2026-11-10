@@ -92,7 +92,6 @@ function rfElement(id: string): HTMLElement | null {
   );
 }
 
-/** How much of an element's content is cut off, the most of it or any descendant. */
 function hiddenBelow(root: HTMLElement): number {
   let hidden = root.scrollHeight - root.clientHeight;
   for (const el of root.querySelectorAll<HTMLElement>("*"))
@@ -100,7 +99,6 @@ function hiddenBelow(root: HTMLElement): number {
   return hidden;
 }
 
-/** Empty space at the bottom of a sized card's output area. */
 function slackBelow(grow: HTMLElement): number {
   let bottom = 0;
   for (const child of grow.children)
@@ -111,11 +109,7 @@ function slackBelow(grow: HTMLElement): number {
   return grow.clientHeight - (bottom - grow.offsetTop);
 }
 
-/**
- * Each card's size after fitting: one with output is sized to show it (up to a cap), an oversized
- * one shrinks, and a card with nothing to show goes back to its automatic size. A card in a group
- * never grows out of the frame.
- */
+/** Output grows a card (capped), oversized ones shrink, empty ones go auto; a grouped card stays inside its frame. */
 function fitCards(
   graph: DocGraph,
   measured: (id: string) => { width: number; height: number } | undefined,
@@ -192,7 +186,6 @@ export async function autoLayout(
   useDocStore.getState().applyTidy(patch);
 }
 
-/** The graph with each recipe frame as tall as it is drawn, holding its setup cards. */
 function withSetupHeights(graph: DocGraph): DocGraph {
   const { heights } = setupLayout(graph, null, new Map());
   if (!Object.keys(heights).length) return graph;

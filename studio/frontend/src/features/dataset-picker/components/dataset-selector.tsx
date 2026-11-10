@@ -93,7 +93,7 @@ export function DatasetSelector({
   value,
   onValueChange,
 }: {
-  /** Controlled mode (Flows): a Hub repo only, reported instead of stored on the Train page. */
+  /** Flows: Hub repo only, reported instead of stored. */
   value?: string | null;
   onValueChange?: (repo: string) => void;
 } = {}) {

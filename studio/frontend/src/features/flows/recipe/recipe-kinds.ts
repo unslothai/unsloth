@@ -125,7 +125,6 @@ export function validatorBlock(column: RecipeColumn): string {
   return lang.startsWith("sql") ? "validator_sql" : "validator_python";
 }
 
-/** The block a column was made from. */
 export function columnBlock(column: RecipeColumn): RecipeBlock {
   const type = text(column.column_type);
   let key = "";

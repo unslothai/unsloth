@@ -57,8 +57,7 @@ function equal(a: unknown, b: unknown): boolean {
   return true;
 }
 
-/** `JSON.stringify(a) === JSON.stringify(b)` without building the strings: key order counts, and
- * what JSON drops or nulls (undefined, functions, NaN) is dropped or nulled here too. */
+/** Same as comparing `JSON.stringify` output, including key order and dropped/nulled values. */
 export function jsonEqual(a: unknown, b: unknown): boolean {
   return equal(plain(a), plain(b));
 }

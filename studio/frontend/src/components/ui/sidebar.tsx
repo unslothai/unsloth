@@ -78,7 +78,6 @@ function useSidebar() {
   return context
 }
 
-/** The sidebar state, or null outside a SidebarProvider (an embedded or standalone page). */
 function useOptionalSidebar() {
   return React.useContext(SidebarContext)
 }

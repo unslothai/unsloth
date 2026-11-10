@@ -38,7 +38,7 @@ const RESIZER = {
   handleStyle: { opacity: 0 },
 } as const;
 
-/** Mixes a colour into the frame surface, so tints read on both themes. */
+/** Mixed into the surface so tints read on both themes. */
 function tint(color: string, percent: number): string {
   return `color-mix(in oklab, ${studioInk(color)} ${percent}%, transparent)`;
 }
@@ -102,7 +102,7 @@ const NOTE_STYLE = { background: "var(--muted)", borderColor: "var(--border)" };
 // Recipe Studio's and the examples' default note yellow reads as "no colour picked".
 const DEFAULT_NOTE = "#fde68a";
 
-/** Top-right trash, shown on hover or selection; goes through the canvas delete, so it is one undo step. */
+/** Goes through the canvas delete, so it is one undo step. */
 function FrameDelete({
   id,
   label,
@@ -207,7 +207,6 @@ function GroupFrameImpl({ id, data, selected }: NodeProps<RfNode>) {
   );
 }
 
-/** Recipe Studio's markdown note: rendered when idle, double-click to edit. */
 function NoteFrameImpl({ id, data, selected }: NodeProps<RfNode>) {
   const noteId = (data as { noteId: string }).noteId;
   const note = useDocStore((s) => s.graph.notes[noteId]);

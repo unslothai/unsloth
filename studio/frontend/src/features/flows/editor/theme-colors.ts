@@ -51,7 +51,6 @@ const STUDIO_INK: Record<string, string> = {
   "#0ea5e9": INDIGO, // output
 };
 
-/** The Studio token for a catalog colour; colours it doesn't know pass through. */
 export function studioInk(color: string): string {
   return STUDIO_INK[color.toLowerCase()] ?? color;
 }

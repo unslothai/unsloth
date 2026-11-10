@@ -32,8 +32,7 @@ import {
 import { commitConfigs, nameTaken, setupConfig, viewOf } from "./recipe-blocks";
 import { groupColumns, recipeSignature } from "./recipe-columns";
 
-/** The seed form queues replaced upload dirs for Recipe Studio to delete; a flow can share those dirs with the
- * recipe it came from, so nothing it replaces here is queued. */
+/** A flow can share upload dirs with its source recipe, so replaced dirs are never queued for deletion. */
 function useNoUploadCleanup() {
   useEffect(() => {
     const before = useRecipeStudioStore.getState().pendingUploadCleanups;
@@ -109,10 +108,7 @@ function BlockForm({
       typeof patch.name === "string" &&
       (!patch.name.trim() || nameTaken(latest.current, id, patch.name))
     ) {
-      // A block with no name drops out of the recipe (a setup card and its inspector) or blanks
-      // every reference to it (a column), and one named like another stops the recipe opening, so
-      // such a name shows in the form only: the recipe and its links keep the last name until a
-      // usable one is typed, and the rename carries them across.
+      // Blank or duplicate names would break references or reopening, so they stay form-only until valid.
       setConfigs({
         ...latest.current,
         [id]: { ...latest.current[id], name: patch.name } as NodeConfig,
@@ -155,7 +151,6 @@ function BlockForm({
   );
 }
 
-/** A column's settings: the column's own Recipe Studio form. */
 export function ColumnForm({ node }: { node: FlowNode }) {
   const groupId = node.group ?? "";
   return (
@@ -166,7 +161,6 @@ export function ColumnForm({ node }: { node: FlowNode }) {
   );
 }
 
-/** A seed, provider connection, model preset or tool profile's settings. */
 export function SetupForm({ target }: { target: RecipeSetupTarget }) {
   return (
     <BlockForm
