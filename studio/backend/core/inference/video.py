@@ -12751,6 +12751,16 @@ class VideoBackend:
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
                 )
+            if "int8_gemm" in speed_optims:
+                # before the first forward traces the blocks
+                try:
+                    from .video_minimax_h3_ffn import install as install_h3_ffn
+                    if install_h3_ffn(
+                        getattr(pipe, denoiser_component, None), device = device, logger = logger
+                    ):
+                        speed_optims += ("h3_fused_swiglu",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock MLP stays
+                    logger.warning("video.h3_ffn: skipped: %s", exc)
             if "h3_strided_attn" in speed_optims:
                 from .video_minimax_h3_attn import shared_qkv_count
                 shared_qkv = shared_qkv_count(getattr(pipe, denoiser_component, None))
