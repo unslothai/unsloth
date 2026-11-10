@@ -213,6 +213,14 @@ class SttAudioTooLongError(ValueError):
     """The decoded audio exceeds the bounded transcription duration."""
 
 
+class SttContextSizeError(ValueError):
+    """A recording cannot fit the selected context, or Auto cannot size it reliably."""
+
+
+class SttIncompleteTranscriptionError(ValueError):
+    """The server stopped at a limit instead of completing the transcription."""
+
+
 class SttLanguageError(ValueError):
     """The requested language is not supported by the selected STT model."""
 
@@ -1460,14 +1468,14 @@ class WhisperSttSidecar:
     ):
         """An explicit device differing from the resident one reloads the model; None keeps what is
         resident."""
-        from core.inference.audio_device import audio_device_default, normalize_audio_device
+        from core.inference.audio_device import normalize_audio_device, stt_device_default
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
         # None means no opinion, not auto: do not move a model another surface placed.
         requested = None if device is None else normalize_audio_device(device)
-        preference = audio_device_default() if requested is None else requested
+        preference = stt_device_default() if requested is None else requested
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -133,6 +134,7 @@ function Row({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   return (
     <div
       className={cn(

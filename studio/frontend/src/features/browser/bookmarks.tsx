@@ -23,9 +23,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArrowRightDoubleIcon,
-  Delete02Icon,
   Edit03Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
@@ -341,7 +341,8 @@ export function BookmarkStar({
                 bookmark && "text-primary hover:text-primary [&_path]:fill-current",
               )}
             >
-              <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-3.75" />
+              {/* Optically centred: the star's points weigh it low. */}
+              <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-3.75 -translate-y-[0.5px]" />
             </button>
           </PopoverAnchor>
         </TooltipTrigger>
@@ -394,7 +395,7 @@ function BookmarkItem({
             >
               {t("browser.bookmarks.edit")}
             </MenuRow>
-            <MenuRow icon={Delete02Icon} onSelect={() => removeBookmarkWithUndo(bookmark, t)}>
+            <MenuRow icon={TrashIcon} onSelect={() => removeBookmarkWithUndo(bookmark, t)}>
               {t("browser.bookmarks.delete")}
             </MenuRow>
           </>

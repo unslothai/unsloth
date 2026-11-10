@@ -1192,6 +1192,119 @@ def test_python_high_risk_classifier(code, high_risk):
     assert is_high_risk_tool_call("python", {"code": code}) is high_risk
 
 
+@pytest.mark.parametrize(
+    "name, arguments, high_risk",
+    [
+        ("python", {"code": "__import__('os').system('rm -rf ~')"}, True),
+        ("python", {"code": "__import__('posix').system('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "import importlib\nimportlib.import_module('os').system('rm -rf ~')"},
+            True,
+        ),
+        ("python", {"code": "import sys\nsys.modules['os'].system('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nf = os.system\nf('rm -rf ~')"}, True),
+        ("python", {"code": "import subprocess as sp\nr = sp.run\nr(['rm', '-rf', '/'])"}, True),
+        ("python", {"code": "m = __import__('os')\nm.system('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "import os\nm = os\nimport subprocess as m\nm.run(['rm', '-rf', '/'])"},
+            True,
+        ),
+        ("python", {"code": "import nt\nnt.system('rm -rf ~')"}, True),
+        ("python", {"code": "(f := __import__('os').system)('rm -rf ~')"}, True),
+        ("python", {"code": "(m := __import__('os'))\nm.system('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nf: object = os.system\nf('rm -rf ~')"}, True),
+        ("python", {"code": "from posix import system\nsystem('rm -rf ~')"}, True),
+        ("python", {"code": "from os import *\nsystem('rm -rf ~')"}, True),
+        ("python", {"code": "import sys\nsys.modules.get('os').system('rm -rf ~')"}, True),
+        ("python", {"code": "from sys import modules as m\nm['os'].system('rm -rf ~')"}, True),
+        ("python", {"code": "from sys import *\nmodules['os'].system('rm -rf ~')"}, True),
+        (
+            "python",
+            {
+                "code": "import importlib\nload = getattr(importlib, 'import_module')\nload('os').system('rm -rf ~')"
+            },
+            True,
+        ),
+        ("python", {"code": "import os\ngetattr(os, 'sys' + 'tem')('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nf = getattr(os, 'system')\nf('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nvars(os)['system']('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "import subprocess\nsubprocess.__dict__['run'](['rm', '-rf', '/'])"},
+            True,
+        ),
+        ("python", {"code": "__import__(name='os').system('rm -rf ~')"}, True),
+        ("python", {"code": "__import__('os.path').system('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "__import__(**{'name': 'math', 'name': 'os'}).system('rm -rf ~')"},
+            True,
+        ),
+        ("python", {"code": "import os\nos.__dict__.get('system')('rm -rf ~')"}, True),
+        ("python", {"code": "import os\ngetattr(os, '__dict__')['system']('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nd = os.__dict__\nd['system']('rm -rf ~')"}, True),
+        (
+            "python",
+            {
+                "code": "import os\nfrom builtins import getattr as attr\nattr(os, 'system')('rm -rf ~')"
+            },
+            True,
+        ),
+        ("python", {"code": "import builtins, os\nbuiltins.vars(os)['system']('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nx = os\nx = x.system\nx('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nd = os.__dict__\nd = d['system']\nd('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "from importlib import import_module as load\nload('os').system('rm -rf ~')"},
+            True,
+        ),
+        (
+            "python",
+            {"code": "from builtins import __import__ as load\nload('os').system('rm -rf ~')"},
+            True,
+        ),
+        (
+            "python",
+            {"code": "def go():\n    sp.run(['rm', '-rf', '/'])\nimport subprocess as sp\ngo()"},
+            True,
+        ),
+        (
+            "python",
+            {
+                "code": "def go():\n    r(['rm', '-rf', '/'])\ndef setup():\n    global r\n    r = sp.run\nimport subprocess as sp\nsetup()\ngo()"
+            },
+            True,
+        ),
+        ("python", {"code": "(load := __import__)('os').system('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nm = os\nm = os.system\nf = m\nf('rm -rf ~')"}, True),
+        ("python", {"code": "cmd = input()\n__import__('os').system(cmd)"}, True),
+        ("terminal", {"command": "python3 -c \"__import__('os').system('rm -rf ~')\""}, True),
+        ("python", {"code": "__import__('os').system('ls')"}, False),
+        ("python", {"code": "print(__import__('os').getcwd())"}, False),
+        ("python", {"code": "import sys\nprint(sys.modules['os'].getcwd())"}, False),
+        ("python", {"code": "import os\nf = os.getcwd\nprint(f())"}, False),
+        ("python", {"code": "import os\nprint(getattr(os, 'getcwd')())"}, False),
+        ("python", {"code": "import os\ngetattr(os, 'system')('ls')"}, False),
+        ("python", {"code": "d = {'system': print}\nd['system']('rm -rf ~')"}, False),
+        (
+            "python",
+            {"code": "import os\nd = os.__dict__\nd = d.get('__dict__', d)\nprint(len(d))"},
+            False,
+        ),
+        (
+            "python",
+            {"code": "class M:\n    def run(self, c): ...\nm = M()\ngetattr(m, 'run')(input())"},
+            False,
+        ),
+        ("terminal", {"command": "python3 -c \"__import__('os').system('ls')\""}, False),
+    ],
+)
+def test_shell_command_through_any_os_module_handle_is_high_risk(name, arguments, high_risk):
+    assert is_high_risk_tool_call(name, arguments) is high_risk
+
+
 def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call("web_search", {"query": "hi"}) is False
     assert is_high_risk_tool_call("search_knowledge_base", {}) is False
@@ -2408,9 +2521,7 @@ def _tool_starts(events):
 
 
 def _diag(events, exec_fn):
-    """A compact dump of what the loop actually did, attached to the loop-driving
-    assertions so a full-suite-only failure on CI (which does not reproduce when
-    the file runs alone) reports the real event stream instead of a bare diff."""
+    """Attached to loop assertions, so a full-suite-only CI failure shows the real event stream."""
     return (
         f"calls={exec_fn.calls} sandbox_seen={exec_fn.disable_sandbox_seen} "
         f"events={[(e.get('type'), e.get('awaiting_confirmation'), e.get('tool_name')) for e in events]}"
@@ -2776,8 +2887,7 @@ def test_confirm_gate_needs_stream():
         _confirm_gate_needs_stream(req(permission_mode = "auto"), selected_names = ["mcp_tool_search"])
         is True
     )
-    # But a selectable unsafe tool, an unrestricted (omitted) selection, MCP, or an
-    # explicit confirm flag all still require streaming under auto.
+    # Unsafe tools, omitted selections, MCP, or a confirm flag still need streaming under auto.
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["terminal"])) is True
     )
@@ -3686,8 +3796,7 @@ def test_auto_mode_stays_silent_inside_allowlisted_roots_python(code):
 
 
 def test_configured_cache_reads_stay_silent():
-    """A read under THIS install's own sandbox / model cache is ordinary work, unlike the same path
-    shape under someone else's home."""
+    """Reads under this install's own sandbox or model cache are ordinary work, not prompts."""
     from core.inference import tool_path_approval as path_gate
 
     read_roots, write_roots = path_gate._silent_roots()
@@ -3713,31 +3822,27 @@ def test_credential_paths_outrank_the_allowlist():
 
 
 def test_relative_paths_never_prompt():
-    """Relative paths resolve inside the per-session workdir, which is the whole reason ordinary
-    in-sandbox work stays silent."""
+    """Relative paths resolve in the per-session workdir, which keeps in-sandbox work silent."""
     from core.inference import tool_path_approval as path_gate
     for path in ("out.txt", "./data/train.csv", "build/artifacts/model.gguf", "-", ""):
         assert path_gate._path_needs_approval(path, writing = True) is False, path
 
 
 def test_windows_spellings_are_treated_as_absolute():
-    """Path syntax is judged on every host, so a Windows-only classifier bug cannot hide behind a
-    Linux test run."""
+    """Path syntax is judged on every host, so a Windows-only bug cannot hide behind Linux."""
     from core.inference import tool_path_approval as path_gate
     for path in ("C:\\Users\\kuser\\Documents\\taxes.xlsx", "\\\\fileserver\\share\\secret.docx"):
         assert path_gate._path_needs_approval(path) is True, path
 
 
 def test_unresolved_dynamic_paths_do_not_prompt():
-    """A path the folder could not resolve carries the NUL sentinel; it is not a decidable path, and
-    the dynamic-alias checks cover those separately."""
+    """An unresolved path carries the NUL sentinel, so dynamic-alias checks cover it."""
     from core.inference import tool_path_approval as path_gate
     assert path_gate._path_needs_approval("/media/\x00/file") is False
 
 
 def test_parent_escape_sentinel_asks():
-    """\x02 marks a pathlib .parent walking OUT of its root. It is an escape marker, so grouping it
-    with the unresolved marker would turn the signal into a pass."""
+    """The 0x02 marker is an escape out of the root; grouping it with NUL would pass it."""
     from core.inference import tool_path_approval as path_gate
     assert path_gate._path_needs_approval("\x02/file") is True
 
@@ -3870,9 +3975,7 @@ def test_credentials_inside_a_silent_root_still_ask():
 
 
 def test_studio_own_state_is_never_silent():
-    """The studio home holds studio.db (chat history, provider and MCP configuration) and auth/
-    next to the sandbox. Several root producers fall back to that directory when their own
-    subdirectory is unset, and one such fallback would grant a tool everything Studio owns."""
+    """The studio home holds studio.db and auth/; a root producer falling back to it grants too much."""
     from core.inference import tool_path_approval as path_gate
     from utils.paths.storage_roots import studio_root
 

@@ -533,7 +533,7 @@ test("Record is offered only where the browser can capture audio", () => {
 });
 
 test("a Transcribe recording is stopped at the 30 minute limit the inputs route accepts", () => {
-  // 30 minutes of 16 kHz PCM is ~58 MB, under the 200 MB backend cap.
+  // 30 minutes of 16 kHz PCM is ~58 MB, under the backend cap's 200 MB floor.
   assert.match(audioPageSource, /const RECORDING_MAX_SECONDS = 30 \* 60;/);
   assert.match(audioPageSource, /maxRecordSeconds=\{RECORDING_MAX_SECONDS\}/);
   assert.match(

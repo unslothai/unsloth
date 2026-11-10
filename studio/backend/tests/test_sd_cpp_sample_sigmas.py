@@ -393,3 +393,28 @@ def test_a_cache_only_grid_read_falls_back_to_the_default_cache_root(monkeypatch
     )
     assert grid == TURBO_GRID and base == "Qwen/Qwen-Image-2.1-Turbo"
     assert roots == ["/live", None]
+
+
+@pytest.mark.parametrize("mode", ["oneshot", "server"])
+@pytest.mark.parametrize("family_enabled", [True, False])
+def test_request_schedule_takes_precedence_over_family_default(monkeypatch, mode, family_enabled):
+    """Explicit schedules override family defaults without bypassing the family kill switch."""
+    from dataclasses import replace
+
+    monkeypatch.setenv("UNSLOTH_SD_CPP_FAMILY_SCHEDULER", "1" if family_enabled else "0")
+    engine = _FakeEngine()
+    server = _FakeServer("sd-server") if mode == "server" else None
+    backend = SdCppDiffusionBackend(engine = engine)
+    backend._state = replace(_state(grid = None, mode = mode, server = server), scheduler = "exponential")
+
+    def requested_scheduler():
+        """Read the scheduler sent to the selected native transport."""
+        if server is not None:
+            return server.payloads[-1]["sample_params"].get("scheduler")
+        return engine.calls[-1][1].scheduler
+
+    backend.generate(prompt = "a fox", steps = 8, guidance = 1.0, seed = 3)
+    assert requested_scheduler() == ("exponential" if family_enabled else None)
+    backend.generate(prompt = "a fox", steps = 8, guidance = 1.0, seed = 3, schedule_type = "karras")
+    assert requested_scheduler() == "karras"
+    assert backend._state.scheduler == "exponential"

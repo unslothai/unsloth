@@ -41,7 +41,7 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
@@ -639,7 +639,7 @@ export function HistoryCardGrid({
                   aria-label={t("studio.history.deleteRun")}
                   onClick={() => setDeleteTarget(run.id)}
                 >
-                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                  <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                 </button>
               )}
             </div>

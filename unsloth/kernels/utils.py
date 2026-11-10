@@ -52,9 +52,8 @@ else:
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 
-# DEVICE_COUNT == 0 = no visible accelerator (e.g. CPU-only CI runner). The consumer functions below only index
-# these arrays during real GPU work, so empty containers are safe -- they just need to be defined so the module
-# imports cleanly.
+# DEVICE_COUNT == 0 means no visible accelerator (e.g. a CPU-only CI runner); consumers only index
+# these arrays during GPU work, so empty containers only need to exist for the module to import.
 if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
@@ -178,10 +177,9 @@ HAS_CUDA_STREAM = False
 try:
     import bitsandbytes as bnb
 
-    # If an earlier `import bitsandbytes` died inside __init__, CPython evicts only the parent from
-    # sys.modules and keeps its submodules, so this retry re-executes __init__ without rebinding
-    # bnb.functional. `import x.y as z` reads sys.modules directly and survives that, plain attribute
-    # access does not.
+    # If an earlier import bitsandbytes died in __init__, CPython evicts only the parent from
+    # sys.modules, so this retry re-runs __init__ without rebinding bnb.functional; import x.y as z
+    # survives that, plain attribute access does not.
     import bitsandbytes.functional as bnb_functional
 except Exception:
     # device_type.py already degrades to 16bit/full finetuning when bnb is missing (gfx906, whose
@@ -484,15 +482,22 @@ def _has_packed_qweight(proj):
     )
 
 
+def _fp8_lora_state(base_layer, W):
+    """The fp8 frozen-base state (kernels/fp8_lora.py, float8_training with LoRA), refreshed if W changed."""
+    state = base_layer.__dict__.get("_unsloth_fp8_lora")
+    if state is None or W.requires_grad:
+        return None
+    return state.refresh(W)
+
+
 def _is_packed_state(quant_state):
     return getattr(type(quant_state), "_unsloth_packed_weight_state", False)
 
 
 def get_lora_parameters(proj):
-    """Return (weight, weight quant_state, lora A, lora B, lora scale).
-    With QAT enabled, also fake-quantizes the base layer and lora weights.
-    Tensor parallel projections (models/tp_native.py) return local shards of their DTensors.
-    """
+    """Return (weight, weight quant_state, lora A, lora B, lora scale); with QAT the base layer and
+    lora weights are also fake-quantized; tensor parallel projections (models/tp_native.py)
+    return local shards of their DTensors."""
     localize = proj.__dict__.get("_unsloth_tp_local")
     if localize is not None:
         return localize(proj)
@@ -527,6 +532,8 @@ def get_lora_parameters(proj):
 
     if packed is not None:
         W_quant = packed[1]
+    elif W_quant is None:
+        W_quant = _fp8_lora_state(base_layer, W)
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None
@@ -590,6 +597,8 @@ def get_lora_parameters_bias(proj):
 
     if packed is not None:
         W_quant = packed[1]
+    elif W_quant is None:
+        W_quant = _fp8_lora_state(base_layer, W)
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None, base_layer.bias
@@ -726,12 +735,9 @@ _FSDP2_GATHERED = "_unsloth_fsdp2_gathered"
 
 
 def _gathered_plan_hit(plan, W):
-    """FSDP2 frees an all-gathered weight's storage after use and re-allocates it for the next
-    all-gather: the same tensor at a new address, so a plan keyed on the address it was built at
-    never hits again. The planned launch reads the address of the tensor it was built with at
-    launch time, so it still applies while that tensor and W (the weight, or a view of it such as
-    the backward's `W.t()`) are at the same address with the 16 byte alignment it was specialized
-    on. A tensor given a new storage object instead of a resized one has another address: rebuilt."""
+    """FSDP2 re-allocates an all-gathered weight at a new address, so a plan is reused only while
+    its tensor and W (or a view like W.t()) keep the address and 16 byte alignment it was built
+    for; else rebuilt."""
     address = W.data_ptr()
     if plan[6].data_ptr() != address or (address & 15) != (plan[0] & 15):
         return False
@@ -1829,8 +1835,7 @@ def fast_linear_forward(
         out = torch_matmul(X, W, out = out)
 
     if out.dtype != X.dtype:
-        # torch.matmul under a different autocast dtype returns that dtype; the LoRA update, decode
-        # buffers and every other branch here work in X.dtype.
+        # Matmul under another autocast returns that dtype; LoRA and buffers need X.dtype.
         out = out.to(X.dtype)
 
     if lora_A is not None:
@@ -2024,6 +2029,8 @@ def _lora_fused_ok(W, W_quant, dtype):
         return False
     if not _is_compiling() and W.layout != torch.strided:
         return False
+    if getattr(type(W_quant), "_unsloth_fp8_dgrad", False):
+        return W_quant.dtype == dtype
     if type(W_quant) is Int4QuantState or _is_packed_state(W_quant):
         return False
     if W_quant is None:
@@ -2081,22 +2088,7 @@ def matmul_lora(
     if XA is not None and out is not None and _shares_storage(out, XA):
         XA = None
 
-    if isinstance(W, Float8Tensor):
-        assert W.ndim == 2
-        if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
-            # Rowwise scaling becomes colwise after transpose, so this detects the backward pass.
-            W = W.dequantize()
-        else:
-            W = W.contiguous()
-        out = torch_matmul(X, W.t(), out = out)
-    elif W.dtype == torch.float8_e4m3fn:
-        out = fp8_linear(X, W, W_quant)
-    elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
-        # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
-        out = _int4_matmul(X, W, W_quant, out = out)
-    elif _is_packed_state(W_quant):
-        out = W_quant.matmul(X, W, out = out)
-    elif (
+    lora_first = (
         A is not None
         and fused
         # Compiled inside torch.func transforms or native forward-mode AD: the op has no forward-mode or
@@ -2119,11 +2111,31 @@ def matmul_lora(
                 and not _shares_storage(out, W, X, A, B, XA)
             )
         )
+    )
+    if isinstance(W, Float8Tensor):
+        assert W.ndim == 2
+        if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+            # Rowwise scaling becomes colwise after transpose, so this detects the backward pass.
+            W = W.dequantize()
+        else:
+            W = W.contiguous()
+        out = torch_matmul(X, W.t(), out = out)
+    elif W.dtype == torch.float8_e4m3fn:
+        out = fp8_linear(X, W, W_quant)
+    elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
+        # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
+        out = _int4_matmul(X, W, W_quant, out = out)
+    elif _is_packed_state(W_quant) and not (
+        lora_first and getattr(type(W_quant), "_unsloth_fp8_dgrad", False)
     ):
+        out = W_quant.matmul(X, W, out = out)
+    elif lora_first:
         if XA is None:
             XA = torch_matmul(X, A.t() if A.dtype is dtype else A.t().to(dtype))
         B = B.t() if B.dtype is dtype else B.t().to(dtype)
-        if out is not None:
+        if getattr(type(W_quant), "_unsloth_fp8_dgrad", False):
+            out = W_quant.lora_first(X, W, XA, B, s, out = out)
+        elif out is not None:
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             if W_quant is not None:

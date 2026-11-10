@@ -47,13 +47,14 @@ def _run(cases):
     try:
         while len(results) < len(procs):
             try:
-                rank, out = queue.get(timeout = 60 if _failed(results) else 600)
+                # Below the 330 s pytest timeout, so a hang fails here with what did arrive.
+                rank, out = queue.get(timeout = 60 if _failed(results) else 240)
             except queue_module.Empty:
                 break
             results[rank] = out
     finally:
         for p in procs:
-            p.join(5 if len(results) < len(procs) else 120)
+            p.join(5 if len(results) < len(procs) else 30)
             if p.is_alive():
                 p.kill()
     assert results, "no rank reported"

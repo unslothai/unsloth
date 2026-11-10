@@ -321,12 +321,9 @@ def run_backward(
 
 
 class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
-    """Reference MoE block using triton grouped gemm.
-
-    Like Qwen3MoeGroupedGEMMBlock but with triton (not torch-native) grouped gemm.
-    NOT for production: it saves intermediate results and runs extra checks for
-    debugging. See grouped_gemm/reference/moe_block.py for a cleaner version.
-    """
+    """Reference MoE block with triton grouped GEMM (the parent Qwen3MoeGroupedGEMMBlock is
+    torch-native); not for production since it saves intermediates and runs extra debug checks;
+    see grouped_gemm/reference/moe_block.py for a cleaner version."""
 
     def __init__(
         self,

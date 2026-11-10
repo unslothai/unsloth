@@ -112,8 +112,7 @@ def _planned_files(repo):
 
 
 def _write_planned_tree(root, repo):
-    """The files a pipeline load stages, as stubs: the fixture's configs, shard indexes naming their shards, one byte
-    per weight."""
+    """Stub files a pipeline load stages: configs, shard indexes, one byte per weight."""
     names = sorted(_planned_files(repo))
     _write_configs(root, repo)
     _write_json(root / "scheduler" / "scheduler_config.json", _ckpt(repo)["scheduler_config"])
@@ -403,7 +402,13 @@ def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
     monkeypatch.setattr(vc3, "logger", log)
     refusal = vc3.guardrail_refusal(repo)
     if repo == NANO and guardrail == "absent":
-        for part in (f"'{NANO}'", "pip install cosmos-guardrail", f"{_OPT_OUT_ENV}=0"):
+        for part in (
+            f"'{NANO}'",
+            "pip install cosmos-guardrail",
+            f"https://huggingface.co/{_GUARDRAIL_REPO}",
+            "token in Settings",
+            f"{_OPT_OUT_ENV}=0",
+        ):
             assert part in refusal, part
         assert vc3.guardrail_refusal(NANO, index = _ckpt(EDGE)["model_index"]) is None
     else:
@@ -767,6 +772,125 @@ def test_a_wan_load_keeps_the_stock_encode(cosmos3_runtime, monkeypatch):
     assert not getattr(backend._state.pipe.vae.encode, "_unsloth_untiled_encode", False)
 
 
+_GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
+
+
+def _gated_load(repo):
+    """The guardrail's real 401 text, wrapped in an OSError."""
+    from huggingface_hub.errors import GatedRepoError
+
+    class _Gated(GatedRepoError):
+        def __init__(self, message):
+            Exception.__init__(self, message)
+
+    def from_pretrained(cls, source, **kwargs):
+        try:
+            raise _Gated(
+                f"401 Client Error. Cannot access gated repo for url https://huggingface.co/{repo}/resolve/cf03c03/"
+                f"blocklist/custom/notable.\nAccess to model {repo} is restricted. Please log in."
+            )
+        except _Gated as exc:
+            raise OSError("could not build the safety checker") from exc
+
+    return classmethod(from_pretrained)
+
+
+def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_runtime, monkeypatch):
+    _set_guardrail(monkeypatch, "installed")
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", _gated_load(_GUARDRAIL_REPO))
+    with pytest.raises(ValueError) as refused:
+        _loaded(NANO)
+    message = str(refused.value)
+    for part in (
+        f"'{NANO}'",
+        f"https://huggingface.co/{_GUARDRAIL_REPO}",
+        "token in Settings",
+        f"{_OPT_OUT_ENV}=0",
+    ):
+        assert part in message, part
+    assert "401 Client Error" not in message and "pip install" not in message
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", _gated_load("nvidia/Cosmos3-Nano"))
+    with pytest.raises(OSError, match = "safety checker"):
+        _loaded(NANO)
+
+
+def _guardrail_downloads(monkeypatch):
+    """Records the token each guardrail snapshot_download sends."""
+    seen = []
+
+    def snapshot_download(
+        repo_id,
+        token = "ambient",
+        **kwargs,
+    ):
+        seen.append(token)
+        return "/nonexistent"
+
+    inner = types.ModuleType("cosmos_guardrail.cosmos_guardrail")
+    inner.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "cosmos_guardrail.cosmos_guardrail", inner)
+    return inner, seen
+
+
+@pytest.mark.parametrize(
+    "token, sent",
+    [("hf_settings", "hf_settings"), (False, False), (None, "ambient"), ("  ", "ambient")],
+)
+def test_the_guardrail_download_gets_the_loads_token(cosmos3_runtime, monkeypatch, token, sent):
+    _set_guardrail(monkeypatch, "installed")
+    inner, seen = _guardrail_downloads(monkeypatch)
+    real_from_pretrained = _FakeCosmos3Pipeline.__dict__["from_pretrained"]
+
+    def from_pretrained(cls, source, **kwargs):
+        inner.snapshot_download(_GUARDRAIL_REPO, allow_patterns = ["blocklist/*"])
+        return real_from_pretrained.__func__(cls, source, **kwargs)
+
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", classmethod(from_pretrained))
+    VideoBackend().load_pipeline(NANO, model_kind = "pipeline", hf_token = token)
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == [sent, "ambient"]
+
+
+def test_the_guardrail_token_scope_ends_with_a_failed_load(monkeypatch):
+    inner, seen = _guardrail_downloads(monkeypatch)
+    with pytest.raises(RuntimeError):
+        with vc3.guardrail_hub_token("hf_x"):
+            inner.snapshot_download(_GUARDRAIL_REPO)
+            raise RuntimeError("load failed")
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == ["hf_x", "ambient"]
+
+
+def test_overlapping_guardrail_loads_keep_their_own_tokens(monkeypatch):
+    """A cancel-and-reload overlaps two loads; exits out of order must not leave either token behind."""
+    import threading
+
+    inner, seen = _guardrail_downloads(monkeypatch)
+    a_in, b_in, a_out = threading.Event(), threading.Event(), threading.Event()
+
+    def load_a():
+        with vc3.guardrail_hub_token("hf_a"):
+            a_in.set()
+            b_in.wait(5)
+            inner.snapshot_download(_GUARDRAIL_REPO)
+        a_out.set()
+
+    def load_b():
+        a_in.wait(5)
+        with vc3.guardrail_hub_token("hf_b"):
+            b_in.set()
+            a_out.wait(5)
+            inner.snapshot_download(_GUARDRAIL_REPO)
+
+    threads = [threading.Thread(target = load_a), threading.Thread(target = load_b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == ["hf_a", "hf_b", "ambient"]
+
+
 def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_runtime, monkeypatch):
     _set_guardrail(monkeypatch, "absent")
     started = []
@@ -775,7 +899,7 @@ def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_ru
     with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=0"):
         backend.begin_load(NANO, model_kind = "pipeline")
     assert started == [] and backend.loading_repo_ids() == ()
-    with pytest.raises(ValueError, match = "cosmos_guardrail"):
+    with pytest.raises(ValueError, match = "pip install cosmos-guardrail"):
         backend.load_pipeline(NANO, model_kind = "pipeline")
     assert _FakeCosmos3Pipeline.loads == []
     with pytest.raises(ValueError, match = "limited to"):
@@ -1007,6 +1131,75 @@ def test_rows_hide_on_a_diffusers_without_edges_native_flow_schedule(
     assert {df.family_pipeline_available(_fam(n)) for n in vf.COSMOS3_FAMILIES} == {available}
 
 
+def _imported_diffusers(monkeypatch, version, *classes):
+    module = types.ModuleType("diffusers")
+    module.__version__ = version
+    for name in classes:
+        setattr(module, name, type(name, (), {"__module__": "diffusers.pipelines.fake"}))
+    monkeypatch.setitem(sys.modules, "diffusers", module)
+    return module
+
+
+@pytest.mark.parametrize(
+    "installed, available",
+    [
+        ("0.39.0", False),
+        ("0.40.0", False),
+        ("0.41.0", True),
+        ("0.41.0.dev0", True),
+        ("0.42.1", True),
+    ],
+)
+def test_an_imported_diffusers_below_the_floor_hides_cosmos3_even_though_it_exports_the_class(
+    monkeypatch, installed, available
+):
+    from core.inference import diffusion_families as df
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    assert {df.family_pipeline_available(_fam(n)) for n in vf.COSMOS3_FAMILIES} == {available}
+
+
+@pytest.mark.parametrize("installed", ["0.39.0", "0.40.0"])
+def test_the_load_gate_refuses_cosmos3_on_a_diffusers_that_exports_it_below_the_floor(
+    monkeypatch, installed
+):
+    from core.inference import diffusion_families as df
+
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    with pytest.raises(ValueError, match = r"needs diffusers >= 0\.41\.0 \(Cosmos3OmniPipeline\)"):
+        df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    with pytest.raises(ValueError, match = rf"has diffusers {installed}\."):
+        df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge", strict = True)
+
+
+@pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.dev0", "0.42.1", "0.42.1+local"])
+def test_the_load_gate_accepts_cosmos3_at_or_above_the_floor(monkeypatch, installed):
+    from core.inference import diffusion_families as df
+
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge", strict = True)
+
+
+def test_the_floor_leaves_main_builds_judged_by_presence(monkeypatch):
+    from core.inference import diffusion_families as df
+
+    _imported_diffusers(monkeypatch, "0.41.0.dev0", "Flux3ModularPipeline", "Cosmos3OmniPipeline")
+    df.assert_pipeline_class_available("Flux3ModularPipeline", "flux3")
+    monkeypatch.setattr(df, "_UNRELEASED_MIN_DIFFUSERS", frozenset({"0.43.0"}))
+    monkeypatch.setitem(df._PIPELINE_MIN_DIFFUSERS, "Cosmos3OmniPipeline", "0.43.0")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    assert df.family_pipeline_available(_fam("cosmos3-edge"))
+
+
+def test_an_unreadable_version_keeps_the_present_class_available(monkeypatch):
+    from core.inference import diffusion_families as df
+
+    module = _imported_diffusers(monkeypatch, "0.40.0", "Cosmos3OmniPipeline")
+    del module.__version__
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    assert df.family_pipeline_available(_fam("cosmos3-edge"))
+
+
 _PIPELINE = ("model_index.json", "transformer/diffusion_pytorch_model.safetensors")
 _SHARDS = ("config.json", "model.safetensors.index.json", "model-00001-of-00002.safetensors")
 
@@ -1080,8 +1273,10 @@ def test_cosmos3_decodes_untiled_when_it_fits_even_at_speed_off(policy, speed):
     placed = policy != "sequential"
     for family in ("cosmos3-edge", "cosmos3-nano"):
         assert gate(family, policy, "cuda", speed) is placed
-        assert gate(family, policy, "cpu", speed) is False
-    assert gate("wan2.2-ti2v-5b", policy, "cuda", speed) is (placed and speed != "off")
+        assert gate(family, policy, "cpu", speed) is placed
+        assert gate(family, policy, "mps", speed) is False
+    for device in ("cuda", "cpu"):
+        assert gate("wan2.2-ti2v-5b", policy, device, speed) is (placed and speed != "off")
 
 
 def _diffusers_tiles(length, tile, stride):
@@ -1132,3 +1327,164 @@ def test_wide_tiles_keep_the_seam_floor_for_cosmos3():
                         tiles = _diffusers_tiles(length, tile, stride)
                         assert G.check_axis(tiles, floor) == [], (family, width, height, plan)
     assert planned
+
+
+# NVIDIA's settings: the pipeline's 256 tier, Edge "12-30 fps", Nano 10/16/24/30 fps (NVIDIA/cosmos models.md).
+_256P = [(320, 192), (192, 320), (256, 256), (320, 256), (256, 320)]
+_480P = [(832, 480), (480, 832), (640, 640), (736, 544), (544, 736)]
+
+
+def test_presets_carry_the_pipelines_256p_and_480p_tiers():
+    edge, nano = _fam("cosmos3-edge"), _fam("cosmos3-nano")
+    assert list(edge.resolution_presets) == _480P + _256P
+    assert list(nano.resolution_presets[:5]) == [
+        (1280, 720),
+        (720, 1280),
+        (960, 960),
+        (1104, 832),
+        (832, 1104),
+    ]
+    assert set(nano.resolution_presets[5:]) == set(_480P) | set(_256P)
+    for fam in (edge, nano):
+        assert len(set(fam.resolution_presets)) == len(fam.resolution_presets)
+        for w, h in fam.resolution_presets:
+            assert w % fam.resolution_multiple == 0 and h % fam.resolution_multiple == 0
+            vf.validate_video_request_shape(fam, w, h)
+
+
+def test_preset_tiers_match_the_pipelines_resolution_bins():
+    pytest.importorskip("diffusers", reason = "Backend CI installs no diffusers")
+    from diffusers.pipelines.cosmos.pipeline_cosmos3_omni import _ACTION_RESOLUTION_BINS
+
+    tier = lambda key: {(w, h) for h, w in _ACTION_RESOLUTION_BINS[key].values()}  # noqa: E731
+    assert set(_256P) == tier("256") and set(_480P) == tier("480")
+    assert set(_fam("cosmos3-nano").resolution_presets[:5]) == tier("720")
+
+
+@pytest.mark.parametrize("name", ["cosmos3-edge", "cosmos3-nano"])
+@pytest.mark.parametrize("size", [(320, 192), (448, 256), (256, 448), (256, 256)])
+def test_256p_and_nvidias_jetson_size_are_accepted(name, size):
+    fam = _fam(name)
+    assert vf.video_custom_size_bounds(fam)[0] == 192 * 320
+    vf.validate_video_request_shape(fam, *size)
+
+
+@pytest.mark.parametrize(
+    "name, size, fragment",
+    [
+        ("cosmos3-edge", (176, 176), "61,440"),
+        ("cosmos3-nano", (240, 160), "61,440"),
+        ("cosmos3-edge", (1280, 720), "409,600 pixels"),
+        ("cosmos3-edge", (448, 250), "multiples of 16"),
+    ],
+)
+def test_sizes_below_256p_or_above_the_top_tier_are_refused(name, size, fragment):
+    with pytest.raises(vf.VideoShapeError, match = fragment):
+        vf.validate_video_request_shape(_fam(name), *size)
+
+
+@pytest.mark.parametrize(
+    "name, requested, snapped",
+    [
+        ("cosmos3-edge", 49, 53),
+        ("cosmos3-edge", 50, 53),
+        ("cosmos3-edge", 150, 149),
+        ("cosmos3-edge", 54, 53),
+        ("cosmos3-nano", 400, 397),
+        ("cosmos3-nano", 4, 5),
+    ],
+)
+def test_frames_snap_inside_nvidias_window(name, requested, snapped):
+    assert vf.snap_num_frames(_fam(name), requested) == snapped
+
+
+@pytest.mark.parametrize("frames", [49, 153])
+def test_lattice_counts_outside_the_cards_window_are_refused(frames):
+    with pytest.raises(vf.VideoShapeError, match = "run from 53 to 149"):
+        vf.validate_video_request_shape(_fam("cosmos3-edge"), num_frames = frames)
+
+
+def test_fps_options_follow_nvidias_settings():
+    assert vf.video_family_fps_options(_fam("cosmos3-edge")) == tuple(range(12, 31))
+    assert vf.video_family_fps_options(_fam("cosmos3-nano")) == (10, 16, 24, 30)
+    for name in ("cosmos3-edge", "cosmos3-nano"):
+        assert _fam(name).default_fps == 24
+    others = [f for f in vf._FAMILIES if f.name not in ("cosmos3-edge", "cosmos3-nano")]
+    assert others and all(vf.video_family_fps_options(f) is None for f in others)
+
+
+@pytest.mark.parametrize(
+    "name, fps, ok",
+    [
+        ("cosmos3-edge", 12, True),
+        ("cosmos3-edge", 30, True),
+        ("cosmos3-edge", 17, True),
+        ("cosmos3-edge", 11, False),
+        ("cosmos3-edge", 31, False),
+        ("cosmos3-nano", 10, True),
+        ("cosmos3-nano", 16, True),
+        ("cosmos3-nano", 30, True),
+        ("cosmos3-nano", 12, False),
+        ("cosmos3-nano", 60, False),
+    ],
+)
+def test_fps_is_validated_against_the_family(name, fps, ok):
+    fam = _fam(name)
+    if ok:
+        vf.validate_video_request_shape(fam, fps = fps)
+        return
+    expected = "12 to 30" if name == "cosmos3-edge" else "10, 16, 24, 30"
+    with pytest.raises(
+        vf.VideoShapeError, match = f"{fps} fps is not a supported frame rate.*{expected}"
+    ):
+        vf.validate_video_request_shape(fam, fps = fps)
+
+
+@pytest.mark.parametrize(
+    "fam",
+    [f for f in vf._FAMILIES if vf.video_family_fps_options(f) is None],
+    ids = lambda f: f.name,
+)
+def test_a_family_without_fps_options_takes_any_rate(fam):
+    for fps in (None, 1, 7, 24, 60, 120):
+        vf.validate_video_fps(fam, fps)
+
+
+@pytest.mark.parametrize("seconds, fps, frames", [(5.0, 12, 61), (5.0, 30, 149), (4.0, 24, 97)])
+def test_duration_converts_at_the_chosen_fps(seconds, fps, frames):
+    from routes.video import _frames_for_seconds
+
+    fam = _fam("cosmos3-edge")
+    defaults = {"fps": fps, "frame_step": fam.frame_step, "frame_offset": fam.frame_offset}
+    assert _frames_for_seconds(seconds, defaults) == frames
+    vf.validate_video_request_shape(fam, num_frames = frames, fps = fps)
+
+
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+def test_status_exposes_the_fps_options_and_frame_window(cosmos3_runtime, repo):
+    from models.inference import VideoGenerationDefaults
+
+    _backend, status = _loaded(repo)
+    got = status["defaults"]
+    rng, choices, window = {
+        EDGE: ([12, 30], [], (53, 149)),
+        NANO: (None, [10, 16, 24, 30], (5, 397)),
+    }[repo]
+    assert (got["fps"], got["fps_range"], got["fps_choices"]) == (24, rng, choices)
+    assert (got["min_num_frames"], got["max_num_frames"]) == window
+    assert [320, 192] in got["resolution_presets"] and got["custom_size_min_pixels"] == 61440
+    VideoGenerationDefaults(**got)
+
+
+@pytest.mark.parametrize("repo, fps, bad", [(EDGE, 12, 31), (NANO, 30, 12)])
+def test_generate_renders_and_exports_at_the_chosen_fps(cosmos3_runtime, repo, fps, bad):
+    backend, _status = _loaded(repo)
+    result = backend.generate(prompt = "p", steps = 1, fps = fps, width = 320, height = 192)
+    passed = backend._state.pipe.passed
+    assert passed["fps"] == float(fps) and (passed["width"], passed["height"]) == (320, 192)
+    assert result["fps"] == fps and cosmos3_runtime[-1]["fps"] == fps
+    with pytest.raises(vf.VideoShapeError, match = "frame rate"):
+        backend.begin_generate(prompt = "p", steps = 1, fps = bad)
+    with pytest.raises(vf.VideoShapeError, match = "frame rate"):
+        backend.generate(prompt = "p", steps = 1, fps = bad)
+    assert backend.generate_progress()["active"] is False

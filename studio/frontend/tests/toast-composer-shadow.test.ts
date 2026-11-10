@@ -17,7 +17,7 @@ function rules(): [string, string][] {
   return out;
 }
 
-const SURFACE = /chat-composer-surface|unsloth-composer-surface|\[data-sonner-toast\]\[data-styled='true'\]/;
+const SURFACE = /(chat-composer-surface|unsloth-composer-surface|\[data-sonner-toast\]\[data-styled='true'\])\s*(,|$)/;
 
 test("toasts and the composer read one shadow variable", () => {
   const shadows = rules()

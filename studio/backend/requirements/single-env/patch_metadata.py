@@ -25,6 +25,10 @@ PATCHES: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"^Requires-Dist: pyarrow<20,>=19\.0\.1$", re.MULTILINE),
         "Requires-Dist: pyarrow>=21.0.0",
     ),
+    (
+        re.compile(r"^Requires-Dist: mcp<2,>=1\.26\.0$", re.MULTILINE),
+        "Requires-Dist: mcp<3,>=2.3",
+    ),
 )
 
 

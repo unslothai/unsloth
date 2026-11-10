@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 import tempfile
+import unicodedata
 from importlib.util import find_spec
 from typing import Callable, Optional
 from utils.datasets.format_detection import _AUDIO_EXTENSIONS
@@ -158,15 +159,19 @@ def _contained_local_path(
     return pathmod.join(target_dir, *parts)
 
 
+def _local_path_key(path: str) -> str:
+    return unicodedata.normalize("NFC", os.path.normpath(path)).casefold()
+
+
 def _unique_local_path(target_dir: str, filename: str, used_paths: set[str]) -> str:
-    """Return an unused flattened path for an S3 object basename."""
+    """Return an unused local path for an S3 object basename."""
     stem, ext = os.path.splitext(filename)
     candidate = _contained_local_path(target_dir, [filename])
     suffix = 1
-    while candidate in used_paths or os.path.exists(candidate):
+    while _local_path_key(candidate) in used_paths or os.path.exists(candidate):
         candidate = _contained_local_path(target_dir, [f"{stem}_{suffix}{ext}"])
         suffix += 1
-    used_paths.add(candidate)
+    used_paths.add(_local_path_key(candidate))
     return candidate
 
 
@@ -189,13 +194,13 @@ def _key_relative_to_prefix(key: str, prefix: Optional[str]) -> str:
     return key.lstrip("/")
 
 
-def _download_structured(
-    client, bucket: str, prefix: Optional[str], keys: list[str], target_dir: str, cancel_callback
+def _structured_local_paths(
+    prefix: Optional[str], keys: list[str], target_dir: str
 ) -> dict[str, str]:
-    """Download ``keys`` mirroring their prefix-relative layout. Returns key -> local path."""
+    """Map keys to distinct local paths under their prefix-relative directories."""
     local_by_key: dict[str, str] = {}
+    used_paths: set[str] = set()
     for key in keys:
-        _raise_if_cancelled(cancel_callback)
         relative = _key_relative_to_prefix(key, prefix)
         parts = [part for part in relative.split("/") if part not in ("", ".")]
         # ".." is a legal S3 key segment: refuse rather than write above target_dir.
@@ -204,11 +209,18 @@ def _download_structured(
                 f"S3 key {key!r} contains '..' or empty path segments and cannot "
                 "be downloaded into the dataset directory."
             )
-        local_path = _contained_local_path(target_dir, parts)
-        os.makedirs(os.path.dirname(local_path) or target_dir, exist_ok = True)
-        _download_one(client, bucket, key, local_path, cancel_callback)
-        local_by_key[key] = local_path
+        path = _contained_local_path(target_dir, parts)
+        local_by_key[key] = _unique_local_path(
+            os.path.dirname(path), os.path.basename(path), used_paths
+        )
     return local_by_key
+
+
+def _download_structured(client, bucket: str, local_by_key: dict[str, str], cancel_callback):
+    for key, local_path in local_by_key.items():
+        _raise_if_cancelled(cancel_callback)
+        os.makedirs(os.path.dirname(local_path), exist_ok = True)
+        _download_one(client, bucket, key, local_path, cancel_callback)
 
 
 def _rewrite_audio_references(
@@ -217,8 +229,9 @@ def _rewrite_audio_references(
     bucket: str,
     prefix: Optional[str],
 ) -> None:
-    """Rewrite audio values naming a downloaded key (prefix-relative, ``s3://`` URI, or
-    manifest-relative) to its local path; anything else is left as written."""
+    """Rewrite audio values naming an audio key (prefix-relative, ``s3://`` URI, or
+    manifest-relative) to its local path; anything else is left as written. A value whose
+    prefix- and manifest-relative readings name different keys is refused."""
     lookup: dict[str, str] = {}
     for key, local_path in audio_local_by_key.items():
         lookup[_key_relative_to_prefix(key, prefix)] = local_path
@@ -233,10 +246,15 @@ def _rewrite_audio_references(
             if not isinstance(value, str) or not value.lower().endswith(_AUDIO_EXTENSIONS):
                 return None
             direct = lookup.get(value)
-            if direct is not None:
-                return direct
             relative_to_manifest = os.path.normpath(os.path.join(manifest_dir, value))
-            return lookup.get(relative_to_manifest.replace(os.sep, "/"))
+            relative = lookup.get(relative_to_manifest.replace(os.sep, "/"))
+            if direct is not None and relative is not None and direct != relative:
+                raise ValueError(
+                    f"Ambiguous audio reference {value!r} in S3 manifest {manifest_key!r}: "
+                    "it matches different prefix-relative and manifest-relative files. "
+                    "Use './' for a manifest-relative path or a full 's3://' URI."
+                )
+            return direct if direct is not None else relative
 
         if manifest_path.lower().endswith(".csv"):
             _rewrite_csv_manifest(manifest_path, resolve)
@@ -273,16 +291,19 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
     except json.JSONDecodeError:
         data = None  # JSON Lines in a .json file
     if data is None:
-        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        # Text mode normalizes CRLF; Unicode separators inside strings are data.
+        rows = [json.loads(line) for line in text.split("\n") if line.strip()]
         for row in rows:
             _rewrite_row(row, resolve)
         with open(manifest_path, "w", encoding = "utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii = False) + "\n")
         return
-    if not isinstance(data, list):
-        return  # column-oriented JSON
-    for row in data:
+    # A single JSON Lines record also parses as a complete JSON object.
+    # Keep its object shape while applying the same rewrite as multi-row manifests.
+    if not isinstance(data, (dict, list)):
+        return
+    for row in [data] if isinstance(data, dict) else data:
         _rewrite_row(row, resolve)
     with open(manifest_path, "w", encoding = "utf-8") as f:
         json.dump(data, f, ensure_ascii = False)
@@ -357,14 +378,14 @@ def prepare_s3_dataset_download(
 
         local_files: list[str] = []
         if audio_keys:
-            manifest_local_by_key = _download_structured(
-                client, bucket, prefix, keys, target_dir, cancel_callback
-            )
-            audio_local_by_key = _download_structured(
-                client, bucket, prefix, audio_keys, target_dir, cancel_callback
-            )
-            local_files = list(manifest_local_by_key.values())
+            local_by_key = _structured_local_paths(prefix, keys + audio_keys, target_dir)
+            manifest_local_by_key = {key: local_by_key[key] for key in keys}
+            audio_local_by_key = {key: local_by_key[key] for key in audio_keys}
+            _download_structured(client, bucket, manifest_local_by_key, cancel_callback)
+            # Rewrite before the audio download so a bad manifest fails without fetching it.
             _rewrite_audio_references(manifest_local_by_key, audio_local_by_key, bucket, prefix)
+            _download_structured(client, bucket, audio_local_by_key, cancel_callback)
+            local_files = list(manifest_local_by_key.values())
         else:
             used_paths: set[str] = set()
             for key in keys:

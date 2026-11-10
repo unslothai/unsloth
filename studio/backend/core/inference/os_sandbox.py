@@ -331,12 +331,25 @@ def _walk_for_host_channels(
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
     links: dict[tuple[int, int], list] = {}
     unreadable: list[str] = []
+    # POSIX: each directory's stat as its parent saw it (the root via stat, as scandir follows it). While still current
+    # when walked, it stands in for the path/.. stat ismount reads; a missing or swapped one takes the ismount calls.
+    listed: dict[str, os.stat_result] = {}
+    if not _NT_PATHS:
+        try:
+            listed[root] = os.stat(root)
+        except OSError:
+            pass
 
     for base, dirs, names in os.walk(
         root, followlinks = False, onerror = lambda exc: unreadable.append(exc.filename or root)
     ):
+        parent = listed.pop(base, None)
+        signature = directory_signature(base) if witness is not None or parent is not None else None
+        if parent is not None and signature[1:3] != (parent.st_dev, parent.st_ino):
+            # Swapped since its parent listed it.
+            parent = None
         if witness is not None:
-            witness.append(directory_signature(base))
+            witness.append(signature)
         if unreadable:
             return f"{unreadable[0]} cannot be fully inspected"
         for name in (*dirs, *names):
@@ -359,8 +372,16 @@ def _walk_for_host_channels(
             if stat.S_ISDIR(info.st_mode):
                 # Misses a same-filesystem bind mount; Linux also asks the mount table. A Windows mounted folder is a
                 # reparse point, refused above, and ntpath.ismount calls a directory named nul the \\.\nul device root.
-                if not _NT_PATHS and os.path.ismount(path):
-                    return f"contains a nested host mount: {path}"
+                if not _NT_PATHS:
+                    # path/.. is this parent: same device and another inode is exactly where ismount says no.
+                    if (
+                        parent is None
+                        or info.st_dev != parent.st_dev
+                        or info.st_ino == parent.st_ino
+                    ):
+                        if os.path.ismount(path):
+                            return f"contains a nested host mount: {path}"
+                    listed[path] = info
                 continue
             if not stat.S_ISREG(info.st_mode):
                 return f"contains a device or IPC node: {path}"

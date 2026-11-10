@@ -320,8 +320,7 @@ class TestResponsesReasoning:
         assert req.enable_thinking is None
 
     def test_malformed_reasoning_is_ignored_not_fatal(self):
-        """Never 400 on a shape we don't recognise -- that regressed real
-        Claude Code traffic once already."""
+        """Unknown shapes must not 400; this already regressed real Claude Code traffic."""
         for bad in ("high", {"effort": 3}, {}, {"summary": "auto"}, {"effort": "auto"}):
             req = self._chat_req(bad)
             assert req.enable_thinking is None

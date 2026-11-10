@@ -175,9 +175,12 @@ def _teardown() -> None:
     diffusion_arch_patches.uninstall_arch_patches()
     for mod_name in (
         "diffusion_flux2_rope",
+        "diffusion_flux3_rope",
+        "diffusion_flux3_half_attn",
         "diffusion_qwenimage_rope",
         "diffusion_zimage_fused",
         "diffusion_qwenimage21_fused",
+        "diffusion_flux_convrot_fused",
         "diffusion_rocm_fused",
         "diffusion_qwenimage21",
         "diffusion_qwenimage21_rope",
@@ -227,11 +230,16 @@ def legacy_entry(
             uninstall_fp16_rmsnorm()
             patches["fp16_eager_rmsnorm"] = False
         from core.inference.diffusion_flux2_rope import install_for_pipe as flux2
+        from core.inference.diffusion_flux3_rope import install_for_pipe as flux3
         from core.inference.diffusion_qwenimage21 import install_for_pipe as q21
         from core.inference.diffusion_rocm_fused import install_for_pipe as rocm
 
         patches["qwenimage21_fast_step"] = _engaged(q21(pipe, None))
         patches["flux2_rope"] = _engaged(flux2(pipe, target.dtype, target.device, None))
+        patches["flux3_rope"] = _engaged(flux3(pipe, target.device, None))
+        from core.inference.diffusion_flux3_half_attn import install_for_pipe as flux3_attn
+
+        patches["flux3_fp16_attn"] = _engaged(flux3_attn(pipe, target.device, speed, None))
         patches["rocm_fused"] = _engaged(rocm(pipe, target.dtype, target.device, None))
         applied = ds.apply_speed_optims(
             pipe,
@@ -485,10 +493,13 @@ def snapshot(entry: Callable) -> dict:
     from core.inference import diffusion_transformer_quant
 
     patch.setattr(diffusion_transformer_quant, "_is_consumer_gpu", lambda *a, **k: True)
-    # The fused fp16 RoPE and Wan gates ask whether Triton imports (CPU torch from pip has none); pin them too.
+    # The fused RoPE and Wan gates ask whether Triton imports (CPU torch from pip has none); pin them too.
     from core.inference import diffusion_flux2_rope, video_wan_fused
 
     patch.setattr(diffusion_flux2_rope, "_kernel", lambda: (lambda *a, **k: None))
+    from core.inference import diffusion_flux3_rope
+
+    patch.setattr(diffusion_flux3_rope, "_kernel", lambda: (lambda *a, **k: None))
     patch.setattr(video_wan_fused, "_kernels", lambda: {})
     from core.inference import diffusion_rocm_fused
 

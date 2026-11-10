@@ -94,6 +94,17 @@ def conn(rag_home, rag_conn, stub_embeddings):
     return rag_conn
 
 
+def _fail_embedder(monkeypatch):
+    """Archiving then falls back to keyword-only copies, as with a llama.cpp that cannot load the embedder."""
+    from core.rag import embeddings
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+
+
 def _tool_part(
     *,
     type = "tool-call",
@@ -1225,11 +1236,16 @@ def test_an_embedder_download_still_pending_is_logged_once_without_a_traceback(
     turn = _turn("what is the deploy code", "the deploy code is 5150")
     caplog.set_level(logging.INFO, logger = conversation_archive.logger.name)
 
-    for _ in range(3):
-        assert _archive([dict(m) for m in turn]) == 0
+    # The first fit keeps a keyword copy of the evicted turn; later fits find it there and add none.
+    # Saved once: each saved occurrence gets its own copy.
+    _save_thread(THREAD, turn, append = True)
+    for expected in (1, 0, 0):
+        assert conversation_archive.archive_turns(THREAD, [dict(m) for m in turn]) == expected
         assert conversation_archive.degraded() is True
         found = conversation_archive.recall(THREAD, "sourdough")
         assert found is not None and "sourdough" in found[0]
+        found = conversation_archive.recall(THREAD, "deploy code")
+        assert found is not None and "5150" in found[0]
 
     records = [r for r in caplog.records if r.name == conversation_archive.logger.name]
     assert not [r for r in records if r.levelno >= logging.WARNING or r.exc_info]
@@ -1258,12 +1274,133 @@ def test_a_failed_archive_marks_the_feature_degraded(conn, monkeypatch):
         raise RuntimeError("no embedding model could be started")
 
     monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
-    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 0
+    # Kept for keyword search, but dense recall is still down.
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
     assert conversation_archive.degraded() is True
 
     monkeypatch.setattr(embeddings, "encode_with_identity", real)
+    # The keyword copy is re-embedded in place.
     assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
     assert conversation_archive.degraded() is False
+
+
+def test_turns_evicted_while_the_embedder_fails_stay_searchable(conn, monkeypatch):
+    """#16706: with no archive the chat never gets search_conversation, and recall finds nothing."""
+    from core.inference import tools
+    from core.rag import embeddings
+
+    thread_id = "no-embedder-thread"
+    turns = _turn("what is the deploy code", "the deploy code is 5150") + _turn(
+        "which colour did we pick", "we picked teal"
+    )
+    _save_thread(thread_id, turns + [{"role": "user", "content": "and now?"}])
+
+    real_encode = embeddings.encode_with_identity
+    real_counter = embeddings.token_counter
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("llama-server binary not found")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    assert conversation_archive.has_archive(thread_id) is False
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 2
+    assert conversation_archive.has_archive(thread_id) is True
+
+    # The model's own search, through the tool it is now offered, answers from keyword matches.
+    found = tools._search_conversation({"query": "deploy code"}, {"thread_id": thread_id})
+    assert "5150" in found
+    found = tools._search_conversation({"query": "colour teal"}, {"thread_id": thread_id})
+    assert "teal" in found
+
+    scope = store.conversation_archive_scope(thread_id)
+    before = {
+        row["sha256"]: row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT sha256, archive_ordinal FROM documents WHERE scope = ?", (scope,)
+        )
+    }
+    assert len(before) == 2
+
+    # Once the embedder works, the same eviction re-embeds both turns where they were.
+    monkeypatch.setattr(embeddings, "encode_with_identity", real_encode)
+    monkeypatch.setattr(embeddings, "token_counter", real_counter)
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 2
+    rows = conn.execute(
+        "SELECT sha256, archive_ordinal, embedding_model FROM documents WHERE scope = ?", (scope,)
+    ).fetchall()
+    assert {row["sha256"]: row["archive_ordinal"] for row in rows} == before
+    assert all(row["embedding_model"] != conversation_archive.LEXICAL_ONLY_IDENTITY for row in rows)
+    vectors = conn.execute("SELECT COUNT(*) FROM chunks_vec WHERE scope = ?", (scope,)).fetchone()[
+        0
+    ]
+    assert vectors > 0
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 0
+
+
+def test_keyword_copies_keep_every_evicted_occurrence_of_a_repeated_turn(conn, monkeypatch):
+    """A turn said twice keeps both seats, or recall shows the value it replaced as the latest."""
+    from core.rag import embeddings
+
+    thread_id = "repeat-no-embedder"
+    turns = _turn("set X to 1", "ok") + _turn("set X to 2", "ok") + _turn("set X to 1", "ok")
+    live = [{"role": "user", "content": "what is X now?"}]
+    _save_thread(thread_id, turns + live)
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns], live = live) == 3
+    ordinals = [
+        row[0]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope = ? ORDER BY archive_ordinal",
+            (store.conversation_archive_scope(thread_id),),
+        )
+    ]
+    assert ordinals == [0, 1, 2]
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns], live = live) == 0
+
+
+def test_chat_stop_interrupts_the_keyword_fallback(conn, monkeypatch):
+    from core.rag import embeddings
+
+    thread_id = "stop-no-embedder"
+    turns = [m for i in range(5) for m in _turn(f"question {i}", f"answer {i}")]
+    _save_thread(thread_id, turns + [{"role": "user", "content": "next"}])
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    polls = []
+
+    def stop_after_one_write():
+        polls.append(1)
+        # Polled once before the dense pass, once before the fallback, then once per turn.
+        return len(polls) > 3
+
+    written = conversation_archive.archive_turns(
+        thread_id, [dict(m) for m in turns], cancel_check = stop_after_one_write
+    )
+    assert written == 1
+
+
+def test_a_failing_store_does_not_fall_back_to_keyword_copies(conn, monkeypatch):
+    """Only the embedder failing falls back: a store that cannot write chunks is left to retry."""
+    turns = _turn("what is a wombat", "a burrowing marsupial")
+    real_add_chunks = store.add_chunks
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(store, "add_chunks", explode)
+    assert _archive(turns, thread_id = "store-fails") == 0
+    assert conversation_archive.has_archive("store-fails") is False
+    monkeypatch.setattr(store, "add_chunks", real_add_chunks)
 
 
 def test_the_late_archive_cleanup_spares_a_recreated_thread(conn):
@@ -2085,9 +2222,8 @@ def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypa
 
     encoded = threading.Event()
 
-    # Queue behind the other user's lock, then encode outside it. Holding it across real() made
-    # the worker take the same non-reentrant lock again inside encode, so once the gap reopened it
-    # hung for good and stalled the next test on that xdist worker until pytest-timeout fired.
+    # Queue behind the other user's lock, then encode outside it; holding it across real() re-took
+    # the non-reentrant lock inside encode and hung the xdist worker until pytest-timeout.
     def locked(texts, **kwargs):
         with lock:
             time.sleep(0.5)
@@ -2343,12 +2479,24 @@ def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
         evicted.append({"role": "user", "content": f"fail question {index} unique {index}"})
         evicted.append({"role": "assistant", "content": f"fail answer {index} unique {index}"})
 
-    written = conversation_archive.archive_turns(thread_id, evicted)
-    assert 0 < written < 8
+    scope = store.conversation_archive_scope(thread_id)
+
+    def keyword_only():
+        return conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE scope = ? AND embedding_model = ?",
+            (scope, conversation_archive.LEXICAL_ONLY_IDENTITY),
+        ).fetchone()[0]
+
+    # Every turn is kept: the embedded batches with vectors, the rest for keyword search only.
+    assert conversation_archive.archive_turns(thread_id, evicted) == 8
+    unembedded = keyword_only()
+    assert 0 < unembedded < 8
     assert conversation_archive.degraded()
     calls.clear()
-    assert conversation_archive.archive_turns(thread_id, evicted) == 8 - written
-    assert sum(calls) <= 8 - written
+    # Only the keyword-only turns are encoded again.
+    assert conversation_archive.archive_turns(thread_id, evicted) == unembedded
+    assert sum(calls) <= unembedded
+    assert keyword_only() == 0
 
 
 VARIABLE = "ZQXVARA123"
@@ -2486,8 +2634,7 @@ def test_each_archived_turn_records_its_position(conn):
 
 
 def test_re_embedding_a_turn_keeps_its_place(conn, monkeypatch):
-    """Re-embedding walks the whole archive, so a fresh ordinal here would renumber the
-    entire conversation into the order its vectors were rebuilt."""
+    """Re-embedding walks the archive, so a new ordinal would renumber turns in rebuild order."""
     from core.rag import embeddings
 
     # Patch embedding_identity too: archive_turns short-circuits on the expected identity.
@@ -2698,9 +2845,8 @@ def test_the_archive_query_keeps_the_negation_that_carries_the_question(conn):
 
 
 def test_re_embedding_a_turn_archived_before_ordinals_leaves_it_unnumbered(conn, monkeypatch):
-    """A NULL ordinal predates the column. Allocating one on re-embed would move the
-    conversation's OLDEST turn behind every numbered one, and the renderer would then
-    read it as the later, superseding statement."""
+    """A NULL ordinal predates the column; allocating one on re-embed would move the oldest turn
+    behind every numbered one, so the renderer reads it as the later, superseding statement."""
     from core.rag import embeddings
 
     identity = {"name": "st:model-a"}
@@ -2878,8 +3024,7 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
 
 
 def test_the_sql_candidate_order_agrees_with_the_python_recall_order(conn):
-    """SQL and Python order turns separately; the SQL LIMIT picks candidates, so drift silently
-    drops turns."""
+    """SQL and Python order turns separately; SQL LIMIT picks candidates, so drift drops turns."""
     import types
 
     scope = store.conversation_archive_scope(THREAD)
@@ -3013,8 +3158,7 @@ def test_merging_two_recall_queries_still_lists_legacy_turns_first(conn):
 
 
 def test_merging_two_recall_queries_keeps_one_turns_chunks_in_order(conn, monkeypatch):
-    """Both queries hit the same long turn, so every source carries the same `turn` and a
-    stable sort would quote it in query order -- tail first."""
+    """Both queries hit the same turn, so a stable sort would quote its chunks tail first."""
     monkeypatch.setattr(config, "CHUNK_TOKENS", 30)
     monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
     body = (
@@ -3056,9 +3200,8 @@ def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_sa
 
 
 def test_both_recall_paths_order_by_the_same_key():
-    """The single-query path reads snake_case columns and the merge reads camelCase keys;
-    they are only the same key while both call `_order_key`.
-    """
+    """The single-query path reads snake_case columns and the merge reads camelCase keys; they match
+    only while both call `_order_key`."""
     from core.rag import conversation_archive
     for ordinal in (None, 0, 4):
         for created in ("", "2026-01-01T00:00:00Z"):
@@ -3232,8 +3375,7 @@ def test_an_overlapping_anchor_query_does_not_shrink_the_recall(conn):
 
 
 def test_a_shouted_question_filters_as_well_as_a_typed_one(conn):
-    """A shouted question with no lower case would make every word an identifier; the rule needs
-    contrast."""
+    """All-caps text makes every word an identifier, so the rule needs lower-case contrast."""
     for index in range(6):
         _archive(_turn(f"Set {VARIABLE} to 42{index}.", f"Understood. {VARIABLE} is 42{index}."))
     _archive(
@@ -3380,9 +3522,8 @@ def test_a_re_embed_does_not_swallow_a_repeat_evicted_later(conn, monkeypatch):
 
 
 def test_two_evicted_copies_of_a_thrice_said_turn_are_both_archived(conn):
-    """A set of live texts cannot count. Three identical turns with two evicted and one
-    still in the prompt looked entirely live, so only one copy was ever written and the
-    archive was a turn short of what was actually said."""
+    """A set of live texts cannot count: three identical turns, two evicted and one still in the
+    prompt, looked live, so only one copy was archived and a turn went missing."""
     repeat = _turn("set ZQXVARA123 to 1", "ok")
     mid = _turn("set ZQXVARA123 to 2", "ok")
     other = _turn("something else about ZQXVARA123", "fine")
@@ -3453,8 +3594,7 @@ def test_the_write_budget_is_every_seat_when_the_caller_says_nothing(conn):
 
 
 def test_an_out_of_order_eviction_still_numbers_turns_in_conversation_order(conn):
-    """Archive order is not conversation order: a pinned or newest-group turn is evicted after later
-    ones."""
+    """Archive order is not conversation order: pinned or newest-group turns are evicted late."""
     conversation = (
         _turn("the standing instruction about pelicans", "Understood.")
         + _turn("the middle turn about pelicans", "Noted.")
@@ -3574,9 +3714,8 @@ def _report_then_correction(sent_report):
     ids = ["python-off", "python-on"],
 )
 def test_a_turn_sent_with_an_attachment_keeps_its_place(conn, sent_report):
-    """The stored row keeps the document under `attachments` while the request inlines it (after the python
-    tool's path note when that is on). Read without them, the turn took the fallback ordinal and came back
-    as the latest turn, superseding the correction that followed it."""
+    """Stored rows keep the document under attachments but requests inline it after the python path
+    note; without that text the turn got a fallback ordinal and superseded the correction."""
     wire = _report_then_correction(sent_report)
 
     assert conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:]) == 2
@@ -3620,8 +3759,7 @@ def test_a_tool_only_attachment_keeps_its_place_with_the_python_tool_on(conn):
 
 
 def test_an_attachment_turn_numbered_past_the_end_converges_on_the_next_compaction(conn):
-    """Archives written before the fold hold the attachment turn after every later one; the next eviction
-    of that turn moves it back to its seat."""
+    """Pre-fold archives put the attachment turn last; its next eviction re-seats it."""
     wire = _report_then_correction(_REPORT)
     conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:])
     scope = store.conversation_archive_scope(THREAD)
@@ -3636,9 +3774,8 @@ def test_an_attachment_turn_numbered_past_the_end_converges_on_the_next_compacti
 
 
 def test_recall_without_a_request_branch_keeps_an_attachment_turn(conn):
-    """The branch filter's stored-transcript fallback reads the same rows: without the attachment text,
-    the archived turn looked rolled back and no query could return it. Studio always passes its branch,
-    so this covers other callers only, and only without the python tool's notes."""
+    """Without attachment text, the branch filter's fallback marks the turn rolled back, so no query
+    finds it; Studio passes its branch, so only other callers without python notes hit it."""
     wire = _report_then_correction(_REPORT)
     conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:])
 
@@ -3934,8 +4071,13 @@ def test_a_retried_turn_is_numbered_on_the_branch_the_user_is_on(conn):
     assert ordinals == [0, 1, 2]
 
 
-def test_a_rewind_retires_the_copy_the_conversation_no_longer_holds(conn):
+@pytest.mark.parametrize("embedder_fails", [False, True])
+def test_a_rewind_retires_the_copy_the_conversation_no_longer_holds(
+    conn, monkeypatch, embedder_fails
+):
     """Identical copies outnumber occurrences after a rewind, so surplus copies must be retired."""
+    if embedder_fails:
+        _fail_embedder(monkeypatch)
     first = _turn("set ZQXVARA123 to 1", "ok")
     second = _turn("set ZQXVARA123 to 2", "ok")
     repeat = _turn("set ZQXVARA123 to 1", "ok")
@@ -4647,8 +4789,7 @@ def test_an_audio_reply_is_replayed_as_the_sentinel_the_request_carried():
 
 
 def test_the_branch_seed_scores_an_in_order_run_not_a_set(conn):
-    """The branch seed must score an in-order run, not a set, so a sibling with the same texts
-    cannot win."""
+    """The branch seed must score an in-order run, not a set, so same-text siblings cannot win."""
     from storage import studio_db
 
     studio_db.upsert_chat_thread(
@@ -4926,8 +5067,13 @@ def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
     assert conversation_archive._occurrences(positions, live) == [1]
 
 
-def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
+@pytest.mark.parametrize("embedder_fails", [False, True])
+def test_the_same_text_over_a_longer_span_widens_the_stored_window(
+    conn, monkeypatch, embedder_fails
+):
     """Same text over a longer span must widen the stored window, or the turn is filtered out of recall."""
+    if embedder_fails:
+        _fail_embedder(monkeypatch)
     short = [
         _assistant_call("terminal", '{"command":"ls"}', id = "c2"),
         {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},

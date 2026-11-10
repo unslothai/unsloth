@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from hub.utils.hf_tokens import normalize_token
+
 HOSTED_VAE_ENV = "UNSLOTH_DIFFUSION_HOSTED_VAE"
 HOSTED_VAE_COMPONENT = "vae"
 
@@ -64,7 +66,7 @@ def hosted_vae_plan_files(
     repo_id, filename = src
     try:
         from huggingface_hub import HfApi
-        infos = HfApi(token = hf_token or None).get_paths_info(repo_id, [filename])
+        infos = HfApi(token = normalize_token(hf_token)).get_paths_info(repo_id, [filename])
         size = next((int(getattr(i, "size", 0) or 0) for i in infos if i.path == filename), 0)
     except Exception as exc:  # noqa: BLE001 -- unresolvable: keep the dense VAE
         if logger is not None:
@@ -88,7 +90,7 @@ def _vae_config(
             source,
             "vae/config.json",
             cache_dir = cache_dir,
-            token = hf_token or None,
+            token = normalize_token(hf_token),
             local_files_only = local_files_only,
         )
     with open(local, encoding = "utf-8") as fh:
@@ -167,7 +169,7 @@ def hosted_vae_pipe_kwargs(
                 repo_id,
                 filename,
                 cache_dir = cache_dir,
-                token = hf_token or None,
+                token = normalize_token(hf_token),
                 local_files_only = local_files_only,
             )
         config = _vae_config(
@@ -225,6 +227,8 @@ def _dense_vae_kwargs(
     }
     if cache_dir:
         kwargs["cache_dir"] = cache_dir
-    if hf_token:
-        kwargs["token"] = hf_token
+    hub_token = normalize_token(hf_token)
+    # False is kept: it means anonymous, while an omitted token falls back to the cached login.
+    if hub_token is not None:
+        kwargs["token"] = hub_token
     return {HOSTED_VAE_COMPONENT: vae_cls.from_pretrained(str(base), **kwargs)}

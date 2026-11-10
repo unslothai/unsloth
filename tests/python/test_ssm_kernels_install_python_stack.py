@@ -160,8 +160,7 @@ def test_no_torch_or_macos_skips_the_check(monkeypatch):
 
 @pytest.mark.parametrize("torch_imports", [False, None])
 def test_a_torch_that_does_not_import_keeps_every_kernel(monkeypatch, torch_imports):
-    # A half-finished repair or a transient failure in torch says nothing about the kernels, and an
-    # offline machine could not reinstall them.
+    # A torch that fails to import says nothing about the kernels, so none are removed.
     host = _Kernels({"causal-conv1d": False, "mamba-ssm": False}, torch_imports = torch_imports)
     warnings = _run_stale_check(monkeypatch, host)
     assert host.removed == []

@@ -8,6 +8,7 @@ import logging
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -270,8 +271,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chunks ADD COLUMN page_char_end INTEGER")
     if "whole_document_token_count" not in chunk_cols:
         conn.execute("ALTER TABLE chunks ADD COLUMN whole_document_token_count INTEGER")
-    # Partial, so it is empty until a chat is compacted and the MAX() that allocates the next ordinal is
-    # an index probe rather than a scan.
+    # Partial: empty until a chat is compacted; keeps the MAX() ordinal lookup an index probe.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
         "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"
@@ -286,9 +286,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
-    """Add the linked-folder columns a database created by an earlier build is missing. Also called for
-    the metadata connection, which skips _ensure_schema so that scope retirement keeps working when
-    the vector extension cannot load."""
+    """Adds linked-folder columns missing from older builds; also called on the metadata connection,
+    which skips _ensure_schema so scope retirement works without the vector extension"""
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
     # the queued follow-up request; it replaced a flag that only recorded rebuilds
     if job_cols and "successor_kind" not in job_cols:
@@ -315,6 +314,85 @@ def reset_schema_state_for_tests() -> None:
         _schema_ready.clear()
 
 
+class _ReusedConnection(sqlite_gate.GatedConnection):
+    """Shared by a reuse_connections() block: close() rolls back the uncommitted rest (what a real close
+    discards) and keeps the connection open."""
+
+    _reuse_slot = None
+
+    def close(self) -> None:
+        slot = self._reuse_slot
+        if slot is None or slot.conn is not self:
+            super().close()
+            return
+        if not slot.checked_out:
+            return
+        slot.checked_out = False
+        try:
+            self.rollback()
+        except Exception:  # noqa: BLE001 - a real close would not raise here either
+            slot.discard()
+
+
+class _ReuseSlot:
+    __slots__ = ("conn", "db_path", "checked_out")
+
+    def __init__(self) -> None:
+        self.conn = None
+        self.db_path = None
+        self.checked_out = False
+
+    def checkout(self, db_path: Path):
+        conn = self.conn
+        if conn is None or self.checked_out or self.db_path != db_path:
+            return None
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 5000")
+        except Exception:  # noqa: BLE001 - unusable now, so the caller opens a new one
+            self.discard()
+            return None
+        self.checked_out = True
+        return conn
+
+    def discard(self) -> None:
+        conn, self.conn, self.db_path, self.checked_out = self.conn, None, None, False
+        if conn is not None:
+            conn._reuse_slot = None
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not close a reused rag.db connection", exc_info = True)
+
+
+_reuse_state = threading.local()
+
+
+def release_reused() -> None:
+    """Close this thread's idle shared connection before file work or waits, so an account rename on
+    Windows sees the same open handles as without the block. No-op outside a block or while checked out."""
+    slot = getattr(_reuse_state, "slot", None)
+    if slot is not None and slot.conn is not None and not slot.checked_out:
+        slot.discard()
+
+
+@contextmanager
+def reuse_connections():
+    """On this thread, get_connection() reuses one connection (a fresh open costs ~0.5 ms) unless it is
+    still checked out, then opens a normal one. Callers commit and close as before. Nested blocks share
+    the outer one, which closes it."""
+    if getattr(_reuse_state, "slot", None) is not None:
+        yield
+        return
+    slot = _ReuseSlot()
+    _reuse_state.slot = slot
+    try:
+        yield
+    finally:
+        _reuse_state.slot = None
+        slot.discard()
+
+
 def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
     global _extension_loaded
@@ -323,18 +401,28 @@ def get_connection() -> sqlite3.Connection:
 
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite_gate.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    # Wait for a lock instead of erroring: figure-heavy ingests hold connections across many seconds.
-    conn.execute("PRAGMA busy_timeout = 5000")
-    try:
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
-    except Exception as exc:  # noqa: BLE001
-        conn.close()
-        _warn_unavailable_once(exc)
-        raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
+    slot = getattr(_reuse_state, "slot", None)
+    conn = slot.checkout(db_path) if slot is not None else None
+    if conn is None:
+        adopt = slot is not None and slot.conn is None
+        if adopt:
+            conn = sqlite_gate.connect(db_path, factory = _ReusedConnection)
+        else:
+            conn = sqlite_gate.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        # Wait for a lock instead of erroring: figure-heavy ingests hold connections across many seconds.
+        conn.execute("PRAGMA busy_timeout = 5000")
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+        except Exception as exc:  # noqa: BLE001
+            conn.close()
+            _warn_unavailable_once(exc)
+            raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
+        if adopt:
+            slot.conn, slot.db_path, slot.checked_out = conn, db_path, True
+            conn._reuse_slot = slot
     # Set before the schema step: the library loaded, whatever the db does next. Monotonic, no lock.
     _extension_loaded = True
 
@@ -357,9 +445,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def get_metadata_connection() -> sqlite3.Connection:
-    """Open rag.db without loading sqlite-vec. This connection is only for ordinary SQLite metadata
-    tables. It lets lifecycle tombstones remain writable when the optional native vector extension
-    is temporarily unavailable. Callers must not query or mutate the vec0 virtual table."""
+    """Metadata-only connection without sqlite-vec: tombstones stay writable; do not touch vec0 tables."""
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite_gate.connect(db_path)
@@ -516,9 +602,8 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
 
 
 def _delete_document_chunks(conn, document_id: str) -> None:
-    """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
-    reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
-    stay citable."""
+    """Deletes chunk rows, keeps the documents row; retrieval filters by scope, so leftovers stay
+    citable."""
     if (
         conn.execute("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (document_id,)).fetchone()
         is None
@@ -533,9 +618,8 @@ def _delete_document_chunks(conn, document_id: str) -> None:
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:
-    """Fail ingestion jobs/documents left mid-flight by a crash so they stop showing as stuck
-    "processing" and become re-ingestible. Work owned by another live backend is left alone until
-    its lease expires. No-op without RAG. Returns the number of jobs reset."""
+    """Fails crash-orphaned ingestion jobs so they can re-run; another live backend's work is left
+    alone until its lease expires; no-op without RAG"""
     # rag_available(): the package may be installed without the vec0 binary.
     if not rag_available():
         return 0
