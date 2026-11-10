@@ -28,6 +28,8 @@ import {
   sanitizeStrength,
   sanitizeStrengths,
 } from "./model";
+import { startGlassMotion } from "./glass-motion";
+import { softwareCompositing } from "./software-compositing";
 import { useChatWelcomeShown } from "./welcome";
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
@@ -228,7 +230,7 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   useEffect(() => {
     document.documentElement.toggleAttribute(
       "data-glass-menus",
-      menus && material !== "solid" && material !== "transparent" && here,
+      menus && material !== "solid" && here,
     );
   }, [menus, material, here]);
   useEffect(() => {
@@ -242,6 +244,24 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
       "data-glass-cpu",
       WEBKIT_GTK && material !== "solid" && material !== "transparent" && here,
     );
+  }, [material, here]);
+  useEffect(() => {
+    // Only where compositing is in software, which recomputes every blur on every frame; with a GPU glass
+    // keeps its blur while things move. WebKitGTK already has no live blur outside the sidebar (data-glass-cpu).
+    // Transparent has no blur, except on Windows Desktop, where its menus and dialogs carry one.
+    const root = document.documentElement;
+    const clearBlur =
+      material === "transparent" &&
+      root.classList.contains("tauri") &&
+      root.classList.contains("client-windows");
+    const on =
+      !WEBKIT_GTK &&
+      material !== "solid" &&
+      (material !== "transparent" || clearBlur) &&
+      here &&
+      softwareCompositing();
+    document.documentElement.toggleAttribute("data-glass-motion", on);
+    return on ? startGlassMotion().stop : undefined;
   }, [material, here]);
   useEffect(() => {
     const root = document.documentElement;

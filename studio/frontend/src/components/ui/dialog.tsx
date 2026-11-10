@@ -14,6 +14,7 @@ import {
   DropdownGlowContext,
   dialogDropdownGlow,
 } from "@/components/ui/dropdown-glow";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -55,12 +56,15 @@ function DialogClose({
 function DialogOverlay({
   className,
   position = "fixed",
+  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Overlay> & {
   position?: "fixed" | "absolute";
 }) {
+  const surfaceRef = useSurfaceRef(MODAL_SURFACE, ref);
   return (
     <DialogPrimitive.Overlay
+      ref={surfaceRef}
       data-slot="dialog-overlay"
       data-viewport-backdrop={position === "fixed" ? true : undefined}
       className={cn(
@@ -83,6 +87,7 @@ function DialogContent({
   overlayPosition,
   overlayTone,
   onInteractOutside,
+  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
@@ -94,6 +99,7 @@ function DialogContent({
   overlayTone?: "strong" | "dense";
 }) {
   const resolvedContainer = container ?? null;
+  const surfaceRef = useSurfaceRef(MODAL_SURFACE, ref);
   const inheritedGlow = useContext(DropdownGlowContext);
   const glow =
     resolvedContainer === null
@@ -108,6 +114,7 @@ function DialogContent({
           data-viewport-backdrop-tone={overlayTone}
         />
         <DialogPrimitive.Content
+          ref={surfaceRef}
           data-slot="dialog-content"
           className={cn(
             // max-h + scroll keeps tall dialogs reachable on short viewports; a call site

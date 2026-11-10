@@ -7,7 +7,9 @@ file, verified against its recorded fingerprint, and refused (dense build) whene
 
 from __future__ import annotations
 
+import gc
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -288,3 +290,26 @@ def test_only_an_opted_in_family_offload_int8_takes_the_hosted_file(monkeypatch)
     monkeypatch.setattr(V, "native_int8_act", lambda target: True)
     monkeypatch.setenv(NH.NATIVE_HOSTED_ENV, "0")
     assert V._video_native_hosted_scheme(ltx25, "int8", _target()) is None
+
+
+def _file_mapped(path) -> bool:
+    real = os.path.realpath(str(path))
+    with open("/proc/self/maps") as maps:
+        return any(line.rstrip("\n").endswith(real) for line in maps)
+
+
+def test_offload_repoint_releases_the_hosted_file(tmp_path):
+    # Group offload re-points each weight at its pinned copy; a view's base would keep the file mapped.
+    path, cfg_dir, _built = _write_hosted(tmp_path)
+    model = _load(path, cfg_dir)
+    assert model is not None
+    tensors = [*model.parameters(), *model.buffers()]
+    assert all(t._base is None for t in tensors)
+    if not os.path.exists("/proc/self/maps"):
+        return
+    assert _file_mapped(path)
+    for t in tensors:
+        t.data = t.data.clone()
+    del t, tensors
+    gc.collect()
+    assert not _file_mapped(path)

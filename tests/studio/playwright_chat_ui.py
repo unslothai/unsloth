@@ -56,8 +56,7 @@ PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# Emulates 4 vCPU user boxes; the rapid-submit bug only reproduces at 4x/8x.
-# Off unless set, Chromium only.
+# Emulates 4 vCPU boxes (rapid-submit bug needs 4x/8x); off unless set, Chromium only.
 CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
 
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
@@ -225,15 +224,9 @@ def wait_for_settled_shell(
     fallback_budget_s = 30.0,
     missing_pill_s = 5.0,
 ):
-    """Return once the composer and its permission pill have stayed up together for settle_s.
-
-    The textarea showing once is not the shell settling. On the Windows lane the shell has been seen to drop to the
-    full-page route fallback right after the composer painted, while the backend stalled ~5 s warming torch, and stay
-    there past the next step's 5 s expect. The pill and the textarea render in the same commit, so seeing both once
-    proves nothing either: they have to stay up. A fallback is waited out for up to fallback_budget_s and then raised
-    as a boot failure (the caller re-navigates once). A booted shell, composer up and no fallback, that goes
-    missing_pill_s without the pill raises ShellMissingControl, which the caller must not retry.
-    """
+    """Waits for the composer and pill to stay up together for settle_s; a route fallback is waited
+    out up to fallback_budget_s, then raises a boot failure; a booted shell missing the pill for
+    missing_pill_s raises ShellMissingControl, which callers must not retry."""
     pill = page.locator(PERMISSION_PILL).first
     fallback = page.get_by_text(ROUTE_FALLBACK_TEXT, exact = True)
     deadline = time.monotonic() + fallback_budget_s
@@ -369,8 +362,7 @@ def exercise_permission_mode_controls(page, shoot):
         else:
             route.continue_()
 
-    # Wait for the pill, not networkidle: with this page.route networkidle can hang past the watchdog.
-    # One extra reload only when the app shell never booted.
+    # Wait for the pill, not networkidle (it hangs); reload once only if the shell never boots.
     def _boot_state():
         try:
             return page.evaluate(
@@ -663,8 +655,7 @@ def open_recent_thread_with_our_prompts(
         )
 
     def landed(thread_id, before, before_thread):
-        """Returns ours, other or None; turns identical to before are stale unless the row was
-        already open."""
+        """Ours, other or None; a turn identical to before is stale unless its row was open."""
         try:
             handle = page.wait_for_function(
                 """([threadId, wanted, before, beforeThread]) => {
@@ -744,7 +735,7 @@ def parse_rgb(s):
 
 
 def exercise_floating_monitor_geometry(page):
-    """Exercise content, drag, native resize, and viewport geometry."""
+    """Exercise content, drag, edge resize, and viewport geometry."""
     monitor = page.get_by_test_id("floating-monitor")
     monitor.wait_for(state = "visible", timeout = 10_000)
     monitor_handle = page.get_by_test_id("floating-monitor-drag-handle")
@@ -789,19 +780,30 @@ def exercise_floating_monitor_geometry(page):
         )
         return monitor_box("drag")
 
-    def resize_monitor_to(
-        x,
-        y,
-        grip_inset = 8,
+    def resize_handle_center(edge):
+        handle = monitor.locator(f'[data-testid="floating-monitor-resize"][data-edge="{edge}"]')
+        box = handle.bounding_box()
+        if box is None:
+            fail(f"floating monitor {edge} resize handle has no bounding box")
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+    def resize_monitor_by(
+        dx,
+        dy,
+        edge = "se",
     ):
         before = monitor_box("resize")
-        pointer_drag(
-            before["x"] + before["width"] - grip_inset,
-            before["y"] + before["height"] - grip_inset,
-            x,
-            y,
-        )
+        start_x, start_y = resize_handle_center(edge)
+        pointer_drag(start_x, start_y, start_x + dx, start_y + dy)
         return before, monitor_box("resize")
+
+    def content_fits(label):
+        clipped = monitor.get_by_test_id("floating-monitor-content").evaluate(
+            "node => node.getBoundingClientRect().height"
+            " - node.parentElement.getBoundingClientRect().height"
+        )
+        if abs(clipped) > tolerance:
+            fail(f"{label}: content and its scroll region differ by {clipped!r}px")
 
     def expect_close(actual, expected, label):
         if abs(actual - expected) > tolerance:
@@ -815,8 +817,7 @@ def exercise_floating_monitor_geometry(page):
             and box["y"] + box["height"] <= surface["height"] - inset + tolerance
         )
 
-    # Wait for /api/system: until then the panel shows a zero-filled DEFAULT_SYSTEM with no GPU, and
-    # the VRAM row later adds ~59px, breaking the height baseline.
+    # Wait for /api/system; before it, zero-filled defaults, and VRAM later adds ~59px.
     try:
         page.wait_for_function(
             r"""() => {
@@ -907,13 +908,37 @@ def exercise_floating_monitor_geometry(page):
         ),
     )
 
-    # Chromium retains a blocked inline resize request; a later drag must not reveal that hidden size.
-    _, blocked_box = resize_monitor_to(
-        viewport["width"] - 2,
-        viewport["height"] - 2,
-    )
+    # At the resting corner the right and bottom edges have no room, so an outward drag changes nothing.
+    _, blocked_box = resize_monitor_by(40, 40)
     expect_close(blocked_box["width"], initial_box["width"], "blocked width")
     expect_close(blocked_box["height"], initial_box["height"], "blocked height")
+
+    # The left edge grows the card leftward while it stays pinned to the corner.
+    _, left_grown = resize_monitor_by(-60, 0, edge = "w")
+    expect_close(left_grown["width"], initial_box["width"] + 60, "left edge width")
+    expect_close(
+        left_grown["x"] + left_grown["width"],
+        viewport["width"] - inset,
+        "left edge keeps right inset",
+    )
+    expect_close(
+        left_grown["y"] + left_grown["height"],
+        viewport["height"] - inset,
+        "left edge keeps bottom inset",
+    )
+    content_fits("left edge resize")
+    # Double-click on a handle restores the default width at the same corner.
+    start_x, start_y = resize_handle_center("w")
+    page.mouse.dblclick(start_x, start_y)
+    wait_for_settled(monitor)
+    initial_box = wait_for_box(
+        "width reset",
+        lambda box: (
+            abs(box["width"] - initial_box["width"]) <= tolerance
+            and abs(box["height"] - initial_box["height"]) <= tolerance
+            and abs(box["y"] + box["height"] - viewport["height"] + inset) <= tolerance
+        ),
+    )
     left_box = drag_monitor_to(0, viewport["height"] / 2)
     expect_close(left_box["x"], inset, "left inset")
     expect_close(left_box["width"], initial_box["width"], "post-drag width")
@@ -953,75 +978,32 @@ def exercise_floating_monitor_geometry(page):
     wait_for_settled(monitor)
     wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
 
+    # Width is the one user-set size: the text stays its size and the height follows the content,
+    # so a corner drag never adds empty space below it.
     resize_start = drag_monitor_to(0, 0)
-    want = (resize_start["width"] + 40, resize_start["height"] + 30)
-
-    def size_limits():
-        return monitor.evaluate(
-            """(el) => {
-                const s = getComputedStyle(el);
-                const px = (v) => (v === "none" ? Infinity : parseFloat(v));
-                return { minWidth: px(s.minWidth), maxWidth: px(s.maxWidth), minHeight: px(s.minHeight),
-                         maxHeight: px(s.maxHeight), inline: el.style.cssText };
-            }"""
-        )
-
-    # max-width/height are the room left of the panel's spot, so wait for them to allow the target before dragging.
-    deadline = time.time() + 5
-    limits = size_limits()
-    while (
-        limits["maxWidth"] < want[0] or limits["maxHeight"] < want[1]
-    ) and time.time() < deadline:
-        page.wait_for_timeout(50)
-        limits = size_limits()
-    if limits["maxWidth"] < want[0] or limits["maxHeight"] < want[1]:
-        fail(
-            f"floating monitor limits never left the narrow viewport after the restore: {limits!r}"
-        )
-    _, resized_box = resize_monitor_to(
-        resize_start["x"] + resize_start["width"] - 8 + 40,
-        resize_start["y"] + resize_start["height"] - 8 + 30,
-    )
-    if (
-        abs(resized_box["width"] - want[0]) > tolerance
-        or abs(resized_box["height"] - want[1]) > tolerance
-    ):
-        info(
-            f"resize landed at {resized_box['width']}x{resized_box['height']} with limits {size_limits()!r}"
-        )
+    _, resized_box = resize_monitor_by(40, 40)
     expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")
-    expect_close(resized_box["height"], resize_start["height"] + 30, "resize height")
+    if resized_box["height"] > resize_start["height"] + tolerance:
+        fail(f"a wider card grew taller: {resize_start!r} -> {resized_box!r}")
     expect_close(resized_box["x"], resize_start["x"], "resize left edge")
     expect_close(resized_box["y"], resize_start["y"], "resize top edge")
+    content_fits("corner resize")
 
-    _, minimum_box = resize_monitor_to(
-        resized_box["x"] + resized_box["width"] - 102,
-        resized_box["y"] + resized_box["height"] - 102,
-        grip_inset = 2,
-    )
-    expect_close(minimum_box["width"], resize_start["width"], "minimum width")
-    expect_close(minimum_box["height"], resize_start["height"], "minimum height")
+    _, minimum_box = resize_monitor_by(-200, 0)
+    expect_close(minimum_box["width"], 232, "minimum width")
+    content_fits("minimum resize")
 
     drag_monitor_to(0, 0)
-    _, maximum_box = resize_monitor_to(
-        viewport["width"] - 2,
-        viewport["height"] - 2,
-    )
-    expect_close(
-        maximum_box["x"] + maximum_box["width"],
-        viewport["width"] - inset,
-        "maximum resize right inset",
-    )
-    expect_close(
-        maximum_box["y"] + maximum_box["height"],
-        viewport["height"] - inset,
-        "maximum resize bottom inset",
-    )
+    _, maximum_box = resize_monitor_by(viewport["width"], 0)
+    expect_close(maximum_box["width"], 520, "maximum width")
+    if not is_inside(maximum_box, viewport):
+        fail(f"maximum resize left the viewport: {maximum_box!r}")
+    content_fits("maximum resize")
 
     monitor.get_by_role("button", name = "Close").click()
     monitor.wait_for(state = "hidden")
     info(
-        "OK floating monitor preserves native resize and stays stable across "
+        "OK floating monitor resizes from its edges and stays stable across "
         "content, drag, and viewport changes"
     )
 
@@ -1779,8 +1761,7 @@ with sync_playwright() as p:
     info(f"this run's chat: {our_thread_id or 'no thread id on the page'}")
 
     # ─────────────────────────────────────────────────────
-    # 7. Composer toggle buttons. Each aria-label flips between
-    # "Disable X" / "Enable X" with state (shared-composer.tsx).
+    # Toggle aria-labels flip Disable X / Enable X with state (shared-composer.tsx).
     # ─────────────────────────────────────────────────────
     step("composer toggle buttons (Thinking / Web search / Tools)")
     for feature in ("thinking", "web search", "tools"):
@@ -2425,16 +2406,9 @@ with sync_playwright() as p:
 
     # 17. Persisted monitor auth boundary, then shutdown. Own step: page.evaluate has no timeout here.
     step("persisted monitor: reset the browser session and open a fresh page")
-    # Start fresh after the CLI rotation invalidates this browser session.
-    # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
-    #
-    # Nothing here runs script in the OLD page. It is CPU-throttled and its auth was
-    # just revoked, so the app can be busy retrying, and page.evaluate waits for its
-    # event loop with no timeout of its own: this step wedged for its whole budget on
-    # Windows and on the Kaggle T4 runner with no line printed. Closing a page and
-    # clearing cookies are browser-side calls, and the storage writes go through the
-    # fresh page parked on a same-origin JSON endpoint where no app code runs. Each call
-    # announces itself first, so a wedge that remains names the call it sits in.
+    # Fresh page after CLI rotation, in the SAME context (keeps the init script); nothing runs in
+    # the stale page, whose evaluate can wedge with no timeout; storage writes go via a parked
+    # same-origin page; each call announces itself first
     stale_pages.add(page)
     info("closing the stale page")
     try:

@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact."""
+"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 / fp16
+VAE's math SDPA keeps its own dtype (``allow_fp16_bf16_reduction_math_sdp``, scoped to the call) instead of upcasting
+q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the fp32 upcast)."""
 
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager, nullcontext
 from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 VAE_ATTN_CHUNK_ENV = "UNSLOTH_VAE_ATTN_CHUNKED"
 VAE_ATTN_CHUNK_MB_ENV = "UNSLOTH_VAE_ATTN_CHUNK_MB"
+VAE_ATTN_HALF_MATH_ENV = "UNSLOTH_VAE_ATTN_HALF_MATH"
 _FALSE = ("0", "false", "no", "off")
 # fp32 score bytes per chunk; a full matrix at or under this runs unchunked (FLUX.1 1024x1024 is exactly 1 GiB).
 DEFAULT_SCORE_BUDGET_MB = 1024
@@ -20,6 +24,39 @@ _PATCHED = "_unsloth_vae_attn_chunked"
 
 def chunking_disabled() -> bool:
     return os.environ.get(VAE_ATTN_CHUNK_ENV, "").strip().lower() in _FALSE
+
+
+def half_math_enabled() -> bool:
+    return os.environ.get(VAE_ATTN_HALF_MATH_ENV, "").strip().lower() not in _FALSE
+
+
+@contextmanager
+def half_reduction_math():
+    """Math SDPA in the inputs' half dtype for this block (fp32 GEMM accumulation either way), then restore."""
+    import torch
+
+    cb = torch.backends.cuda
+    get = getattr(cb, "fp16_bf16_reduction_math_sdp_allowed", None)
+    put = getattr(cb, "allow_fp16_bf16_reduction_math_sdp", None)
+    if get is None or put is None:  # torch < 2.5 never upcast
+        yield False
+        return
+    prev = bool(get())
+    put(True)
+    try:
+        yield True
+    finally:
+        put(prev)
+
+
+def _half_math_call(q: Any) -> bool:
+    import torch
+    return (
+        getattr(getattr(q, "device", None), "type", None) == "cuda"
+        and q.dtype in (torch.bfloat16, torch.float16)
+        and is_rocm_torch(torch)
+        and half_math_enabled()
+    )
 
 
 def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
@@ -127,6 +164,7 @@ def _mode_class() -> Any:
             super().__init__()
             self.budget = budget
             self.chunked = 0
+            self.half = 0
 
         def __torch_function__(
             self,
@@ -140,9 +178,14 @@ def _mode_class() -> Any:
                 call = _plain_call(args, kwargs)
                 if call is not None:
                     q, k, v, scale = call
-                    if _score_bytes(q, k) > self.budget and not fused_sdpa_available(q, k, v):
-                        self.chunked += 1
-                        return chunked_sdpa(func, q, k, v, self.budget, scale)
+                    if not fused_sdpa_available(q, k, v):
+                        half = _half_math_call(q)
+                        self.half += int(half)
+                        with half_reduction_math() if half else nullcontext():
+                            if _score_bytes(q, k) > self.budget:
+                                self.chunked += 1
+                                return chunked_sdpa(func, q, k, v, self.budget, scale)
+                            return func(*args, **kwargs)
             return func(*args, **kwargs)
 
     return ChunkedVaeAttentionMode

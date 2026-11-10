@@ -41,7 +41,7 @@ UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # moss_uncond_skip* sample args; master-968 predates MOSS-Image (master-975, split-QKV GGUF loading in the same
 # release); master-951 before it predated FLUX.3 Image Klein (master-968), and master-813 Qwen-Image-2.1 (master-883)
 # and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
-DEFAULT_TAG = "master-982-0518b34-uaba3a1c"
+DEFAULT_TAG = "master-982-0518b34-uba6ac30"
 
 REPO = DEFAULT_REPO
 
