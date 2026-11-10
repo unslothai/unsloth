@@ -58,7 +58,6 @@ def _trainer(
     trainer.args = _Args()
     trainer.accelerator = _Accelerator()
     trainer.optimizer = None
-    # What TRL's SFTTrainer.__init__ sets from SFTConfig.router_aux_loss_coef.
     trainer.aux_loss_enabled = aux_loss_enabled
     trainer.router_aux_loss_coef = coef
     trainer.current_gradient_accumulation_steps = current_steps
@@ -106,7 +105,7 @@ def test_stage_takes_trl_coefficient_over_accumulation_steps(plain_helpers):
     model = torch.nn.Linear(2, 2)
     pp_env._pp_training_step(_trainer(stage), model, _batch(), num_items_in_batch = 6)
     assert stage.seen == [(0.5, 4.0)]
-    assert stage.ctx.trainer_aux is None  # cleared once the step is over
+    assert stage.ctx.trainer_aux is None
 
 
 def test_the_last_accumulation_window_divides_by_its_own_length(plain_helpers):
@@ -143,8 +142,8 @@ def test_cleared_when_the_stage_raises(plain_helpers):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        dict(zoo_wrapped = False),  # Unsloth's GPU trainer: the model forward adds the (scaled) term
-        dict(aux_loss_enabled = False),  # TRL turned the aux loss off (router_aux_loss_coef = 0.0)
+        dict(zoo_wrapped = False),
+        dict(aux_loss_enabled = False),
         dict(coef = None),
         dict(trl = _trl_1_14_compute_loss),
     ],
@@ -165,7 +164,6 @@ def test_dense_models_carry_nothing(plain_helpers):
 
 
 def test_chunked_ce_step_leaves_the_term_to_the_forward(plain_helpers):
-    # zoo's compute_loss arms the chunked CE and calls Trainer.compute_loss: the model forward adds the term.
     stage = _Stage()
     inner = torch.nn.Linear(2, 2)
     inner._unsloth_cpu_chunked_ce = True
