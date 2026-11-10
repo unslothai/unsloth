@@ -713,6 +713,24 @@ def _fit_source_catalog(catalog: str, max_chars: int) -> str:
     return ("".join(kept) if not kept or kept[0].endswith("\n") else "\n\n".join(kept)).rstrip()
 
 
+def _fit_synthesis_catalogs(
+    web_entries: list[str], document_entries: list[str], max_chars: int
+) -> tuple[str, str]:
+    limits = _water_fill(
+        [len("\n".join(web_entries)), len("\n".join(document_entries))], max_chars
+    )
+    fitted = []
+    for entries, limit in zip((web_entries, document_entries), limits):
+        kept, used = [], -1
+        for entry in entries:
+            used += len(entry) + 1
+            if used > limit:
+                break
+            kept.append(entry)
+        fitted.append("\n".join(kept))
+    return fitted[0], fitted[1]
+
+
 def _fit_decision_inputs(
     question: str, plan: dict, system_chars: int, total_budget: int | None
 ) -> tuple[str, str]:
@@ -2817,18 +2835,18 @@ class ResearchSupervisor:
         await self._check_active(run["id"])
         if not completed_steps and not sources and not document_sources:
             raise ValueError(f"No research step gathered any evidence. {step_error}".rstrip())
-        source_catalog = "\n".join(
+        web_entries = [
             f"{index}. Title: {_citation_title(source, source['url'])}\n   URL: {source['url']}"
             for index, source in enumerate(sources, 1)
-        )
-        document_source_catalog = "\n".join(
+        ]
+        document_entries = [
             f"{index}. Filename: {source.get('filename') or 'Document'}\n"
             f"   Page: {source.get('page') if source.get('page') is not None else '(unknown)'}\n"
             f"   Citation: {_document_source_citation(source)}\n"
             f"   Document ID: {source.get('documentId') or '(unknown)'}\n"
             f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
             for index, source in enumerate(document_sources, 1)
-        )
+        ]
         # Model-derived JSON shares the evidence budget; history gets only what the fixed scaffold leaves.
         total_budget = _prompt_char_budget(
             _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
@@ -2837,6 +2855,22 @@ class ResearchSupervisor:
         audit_system = _system_prompt_with_instructions(
             _SYNTHESIS_AUDIT_SYSTEM_PROMPT,
             run["config"],
+        )
+        report_system = _system_prompt_with_instructions(_REPORT_SYSTEM_PROMPT, run["config"])
+        catalog_chars = len("\n".join(web_entries)) + len("\n".join(document_entries))
+        source_catalog, document_source_catalog = _fit_synthesis_catalogs(
+            web_entries,
+            document_entries,
+            catalog_chars
+            if total_budget is None
+            else max(
+                0,
+                total_budget
+                - max(len(audit_system), len(report_system))
+                - len(question)
+                - len(plan_json),
+            )
+            // 2,
         )
         audit_scaffold_chars = (
             len(audit_system)
@@ -2915,7 +2949,6 @@ class ResearchSupervisor:
                     break
             except (ValueError, json.JSONDecodeError):
                 continue
-        report_system = _system_prompt_with_instructions(_REPORT_SYSTEM_PROMPT, run["config"])
         report_scaffold_chars = (
             len(report_system)
             + len(question)
