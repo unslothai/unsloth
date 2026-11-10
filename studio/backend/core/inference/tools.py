@@ -6712,6 +6712,7 @@ _HEREDOC_INTERPRETER_MENTION_RE = re.compile(
     r"(?<![\w.-])(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)(?![\w-])"
 )
 _COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
+_SHELL_KEYWORDS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "{"})
 _HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
 
 
@@ -6920,7 +6921,7 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
             for w in names:
                 if skip:
                     skip = False
-                elif re.match(r"\w+=", w):
+                elif re.match(r"\w+=", w) or (not wrapper and w in _SHELL_KEYWORDS):
                     continue
                 elif wrapper and w.startswith("-"):
                     skip = w in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, ())
@@ -6931,7 +6932,7 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 else:
                     command_word = w
                     break
-            if mentioned and names[-1:] == ["exec"]:
+            if mentioned and [w for w in names if not re.match(r"\w+=", w)] == ["exec"]:
                 return True
             if _heredoc_name(command_word) in _HEREDOC_DATA_COMMANDS:
                 continue
