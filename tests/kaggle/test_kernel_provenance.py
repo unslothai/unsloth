@@ -51,9 +51,8 @@ def test_fla_missing_is_a_failure():
 
 
 def test_flash_attention_2_on_turing_is_a_failure():
-    """The regression that matters. FA2 cannot execute on sm_75, so a stack that
-    selects it fails at the first forward, and a leg that did not check would
-    report that as an unexplained crash."""
+    """FA2 cannot execute on sm_75, so a stack that selects it fails at the first forward; the check
+    must flag it, not report an unexplained crash."""
     broken = vision_kernel_failures(
         {"fla": VENDORED}, {"config": "flash_attention_2"}, capability = "7.5"
     )
@@ -75,9 +74,8 @@ def test_a_missing_attention_record_is_a_failure_not_a_silence():
 
 
 def test_causal_conv1d_absence_is_reported_and_not_asserted():
-    """Measured absent on this path. The wheel-first machinery in ssm_runtime.py
-    belongs to Studio's training worker, which the notebook path never calls, so
-    an assertion here would go red on correct behaviour."""
+    """causal_conv1d and mamba_ssm are absent on the notebook path, where ssm_runtime.py's
+    wheel-first code never runs, so absence is reported rather than asserted."""
     kernels = {
         "fla": VENDORED,
         "causal_conv1d": {"importable": False, "error": "ModuleNotFoundError"},

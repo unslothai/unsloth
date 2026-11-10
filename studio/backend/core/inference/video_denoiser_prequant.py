@@ -108,8 +108,11 @@ def denoiser_prequant_pipe_kwargs(
     local_files_only: bool = False,
     cache_dir: Optional[str] = None,
     logger: Any = None,
+    placement_device: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16)."""
+    """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16).
+    ``placement_device`` (default ``device``): where the modules are materialised; a streamed seed stays on the host
+    (``prequant_seed_device``), as the offload hooks move it block by block."""
     try:
         import gc
 
@@ -143,6 +146,7 @@ def denoiser_prequant_pipe_kwargs(
                 base_repo,
                 source,
                 device = device,
+                placement_device = placement_device,
                 dtype = dtype,
                 hf_token = hf_token,
                 scheme = scheme,

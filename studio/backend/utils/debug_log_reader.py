@@ -49,8 +49,7 @@ def encode_cursor(key: str, offset: int) -> str:
 
 
 def decode_cursor(cursor: Optional[str]) -> Optional[tuple[str, int]]:
-    """None for anything unusable: a foreign cursor is answered with a fresh
-    tail, never an error, so a poll loop cannot flash failures."""
+    """None if unusable; a foreign cursor gets a fresh tail, not an error, so polls stay quiet."""
     if not cursor or not isinstance(cursor, str) or not cursor.startswith(_CURSOR_PREFIX):
         return None
     body = cursor[len(_CURSOR_PREFIX) :]

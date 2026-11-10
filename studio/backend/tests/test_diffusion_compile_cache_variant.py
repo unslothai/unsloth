@@ -88,8 +88,7 @@ def test_w8a8_and_weight_only_key_apart():
 
 
 def test_runtime_quantise_and_prequant_scale_dtype_key_apart():
-    # A v2 hosted checkpoint stores fp32 scales; a runtime quantise or a v1 file carries bf16 ones. Different
-    # epilogue graph, so different key.
+    # v2 hosted stores fp32 scales; runtime quantise or v1 bf16 scales need a different key.
     a, b = _int8(), _int8()
     w = b[0].weight
     if type(w).__name__ != "Int8Tensor":

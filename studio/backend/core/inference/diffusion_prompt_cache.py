@@ -230,6 +230,16 @@ _MAX_FOLLOWED_METHODS = 64
 TRANSPARENT_WRAPPER_ATTR = "_unsloth_prompt_cache_transparent"
 
 
+def mark_transparent_wrapper(fn: Any) -> Any:
+    """Self-reference, so a ``functools.wraps`` copy on an outer wrapper is not trusted."""
+    setattr(fn, TRANSPARENT_WRAPPER_ATTR, fn)
+    return fn
+
+
+def is_transparent_wrapper(fn: Any) -> bool:
+    return fn is not None and getattr(fn, TRANSPARENT_WRAPPER_ATTR, None) is fn
+
+
 def _scoped_lora_key() -> bool:
     return (os.environ.get(_ENV_SCOPED_LORA_KEY) or "").strip().lower() not in _FALSE_TOKENS
 
@@ -345,7 +355,7 @@ def _transparent_wrapper(cls: Any, attr: str, value: Any, instance: Any) -> bool
     if not callable(value):
         return False
     for _ in range(8):
-        if not getattr(value, TRANSPARENT_WRAPPER_ATTR, False):
+        if not is_transparent_wrapper(value):
             break
         value = getattr(value, "__wrapped__", None)
     else:
