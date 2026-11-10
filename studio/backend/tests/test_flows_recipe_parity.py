@@ -337,6 +337,20 @@ def test_pasting_recipe_json_with_a_stdio_server_needs_the_ui(client):
     assert client.post("/api/flows/import/recipe", json = {"payload": SQL}).status_code == 200
 
 
+def test_a_stdio_server_nested_in_pasted_recipe_json_needs_the_ui_too(client):
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["tool_configs"] = [
+        {"tool_alias": "files", "providers": ["fs"], "mcp_providers": [STDIO]}
+    ]
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    body = {"payload": payload, "name": "Nested"}
+    assert client.post("/api/flows/import/recipe", json = body).status_code == 403
+    bare = {"payload": {"recipe": payload["recipe"]}, "name": "Nested"}
+    bare["payload"]["recipe"]["columns"][0]["mcp_providers"] = [STDIO]
+    del bare["payload"]["recipe"]["tool_configs"]
+    assert client.post("/api/flows/import/recipe", json = bare).status_code == 403
+
+
 # Run settings
 
 
