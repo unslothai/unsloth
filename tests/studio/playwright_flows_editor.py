@@ -169,8 +169,10 @@ def main() -> int:
             page.screenshot(path = str(SHOTS / "editor_run.png"))
 
             open_flow(page, "perf", f"&nodes={PERF_NODES}")
+            # Above 300 nodes the canvas renders only visible nodes, so wait on the doc store.
             page.wait_for_function(
-                f"() => document.querySelectorAll('.react-flow__node-flowNode').length >= {PERF_NODES}",
+                f"() => window.__flowsSmoke.doc.getState().graph.nodeOrder.length >= {PERF_NODES}"
+                " && document.querySelectorAll('.react-flow__node-flowNode').length > 0",
                 timeout = 60_000,
             )
             metrics["perf_time_to_all_nodes_ms"] = page.evaluate("() => performance.now()")
