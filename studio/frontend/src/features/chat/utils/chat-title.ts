@@ -356,9 +356,8 @@ function titleReasoningFields(
   };
 }
 
-/** Forced reasoning counts toward the cap (Gemini 2.5 Pro forces 128), so add headroom. A Custom
- *  connection without a reasoning dialect gets no thinking-off control, so a thinking model there
- *  spent a small cap before the title (#17332). */
+/** Forced reasoning counts toward the cap (Gemini 2.5 Pro forces 128), so add headroom; a Custom
+ *  connection without a reasoning dialect cannot turn thinking off (#17332). */
 function titleMaxTokens(connection: ResolvedExternalConnection): number {
   const { provider } = connection;
   const floor = getExternalMinOutputTokens(provider.providerType);
