@@ -310,7 +310,11 @@ def test_ensure_model_never_loads_while_the_lane_is_shared(monkeypatch):
 
     loaded: list[str] = []
 
-    async def resident(ctx, kind):
+    async def resident(
+        ctx,
+        kind,
+        snap = None,
+    ):
         return "other/model"
 
     async def load_llm(*_a, **kw):

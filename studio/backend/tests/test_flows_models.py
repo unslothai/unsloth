@@ -8,6 +8,13 @@ from core.flows.nodes import _common
 from studio_mcp import loading
 
 
+def _with_status(slots):
+    async def resident(caller):
+        return await slots(caller), {}
+
+    return resident
+
+
 class _Ctx:
     def __init__(self):
         self.resident = {}
@@ -239,6 +246,7 @@ def test_a_media_variant_reloaded_outside_flows_is_not_reused(monkeypatch):
 
     monkeypatch.setattr(loading, "load_media", fake_load_media)
     monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(loading, "_resident", _with_status(fake_slots))
     monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
     monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
     monkeypatch.setattr(gpu_arbiter, "load_count", lambda owner = None: counts.get(owner, 0))
@@ -303,6 +311,7 @@ def test_flows_own_lora_bake_reload_keeps_the_variant_record(monkeypatch):
 
     monkeypatch.setattr(loading, "load_media", fake_load_media)
     monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(loading, "_resident", _with_status(fake_slots))
     monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
     monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
     monkeypatch.setattr(_common, "_BAKED_LORAS", {})
@@ -415,6 +424,7 @@ def _run_baked_nodes(monkeypatch, sets, placement):
 
     monkeypatch.setattr(loading, "load_media", fake_load_media)
     monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(loading, "_resident", _with_status(fake_slots))
     monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
     monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
     monkeypatch.setattr(_common, "_BAKED_LORAS", {})

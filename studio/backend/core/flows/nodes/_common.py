@@ -255,11 +255,36 @@ def chat_model_name(ctx: Any) -> str:
 MULTI_MODEL_MODES = ("fit", "always")
 
 
+class Residency:
+    """One read of what each slot holds (chat, image and video status), shared by the checks of one model step;
+    a load drops it so the next check reads again."""
+
+    __slots__ = ("_caller", "_read")
+
+    def __init__(self, ctx: Any):
+        self._caller = _caller(ctx)
+        self._read: Optional[tuple[dict, dict]] = None
+
+    async def get(self) -> tuple[dict, dict]:
+        from studio_mcp import loading
+        if self._read is None:
+            self._read = await loading._resident(self._caller)
+        return self._read
+
+    def drop(self) -> None:
+        self._read = None
+
+
+async def _resident(ctx: Any, snap: Optional[Residency]) -> tuple[dict, dict]:
+    return await (snap or Residency(ctx)).get()
+
+
 async def _alongside(
     ctx: Any,
     repo: str,
     variant: Optional[str],
     options: Optional[dict] = None,
+    snap: Optional[Residency] = None,
 ) -> Optional[dict]:
     """Under Keep multiple models loaded (fit or always), serve ``repo`` from its own slot beside the primary chat
     model instead of replacing it: bind to it when it is already kept alongside, else load it alongside. None means
@@ -267,7 +292,7 @@ async def _alongside(
     from studio_mcp import loading
 
     try:
-        _slots, status = await loading._resident(_caller(ctx))
+        _slots, status = await _resident(ctx, snap)
     except Exception:
         return None
     if status.get("multi_model_mode") not in MULTI_MODEL_MODES:
@@ -319,6 +344,8 @@ async def _alongside(
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
+    if snap is not None:
+        snap.drop()
     ctx.resident.clear()
     _alongside_loaded(before)[repo.lower()] = options_hash(options)
     note_loaded(ctx, "llm", repo)
@@ -327,13 +354,16 @@ async def _alongside(
     return {"repo": repo, "variant": variant}
 
 
-async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
+async def resident_name(
+    ctx: Any,
+    model_kind: str,
+    snap: Optional[Residency] = None,
+) -> Optional[str]:
     from core.flows.engine import MODEL_SLOT
-    from studio_mcp import loading
 
     slot = MODEL_SLOT.get(model_kind, model_kind)
     try:
-        slots = await loading.resident_slots(_caller(ctx))
+        slots, _status = await _resident(ctx, snap)
     except Exception:
         return None
     names = slots.get(slot) or []
@@ -439,7 +469,12 @@ def options_hash(options: Optional[dict]) -> Optional[str]:
     ]
 
 
-async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
+async def _resident_variant(
+    ctx: Any,
+    slot: str,
+    repo: str,
+    snap: Optional[Residency] = None,
+) -> Optional[str]:
     if slot != "llm":
         loaded = _LOADED_VARIANT.get(slot)
         if not loaded or loaded[0] != repo.lower():
@@ -448,22 +483,18 @@ async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
             _LOADED_VARIANT.pop(slot, None)
             return None
         return loaded[1]
-    from studio_mcp import loading
-
     try:
-        _slots, status = await loading._resident(_caller(ctx))
+        _slots, status = await _resident(ctx, snap)
     except Exception:
         return None
     variant = status.get("gguf_variant")
     return variant.lower() if isinstance(variant, str) else None
 
 
-async def resident_gguf_variant(ctx: Any) -> Optional[str]:
+async def resident_gguf_variant(ctx: Any, snap: Optional[Residency] = None) -> Optional[str]:
     """The quant the loaded chat model runs, as its status spells it, or None."""
-    from studio_mcp import loading
-
     try:
-        _slots, status = await loading._resident(_caller(ctx))
+        _slots, status = await _resident(ctx, snap)
     except Exception:
         return None
     variant = status.get("gguf_variant") if isinstance(status, dict) else None
@@ -483,22 +514,27 @@ async def ensure_model(
     decoding); the model counts as resident only when it was loaded with the same settings. ``primary``
     puts it in Chat's main slot even under Keep multiple models loaded, for a caller (a recipe job)
     that only reaches the main model."""
-    found = await _ensure_model(ctx, model_kind, choice, options, primary)
+    snap = Residency(ctx)
+    found = await _ensure_model(ctx, model_kind, choice, options, primary, snap)
     requires = (getattr(ctx, "spec", None) or {}).get("requires")
     if requires:
-        await _check_backend(ctx, model_kind, requires)
+        await _check_backend(ctx, model_kind, requires, snap)
     return found
 
 
-async def _check_backend(ctx: Any, model_kind: str, requires: list[str]) -> None:
+async def _check_backend(
+    ctx: Any,
+    model_kind: str,
+    requires: list[str],
+    snap: Optional[Residency] = None,
+) -> None:
     from core.flows.engine import MODEL_SLOT
-    from studio_mcp import loading
 
     if MODEL_SLOT.get(model_kind, model_kind) != "llm":
         return
     title = (getattr(ctx, "spec", None) or {}).get("title") or "This step"
     try:
-        _slots, status = await loading._resident(_caller(ctx))
+        _slots, status = await _resident(ctx, snap)
     except Exception:
         status = None
     if not isinstance(status, dict) or not isinstance(status.get("is_gguf"), bool):
@@ -518,6 +554,7 @@ async def _ensure_model(
     choice: Optional[dict],
     options: Optional[dict],
     primary: bool = False,
+    snap: Optional[Residency] = None,
 ) -> Optional[dict]:
     from core.flows.engine import LOAD_KIND, MODEL_SLOT
     from studio_mcp import loading
@@ -530,7 +567,7 @@ async def _ensure_model(
     variant = choice.get("variant") if isinstance(choice, dict) else None
     if not repo:
         if model_kind in ("chat", "vision", "tts", "audio", "image", "video"):
-            name = await resident_name(ctx, model_kind)
+            name = await resident_name(ctx, model_kind, snap)
             if not name:
                 what = {"image": "image", "video": "video"}.get(model_kind, "chat")
                 raise FlowNodeError(
@@ -543,10 +580,10 @@ async def _ensure_model(
         raise FlowNodeError("Load settings apply to chat models only")
     if slot == "llm":
         ctx.chat_model = None
-    resident = await resident_name(ctx, model_kind)
+    resident = await resident_name(ctx, model_kind, snap)
     if primary and slot == "llm":
         # Chat's main slot, not just any slot: a recipe job reads the model from there.
-        resident = await _into_primary(ctx, repo)
+        resident = await _into_primary(ctx, repo, snap)
     if (
         slot == "llm"
         and not primary
@@ -554,7 +591,7 @@ async def _ensure_model(
         and not (resident and resident.lower() == repo.lower())
     ):
         # The card's load settings ride along, so they never cost the resident model its slot.
-        kept = await _alongside(ctx, repo, variant, options)
+        kept = await _alongside(ctx, repo, variant, options, snap)
         if kept is not None:
             return kept
     wanted = (repo.lower(), (variant or "").lower())
@@ -570,7 +607,7 @@ async def _ensure_model(
     if (
         resident
         and resident.lower() == repo.lower()
-        and (not variant or await _resident_variant(ctx, slot, repo) == variant.lower())
+        and (not variant or await _resident_variant(ctx, slot, repo, snap) == variant.lower())
         and same_settings
     ):
         return {"repo": repo, "variant": variant}
@@ -611,7 +648,13 @@ async def _ensure_model(
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo}: {exc}") from None
-    if primary and slot == "llm" and not loading._same_id(await _primary_name(ctx) or "", repo):
+    if snap is not None:
+        snap.drop()
+    if (
+        primary
+        and slot == "llm"
+        and not loading._same_id(await _primary_name(ctx, snap) or "", repo)
+    ):
         raise FlowNodeError(
             f"{repo} did not load into Chat's main slot; unload the other models and run again"
         )
@@ -628,22 +671,25 @@ async def _ensure_model(
     return {"repo": repo, "variant": variant}
 
 
-async def _primary_name(ctx: Any) -> Optional[str]:
-    from studio_mcp import loading
+async def _primary_name(ctx: Any, snap: Optional[Residency] = None) -> Optional[str]:
     try:
-        _, status = await loading._resident(_caller(ctx))
+        _, status = await _resident(ctx, snap)
     except Exception:
         return None
     return _checkpoint(status.get("model_identifier"))
 
 
-async def _into_primary(ctx: Any, repo: str) -> Optional[str]:
+async def _into_primary(
+    ctx: Any,
+    repo: str,
+    snap: Optional[Residency] = None,
+) -> Optional[str]:
     """Chat's main model; ``repo`` kept in an extra slot is unloaded there first, since a load of a
     model a slot already serves stays in that slot."""
     from studio_mcp import loading
 
     try:
-        slots, status = await loading._resident(_caller(ctx))
+        slots, status = await _resident(ctx, snap)
     except Exception:
         return None
     main = _checkpoint(status.get("model_identifier"))
@@ -651,6 +697,8 @@ async def _into_primary(ctx: Any, repo: str) -> Optional[str]:
         return main
     if any(loading._same_id(_checkpoint(name) or name, repo) for name in slots.get("llm") or []):
         await ctx.call("POST", "/api/inference/unload", json = {"model_path": repo})
+        if snap is not None:
+            snap.drop()
     return main
 
 
