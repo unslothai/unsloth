@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { RoleplayPanel, useIsCharacterChat } from "@/features/characters/chat/roleplay-panel";
+import { useIsRoleplayThread } from "@/features/characters/chat/message-parts";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -82,6 +82,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
+
+// Only character chats show it, so ordinary chats do not load it.
+const RoleplayPanel = lazy(() =>
+  import("@/features/characters/chat/roleplay-panel").then((m) => ({ default: m.RoleplayPanel })),
+);
 import { PermissionModeDropdown } from "./permission-mode-select";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
@@ -489,7 +494,7 @@ export function ChatSettingsPanel({
   const params = useChatRuntimeStore((s) => s.params);
   const setParams = useChatRuntimeStore((s) => s.setParams);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const characterChat = useIsCharacterChat(activeThreadId);
+  const characterChat = useIsRoleplayThread(activeThreadId);
   const {
     width: settingsWidth,
     max: settingsMax,
@@ -1148,7 +1153,9 @@ export function ChatSettingsPanel({
       <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
         {characterChat && activeThreadId ? (
           <CollapsibleSection label={t("characters.panel.title")} defaultOpen={true} first={true}>
-            <RoleplayPanel threadId={activeThreadId} />
+            <Suspense fallback={null}>
+              <RoleplayPanel threadId={activeThreadId} />
+            </Suspense>
           </CollapsibleSection>
         ) : null}
         {(hasModelContent || modelConfig) && (

@@ -42,10 +42,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function useIsCharacterChat(threadId: string | null | undefined): boolean {
-  return useThreadScene(threadId) !== null;
-}
-
 export function RoleplayPanel({ threadId }: { threadId: string }) {
   const t = useT();
   const navigate = useNavigate();

@@ -8,7 +8,6 @@ import {
   useIsRoleplayThread,
   useRoleplayUserParts,
 } from "@/features/characters/chat/message-parts";
-import { CharacterChatPicker } from "@/features/characters/chat/start-picker";
 import { roundAdvancing } from "@/features/characters/chat/roleplay-controller";
 import {
   RoleplaySpeakerBar,
@@ -7057,6 +7056,12 @@ function usePickComposerAttachment(): () => void {
   }, [aui, audioAttachmentsEnabled]);
 }
 
+const LazyCharacterChatPicker = lazy(() =>
+  import("@/features/characters/chat/start-picker").then((module) => ({
+    default: module.CharacterChatPicker,
+  })),
+);
+
 const LazyLibraryAttachmentPicker = lazy(() =>
   import("@/components/assistant-ui/library-attachment-picker").then((module) => ({
     default: module.LibraryAttachmentPicker,
@@ -7475,7 +7480,9 @@ const ComposerToolsMenu: FC<{
       </Suspense>
     ) : null}
     {characterPickerOpen ? (
-      <CharacterChatPicker onClose={() => setCharacterPickerOpen(false)} />
+      <Suspense fallback={null}>
+        <LazyCharacterChatPicker onClose={() => setCharacterPickerOpen(false)} />
+      </Suspense>
     ) : null}
     <PromptStorageDialog
       open={promptStorageOpen}

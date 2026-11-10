@@ -59,3 +59,12 @@ test("a scene text field keeps what is being typed when an earlier save answers"
   assert.match(field, /onFocus=\{\(\) => \{\s*editing\.current = true;/);
   assert.match(field, /onBlur=\{\(\) => \{\s*editing\.current = false;/);
 });
+
+test("the chat page loads the character panel and picker only when they open", () => {
+  const sheet = read("features/chat/chat-settings-sheet.tsx");
+  assert.doesNotMatch(sheet, /^import [^;]*from "@\/features\/characters\/chat\/roleplay-panel"/m);
+  assert.match(sheet, /lazy\(\(\) =>\s*import\("@\/features\/characters\/chat\/roleplay-panel"\)/);
+  const thread = read("components/assistant-ui/thread.tsx");
+  assert.doesNotMatch(thread, /^import [^;]*from "@\/features\/characters\/chat\/start-picker"/m);
+  assert.match(thread, /lazy\(\(\) =>\s*import\("@\/features\/characters\/chat\/start-picker"\)/);
+});
