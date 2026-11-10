@@ -935,6 +935,8 @@ def test_queue_ids_are_stored_and_loaded_per_account(queue, monkeypatch):
 
     monkeypatch.setattr(openai_fine_tuning, "_alias_db", spy)
     monkeypatch.setattr(openai_fine_tuning, "_save_alias", save_spy)
+    # The drainer only starts jobs of live accounts.
+    monkeypatch.setattr("core.training.account_jobs.job_accounts", lambda: [bob])
 
     async def flow():
         uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")

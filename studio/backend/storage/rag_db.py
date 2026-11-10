@@ -28,6 +28,14 @@ except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
 
 _RAG_UNAVAILABLE_MSG = "RAG unavailable: sqlite-vec extension could not be loaded"
 
+# Han, Kana and Hangul. unicode61 keeps an unspaced run as one token, so chunks_fts holds them one per token.
+CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff66-\uff9f\U00020000-\U0002fa1f"
+_CJK_CHAR = re.compile(f"[{CJK}]")
+
+
+def fts_text(text: str) -> str:
+    return _CJK_CHAR.sub(r" \g<0> ", text)
+
 
 class RagExtensionUnavailable(RuntimeError):
     """sqlite-vec is installed but its native library will not load (a missing vec0 binary in the venv is the
@@ -282,6 +290,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
     )
     ensure_linked_folder_columns(conn)
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+        conn.executemany(
+            "UPDATE chunks_fts SET text=? WHERE rowid=?",
+            [
+                (fts_text(text), rowid)
+                for rowid, text in conn.execute("SELECT rowid, text FROM chunks_fts")
+                if text and _CJK_CHAR.search(text)
+            ],
+        )
+        conn.execute("PRAGMA user_version = 1")
     conn.commit()
 
 

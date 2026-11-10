@@ -306,6 +306,21 @@ class KronAdapter:
             setattr(parent, attr, wrapper.base_layer)
 
 
+# A Kronecker factor is never larger than the layer it builds (16384 x 16384), so a low-rank pair whose product is
+# bigger is malformed: refuse it before multiplying, as a ~400 KB pair can otherwise ask for tens of GB.
+_MAX_KRON_FACTOR_ELEMENTS = 1 << 28
+
+
+def _low_rank_product(a: Any, b: Any, stem: str) -> Any:
+    if a.dim() != 2 or b.dim() != 2 or a.shape[1] != b.shape[0]:
+        raise ValueError(f"LoKR factors {stem}_a / {stem}_b do not multiply")
+    if int(a.shape[0]) * int(b.shape[1]) > _MAX_KRON_FACTOR_ELEMENTS:
+        raise ValueError(
+            f"LoKR factor {stem} is {int(a.shape[0])} x {int(b.shape[1])}, larger than any layer"
+        )
+    return a.float() @ b.float()
+
+
 def _kron_factors(parts: dict) -> tuple[Any, Any, float]:
     """``(w1, w2, alpha_scale)`` like the reference runtime: a factor stored as a low-rank pair is its product, and
     ``alpha / rank`` applies only when one is (rank = that pair's inner size)."""
@@ -314,13 +329,13 @@ def _kron_factors(parts: dict) -> tuple[Any, Any, float]:
     dim = None
     w1 = parts.get("lokr_w1")
     if w1 is None:
-        w1 = parts["lokr_w1_a"].float() @ parts["lokr_w1_b"].float()
+        w1 = _low_rank_product(parts["lokr_w1_a"], parts["lokr_w1_b"], "lokr_w1")
         dim = int(parts["lokr_w1_b"].shape[0])
     w2 = parts.get("lokr_w2")
     if w2 is None:
         if "lokr_t2" in parts:
             raise ValueError("a LoKR convolution (lokr_t2) cannot apply to a Linear layer")
-        w2 = parts["lokr_w2_a"].float() @ parts["lokr_w2_b"].float()
+        w2 = _low_rank_product(parts["lokr_w2_a"], parts["lokr_w2_b"], "lokr_w2")
         dim = int(parts["lokr_w2_b"].shape[0])
     if w1.dim() != 2 or w2.dim() != 2:
         raise ValueError("only Linear LoKR modules are supported")

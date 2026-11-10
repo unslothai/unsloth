@@ -355,3 +355,34 @@ def test_batched_updates_match_separate_groups_and_new_gradients(api):
                 continue
             for key in ("step", "exp_avg", "exp_avg_sq"):
                 assert torch.equal(optimizer.state[p][key], control.state[q][key])
+
+
+@pytest.mark.parametrize("bad", ["short_moment", "wide_step", "empty_seed"])
+def test_load_state_dict_rejects_state_the_kernel_would_overrun(api, bad):
+    # The CUDA kernel masks moment reads / writes by the parameter's size and loads step / seed as scalars.
+    p = torch.nn.Parameter(torch.ones(8, 4, dtype = torch.bfloat16))
+    opt = api.AdamWBF16([p], lr = 1e-3)
+    p.grad = torch.ones_like(p)
+    opt.step()
+    state = opt.state_dict()
+    entry = state["state"][0]
+    if bad == "short_moment":
+        entry["exp_avg"] = torch.zeros(3)
+    elif bad == "wide_step":
+        entry["step"] = torch.zeros(4, dtype = torch.int64)
+    else:
+        entry["sr_seed"] = torch.zeros(0, dtype = torch.int64)
+    fresh = torch.nn.Parameter(torch.ones(8, 4, dtype = torch.bfloat16))
+    with pytest.raises(ValueError):
+        api.AdamWBF16([fresh], lr = 1e-3).load_state_dict(state)
+
+
+def test_load_state_dict_round_trip_still_loads(api):
+    p = torch.nn.Parameter(torch.ones(8, 4, dtype = torch.bfloat16))
+    opt = api.AdamWBF16([p], lr = 1e-3)
+    p.grad = torch.ones_like(p)
+    opt.step()
+    fresh = torch.nn.Parameter(torch.ones(8, 4, dtype = torch.bfloat16))
+    other = api.AdamWBF16([fresh], lr = 1e-3)
+    other.load_state_dict(opt.state_dict())
+    assert torch.equal(other.state[fresh]["exp_avg"], opt.state[p]["exp_avg"])

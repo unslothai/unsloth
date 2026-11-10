@@ -5270,6 +5270,7 @@ _DisplayVisibility = Literal["collapsed", "auto", "expanded"]
 class ChatPrefsPayload(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
+    shareComposerDraft: Optional[bool] = None
     plainTextComposer: Optional[bool] = None
     showContextWindowUsage: Optional[bool] = None
     sendShortcut: Optional[Literal["enter", "mod-enter-multiline", "mod-enter"]] = None

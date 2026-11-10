@@ -438,6 +438,12 @@ def _save_pretrained_gguf(
     inner_model = self[0].auto_model
     if hasattr(inner_model, "_orig_mod"):
         inner_model = inner_model._orig_mod
+    # The GGUF saver reads the load's remote-code consent off the model it converts.
+    if getattr(self, "_unsloth_trust_remote_code", False) is True:
+        try:
+            inner_model._unsloth_trust_remote_code = True
+        except Exception:
+            pass
 
     transformer_path = "0_Transformer"
     modules_path = os.path.join(save_directory, "modules.json")

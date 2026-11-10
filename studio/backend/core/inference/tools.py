@@ -11373,18 +11373,23 @@ def _edit_file_write(
 ) -> str:
     """Atomic rename from a temp file; will not revert a file another chat rewrote since expect; containment rechecked before the rename catches a symlink swap."""
     payload = (bom + text.replace("\n", newline)).encode("utf-8")
-    directory = os.path.dirname(path) or "."
     try:
-        os.makedirs(directory, exist_ok = True)
+        dir_fd, leaf = _edit_file_parent(path, workdir, create_dirs = True)
     except OSError as exc:
         return f"Error: cannot create directory for '{os.path.basename(path)}': {exc}"
     tmp = ""
     try:
-        fd, tmp = tempfile.mkstemp(dir = directory, prefix = ".unsloth_edit_")
+        if dir_fd is None:
+            fd, tmp = tempfile.mkstemp(dir = os.path.dirname(path) or ".", prefix = ".unsloth_edit_")
+        else:
+            tmp = f".unsloth_edit_{uuid.uuid4().hex}"
+            fd = os.open(
+                tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600, dir_fd = dir_fd
+            )
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
         try:
-            shutil.copymode(path, tmp)
+            os.chmod(tmp, stat.S_IMODE(os.stat(leaf, dir_fd = dir_fd).st_mode), dir_fd = dir_fd)
         except OSError:
             pass  # new file, or a mode we cannot read; the default is fine
         if workdir is not None and _is_outside_workdir(path, workdir):
@@ -11394,7 +11399,9 @@ def _edit_file_write(
             )
         if expect is not None:
             try:
-                with open(path, "rb") as fh:
+                with os.fdopen(
+                    os.open(leaf, os.O_RDONLY | getattr(os, "O_BINARY", 0), dir_fd = dir_fd), "rb"
+                ) as fh:
                     current = fh.read(len(expect) + 1)
             except OSError:
                 current = None
@@ -11406,14 +11413,16 @@ def _edit_file_write(
                 )
         from core import library
 
-        library.replace_file(tmp, path)
+        library.replace_file(tmp, path, dir_fd = dir_fd)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
     finally:
         if tmp:
             with contextlib.suppress(OSError):
-                os.remove(tmp)
+                os.remove(tmp, dir_fd = dir_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
     return ""
 
 
@@ -11552,6 +11561,23 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
     return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
 
 
+def _edit_file_parent(
+    target: str, workdir: "str | None", create_dirs: bool
+) -> "tuple[int | None, str]":
+    """(folder fd or None, name to use with it). Confined POSIX writes open every parent below the
+    workdir without following links, so a folder swapped for a link mid-call fails instead of
+    carrying the write outside; unconfined calls and Windows keep the path."""
+    if workdir is None or not file_history.DIR_FD_WALK:
+        if create_dirs:
+            os.makedirs(os.path.dirname(target) or ".", exist_ok = True)
+        return None, target
+    root = os.path.realpath(workdir)
+    parts = os.path.relpath(target, root).split(os.sep)
+    if parts[0] == os.pardir:
+        raise OSError("not inside the working directory")
+    return file_history.open_dir_below(root, parts[:-1], create_dirs), parts[-1]
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -11562,37 +11588,40 @@ def _edit_file_create(
     """Creates with O_EXCL, not a lexists check, so two chats cannot drop each other's file; never clobbers, and a zero-byte target stays writable on purpose."""
     payload = (new.replace("\n", newline)).encode("utf-8")
     if not os.path.lexists(target):
-        directory = os.path.dirname(target) or "."
         try:
-            os.makedirs(directory, exist_ok = True)
+            dir_fd, leaf = _edit_file_parent(target, workdir, create_dirs = True)
         except OSError as exc:
             return f"Error: cannot create directory for '{name}': {exc}"
-        if workdir is not None and _is_outside_workdir(target, workdir):
-            return (
-                f"Error: '{name}' moved outside the working directory while the "
-                "edit was being prepared; nothing was written."
-            )
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        # Never follow a symlink planted at the final component in the meantime.
-        flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(target, flags, 0o666)
-        except FileExistsError:
-            return (
-                f"Error: '{name}' was created by something else while this call "
-                "was preparing it; nothing was written."
-            )
-        except OSError as exc:
-            return f"Error: cannot write '{name}': {exc}"
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(payload)
-        except OSError as exc:
-            # A partial write after ENOSPC cannot be retried (empty old_string refuses non-empty), so
-            # remove the inode.
-            with contextlib.suppress(OSError):
-                os.remove(target)
-            return f"Error: cannot write '{name}': {exc}"
+            if workdir is not None and _is_outside_workdir(target, workdir):
+                return (
+                    f"Error: '{name}' moved outside the working directory while the "
+                    "edit was being prepared; nothing was written."
+                )
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            # Never follow a symlink planted at the final component in the meantime.
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(leaf, flags, 0o666, dir_fd = dir_fd)
+            except FileExistsError:
+                return (
+                    f"Error: '{name}' was created by something else while this call "
+                    "was preparing it; nothing was written."
+                )
+            except OSError as exc:
+                return f"Error: cannot write '{name}': {exc}"
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(payload)
+            except OSError as exc:
+                # A partial write after ENOSPC cannot be retried (empty old_string refuses non-empty), so
+                # remove the inode.
+                with contextlib.suppress(OSError):
+                    os.remove(leaf, dir_fd = dir_fd)
+                return f"Error: cannot write '{name}': {exc}"
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
         return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
     try:
         st = os.stat(target)
@@ -12879,12 +12908,15 @@ def _mcp_search_index(specs: list[dict]) -> sqlite3.Connection:
     conn.execute(
         "CREATE VIRTUAL TABLE tool_text USING fts5(description, params, tokenize='porter unicode61')"
     )
+    from storage.rag_db import fts_text  # noqa: PLC0415
+
     conn.executemany(
-        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)", [(i, r[0]) for i, r in enumerate(rows)]
+        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)",
+        [(i, fts_text(r[0])) for i, r in enumerate(rows)],
     )
     conn.executemany(
         "INSERT INTO tool_text(rowid, description, params) VALUES (?, ?, ?)",
-        [(i, r[1], r[2]) for i, r in enumerate(rows)],
+        [(i, fts_text(r[1]), fts_text(r[2])) for i, r in enumerate(rows)],
     )
     _MCP_SEARCH_INDEXES[digest] = conn
     while len(_MCP_SEARCH_INDEXES) > 4:

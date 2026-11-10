@@ -1706,6 +1706,19 @@ html[data-contrast-adjust].dark .hub-page :is([class*="bg-background"], [class*=
 		var(--popup-shadow);
 }
 
+/* A dialog is centred by translating it half its own size. WebKit snaps layout positions to whole
+   pixels but not transforms, so one with an odd or fractional height (MCP Servers is 243.125px tall)
+   is drawn between pixel rows and all its text blurs at 1x. Shift by whole device pixels. Keyed on
+   the centring class, so a dialog that sets its own translate (the command palette) is left alone. */
+@supports (translate: 0 round(-50%, 1px)) {
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]).-translate-x-1\/2 {
+		--tw-translate-x: round(-50%, var(--device-px, 1px));
+	}
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]).-translate-y-1\/2 {
+		--tw-translate-y: round(-50%, var(--device-px, 1px));
+	}
+}
+
 html[data-code-font-size] :is(pre, code, kbd, samp),
 html[data-code-font-size] .aui-reasoning-code-lines {
 	font-size: var(--custom-code-font-size) !important;
@@ -6418,7 +6431,9 @@ html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]
   position: relative;
   isolation: isolate;
 }
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting::before {
+/* Only over an image (data-wallpaper-image): the plain Glass backdrop is the page colour itself, so the halo
+   changes nothing there, and blending it rounds a step dark in places, which draws rings around the greeting. */
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-image] .unsloth-welcome-greeting::before {
   content: "";
   position: absolute;
   inset: -48px -40px;
@@ -6717,6 +6732,21 @@ html.dark[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .unsloth-files-
   --glass-sheen: linear-gradient(160deg, rgb(255 255 255 / .019), transparent 55%, transparent 75%, rgb(255 255 255 / .01));
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .11), rgb(255 255 255 / .022) 62%, rgb(255 255 255 / .044));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .154), inset 0 -1px 0 rgb(255 255 255 / .033), inset 0 0 0 1px rgb(255 255 255 / .039);
+}
+/* The sheen fades a few percent of white out across half the surface. Chromium dithers that gradient smooth;
+   WebKit and Firefox do not, so each 8-bit step shows as a wide diagonal stripe (five of them across a dark
+   Settings dialog). No sheen on either; the rims and glows carry the look. WebKit is data-glass-layers (the
+   macOS and Linux apps, Safari). After every sheen above: equal specificity, so order decides. */
+html[data-glass^="liquid"][data-glass-layers],
+html[data-glass^="liquid"][data-glass-layers] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+  --glass-sheen: none;
+}
+/* Firefox sets no flag: the repeated attribute matches the specificity of the dark sheens above. */
+@supports (-moz-appearance: none) {
+  html[data-glass^="liquid"][data-glass],
+  html[data-glass^="liquid"][data-glass] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+    --glass-sheen: none;
+  }
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before,
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
