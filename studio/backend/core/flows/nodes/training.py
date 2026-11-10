@@ -1139,55 +1139,29 @@ def _is_csv(dataset: dict) -> bool:
 async def _upload_parquet(ctx: NodeContext, table: Any, name: str) -> dict:
     import io
 
-    from core.flows.nodes.data import upload_ref
+    from core.flows.nodes.data import upload_dataset
 
     out = io.BytesIO()
     table.to_parquet(out)
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
-    saved = await ctx.call(
-        "POST",
-        "/api/hub/datasets/upload",
-        files = {"file": (f"{name}.parquet", out.getvalue(), "application/octet-stream")},
+    return await upload_dataset(
+        ctx, name, "parquet", out.getvalue(), len(table), sorted(table.column_names)
     )
-    stored = saved.get("stored_path") if isinstance(saved, dict) else None
-    if not isinstance(stored, str) or not stored:
-        raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
-    return {
-        "kind": "dataset",
-        "source": "local",
-        "ref": upload_ref(stored),
-        "rows": len(table),
-        "columns": sorted(table.column_names),
-    }
 
 
 async def _upload_csv(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     import csv
     import io
 
-    from core.flows.nodes.data import upload_ref
+    from core.flows.nodes.data import upload_dataset
 
     columns = list(dict.fromkeys(k for r in rows for k in r))
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames = columns)
     writer.writeheader()
     writer.writerows({k: "" if v is None else v for k, v in r.items()} for r in rows)
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
-    saved = await ctx.call(
-        "POST",
-        "/api/hub/datasets/upload",
-        files = {"file": (f"{name}.csv", out.getvalue().encode(), "application/octet-stream")},
+    return await upload_dataset(
+        ctx, name, "csv", out.getvalue().encode(), len(rows), sorted(columns)
     )
-    stored = saved.get("stored_path") if isinstance(saved, dict) else None
-    if not isinstance(stored, str) or not stored:
-        raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
-    return {
-        "kind": "dataset",
-        "source": "local",
-        "ref": upload_ref(stored),
-        "rows": len(rows),
-        "columns": sorted(columns),
-    }
 
 
 def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:
