@@ -335,6 +335,7 @@ export function useTrainingRuntimeLifecycle(): void {
       return s.phase === "idle" && !s.isTrainingRunning;
     };
 
+    // Not gated on document.hidden: drives the native finished / failed notifications.
     const statusTimer = setInterval(() => {
       const s = runtimeStore.getState();
       if (!s.hasHydrated || s.isHydrating) {
@@ -356,7 +357,6 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     };
 
-    // Keeps polling while hidden: drives the "training finished" notification.
     const metricsTimer = setInterval(() => {
       if (document.hidden) return;
       pollMetricsIfActive();
