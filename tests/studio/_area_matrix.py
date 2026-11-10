@@ -1978,8 +1978,9 @@ def thread_split(threads: dict[str, float]) -> str:
 
 
 def recheck_keys(verdicts: list[dict]) -> list[tuple[int, str, str]]:
-    """(turns, mode, area) to measure again: every failing CPU cell and broken area, and a blocking paint
-    / main-thread length failure at both lengths."""
+    """(turns, mode, area) to measure again: every failing CPU cell and broken area, and a paint /
+    main-thread length failure at both lengths (also while report-only: a single first reading at LONG
+    turns carries 100-250 ms of work spilled over from the areas run before it)."""
     keys = {
         (v["turns"], v["mode"], v["area"])
         for v in verdicts
@@ -1994,7 +1995,7 @@ def recheck_keys(verdicts: list[dict]) -> list[tuple[int, str, str]]:
     keys |= {
         (t, v["mode"], v["area"])
         for v in verdicts
-        if v["fail"] and v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")
+        if v.get("would_fail") and v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")
         for t in (SHORT, LONG)
     }
     return sorted(keys)
