@@ -33,8 +33,7 @@
     "Send message",
   ];
 
-  // Progress hooks: data-status on text parts and aria-busy on reasoning content, named once so
-  // the streaming scan and its control cannot drift apart.
+  // Progress hooks named once so the streaming scan and its control cannot drift apart.
   const STATUS_HOOK =
     '[data-status], [data-slot="reasoning-content"][aria-busy]';
 
@@ -100,8 +99,7 @@
           null,
       );
     },
-    // Tells a renamed data-status hook (blind probe) apart from an unmounted row or a row with no
-    // parts yet. data-status is rendered for complete parts too.
+    // Tells a renamed hook from unmounted or empty rows; data-status marks complete parts too.
     statusHookPresent() {
       return D.assistantMessages().some(
         (m) => m.querySelector(STATUS_HOOK) !== null,
@@ -117,8 +115,7 @@
     messageCount() {
       return qa("[data-role]").length;
     },
-    // Thread length, not mounted count: differs once an arm windows. Read from aria-setsize, where
-    // WAI-ARIA requires a windowed list to publish it.
+    // Thread length, not mounted count: a windowed list must publish it as aria-setsize.
     threadTotal() {
       // The ordinal may sit on the message or on the virtualizer's row wrapper (same walk as readiness.py).
       const first = q("[data-role]");
@@ -142,8 +139,7 @@
       return all.length ? all[all.length - 1] : null;
     },
 
-    // Hidden with `invisible` when the app's autoscroll considers itself at the bottom, so the
-    // harness and the app cannot disagree about pinning.
+    // Hidden (`invisible`) when the app is at bottom, so harness and app agree on pinning.
     jumpToBottomButton() {
       return q(".aui-thread-scroll-to-bottom");
     },
@@ -167,8 +163,7 @@
     reasoningOpenCount() {
       return qa('[data-slot="reasoning-root"][data-state="open"]').length;
     },
-    // Collapsed content stays mounted until animationend/transitionend, so a collapse is settled
-    // only once the content is gone.
+    // Collapsed content stays mounted until its transition ends, so a collapse settles late.
     reasoningContentMounted() {
       return qa('[data-slot="reasoning-content"]').filter(
         (el) => !el.hasAttribute("hidden"),
@@ -242,8 +237,7 @@
       const menu = D.openMenu();
       return menu ? byName(".aui-action-bar-more-item", name, menu) : null;
     },
-    // Radix opens on pointerdown, so click() leaves the menu shut. The portaled menu is looked up
-    // only when body's children change, not per paint.
+    // Radix opens on pointerdown, not click; the portal is searched only on body changes.
     async openMenuAndFind(trigger, name, waitMs) {
       const pointer = {
         bubbles: true,
@@ -524,8 +518,7 @@
     },
     resume() {
       suspended = Math.max(0, suspended - 1);
-      // Re-attach if the gesture ended at the bottom; only checked on gesture exit, so the app pulling
-      // the viewport down on its own still counts as a yank.
+      // Re-attach on exit if the gesture ended at bottom; app-driven scrolls count as yanks.
       if (suspended === 0 && detached) {
         const app = D.appSaysAtBottom();
         const distance = D.distanceFromBottom();
@@ -574,9 +567,7 @@
     reset() {
       try {
         window.sessionStorage.removeItem(FOLLOW_KEY);
-      } catch (e) {
-        /* storage may be unavailable */
-      }
+      } catch { /* ignore */ }
       F.samples = 0;
       F.running_samples = 0;
       F.running_pinned = 0;

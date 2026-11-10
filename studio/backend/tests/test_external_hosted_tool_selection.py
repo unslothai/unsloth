@@ -163,8 +163,7 @@ def test_a_provider_without_that_tool_is_not_offered_it():
 
 @pytest.mark.parametrize("provider_type", ["llama_cpp", "vllm", "ollama", "custom"])
 def test_a_self_hosted_server_is_sent_no_hosted_names_at_all(provider_type):
-    """These declare no hosted tools, and an unknown name is a 400 from some of
-    them, so the filter has to be empty rather than pass-through."""
+    """These servers declare no hosted tools, and some 400 on unknown names, so send none."""
     assert hosted_only_tools(provider_type, ["python", "image_generation"]) == []
 
 
@@ -186,8 +185,7 @@ def test_images_plus_a_studio_tool_still_reaches_the_provider(monkeypatch, provi
 
 
 def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
-    """A project with automatic RAG selects the loop without the user touching a
-    tool pill, which is the quietest way to lose Images."""
+    """Automatic RAG selects the loop silently, which can quietly drop the user's image tool."""
     transport = _loop_transport(
         monkeypatch,
         "openai",
@@ -199,8 +197,7 @@ def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
 
 
 def test_the_loop_keeps_its_own_search(monkeypatch):
-    """Unsloth's web_search is running locally this turn, so the provider must not
-    be asked to run its own as well."""
+    """Unsloth's web_search runs locally this turn, so the provider must not run its own too."""
     transport = _loop_transport(monkeypatch, "openai", ["web_search", "python"])
     assert transport._request_kwargs["enabled_tools"] is None
 

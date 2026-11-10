@@ -122,8 +122,7 @@ def _preflight(
 
 class TestCacheAwarePreflight:
     def test_fully_cached_model_does_not_require_disk(self):
-        """The MiniMax case: 131 GB weights cached, only 36 GB free.
-        Preflight must not raise."""
+        """MiniMax case: 131 GB weights cached, only 36 GB free; preflight must not raise."""
         shards = [(f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)]
         cached = {name: size for name, size in shards}
         out = _preflight(
@@ -152,8 +151,7 @@ class TestCacheAwarePreflight:
         assert out["would_raise_disk_error"] is False
 
     def test_partial_cache_insufficient_disk_for_rest_still_raises(self):
-        """Two of four shards cached; remaining 70 GB still exceeds free
-        disk -> preflight correctly wants to raise."""
+        """Two of four shards cached; 70 GB still exceeds free disk, so preflight should raise."""
         shards = [(f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)]
         cached = {
             shards[0][0]: shards[0][1],
@@ -180,8 +178,7 @@ class TestCacheAwarePreflight:
         assert out["would_raise_disk_error"] is False
 
     def test_incomplete_cached_blob_is_not_credited(self):
-        """A partial file on disk (e.g. interrupted download) isn't counted
-        as cached -- we still require bytes for it."""
+        """A partial file on disk (e.g. an interrupted download) is not credited as cached."""
         shards = [("UD-Q4_K_XL/shard-0.gguf", 40 * GIB)]
         partial = {"UD-Q4_K_XL/shard-0.gguf": 10 * GIB}
         out = _preflight(
@@ -194,8 +191,7 @@ class TestCacheAwarePreflight:
         assert out["would_raise_disk_error"] is False
 
     def test_zero_size_path_infos_do_not_crash(self):
-        """A path_info with size=0 must not be credited or break the
-        arithmetic."""
+        """A path_info with size=0 must not be credited or break the arithmetic."""
         shards = [("mmproj.gguf", 0), ("UD-Q4_K_XL/shard-0.gguf", 40 * GIB)]
         out = _preflight(
             repo_files = shards,

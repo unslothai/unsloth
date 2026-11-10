@@ -99,6 +99,7 @@ import {
 
   useState,
 } from "react";
+import { FIND_SCOPE_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
@@ -405,6 +406,7 @@ const DEFAULT_DOCUMENT_TITLE = "Unsloth";
 
 function RootLayout() {
   const t = useT();
+  const findScopeRef = useSurfaceRef<HTMLDivElement>(FIND_SCOPE_SURFACE);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const routeOwnsReloadReadiness =
@@ -432,7 +434,8 @@ function RootLayout() {
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   const isChatRoute = pathname === "/chat";
-  const windowsWallpaperPage = !isChatRoute && usesWindowsTitlebar();
+  const windowsTitlebar = usesWindowsTitlebar();
+  const windowsWallpaperPage = !isChatRoute && windowsTitlebar;
   const { pinned, setPinned, togglePinned } = useSidebarPin();
   const navigate = useNavigate();
 
@@ -708,7 +711,7 @@ function RootLayout() {
       <ImageViewer />
       {!hideNavbar && <CommandPalette />}
       {hideNavbar ? (
-        <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
+        <main className="h-dvh flex-1 overflow-y-auto pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
             <Outlet />
           </RouteBoundary>
@@ -747,6 +750,7 @@ function RootLayout() {
           >
             <Navbar />
             <div
+              ref={findScopeRef}
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
             >

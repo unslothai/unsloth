@@ -1770,9 +1770,8 @@ def _cuda_device_count() -> int:
 
 
 def cancel_warm_start() -> bool:
-    """Cancel a warm start still launching (it holds the image engine's generation slot until its server is up), for
-    a teardown, a model switch or an unenhanced render that would otherwise wait it out. Never creates the sidecar,
-    never blocks."""
+    """Cancel a warm start still launching (it holds the image engine's generation slot until up),
+    for a teardown, model switch or unenhanced render; never creates the sidecar or blocks."""
     sidecar = _sidecar
     return sidecar is not None and sidecar.cancel_warm_start()
 
@@ -2161,6 +2160,10 @@ def enhance_for_generation(
     variant = variant_for_family(family_name)
     distinct = list(dict.fromkeys(p for p in prompts if isinstance(p, str)))
     cancel_event = cancel_event or threading.Event()
+    from core.inference.generation_ticket import bind_generation_cancel
+
+    # A queued job's or chat image's own Stop reaches its captioning too, not only the denoise.
+    bind_generation_cancel(cancel_event)
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
     # On every exit, a Stop included: a retry with enhancement off must not denoise beside a tight server.

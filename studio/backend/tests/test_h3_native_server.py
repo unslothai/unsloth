@@ -147,25 +147,28 @@ def test_vid_gen_other_400_is_a_plain_failure(patched):
 
 
 def test_vid_gen_failure_carries_the_log_cause(patched):
-    s = _server_with(
-        _FakePopen(),
-        _FakeClient(
-            post = lambda url, json: _Resp(202, {"id": "jobF"}),
-            get = lambda url: _Resp(
-                200,
-                {
-                    "status": "failed",
-                    "error": {
-                        "code": "generation_failed",
-                        "message": "generate_video returned no results",
-                    },
+    client = _FakeClient(
+        get = lambda url: _Resp(
+            200,
+            {
+                "status": "failed",
+                "error": {
+                    "code": "generation_failed",
+                    "message": "generate_video returned no results",
                 },
-            ),
+            },
         ),
     )
-    s._tail.append(
-        "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 5463.50 MiB: out of memory"
-    )
+    s = _server_with(_FakePopen(), client)
+
+    def post(url, json):
+        s._tail.append(
+            "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 5463.50 MiB: out of memory"
+        )
+        s._lines_seen += 1
+        return _Resp(202, {"id": "jobF"})
+
+    client._post = post
     with pytest.raises(RuntimeError, match = "out of memory"):
         s.vid_gen({"prompt": "x"}, poll_interval = 0.0)
 

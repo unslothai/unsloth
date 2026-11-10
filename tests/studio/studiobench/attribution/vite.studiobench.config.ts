@@ -10,8 +10,7 @@ import { previewRuntime } from "../../../../studio/frontend/vite-preview-runtime
 
 const FRONTEND_ROOT = path.resolve(__dirname, "../../../../studio/frontend");
 
-// Resolve plugins from the frontend package: Vite loads this config from its own dir,
-// where no node_modules exists up the tree.
+// Plugins resolve from the frontend package; Vite's config dir has no node_modules above it.
 const requireFromFrontend = createRequire(
   path.join(FRONTEND_ROOT, "package.json"),
 );
@@ -22,8 +21,7 @@ const { defineConfig } = requireFromFrontend("vite");
 export default defineConfig({
   root: FRONTEND_ROOT,
   plugins: [react(), tailwindcss(), previewRuntime()],
-  // Keep an unrelated PostCSS config in an ancestor directory from leaking into Unsloth installs.
-  // Tailwind is provided by its dedicated Vite plugin.
+  // Blocks an ancestor PostCSS config from leaking in; Tailwind uses its own Vite plugin.
   css: {
     postcss: {
       plugins: [],

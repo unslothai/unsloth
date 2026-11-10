@@ -199,8 +199,7 @@ def test_a_record_at_a_superseded_policy_no_longer_gates_its_base(tmp_path):
         base_repo = "black-forest-labs/FLUX.1-schnell",
         policy_id = "flux_mod_single_v1",
     )
-    # Separate files: the loader caches on (path, mtime_ns, size), and Windows' ~15.6 ms write clock
-    # would return the first same-size document on a rewrite.
+    # Separate files: a ~15.6 ms Windows clock aliases same-size rewrites in the loader cache.
     (tmp_path / "superseded").mkdir()
     (tmp_path / "current").mkdir()
     path = _gate_file(tmp_path / "superseded", flux)

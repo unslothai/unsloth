@@ -177,8 +177,7 @@
             : Math.round((over33 / gaps.length) * 1000) / 10,
         p50_frame_ms: quantile(gaps, 0.5),
         p95_frame_ms: quantile(gaps, 0.95),
-        // Raw deltas for the jank metrics. gaps is sorted ascending, so over the cap emit null
-        // rather than a head slice that drops exactly the janky frames.
+        // Sorted gaps: over the cap emit null, since a head slice drops the janky frames.
         frame_gaps_ms:
           gaps.length > GAPS_CAP
             ? null

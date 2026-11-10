@@ -77,8 +77,7 @@ _PANDAS_SENTINELS_READY = False
 
 
 def _is_pandas_missing(value: Any) -> bool:
-    """pandas' own missing sentinels. Identity rather than ``pd.isna``, which answers element-wise
-    for a list or an array; these two are singletons."""
+    """Identity check, not pd.isna (element-wise on arrays); pandas' sentinels are singletons."""
     global _PANDAS_NA, _PANDAS_NAT, _PANDAS_SENTINELS_READY
     if not _PANDAS_SENTINELS_READY:
         try:

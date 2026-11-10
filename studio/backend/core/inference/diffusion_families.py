@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import contextlib
 import contextvars
 import os
 import re
@@ -56,6 +57,28 @@ class LoadIdentity:
 def load_identity(repo_id, base_repo, family) -> LoadIdentity:
     """``LoadIdentity`` for one load. None and "" describe the same absent field."""
     return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
+
+
+# The image queue pins the checkpoint file too: another quant of the same repo is the same LoadIdentity.
+_pinned_checkpoint: contextvars.ContextVar = contextvars.ContextVar(
+    "pinned_checkpoint", default = None
+)
+
+
+@contextlib.contextmanager
+def pin_checkpoint(filename):
+    token = _pinned_checkpoint.set((filename,))
+    try:
+        yield
+    finally:
+        _pinned_checkpoint.reset(token)
+
+
+def require_pinned_checkpoint(loaded_id: LoadIdentity, loaded_filename) -> None:
+    """Called by each engine beside its expected_load check, under the same lock."""
+    pin = _pinned_checkpoint.get()
+    if pin is not None and pin[0] != loaded_filename:
+        raise DiffusionModelReplacedError(loaded_id, loaded_id)
 
 
 class DiffusionModelReplacedError(RuntimeError):
@@ -299,6 +322,21 @@ _QWENIMAGE_MOD_WEIGHT_ONLY = ("img_mod", "txt_mod")
 # pre-floor plain fp8 at LPIPS 0.712 with SSIM 0.016 and mean luma 0. Keeping the deny cost real speed: it pinned qwen
 # to int8 at 1.10x bf16 when compiled fp8 measures 1.21x.
 _QWENIMAGE_SCHEME_DENY = frozenset({"mxfp8", "nvfp4"})
+# rdna_auto_w8a8: gfx1151, ROCm 7.13, 1024^2, both arms compiled, LPIPS vs compiled bf16. Wan failed the 0.10 LPIPS bar.
+_QWENIMAGE21_RDNA_AUTO_W8A8 = "compiled int8 W8A8 measured 83.3 vs 95.1 s/image against compiled bf16 on gfx1151 (25 steps), LPIPS 0.020"
+_QWENIMAGE_RDNA_AUTO_W8A8 = (
+    "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
+    "LPIPS 0.014"
+)
+# FLUX.3 renders black in float16, so fp16-only cards run it in float32; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
+_FLUX3_FP16_INCOMPATIBLE = (
+    os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16") or ""
+).strip().lower() not in (
+    "1",
+    "on",
+    "true",
+    "yes",
+)
 # FLUX.3 Klein transformer-quant keep-list, every scheme (FamilyProfile.quant_exclude_tokens).
 _FLUX3_QUANT_KEEP = (
     "modulation",
@@ -307,10 +345,9 @@ _FLUX3_QUANT_KEEP = (
     "txt_mode_blocks",
     "context_embedder",
 )
-# Schemes denied for TRAINING on top of the inference deny. Training holds a stricter bar because the evidence above is
-# rendering evidence: it says a frozen fp8 forward reconstructs the bf16 image, not that a LoRA converges when its
-# frozen linears are fp8. Nobody has run that, so qwen fp8 stays out of the Train UI until someone does. Delete the
-# entry once a training run is measured.
+# Training denies fp8 on top of the inference deny: rendering evidence shows a frozen fp8 forward
+# reconstructs bf16 images, not that a LoRA converges on fp8 linears; remove once a training run is
+# measured.
 _QWENIMAGE_TRAIN_SCHEME_DENY = frozenset({"fp8"})
 # Text-encoder int8 keep-bf16 schedule (skip_first, skip_last) from measured hidden-state fidelity: qwen-image
 # (Qwen2.5-VL-7B) first+last 6 gives ~0.997 cosine; flux.2-dev (Mistral-Small-24B) first 3 gives ~0.98 (early-layer
@@ -371,11 +408,9 @@ _FLUX1_SD_CPP_TEXT_ENCODERS: tuple[tuple[str, str, str], ...] = (
         "t5xxl_shard",
     ),
 )
-# FLUX.3 Klein's encoder is Qwen3-VL-4B-Instruct (byte-identical), read by sd.cpp through --llm with hidden states 4..32.
-# References go through the VAE, not the vision tower, so editing needs no projector. Q8_0 rather than Q4_K_M: the
-# encoder quant dominates the error here. Against a BF16 DiT + BF16 encoder render (sd.cpp, 4 prompts, 1024, same
-# seeds, B200), LPIPS-alex mean with the Q8_0 DiT is 0.031 (Q8_0 encoder) vs 0.080 (Q4_K_M) on the distilled model and
-# 0.008 vs 0.082 on the base; with UD-Q4_K_XL 0.068 vs 0.090 and 0.110 vs 0.109. 4.28 GB against 2.50 GB.
+# FLUX.3 Klein's encoder is Qwen3-VL-4B-Instruct (byte-identical), read by sd.cpp through --llm with
+# hidden states 4 to 32; Q8_0 is picked over Q4_K_M since the encoder quant dominates the error, and
+# references go through the VAE so no projector is needed.
 _FLUX3_SD_CPP_TEXT_ENCODERS = (
     (
         "unsloth/Qwen3-VL-4B-Instruct-GGUF",
@@ -403,6 +438,33 @@ _MOSS_IMAGE_CONVROT_SUFFIXES = (
     "proj.o",
     "proj.ffn_up_gate",
     "proj.ffn_down",
+)
+
+# All 101 int8 Linear widths are 256-divisible.
+_FLUX2_KLEIN_CONVROT_SUFFIXES = (
+    "context_embedder",
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "attn.add_q_proj",
+    "attn.add_k_proj",
+    "attn.add_v_proj",
+    "attn.to_add_out",
+    "ff.linear_in",
+    "ff.linear_out",
+    "ff_context.linear_in",
+    "ff_context.linear_out",
+    "attn.to_qkv_mlp_proj",
+    "attn.to_out",
+)
+_FLUX3_CONVROT_SUFFIXES = (
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "ff.linear_in",
+    "ff.linear_out",
 )
 
 _FAMILIES: tuple[DiffusionFamily, ...] = (
@@ -460,10 +522,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
         # are byte-identical).
         te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
-        # No te_quant_auto: a small encoder (T5-XXL, 4.8B) stays bf16 unless ComfyUI's template quantizes it, and the
-        # FLUX.1 templates load t5xxl_fp16. Measured against the bf16 encoder (bf16 DiT, schnell 4 steps, 24 prompts,
-        # bf16 A/A repeat bit-identical): the hosted int8 ConvRot T5 scores LPIPS-alex mean 0.055, SSIM 0.927, layerwise
-        # fp8 0.096 on 12; both stay one explicit pick away (T5 resident 8.87 -> 4.56 GiB).
+        # No te_quant_auto: a small 4.8B T5-XXL stays bf16 unless ComfyUI's template quantizes it
+        # (the FLUX.1 templates load t5xxl_fp16); the int8 ConvRot and layerwise fp8 T5 files stay
+        # one explicit pick away.
         aliases = ("flux1", "flux-1"),
         # LoRA training targets FLUX.1-dev via the DiT trainer (QLoRA nf4); the dev repo is gated
         trainable = True,
@@ -482,6 +543,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            # LPIPS vs fp16 (4B, T4 W8A8, 16 renders): plain 0.103 -> ConvRot 0.037; A100 0.092 -> 0.034.
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _FLUX2_KLEIN_CONVROT_SUFFIXES,
+                filename = "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+                repo = "unsloth/FLUX.2-klein-4B-FP8",
+                default_on = True,
+                hosted_plain = True,
+            ),
             preview_factors = "flux2",
             auto_static_skip = (
                 (
@@ -516,11 +586,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 "unsloth/FLUX.2-klein-9B-FP8",
             ),
         ),
-        # No te_quant_auto: an unset request keeps the bf16 encoder. ComfyUI loads qwen_3_4b bf16 for the 4B pair and
-        # qwen_3_8b_fp8mixed for the 9B pair; against the bf16 encoder (bf16 DiT) the hosted int8 ConvRot files score
-        # LPIPS-alex mean 0.078 (4B, 4 steps, 24 prompts), 0.103 (base 4B, 20 steps CFG 5) and 0.047 (9B), layerwise fp8
-        # 0.115 / 0.214 / 0.072. The encoder itself is close (int8 hidden-state cosine 0.9997 at the read layers), but
-        # the distilled 4B amplifies it past what a silent default should cost; the files stay for explicit picks.
+        # No te_quant_auto: an unset request keeps the bf16 encoder, since the distilled 4B
+        # amplifies the int8 ConvRot encoder error past what a silent default should cost; the files
+        # stay for explicit picks.
         aliases = ("flux2-klein",),
         # A local ComfyUI file has no card tag, so without these a 9B pick got the 4B base and was refused.
         named_variant_bases = (
@@ -570,9 +638,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.3-klein-base",
         comfy_shift_node = "flux",
+        fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            int8_convrot = ConvRotSpec(group = 256, suffixes = _FLUX3_CONVROT_SUFFIXES, default_on = True),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -627,9 +697,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.3-klein",
         comfy_shift_node = "flux",
+        fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _FLUX3_CONVROT_SUFFIXES,
+                filename = "flux-3-image-klein-INT8-ConvRot.safetensors",
+                repo = "unsloth/flux-3-image-klein-FP8",
+                default_on = True,
+                hosted_plain = True,
+            ),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -695,10 +774,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Pre-cast Mistral-Small-24B conditioner (bf16 ~48 GB dense, ~24.7 GB pre-cast).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/FLUX.2-dev-FP8"),),
-        # int8 ConvRot by default. ComfyUI's FLUX.2-dev templates load mistral_3_small_flux2_bf16 (2 of 3; the third
-        # fp8); against the bf16 encoder (bf16 DiT, 20 steps guidance 4, 24 prompts, bf16 A/A repeat bit-identical) the
-        # hosted int8 ConvRot file scores LPIPS-alex mean 0.057, SSIM 0.929, layerwise fp8 0.266 / SSIM 0.730 on 12. The
-        # Pixtral vision tower stays bf16. Resident 44.7 -> 22.8 GiB, load 9.3 -> 3.6 s.
+        # int8 ConvRot by default: it measured closer to the bf16 encoder than layerwise fp8 and
+        # roughly halves resident size (44.7 to 22.8 GiB); the Pixtral vision tower stays bf16.
         te_quant_auto = "int8",
         aliases = ("flux2-dev", "flux2dev"),
         trainable = True,
@@ -740,9 +817,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
         # FLUX.1's pre-cast T5-XXL: Kontext ships the same text_encoder_2 shards (sha256 compared 2026-10-16).
         te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
-        # fp8 by default, as ComfyUI's Kontext template (t5xxl_fp8_e4m3fn_scaled): against the bf16 encoder (bf16 DiT, 8
-        # edits, 20 steps, bf16 A/A repeat bit-identical) LPIPS-alex mean 0.034 / max 0.143, SSIM 0.945. The shared int8
-        # ConvRot T5 scores 0.021 and is one explicit pick away.
+        # fp8 by default, as ComfyUI's Kontext template (t5xxl_fp8_e4m3fn_scaled); the shared int8
+        # ConvRot T5 scores closer to the bf16 encoder and stays one explicit pick away.
         te_quant_auto = "fp8",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
         edit = True,
@@ -785,9 +861,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen-Image's pre-cast Qwen2.5-VL-7B: every edit release (original, 2509, 2511) ships the same text_encoder/
         # shards. The vision tower is cast too, and the edit path runs it.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
-        # int8 ConvRot by default. ComfyUI loads qwen_2.5_vl_7b_fp8_scaled; our layerwise fp8 (no scales) sits at the
-        # limit against the bf16 encoder (bf16 DiT, 8 edits, 40 steps: LPIPS-alex mean 0.060, max 0.330), the shared
-        # int8 ConvRot file at 0.017 / max 0.033, SSIM 0.970. The vision tower stays bf16 in it.
+        # int8 ConvRot by default: layerwise fp8 without scales sits at the limit against the bf16
+        # encoder while the int8 ConvRot file measured closer; the vision tower stays bf16 in it.
         te_quant_auto = "int8",
         cfg_kwarg = "true_cfg_scale",
         aliases = (
@@ -851,9 +926,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Qwen/Qwen-Image-Layered",
         # Qwen-Image's pre-cast Qwen2.5-VL-7B: the layered release ships the same text_encoder/ shards.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
-        # fp8 by default, as ComfyUI's layered templates (qwen_2.5_vl_7b_fp8_scaled): LPIPS-alex mean 0.0055 / max
-        # 0.034, SSIM 0.993 against the bf16 encoder (bf16 DiT, 8 inputs, 20 steps CFG 2.5, bf16 A/A repeat
-        # bit-identical).
+        # fp8 by default to match ComfyUI's qwen_2.5_vl_7b_fp8_scaled template; measured close to
+        # the bf16 encoder (LPIPS-alex mean 0.0055, SSIM 0.993).
         te_quant_auto = "fp8",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image_layered", "qwenimagelayered"),
@@ -891,6 +965,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
             preview_factors = "qwen_image",
             auto_static_skip = (("qwen/qwen-image", (("default", 2), ("max", 3), ("steps", 20))),),
+            rdna_auto_w8a8 = _QWENIMAGE_RDNA_AUTO_W8A8,
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
@@ -913,10 +988,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
-        # int8 ConvRot by default. ComfyUI loads qwen_2.5_vl_7b_fp8_scaled, but our layerwise fp8 (no per-tensor scale)
-        # moves too much: against the bf16 encoder (bf16 DiT, 20 steps CFG 4, bf16 A/A repeat bit-identical) LPIPS-alex
-        # mean 0.138 / SSIM 0.844 on 12 prompts, int8 ConvRot 0.057 / SSIM 0.938 on 24 (one 0.47 is a cone moved to the
-        # side the prompt asks for). Text renders correctly in both. Resident 15.45 -> 8.36 GiB, load 7.3 -> 2.6 s.
+        # int8 ConvRot by default: ComfyUI loads qwen_2.5_vl_7b_fp8_scaled, but our layerwise fp8
+        # (no per-tensor scale) moves too much against the bf16 encoder (LPIPS-alex 0.138 vs 0.057
+        # for int8 ConvRot); resident 15.45 to 8.36 GiB.
         te_quant_auto = "int8",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
@@ -948,13 +1022,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "qwen-image-2.1",
         comfy_shift_node = "flux",
         profile = FamilyProfile(
-            # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's exclusion list
-            # does not apply and this one was measured rather than inherited. ``txt_in`` is here as a QUALITY lever,
-            # not the small-M crash guard it is on qwen-image: all four policy arms rendered a deliberately 2-token
-            # prompt without tripping ``_int_mm``'s M floor, so nothing crashes either way. Excluding it scored LPIPS
-            # 0.0642 against 0.1032 with the generic tokens alone, paired over 16 calibration prompts, -0.0390 CI95
-            # [-0.0708, -0.0072], better on 14/16.
+            # 2.1 is a 32-block single-stream DiT with no add-prefixed projections or txt_mlp, so
+            # the 20B MMDiT exclusion list does not apply; excluding txt_in scores LPIPS 0.064 vs
+            # 0.103, a quality lever, not a crash guard.
             int8_exclude_tokens = ("txt_in",),
+            rdna_auto_w8a8 = _QWENIMAGE21_RDNA_AUTO_W8A8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = (
@@ -1053,15 +1125,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 "vae/qwen_image_2.1_vae_bf16.safetensors",
             ),
         ),
-        # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
-        # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
-        # UD-Q4_K_XL, the Dynamic 2.0 rung, rather than the uniform Q4_K_M: same 4-bit class and
-        # the same CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 5.1 against
-        # 5.0), with the per-tensor precision the dynamic recipe assigns. Measured on this host
-        # against the 2.1-capable build, one prompt at 1024 with 20 steps and a shared seed:
-        # LPIPS 0.02894 / SSIM 0.95908 between the two, 36.5 s against 39.0 s, both coherent.
-        # The vision projector (--llm_vision) is what native editing needs; text-to-image never reads it (a fixed-seed
-        # render is byte-identical with and without it). Listed here so download, readiness and delete guards see it.
+        # Qwen3-VL 8B goes via --llm, not --qwen2vl (Qwen2-VL vision preprocessing this encoder does
+        # not want); UD-Q4_K_XL matches Q4_K_M's 4-bit class and CPU RAM; --llm_vision serves native
+        # editing only, text-to-image never reads it; listed so download and delete guards see it.
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen3-VL-8B-Instruct-GGUF",
@@ -1121,10 +1187,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # shared with flux.2-klein-4B: klein ships stock Qwen3-4B (sha256-identical to unsloth/Qwen3-4B), while this
         # encoder is Z-Image's own variant of it (layer 35 MLP up/down_proj maxdiff 0.86 against klein's).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),),
-        # No te_quant_auto: a small encoder (Qwen3-4B) stays bf16 unless ComfyUI's template quantizes it, and 3 of its
-        # 4 templates load qwen_3_4b bf16. Measured against the bf16 encoder (bf16 DiT, 8 steps, 12 prompts, bf16 A/A
-        # repeat bit-identical): int8 ConvRot LPIPS-alex mean 0.049, SSIM 0.934, layerwise fp8 0.105; both stay one
-        # explicit pick away (resident 7.49 -> 4.11 GiB).
+        # No te_quant_auto: the small Qwen3-4B encoder stays bf16, since 3 of ComfyUI's 4 templates
+        # load it bf16; int8 ConvRot (LPIPS-alex 0.049) and layerwise fp8 (0.105) stay explicit
+        # picks.
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA
         trainable = True,
@@ -1197,10 +1262,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # pre-cast Gemma2-2B TE; the Hub stores it fp32 (10.46 GB), so the 3.20 GB artifact is a 3.3x download cut
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),),
-        # No te_quant_auto: a small encoder (Gemma-2-2B) stays bf16 unless ComfyUI's template quantizes it, and ComfyUI
-        # ships gemma_2_2b_fp16 only. Measured against the bf16 encoder (bf16 DiT, 50 steps, 8 prompts, bf16 A/A repeat
-        # bit-identical): int8 ConvRot LPIPS-alex mean 0.015, SSIM 0.986, layerwise fp8 0.177; both stay one explicit
-        # pick away (resident 4.87 -> 2.99 GiB, download 10.46 GB fp32 -> 3.21 GB).
+        # No te_quant_auto: the small Gemma-2-2B encoder stays bf16, since ComfyUI ships only
+        # gemma_2_2b_fp16; int8 ConvRot (LPIPS-alex 0.015) and layerwise fp8 (0.177) stay explicit
+        # picks.
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         fp16_incompatible = True,
     ),
@@ -1293,11 +1357,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
             ("fp8", "text_encoder_3", "unsloth/FLUX.1-schnell-FP8", "text_encoder_2"),
         ),
-        # No te_quant_auto. ComfyUI loads t5xxl_fp8_e4m3fn_scaled + llama_3.1_8b_instruct_fp8_scaled; against the bf16
-        # encoders (bf16 DiT, Full 50 steps CFG 5, 12 prompts, bf16 A/A repeat bit-identical) the hosted int8 ConvRot T5
-        # + Llama score LPIPS-alex mean 0.103 / SSIM 0.890 and layerwise fp8 0.225 / SSIM 0.763: this DiT reads every
-        # Llama layer, and neither is close enough for a silent default. Both stay one explicit pick away (CLIPs stay
-        # bf16).
+        # No te_quant_auto: the hosted int8 ConvRot T5 and Llama (LPIPS-alex 0.103) and layerwise
+        # fp8 (0.225) are both too far from bf16 for a silent default, since this DiT reads every
+        # Llama layer; CLIPs stay bf16.
         pipeline_class = "HiDreamImagePipeline",
         transformer_class = "HiDreamImageTransformer2DModel",
         base_repo = "HiDream-ai/HiDream-I1-Full",
@@ -1321,10 +1383,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen3-VL-8B, built from the vendor's per-channel-scaled fp8 shards dequantized to bf16 (what a dense load
         # runs): layerwise fp8 here, int8 ConvRot in diffusion_te_prequant.TE_INT8_CONVROT_FILES.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/ideogram-4-FP8"),),
-        # No te_quant_auto. ComfyUI loads qwen3vl_8b_fp8_scaled; against the dequantized vendor encoder (bf16 DiT, 20
-        # steps CFG 7, 12 prompts, bf16 A/A repeat bit-identical) int8 ConvRot scores LPIPS-alex mean 0.081 and
-        # layerwise fp8 0.114, both past what a silent default should cost, although text survives and the encoder loads
-        # in 2.1 s instead of 153 s (8.7 instead of 15.2 GiB). The files stay for explicit picks.
+        # No te_quant_auto: int8 ConvRot (LPIPS-alex 0.081) and layerwise fp8 (0.114) cost too much
+        # for a silent default against the dequantized vendor encoder, though text survives and the
+        # encoder is smaller (8.7 vs 15.2 GiB).
         aliases = ("ideogram4", "ideogram-v4", "ideogram"),
         # Two DiTs assembled per-component, so no transformer-only single-file / GGUF load.
         pipeline_only = True,
@@ -2205,10 +2266,9 @@ def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[floa
     return row[1] if row else getattr(fam, "comfy_flow_shift", None)
 
 
-# FLUX.3 single files / GGUFs take their transformer config from the companion repo, which may be the other
-# variant's (the TE and VAE are shared, and the base repo is gated). The variant check has already matched the
-# checkpoint to the family, so the family sets flow_map: a base file on the distilled config would otherwise build the
-# target-time embedder the file has no weights for and fail on meta tensors, and the reverse would drop its weights.
+# FLUX.3 single files and GGUFs can take the other variant's transformer config from the companion
+# repo, so the family sets flow_map; a base file on the distilled config fails on meta tensors, and
+# the reverse drops its weights.
 _FLUX3_FLOW_MAP = {"flux.3-klein": True, "flux.3-klein-base": False}
 
 
@@ -2369,7 +2429,7 @@ _DIFFUSERS_DROPPED_PY39 = "0.37.0"
 _DIFFUSERS_DROPPED_PY310 = "0.42.0"
 _MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
-# First diffusers release exporting each class; every probed class must be listed, since an unlisted one reads as available.
+# Minimum diffusers per class, enforced even when the class is present; an unlisted class reads as available.
 _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     # MiniMax-H3 is judged by its transformer, first available in diffusers 0.40.0.
     "MiniMaxH3Transformer3DModel": "0.40.0",
@@ -2915,13 +2975,10 @@ def assert_pipeline_class_available(
             f"missing and install it."
         )
 
-    if present:
+    installed = getattr(diffusers, "__version__", None)
+    if present and not _present_class_below_floor(pipeline_class, installed):
         return
-    raise ValueError(
-        _too_old_message(
-            pipeline_class, family_name, str(getattr(diffusers, "__version__", "unknown"))
-        )
-    )
+    raise ValueError(_too_old_message(pipeline_class, family_name, str(installed or "unknown")))
 
 
 def _module_namespace_is_unreadable(module: Any) -> bool:
@@ -2960,6 +3017,20 @@ def _installed_at_least(installed: str, minimum: str) -> bool:
         return True
 
 
+def _present_class_below_floor(pipeline_class: str, installed: Any) -> bool:
+    """Probe-file classes and unreleased floors stay presence-judged: main builds report an older release."""
+    minimum = _PIPELINE_MIN_DIFFUSERS.get(pipeline_class)
+    if (
+        minimum is None
+        or minimum in _UNRELEASED_MIN_DIFFUSERS
+        or pipeline_class in _PIPELINE_PROBE_FILES
+        or not isinstance(installed, str)
+        or not installed.strip()
+    ):
+        return False
+    return not _installed_at_least(installed.strip(), minimum)
+
+
 def family_probe_class(fam: Any) -> str:
     """ModularPipeline is generic and predates families, so probe the transformer class; listing and both training gates must share it."""
     name = str(getattr(fam, "pipeline_class", "") or "")
@@ -2993,9 +3064,12 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
             return True
         if not _module_namespace_is_unreadable(module):
             try:
-                return hasattr(module, name)
+                if not hasattr(module, name):
+                    return False
+                installed = getattr(module, "__version__", None)
             except Exception:  # noqa: BLE001 -- a probe failure must not hide a model
                 return True
+            return not _present_class_below_floor(name, installed)
     minimum, _needs_py310 = pipeline_class_requirement(name)
     if minimum is None:
         return True
