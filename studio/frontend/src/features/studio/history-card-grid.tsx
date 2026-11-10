@@ -350,7 +350,6 @@ export function HistoryCardGrid({
     const timer = setInterval(() => {
       if (!document.hidden) void poll();
     }, RUNNING_POLL_INTERVAL_MS);
-    // Refetch on return only if a tick was skipped.
     const onVisibilityChange = () => {
       if (
         !document.hidden &&

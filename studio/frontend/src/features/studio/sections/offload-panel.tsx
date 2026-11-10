@@ -74,7 +74,6 @@ export function useOffloadState(enabled: boolean, intervalMs = 2000): OffloadSta
     const timer = setInterval(() => {
       if (!document.hidden) pollNow();
     }, intervalMs);
-    // Refetch on return only if a tick was skipped.
     const onVisibilityChange = () => {
       if (!document.hidden && Date.now() - lastPollAt >= intervalMs) pollNow();
     };

@@ -361,7 +361,6 @@ export function useTrainingRuntimeLifecycle(): void {
       if (document.hidden) return;
       pollMetricsIfActive();
     }, METRICS_POLL_INTERVAL_MS);
-    // Refetch on return only if a tick was skipped.
     const onVisibilityChange = () => {
       if (
         !document.hidden &&
