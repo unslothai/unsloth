@@ -35,6 +35,10 @@ import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
 } from "./features/settings/stores/interface-scale-store";
+import {
+  shortcutOwningBinding,
+  useKeyboardShortcutsStore,
+} from "./features/settings/stores/keyboard-shortcuts-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { markAppSessionStart } from "./lib/app-session-start";
@@ -73,7 +77,14 @@ const root = createRoot(rootElement);
 
 if (isTauri) {
   document.documentElement.classList.add("tauri");
-  watchDesktopFullscreen(window);
+  watchDesktopFullscreen(
+    window,
+    () =>
+      shortcutOwningBinding(
+        useKeyboardShortcutsStore.getState().overrides,
+        "F11",
+      ) !== null,
+  );
 }
 
 const uaLower = navigator.userAgent.toLowerCase();

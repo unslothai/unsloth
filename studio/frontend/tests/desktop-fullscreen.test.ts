@@ -21,7 +21,8 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
   const { watchDesktopFullscreen } =
     await import("../src/lib/desktop-fullscreen.ts");
   const target = new EventTarget();
-  watchDesktopFullscreen(target as unknown as Window);
+  let keyTaken = false;
+  watchDesktopFullscreen(target as unknown as Window, () => keyTaken);
 
   const press = (code: string, options = {}) => {
     const event = Object.assign(new Event("keydown", { cancelable: true }), {
@@ -39,7 +40,10 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
   // Wait for the native call rather than assuming the lazy import takes one tick.
   const waitForChanges = async (expected: number) => {
     const deadline = Date.now() + 10_000;
-    while (control.fullscreenChanges.length < expected && Date.now() < deadline) {
+    while (
+      control.fullscreenChanges.length < expected &&
+      Date.now() < deadline
+    ) {
       await delay(10);
     }
     assert.equal(control.fullscreenChanges.length, expected);
@@ -66,4 +70,23 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
   releaseGate();
   await waitForChanges(3);
   assert.deepEqual(control.fullscreenChanges, [true, false, true]);
+
+  keyTaken = true;
+  assert.equal(press("F11").defaultPrevented, false);
+  await delay(50);
+  assert.deepEqual(control.fullscreenChanges, [true, false, true]);
+});
+
+test("a bare F11 bound in Settings has an owner the watcher can defer to", async () => {
+  const { shortcutOwningBinding, useKeyboardShortcutsStore } =
+    await import("../src/features/settings/stores/keyboard-shortcuts-store.ts");
+  const owner = () =>
+    shortcutOwningBinding(
+      useKeyboardShortcutsStore.getState().overrides,
+      "F11",
+    );
+  assert.equal(owner(), null);
+  useKeyboardShortcutsStore.getState().setBinding("newChat", "primary", "F11");
+  assert.equal(owner(), "newChat");
+  useKeyboardShortcutsStore.getState().resetAll();
 });

@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Toggle the native desktop window with F11; web pages keep their browser shortcut. */
-export function watchDesktopFullscreen(target: Window): void {
+/**
+ * Toggle the native desktop window with F11; web pages keep their browser shortcut.
+ * `keyTaken` lets a user's own F11 binding from Settings win.
+ */
+export function watchDesktopFullscreen(
+  target: Window,
+  keyTaken: () => boolean = () => false,
+): void {
   let changing = false;
   target.addEventListener("keydown", (event) => {
     if (
@@ -12,7 +18,8 @@ export function watchDesktopFullscreen(target: Window): void {
       event.altKey ||
       event.ctrlKey ||
       event.metaKey ||
-      event.shiftKey
+      event.shiftKey ||
+      keyTaken()
     )
       return;
 
