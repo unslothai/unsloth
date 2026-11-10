@@ -209,3 +209,81 @@ def test_generate_releases_only_the_live_shortfall_for_a_priced_edit():
     assert "extra_mib = min(extra_mib, short)" in src[at:hook]
     stored = src.index("MEASURED_RESERVE_REFERENCE_INDEX: the edit the placement priced")
     assert "measured_reference_reserve_mib" in src[stored : stored + 400]
+
+
+def _q21_family():
+    from core.inference.diffusion_families import _FAMILIES
+    return next(f for f in _FAMILIES if f.name == "qwen-image-2.1")
+
+
+@pytest.mark.parametrize(
+    "budget,total", [(21432, 24576), (20000, 23034), (14500, 16376), (13407, 16376)]
+)
+def test_the_load_and_the_first_edit_guard_agree_on_a_default_edit(q21, budget, total):
+    """The guard's inputs for a default edit (no reference_resolution sent, one source image), built the way generate()
+    builds them, against the reserve the load stored: no release, so no "oversized request" mid-render."""
+    from core.inference.diffusion_conditioning import (
+        effective_reference_resolution,
+        reference_request_pixels,
+    )
+
+    fam = _q21_family()
+    side = effective_reference_resolution(fam, None)
+    reference_pixels = reference_request_pixels(side, 0)
+    condition_pixels = int(1 * side * side * fam.condition_pixel_weight)
+    plan = _refine(q21, _plan(budget, total))
+    # the load priced the same processed reference the request path will send
+    assert dm._default_reference_pixels("qwen-image-2.1") == reference_pixels == REF
+    need = dm.load_covered_reference_need_mib(
+        _with_reserve(q21, plan),
+        width = 1024,
+        height = 1024,
+        reference_pixels = reference_pixels,
+        cfg = False,
+    )
+    assert need == plan.estimates["measured_reference_need_mib"]
+    extra = dm.measured_request_extra_mib(
+        q21,
+        width = 1024,
+        height = 1024,
+        condition_pixels = condition_pixels,
+        reference_pixels = reference_pixels,
+        cfg = False,
+        workflow = "edit",
+    )
+    covered = plan.estimates["measured_reference_reserve_mib"]
+    if covered >= need:
+        assert extra == 0
+    else:
+        # every encoder layer already gave way: only the part the plan could not cover is left to the live check
+        assert plan.resident_text_encoder_mib is None and 0 < extra == need - covered < FLAT_EXTRA
+
+
+def _with_reserve(pipe, plan):
+    pipe._unsloth_measured_reserve = _reserve(plan)
+    return pipe
+
+
+def test_a_larger_reference_resolution_is_priced_past_the_default_placement(q21):
+    from core.inference.diffusion_conditioning import reference_request_pixels
+
+    plan = _refine(q21, _plan(21432, 24576))
+    _with_reserve(q21, plan)
+    two_k = reference_request_pixels(2048, 0)
+    assert (
+        dm.measured_request_extra_mib(
+            q21,
+            width = 1024,
+            height = 1024,
+            condition_pixels = int(two_k * 0.32),
+            reference_pixels = two_k,
+            cfg = False,
+            workflow = "edit",
+        )
+        > 0
+    )
+
+
+def test_generate_prices_the_reference_with_the_shared_helper():
+    src = (pathlib.Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert "guard_reference_pixels = reference_request_pixels(" in src

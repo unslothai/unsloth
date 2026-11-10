@@ -6225,6 +6225,19 @@ def edit_load_placement_enabled() -> bool:
     return derived_reference_pricing_enabled() and not _env_off(EDIT_LOAD_PLACEMENT_ENV)
 
 
+def _default_reference_pixels(family: str) -> int:
+    """Reference pixels of a default edit for ``family``, from the request path's own helpers (the reference resized
+    to the family's default ``reference_resolution``), so the load and the render-time guard price the same image."""
+    try:
+        from .diffusion_conditioning import default_reference_pixels
+        from .diffusion_families import _FAMILIES
+
+        fam = next((f for f in _FAMILIES if str(f.name).lower() == family), None)
+        return default_reference_pixels(fam) if fam is not None else 0
+    except Exception:  # noqa: BLE001 - unreadable: no edit placement
+        return 0
+
+
 def _load_reference_need(
     pipe: Any,
     *,
@@ -6233,8 +6246,8 @@ def _load_reference_need(
     quant: Optional[str],
     static_seed: bool,
 ) -> Optional[tuple[int, int]]:
-    """(denoise phase MiB, denoise MiB) of a guidance-free edit at the default canvas with one default-sized reference
-    (the family's default guidance is 1.0), for a reference-priced family; None when unpriced or switched off. The
+    """(denoise phase MiB, denoise MiB) of a guidance-free edit at the default canvas with one reference at the
+    family's default ``reference_resolution`` (the family's default guidance is 1.0), for a reference-priced family; None when unpriced or switched off. The
     phase is the static denoise seed; a learned edit peak of this build raises the need, as at request time."""
     name = (str(family or "").split() or [""])[0].lower()
     if not edit_load_placement_enabled() or name not in _DERIVED_REFERENCE_FAMILIES:
@@ -6247,11 +6260,13 @@ def _load_reference_need(
         or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES
     ):
         return None
+    reference = _default_reference_pixels(name)
+    if not reference:
+        return None
     step = _MEASURED_PEAK_ROUND_MIB
     row = phases[1 if speed_mode == "max" else 0]
     phase = int(math.ceil(row[_PHASE_DENOISE_COLUMN] * _MEASURED_PEAK_MARGIN))
     phase = int(-(-phase // step) * step)
-    reference = DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
     need = derived_reference_need_mib(
         pipe,
         family = family,

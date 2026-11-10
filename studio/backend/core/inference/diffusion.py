@@ -154,6 +154,7 @@ from .diffusion_conditioning import (
     decode_condition_images,
     edit_takes_extra_images,
     effective_reference_resolution,
+    reference_request_pixels,
     match_source_size,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
@@ -15069,8 +15070,8 @@ class DiffusionBackend:
                     )
                     # unweighted reference pixels: a measured placement prices them from their token count
                     if ref_resolution is not None and not layer_count:
-                        guard_reference_pixels = int(
-                            (1 + len(ref_extra)) * ref_resolution * ref_resolution
+                        guard_reference_pixels = reference_request_pixels(
+                            ref_resolution, len(ref_extra)
                         )
                     if layer_count:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
