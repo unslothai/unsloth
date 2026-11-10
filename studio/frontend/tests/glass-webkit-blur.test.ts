@@ -89,16 +89,19 @@ test("WebKitGTK liquid 3D draws its wide inner glows as gradients, not blurred s
   assert.equal(glowUses.length, 3, "composer, menus and dialogs; elsewhere --glass-glow is unset, so the layer is none");
 });
 
-test("WebKitGTK liquid glass drops the sheen, which bands into stripes over a flat fill", () => {
-  const rule = ruleAt('html[data-glass^="liquid"][data-glass-cpu],');
+test("WebKit liquid glass drops the sheen, which bands into stripes without dithering", () => {
+  // data-glass-layers is the WebKit flag (macOS and Linux apps, Safari); Chromium dithers the gradient and keeps it.
+  assert.match(MATERIAL, /"data-glass-layers",\s*WEBKIT_LAYERS && material !== "solid" && material !== "transparent" && here,/);
+  const rule = ruleAt('html[data-glass^="liquid"][data-glass-layers],');
   assert.ok(
-    rule.includes('html[data-glass^="liquid"][data-glass-cpu] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {'),
+    rule.includes('html[data-glass^="liquid"][data-glass-layers] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {'),
     "the composer sets its own sheen, so it is cleared there too",
   );
   assert.match(rule, /--glass-sheen: none;/);
   // Every sheen definition must come before the override: equal specificity, so the later rule wins.
-  const at = CSS.indexOf('html[data-glass^="liquid"][data-glass-cpu],');
+  const at = CSS.indexOf('html[data-glass^="liquid"][data-glass-layers],');
   assert.doesNotMatch(CSS.slice(at), /--glass-sheen: linear-gradient/);
+  assert.equal((CSS.slice(0, at).match(/--glass-sheen: linear-gradient/g) ?? []).length, 8);
 });
 
 test("the WebKitGTK rules are unlayered top-level rules", () => {
