@@ -44,7 +44,12 @@ import {
   SPECULATIVE_TYPES,
 } from "@/lib/speculative-modes";
 import { type ReactNode, useEffect, useState } from "react";
-import { CONTEXT_PIN, type LoadSettings, contextPin } from "./llm-settings";
+import {
+  CONTEXT_PIN,
+  type LoadSettings,
+  contextPin,
+  extraArgsEdit,
+} from "./llm-settings";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -204,9 +209,8 @@ function ExtraArgsField({
   // Committed as typed, not on blur, so a run started from the keyboard sends what is shown.
   const edit = (next: string) => {
     setText(next);
-    const found = parseExtraArgs(next);
-    if (!found.unterminatedQuote)
-      onChange(found.tokens.length > 0 ? found.tokens : undefined);
+    const found = extraArgsEdit(next);
+    if (found.commit) onChange(found.value);
   };
   return (
     <div className="flex flex-col gap-1">

@@ -6,68 +6,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { byTestId, flushMicrotasks } from "./helpers/flows.ts";
+import { fakeReact } from "./helpers/fake-react.ts";
+import { elementsOf, loadWithStubs, type StubElement, stubEveryImport, stubJsxRuntime } from "./helpers/module-stubs.ts";
 import { hfDatasetChoice, pickedSplit, shownSplit } from "../src/features/flows/editor/dataset-choice.ts";
-
-test("Fine-tune's base model opens the Train page's picker and stores a plain string", () => {
-  const fields = readSrc("features/flows/editor/param-fields.tsx");
-  assert.match(
-    fields,
-    /spec\.id === "base_model"[\s\S]{0,200}<FlowTrainModelPicker\s*value=\{String\(value \?\? ""\)\}\s*onChange=\{\(model, cache\) =>\s*onPatch\s*\?\s*onPatch\(\{ base_model: model, base_model_cache: cache \}\)\s*:\s*onChange\(model\)/,
-  );
-  const picker = readSrc("features/flows/editor/model-picker-field.tsx");
-  assert.match(picker, /TrainModelSelector,\n\} from "@\/features\/train-model-picker";/);
-  // The On device copy picked rides beside the plain repo string, so the run trains on it.
-  assert.match(picker, /onChange\(model, cache \? \{ known_cached: true, local_path: cache\.localPath \} : null\)/);
-  const inspector = readSrc("features/flows/editor/inspector.tsx");
-  assert.equal(inspector.match(/onPatch=\{setParams\}/g)?.length, 2);
-  // The generic picker no longer has a train kind.
-  assert.doesNotMatch(picker, /kind === "train"|train: \{/);
-});
-
-test("TrainModelSelector in controlled mode reads the value and reports picks instead of the store", () => {
-  const src = readSrc("features/train-model-picker/components/train-model-selector.tsx");
-  assert.match(src, /const controlled = onValueChange !== undefined;/);
-  assert.match(src, /const selectedModel = controlled \? value \|\| null : store\.selectedModel;/);
-  assert.match(src, /\? \(model, _type, options\) =>\s*model &&\s*onValueChange\(\s*model,\s*options\?\.knownCached\s*\?\s*\{ knownCached: true, localPath: options\.localPath \?\? null \}\s*:\s*null,\s*\)\s*: store\.selectTrainingModel;/);
-});
-
-test("the Hugging Face Dataset node renders the Train page's dataset picker and subset/split dropdowns", () => {
-  const inspector = readSrc("features/flows/editor/inspector.tsx");
-  assert.match(
-    inspector,
-    /spec\.type === HF_DATASET_NODE \? \(\s*<FlowHfDatasetFields params=\{node\.params\} onChange=\{setParams\} \/>/,
-  );
-  const field = readSrc("features/flows/editor/dataset-picker-field.tsx");
-  assert.match(field, /export const HF_DATASET_NODE = "data\.hf_dataset";/);
-  assert.match(field, /import \{ DatasetSelector \} from "@\/features\/dataset-picker";/);
-  assert.match(field, /import \{ HfDatasetSubsetSplitSelectors \} from "@\/features\/training";/);
-  // A new repo clears the subset so the dropdowns pick its default again.
-  assert.match(field, /onValueChange=\{\(next\) => onChange\(\{ repo: next, subset: "" \}\)\}/);
-  assert.match(field, /hideEvalSplit=\{true\}/);
-});
-
-test("DatasetSelector in controlled mode is Hub-only and leaves the Train page's store alone", () => {
-  const src = readSrc("features/dataset-picker/components/dataset-selector.tsx");
-  assert.match(src, /const dataset = controlled \? value \|\| null : storeDataset;/);
-  assert.match(src, /const datasetSource = controlled \? "huggingface" : storeDatasetSource;/);
-  assert.match(src, /\.filter\(\(d\) => !d\.partial && !controlled\)/);
-  assert.match(src, /onValueChange \? \(id\) => id && onValueChange\(id\) : storeSelectHfDataset/);
-});
-
-test("the subset/split selectors can drop the eval split, in both the dropdown and manual forms", () => {
-  const src = readSrc("features/training/components/hf-dataset-subset-split-selectors.tsx");
-  assert.equal(src.match(/\{!hideEvalSplit && \(/g)?.length, 2);
-  assert.match(src, /hideEvalSplit = false,/);
-});
 
 test("the node's params map onto the picker's values, with an unset split running as train", () => {
   assert.deepEqual(hfDatasetChoice({}), { repo: null, subset: null, split: "train" });
-  assert.deepEqual(hfDatasetChoice({ repo: " openai/gsm8k ", subset: "main", split: "test" }), {
-    repo: "openai/gsm8k",
-    subset: "main",
-    split: "test",
-  });
+  assert.deepEqual(
+    hfDatasetChoice({ repo: " openai/gsm8k ", subset: "main", split: "test" }),
+    { repo: "openai/gsm8k", subset: "main", split: "test" },
+  );
   assert.deepEqual(hfDatasetChoice({ repo: "", subset: "", split: "" }), { repo: null, subset: null, split: null });
 });
 
@@ -79,28 +28,131 @@ test("a saved split expression survives the dropdown, which lists only split nam
   assert.equal(pickedSplit("train[:10%]", "train"), "train[:10%]");
   assert.equal(pickedSplit("train[:10%]", "test"), "test");
   assert.equal(pickedSplit("train", null), "");
-  const field = readSrc("features/flows/editor/dataset-picker-field.tsx");
-  assert.match(field, /datasetSplit=\{shownSplit\(split\)\}/);
-  assert.match(field, /onChange\(\{ split: pickedSplit\(saved\.current, v\) \}\)/);
+  // `v` on the way to `validation` is no split name, so auto-select would snap it back to train.
+  assert.notEqual(shownSplit("v"), pickedSplit("v", "train"));
+});
+
+// ---- The picker components, rendered with deterministic hooks (no DOM). ----
+
+let active = fakeReact();
+const react = new Proxy({}, {
+  get: (_t, key) => (key === "memo" ? (c: unknown) => c : key === "useId" ? () => "id" : active.react[key as keyof typeof active.react]),
+});
+const src = (rel: string) => new URL(`../src/features/flows/${rel}`, import.meta.url);
+const named = (els: StubElement[], name: string) =>
+  els.find((e) => (e.type as { name?: string }).name === name) as StubElement;
+const call = (el: StubElement, prop: string, ...args: unknown[]) =>
+  (el.props[prop] as (...a: unknown[]) => unknown)(...args);
+
+test("Fine-tune's base model sends the backend a plain repo string plus the picked On device copy", () => {
+  // Backend contract: the run reads `base_model` and `base_model_cache: { known_cached, local_path }`.
+  const { FlowTrainModelPicker } = loadWithStubs<{ FlowTrainModelPicker: (p: unknown) => StubElement }>(
+    src("editor/model-picker-field.tsx"),
+    stubEveryImport({ react, "react/jsx-runtime": stubJsxRuntime() }),
+  );
+  const { ParamField } = loadWithStubs<{ ParamField: (p: unknown) => StubElement }>(
+    src("editor/param-fields.tsx"),
+    stubEveryImport({ react, "react/jsx-runtime": stubJsxRuntime(), "./model-picker-field": { FlowTrainModelPicker } }),
+  );
+  const patches: unknown[] = [];
+  const plain: unknown[] = [];
+  const field = (onPatch?: (p: unknown) => void) =>
+    ParamField({ spec: { id: "base_model", kind: "text" }, value: "unsloth/a", onChange: (v: unknown) => plain.push(v), onPatch });
+  const picker = field((p) => patches.push(p));
+  assert.equal(picker.type, FlowTrainModelPicker);
+  assert.equal(picker.props.value, "unsloth/a");
+  const selector = FlowTrainModelPicker(picker.props);
+  call(selector, "onValueChange", "unsloth/b", { knownCached: true, localPath: "/models/b" });
+  call(selector, "onValueChange", "unsloth/c", null);
+  assert.deepEqual(patches, [
+    { base_model: "unsloth/b", base_model_cache: { known_cached: true, local_path: "/models/b" } },
+    { base_model: "unsloth/c", base_model_cache: null },
+  ]);
+  // Without onPatch (e.g. a node with no inspector patching) the plain repo string still lands.
+  call(FlowTrainModelPicker(field().props), "onValueChange", "unsloth/d", null);
+  assert.deepEqual(plain, ["unsloth/d"]);
+});
+
+for (const [source, fetches] of [["/api/flows", 2], ["/api/models", 1]] as const)
+  test(`a picker over ${source} fetches its options ${fetches === 2 ? "fresh on every open" : "once and reuses them"}`, async () => {
+    const fetched: string[] = [];
+    const { ParamField } = loadWithStubs<{ ParamField: (p: unknown) => StubElement }>(
+      src("editor/param-fields.tsx"),
+      stubEveryImport({
+        react,
+        "react/jsx-runtime": stubJsxRuntime(),
+        "@/features/auth": {
+          getAuthSessionEpoch: () => 1,
+          authFetch: async (url: string) => {
+            fetched.push(url);
+            return { ok: true, json: async () => ["a", "b"] };
+          },
+        },
+        "./remote-options": await import("../src/features/flows/editor/remote-options.ts"),
+      }),
+    );
+    const spec = { id: "flow", kind: "text", options_from: source };
+    for (let open = 0; open < 2; open++) {
+      const hooks = fakeReact();
+      active = hooks;
+      const field = ParamField({ spec, value: "", onChange: () => undefined });
+      const render = () => hooks.render(field.type as (p: unknown) => unknown, field.props);
+      render();
+      await flushMicrotasks();
+      const input = named(elementsOf(render()), "Input");
+      assert.equal(input.props.placeholder, "2 choices");
+      hooks.unmount();
+    }
+    assert.equal(fetched.length, fetches);
+  });
+
+function datasetFields(params: Record<string, unknown>) {
+  const patches: Record<string, unknown>[] = [];
+  const { FlowHfDatasetFields } = loadWithStubs<{ FlowHfDatasetFields: (p: unknown) => unknown }>(
+    src("editor/dataset-picker-field.tsx"),
+    stubEveryImport({
+      react,
+      "react/jsx-runtime": stubJsxRuntime(),
+      "./dataset-choice": { hfDatasetChoice, pickedSplit, shownSplit },
+      "@/features/hub": { hfApiToken: () => null, useHfTokenStore: () => null, useOnlineStatus: () => true },
+    }),
+  );
+  const hooks = fakeReact();
+  const props = { params, onChange: (p: Record<string, unknown>) => patches.push(p) };
+  active = hooks;
+  const els = elementsOf(hooks.render(FlowHfDatasetFields, props));
+  const splitInput = byTestId(els, "flows-hf-split-expression") as StubElement;
+  return { patches, els, splitInput, dropdowns: named(els, "HfDatasetSubsetSplitSelectors") };
+}
+
+test("the Hugging Face Dataset node: a new repo clears the subset, and the eval split is hidden", () => {
+  const saved = { repo: "openai/gsm8k", subset: "main", split: "train[:10%]" };
+  const { patches, els, dropdowns } = datasetFields(saved);
+  call(named(els, "DatasetSelector"), "onValueChange", "org/other");
+  assert.deepEqual(patches, [{ repo: "org/other", subset: "" }]);
+  assert.equal(dropdowns.props.hideEvalSplit, true);
+  assert.equal(dropdowns.props.datasetName, "openai/gsm8k");
+  assert.equal(dropdowns.props.datasetSplit, "train", "the dropdown shows the split name of the saved expression");
+  call(dropdowns, "setDatasetSubset", null);
+  assert.deepEqual(patches.at(-1), { subset: "" });
+});
+
+test("a saved split expression survives the dropdown's auto-select, and the full expression stays editable", () => {
+  const { patches, dropdowns, splitInput } = datasetFields({ repo: "openai/gsm8k", split: "train[:10%]" });
+  call(dropdowns, "setDatasetSplit", "train");
+  call(dropdowns, "setDatasetSplit", "test");
+  assert.deepEqual(patches, [{ split: "train[:10%]" }, { split: "test" }]);
+  assert.equal(splitInput.props.value, "train[:10%]");
+  call(splitInput, "onChange", { target: { value: "train+test" } });
+  assert.deepEqual(patches.at(-1), { split: "train+test" });
 });
 
 test("typing a split expression is not replaced by the dropdown's auto-select mid-word", () => {
-  // `v` on the way to `validation` is no split name, so auto-select would snap it back to train.
-  assert.notEqual(shownSplit("v"), pickedSplit("v", "train"));
-  const field = readSrc("features/flows/editor/dataset-picker-field.tsx");
-  assert.match(field, /if \(!editing\.current\) onChange\(\{ split: pickedSplit\(saved\.current, v\) \}\);/);
-  assert.match(field, /onFocus=\{\(\) => \{\s+editing\.current = true;\s+\}\}/);
-  assert.match(field, /onBlur=\{\(\) => \{\s+editing\.current = false;\s+\}\}/);
-});
-
-test("the full split expression stays editable beside the split dropdown", () => {
-  const field = readSrc("features/flows/editor/dataset-picker-field.tsx");
-  assert.match(field, /<Input\s+value=\{split \?\? ""\}\s+onChange=\{\(e\) => onChange\(\{ split: e\.target\.value \}\)\}/);
-});
-
-test("an app's Select keeps a configured empty option", () => {
-  const page = readSrc("features/flows/app/flow-app-page.tsx");
-  assert.match(page, /\(field\.options \?\? \[\]\)\.map\(\(option\) => \(/);
-  assert.match(page, /onValueChange=\{\(next\) => onChange\(fromSelectValue\(next\)\)\}/);
-  assert.doesNotMatch(page, /field\.options \?\? \[\]\)\.filter\(Boolean\)/);
+  const { patches, dropdowns, splitInput } = datasetFields({ repo: "openai/gsm8k", split: "v" });
+  call(splitInput, "onFocus");
+  call(dropdowns, "setDatasetSplit", "train");
+  assert.deepEqual(patches, [], "no snap back to train while typing");
+  call(splitInput, "onBlur");
+  call(dropdowns, "setDatasetSplit", "train");
+  assert.deepEqual(patches, [{ split: "train" }], "after leaving the field the dropdown may pick again");
 });

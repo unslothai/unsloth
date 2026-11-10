@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Work a drag frame does that does not depend on what moved: kept to what changed.
+// Dragging: cards drag from anywhere, and the work a drag frame does is kept to what changed.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { catalog, doc, edge, node, specs } from "./flows-editor-fixtures.ts";
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { catalog, doc, edge, node, specs } from "./helpers/flows.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -101,10 +101,12 @@ test("card selectors look up their own wires: one index build per edge set", () 
   assert.deepEqual(wiresInto(g, "prompt"), []);
 });
 
-test("a flow card re-measures its content floor only when its content or width changes", () => {
-  const src = readSrc("features/flows/editor/flow-node.tsx");
-  assert.match(
-    src,
-    /useLayoutEffect\(\(\) => \{[\s\S]*?cardContentMinHeight\(card\)[\s\S]*?\}, \[node, spec, category, runtime, lowDetail, resizing, width, contentMin\]\);/,
-  );
+test("a card has no drag handle, so pressing its body drags it", () => {
+  useDocStore.getState().load(doc([node("a", "input.text")], []));
+  const card = new RfDeriver()
+    .nodes(useDocStore.getState().graph, new Set(), null)
+    .find((n) => n.id === "a");
+  assert.ok(card);
+  assert.equal(card.type, "flowNode");
+  assert.equal(card.dragHandle, undefined);
 });

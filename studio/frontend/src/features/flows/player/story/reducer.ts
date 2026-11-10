@@ -126,6 +126,21 @@ export function atSceneStart(m: StoryManifest, s: StoryState): boolean {
   return !scene || s.line <= restAt(visibleLines(scene, s.vars), 0);
 }
 
+/** Lines written for the scene being read past its start would jump the reader; they wait for the next visit. */
+export function linesWaitForNextVisit(
+  m: StoryManifest,
+  s: StoryState,
+  rev: number,
+  sceneId: string,
+): boolean {
+  return (
+    s.rev === rev &&
+    s.sceneId === sceneId &&
+    s.status === "reading" &&
+    !atSceneStart(m, s)
+  );
+}
+
 export function visibleChoices(
   scene: StoryScene,
   vars: Record<string, unknown>,
@@ -437,8 +452,8 @@ export function reduce(
       if (a.rev !== s.rev) return s;
       const scene = sceneOf(m, s, a.sceneId);
       if (!scene || a.lines.length === 0) return s;
+      if (linesWaitForNextVisit(m, s, a.rev, a.sceneId)) return s;
       const here = s.sceneId === a.sceneId && s.status === "reading";
-      if (here && !atSceneStart(m, s)) return s;
       const replaced: StoryScene = {
         ...scene,
         lines: a.lines,

@@ -13,6 +13,7 @@ import { useUiStore } from "../stores/ui-store";
 import type { RfEdge } from "./derive-rf";
 import { portInk } from "./theme-colors";
 import { WireDelete, WireHalo, useWireHover, wireStroke } from "./wire-delete";
+import { wireDeleteShown } from "./wire-live";
 import { BusEdge } from "./wire-routing";
 
 function CurvedEdgeImpl({
@@ -60,7 +61,7 @@ function CurvedEdgeImpl({
         id={id}
         x={labelX}
         y={labelY}
-        show={deletable !== false && (hover || !!selected)}
+        show={wireDeleteShown(deletable, hover, selected)}
         onEnter={enter}
         onLeave={leave}
       />

@@ -84,3 +84,12 @@ export function stretchToHandles(
   out[n - 1] = { x: targetX, y: targetY };
   return out;
 }
+
+/** A wire's × shows on hover or selection, never on a wire that cannot be removed (a read-only canvas). */
+export function wireDeleteShown(
+  deletable: boolean | undefined,
+  hover: boolean,
+  selected: boolean | undefined,
+): boolean {
+  return deletable !== false && (hover || !!selected);
+}

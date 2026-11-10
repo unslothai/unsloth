@@ -4,29 +4,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { specs } from "./flows-editor-fixtures.ts";
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { readFlowsSrc, specs } from "./helpers/flows.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const s = await import("../src/features/flows/editor/llm-settings.ts");
-const { defaultParams } = await import(
-  "../src/features/flows/stores/catalog-store.ts"
-);
+const { defaultParams } = await import("../src/features/flows/stores/catalog-store.ts");
 
 const GENERATE = specs["llm.generate"];
 const VISION = specs["llm.vision"];
 const SAVED = {
-  temperature: 0.3,
-  topP: 0.7,
-  topK: 40,
-  minP: 0.05,
-  minPMode: "custom" as const,
-  repetitionPenalty: 1.1,
-  presencePenalty: 0.5,
-  maxTokens: 2048,
-  systemPrompt: "Be brief.",
+  temperature: 0.3, topP: 0.7, topK: 40, minP: 0.05, minPMode: "custom" as const,
+  repetitionPenalty: 1.1, presencePenalty: 0.5, maxTokens: 2048, systemPrompt: "Be brief.",
 };
+/** What Chat reports as loaded: Qwen3-4B-GGUF at an 8k context unless overridden. */
+const loadedModel = (over: Record<string, unknown> = {}) => ({
+  checkpoint: "unsloth/Qwen3-4B-GGUF",
+  contextLength: 8192,
+  kvCacheDtype: null,
+  nParallel: null,
+  speculativeType: null,
+  ...over,
+});
 
 test("on, the saved settings win over the card's own values", () => {
   const card = { temperature: 1.5, system: "card", use_model_settings: true };
@@ -51,18 +51,12 @@ test("on with nothing saved, or only some keys, the card fills the gaps", () => 
 });
 
 test("server Min P, a Max output cap and out-of-range values follow the engine's rules", () => {
-  const out = s.savedAsParams(
-    { minP: 0.3, minPMode: "server-default", maxTokens: 2 ** 31 - 1 },
-    GENERATE,
-  );
+  const out = s.savedAsParams({ minP: 0.3, minPMode: "server-default", maxTokens: 2 ** 31 - 1 }, GENERATE);
   assert.equal(out.min_p, null);
   assert.equal(out.max_tokens, 32768);
   assert.equal(s.savedAsParams({ maxTokens: 2 ** 31 - 1 }, VISION).max_tokens, 8192);
-  const shown = s.effectiveParams(
-    { min_p: 0.3, use_model_settings: true },
-    { minPMode: "server-default" },
-    GENERATE,
-  );
+  const card = { min_p: 0.3, use_model_settings: true };
+  const shown = s.effectiveParams(card, { minPMode: "server-default" }, GENERATE);
   assert.equal(shown.min_p, null);
   assert.equal(s.savedAsParams({ maxTokens: 20000 }, VISION).max_tokens, 8192);
 });
@@ -84,9 +78,7 @@ test("turning the toggle off keeps the values on screen; on drops nothing", () =
   const off = s.togglePatch({}, SAVED, GENERATE, false);
   assert.equal(off.use_model_settings, false);
   assert.equal(off.temperature, 0.3);
-  assert.deepEqual(s.togglePatch({}, SAVED, GENERATE, true), {
-    use_model_settings: true,
-  });
+  assert.deepEqual(s.togglePatch({}, SAVED, GENERATE, true), { use_model_settings: true });
 });
 
 test("Load copies the saved values; Save writes only what the card sets", () => {
@@ -111,10 +103,7 @@ test("the memory key is the card's model, else the loaded one, matched case-inse
 test("new cards start on; a flow saved before the setting stays off and keeps its values", () => {
   assert.equal(defaultParams(GENERATE).use_model_settings, true);
   assert.equal(defaultParams(VISION).use_model_settings, true);
-  assert.equal(
-    s.newCardParams("text.template", { template: "" }).use_model_settings,
-    undefined,
-  );
+  assert.equal(s.newCardParams("text.template", { template: "" }).use_model_settings, undefined);
   // An old llm.generate node: the engine's param names, no toggle, no sampling keys.
   const old = { system: "You extract.", temperature: 0.2, max_tokens: 300 };
   assert.equal(s.isOn(old), false);
@@ -129,25 +118,10 @@ test("new cards start on; a flow saved before the setting stays off and keeps it
 test("the inspector hides panel params from the generic rows, stably", () => {
   const trimmed = s.withoutPanelParams(GENERATE);
   assert.equal(trimmed, s.withoutPanelParams(GENERATE));
-  assert.deepEqual(
-    trimmed.params.map((p) => p.id),
-    ["model", "prompt"],
-  );
-  assert.deepEqual(
-    s.withoutPanelParams(VISION).params.map((p) => p.id),
-    ["model", "question"],
-  );
+  assert.deepEqual(trimmed.params.map((p) => p.id), ["model", "prompt"]);
+  assert.deepEqual(s.withoutPanelParams(VISION).params.map((p) => p.id), ["model", "question"]);
   const template = specs["text.template"];
   assert.equal(s.withoutPanelParams(template), template);
-});
-
-test("the panel reuses Chat's controls and none of its chat-only sections", () => {
-  const src = readSrc("features/flows/editor/llm-settings-panel.tsx");
-  assert.match(src, /ParamSlider/);
-  assert.match(src, /setRememberedParamsForModel/);
-  assert.match(src, /paramsByModel/);
-  for (const chatOnly of ["Tools", "Retrieval", "Preset", "Prompt variables"])
-    assert.doesNotMatch(src, new RegExp(`label="${chatOnly}"`));
 });
 
 test("a card with no model keys its settings on the resident model, not Chat's picker", () => {
@@ -159,15 +133,9 @@ test("a card with no model keys its settings on the resident model, not Chat's p
 const SAVED_LOAD = { max_seq_length: 65536, kv_cache_dtype: "q8_0" };
 
 test("load settings follow the same precedence: saved over the card's own when on", () => {
-  const card = {
-    use_model_settings: true,
-    load: { max_seq_length: 8192, n_parallel: 2 },
-  };
-  assert.deepEqual(s.effectiveParams(card, undefined, GENERATE, SAVED_LOAD).load, {
-    max_seq_length: 65536,
-    n_parallel: 2,
-    kv_cache_dtype: "q8_0",
-  });
+  const card = { use_model_settings: true, load: { max_seq_length: 8192, n_parallel: 2 } };
+  const merged = { max_seq_length: 65536, n_parallel: 2, kv_cache_dtype: "q8_0" };
+  assert.deepEqual(s.effectiveParams(card, undefined, GENERATE, SAVED_LOAD).load, merged);
   const off = { ...card, use_model_settings: false };
   assert.deepEqual(s.effectiveParams(off, undefined, GENERATE, SAVED_LOAD).load, off.load);
   // Editing one load field while on forks the whole shown load onto the card.
@@ -175,30 +143,20 @@ test("load settings follow the same precedence: saved over the card's own when o
   assert.equal(patch.use_model_settings, false);
   assert.deepEqual(patch.load, { max_seq_length: 4096 });
   assert.deepEqual(s.loadPatch(undefined, GENERATE, SAVED_LOAD).load, SAVED_LOAD);
-  assert.deepEqual(s.togglePatch(card, undefined, GENERATE, false, SAVED_LOAD).load, {
-    max_seq_length: 65536,
-    n_parallel: 2,
-    kv_cache_dtype: "q8_0",
-  });
+  assert.deepEqual(s.togglePatch(card, undefined, GENERATE, false, SAVED_LOAD).load, merged);
 });
 
 test("a blank load field goes back to the model's default", () => {
-  assert.deepEqual(s.withLoadField({ n_parallel: 2 }, "max_seq_length", 4096), {
-    n_parallel: 2,
-    max_seq_length: 4096,
-  });
+  assert.deepEqual(
+    s.withLoadField({ n_parallel: 2 }, "max_seq_length", 4096),
+    { n_parallel: 2, max_seq_length: 4096 },
+  );
   assert.equal(s.withLoadField({ n_parallel: 2 }, "n_parallel", undefined), null);
   assert.deepEqual(s.withLoadField({ a: 1, b: "x" }, "b", ""), { a: 1 });
 });
 
 test("the reload hint names what differs from what is loaded, and stays quiet otherwise", () => {
-  const loaded = {
-    checkpoint: "unsloth/Qwen3-4B-GGUF",
-    contextLength: 8192,
-    kvCacheDtype: null,
-    nParallel: 4,
-    speculativeType: "auto",
-  };
+  const loaded = loadedModel({ nParallel: 4, speculativeType: "auto" });
   assert.equal(
     s.reloadHint({ load: { max_seq_length: 32768 } }, loaded),
     "Reloads the model: context 32k vs 8k loaded",
@@ -213,10 +171,7 @@ test("the reload hint names what differs from what is loaded, and stays quiet ot
   );
   assert.equal(s.reloadHint({ load: { max_seq_length: 8192 } }, loaded), null);
   assert.equal(s.reloadHint({}, loaded), null);
-  assert.equal(
-    s.reloadHint({ model: { repo: "UNSLOTH/qwen3-4b-gguf", variant: null } }, loaded),
-    null,
-  );
+  assert.equal(s.reloadHint({ model: { repo: "UNSLOTH/qwen3-4b-gguf", variant: null } }, loaded), null);
 });
 
 test("load settings, thinking and effort are panel params on both LLM nodes", () => {
@@ -229,50 +184,11 @@ test("load settings, thinking and effort are panel params on both LLM nodes", ()
   assert.deepEqual(effort?.options, ["low", "medium", "high", "max"]);
 });
 
-test("the load section rebuilds Chat's load controls with Chat's constants", () => {
-  const src = readSrc("features/flows/editor/llm-load-settings.tsx");
-  for (const label of [
-    "Context Length",
-    "GPU Memory",
-    "GPU Layers",
-    "MoE Layers on CPU",
-    "Load in 4-bit",
-    "KV Cache Dtype",
-    "Mmap/Mlock",
-    "Vision",
-    "Speculative Decoding",
-    "Draft Tokens",
-    "Parallel Slots",
-    "Batch Size",
-    "Micro-batch Size",
-    "Tensor Parallelism",
-    "Reasoning Budget",
-    "Reasoning Budget Message",
-    "Chat Template",
-    "Checkpoints",
-    "Cache RAM",
-    "Extra Arguments",
-  ])
-    assert.match(src, new RegExp(`label="${label}"|>${label}<`), label);
-  assert.match(src, /KV_CACHE_DTYPES/);
-  assert.match(src, /SPECULATIVE_TYPES/);
-});
-
 test("the card's hint uses the saved load when the card follows it", () => {
-  const loaded = {
-    checkpoint: "unsloth/Qwen3-4B-GGUF",
-    contextLength: 8192,
-    kvCacheDtype: null,
-    nParallel: null,
-    speculativeType: null,
-  };
   const card = { use_model_settings: true, load: null };
   const load = s.effectiveLoad(card, { max_seq_length: 32768 });
   assert.deepEqual(load, { max_seq_length: 32768 });
-  assert.equal(
-    s.reloadHint({ ...card, load }, loaded),
-    "Reloads the model: context 32k vs 8k loaded",
-  );
+  assert.equal(s.reloadHint({ ...card, load }, loadedModel()), "Reloads the model: context 32k vs 8k loaded");
   assert.equal(s.effectiveLoad({ ...card, use_model_settings: false }, { max_seq_length: 32768 }), null);
 });
 
@@ -287,14 +203,7 @@ test("Context Length writes Chat's context pin and drops a stale max_seq_length"
 });
 
 test("the reload hint names a different GGUF quant of the loaded repo", () => {
-  const loaded = {
-    checkpoint: "unsloth/Qwen3-4B-GGUF",
-    ggufVariant: "UD-Q4_K_XL",
-    contextLength: 8192,
-    kvCacheDtype: null,
-    nParallel: 4,
-    speculativeType: null,
-  };
+  const loaded = loadedModel({ ggufVariant: "UD-Q4_K_XL", nParallel: 4 });
   const card = (variant: string | null) => ({ model: { repo: "unsloth/Qwen3-4B-GGUF", variant } });
   assert.equal(s.reloadHint(card("Q8_0"), loaded), "Reloads the model: Q8_0 vs UD-Q4_K_XL loaded");
   assert.equal(s.reloadHint(card("ud-q4_k_xl"), loaded), null);
@@ -307,47 +216,36 @@ test("Load model defaults with no saved load clears the card's own load settings
 });
 
 test("a card switched to another model never shows the last model's saved load", () => {
-  const src = readSrc("features/flows/editor/llm-settings-panel.tsx");
-  const hook = src.slice(src.indexOf("function useSavedLoad"), src.indexOf("function useLoadedModel"));
-  assert.match(hook, /setSaved\(\{ at, load:/);
-  assert.match(hook, /return saved\?\.at === at \? saved\.load : null;/);
+  const forA = s.savedLoadTag("unsloth/A", null);
+  const read = { at: forA, load: { max_seq_length: 4096 } };
+  assert.deepEqual(s.savedLoadFor(read, forA), { max_seq_length: 4096 });
+  assert.equal(s.savedLoadFor(read, s.savedLoadTag("unsloth/B", null)), null);
+  assert.equal(s.savedLoadFor(read, s.savedLoadTag("unsloth/A", "Q8_0")), null, "another quant is another read");
+  assert.equal(s.savedLoadFor(null, forA), null);
 });
 
-test("the reload hint's resident model is read from the server when a flow opens and after each run", () => {
-  const sync = readSrc("features/flows/editor/resident-sync.ts");
+test("the reload hint's resident model is read through a lazy import of Chat's runtime", () => {
+  // Lazy-import boundary: keeps Chat's runtime hooks out of the Flows startup chunk.
+  const sync = readFlowsSrc("editor/resident-sync.ts");
   assert.match(sync, /import\("@\/features\/chat\/hooks\/use-chat-model-runtime"\)/);
   assert.match(sync, /syncInferenceStatusToStore\(\{ includeLoras: false, quiet: true \}\)/);
-  const page = readSrc("features/flows/editor/flows-editor-page.tsx");
-  assert.match(page, /syncResidentModel\(\);\s*return subscribeResidentStatusRefresh\(syncResidentModel\);/);
-  const runs = readSrc("features/flows/editor/run-controller.ts");
-  assert.match(runs, /if \(controller\.signal\.aborted\) return;\s*\/\/[^\n]*\n\s*syncResidentModel\(\);/);
 });
 
-test("Reasoning Effort hides when a JSON schema is set: JSON output runs with thinking off", async () => {
-  const { readFileSync } = await import("node:fs");
-  const panel = readFileSync(
-    new URL("../src/features/flows/editor/llm-settings-panel.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    panel,
-    /has\("reasoning_effort"\) &&\s+node\.params\.thinking === true &&\s+!node\.params\.json_schema/,
-  );
-});
+for (const [name, params, thinking, effort] of [
+  ["thinking on, no schema", { thinking: true }, { checked: true, disabled: false }, true],
+  ["thinking on under a JSON schema", { thinking: true, json_schema: "{}" }, { checked: false, disabled: true }, false],
+  ["thinking off", { thinking: false }, { checked: false, disabled: false }, false],
+  ["thinking unset under a schema", { json_schema: "{}" }, { checked: false, disabled: true }, false],
+] as const) {
+  test(`Thinking switch and Reasoning Effort under a JSON schema: ${name}`, () => {
+    assert.deepEqual(s.thinkingSwitch(params), thinking);
+    assert.equal(s.showsReasoningEffort(params), effort);
+  });
+}
 
 test("extra llama-server arguments commit as they are typed, so a keyboard run sends them", () => {
-  const src = readSrc("features/flows/editor/llm-load-settings.tsx");
-  const field = src.slice(src.indexOf("function ExtraArgsField"), src.indexOf("export function LlmLoadSettings"));
-  assert.match(field, /onChange=\{\(e\) => edit\(e\.target\.value\)\}/);
-  assert.match(field, /if \(!found\.unterminatedQuote\)\s*onChange\(/);
-  assert.doesNotMatch(field, /onBlur/);
-});
-
-test("Thinking reads off and is disabled under a JSON schema", async () => {
-  const { readFileSync } = await import("node:fs");
-  const panel = readFileSync(
-    new URL("../src/features/flows/editor/llm-settings-panel.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(panel, /checked=\{node\.params\.thinking === true && !node\.params\.json_schema\}\s+disabled=\{!!node\.params\.json_schema\}/);
+  assert.deepEqual(s.extraArgsEdit("--flag value"), { commit: true, value: ["--flag", "value"] });
+  assert.deepEqual(s.extraArgsEdit("--flag"), { commit: true, value: ["--flag"] }, "a partial word still commits");
+  assert.deepEqual(s.extraArgsEdit("   "), { commit: true, value: undefined }, "clearing the box clears the card");
+  assert.deepEqual(s.extraArgsEdit('--x "open'), { commit: false }, "an open quote waits");
 });

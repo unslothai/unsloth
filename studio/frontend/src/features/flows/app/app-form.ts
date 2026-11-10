@@ -249,3 +249,12 @@ export function foldAppEvents(
   }
   return next;
 }
+
+/** What a text or JSON field shows: an empty value is an empty box, never the text `""` or `null`. */
+export function textFieldValue(value: unknown): string {
+  return typeof value === "string"
+    ? value
+    : value == null
+      ? ""
+      : JSON.stringify(value);
+}

@@ -46,6 +46,26 @@ function getWorker(): Worker {
 let remembered: ReadonlyMap<string, { width: number; height: number }> =
   new Map();
 
+/** A fitted card size kept inside its frame. The frame only limits growth: a card already sticking out keeps the size it has. */
+export function clampFitToFrame(
+  fit: [number, number],
+  size: { width: number; height: number },
+  pos: [number, number],
+  frame: [number, number, number, number],
+  pad = 12,
+): [number, number] {
+  return [
+    Math.max(
+      Math.min(fit[0], frame[0] + frame[2] - pos[0] - pad),
+      Math.min(fit[0], size.width),
+    ),
+    Math.max(
+      Math.min(fit[1], frame[1] + frame[3] - pos[1] - pad),
+      Math.min(fit[1], size.height),
+    ),
+  ];
+}
+
 export function rememberSizes(
   sizes: ReadonlyMap<string, { width: number; height: number }>,
 ): void {
@@ -123,18 +143,7 @@ function fitCards(
     if (!fit) continue;
     const frame = node.group ? graph.groups[node.group]?.rect : undefined;
     if (frame) {
-      const pad = 12;
-      // The frame only limits growth: a card already sticking out keeps the size it has.
-      fit = [
-        Math.max(
-          Math.min(fit[0], frame[0] + frame[2] - node.pos[0] - pad),
-          Math.min(fit[0], size.width),
-        ),
-        Math.max(
-          Math.min(fit[1], frame[1] + frame[3] - node.pos[1] - pad),
-          Math.min(fit[1], size.height),
-        ),
-      ];
+      fit = clampFitToFrame(fit, size, node.pos, frame);
       if (fit[0] < size.width && fit[1] < size.height && !node.size) continue;
     }
     out[id] = fit;

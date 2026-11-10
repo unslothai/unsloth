@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Model params use Studio's model picker and keep the saved {repo, variant} shape.
+// Model params keep the saved {repo, variant} shape; saved load settings notify their readers.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { registerStoreStubResolver } from "./helpers/kit.ts";
+import { loadWithStubs, stubEveryImport, stubJsxRuntime } from "./helpers/module-stubs.ts";
 import { choiceFromPick, modelChoiceOf } from "../src/features/flows/editor/model-choice.ts";
+
+registerStoreStubResolver();
+
+const overrides = await import("../src/features/model-picker/api/model-overrides.ts");
 
 test("values saved before the picker still load", () => {
   assert.equal(modelChoiceOf(null), null);
@@ -29,45 +34,45 @@ test("a pick stores the repo plus the GGUF variant when the picker returns one",
   assert.deepEqual(choiceFromPick("unsloth/Qwen3-4B", {}), { repo: "unsloth/Qwen3-4B", variant: null });
 });
 
-test("the model field renders Studio's ModelSelector, keeps the loaded-model checkbox, and has no datalist", () => {
-  const fields = readSrc("features/flows/editor/param-fields.tsx");
-  const field = fields.slice(fields.indexOf("function ModelField"), fields.indexOf("export const DOCUMENT_ACCEPT"));
-  assert.match(field, /Use the loaded \{spec\.model_kind \?\? ""\} model/);
-  assert.match(field, /<FlowModelPicker/);
-  assert.doesNotMatch(field, /datalist|Hugging Face repo/);
-  const picker = readSrc("features/flows/editor/model-picker-field.tsx");
-  assert.match(picker, /import \{ type ModelOption, ModelSelector \} from "@\/features\/model-picker";/);
-  // `loaded` only marks residency; a pick just stores the choice.
-  assert.match(picker, /loaded=\{resident\}/);
-  assert.match(picker, /onValueChange=\{\(id, meta\) => onChange\(choiceFromPick\(id, meta\)\)\}/, "a pick never loads a model");
+test("every saved-settings write tells its listeners once it settles", async () => {
+  let heard = 0;
+  const off = overrides.onModelOverrideWrite(() => heard++);
+  // The test stub's authFetch rejects: a failed write still re-reads, it may have landed.
+  await overrides.putModelOverride("org/model", null, null).catch(() => {});
+  assert.equal(heard, 1);
+  off();
+  await overrides.putModelOverride("org/model", null, null).catch(() => {});
+  assert.equal(heard, 1);
 });
 
-test("a select param the doc never stored shows its default, not an empty box", () => {
-  const fields = readSrc("features/flows/editor/param-fields.tsx");
-  const select = fields.slice(fields.indexOf('case "select":'), fields.indexOf('case "seed":'));
-  assert.match(select, /spec\.default \?\? spec\.options\?\.\[0\]/);
-});
+// Param fields a doc never stored show the default the run will use, not an empty box.
 
-test("a loaded model the picker's rowFilter rejects is not pinned at the top of Recommended", () => {
-  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
-  const loaded = pickers.slice(pickers.indexOf("const loadedRows = useMemo"), pickers.indexOf("const loadedRowIds"));
-  assert.match(loaded, /!rowFilter \|\| rowFilter\(\{ id: m\.id \}\)/);
-  assert.match(loaded, /\[isChatPicker, section, debouncedQuery, loadedModels, rowFilter\]/);
-});
+const { ParamField } = loadWithStubs<{
+  ParamField: (p: { spec: Record<string, unknown>; value: unknown; onChange: (v: unknown) => void }) => {
+    props: Record<string, unknown>;
+  };
+}>(
+  new URL("../src/features/flows/editor/param-fields.tsx", import.meta.url),
+  stubEveryImport({
+    react: { __esModule: true, memo: (f: unknown) => f },
+    "react/jsx-runtime": stubJsxRuntime(),
+  }),
+);
+const field = (spec: Record<string, unknown>, value: unknown) =>
+  ParamField({ spec: { id: "p", label: "P", ...spec }, value, onChange: () => undefined }).props;
 
-test("a Flows model field's closed trigger reads like Chat's: ghost, name with format and quant, check when resident", () => {
-  const picker = readSrc("features/flows/editor/model-picker-field.tsx");
-  assert.match(picker, /variant="ghost"/);
-  assert.doesNotMatch(picker, /variant="outline"/);
-  assert.match(picker, /loaded=\{resident\}\s*loadedMark="check"/);
-  assert.match(picker, /activeGgufVariant=\{choice\.variant \?\? null\}/);
-  const selector = readSrc("features/model-picker/components/model-selector.tsx");
-  assert.match(selector, /loadedMark === "check" \? \(\s*<HugeiconsIcon\s*icon=\{CheckmarkCircle02Icon\}/);
-  // Every other picker keeps the dot unless it asks.
-  assert.match(selector, /loadedMark = "dot",/);
-});
-
-test("the closed picker's name shrinks at field size, so a long name truncates inside the inspector", () => {
-  const field = readSrc("features/flows/editor/model-picker-field.tsx");
-  assert.match(field, /triggerLabelClassName="shrink text-ui-13"/);
-});
+const defaults: [string, Record<string, unknown>, unknown, string, unknown][] = [
+  ["an unset number shows its default", { kind: "number", default: 0.7 }, undefined, "value", "0.7"],
+  ["a null int shows its default", { kind: "int", default: 512 }, null, "value", "512"],
+  ["a stored number wins over the default", { kind: "number", default: 0.7 }, 0.2, "value", "0.2"],
+  ["a number with a null default stays empty", { kind: "number", default: null }, undefined, "value", ""],
+  ["an unset toggle shows its default", { kind: "bool", default: true }, undefined, "checked", true],
+  ["a stored false toggle stays off", { kind: "bool", default: true }, false, "checked", false],
+  ["an unset select shows its default", { kind: "select", default: "b", options: ["a", "b"] }, undefined, "value", "b"],
+  ["an empty select with no default shows the first option", { kind: "select", default: null, options: ["a", "b"] }, "", "value", "a"],
+];
+for (const [name, spec, value, prop, shown] of defaults) {
+  test(`param field: ${name}`, () => {
+    assert.equal(field(spec, value)[prop], shown);
+  });
+}

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Dragging a card re-routes its own wires live, once per frame; a note moves no wire.
+// Dragging a card re-routes its own wires live; a note moves no wire.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
@@ -14,8 +13,6 @@ const { wiresToReroute, stretchToHandles, wireMidpoint } = await import(
   "../src/features/flows/editor/wire-live.ts"
 );
 
-const src = (path: string) =>
-  readFileSync(new URL(`../src/features/flows/editor/${path}`, import.meta.url), "utf8");
 const e = (id: string, source: string, target: string, sh = "out:text", th = "in:value") =>
   ({ id, source, target, sourceHandle: sh, targetHandle: th }) as never;
 
@@ -34,17 +31,6 @@ test("a dragged card re-routes its own wires and the ones sharing their lane, ne
   assert.deepEqual(ids(["group:g1"]), [], "a frame on its own moves no wire");
 });
 
-test("the controller sends partial requests at most once per frame and a full pass on release", () => {
-  const routing = src("wire-routing.tsx");
-  const schedule = src("wire-schedule.ts");
-  assert.match(schedule, /moving\)\.length\)\s*return;/);
-  assert.match(schedule, /partial: true,[\s\S]*\}, true\);/);
-  assert.match(routing, /requestAnimationFrame\(run\)/);
-  assert.match(routing, /const next = partial\s*\? new Map<string, WireRoute>\(previous\)/);
-  assert.match(src("canvas.tsx"), /<WireRouterController[^>]*moving=\{moving\}/);
-  assert.match(routing, /show=\{deletable !== false && \(hover \|\| !!selected\)\}/);
-});
-
 test("a route a frame behind its card follows the handles instead of jumping to a curve", () => {
   const route = [{ x: 260, y: 60 }, { x: 300, y: 60 }, { x: 300, y: 200 }, { x: 500, y: 200 }];
   assert.deepEqual(stretchToHandles(route, 262, 70, 500, 205), [
@@ -58,9 +44,4 @@ test("each wire of a fan-in has its own × point before the shared leg", () => {
   const two = wireMidpoint([{ x: 0, y: 200 }, { x: 200, y: 200 }, { x: 200, y: 100 }, { x: 240, y: 100 }]);
   assert.notDeepEqual(one, two);
   assert.ok(one.x < 200 && two.x <= 200);
-});
-
-test("a reroute's wire segments have no draggable end; they move with the reroute", () => {
-  assert.match(src("derive-rf.ts"), /reconnectable: false,\s*data: \{\s*kind: "data",\s*portType: info\.portType,\s*ends: info\.ends,/);
-  assert.match(src("use-wire-reconnect.ts"), /isWireSegment\(before\.graph, old\.id\)/);
 });

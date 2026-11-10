@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { catalog, edge, specs } from "./flows-editor-fixtures.ts";
+import { catalog, edge, specs } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -44,44 +44,23 @@ test("matching types connect; mismatched ones are refused", () => {
   assert.match(bad.reason ?? "", /number cannot connect to text/);
 });
 
-test("`any` accepts everything and list items must agree", () => {
-  assert.equal(
-    checkConnection(
-      "a",
-      specs["image.generate"],
-      outHandle("image"),
-      "b",
-      specs["output.preview"],
-      inHandle("value"),
-    ).ok,
-    true,
-  );
-  assert.equal(
-    checkConnection(
-      "a",
-      specs["image.generate"],
-      outHandle("images"),
-      "b",
-      specs["image.grid"],
-      inHandle("images"),
-    ).ok,
-    true,
-  );
-  assert.equal(
-    checkConnection(
-      "a",
-      specs["input.list"],
-      outHandle("items"),
-      "b",
-      specs["image.grid"],
-      inHandle("images"),
-    ).ok,
-    false,
-    "a list of text is not a list of images",
-  );
-});
+// [why, source id, source type, source handle, target id, target type, target handle, ok]
+const cases: [string, string, string, string, string, string, string, boolean][] = [
+  ["`any` accepts an image", "a", "image.generate", outHandle("image"), "b", "output.preview", inHandle("value"), true],
+  ["a list of images feeds a list of images", "a", "image.generate", outHandle("images"), "b", "image.grid", inHandle("images"), true],
+  ["a list of text is not a list of images", "a", "input.list", outHandle("items"), "b", "image.grid", inHandle("images"), false],
+  ["a story path joins a story input", "s", "story.scene", flowOutHandle("next"), "c", "story.choice", FLOW_IN_HANDLE, true],
+  ["a story path does not join a data input", "s", "story.scene", flowOutHandle("next"), "c", "llm.generate", inHandle("prompt"), false],
+  ["Story has no incoming path", "s", "story.start", flowOutHandle("next"), "c", "story.start", FLOW_IN_HANDLE, false],
+  ["an input does not connect to an input", "a", "llm.generate", inHandle("prompt"), "b", "llm.generate", inHandle("prompt"), false],
+  ["a node cannot feed itself", "a", "llm.generate", outHandle("text"), "a", "llm.generate", inHandle("prompt"), false],
+];
+for (const [why, sid, stype, sh, tid, ttype, th, ok] of cases)
+  test(`connection: ${why}`, () => {
+    assert.equal(checkConnection(sid, specs[stype], sh, tid, specs[ttype], th).ok, ok);
+  });
 
-test("story paths only join story handles", () => {
+test("a story path connects as a flow edge into the flow port", () => {
   const ok = checkConnection(
     "s",
     specs["story.scene"],
@@ -90,57 +69,8 @@ test("story paths only join story handles", () => {
     specs["story.choice"],
     FLOW_IN_HANDLE,
   );
-  assert.equal(ok.ok, true);
   assert.equal(ok.kind, "flow");
   assert.equal(ok.targetPort, "flow");
-  assert.equal(
-    checkConnection(
-      "s",
-      specs["story.scene"],
-      flowOutHandle("next"),
-      "c",
-      specs["llm.generate"],
-      inHandle("prompt"),
-    ).ok,
-    false,
-  );
-  assert.equal(
-    checkConnection(
-      "s",
-      specs["story.start"],
-      flowOutHandle("next"),
-      "c",
-      specs["story.start"],
-      FLOW_IN_HANDLE,
-    ).ok,
-    false,
-    "Story has no incoming path",
-  );
-});
-
-test("inputs connect to outputs only, and a node cannot feed itself", () => {
-  assert.equal(
-    checkConnection(
-      "a",
-      specs["llm.generate"],
-      inHandle("prompt"),
-      "b",
-      specs["llm.generate"],
-      inHandle("prompt"),
-    ).ok,
-    false,
-  );
-  assert.equal(
-    checkConnection(
-      "a",
-      specs["llm.generate"],
-      outHandle("text"),
-      "a",
-      specs["llm.generate"],
-      inHandle("prompt"),
-    ).ok,
-    false,
-  );
 });
 
 test("data cycles are detected; story loops are allowed", () => {
@@ -194,20 +124,17 @@ test("a For Each body can feed its result back to collect", () => {
   assert.equal(wouldCreateCycle(edges.slice(0, 1), "t", "fe", "items"), true);
 });
 
-test("the editor accepts the same coercions as the compiler", () => {
-  const list = { id: "items", type: "list", item: "text" } as never;
-  const json = { id: "value", type: "json" } as never;
-  const text = { id: "text", type: "text" } as never;
-  const anyList = { id: "values", type: "list" } as never;
-  const image = { id: "image", type: "image" } as never;
-  assert.equal(typesCompatible(list, json), true);
-  assert.equal(typesCompatible(text, anyList), true);
-  assert.equal(typesCompatible(text, list), true);
-  assert.equal(typesCompatible(image, list), false);
-  assert.equal(typesCompatible(image, json), false);
-  const mask = { id: "mask", type: "mask" } as never;
-  const audio = { id: "audio", type: "audio" } as never;
-  assert.equal(typesCompatible(mask, image), true);
-  assert.equal(typesCompatible(image, mask), true);
-  assert.equal(typesCompatible(mask, audio), false);
-});
+const port = (type: string, item?: string) => ({ id: "p", type, ...(item ? { item } : {}) }) as never;
+for (const [from, to, ok] of [
+  [port("list", "text"), port("json"), true],
+  [port("text"), port("list"), true],
+  [port("text"), port("list", "text"), true],
+  [port("image"), port("list", "text"), false],
+  [port("image"), port("json"), false],
+  [port("mask"), port("image"), true],
+  [port("image"), port("mask"), true],
+  [port("mask"), port("audio"), false],
+] as const)
+  test(`the editor accepts the compiler's coercions: ${JSON.stringify(from)} -> ${JSON.stringify(to)} is ${ok}`, () => {
+    assert.equal(typesCompatible(from, to), ok);
+  });

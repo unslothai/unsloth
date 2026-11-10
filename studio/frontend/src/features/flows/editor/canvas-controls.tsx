@@ -18,7 +18,7 @@ import {
   MinusSignIcon,
   PlusSignIcon,
 } from "./icon-data";
-import { isTyping } from "./history-keys";
+import { turnsArmedReroute } from "./history-keys";
 import { addNodeConnected } from "./node-factory";
 import {
   PLACE_GROUP,
@@ -199,13 +199,8 @@ function ArmedPlacement() {
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") stopPlacement();
-      else if (
-        // Typing an R in a field turns nothing.
-        !isTyping(e.target) &&
-        armed === REROUTE_TYPE &&
-        (e.key === "r" || e.key === "R") &&
-        !(e.metaKey || e.ctrlKey || e.altKey)
-      ) {
+      // Typing an R in a field turns nothing.
+      else if (turnsArmedReroute(e, armed === REROUTE_TYPE)) {
         e.preventDefault();
         // Turns from what the ghost shows now, which on a wire is the wire's direction.
         const shown = pointerRef.current?.dir ?? usePlacement.getState().rerouteDir;

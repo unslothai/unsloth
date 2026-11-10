@@ -4,11 +4,16 @@
 // Notes are not wire obstacles: moving or resizing one never reroutes a wire.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { isWireObstacle, routingVersion } from "../src/features/flows/editor/wire-obstacles.ts";
-import { routeWires } from "../src/features/flows/editor/wire-router.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const { isWireObstacle, routingVersion } = await import("../src/features/flows/editor/wire-obstacles.ts");
+const { routeWires } = await import("../src/features/flows/editor/wire-router.ts");
+const { buildRequest } = await import("../src/features/flows/editor/wire-schedule.ts");
+const { turnsArmedReroute } = await import("../src/features/flows/editor/history-keys.ts");
 
 const card = (id: string, x: number, y = 0) => ({
   id,
@@ -42,11 +47,19 @@ test("the router never sees a note, so a note on the straight path does not bend
   const straight = routeWires(rects, edges).routes.get("e");
   assert.ok(straight);
   assert.equal(new Set(straight.points.map((p) => Math.round(p.y))).size, 1, "a straight run between level ports");
-  const read = (file: string) => readFileSync(new URL(`../src/features/flows/editor/${file}`, import.meta.url), "utf8");
-  assert.match(read("wire-schedule.ts"), /node\.hidden \|\| !isWireObstacle\(node\.type\)/);
-  const src = read("wire-routing.tsx");
-  assert.match(src, /useStore\(\(s\) => versionOf\(s\.nodeLookup\.values\(\)\)\)/);
-  assert.match(src, /\[nodesVersion, edges, scope, store(, moving)?(, global)?\]/);
+  // The request the canvas sends the router leaves notes (and hidden cards) out.
+  const placed = (n: ReturnType<typeof card> | ReturnType<typeof note>, hidden = false) => ({
+    ...n,
+    hidden,
+    internals: { positionAbsolute: n.position },
+  });
+  const lookup = new Map(
+    [placed(card("a", 0)), placed(card("b", 700)), placed(note(300, 0)), placed(card("gone", 300), true)].map(
+      (n) => [n.id, n] as const,
+    ),
+  );
+  const request = buildRequest(lookup as never, []);
+  assert.deepEqual(request.rects.map((r) => r.id).sort(), ["a", "b"]);
 });
 
 test("turning a reroute around reroutes its wires though its box is unchanged", () => {
@@ -61,10 +74,27 @@ test("turning a reroute around reroutes its wires though its box is unchanged", 
   assert.notEqual(version([card("a", 0), rr("down")]), version([card("a", 0), rr("up")]));
 });
 
-test("an R typed in a field while the reroute tool is armed stays in the field", () => {
-  const src = readFileSync(
-    new URL("../src/features/flows/editor/canvas-controls.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(src, /!isTyping\(e\.target\) &&\s*armed === REROUTE_TYPE &&/);
+const field = { tagName: "INPUT" } as unknown as EventTarget;
+const canvas = { tagName: "DIV" } as unknown as EventTarget;
+const key = (k: string, target: EventTarget, mods: Partial<Record<"metaKey" | "ctrlKey" | "altKey", boolean>> = {}) => ({
+  key: k,
+  target,
+  metaKey: false,
+  ctrlKey: false,
+  altKey: false,
+  ...mods,
 });
+const turns: [string, ReturnType<typeof key>, boolean, boolean][] = [
+  ["R on the canvas, reroute tool armed", key("r", canvas), true, true],
+  ["Shift+R on the canvas, reroute tool armed", key("R", canvas), true, true],
+  ["R typed in a field, reroute tool armed", key("r", field), true, false],
+  ["R with no reroute tool armed", key("r", canvas), false, false],
+  ["Ctrl+R (reload), reroute tool armed", key("r", canvas, { ctrlKey: true }), true, false],
+  ["Cmd+R, reroute tool armed", key("r", canvas, { metaKey: true }), true, false],
+  ["another key, reroute tool armed", key("t", canvas), true, false],
+];
+for (const [name, event, armed, turned] of turns) {
+  test(`${name}: ${turned ? "turns the reroute" : "turns nothing"}`, () => {
+    assert.equal(turnsArmedReroute(event, armed), turned);
+  });
+}

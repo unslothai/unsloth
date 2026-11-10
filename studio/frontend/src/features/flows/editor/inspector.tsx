@@ -60,7 +60,7 @@ function InspectorHeading({ children }: { children: string }) {
   );
 }
 
-function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
+export function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
   const runtime = useRuntimeStore((s) => s.nodes[nodeId]) ?? IDLE_RUNTIME;
   const hasOutputs = runtime.outputs && Object.keys(runtime.outputs).length > 0;
   if (!hasOutputs && !runtime.text && !runtime.error) return null;

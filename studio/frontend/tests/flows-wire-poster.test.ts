@@ -4,10 +4,35 @@
 // A wire from a card below and left of its target never runs through a card, before or after a resize.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { routeWires } from "../src/features/flows/editor/wire-router.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const { routeWires } = await import("../src/features/flows/editor/wire-router.ts");
+type RouteRequest = import("../src/features/flows/editor/wire-router.worker.ts").RouteRequest;
+type RouteResponse = import("../src/features/flows/editor/wire-router.worker.ts").RouteResponse;
+
+// The routing worker's own message handler, run in-process: `self` is the worker scope.
+const replies: RouteResponse[] = [];
+const workerScope: { onmessage: ((event: { data: RouteRequest }) => void) | null; postMessage: (m: RouteResponse) => void } = {
+  onmessage: null,
+  postMessage: (m) => void replies.push(m),
+};
+(globalThis as Record<string, unknown>).self = workerScope;
+await import("../src/features/flows/editor/wire-router.worker.ts");
+type Wire = Parameters<typeof routeWires>[1][number];
+let nextRequest = 0;
+const ask = (rects: R[], edges: Wire[], partial = false, scope = "flow") => {
+  workerScope.onmessage?.({
+    data: { id: ++nextRequest, scope, rects, zones: [], edges, hopRadius: 4, partial },
+  });
+  const reply = replies.at(-1);
+  assert.equal(reply?.id, nextRequest);
+  assert.equal(reply?.error, undefined);
+  return reply?.routes;
+};
 
 type R = { id: string; x: number; y: number; width: number; height: number };
 const crosses = (a: { x: number; y: number }, b: { x: number; y: number }, r: R) => {
@@ -46,8 +71,26 @@ test("the same document routes the same way every time: full passes start from s
   const a = routeWires([g, t], [wire]).routes.get("e");
   const b = routeWires([g, t], [wire]).routes.get("e");
   assert.deepEqual(a, b);
-  const worker = readFileSync(new URL("../src/features/flows/editor/wire-router.worker.ts", import.meta.url), "utf8");
-  assert.match(worker, /request\.partial && cache\?\.scope === request\.scope \? cache\.value : undefined/);
-  const routing = readFileSync(new URL("../src/features/flows/editor/wire-schedule.ts", import.meta.url), "utf8");
-  assert.match(routing, /if \(!node\.hidden && !\(node\.measured\.width && node\.measured\.height\)\)\s*return;/);
+});
+
+test("the routing worker: a full pass after other passes routes as from scratch, a partial one reuses the last", () => {
+  // Two wires sharing a corridor; moving c changes how a cached pass and a fresh one lay them out.
+  const card = (id: string, x: number, y: number): R => ({ id, x, y, width: 220, height: 120 });
+  const pair = (source: string, target: string): Wire => ({
+    id: `${source}->${target}`, source, target, sourceSide: "right", targetSide: "left", net: source,
+  });
+  const edges = [pair("a", "d"), pair("b", "c")];
+  const before = [card("a", 0, 0), card("b", 0, 200), card("c", 600, 100), card("d", 600, 400)];
+  const after = before.map((r) => (r.id === "c" ? { ...r, y: r.y + 100 } : r));
+  const fresh = [...routeWires(after, edges, { hopRadius: 4 }).routes.values()];
+  const reused = [
+    ...routeWires(after, edges, { hopRadius: 4 }, routeWires(before, edges, { hopRadius: 4 }).cache).routes.values(),
+  ];
+  assert.notDeepEqual(reused, fresh, "the scene tells a cached pass from a fresh one");
+  ask(before, edges);
+  assert.deepEqual(ask(after, edges), fresh, "full pass: same as a fresh document");
+  ask(before, edges);
+  assert.deepEqual(ask(after, edges, true), reused, "partial pass: reuses the last result");
+  ask(before, edges, false, "other flow");
+  assert.deepEqual(ask(after, edges, true), fresh, "another flow's cache is dropped");
 });

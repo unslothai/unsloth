@@ -35,6 +35,7 @@ import {
   datasetSummary,
   datasetTitle,
   knownTotal,
+  literalColumn,
   pageCount,
 } from "./dataset-value";
 
@@ -135,9 +136,7 @@ function DatasetPages({
       names
         .filter((name) => !hidden.includes(name))
         .map((name) => ({
-          // A column name is a literal key: `accessorKey` would read `a.b` as nested and turn its id into `a_b`.
-          id: name,
-          accessorFn: (row: Record<string, unknown>) => row[name],
+          ...literalColumn(name),
           header: () => (
             <span className="flex flex-col leading-tight">
               <span>{name}</span>

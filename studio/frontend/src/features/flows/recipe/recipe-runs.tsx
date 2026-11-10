@@ -35,6 +35,7 @@ import { useRuntimeStore } from "../stores/runtime-store";
 import { type RecipeRunsTarget, useUiStore } from "../stores/ui-store";
 import { groupGenerate } from "./recipe-columns";
 import {
+  readRunPage,
   runsAreLive,
   savedRunDataset,
   selectedRun,
@@ -136,21 +137,9 @@ function useRecipeRuns(
       const size = record.datasetPageSize || 20;
       const offset = (page - 1) * size;
       try {
-        // The recipe job manager keeps only the newest job; an older run pages from its saved parquet.
-        const saved = savedRunDataset(record);
-        // The job's dataset is the untransformed one, so a transform's pages read its own output.
-        const fromJob = record.output_ref
-          ? Promise.reject(new Error("transformed output"))
-          : getRecipeJobDataset(record.jobId, { limit: size, offset });
-        const response = await fromJob.catch(async (error) => {
-          if (!saved) throw error;
-          const read = await datasetRows(saved, offset, size);
-          // That reader stops at its view window; pages past it would load empty.
-          const total =
-            typeof read.total === "number"
-              ? Math.min(read.total, read.view_rows)
-              : read.total;
-          return { dataset: read.rows, total };
+        const response = await readRunPage(record, offset, size, {
+          job: getRecipeJobDataset,
+          saved: datasetRows,
         });
         setPages((current) => ({
           ...current,
@@ -286,7 +275,7 @@ function RecipeRunsOpen({ target }: { target: RecipeRunsTarget }) {
 }
 
 /** A schema transform's run downloads its own rows; the job's export holds the untransformed ones. */
-async function downloadRun(
+export async function downloadRun(
   record: RecipeExecutionRecord,
 ): Promise<DownloadOutcome> {
   if (!record.output_ref) return downloadExecutionDataset(record);

@@ -4,14 +4,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { doc, edge, node } from "./flows-editor-fixtures.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { doc, edge, node } from "./helpers/flows.ts";
+import { registerStoreStubResolver } from "./helpers/kit.ts";
 
-registerBundlerResolver();
+registerStoreStubResolver();
 
+const api = await import("../src/features/flows/api.ts");
 const { useDocStore, documentFromState, documentSignature } = await import(
   "../src/features/flows/stores/doc-store.ts"
 );
+const A = await import("../src/features/flows/editor/use-autosave.ts");
 
 test("the saved document round-trips through the store", () => {
   const original = doc(
@@ -68,4 +70,59 @@ test("only semantic changes bump the version autosave watches", () => {
   );
   useDocStore.getState().updateParams("missing", { x: 1 });
   assert.equal(useDocStore.getState().version, v);
+});
+
+/** A promise plus its resolver, so the test decides when each step happens. */
+function signal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+// The timeout only bounds a regression that never sends the closing save; it never paces the test.
+test("switching flows while a save is in flight still saves the last edit", { timeout: 10_000 }, async () => {
+  const stored = { updatedAt: 1 };
+  const saved: ReturnType<typeof documentFromState>[] = [];
+  const firstSave = signal();
+  const firstPut = signal();
+  const secondSaved = signal();
+  let puts = 0;
+  api.setFlowsTransport(async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    puts += 1;
+    if (puts === 1) {
+      firstPut.resolve();
+      await firstSave.promise;
+    }
+    if (body.baseUpdatedAt !== stored.updatedAt)
+      return new Response(JSON.stringify({ detail: "conflict" }), { status: 409 });
+    stored.updatedAt += 1;
+    saved.push(body.doc);
+    if (saved.length === 2) secondSaved.resolve();
+    return new Response(
+      JSON.stringify({ id: "a", name: "A", doc: body.doc, updatedAt: stored.updatedAt }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  });
+  const withValue = (value: string) => ({
+    ...first,
+    nodes: [node("x", "input.text", [0, 0], { value })],
+  });
+  const first = doc([node("x", "input.text", [0, 0], { value: "one" })]);
+  first.id = "a";
+  useDocStore.getState().load(first);
+  A.beginSaveSession("a", 1, documentSignature(first));
+  useDocStore.getState().load(withValue("two"));
+  const flushing = A.flushSave();
+  await firstPut.promise;
+  useDocStore.getState().load(withValue("three"));
+  A.endSaveSession();
+  A.beginSaveSession("b", 1, "other");
+  firstSave.resolve();
+  await flushing;
+  await secondSaved.promise;
+  api.setFlowsTransport(null);
+  assert.deepEqual(saved.map((d) => d.nodes[0]?.params.value), ["two", "three"]);
 });

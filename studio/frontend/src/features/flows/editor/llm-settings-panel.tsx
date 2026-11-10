@@ -51,6 +51,10 @@ import {
   modelKey,
   paramsAsSaved,
   reloadHint,
+  savedLoadFor,
+  savedLoadTag,
+  showsReasoningEffort,
+  thinkingSwitch,
   togglePatch,
   withLoadField,
 } from "./llm-settings";
@@ -146,7 +150,7 @@ onModelOverrideWrite(overridesChanged);
 /** Chat's saved launch settings for the model, as the engine reads them. */
 function useSavedLoad(key: string | null, variant: string | null) {
   // Tagged with the model it was read for, so a switch never shows the last model's while the read is out.
-  const at = `${key ?? ""}\u0000${variant ?? ""}`;
+  const at = savedLoadTag(key, variant);
   const [saved, setSaved] = useState<{
     at: string;
     load: LoadSettings | null;
@@ -175,7 +179,7 @@ function useSavedLoad(key: string | null, variant: string | null) {
       alive = false;
     };
   }, [key, variant, version]);
-  return saved?.at === at ? saved.load : null;
+  return savedLoadFor(saved, at);
 }
 
 /** The loaded model as Chat's status reports it: the resident one, not Chat's picker. */
@@ -498,8 +502,8 @@ export function LlmSettingsPanel({
               {/* JSON output always runs without thinking, so the switch reads off there. */}
               <Switch
                 aria-label="Thinking"
-                checked={node.params.thinking === true && !node.params.json_schema}
-                disabled={!!node.params.json_schema}
+                checked={thinkingSwitch(node.params).checked}
+                disabled={thinkingSwitch(node.params).disabled}
                 onCheckedChange={(checked) =>
                   update({ thinking: checked === true }, "thinking")
                 }
@@ -508,8 +512,7 @@ export function LlmSettingsPanel({
           )}
           {/* JSON output runs with thinking off, so a level would do nothing there. */}
           {has("reasoning_effort") &&
-            node.params.thinking === true &&
-            !node.params.json_schema && (
+            showsReasoningEffort(node.params) && (
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">

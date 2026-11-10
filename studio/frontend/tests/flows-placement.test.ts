@@ -1,20 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Placing cards from the Nodes panel: arming, where a card lands, grid snap, and which spots take a card.
+
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import {
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const {
+  GRAB,
+  GRID,
   PLACE_GROUP,
   PLACE_NOTE,
   PLACE_SHAPES,
+  placeableTarget,
   placedRect,
   placementPosition,
+  snapPoint,
   stopPlacement,
   togglePlacement,
   usePlacement,
-} from "../src/features/flows/editor/placement.ts";
+} = await import("../src/features/flows/editor/placement.ts");
+const { REROUTE_SIZE } = await import("../src/features/flows/editor/reroutes.ts");
+const { nearestOnPath } = await import("../src/features/flows/editor/wire-snap.ts");
 
 const armed = () => usePlacement.getState().armed;
 
@@ -28,19 +39,12 @@ test("clicking an item arms it, clicking it again disarms, another item switches
   assert.equal(armed(), null);
 });
 
-test("Esc, right-click and leaving the editor all stop placement", () => {
+test("stopping placement disarms, and stopping twice is harmless", () => {
   togglePlacement("text.input");
   stopPlacement();
   assert.equal(armed(), null);
   stopPlacement();
   assert.equal(armed(), null);
-  const src = readFileSync(
-    new URL("../src/features/flows/editor/canvas-controls.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(src, /useEffect\(\(\) => stopPlacement, \[\]\);/);
-  assert.match(src, /e\.key === "Escape"\) stopPlacement\(\)/);
-  assert.match(src, /const menu = [\s\S]*?stopPlacement\(\);/);
 });
 
 test("a placed node lands with its header under the pointer, on the grid when snap is on", () => {
@@ -51,18 +55,7 @@ test("a placed node lands with its header under the pointer, on the grid when sn
   assert.equal(Math.abs(y % 20), 0);
 });
 
-test("only placeable spots place (canvas, group or note body); clicks on cards do not", () => {
-  const src = readFileSync(
-    new URL("../src/features/flows/editor/canvas-controls.tsx", import.meta.url),
-    "utf8",
-  );
-  const click = src.slice(src.indexOf("const click ="), src.indexOf("const dblclick"));
-  assert.match(click, /!onPane\(e\)\) return;/);
-  assert.match(src, /const onPane = \(e: Event\) => placeableTarget\(e\.target as Element\);/);
-});
-
-test("a placed card's header icon lands on the pointer, in flow units, at any spot", async () => {
-  const { GRAB } = await import("../src/features/flows/editor/placement.ts");
+test("a placed card's header icon lands on the pointer, in flow units, at any spot", () => {
   for (const flow of [{ x: 0, y: 0 }, { x: 123.4, y: -56.7 }, { x: -980.2, y: 441.9 }]) {
     const [x, y] = placementPosition(flow, false);
     assert.ok(Math.hypot(x + GRAB[0] - flow.x, y + GRAB[1] - flow.y) <= 1, "unsnapped: within rounding");
@@ -71,19 +64,8 @@ test("a placed card's header icon lands on the pointer, in flow units, at any sp
   }
 });
 
-test("the ghost uses the same grab point and canvas zoom, portaled clear of transformed ancestors", () => {
-  const src = readFileSync(new URL("../src/features/flows/editor/placement-ghost.tsx", import.meta.url), "utf8");
-  assert.match(src, /left: x - GRAB\[0\] \* zoom,\s*top: y - GRAB\[1\] \* zoom,\s*transform: `scale\(\$\{zoom\}\)`/);
-  assert.match(src, /createPortal\(/);
-  for (const file of ["canvas-controls.tsx", "palette.tsx"])
-    assert.match(readFileSync(new URL(`../src/features/flows/editor/${file}`, import.meta.url), "utf8"), /<PlacementGhost /);
-});
-
 test("a reroute is centred on the pointer, groups and notes hang from it", () => {
-  const reroutes = readFileSync(new URL("../src/features/flows/editor/reroutes.ts", import.meta.url), "utf8");
-  const [, rw, rh] = reroutes.match(/REROUTE_SIZE = \{ width: (\d+), height: (\d+) \}/) ?? [];
-  assert.deepEqual(PLACE_SHAPES.reroute.size, [Number(rw), Number(rh)]);
-  assert.match(reroutes, /REROUTE_TYPE = "reroute"/);
+  assert.deepEqual(PLACE_SHAPES.reroute.size, [REROUTE_SIZE.width, REROUTE_SIZE.height]);
   const rect = placedRect("reroute", { x: 203, y: 97 }, true);
   assert.ok(rect);
   const [x, y, w, h] = rect;
@@ -93,14 +75,7 @@ test("a reroute is centred on the pointer, groups and notes hang from it", () =>
   assert.equal(placedRect("text.input", { x: 0, y: 0 }, true), null);
 });
 
-test("armed toolbar shapes place through placedRect and show their own ghost", () => {
-  const src = readFileSync(new URL("../src/features/flows/editor/canvas-controls.tsx", import.meta.url), "utf8");
-  assert.match(src, /placeArmed\(\s*armed,\s*screenToFlowPosition/);
-  assert.match(src, /<ShapeGhost\s+type=\{armed\}/);
-});
-
-test("a reroute dropped near a wire lands on the wire's nearest point", async () => {
-  const { nearestOnPath } = await import("../src/features/flows/editor/wire-snap.ts");
+test("a reroute dropped near a wire lands on the wire's nearest point", () => {
   // An L-shaped wire: (0,0) -> (100,0) -> (100,100).
   const at = (d: number) => (d <= 100 ? { x: d, y: 0 } : { x: 100, y: d - 100 });
   const p = nearestOnPath(200, at, { x: 40, y: 7 });
@@ -109,10 +84,56 @@ test("a reroute dropped near a wire lands on the wire's nearest point", async ()
   assert.ok(q.x === 100 && Math.abs(q.y - 63) < 0.5, JSON.stringify(q));
 });
 
-test("an armed reroute threads into the wire under the pointer, and the wire's × hides", () => {
-  const read = (f: string) => readFileSync(new URL(`../src/features/flows/editor/${f}`, import.meta.url), "utf8");
-  const controls = read("canvas-controls.tsx");
-  assert.match(controls, /addReroute\(hit\.at, \{\s*splitId: hit\.wire,\s*dir: hit\.dir,/);
-  assert.match(controls, /setPointer\(\{ \.\.\.flowToScreenPosition\(hit\.at\), dir: hit\.dir \}\)/);
-  assert.match(read("wire-delete.tsx"), /if \(!show \|\| rerouting\) return null;/);
+// Snap to grid lands a card's top-left on the canvas dots.
+
+test("dots sit on multiples of the grid at any pan and zoom", () => {
+  // @xyflow/react Background, dots: tile at pan % (gap*zoom), translated by -(offset*zoom),
+  // circle at (radius, radius) with radius = size*zoom/2.
+  const size = 1.2;
+  const offset = size / 2;
+  for (const [pan, zoom] of [[0, 1], [37, 1], [-113.5, 0.5], [512, 1.75]]) {
+    const tile = GRID * zoom;
+    for (let k = -2; k <= 2; k++) {
+      const screen = (pan % tile) + k * tile - offset * zoom + (size * zoom) / 2;
+      const flow = (screen - pan) / zoom;
+      const nearest = Math.round(flow / GRID) * GRID;
+      assert.ok(Math.abs(flow - nearest) < 1e-9, `pan ${pan} zoom ${zoom}: dot at ${flow}`);
+    }
+  }
 });
+
+test("snapPoint rounds to the 20px grid when snap is on, to whole pixels when off", () => {
+  assert.equal(GRID, 20);
+  assert.deepEqual(snapPoint([29, -31], true), [20, -40]);
+  assert.deepEqual(snapPoint([29.4, -31.6], false), [29, -32]);
+});
+
+// An armed Nodes panel item previews and places over a group or a note, not just bare canvas.
+
+const el = (classes: string[], ancestors: string[] = []) => ({
+  classList: { contains: (c: string) => classes.includes(c) },
+  closest: (sel: string) => {
+    const all = [...classes, ...ancestors];
+    return sel.split(",").some((part) => {
+      const s = part.trim();
+      if (s.startsWith(".")) return all.includes(s.slice(1));
+      return all.includes(`<${s.replace(/\[.*\]/, "")}>`);
+    })
+      ? {}
+      : null;
+  },
+});
+
+const targets: [string, ReturnType<typeof el> | null, boolean][] = [
+  ["bare canvas", el(["react-flow__pane"]), true],
+  ["a group's body", el(["group/frame"], ["react-flow__node-flowGroup"]), true],
+  ["a note's body", el(["text-xs"], ["react-flow__node-flowNote"]), true],
+  ["a card", el(["flex"], ["react-flow__node-flowNode"]), false],
+  ["a button on a group", el(["size-6"], ["<button>", "react-flow__node-flowGroup"]), false],
+  ["no target", null, false],
+];
+for (const [name, target, placeable] of targets) {
+  test(`placeableTarget: ${name} ${placeable ? "takes" : "does not take"} the card`, () => {
+    assert.equal(placeableTarget(target as never), placeable);
+  });
+}

@@ -172,7 +172,7 @@ export function expandedText(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function OutputValues({
+export function OutputValues({
   outputs,
   spec,
   expanded = false,

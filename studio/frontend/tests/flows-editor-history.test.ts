@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { doc, edge, node } from "./flows-editor-fixtures.ts";
+import { chainDoc, edge, node } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -14,21 +14,7 @@ const { useDocStore, cloneFragment } = await import(
 );
 
 function fresh() {
-  useDocStore
-    .getState()
-    .load(
-      doc(
-        [
-          node("a", "input.text"),
-          node("b", "llm.generate", [300, 0]),
-          node("c", "output.preview", [600, 0]),
-        ],
-        [
-          edge("e1", "a", "text", "b", "prompt"),
-          edge("e2", "b", "text", "c", "value"),
-        ],
-      ),
-    );
+  useDocStore.getState().load(chainDoc());
   return useDocStore.getState();
 }
 

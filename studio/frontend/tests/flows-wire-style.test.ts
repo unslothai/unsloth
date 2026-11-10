@@ -4,19 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { installLocalStorageFake, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const stored = new Map<string, string>();
-Object.defineProperty(globalThis, "localStorage", {
-  configurable: true,
-  value: {
-    getItem: (key: string) => stored.get(key) ?? null,
-    setItem: (key: string, value: string) => void stored.set(key, value),
-    removeItem: (key: string) => void stored.delete(key),
-  },
-});
+const { store: stored } = installLocalStorageFake();
 
 const STORE = "../src/features/flows/stores/ui-store.ts";
 

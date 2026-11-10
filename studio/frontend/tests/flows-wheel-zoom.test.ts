@@ -6,7 +6,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
 import { wheelScrollsInside } from "../src/features/flows/editor/wheel-scroll.ts";
 
 type B = {
@@ -46,17 +45,4 @@ test("a pinch zooms even over a box that could scroll", () => {
   const canvas = box({}, null);
   const note = box({ overflowY: "auto", scrollHeight: 300 }, canvas);
   assert.equal(wheelScrollsInside(note, canvas, 0, 40, true, styleOf), false);
-});
-
-test("the canvas decides in the capture phase, and React Flow's nowheel class no longer blocks zoom", () => {
-  const canvas = readSrc("features/flows/editor/canvas.tsx");
-  assert.match(canvas, /onWheelCapture=\{\(event\) => \{[\s\S]{0,300}wheelScrollsInside\([\s\S]{0,200}event\.stopPropagation\(\)/);
-  assert.match(canvas, /noWheelClassName="flows-wheel-unused"/);
-});
-
-test("a note's text is laid out in the note body, so the body is the box the wheel scrolls", () => {
-  const frames = readSrc("features/flows/editor/frame-nodes.tsx");
-  // Plain markdown takes no pointer; as its own h-full scroller it could never be wheeled.
-  assert.match(frames, /<MarkdownPreview\s*markdown=\{note\.text\}\s*plain=\{true\}\s*className="h-auto overflow-visible"/);
-  assert.match(frames, /<BaseNodeContent className="[^"]*h-full overflow-y-auto/);
 });

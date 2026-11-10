@@ -138,3 +138,11 @@ export function columnDtypes(rows: Record<string, unknown>[]): Record<string, st
     columnStats(rows).map((c) => [c.column_name, c.simple_dtype]),
   );
 }
+
+/** A table column that reads its name as a literal key: `accessorKey` would read `a.b` as nested and turn its id into `a_b`. */
+export function literalColumn(name: string): {
+  id: string;
+  accessorFn: (row: Record<string, unknown>) => unknown;
+} {
+  return { id: name, accessorFn: (row) => row[name] };
+}

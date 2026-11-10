@@ -2,10 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { doc } from "./helpers/flows.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+import { loadWithStubs, stubEveryImport } from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 
@@ -15,6 +16,7 @@ const { dragHasFiles, inputForAssetKind, inputForFile } = await import(
 const { outputDownload, toolbarNodeId } = await import(
   "../src/features/flows/editor/canvas-rules.ts"
 );
+const { isStudioMediaUrl } = await import("../src/features/flows/media-url.ts");
 
 test("a dropped file becomes the matching input block", () => {
   assert.deepEqual(inputForFile("cat.png", "image/png"), {
@@ -51,12 +53,6 @@ test("the toolbar shows for one selected block in an editable flow", () => {
   assert.equal(toolbarNodeId(["group:g1"], isBlock, false), null);
 });
 
-test("the card toolbar holds actions only: no model picker or other setting", () => {
-  const bar = readFileSync(new URL("../src/features/flows/editor/node-toolbar.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(bar, /ParamField|node-toolbar-model|Use the loaded/);
-  for (const id of ["run", "reroll", "download", "delete"]) assert.match(bar, new RegExp(`data-testid="node-toolbar-${id}"`));
-});
-
 test("Download gives the first media output, else the outputs as JSON", () => {
   assert.equal(outputDownload(null, "x"), null);
   assert.equal(outputDownload({}, "x"), null);
@@ -90,22 +86,27 @@ test("Download gives the first media output, else the outputs as JSON", () => {
 });
 
 test("generated gallery media downloads through its authenticated /api/ route", () => {
-  // api.ts pulls in the auth transport, so check the mapping in its source.
-  const src = readSrc("features/flows/api.ts");
-  const body = src.slice(
-    src.indexOf("export function mediaPath"),
-    src.indexOf("export async function fetchMediaBlob"),
+  // api.ts pulls in the auth transport, so run it with its imports stubbed.
+  const api = loadWithStubs<{ mediaPath: (m: { kind: string; ref: string; url?: string }) => string | null }>(
+    new URL("../src/features/flows/api.ts", import.meta.url),
+    stubEveryImport({ "./media-url": { isStudioMediaUrl } }),
   );
-  assert.match(
-    src,
-    /GALLERY_ROUTES: Record<string, string> = \{\s*image: "images",\s*audio: "audio",\s*video: "video",/,
+  const cases: [string, string | null][] = [
+    ["image:7", "/api/inference/images/gallery/7/file"],
+    ["audio:a b", "/api/inference/audio/gallery/a%20b/file"],
+    ["video:v1", "/api/inference/video/gallery/v1/file"],
+    ["sha256:ab", "/api/flows/assets/sha256%3Aab"],
+    ["flowasset:x", "/api/flows/assets/flowasset%3Ax"],
+    ["model:x", null],
+    ["image:", null],
+  ];
+  for (const [ref, path] of cases) assert.equal(api.mediaPath({ kind: "image", ref }), path, ref);
+  assert.equal(
+    api.mediaPath({ kind: "image", ref: "x:y", url: "/api/inference/images/gallery/1/file" }),
+    "/api/inference/images/gallery/1/file",
   );
-  assert.match(
-    body,
-    /return `\/api\/inference\/\$\{gallery\}\/gallery\/\$\{encodeURIComponent\(id\)\}\/file`;/,
-  );
+  assert.equal(api.mediaPath({ kind: "image", ref: "x:y", url: "https://evil.example/x.png" }), null);
 });
-
 
 test("PDF and Word drops become Document blocks, and the uploaded kind picks the block", () => {
   assert.equal(inputForFile("report.pdf", "application/pdf")?.type, "input.file");
@@ -114,6 +115,37 @@ test("PDF and Word drops become Document blocks, and the uploaded kind picks the
   assert.equal(inputForAssetKind("audio"), "input.audio");
   assert.equal(inputForAssetKind("document"), "input.file");
   assert.equal(inputForAssetKind("file"), null);
-  const src = readSrc("features/flows/editor/file-drop.ts");
-  assert.match(src, /const fits = inputForAssetKind\(asset\.kind\);\s*if \(fits && fits !== target\.type\) node = createNode\(fits, position\);/);
+});
+
+test("an uploaded file becomes the block its uploaded kind picks", async () => {
+  const docStore = await import("../src/features/flows/stores/doc-store.ts");
+  const canvasRules = await import("../src/features/flows/editor/canvas-rules.ts");
+  let uploaded = "image";
+  const drop = loadWithStubs<{ addFileNodes: (files: unknown[], at: { x: number; y: number }) => Promise<string[]> }>(
+    new URL("../src/features/flows/editor/file-drop.ts", import.meta.url),
+    stubEveryImport({
+      "../api": { uploadAsset: async () => ({ kind: uploaded, ref: "sha256:aa" }) },
+      "../stores/doc-store": docStore,
+      "../stores/ui-store": await import("../src/features/flows/stores/ui-store.ts"),
+      "./canvas-rules": canvasRules,
+      "./node-factory": {
+        createNode: (type: string, pos: [number, number]) => ({ id: `n-${type}`, type, v: 1, params: {}, pos }),
+      },
+    }),
+  );
+  docStore.useDocStore.getState().load(doc([]));
+  const file = (name: string) => ({ name, type: "", size: 10, text: async () => "" });
+  const types = () => Object.values(docStore.useDocStore.getState().graph.nodes).map((n) => n.type).sort();
+  await drop.addFileNodes([file("cat.png")], { x: 0, y: 0 });
+  uploaded = "audio";
+  await drop.addFileNodes([file("clip.mp4")], { x: 0, y: 0 });
+  assert.deepEqual(types(), ["input.audio", "input.image"], "an audio-only clip becomes an Audio block");
+});
+
+test("only Studio's own media paths are fetched with the user's token", () => {
+  assert.equal(isStudioMediaUrl("/api/inference/images/gallery/1/file"), true);
+  assert.equal(isStudioMediaUrl("https://evil.example/x.png"), false);
+  assert.equal(isStudioMediaUrl("//evil.example/x.png"), false);
+  assert.equal(isStudioMediaUrl("/api//evil.example"), false);
+  assert.equal(isStudioMediaUrl(null), false);
 });

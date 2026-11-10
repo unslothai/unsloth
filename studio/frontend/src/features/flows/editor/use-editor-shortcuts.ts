@@ -49,6 +49,26 @@ export function copySelection(): GraphFragment | null {
   return fragment;
 }
 
+/** Cut: copy, then remove what was copied, so a closed super card's blocks go too, and readers lose their references. */
+export function cutSelection(): GraphFragment | null {
+  const fragment = copySelection();
+  if (fragment) {
+    removeNodes(fragment.nodes.map((n) => n.id));
+    useUiStore.getState().setSelection([], []);
+  }
+  return fragment;
+}
+
+/** Select All: every block, closed super card and wire, so Delete removes them all. */
+export function selectAll(): void {
+  const doc = useDocStore.getState();
+  useUiStore
+    .getState()
+    .setSelection(selectAllIds(doc.meta.editor, doc.graph), [
+      ...doc.graph.edgeOrder,
+    ]);
+}
+
 export function placeFragment(
   fragment: GraphFragment,
   at: { x: number; y: number } | null,
@@ -166,13 +186,7 @@ export function useEditorShortcuts(active: boolean): void {
       if (mod && key === "c") {
         if (copySelection()) event.preventDefault();
       } else if (mod && key === "x") {
-        const fragment = copySelection();
-        if (fragment) {
-          event.preventDefault();
-          // Cut what was copied, so a closed super card's blocks go too, and readers lose their references.
-          removeNodes(fragment.nodes.map((n) => n.id));
-          useUiStore.getState().setSelection([], []);
-        }
+        if (cutSelection()) event.preventDefault();
       } else if (mod && key === "v") {
         event.preventDefault();
         const local = clipboard;
@@ -211,12 +225,7 @@ export function useEditorShortcuts(active: boolean): void {
         );
       } else if (mod && key === "a") {
         event.preventDefault();
-        useUiStore
-          .getState()
-          .setSelection(
-            selectAllIds(doc.meta.editor, doc.graph),
-            [...doc.graph.edgeOrder],
-          );
+        selectAll();
       } else if (!mod && key === "i") {
         const ui = useUiStore.getState();
         const [only, ...rest] = ui.selectedNodes;
