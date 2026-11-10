@@ -180,7 +180,8 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
       batch_size: batchSize > 0 ? String(batchSize) : "auto",
       num_fewshot: fewshotParam(
         fewshotSupported,
-        taskConfig !== null,
+        // A null default (missing metadata or config failure) stays unknown so lm_eval keeps its own.
+        taskConfig?.num_fewshot != null,
         fewshotPickedRef.current,
         numFewshot,
       ),

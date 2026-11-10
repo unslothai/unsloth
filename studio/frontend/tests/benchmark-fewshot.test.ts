@@ -22,5 +22,13 @@ test("the page sends the field through fewshotParam and resets it to each task's
   );
   assert.doesNotMatch(page, /numFewshot > 0 \? numFewshot : null/);
   assert.match(page, /num_fewshot: fewshotParam\(/);
-  assert.match(page, /if \(!fewshotPickedRef\.current\) setNumFewshot\(cfg\.num_fewshot \?\? 0\);/);
+  // An unknown (null) task default must not count as known, else the reset 0 is sent.
+  assert.match(
+    page,
+    /fewshotSupported,\s*(?:\/\/[^\n]*\n\s*)?taskConfig\?\.num_fewshot != null,/,
+  );
+  assert.match(
+    page,
+    /if \(!fewshotPickedRef\.current\) setNumFewshot\(cfg\.num_fewshot \?\? 0\);/,
+  );
 });
