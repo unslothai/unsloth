@@ -6773,7 +6773,8 @@ def _shell_line_tokens(line: str) -> "list | None":
                 j += 2 if ch == '"' and line[j] == "\\" else 1
             if j >= n:
                 return None
-            word.append(line[i + 1 : j])
+            text = line[i + 1 : j]
+            word.append(re.sub(r'\\([$`"\\\n])', r"\1", text) if ch == '"' else text)
             quoted = active = True
             i = j + 1
         elif line.startswith("$((", i) or (line.startswith("((", i) and not active):
@@ -6906,6 +6907,8 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                     break
                 body.append(text)
             if not terminated and _HEREDOC_INTERPRETER_MENTION_RE.search("\n".join(body)):
+                return True
+            if mentioned and not quoted and re.search(r"[$`]|\\\n", "\n".join(body) + "\n"):
                 return True
             command_word = next((w for w in names if not re.match(r"\w+=", w)), "")
             if mentioned and names[-1:] == ["exec"]:
