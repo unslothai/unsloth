@@ -59,7 +59,6 @@ export function runEditMenuAction(
   (focused ?? doc.body).dispatchEvent(makeKey(editMenuKey(action)));
 }
 
-/** Listens for the menu's Undo / Redo; returns the cleanup. */
 export function listenEditMenu(): () => void {
   let disposed = false;
   let unlisten: (() => void) | undefined;

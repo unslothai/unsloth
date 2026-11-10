@@ -174,10 +174,8 @@ const EDIT_HISTORY: &[(&str, &str, &str)] = &[
     ("Redo", "edit-redo", "CmdOrCtrl+Shift+Z"),
 ];
 
-/// The main webview is a child webview (the `unstable` feature), and wry returns NO from its
-/// performKeyEquivalent for those (tauri#9426): the page never sees Cmd+Z, the native Undo sends
-/// `undo:` instead, and that does nothing outside a text field. These items send the action to
-/// the renderer, which undoes text natively or replays the key for the page's own history.
+/// wry's child webview never sees Cmd+Z (tauri#9426) and native `undo:` is a no-op outside text
+/// fields, so these route to the renderer, which undoes text or replays the key.
 #[cfg(target_os = "macos")]
 fn route_edit_history(
     app: &tauri::App,
@@ -264,9 +262,7 @@ fn emit_action(app: &tauri::AppHandle, action: &str) {
     }
 }
 
-/// Undo / Redo go where the key focus is: the Studio page gets the renderer action, and an
-/// embedded browser page (its own native webview) gets AppKit's `undo:` / `redo:`, as the stock
-/// Edit items sent it.
+/// Studio page gets the renderer action; an embedded browser webview gets AppKit `undo:`/`redo:`.
 #[cfg(target_os = "macos")]
 fn route_history(app: &tauri::AppHandle, action: &str) {
     let Some(main) = app.get_webview("main") else {
@@ -286,8 +282,7 @@ fn route_history(app: &tauri::AppHandle, action: &str) {
     }
 }
 
-/// On the main thread: when the key focus is outside the main webview, send it `undo:` or `redo:`
-/// up its responder chain and return true; false leaves it to the renderer.
+/// Main thread: if key focus is outside the main webview, send `undo:`/`redo:` and return true.
 #[cfg(target_os = "macos")]
 fn undo_in_other_view(
     window: &tauri::Window,
