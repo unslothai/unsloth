@@ -480,7 +480,6 @@ test("the placement row needs no setting", () => {
   const row = readSrc("features/model-picker/components/loaded-placement-row.tsx");
   assert.doesNotMatch(row, /showGenerationDetails|useChatPreferencesStore/);
   assert.match(row, /if \(placement === null\) return null;/);
-  // The switch now only governs the live speed lines, and says so.
   assert.equal(en.settings.chat.showGenerationDetails, "Detailed speed info");
   assert.doesNotMatch(en.settings.chat.showGenerationDetailsDescription, /layers/);
 });

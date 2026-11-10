@@ -229,7 +229,6 @@ test("the notice says how much of the weights is on the GPU and on the CPU", () 
     offloadWarning({ offloaded: 9, total: 25, gpuWeightsMib: 40 })?.description ?? "",
     /Model weights: 40 MiB on the GPU\.$/,
   );
-  // VRAM and RAM are one pool on some machines, so the notice names the device instead.
   assert.doesNotMatch(
     offloadWarning({ offloaded: 54, total: 66, gpuWeightsMib: 19456, hostWeightsMib: 4813 })
       ?.description ?? "",
@@ -276,22 +275,18 @@ test("expert weights the fit kept on the CPU are stated, not warned about", () =
 
 test("only a spill nobody chose, on an otherwise full load, gets the expert note", () => {
   const spill = { offloaded: 31, total: 31, overflowLayers: 7 };
-  // A dense model, or a MoE that fit: nothing to add.
   assert.equal(expertSpillNote({ offloaded: 31, total: 31, overflowLayers: 0 }), null);
   assert.equal(expertSpillNote({ offloaded: 31, total: 31 }), null);
-  // The user's own split.
   assert.equal(expertSpillNote({ ...spill, gpuMemoryMode: "manual", gpuLayers: 31 }), null);
   assert.equal(expertSpillNote({ ...spill, offloadOverridden: true }), null);
   // Manual with GPU Layers on Auto is still the fit's doing.
   assert.notEqual(expertSpillNote({ ...spill, gpuMemoryMode: "manual", gpuLayers: -1 }), null);
-  // A load that already warns says it there.
   assert.equal(expertSpillNote({ ...spill, offloaded: 20 }), null);
   assert.equal(expertSpillNote({ ...spill, cpuFallbackReason: "vulkan_startup_crash" }), null);
   assert.equal(expertSpillNote({}), null);
 });
 
 test("a full count with every buffer in system memory is not a success", () => {
-  // A GPU build whose backend failed to start still logs "offloaded N/N".
   const hostOnly = { offloaded: 29, total: 29, gpuWeightsMib: 0, hostWeightsMib: 499.8 };
   const broken = offloadWarning({ ...hostOnly, gpuBackendUnavailable: true });
   assert.equal(broken?.titleSuffix, ", on CPU");

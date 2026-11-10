@@ -102,8 +102,7 @@ function shortfallCause(counts: OffloadCounts): ShortfallCause | null {
   return onGpu <= 0 ? "noneFit" : "partial";
 }
 
-/** " Model weights: 12 GiB on the GPU, 5.7 GiB on the CPU." Weights only: the KV cache and compute buffers
- *  are not in these figures. Names the device, since VRAM and RAM are one pool on some machines. */
+/** Weights only, no KV cache. Names the device, not VRAM/RAM: those are one pool on some machines. */
 function weightsSentence(counts: OffloadCounts): string {
   const gpu = count(counts.gpuWeightsMib) ?? 0;
   const host = count(counts.hostWeightsMib) ?? 0;
@@ -113,7 +112,6 @@ function weightsSentence(counts: OffloadCounts): string {
   return parts.length > 0 ? ` Model weights: ${parts.join(", ")}.` : "";
 }
 
-/** The load notice for a model that is not fully on the GPU, or `null`. */
 export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   const { offloaded, total } = counts;
   switch (shortfallCause(counts)) {
@@ -146,8 +144,7 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   }
 }
 
-/** For a load llama.cpp counts as fully offloaded while its own fit kept MoE expert weights on the CPU, or
- *  `null`. Not a warning: that is how a large MoE fits, and it costs far less than whole layers on the CPU. */
+/** Not a warning: --fit keeping MoE expert weights on the CPU is how a large MoE fits, far cheaper than layers. */
 export function expertSpillNote(counts: OffloadCounts): string | null {
   const { offloaded, total } = counts;
   if (typeof offloaded !== "number" || typeof total !== "number") return null;
