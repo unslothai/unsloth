@@ -871,3 +871,222 @@ def test_kill_orphaned_servers_procfs_still_kills_the_same_process(tmp_path):
 
     assert killed == [mypid + 1]
     assert n == 1
+
+
+# ── A release the driver reports late ────────────────────────────────────────
+#
+# Windows frees a dead process's VRAM after the process is gone, so the free figure can sit at
+# its pre-kill value for a while. Two equal samples taken in that window are stale, not settled.
+
+_HELD = 16000.0  # MiB of weights the killed child had on the GPU
+_BEFORE = [(0, 4000)]  # free while it was alive
+_AFTER = [(0, 20000)]  # free once the driver reports the release
+
+
+class _Warnings:
+    """Stands in for the module logger; structlog loggers are not caplog's to capture."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def warning(self, msg, *args, **_kw):
+        self.messages.append(msg % args if args else msg)
+
+    def __getattr__(self, _name):
+        return lambda *a, **k: None
+
+
+def test_without_a_baseline_a_stale_stable_reading_still_ends_the_wait():
+    """The behaviour the baseline exists to change, pinned so the two are told apart."""
+    ctx, state = _patch_probe([_BEFORE, _BEFORE, _AFTER])
+    with ctx, _Sleeps() as sleeps:
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.01))
+    assert state["calls"] == 2
+    assert len(sleeps.durations) == 1
+
+
+def test_a_stale_stable_reading_waits_for_the_release():
+    ctx, state = _patch_probe([_BEFORE, _BEFORE, _BEFORE, _AFTER, _AFTER])
+    with ctx, _Sleeps() as sleeps:
+        LlamaCppBackend._wait_for_vram_settle(
+            **_kw(max_wait = 2.0, interval = 0.01, baseline = (_BEFORE, _HELD))
+        )
+    # Three stale reads, the read that shows the release, and one stable read after it.
+    assert state["calls"] == 5
+    assert len(sleeps.durations) == 4
+
+
+def test_a_release_already_reported_costs_the_same_single_poll():
+    """Linux: the memory is back before the first read, so the baseline adds no wait."""
+    ctx, state = _patch_probe([_AFTER, _AFTER])
+    with ctx, _Sleeps() as sleeps:
+        LlamaCppBackend._wait_for_vram_settle(
+            **_kw(max_wait = 2.0, interval = 0.01, baseline = (_BEFORE, _HELD))
+        )
+    assert state["calls"] == 2
+    assert len(sleeps.durations) == 1
+
+
+def test_a_partial_release_is_not_the_release():
+    """Under half the held weights back is still mid-reclaim, however stable it reads."""
+    partial = [(0, 9000)]
+    ctx, state = _patch_probe([_BEFORE, partial, partial, _AFTER, _AFTER])
+    with ctx, _Sleeps():
+        LlamaCppBackend._wait_for_vram_settle(
+            **_kw(max_wait = 2.0, interval = 0.01, baseline = (_BEFORE, _HELD))
+        )
+    assert state["calls"] == 5
+
+
+def test_a_split_release_is_summed_over_the_gpus_the_baseline_read():
+    before = [(0, 2000), (1, 2000)]
+    after = [(0, 10000), (1, 10500)]
+    ctx, state = _patch_probe([before, before, after, after])
+    with ctx, _Sleeps():
+        LlamaCppBackend._wait_for_vram_settle(
+            **_kw(max_wait = 2.0, interval = 0.01, baseline = (before, _HELD))
+        )
+    assert state["calls"] == 4
+
+
+def test_a_release_that_never_shows_stops_at_the_bound_and_says_so():
+    log = _Warnings()
+    ctx, state = _patch_probe([_BEFORE])
+    with (
+        _Clock() as clock,
+        ctx,
+        _Sleeps(clock) as sleeps,
+        patch.object(llama_cpp_module, "logger", log),
+    ):
+        LlamaCppBackend._wait_for_vram_settle(
+            **_kw(max_wait = 2.0, interval = 0.25, baseline = (_BEFORE, _HELD))
+        )
+    assert sleeps.total == pytest.approx(LlamaCppBackend._VRAM_RELEASE_WAIT_S)
+    assert state["calls"] >= 2
+    assert len(log.messages) == 1 and "did not rise" in log.messages[0]
+
+
+def test_the_settle_budget_restarts_when_the_release_shows():
+    """A release near the end of the bound still gets its stable read."""
+    draining = [(0, 18000)]
+    log = _Warnings()
+    # Stale reads up to one poll short of the bound, the release still moving, then stable past it.
+    stale = int(LlamaCppBackend._VRAM_RELEASE_WAIT_S / 0.25) - 1
+    samples = [_BEFORE] * stale + [draining, _AFTER, _AFTER]
+    ctx, state = _patch_probe(samples)
+    with _Clock() as clock, ctx, _Sleeps(clock), patch.object(llama_cpp_module, "logger", log):
+        LlamaCppBackend._wait_for_vram_settle(
+            **_kw(max_wait = 2.0, interval = 0.25, baseline = (_BEFORE, _HELD))
+        )
+    assert state["calls"] == len(samples)
+    assert log.messages == []
+
+
+class _LiveThenDead:
+    """A child that is alive until terminated, with no pid so no real process is signalled."""
+
+    def __init__(self, order):
+        self._order = order
+        self._dead = False
+
+    def poll(self):
+        return 0 if self._dead else None
+
+    def terminate(self):
+        self._order.append("terminate")
+        self._dead = True
+
+    def wait(self, timeout = None):
+        return 0
+
+    def kill(self):
+        self._dead = True
+
+
+def _killable_backend(order, placement):
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._process = _LiveThenDead(order)
+    backend._healthy = True
+    backend._stats_logger = None
+    backend._stdout_thread = None
+    backend._llama_log_fh = None
+    backend._last_kill_monotonic = 0.0
+    backend._last_kill_vram_baseline = None
+    backend._weight_placement = placement
+    return backend
+
+
+def _ordered_probe(order, sample):
+    def _probe():
+        order.append("probe")
+        return sample
+
+    return patch.object(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_probe))
+
+
+def test_kill_reads_free_vram_while_a_gpu_child_is_still_alive():
+    order: list[str] = []
+    backend = _killable_backend(order, {"gpu_mib": _HELD, "host_mib": 900.0})
+    with _ordered_probe(order, _BEFORE):
+        backend._kill_process()
+    assert order == ["probe", "terminate"]
+    assert backend._last_kill_vram_baseline == (_BEFORE, _HELD)
+
+
+@pytest.mark.parametrize(
+    "placement",
+    [None, {"gpu_mib": 0.0, "host_mib": 16000.0}, {"gpu_mib": 100.0}, {"gpu_mib": None}],
+    ids = ["unknown", "cpu-only", "tiny", "null"],
+)
+def test_kill_takes_no_baseline_for_a_child_with_no_gpu_weights_to_see(placement):
+    order: list[str] = []
+    backend = _killable_backend(order, placement)
+    with _ordered_probe(order, _BEFORE):
+        backend._kill_process()
+    assert order == ["terminate"]
+    assert backend._last_kill_vram_baseline is None
+
+
+def test_kill_takes_no_baseline_on_shutdown_or_for_an_exited_child():
+    order: list[str] = []
+    backend = _killable_backend(order, {"gpu_mib": _HELD})
+    backend._teardown_lock = __import__("threading").RLock()
+    backend._spawn_lock = __import__("threading").RLock()
+    backend._last_kill_vram_baseline = (_BEFORE, _HELD)
+    with (
+        _ordered_probe(order, _BEFORE),
+        patch("utils.process_lifetime.mark_process_shutting_down", lambda: None),
+    ):
+        backend._kill_process(teardown = True)
+    assert "probe" not in order
+    assert backend._last_kill_vram_baseline is None
+
+    order.clear()
+    backend = _killable_backend(order, {"gpu_mib": _HELD})
+    backend._process._dead = True  # crashed before the kill: its free figure is no baseline
+    with _ordered_probe(order, _BEFORE):
+        backend._kill_process()
+    assert "probe" not in order
+    assert backend._last_kill_vram_baseline is None
+
+
+def test_a_failed_baseline_read_leaves_the_kill_and_the_wait_as_before():
+    order: list[str] = []
+    backend = _killable_backend(order, {"gpu_mib": _HELD})
+
+    def _boom():
+        raise RuntimeError("nvidia-smi wedged")
+
+    with patch.object(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_boom)):
+        backend._kill_process()
+    assert order == ["terminate"]
+    assert backend._last_kill_vram_baseline is None
+    assert backend._process is None
+
+
+def test_both_load_paths_hand_the_baseline_to_the_wait():
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert src.count("_wait_for_vram_settle(") == 2
+    assert src.count('baseline = getattr(self, "_last_kill_vram_baseline", None)') == 2

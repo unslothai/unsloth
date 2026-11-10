@@ -8660,6 +8660,9 @@ class LlamaCppBackend:
         self._mmproj_accepts_image: bool = True
         # Set in _kill_process (monotonic); load_model reads it to decide whether to wait for VRAM reclaim.
         self._last_kill_monotonic: float = 0.0
+        # (free MiB per GPU, MiB of weights it held) read just before the last kill of a child with GPU
+        # weights; lets the settle wait tell a release the driver has not reported yet from one that landed.
+        self._last_kill_vram_baseline: Optional[tuple[list[tuple[int, int]], float]] = None
         self._planned_vram_mib: dict[int, int] = {}
         self._pending_plan_mib: dict[int, int] = {}
 
@@ -16431,14 +16434,43 @@ class LlamaCppBackend:
     # Skip the wait when the last kill is older than this; the driver has already reclaimed it.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
 
+    # A child holding less GPU weight than this cannot be told from noise in the free-VRAM figure.
+    _VRAM_RELEASE_MIN_HELD_MIB: float = 512.0
+    # How long a load waits for the VRAM of the server it just stopped to show as free. Windows
+    # (WDDM) frees it after the process is gone, so the figure trails the exit. A bound, not a measurement.
+    _VRAM_RELEASE_WAIT_S: float = 10.0
+
+    def _vram_baseline_before_kill(self) -> Optional[tuple[list[tuple[int, int]], float]]:
+        """(free MiB per GPU, MiB of weights the child holds on GPU), read while the child is still
+        alive; None when it holds too little to see or the read fails. Never raises."""
+        try:
+            held = float((getattr(self, "_weight_placement", None) or {}).get("gpu_mib") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if held < self._VRAM_RELEASE_MIN_HELD_MIB:
+            return None
+        try:
+            from utils.hardware import gpu_query
+            with gpu_query.fresh_reads():
+                free = LlamaCppBackend._get_gpu_free_memory()
+        except Exception:
+            return None
+        return (list(free), held) if free else None
+
     @staticmethod
     def _wait_for_vram_settle(
         max_wait: float = 2.0,
         interval: float = 0.25,
         tolerance_mib: int = 256,
         since_kill: float = 0.0,
+        baseline: Optional[tuple[list[tuple[int, int]], float]] = None,
     ) -> None:
-        """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi."""
+        """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi.
+
+        ``baseline`` is ``_vram_baseline_before_kill``'s read. With it, a stable reading only counts
+        once the killed child's VRAM shows as free: two equal samples taken before the driver
+        reports the release are stale, not settled, and a load planned on them offloads a model
+        the card holds. That wait is bounded by ``_VRAM_RELEASE_WAIT_S``."""
         now = time.monotonic()
         if since_kill <= 0.0:
             return
@@ -16458,18 +16490,37 @@ class LlamaCppBackend:
             except Exception:
                 return None
 
+        def _released(sample) -> bool:
+            # Half the weights: KV and scratch come back with them, another tenant may take some.
+            before = dict(baseline[0])
+            gain = sum(free - before[idx] for idx, free in sample if idx in before)
+            return gain >= baseline[1] / 2.0
+
         prev = _probe_or_none()
         if prev is None or not prev:
             return
+        awaiting_release = baseline is not None and not _released(prev)
+        if awaiting_release:
+            deadline = now + max(max_wait, LlamaCppBackend._VRAM_RELEASE_WAIT_S)
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return
+                break
             # Clip the nap so a near-zero ``max_wait`` is respected.
             time.sleep(min(interval, remaining))
+            if awaiting_release and time.monotonic() >= deadline:
+                break
             curr = _probe_or_none()
             if curr is None or not curr or len(curr) != len(prev):
                 return
+            if awaiting_release:
+                # Stable is not settled yet: the release has not reached the driver's figure.
+                if _released(curr):
+                    awaiting_release = False
+                    # The usual settle budget, counted from the moment the release shows.
+                    deadline = time.monotonic() + max_wait
+                prev = curr
+                continue
             prev_map = dict(prev)
             stable = True
             for idx, free in curr:
@@ -16485,6 +16536,13 @@ class LlamaCppBackend:
             if stable:
                 return
             prev = curr
+        if awaiting_release:
+            logger.warning(
+                "Free VRAM did not rise within %.1f s of stopping the previous llama-server "
+                "(it held about %.0f MiB); the GPU fit that follows uses the reported figure.",
+                max(max_wait, LlamaCppBackend._VRAM_RELEASE_WAIT_S),
+                baseline[1],
+            )
 
     # Free-VRAM fraction at which Unsloth pins the GPU instead of deferring to --fit on.
     # Guards fragmentation and per-device context; 0.90 sent 91-94% fits to CPU offload.
@@ -24304,7 +24362,10 @@ class LlamaCppBackend:
                 self._vram_fraction_launched = None
                 # Outside the lock, as for llama-server: the Auto layer fit reads free VRAM,
                 # which a just-killed runner still holds until the driver reclaims it.
-                self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+                self._wait_for_vram_settle(
+                    since_kill = self._last_kill_monotonic,
+                    baseline = getattr(self, "_last_kill_vram_baseline", None),
+                )
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
@@ -24340,7 +24401,10 @@ class LlamaCppBackend:
             self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside self._lock so /unload, /cancel, /status aren't blocked.
-            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+            self._wait_for_vram_settle(
+                since_kill = self._last_kill_monotonic,
+                baseline = getattr(self, "_last_kill_vram_baseline", None),
+            )
 
             # ── Phase 3: start llama-server (under lock) ──────────────
             with self._lock:
@@ -34583,6 +34647,10 @@ class LlamaCppBackend:
         _pgid = self._leading_process_group(_pid)
         _descendants, _descendants_known = self._collect_descendants(_pid)
         _exited_first = getattr(self._process, "poll", lambda: None)() is not None
+        # While the child still holds its VRAM; a shutdown has no load to plan for.
+        self._last_kill_vram_baseline = (
+            None if teardown or _exited_first else self._vram_baseline_before_kill()
+        )
         if teardown:
             # Log between kill() and wait(): a TimeoutExpired from wait() escapes this handler unreported.
             self._torn_down_process = self._process
