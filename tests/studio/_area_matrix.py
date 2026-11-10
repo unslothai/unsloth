@@ -1048,22 +1048,14 @@ class Page:
         page.on("pageerror", lambda e: self.errors.append(str(e)[:200]))
 
         def load():
-            """Load the seeded thread and complete progressive mounts before measurement."""
             page.goto(
                 f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000
             )
-            page.wait_for_selector("[data-role]", state = "attached", timeout = 120_000)
-            # Find completes progressive mounts before the gate reads the full thread.
-            page.keyboard.press("ControlOrMeta+f")
-            find_bar = page.locator(".find-bar-surface")
-            find_bar.wait_for(state = "visible")
             page.wait_for_function(
                 "(n) => document.querySelectorAll('[data-role]').length >= n",
                 arg = 2 * turns,
                 timeout = 120_000,
             )
-            page.keyboard.press("Escape")
-            find_bar.wait_for(state = "hidden")
 
         load()
         if mode["set"].get("wallpaper"):
