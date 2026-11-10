@@ -49792,16 +49792,12 @@ def _decode_external_images(encoded: list) -> list:
     return images
 
 
-# The local decoder's per-side ceiling (core.inference.diffusion.decode_b64_image), restated here because a
-# connection run must not import the diffusion stack.
+# decode_b64_image's per-side limit, restated so a connection run does not import the diffusion stack.
 _EXTERNAL_EDIT_MAX_SIDE = 4096
 
 
 def _external_edit_uploads(sources: list[str]) -> list[bytes]:
-    """Each base64 or data-URL source as the PNG a connection's /images/edits receives.
-
-    Upright and flattened like a local source image: sd-server decodes with stb, which ignores EXIF orientation,
-    so a phone photo sent as uploaded would be edited on its side. Raises ValueError for one that cannot be sent."""
+    """Each base64 or data-URL source as an upright, flattened PNG (sd-server ignores EXIF orientation)."""
     from PIL import Image
 
     uploads = []
@@ -49812,13 +49808,13 @@ def _external_edit_uploads(sources: list[str]) -> list[bytes]:
         try:
             image = Image.open(io.BytesIO(base64.b64decode(raw)))
             width, height = image.size
-            # From the header, before load(): a huge-dimension file must not be read into memory.
+            # Checked from the header so a huge image is never loaded.
             oversized = max(width, height) > _EXTERNAL_EDIT_MAX_SIDE
             if not oversized:
                 image.load()
                 image = _mcp_flattened_rgb(exif_upright(image))
-        except Exception as exc:  # noqa: BLE001 -- surfaced as a 400
-            # Fixed text: Pillow's own message carries the repr of the buffer it was handed.
+        except Exception as exc:  # noqa: BLE001 - surfaced as a 400
+            # Not str(exc): Pillow's message includes the buffer's repr.
             raise ValueError("Could not decode the image to edit.") from exc
         if oversized:
             raise ValueError(
@@ -49849,7 +49845,6 @@ async def _external_image_generation(
             status_code = 400,
             detail = "model is required when using an external image connection.",
         )
-    # The one image-input workflow a connection takes: an instruction edit, sent to /images/edits.
     editing = body.workflow == "edit"
     if (
         (not editing and (body.init_image or body.reference_images or body.workflow))
@@ -50021,7 +50016,7 @@ async def _external_image_generation(
                             "model": external_model,
                             "model_kind": "connection",
                             "created_at": created_at,
-                            # As the local path records an edit: the recipe names it and Restore reopens Edit.
+                            # Recorded like a local edit, so Restore reopens Edit.
                             **(
                                 {
                                     "workflow": "edit",

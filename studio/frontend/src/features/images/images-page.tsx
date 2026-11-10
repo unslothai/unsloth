@@ -7065,7 +7065,7 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {/* An edit through a connection is sent no size (the server picks it), so these would do nothing. */}
+            {/* A connection edit sends no size. */}
             {!unifiedEditActive && !(external && workflow === "edit") && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}

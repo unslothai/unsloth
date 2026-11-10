@@ -7359,17 +7359,14 @@ class ExternalProviderClient:
     async def create_image_edits(
         self, prompt: str, model: str, n: int, images: list[bytes]
     ) -> list[str]:
-        """Post PNG source images to an OpenAI-compatible /images/edits endpoint.
-
-        No ``size`` is sent, so the server picks the output size (sd-server returns the source's)."""
-        # One image goes under `image` and several under `image[]`, the two names the spec takes.
+        """POST PNGs to /images/edits. No ``size`` is sent: the server picks the output size."""
         field = "image" if len(images) == 1 else "image[]"
         headers = self._auth_headers()
         headers.pop("Content-Type", None)
         response = await _client().post(
             _append_provider_path(self.base_url, "/images/edits"),
             headers = headers,
-            # `model` is a form field: a router such as llama-swap picks the upstream from it.
+            # llama-swap routes on the `model` form field.
             data = {
                 "model": model,
                 "prompt": prompt,

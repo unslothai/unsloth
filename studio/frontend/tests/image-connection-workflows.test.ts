@@ -15,8 +15,7 @@ test("a connection offers Create and Edit, and no other image workflow", () => {
   assert.deepEqual(off, ["transform", "inpaint", "extend", "upscale", "reference"]);
 });
 
-// The page is one component, so its wiring is read from source: the list above is what a selected
-// connection publishes to the sidebar, and the Edit form drops the size the edit request never sends.
+// The page is one component, so its wiring is read from source.
 test("the Images page publishes that list while a connection is selected", () => {
   assert.match(PAGE, /if \(external\) \{\s+setSupported\(\[\.\.\.CONNECTION_WORKFLOWS\]\);\s+return;/);
   assert.match(PAGE, /!unifiedEditActive && !\(external && workflow === "edit"\) && sizeControls/);
