@@ -1037,7 +1037,6 @@ export const pl = {
       showLess: "Pokaż mniej",
       settings: "Ustawienia",
       api: "API",
-      benchmarks: "Benchmarki",
       lightMode: "Tryb jasny",
       darkMode: "Tryb ciemny",
       guidedTour: "Przewodnik",

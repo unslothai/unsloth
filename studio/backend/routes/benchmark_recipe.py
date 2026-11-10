@@ -44,7 +44,7 @@ def _recipe_task(params: dict) -> dict:
     targets = params["targets"]
     # The worker can outlive a Stop, so it revokes the run's key itself once the adapter is back on.
     params["key_claimed"] = True
-    from routes.benchmarks import check_resident, scoring_hold
+    from core.benchmark.hold import check_resident, scoring_hold
 
     try:
         with httpx.Client() as client, scoring_hold():
@@ -85,7 +85,7 @@ def _model_label(alias: str, configs: dict[str, dict], local_names: set) -> str:
     model = str(mc.get("model") or "").strip()
     if mc.get("provider") in local_names and (not model or model.lower() == "local"):
         # With its quant, as the lm-eval path names it: two quants of one repo are two models.
-        from routes.benchmarks import loaded_identity
+        from core.benchmark.hold import loaded_identity
         model = loaded_identity()
     return model or alias
 
@@ -155,9 +155,6 @@ async def run_recipe_heldout(
 
     backend = get_benchmark_backend()
     account = current_account()
-    from routes.benchmarks import sweep_refusal
-
-    sweep_refusal()
     run_seq = backend.try_begin(account, request.run_token)
     if run_seq is None:
         raise HTTPException(status_code = 409, detail = "A benchmark is already running.")

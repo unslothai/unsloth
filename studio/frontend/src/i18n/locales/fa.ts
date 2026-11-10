@@ -1024,7 +1024,6 @@ export const fa = {
       showLess: "نمایش کمتر",
       settings: "تنظیمات",
       api: "API",
-      benchmarks: "بنچمارک‌ها",
       lightMode: "حالت روشن",
       darkMode: "حالت تیره",
       guidedTour: "تور راهنما",

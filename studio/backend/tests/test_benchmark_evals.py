@@ -508,15 +508,6 @@ def test_concurrent_run_requests_get_one_slot(monkeypatch):
     assert not backend.is_active()
 
 
-def test_charts_keep_two_quants_of_one_model_apart():
-    from core.benchmark.graph import _legend_labels
-
-    a = "/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
-    b = "/models/Qwen3-30B-A3B-Instruct-2507-Q8_0.gguf"
-    labels = _legend_labels([a, b])
-    assert labels[a] != labels[b] and "Q4_K_M" in labels[a] and "Q8_0" in labels[b]
-
-
 def test_pypi_gguf_backend_is_reported_as_missing(monkeypatch):
     import sys
     import types
@@ -573,12 +564,11 @@ def test_tokenize_passthrough_sends_llama_server_key(monkeypatch):
 def test_a_new_run_does_not_start_with_the_last_runs_progress(monkeypatch):
     backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
     orch._report_progress(1318, 1319, "Running generate_until requests", "11:13", "00:00")
-    assert benchmark_routes._live_progress(backend) is None  # idle: nothing to show
     seq = backend.try_begin()
     assert seq is not None
     assert backend.get_latest_progress() is None
     orch._report_progress(21, 400, "Running loglikelihood requests", "00:01", "00:15")
-    assert benchmark_routes._live_progress(backend)["current"] == 21
+    assert backend.get_latest_progress()["current"] == 21
     backend.release(seq)
 
 
