@@ -77,8 +77,6 @@ def test_compared_path_still_loads_slow_tokenizer(same):
 
 
 class _V5Tok:
-    """A v5 tokenizer whose add_bos / add_eos setters rebuild the post_processor."""
-
     bos_token = "<s>"
     all_special_tokens = ["<s>"]
 
@@ -167,7 +165,6 @@ def test_v5_skips_slow_load_that_copies_the_fast_tokenizer(name, monkeypatch):
 def test_v5_llama_skips_only_at_legacy_false(monkeypatch):
     result, calls = _run_v5(_v5_class("LlamaTokenizer"), monkeypatch, legacy = False)
     assert calls == ["fast"] and result.kind == "fast"
-    # The slow load forces legacy = False, which rebuilds a legacy = True LlamaTokenizer differently.
     result, calls = _run_v5(_v5_class("LlamaTokenizer"), monkeypatch, legacy = True)
     assert calls == ["fast", "slow"]
 
@@ -227,7 +224,6 @@ def test_v5_real_qwen2_tokenizer_constructed_once(tmp_path):
 
 @_needs_v5
 def test_v5_failed_slow_load_keeps_the_tokenizer_as_loaded(tmp_path):
-    # Replayed setters drop BOS, so the slow load runs; when it fails the fast tokenizer returns as loaded.
     from tokenizers import processors
 
     vocab = {c: i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz\u0120!")}

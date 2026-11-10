@@ -1032,7 +1032,6 @@ def fix_sentencepiece_gguf(saved_location):
 
 
 def _sync_add_special_tokens(fast_tokenizer, slow_tokenizer):
-    # On v5 the setters rebuild the post_processor, so run them even when values match.
     if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
         fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
     if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
