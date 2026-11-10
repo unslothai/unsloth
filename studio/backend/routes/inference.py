@@ -49940,7 +49940,8 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
                         plan.cells[index].request, captured = captured
                     )
                 records[index] = result.images[0]
-                pictures[index] = diffusion_xy.fit_cell(captured[0], plan)
+                # LANCZOS on a large render would block the event loop.
+                pictures[index] = await asyncio.to_thread(diffusion_xy.fit_cell, captured[0], plan)
         # No await between these two: a Stop after the last cell ends the grid, one after this is not acknowledged.
         _xy_grid_stops.remove(stop)
         if ticket.cancelled():
