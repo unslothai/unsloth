@@ -653,6 +653,8 @@ _INTEL_XPU_PCI_IDS = frozenset((
     0xB084, 0xB085, 0xB086, 0xB087,  # PTL Arc Pro (Mesa iris_pci_ids.h)
     0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
 ))  # fmt: skip
+# The iGPUs above: their device memory is host RAM. Kept literal, installer tests parse _INTEL_XPU_PCI_IDS.
+_INTEL_XPU_IGPU_PCI_IDS = frozenset((0x7D55, 0x7D51, 0x64A0, *range(0xB080, 0xB088)))
 
 
 def _is_intel_xpu_pci_id(device_id: int) -> bool:
