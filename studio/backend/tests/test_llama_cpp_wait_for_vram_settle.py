@@ -1070,6 +1070,71 @@ def test_a_reading_that_does_not_count_the_childs_weights_is_no_baseline(rows):
     assert backend._last_kill_vram_baseline is None
 
 
+@pytest.mark.parametrize("untrusted", [False, True], ids = ["live-figure", "windows-rocm"])
+def test_windows_rocm_takes_no_baseline_even_when_studios_own_vram_passes_the_check(untrusted):
+    """24 GiB card, Studio's own torch reservation 6 GiB, the child's weights 8 GiB: free reads
+    18 GiB before and after the kill. 6 GiB is over half the child's weights, so the reading alone
+    looks as if it counted the child; on Windows ROCm it never does."""
+    order: list[str] = []
+    backend = _killable_backend(order, [8192.0])
+    with (
+        _ordered_memory(order, [(0, 18432, 24576)]),
+        patch.object(
+            LlamaCppBackend,
+            "_free_vram_counts_only_this_process",
+            staticmethod(lambda: untrusted),
+        ),
+    ):
+        backend._kill_process()
+    if untrusted:
+        assert order == ["terminate"]
+        assert backend._last_kill_vram_baseline is None
+    else:
+        assert backend._last_kill_vram_baseline == {0: (18432, 8192.0)}
+
+
+def test_a_rocm_torch_imported_by_the_read_itself_still_drops_the_baseline():
+    """Before hardware detection the first check passes; the read then brings torch in."""
+    order: list[str] = []
+    backend = _killable_backend(order, [8192.0])
+    answers = iter([False, True])
+    with (
+        _ordered_memory(order, [(0, 18432, 24576)]),
+        patch.object(
+            LlamaCppBackend,
+            "_free_vram_counts_only_this_process",
+            staticmethod(lambda: next(answers)),
+        ),
+    ):
+        backend._kill_process()
+    assert order == ["probe", "terminate"]
+    assert backend._last_kill_vram_baseline is None
+
+
+@pytest.mark.parametrize(
+    "platform, is_rocm, torch_hip, expected",
+    [
+        ("win32", True, None, True),
+        ("win32", False, "6.4", True),
+        ("win32", False, None, False),
+        ("linux", True, "6.4", False),
+    ],
+    ids = ["detected-rocm", "rocm-torch-before-detection", "windows-cuda", "linux-rocm"],
+)
+def test_only_windows_rocm_free_vram_leaves_the_child_out(
+    monkeypatch, platform, is_rocm, torch_hip, expected
+):
+    import utils.hardware as hardware
+
+    fake_torch = _types.SimpleNamespace(
+        version = _types.SimpleNamespace(hip = torch_hip), __version__ = "2.14.1"
+    )
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(hardware, "rocm_windows_free_is_untrusted", lambda: is_rocm)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert LlamaCppBackend._free_vram_counts_only_this_process() is expected
+
+
 def test_one_untracked_gpu_drops_the_whole_baseline():
     order: list[str] = []
     backend = _killable_backend(order, [_HELD, _HELD])

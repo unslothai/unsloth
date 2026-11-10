@@ -16440,14 +16440,30 @@ class LlamaCppBackend:
     # (WDDM) frees it after the process is gone, so the figure trails the exit. A bound, not a measurement.
     _VRAM_RELEASE_WAIT_S: float = 10.0
 
+    @staticmethod
+    def _free_vram_counts_only_this_process() -> bool:
+        """Windows ROCm: free VRAM leaves out every other process, the child included. IS_ROCM is
+        only set once hardware detection has run, so an already imported ROCm torch answers too."""
+        if sys.platform != "win32":
+            return False
+        from utils.hardware import rocm_windows_free_is_untrusted
+
+        if rocm_windows_free_is_untrusted():
+            return True
+        torch = sys.modules.get("torch")
+        return torch is not None and LlamaCppBackend._torch_is_rocm(torch)
+
     def _vram_baseline_before_kill(self) -> Optional[dict[int, tuple[int, float]]]:
         """{GPU: (free MiB, MiB of weights the child holds there)}, read while the child is alive.
 
-        None unless every GPU it occupies has a reading that already counts those weights as used.
-        A reading that does not (Windows ROCm's ceiling less this process's own allocations, an
-        unknown total) will not show their release either, and waiting on it would only stall the
-        load. Never raises."""
+        None unless every GPU it occupies has a reading that already counts those weights as used:
+        one that does not (a ceiling, an unknown total) will not show their release either, and
+        waiting on it would only stall the load. None on Windows ROCm outright: free there counts
+        only this process's allocations, which can pass that check without counting the child.
+        Never raises."""
         try:
+            if self._free_vram_counts_only_this_process():
+                return None
             held = {
                 idx: float(gb) * 1024.0
                 for idx, gb in (self.reclaimable_gpu_memory_gb() or {}).items()
@@ -16461,6 +16477,9 @@ class LlamaCppBackend:
                 readings = {
                     i: (free, total) for i, free, total in LlamaCppBackend._get_gpu_memory()
                 }
+            # Again: the read itself may be what imported torch.
+            if self._free_vram_counts_only_this_process():
+                return None
             baseline: dict[int, tuple[int, float]] = {}
             for idx, held_mib in held.items():
                 free, total = readings.get(idx, (0, 0))
