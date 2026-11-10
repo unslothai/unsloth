@@ -64,8 +64,7 @@ _TOTAL_PARAMS_VRAM_RE = re.compile(
     re.IGNORECASE,
 )
 
-# One line per visible device in sd.cpp's auto-fit plan: "[I]  CUDA0  <card name>  free N MiB, budget M MiB".
-# The RAM line reads "params budget" and does not match.
+# sd.cpp auto-fit device line "[I]  CUDA0  <card>  free N MiB, budget M MiB"; the RAM "params budget" line won't match.
 _AUTO_FIT_DEVICE_FREE_RE = re.compile(
     r"^\[I\]\s+(\S+)\s.*\bfree\s+([0-9]+)\s*MiB,\s*budget\s+[0-9]+\s*MiB\b"
 )
@@ -480,8 +479,7 @@ class SdCppServer:
 
     @property
     def planned_free_vram_mib(self) -> dict[str, int]:
-        """Free VRAM per device (``{"CUDA0": 6666}``) that sd.cpp's auto-fit read at startup; empty when this
-        build printed no plan."""
+        """Free VRAM per device (``{"CUDA0": 6666}``) from sd.cpp's startup auto-fit plan; empty without one."""
         return dict(self._planned_free_vram_mib)
 
     def reclaimable_params_vram_gb(

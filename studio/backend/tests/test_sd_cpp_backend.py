@@ -3133,8 +3133,7 @@ def test_a_single_vulkan_device_loss_stays_on_vulkan(monkeypatch):
     assert not persisted
 
 
-# What sd-server returned for MOSS-Image Q8_0 on an 8 GB card whose driver reported a release late: the text
-# encoder finished, then the first denoiser segment was refused.
+# MOSS-Image Q8_0 on an 8 GB card whose driver reported a release late.
 _VRAM_REFUSAL = (
     "sd-server generation failed: generation_failed: generate_image returned no results\n"
     "Last output:\n"
@@ -3145,7 +3144,6 @@ _VRAM_REFUSAL = (
 )
 
 
-# The allocator itself failed: what sd-server prints when cudaMalloc returns out of memory under a segment.
 _ALLOCATION_FAILURE = (
     "sd-server generation failed: generation_failed: generate_image returned no results\n"
     "Last output:\n"
@@ -3169,9 +3167,8 @@ def _vram_refusal_backend(
     policy_flags = (),
     device = "cuda",
 ):
-    """A CUDA server load pinned to CUDA1 whose first ``refusals`` jobs fail with ``error``, on whichever
-    server runs them. ``planned_free_mib`` is the free VRAM per card in the first server's auto-fit plan,
-    ``restarted_plans`` what each replacement reads in turn."""
+    """CUDA load pinned to CUDA1 whose first ``refusals`` jobs fail with ``error``; ``restarted_plans`` are the
+    free-VRAM plans each replacement server reads in turn."""
     events: list = []
     remaining = {"refusals": refusals}
     planned = {"CUDA1": 6666} if planned_free_mib is None else planned_free_mib
@@ -3182,7 +3179,6 @@ def _vram_refusal_backend(
 
         def __init__(self, binary):
             self.binary = binary
-            # Each server reads the card when it starts: the next plan in line, then the last one again.
             self.planned_free_vram_mib = dict(plans.pop(0) if len(plans) > 1 else plans[0])
 
         def start(self, files, **kwargs):
@@ -3221,19 +3217,16 @@ def test_a_vram_refusal_restarts_once_under_half_the_planned_free_vram(monkeypat
     flags = b._state.offload_flags
     images, _seeds = b._generate_server(b._state, **_gen_kwargs())
     assert len(images) == 1
-    # Same placement flags, plus the explicit budget: 6666 MiB planned, half of it rounded down to 0.01 GiB.
+    # Half of 6666 MiB, rounded down to 0.01 GiB.
     assert [e for e in events if e[0] == "start"] == [("start", ("--max-vram", "3.25"), flags)]
     assert b._state.vram_budget == "3.25"
     assert b._state.device == "cuda" and b._state.offload_flags == flags
-    # Later requests on this load keep the restarted server.
     images, _seeds = b._generate_server(b._state, **_gen_kwargs())
     assert len(images) == 1
     assert len([e for e in events if e[0] == "start"]) == 1
 
 
 def test_a_vram_refusal_budgets_each_visible_card_from_its_own_free_vram(monkeypatch):
-    # sd.cpp's plan lists every visible card. The render is pinned to CUDA1; the idle 48 GB card next to it must
-    # neither shrink that card's budget nor be capped by it.
     b, events = _vram_refusal_backend(
         monkeypatch, refusals = 1, planned_free_mib = {"CUDA0": 45979, "CUDA1": 5771}
     )
@@ -3243,7 +3236,6 @@ def test_a_vram_refusal_budgets_each_visible_card_from_its_own_free_vram(monkeyp
 
 
 def test_a_vram_refusal_leaves_a_full_bystander_card_to_sd_cpp(monkeypatch):
-    # Half of CUDA0's free VRAM is under the 1 GiB floor, and the render does not use it.
     b, events = _vram_refusal_backend(
         monkeypatch, refusals = 1, planned_free_mib = {"CUDA0": 1800, "CUDA1": 6666}
     )
@@ -3260,9 +3252,7 @@ def test_a_second_vram_refusal_in_the_same_request_is_surfaced(monkeypatch):
 
 
 def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
-    # Another application holds the card during the first request: the restarted server plans with 466 MiB and
-    # is refused too. That plan is fixed for the server's life, so once the card is free again the next request
-    # must restart it, under the budget from the first plan (half of 466 MiB would be no budget at all).
+    # The restart planned while the card was busy (466 MiB); the next request restarts under the first plan's budget.
     b, events = _vram_refusal_backend(
         monkeypatch,
         refusals = 3,
@@ -3280,22 +3270,14 @@ def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        # sd-server printed no auto-fit plan, so there is no free VRAM to halve.
         {"planned_free_mib": {}},
-        # Half of the render card's free VRAM is below the 1 GiB floor.
         {"planned_free_mib": {"CUDA1": 1800}},
         {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 1800}},
-        # The card the render is pinned to is not in the plan.
         {"planned_free_mib": {"CUDA0": 6666}},
-        # A build without --max-vram rejects the flag, and one without per-device budgets its assignments.
         {"max_vram_supported": False},
         {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 5771}, "per_device_supported": False},
-        # A CPU render is not short of VRAM.
         {"device": "cpu"},
-        # Not a memory refusal.
         {"error": "sd-server generation failed: generation_failed: invalid sampler"},
-        # An allocation that failed outright, at the workspace and while staging weights, not a segment the model
-        # manager declined.
         {"error": _ALLOCATION_FAILURE.format(stage = "workspace allocation")},
         {"error": _ALLOCATION_FAILURE.format(stage = "weight preparation")},
     ],

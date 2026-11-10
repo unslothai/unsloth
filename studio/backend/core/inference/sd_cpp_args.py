@@ -709,23 +709,19 @@ def is_device_oom_text(text: Optional[str]) -> bool:
     return False
 
 
-# The stages at which sd.cpp's model manager declines a graph segment after checking device memory
-# (``fail_segment`` in ``src/core/ggml_runner.cpp``). "workspace allocation" is not one: there the allocator failed.
+# sd.cpp ``fail_segment`` capacity-check stages (ggml_runner.cpp); "workspace allocation" is an allocator failure.
 _SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
     "failed during weight preparation",
     "failed during workspace capacity check",
     "failed during allocated capacity check",
 )
-# Share of the free VRAM sd-server planned with that the image retry may use. sd.cpp fills its budget (free less
-# 512 MiB) with cached weights, so each phase needs memory the previous one just released. Half leaves that much
-# unclaimed if the driver still reports the release as in use (Windows may defer destroying allocations).
+# sd.cpp fills free-512 MiB with cached weights, so each phase needs memory the last one released; half leaves it
+# unclaimed when the driver reports the release late (Windows may defer destroying allocations).
 IMAGE_VRAM_RETRY_SCALE = 0.5
 
 
 def is_vram_refusal_text(text: Optional[str]) -> bool:
-    """A failed render whose output shows sd.cpp's model manager declining a segment for device memory, and no
-    allocation that failed outright. Weight preparation also fails when staging the weights cannot allocate;
-    that, like any other allocation failure, keeps its error."""
+    """sd.cpp's model manager declined a segment for VRAM, and no allocation failed outright (that keeps its error)."""
     lines = str(text or "").lower().splitlines()
     if not any(marker in line for line in lines for marker in _SEGMENT_REFUSAL_MARKERS):
         return False
@@ -735,11 +731,8 @@ def is_vram_refusal_text(text: Optional[str]) -> bool:
 def image_vram_retry_budget(
     planned_free_mib: Optional[Mapping[str, int]], render_devices: Iterable[str] = ()
 ) -> Optional[str]:
-    """``--max-vram`` value for the one image retry after a VRAM refusal: half of each card's free VRAM in
-    sd-server's plan, as a plain GiB figure for one card and ``CUDA0=..,CUDA1=..`` for several (the plan lists
-    every visible card, not only the one that renders). A card whose half is under
-    ``GRAPH_CUT_MIN_BUDGET_BYTES`` is left to sd.cpp's own reading. None when the plan is unknown, or when a
-    card the render is pinned to (``render_devices``, any case) is missing from it or under that floor."""
+    """``--max-vram`` for the image retry: half of each planned card's free VRAM (``CUDA0=..,CUDA1=..`` for several),
+    skipping cards under the floor. None if none qualifies or a ``render_devices`` card does not."""
     planned = dict(planned_free_mib or {})
     budgets: dict[str, float] = {}
     for name, mib in planned.items():

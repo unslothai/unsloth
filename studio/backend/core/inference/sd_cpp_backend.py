@@ -2926,7 +2926,7 @@ class _SdState:
     gpu_explicit: bool = False
     multi_gpu: Optional[dict[str, Any]] = None
     split_physical_gpu_id: Optional[int] = None
-    # ``--max-vram`` value this load's server was restarted under after it refused a render for VRAM; None before.
+    # ``--max-vram`` from a VRAM-refusal restart; kept for the load.
     vram_budget: Optional[str] = None
 
     def spawn_env(self) -> Optional[dict[str, str]]:
@@ -5028,7 +5028,6 @@ class SdCppDiffusionBackend:
         # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False
         device_losses = 0
-        # One restart under a smaller VRAM budget per request; the budget itself stays for the load.
         vram_restarted = False
         hires_payload: Optional[dict] = None
         hires_staged: list[Path] = []
@@ -5102,8 +5101,8 @@ class SdCppDiffusionBackend:
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
-                    # fresh device: respawn the same build once. A render sd.cpp refused for VRAM restarts once
-                    # under a smaller budget. Any other death propagates.
+                    # fresh device: respawn the same build once. A VRAM refusal restarts once under a smaller
+                    # budget. Any other death propagates.
                     exc = first_exc
                     while True:
                         moved_to_cpu = False
@@ -5305,21 +5304,9 @@ class SdCppDiffusionBackend:
     def _restart_server_with_vram_headroom(
         self, state: _SdState, error_text: str, cancel: threading.Event
     ) -> tuple[Optional[SdCppServer], Optional[str]]:
-        """Restart this checkpoint's sd-server under an explicit ``--max-vram`` after it refused a render for
-        device memory; ``(None, None)`` if that does not apply. Returns the server and the budget it got.
-
-        sd.cpp's auto-fit budgets the card at its free VRAM less 512 MiB and fills that with cached weights, so
-        a phase change (text encoder to denoiser, denoiser to VAE) needs memory the previous phase has just
-        released. Its model manager decides on the driver's free-memory figure. If that figure trails a
-        release (Windows' video memory manager may defer destroying allocations; not observed on a Windows
-        host), the request is refused while the memory is free and the job ends in ``generate_image returned
-        no results``. Half the planned free VRAM leaves the released memory unclaimed, at the cost of
-        re-staging weights that no longer stay cached. An allocation that failed outright is not retried.
-
-        The caller allows one restart per request. The budget is computed once, from the plan of the first
-        server that refused, and reused after that: a server restarted while another application held the
-        card plans with what was free then and keeps refusing after the card frees up, so the next request
-        has to restart it again, and that server's own plan is too small to halve."""
+        """Restart sd-server under ``--max-vram`` after sd.cpp refused a render for VRAM; returns the server and its
+        budget, or ``(None, None)``. The budget comes from the first refusing server's plan and is reused: a server
+        restarted while another application held the card planned too little to halve, and keeps refusing."""
         if not sd_cpp_args_mod.is_vram_refusal_text(error_text):
             return None, None
         if state.device == "cpu" or self._cpu_backend_forced:

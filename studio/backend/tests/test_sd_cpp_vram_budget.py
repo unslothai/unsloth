@@ -976,17 +976,15 @@ def test_image_vram_refusal_text_leaves_failed_allocations_alone():
         "cudaMalloc failed: out of memory\n"
         "[E] ggml: alloc_tensor_range: failed to allocate CUDA0 buffer of size 220288512\n"
     )
-    # The workspace allocator failing is not a capacity check, with or without the allocator's own lines.
     assert not args_mod.is_vram_refusal_text(segment.format("workspace allocation"))
     assert not args_mod.is_vram_refusal_text(allocator + segment.format("workspace allocation"))
-    # Staging weights can fail the same way, and a Vulkan allocation reads differently.
     assert not args_mod.is_vram_refusal_text(allocator + segment.format("weight preparation"))
     assert not args_mod.is_vram_refusal_text(
         "vk::Device::allocateMemory: ErrorOutOfDeviceMemory\n"
         + segment.format("weight preparation")
     )
     assert not args_mod.is_vram_refusal_text(_AUDIT_OOM)
-    # The video path's markers are unchanged: it retries both kinds, and not weight preparation.
+    # The video path's markers are unchanged.
     assert args_mod.is_device_oom_text(_AUDIT_OOM)
     assert args_mod.is_device_oom_text(segment.format("workspace allocation"))
     assert not args_mod.is_device_oom_text(segment.format("weight preparation"))
@@ -995,7 +993,7 @@ def test_image_vram_refusal_text_leaves_failed_allocations_alone():
 def test_image_vram_retry_budget_is_half_the_planned_free_vram():
     assert args_mod.image_vram_retry_budget({"CUDA0": 6666}) == "3.25"
     assert args_mod.image_vram_retry_budget({"Vulkan0": 24176}) == "11.80"
-    # 1 GiB floor: below it sd.cpp has no room for a segment plus its margin.
+    # 1 GiB floor.
     assert args_mod.image_vram_retry_budget({"CUDA0": 2048}) == "1.00"
     assert args_mod.image_vram_retry_budget({"CUDA0": 2047}) is None
     assert args_mod.image_vram_retry_budget({"CUDA0": 0}) is None
@@ -1006,7 +1004,6 @@ def test_image_vram_retry_budget_is_half_the_planned_free_vram():
 def test_image_vram_retry_budget_is_per_card_and_needs_the_render_cards():
     plan = {"CUDA0": 45979, "CUDA1": 5771}
     assert args_mod.image_vram_retry_budget(plan) == "CUDA0=22.45,CUDA1=2.81"
-    # ``--backend`` pins are compared case-insensitively.
     assert args_mod.image_vram_retry_budget(plan, {"cuda1"}) == "CUDA0=22.45,CUDA1=2.81"
     # A card under the floor is left out, unless the render is pinned to it or it is missing from the plan.
     assert (
