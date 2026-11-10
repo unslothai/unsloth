@@ -1226,6 +1226,21 @@ def test_code_fed_to_an_interpreter_through_a_heredoc_is_screened(command, high_
     assert is_high_risk_tool_call("terminal", {"command": command}) is high_risk
 
 
+def test_the_heredoc_quote_scanner_keeps_its_own_substitution_helper():
+    # tools.py also defines _substitution_end for the Windows nul rewrite (index of the ")" and len()
+    # when unterminated); a second definition of that name silently replaced this one module-wide.
+    from core.inference import tools
+
+    assert tools._quoted_substitution_end("a)", 0) == 2
+    assert tools._quoted_substitution_end("(b))", 0) == 4
+    assert tools._quoted_substitution_end("a", 0) == -1
+    assert tools._quote_end('"$(echo "a)")"', 0) == 13
+    # An unterminated quote inside the substitution keeps the whole string unterminated.
+    assert tools._quote_end('"( )\'$("`")"', 0) == -1
+    assert tools._substitution_end("a)", 0) == 1
+    assert tools._substitution_end("a", 0) == 1
+
+
 def test_heredoc_option_scan_is_linear():
     started = time.perf_counter()
     is_high_risk_tool_call("terminal", {"command": "python3" + " -Xa" * 40 + " x"})
