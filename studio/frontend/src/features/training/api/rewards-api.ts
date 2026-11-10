@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import type { GrpoRewardSelection } from "@/types/training";
 
 export interface RewardRecord {
   name: string;
@@ -15,10 +14,44 @@ export interface RewardRecord {
   rule: Record<string, unknown> | null;
 }
 
+/** The values the backend evaluator used for one score (score_rule in rewards.py). */
+export interface RewardExplanation {
+  reason: string;
+  response?: string | null;
+  reference?: string;
+  comparison_column?: string;
+  reference_fallback?: boolean;
+  normalizers?: string[];
+  normalized_response?: string;
+  normalized_reference?: string;
+  pattern?: string;
+  mode?: "fullmatch" | "search";
+  json_type?: string;
+  required_keys?: string[];
+  missing_keys?: string[];
+  characters?: number;
+  limit?: number;
+  error?: string;
+  error_kind?: "relative" | "absolute";
+  tolerance?: number;
+}
+
+export interface RewardPreviewScore {
+  name: string;
+  score: number;
+  weighted: number;
+  explanation?: RewardExplanation;
+}
+
 export interface RewardPreviewResponse {
-  scores: { name: string; score: number; weighted: number }[];
+  scores: RewardPreviewScore[];
   total: number;
 }
+
+/** A library reward by name, or an unsaved draft as REWARD.md text. */
+export type RewardPreviewItem =
+  | { name: string; weight: number }
+  | { markdown: string; weight: number };
 
 async function readJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -53,6 +86,20 @@ export async function importReward(
   );
 }
 
+/** Imports every REWARD.md in the ZIP or none; a name clash fails unless overwrite is set. */
+export async function importRewardZip(
+  file: Blob,
+  overwrite = false,
+): Promise<RewardRecord[]> {
+  return readJson(
+    await authFetch(`/api/rewards/import-zip?overwrite=${overwrite}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: file,
+    }),
+  );
+}
+
 export async function exportReward(name: string): Promise<string> {
   const body = await readJson<{ markdown: string }>(
     await authFetch(`/api/rewards/${encodeURIComponent(name)}/export`),
@@ -70,15 +117,16 @@ export async function deleteReward(name: string): Promise<void> {
 }
 
 export async function previewRewards(
-  rewards: GrpoRewardSelection[],
+  rewards: RewardPreviewItem[],
   completion: string,
   reference: string | null,
+  explain = false,
 ): Promise<RewardPreviewResponse> {
   return readJson(
     await authFetch("/api/rewards/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rewards, completion, reference }),
+      body: JSON.stringify({ rewards, completion, reference, explain }),
     }),
   );
 }
