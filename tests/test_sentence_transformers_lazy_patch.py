@@ -73,7 +73,7 @@ def test_unsloth_does_not_import_sentence_transformers_and_patches_it_on_import(
 
 _RELOAD_CHILD = textwrap.dedent(
     """
-    import importlib, json, sys
+    import copy, importlib, importlib.util, json, sys
     sys.path.insert(0, {root!r})
     try:
         import unsloth.models.sentence_transformer as module
@@ -81,6 +81,7 @@ _RELOAD_CHILD = textwrap.dedent(
         print("UNSLOTH_IMPORT_FAILED", repr(error))
         raise SystemExit(0)
     importlib.reload(module)
+    copy.copy(importlib.util.find_spec("sentence_transformers").loader)
     import sentence_transformers
     from sentence_transformers.models import Pooling
     print(json.dumps({{

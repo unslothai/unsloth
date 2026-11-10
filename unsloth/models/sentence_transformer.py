@@ -3660,6 +3660,8 @@ class _PatchAfterImportLoader(importlib.abc.Loader):
 
     def __getattr__(self, name):
         # Resource / is_package lookups made while the package's __init__ runs.
+        if name == "_loader":  # copy / pickle build the object without __init__
+            raise AttributeError(name)
         return getattr(self._loader, name)
 
     def create_module(self, spec):
