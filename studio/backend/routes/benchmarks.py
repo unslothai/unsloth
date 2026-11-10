@@ -4,8 +4,6 @@
 """Benchmark run storage, backed by studio.db. The frontend runs the sweep and posts
 the run here as it goes, so a run survives a reload and shows up on every device."""
 
-import contextlib
-import threading
 import time
 from typing import Any, Literal, Optional
 
@@ -13,6 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from core.benchmark import hold
+from core.benchmark.hold import LOAD_PATHS
 from hub.utils.host_paths import host_paths_visible, redact_host_paths
 from storage.benchmark_runs_db import delete_run, get_run, list_runs, upsert_run
 
@@ -23,7 +23,8 @@ MAX_RUNS_LISTED = 200
 # A runner renews well inside this, so a closed tab frees the GPU within a minute.
 LEASE_TTL_SECONDS = 45
 
-_lease_lock = threading.Lock()
+# The scoring hold's lock: a sweep's start and a scoring's start see each other atomically.
+_lease_lock = hold._lock
 _lease: Optional[dict[str, Any]] = None
 
 
@@ -139,7 +140,7 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
     global _lease
     now = time.monotonic()
     with _lease_lock:
-        if lease.kind == "sweep" and _scorings:
+        if lease.kind == "sweep" and hold._scorings:
             # A sweep reloads the server between rows: under a running eval it would swap the model.
             raise HTTPException(
                 status_code = 409,
@@ -180,7 +181,6 @@ def release_lease(
 
 
 LEASE_HEADER = b"x-unsloth-bench-lease"
-LOAD_PATHS = ("/api/inference/load", "/api/inference/unload")
 
 
 def _sweep_holds_against(holder: Optional[str]) -> bool:
@@ -192,61 +192,13 @@ def _sweep_holds_against(holder: Optional[str]) -> bool:
     )
 
 
-# Held-out scorings in progress. They score whatever model is loaded ("local"), so a load or unload
-# by anyone while one runs would answer the later rows with another model under the first one's name.
-_scorings = 0
-
-
-# A scoring outliving this would be a hung worker; the hold is let go when the worker ends anyway.
-SCORING_LEASE_S = 6 * 3600
-
-
-@contextlib.contextmanager
-def _gpu_lease():
-    """The Studio-wide GPU lease: training's start, a video load and every other residency change
-    refuse instead of evicting the model being scored."""
-    import uuid
-
-    from core.inference import gpu_arbiter
-
-    holder = f"benchmark-scoring:{uuid.uuid4().hex}"
-    for attempt in range(40):
-        try:
-            lease = gpu_arbiter.operation_lease(
-                "benchmark", holder, SCORING_LEASE_S, label = "A benchmark scoring"
-            )
-            lease.__enter__()
-            break
-        except gpu_arbiter.GpuLeaseHeldError as exc:
-            # The arbiter mid-change reads as busy for a moment; another operation's lease stays held.
-            if exc.label != "A model change" or attempt == 39:
-                raise
-            time.sleep(0.25)
-    try:
-        yield
-    finally:
-        lease.__exit__(None, None, None)
-
-
-@contextlib.contextmanager
-def scoring_hold():
-    """While a scoring (held-out rows or an lm-eval task) runs, nothing may change the model it
-    answers with: loads and unloads by any path, a Config sweep's start, training's eviction. The
-    scoring itself never loads."""
-    global _scorings
-    with _lease_lock:
-        if _sweep_holds_against(None):
-            # The sweep reloads the server between its rows and owns it until it lets go.
-            raise SweepRunningError(
-                "A Config sweep holds the server. Stop it or let it finish, then run the evaluation."
-            )
-        _scorings += 1
-    try:
-        with _gpu_lease():
-            yield
-    finally:
-        with _lease_lock:
-            _scorings -= 1
+def _refuse_under_sweep() -> None:
+    """A scoring's start guard: the sweep reloads the server between its rows and owns it until
+    it lets go."""
+    if _sweep_holds_against(None):
+        raise SweepRunningError(
+            "A Config sweep holds the server. Stop it or let it finish, then run the evaluation."
+        )
 
 
 class SweepRunningError(RuntimeError):
@@ -264,34 +216,10 @@ def sweep_refusal() -> None:
         )
 
 
-def loaded_identity() -> str:
-    """The model Chat's main slot holds, with its quant: what a scoring answers with."""
-    from routes.data_recipe.jobs import _loaded_local_model_identity
-
-    _, model, variant = _loaded_local_model_identity()
-    return f"{model}:{variant}" if variant else model
-
-
-def check_resident(expected: Optional[str]) -> None:
-    """Under the scoring hold: the model a caller loaded is still the one loaded. Between its load and
-    the hold another client could swap it, and the run would score that model under the first's name."""
-    if expected and (now := loaded_identity()) != expected:
-        raise RuntimeError(
-            f"The model to score changed after it was loaded ({now or 'nothing'} is loaded now, "
-            f"not {expected}). Run the benchmark again."
-        )
-
-
-def scoring_active() -> bool:
-    """A held-out scoring is running: no model may be switched in under it, by any path."""
-    with _lease_lock:
-        return _scorings > 0
-
-
 def load_refused(holder: Optional[str]) -> bool:
     """A load reloads the one llama-server, so mid-sweep it would run the next rows under other settings."""
     with _lease_lock:
-        return _scorings > 0 or _sweep_holds_against(holder)
+        return hold._scorings > 0 or _sweep_holds_against(holder)
 
 
 def note_inference_request(holder: Optional[str]) -> None:
@@ -310,7 +238,7 @@ class BenchmarkTrafficMiddleware:
 
     async def __call__(self, scope, receive, send):
         if (
-            (_lease is not None or _scorings)
+            (_lease is not None or hold._scorings)
             and scope.get("type") == "http"
             and scope.get("method") == "POST"
         ):
@@ -346,3 +274,9 @@ class BenchmarkTrafficMiddleware:
             if _is_inference_path(path):
                 note_inference_request(holder)
         await self.app(scope, receive, send)
+
+
+# Replaced, not appended, so a reimport of this module leaves one guard.
+hold.start_guards[:] = [
+    g for g in hold.start_guards if getattr(g, "__module__", None) != __name__
+] + [_refuse_under_sweep]

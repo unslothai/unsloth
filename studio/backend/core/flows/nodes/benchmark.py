@@ -191,7 +191,7 @@ async def _loaded_identity(
     """What this node loaded, as the eval checks it once scoring holds the model; None if unknown.
     With ``target`` (what the node asked to load), another model in Chat's main slot fails the run:
     it was swapped in between the load and this read, and would be scored under ``label``."""
-    from routes.benchmarks import loaded_identity
+    from core.benchmark.hold import loaded_identity
 
     if ctx is not None and target:
         from studio_mcp import loading

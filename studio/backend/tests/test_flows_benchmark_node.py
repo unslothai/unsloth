@@ -933,7 +933,7 @@ def test_a_picked_model_is_held_to_what_was_picked(monkeypatch):
 
     monkeypatch.setattr(benchmark, "resident_name", resident_name)
     monkeypatch.setattr(loading, "_resident", resident)
-    monkeypatch.setattr("routes.benchmarks.loaded_identity", lambda: "org/A-GGUF:Q4_K_M")
+    monkeypatch.setattr("core.benchmark.hold.loaded_identity", lambda: "org/A-GGUF:Q4_K_M")
     ctx = _Ctx(lambda *a: {}, model = {"repo": "org/A-GGUF", "variant": "Q4_K_M"})
     ctx.inputs = {"dataset": ctx.inputs["dataset"]}
     ctx.chat_model = None

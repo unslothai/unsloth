@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from core.benchmark import hold
 from routes import benchmarks as benchmarks_routes
 from storage import benchmark_runs_db as db
 
@@ -282,7 +283,7 @@ def test_a_held_out_scoring_refuses_loads_until_it_ends(monkeypatch):
     app.post("/api/inference/unload")(lambda: {"ok": True})
     app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
     client = TestClient(app, headers = {"Authorization": "Bearer t"})
-    with benchmarks_routes.scoring_hold():
+    with hold.scoring_hold():
         assert client.post("/api/inference/load").status_code == 409
         assert client.post("/api/inference/unload").status_code == 409
     assert client.post("/api/inference/load").status_code == 200
@@ -311,7 +312,7 @@ def test_a_held_out_scoring_refuses_every_load_path_a_chat_switch_included():
     from routes import inference
 
     # A chat request naming another model switches through _load_model_impl, not the load route.
-    with benchmarks_routes.scoring_hold():
+    with hold.scoring_hold():
         with pytest.raises(HTTPException) as refused:
             asyncio.run(inference._load_model_impl(object(), None, "unsloth"))
     assert refused.value.status_code == 409
@@ -324,7 +325,7 @@ def test_a_sweep_cannot_start_while_an_eval_is_scoring(monkeypatch):
     app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
     client = TestClient(app)
     sweep = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
-    with benchmarks_routes.scoring_hold():
+    with hold.scoring_hold():
         assert client.post("/api/benchmarks/lease", json = sweep).status_code == 409
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
 
@@ -346,25 +347,25 @@ def test_an_eval_cannot_start_under_a_running_sweep(monkeypatch):
         benchmarks_routes.sweep_refusal()
     assert refused.value.status_code == 409
     with pytest.raises(benchmarks_routes.SweepRunningError):
-        with benchmarks_routes.scoring_hold():
+        with hold.scoring_hold():
             pass
     # The sweep keeps the server: its own loads and its renewal still go through.
     own = {"X-Unsloth-Bench-Lease": sweep["holder"]}
     assert client.post("/api/inference/load", headers = own).status_code == 200
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
-    assert not benchmarks_routes.scoring_active()
+    assert not hold.scoring_active()
 
 
 def test_a_scoring_fails_when_another_model_was_loaded_before_it_held_the_model(monkeypatch):
     import pytest
 
     loaded = {"now": "org/ckpt-a"}
-    monkeypatch.setattr(benchmarks_routes, "loaded_identity", lambda: loaded["now"])
-    benchmarks_routes.check_resident("org/ckpt-a")
-    benchmarks_routes.check_resident(None)  # a caller that loaded nothing checks nothing
+    monkeypatch.setattr(hold, "loaded_identity", lambda: loaded["now"])
+    hold.check_resident("org/ckpt-a")
+    hold.check_resident(None)  # a caller that loaded nothing checks nothing
     loaded["now"] = "org/ckpt-b"
     with pytest.raises(RuntimeError, match = "changed after it was loaded"):
-        benchmarks_routes.check_resident("org/ckpt-a")
+        hold.check_resident("org/ckpt-a")
 
 
 def test_the_scoring_workers_check_the_model_they_were_given(monkeypatch):
@@ -373,7 +374,7 @@ def test_the_scoring_workers_check_the_model_they_were_given(monkeypatch):
     from core.benchmark import orchestrator
     from routes import benchmark_recipe
 
-    monkeypatch.setattr(benchmarks_routes, "loaded_identity", lambda: "org/ckpt-b")
+    monkeypatch.setattr(hold, "loaded_identity", lambda: "org/ckpt-b")
     monkeypatch.setattr(orchestrator, "_run_benchmark_task", lambda params: pytest.fail("scored"))
     monkeypatch.setattr(benchmark_recipe, "run_benchmark", lambda *a, **k: pytest.fail("scored"))
     monkeypatch.setattr(benchmark_recipe, "_restore_adapter", lambda *a: None)
@@ -388,4 +389,4 @@ def test_the_scoring_workers_check_the_model_they_were_given(monkeypatch):
                 "expected_model": "org/ckpt-a",
             }
         )
-    assert not benchmarks_routes.scoring_active()
+    assert not hold.scoring_active()

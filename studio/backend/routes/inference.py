@@ -18980,7 +18980,7 @@ async def _load_model_impl(
     speech_codec_path: Optional[str] = None,
 ):
     from core.inference.npu_backend import is_npu_model_path
-    from routes.benchmarks import scoring_active
+    from core.benchmark.hold import scoring_active
 
     if scoring_active():
         # Every load comes through here, a chat request's automatic model switch included: a

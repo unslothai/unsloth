@@ -199,7 +199,7 @@ def harness(monkeypatch):
     monkeypatch.setattr(route, "_revoke_internal_api_key_safe", revoked.append)
     monkeypatch.setattr(route, "managed_account", lambda: False)
     monkeypatch.setattr(route, "current_account", lambda: None)
-    monkeypatch.setattr("routes.benchmarks.loaded_identity", lambda: "unsloth/Qwen3-0.6B")
+    monkeypatch.setattr("core.benchmark.hold.loaded_identity", lambda: "unsloth/Qwen3-0.6B")
     monkeypatch.setattr(
         route,
         "_store",
@@ -476,7 +476,7 @@ def test_an_inequality_is_not_scored_as_an_equality():
 def test_an_lm_eval_run_holds_the_model_for_its_whole_life(monkeypatch):
     from core.benchmark import orchestrator
     from core.inference import gpu_arbiter
-    from routes import benchmarks as bench_routes
+    from core.benchmark import hold as bench_routes
 
     seen = []
 
@@ -519,7 +519,7 @@ def test_the_judge_sees_the_system_instructions_the_answer_was_given():
 
 
 def test_a_local_model_is_stored_under_its_quant(monkeypatch):
-    from routes import benchmarks as bench_routes
+    from core.benchmark import hold as bench_routes
 
     monkeypatch.setattr(bench_routes, "loaded_identity", lambda: "unsloth/Qwen3-0.6B-GGUF:Q8_0")
     configs = {"candidate": {"provider": "local", "model": ""}}
