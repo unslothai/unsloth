@@ -3505,6 +3505,10 @@ export const ar = {
       },
     },
     apiKeys: {
+      requestUsage: {
+        label: "الإبلاغ عن استخدام الرموز",
+        description: "يطلب من نقطة النهاية أعداد الرموز الدقيقة ليعرض شريط السياق الاستخدام الفعلي. أوقفه إذا رفضت نقطة النهاية الطلبات.",
+      },
       title: "API",
       description: "الوصول إلى Unsloth عبر واجهة API المتوافقة مع OpenAI.",
       readDocs: "قراءة وثائق API",

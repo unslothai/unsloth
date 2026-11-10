@@ -309,6 +309,8 @@ export async function syncExternalProvidersFromBackend(
           config.api_type !== "responses" && config.api_type !== "systemone"
             ? normalizeCustomReasoningConfig(config.reasoning_config)
             : undefined,
+        requestUsage:
+          config.provider_type === "custom" ? config.request_usage === true : undefined,
 
         hasApiKey: config.has_api_key,
         shared: config.shared === true,

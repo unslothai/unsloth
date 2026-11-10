@@ -199,6 +199,7 @@ export interface ExternalRoutingFields {
   provider_base_url: string | null;
   provider_api_type: "chat_completions" | "responses";
   provider_reasoning_config?: CustomReasoningConfig;
+  provider_request_usage?: true;
   encrypted_api_key?: string;
   extra_headers?: Record<string, string>;
 }
@@ -270,6 +271,9 @@ export async function buildExternalRoutingFields(
     provider_base_url: provider.baseUrl || null,
     provider_api_type: provider.apiType ?? "chat_completions",
     ...(reasoningConfig?.enabled ? { provider_reasoning_config: reasoningConfig } : {}),
+    ...(provider.providerType === "custom" && provider.requestUsage === true
+      ? { provider_request_usage: true as const }
+      : {}),
     ...(apiKey
       ? {
           encrypted_api_key: await encryptProviderApiKey(

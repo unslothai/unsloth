@@ -3517,6 +3517,10 @@ export const zhTW = {
       description: "透過區域網路或臨時公開 URL，從您的其他裝置存取此 Unsloth。",
     },
     apiKeys: {
+      requestUsage: {
+        label: "回報 token 用量",
+        description: "向端點請求精確的 token 數，讓上下文列顯示實際用量。如果端點拒絕請求，請關閉此項。",
+      },
       title: "API",
       description: "透過與 OpenAI 及 Anthropic 相容的 API 存取 Unsloth。",
       readDocs: "閱讀 API 文件",

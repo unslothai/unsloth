@@ -20,6 +20,8 @@ export interface ExternalProviderConfig {
   baseUrl: string;
   apiType?: ProviderApiType;
   reasoningConfig?: CustomReasoningConfig;
+  /** Custom only: ask the endpoint for streamed usage (stream_options.include_usage). */
+  requestUsage?: boolean;
   decisionsOnly?: boolean;
   models: string[];
   availableModels?: string[];
@@ -631,6 +633,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
       raw.apiType !== "responses" && raw.decisionsOnly !== true
         ? normalizeCustomReasoningConfig(raw.reasoningConfig)
         : undefined,
+    requestUsage: providerType === "custom" ? raw.requestUsage === true : undefined,
     models: raw.models
       .map((model) => model.trim())
       .filter((model) => model.length > 0),

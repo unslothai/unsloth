@@ -3743,6 +3743,10 @@ export const pl = {
         "Uzyskaj dostęp do tego Unsloth z innych urządzeń przez sieć lokalną lub tymczasowy publiczny adres URL.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Raportuj użycie tokenów",
+        description: "Prosi punkt końcowy o dokładną liczbę tokenów, aby pasek kontekstu pokazywał rzeczywiste użycie. Wyłącz, jeśli punkt końcowy odrzuca żądania.",
+      },
       title: "API",
       description:
         "Uzyskaj dostęp do Unsloth przez API zgodne z OpenAI i Anthropic.",

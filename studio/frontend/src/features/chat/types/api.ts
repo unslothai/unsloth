@@ -696,6 +696,7 @@ export interface OpenAIChatCompletionsRequest {
   provider_base_url?: string | null;
   provider_api_type?: "chat_completions" | "responses";
   provider_reasoning_config?: CustomReasoningConfig;
+  provider_request_usage?: boolean;
   /** Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the backend also accepts
    *  a cached-content resource name, forwarded as `generationConfig.cachedContent`. */
   enable_prompt_caching?: boolean | string | null;

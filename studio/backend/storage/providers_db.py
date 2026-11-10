@@ -165,6 +165,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN extra_headers_json TEXT")
     if "shared" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
+    if "request_usage" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE llm_providers ADD COLUMN request_usage INTEGER NOT NULL DEFAULT 0"
+        )
     # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
     conn.commit()
 
@@ -225,6 +229,7 @@ def create_provider(
     reasoning_config: Optional[dict] = None,
     extra_headers: Optional[dict] = None,
     shared: bool = False,
+    request_usage: bool = False,
 ) -> None:
     """Insert a new provider configuration."""
     reasoning_json = _encode_reasoning_config(reasoning_config)
@@ -237,9 +242,10 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                reasoning_config_json, extra_headers_json, shared, created_at, updated_at
+                reasoning_config_json, extra_headers_json, shared, request_usage,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -253,6 +259,7 @@ def create_provider(
                 reasoning_json,
                 extra_headers_json,
                 1 if shared else 0,
+                1 if request_usage else 0,
                 now,
                 now,
             ),
@@ -276,6 +283,7 @@ def update_provider(
     reasoning_config: dict | None | object = _UNSET,
     extra_headers: dict | None | object = _UNSET,
     shared: bool | None = None,
+    request_usage: bool | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -310,6 +318,9 @@ def update_provider(
     if shared is not None:
         updates.append("shared = ?")
         params.append(1 if shared else 0)
+    if request_usage is not None:
+        updates.append("request_usage = ?")
+        params.append(1 if request_usage else 0)
     if not updates:
         return False
     updates.append("updated_at = ?")
@@ -350,6 +361,7 @@ def _row_to_provider(row: sqlite3.Row) -> dict:
     data["models"] = models
     data["available_models"] = available_models
     data["shared"] = bool(data.get("shared"))
+    data["request_usage"] = bool(data.get("request_usage"))
     return data
 
 

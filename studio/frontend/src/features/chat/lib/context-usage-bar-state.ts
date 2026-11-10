@@ -28,7 +28,26 @@ export type ContextUsageBarInput = {
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
   estimated?: boolean;
+  // An API model's window is the provider's: no Context Length setting moves it.
+  providerWindow?: boolean;
 };
+
+/** An API model never shows the window of the local model still resident beside it. */
+export function contextBarWindow({
+  isExternalModel,
+  loadedContextLength,
+  reportedWindow,
+  catalogWindow,
+}: {
+  isExternalModel: boolean;
+  loadedContextLength: number | null;
+  // From the server's context_usage frame: the catalogue's window, else the one the server reports.
+  reportedWindow: number | null | undefined;
+  catalogWindow: number | null | undefined;
+}): number | null {
+  if (!isExternalModel) return loadedContextLength;
+  return reportedWindow || catalogWindow || null;
+}
 
 export type ContextUsageRows = Pick<
   ContextUsageBarInput,
@@ -132,6 +151,7 @@ export function deriveContextUsageBar({
   parallelSlots,
   contextBudget,
   estimated,
+  providerWindow,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
@@ -206,7 +226,7 @@ export function deriveContextUsageBar({
     totalRowValue: `${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
     percent,
     hasUsageDetails,
-    advice: contextLimitAdvice(
+    advice: providerWindow ? "none" : contextLimitAdvice(
       usedTokens,
       limit,
       isMlx,

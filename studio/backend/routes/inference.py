@@ -3752,6 +3752,7 @@ from core.inference.external_provider import (
     _is_kimi_k3,
     _is_openai_family_cloud,
     compacts_server_side,
+    _SERVED_WINDOW_PROVIDERS,
 )
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
@@ -29050,6 +29051,7 @@ async def _proxy_to_external_provider(
     base_url = payload.provider_base_url
     api_type = payload.provider_api_type
     reasoning_config = normalize_provider_reasoning_config(payload.provider_reasoning_config)
+    request_usage = payload.provider_request_usage
     extra_headers: Optional[dict] = None
     saved_provider_snapshot: Optional[dict] = None
 
@@ -29058,10 +29060,13 @@ async def _proxy_to_external_provider(
         base_url = managed.base_url
         api_type = "chat_completions"
         reasoning_config = None
+        request_usage = False
     elif payload.provider_id and (
-        not payload.encrypted_api_key or payload.provider_reasoning_config is not None
+        not payload.encrypted_api_key
+        or payload.provider_reasoning_config is not None
+        or payload.provider_request_usage
     ):
-        # Legacy explicit-key requests retain editable routing; reasoning opt-ins use the saved contract.
+        # Legacy explicit-key requests retain editable routing; reasoning and usage opt-ins use the saved contract.
         config = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
         if config is None:
             raise HTTPException(
@@ -29082,6 +29087,7 @@ async def _proxy_to_external_provider(
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
         reasoning_config = normalize_provider_reasoning_config(config.get("reasoning_config"))
+        request_usage = bool(config.get("request_usage"))
         extra_headers = config.get("extra_headers")
 
     # An explicit key keeps the edited target: headers come from the request, not the saved row.
@@ -29599,6 +29605,7 @@ async def _proxy_to_external_provider(
                 "api_type",
                 "is_enabled",
                 "reasoning_config",
+                "request_usage",
             )
             if current is None or any(
                 current.get(field) != saved_provider_snapshot.get(field) for field in routing_fields
@@ -29680,6 +29687,7 @@ async def _proxy_to_external_provider(
         api_key = api_key,
         api_type = api_type,
         **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
+        **({"request_usage": True} if request_usage else {}),
         **({"extra_headers": extra_headers} if extra_headers else {}),
         **({"managed_loopback": True} if managed is not None else {}),
     )
@@ -29765,24 +29773,37 @@ async def _proxy_to_external_provider(
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
     _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
     # UNSLOTH_CONTEXT_OVERFLOW must not bypass Studio's auto-compact switch.
-    if (
+    _compacts_to_window = (
         managed is None
         and payload.context_overflow == "truncate_oldest"
         and not payload.compaction_threshold
         and not _provider_compacts
-    ):
-        # a self-hosted server reports its startup window when the catalog has none.
-        _served_window = payload.context_window or await client.served_context_window(model)
-        if _served_window:
-            payload = payload.model_copy(
-                update = {
-                    "context_window": _served_window,
-                    "compaction_threshold": min(
-                        _EXTERNAL_COMPACTION_THRESHOLD_MAX,
-                        int(_served_window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
-                    ),
-                }
-            )
+    )
+    # a self-hosted server reports its startup window when the catalog has none; the UI meter shows it too.
+    _ui_window = managed is None and _ui_events and payload.stream
+    # Gated on auto-compact, like compaction's own read, and only for types that serve a window.
+    _ui_window_lookup = (
+        _ui_window
+        and payload.context_overflow == "truncate_oldest"
+        and provider_type in _SERVED_WINDOW_PROVIDERS
+    )
+    _served_window = None
+    if _compacts_to_window or _ui_window:
+        _served_window = payload.context_window or (
+            await client.served_context_window(model)
+            if _compacts_to_window or _ui_window_lookup
+            else None
+        )
+    if _compacts_to_window and _served_window:
+        payload = payload.model_copy(
+            update = {
+                "context_window": _served_window,
+                "compaction_threshold": min(
+                    _EXTERNAL_COMPACTION_THRESHOLD_MAX,
+                    int(_served_window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+                ),
+            }
+        )
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
     _external_context_fitter = None
@@ -29976,6 +29997,9 @@ async def _proxy_to_external_provider(
                 yield _context_truncated_sse_chunk(
                     f"chatcmpl-{uuid.uuid4().hex}", model, _external_truncation
                 )
+            if _served_window and _ui_events and payload.stream:
+                # the meter's total; the same frame a tool loop uses for its counts.
+                yield f"data: {json.dumps({'type': 'context_usage', 'context_window': _served_window})}\n\n"
             provider_compaction_reported = False
             async for line in gen:
                 if _is_openai_sse_done(line) and _managed_cut_short():

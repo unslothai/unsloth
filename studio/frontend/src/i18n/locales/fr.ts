@@ -3551,6 +3551,10 @@ export const fr = {
       },
     },
     apiKeys: {
+      requestUsage: {
+        label: "Signaler l’utilisation des jetons",
+        description: "Demande au point de terminaison le nombre exact de jetons pour que la barre de contexte affiche l’utilisation réelle. Désactivez-le si le point de terminaison rejette les requêtes.",
+      },
       title: "API",
       description: "Accédez à Unsloth via l'API compatible OpenAI.",
       readDocs: "Lire la documentation de l'API",

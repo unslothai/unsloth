@@ -185,6 +185,7 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         available_models = row.get("available_models") or [],
         max_output_tokens = row.get("max_output_tokens"),
         shared = bool(row.get("shared")),
+        request_usage = bool(row.get("request_usage")),
         shared_by_owner = bool(row.get("shared_by_owner")),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
@@ -394,6 +395,7 @@ async def create_provider_config(
             reasoning_config = payload.reasoning_config,
             extra_headers = payload.extra_headers,
             shared = payload.shared,
+            request_usage = payload.request_usage,
         )
         try:
             if api_key:
@@ -499,6 +501,7 @@ async def update_provider_config(
         "reasoning_config",
         "extra_headers",
         "shared",
+        "request_usage",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
@@ -530,6 +533,7 @@ async def update_provider_config(
             available_models = payload.available_models,
             api_type = payload.api_type,
             shared = payload.shared,
+            request_usage = payload.request_usage,
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
@@ -554,11 +558,12 @@ async def update_provider_config(
         reasoning_config = existing.get("reasoning_config"),
         extra_headers = existing.get("extra_headers") or {},
         shared = bool(existing.get("shared")),
+        request_usage = bool(existing.get("request_usage")),
     )
 
     def _current_matches(current: dict, field: str, written) -> bool:
         """Does the row still hold what this request wrote into that column?"""
-        if field in ("is_enabled", "shared"):
+        if field in ("is_enabled", "shared", "request_usage"):
             return bool(current.get(field)) == bool(written)
         return current.get(field) == written
 

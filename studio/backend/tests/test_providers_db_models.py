@@ -110,3 +110,31 @@ def test_existing_provider_rows_migrate_to_unset_override(isolated_providers_db:
     row = providers_db.get_provider("existing")
     assert row is not None
     assert row["max_output_tokens"] is None
+    # old rows keep upstream behaviour: no stream_options until the user opts in
+    assert row["request_usage"] is False
+
+
+def test_custom_request_usage_round_trip(isolated_providers_db: Path):
+    providers_db.create_provider(
+        id = "custom1",
+        provider_type = "custom",
+        display_name = "Custom",
+        base_url = "https://example.com/v1",
+    )
+    assert providers_db.get_provider("custom1")["request_usage"] is False
+    providers_db.create_provider(
+        id = "custom2",
+        provider_type = "custom",
+        display_name = "Custom",
+        base_url = "https://example.com/v1",
+        request_usage = True,
+    )
+    assert providers_db.get_provider("custom2")["request_usage"] is True
+
+    assert providers_db.update_provider(id = "custom1", request_usage = True)
+    assert providers_db.get_provider("custom1")["request_usage"] is True
+    # an update that does not name the flag leaves it alone
+    assert providers_db.update_provider(id = "custom1", display_name = "Renamed")
+    assert providers_db.get_provider("custom1")["request_usage"] is True
+    assert providers_db.update_provider(id = "custom1", request_usage = False)
+    assert providers_db.get_provider("custom1")["request_usage"] is False

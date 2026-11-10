@@ -3287,6 +3287,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Explicit Custom reasoning dialect; saved provider configuration takes precedence.",
     )
+    provider_request_usage: bool = Field(
+        False,
+        description = "[x-unsloth] Ask a Custom endpoint for streamed usage; saved provider configuration takes precedence.",
+    )
     provider_type: Optional[str] = Field(
         None,
         description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",

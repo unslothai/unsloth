@@ -3696,6 +3696,10 @@ export const tr = {
         "Bu Unsloth'a diğer cihazlarınızdan yerel ağınız veya geçici bir herkese açık URL üzerinden erişin.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Token kullanımını bildir",
+        description: "Bağlam çubuğunun gerçek kullanımı göstermesi için uç noktadan kesin token sayılarını ister. Uç nokta istekleri reddederse kapatın.",
+      },
       title: "API",
       description: "Unsloth'a OpenAI ve Anthropic uyumlu API üzerinden erişin.",
       readDocs: "API belgelerini okuyun",

@@ -7324,12 +7324,23 @@ export function createOpenAIStreamAdapter(
                     completion_tokens?: unknown;
                     context_tokens?: unknown;
                     cached_tokens?: unknown;
+                    context_window?: unknown;
                   };
                 }
               )._contextUsage;
               if (liveContext !== undefined) {
-                const { prompt_tokens, completion_tokens, context_tokens, cached_tokens } =
+                const { prompt_tokens, completion_tokens, context_tokens, cached_tokens, context_window } =
                   liveContext ?? {};
+                // An API model's window, sent before its first token.
+                if (
+                  typeof context_window === "number" &&
+                  context_window > 0 &&
+                  isExternalModelId(params.checkpoint)
+                ) {
+                  useChatRuntimeStore
+                    .getState()
+                    .setExternalContextWindow(params.checkpoint, context_window);
+                }
                 if (
                   typeof prompt_tokens === "number" &&
                   typeof completion_tokens === "number" &&

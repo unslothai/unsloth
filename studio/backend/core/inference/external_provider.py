@@ -46,7 +46,8 @@ _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom
 # only vLLM and llama.cpp document both continuation flags on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
+# custom asks only when its connection opts in (request_usage), as a strict endpoint 400s on the field;
+# OpenAI Responses returns usage without it; listed streams need it.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
     {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
 )
@@ -92,9 +93,16 @@ def _positive_int(value: Any) -> Optional[int]:
 
 def _reported_window(entry: dict[str, Any]) -> Optional[int]:
     # llama-server's served window is meta.n_ctx, not meta.n_ctx_train; others use max_model_len.
+    # context_length/context_window: OpenRouter-style catalogues and hosted gateways; max_context_length: LM Studio.
     meta = entry.get("meta")
-    return _positive_int(meta.get("n_ctx") if isinstance(meta, dict) else None) or _positive_int(
-        entry.get("max_model_len")
+    top = entry.get("top_provider")
+    return (
+        _positive_int(meta.get("n_ctx") if isinstance(meta, dict) else None)
+        or _positive_int(entry.get("max_model_len"))
+        or _positive_int(entry.get("context_length"))
+        or _positive_int(entry.get("context_window"))
+        or _positive_int(entry.get("max_context_length"))
+        or _positive_int(top.get("context_length") if isinstance(top, dict) else None)
     )
 
 
@@ -1553,10 +1561,13 @@ class ExternalProviderClient:
         *,
         api_type: str = "chat_completions",
         reasoning_config: Optional[dict] = None,
+        request_usage: bool = False,
         extra_headers: Optional[dict] = None,
         managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
+        # Custom connections opt in per connection: a strict endpoint 400s on stream_options.
+        self.request_usage = request_usage and provider_type == "custom"
         self.api_type = api_type if provider_type == "custom" else "chat_completions"
         self.reasoning_config = (
             normalize_provider_reasoning_config(reasoning_config)
@@ -1854,7 +1865,7 @@ class ExternalProviderClient:
         if top_p is not None:
             body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.
-        if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
+        if stream and (self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS or self.request_usage):
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
             # Newer OpenAI models reject max_tokens; MiniMax counts thinking against it.

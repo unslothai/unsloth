@@ -3587,6 +3587,10 @@ export const he = {
       },
     },
     apiKeys: {
+      requestUsage: {
+        label: "דיווח על שימוש בטוקנים",
+        description: "מבקש מנקודת הקצה ספירת טוקנים מדויקת כדי שסרגל ההקשר יציג את השימוש האמיתי. כבו אם נקודת הקצה דוחה בקשות.",
+      },
       title: "API",
       description: "גישה ל-Unsloth באמצעות ה-API התואם ל-OpenAI.",
       readDocs: "קרא את תיעוד ה-API",

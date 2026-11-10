@@ -3551,6 +3551,10 @@ export const de = {
       },
     },
     apiKeys: {
+      requestUsage: {
+        label: "Token-Verbrauch melden",
+        description: "Fragt den Endpunkt nach exakten Token-Zahlen, damit die Kontextleiste den echten Verbrauch zeigt. Schalte es aus, wenn der Endpunkt Anfragen ablehnt.",
+      },
       title: "API",
       description: "Zugriff auf Unsloth über die OpenAI-kompatible API.",
       readDocs: "API-Dokumentation lesen",

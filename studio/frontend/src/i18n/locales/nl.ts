@@ -3742,6 +3742,10 @@ export const nl = {
         "Bereik deze Unsloth vanaf je andere apparaten, via je lokale netwerk of een tijdelijke openbare URL.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Tokengebruik rapporteren",
+        description: "Vraagt het endpoint om exacte tokenaantallen, zodat de contextbalk het echte gebruik toont. Zet dit uit als het endpoint verzoeken weigert.",
+      },
       title: "API",
       description:
         "Toegang tot Unsloth via de met OpenAI en Anthropic compatibele API.",

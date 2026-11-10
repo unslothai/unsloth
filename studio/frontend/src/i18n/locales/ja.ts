@@ -3481,6 +3481,10 @@ export const ja = {
       },
     },
     apiKeys: {
+      requestUsage: {
+        label: "トークン使用量を報告",
+        description: "エンドポイントに正確なトークン数を要求し、コンテキストバーに実際の使用量を表示します。エンドポイントがリクエストを拒否する場合はオフにしてください。",
+      },
       title: "API",
       description: "OpenAI互換 API を介して Unsloth にアクセスします。",
       readDocs: "API ドキュメントを読む",

@@ -3698,6 +3698,10 @@ export const vi = {
         "Truy cập Unsloth này từ các thiết bị khác của bạn, qua mạng cục bộ hoặc một URL công khai tạm thời.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Báo cáo mức dùng token",
+        description: "Yêu cầu endpoint trả về số token chính xác để thanh ngữ cảnh hiển thị mức dùng thực tế. Hãy tắt nếu endpoint từ chối yêu cầu.",
+      },
       title: "API",
       description: "Truy cập Unsloth qua API tương thích OpenAI và Anthropic.",
       readDocs: "Đọc tài liệu API",
