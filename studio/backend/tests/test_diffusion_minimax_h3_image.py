@@ -575,14 +575,18 @@ def test_family_routing_and_defaults():
     assert vf.detect_video_family("MiniMaxAI/MiniMax-H3").name == "minimax-h3"
 
 
-def test_backend_loads_and_generates(h3i, release, tmp_path):
+def test_backend_loads_and_generates(h3i, release, tmp_path, monkeypatch):
     import base64
     import io
 
     import torch
     from PIL import Image
 
+    from core.inference import diffusion_attention
     from core.inference.diffusion import DiffusionBackend
+
+    # A real CPU load memoizes the SDPA probe process-wide; later tests run against a faked torch.
+    monkeypatch.setattr(diffusion_attention, "_SDPA_PROBE_CACHE", {})
 
     root, _ref, te = release
     te.save_pretrained(str(root / "text_encoder"))
