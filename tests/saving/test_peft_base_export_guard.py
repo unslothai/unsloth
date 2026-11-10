@@ -20,6 +20,8 @@ _EXPORT_FUNCTIONS = {
     "unsloth_generic_save_pretrained_merged",
     "unsloth_generic_push_to_hub_merged",
     "unsloth_save_pretrained_torchao",
+    "unsloth_save_pretrained_openvino",
+    "unsloth_push_to_hub_openvino",
 }
 
 
