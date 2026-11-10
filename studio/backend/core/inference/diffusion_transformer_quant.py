@@ -1398,6 +1398,21 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     return reason
 
 
+def rdna_explicit_int8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Why an explicit int8 request on this ROCm RDNA card compiles its denoiser from render 1, else None (eager).
+    Weight-only int8 stays the scheme unless the family's AUTO table measured W8A8 faster (``rdna_auto_w8a8_reason``);
+    eager int8 is slower than bf16 on gfx1151 for every measured family. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
+    if not _rocm_cuda(target) or not native_quant_host(target):
+        return None
+    if not _sys.platform.startswith("linux"):
+        return None
+    if int8_act_disabled() or not rocm_rdna_w8a8_ready(getattr(target, "ordinal", None)):
+        return None
+    if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
+        return None
+    return "an explicit int8 request on RDNA is measured compiled"
+
+
 def select_transformer_quant_scheme(
     target: Any,
     requested: Optional[str],
