@@ -63,7 +63,7 @@ LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_LENGTH_RATIO", "2.0"))
 COUNT_FLOOR = int(os.environ.get("LONG_THREAD_AREAS_COUNT_FLOOR", "3000"))
 # Paint and main-thread CPU, long over short chat (the cheapest long reading over the median short one,
 # each from the first reading and its rechecks):
-# fails over TIME_LENGTH_RATIO AND over TIME_LENGTH_FLOOR_MS more. A short reading below
+# fails over TIME_LENGTH_RATIO AND over TIME_LENGTH_FLOOR_MS more (TIME_LENGTH_CPU_FLOOR_MS for CPU). A short reading below
 # TIME_BASE_FLOOR_MS counts as that, so a near-free area cannot make a large ratio.
 TIME_LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_RATIO", "2.5"))
 # Blocking. A first reading at LONG turns carries 100-250 ms of work spilled over from the areas run
@@ -74,6 +74,13 @@ TIME_LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_RATIO", 
 # LONG_THREAD_AREAS_LENGTH_TIME_BLOCKING=0 to report only.
 LENGTH_TIME_BLOCKING = os.environ.get("LONG_THREAD_AREAS_LENGTH_TIME_BLOCKING", "1") == "1"
 TIME_LENGTH_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_FLOOR_MS", "50"))
+# Main-thread CPU also has to grow by this much. Message-level actions (tool / reasoning toggles, message
+# menu and click) and a few sidebar surfaces read 2.3-2.6x after rechecks on 2-core GitHub runners (4 gate
+# runs: worst +137 ms), so a ratio alone has no margin there; a feature adding real per-interaction work
+# over the thread (the synthetic menu-open walk: about +1 s) is far above it.
+TIME_LENGTH_CPU_FLOOR_MS = float(
+    os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_CPU_FLOOR_MS", "200")
+)
 TIME_BASE_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_BASE_FLOOR_MS", "20"))
 MAX_RATIO = float(os.environ.get("LONG_THREAD_AREAS_MAX_RATIO", "4.0"))
 # Also judged on CPU growth with chat length: a streamed reply restyles only its own message, so its
@@ -1832,7 +1839,9 @@ def judge(result: dict, known: str | None = None) -> list[dict]:
                         "base_value": sv,
                         "ratio": ratio,
                         "limit": tlimit,
-                        "would_fail": (over := ratio > tlimit and lv - sv > TIME_LENGTH_FLOOR_MS),
+                        "would_fail": (
+                            over := ratio > tlimit and lv - sv > length_floor_ms(metric)
+                        ),
                         "fail": LENGTH_TIME_BLOCKING and over,
                     }
                 )
@@ -1955,6 +1964,11 @@ def thread_split(threads: dict[str, float]) -> str:
     return ", ".join(f"{n or '?'} {v:.0f} ms" for n, v in top)
 
 
+def length_floor_ms(metric: str) -> float:
+    """How much a paint / main-thread length cell must grow, on top of the ratio, to fail."""
+    return TIME_LENGTH_CPU_FLOOR_MS if metric == "main_ms" else TIME_LENGTH_FLOOR_MS
+
+
 def recheck_keys(verdicts: list[dict]) -> list[tuple[int, str, str]]:
     """(turns, mode, area) to measure again: every failing CPU cell and broken area, and a paint /
     main-thread length failure at both lengths (also while report-only: a single first reading at LONG
@@ -2030,7 +2044,7 @@ def run(
             failures.append(
                 f"area {v['area']} ({v['mode']}) costs more as the chat grows: {what} {v['base_value']:,.0f} ms at "
                 f"{SHORT} turns -> {v['value']:,.0f} ms at {LONG} turns = {v['ratio']:.1f}x (limit {v['limit']:.1f}x over "
-                f"{TIME_LENGTH_FLOOR_MS:.0f} ms; LONG_THREAD_AREAS_KNOWN {key}:{v['area']}=... or {key}@{v['mode']}:{v['area']}=...). "
+                f"{length_floor_ms(v['metric']):.0f} ms more; LONG_THREAD_AREAS_KNOWN {key}:{v['area']}=... or {key}@{v['mode']}:{v['area']}=...). "
                 "Element and layout counts can stay flat while this grows: the thread behind the surface is repainted, "
                 "or script walks every message"
             )

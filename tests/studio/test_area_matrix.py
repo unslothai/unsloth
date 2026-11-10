@@ -638,12 +638,12 @@ def test_length_ratio_divides_by_the_median_short_reading(metric, length_blockin
         if v["metric"] == metric and v["kind"] == "length"
     ]
     assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(76, 34, False)]
-    # A real growth still fails over the same median: 34 -> 160 ms is 4.7x and 126 ms more.
+    # A real growth still fails over the same median: 34 -> 300 ms is 8.8x and 266 ms more.
     long_cell = {
         "elements": 10,
         "layout_objects": 0,
-        metric: 170,
-        "again": [{"status": "OK", metric: 160}],
+        metric: 310,
+        "again": [{"status": "OK", metric: 300}],
     }
     pages[(am.LONG, "default")] = _page({"a": long_cell})
     rows = [
@@ -651,7 +651,35 @@ def test_length_ratio_divides_by_the_median_short_reading(metric, length_blockin
         for v in am.judge(_result(pages), known = "")
         if v["metric"] == metric and v["kind"] == "length"
     ]
-    assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(160, 34, True)]
+    assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(300, 34, True)]
+
+
+def test_cpu_length_growth_needs_the_cpu_floor_as_well_as_the_ratio(length_blocking):
+    # GitHub runner, Liquid 3D tool_toggle after rechecks: 51 -> 132 ms is 2.6x but only 81 ms more, inside
+    # the 2-core runner spread for message-level actions; paint keeps the 50 ms floor.
+    def rows(short, long):
+        cells = lambda v: {
+            "elements": 10,
+            "layout_objects": 0,
+            "main_ms": v,
+            "paint_ms": v,
+            "again": [{"status": "OK", "main_ms": v, "paint_ms": v}],
+        }
+        pages = {
+            (am.SHORT, "default"): _page({"a": cells(short)}),
+            (am.LONG, "default"): _page({"a": cells(long)}),
+        }
+        return {
+            v["metric"]: v["fail"]
+            for v in am.judge(_result(pages), known = "")
+            if v["kind"] == "length" and v["metric"] in ("main_ms", "paint_ms")
+        }
+
+    assert am.length_floor_ms("main_ms") == am.TIME_LENGTH_CPU_FLOOR_MS == 200
+    assert am.length_floor_ms("paint_ms") == am.TIME_LENGTH_FLOOR_MS == 50
+    assert rows(51, 132) == {"main_ms": False, "paint_ms": True}
+    # The synthetic per-message walk on a menu open: about +1 s at 200 turns.
+    assert rows(547, 1535) == {"main_ms": True, "paint_ms": True}
 
 
 def test_length_time_checks_block_by_default():
