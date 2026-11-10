@@ -94,8 +94,7 @@ def _speed_calls(path: pathlib.Path) -> list:
 
 
 def test_image_backend_asks_for_the_streamed_install():
-    """Both image-backend speed passes (load, and the deferred compile on the 3rd image) ask for it; the video
-    backend keeps its own H3-only streamed install."""
+    """Image speed passes request the streamed install; video keeps its own H3-only one."""
     calls = _speed_calls(_INFERENCE / "diffusion.py")
     assert len(calls) == 2
     for call in calls:
@@ -198,9 +197,8 @@ def _blocks(n, k, version):
 @needs_cuda
 @pytest.mark.parametrize("version", [None, 2])
 def test_prefetched_weights_run_the_fused_gemm_bit_identically(forced, version):
-    """Studio's block streaming (diffusers group offload driven by the event-fenced prefetch, two groups ahead): the
-    weights reach each block through the copy stream, every int8 Linear still takes the fused GEMM, and the output
-    equals stock torchao on resident weights, forward after forward."""
+    """Block streaming via event-fenced prefetch two groups ahead: every int8 Linear still takes the
+    fused GEMM and matches stock torchao, forward after forward."""
     pytest.importorskip("diffusers.hooks")
     from core.inference import diffusion_memory as dm
     from core.inference.diffusion_offload_prefetch import module_prefetcher

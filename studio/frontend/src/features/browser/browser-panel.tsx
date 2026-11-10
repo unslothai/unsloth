@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usesWindowsTitlebar } from "@/components/tauri/window-titlebar";
 import { ATTACHMENT_PAGE_SCALES } from "@/components/assistant-ui/attachment-viewer-meta";
 import { ScaleMenu } from "@/components/media-viewer";
 import {
@@ -760,7 +761,7 @@ function TabStrip({
       <IconButton label={t("browser.newTab")} onClick={newTab} className={STRIP_BUTTON}>
         <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
       </IconButton>
-      <span aria-hidden={true} className="mx-1 h-4 w-px shrink-0 bg-border" />
+      <span aria-hidden={true} data-slot="browser-tab-divider" className="mx-1 h-4 w-px shrink-0 bg-border" />
       <IconButton
         label={t(fullView ? "browser.fullView.exit" : "browser.fullView.enter")}
         shortcut={fullViewShortcut}
@@ -2536,6 +2537,7 @@ export const BrowserPanel = memo(function BrowserPanel({
       ref={sectionRef}
       data-slot="browser-panel"
       data-browser-document={documentShown || undefined}
+      data-windows-browser={!floating && usesWindowsTitlebar() ? (documentShown ? "document" : "web") : undefined}
       aria-label={t("browser.title")}
       // The chat's find skips the browser's chrome; the page is searched as its own target.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
@@ -2615,6 +2617,7 @@ export const BrowserPanel = memo(function BrowserPanel({
         <div
           ref={setPageElement}
           data-browser-page=""
+          data-browser-new-tab={activeEntry?.kind === "newtab" || undefined}
           className={cn(
             "relative min-h-0 flex-1 overflow-hidden",
             floatingFileControls ? "browser-file-page" : !floating && "border-t border-border/70",

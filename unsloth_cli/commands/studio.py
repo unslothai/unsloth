@@ -338,8 +338,7 @@ def _studio_runtime_launch_guard(*, inherited: bool = False, wait: bool = False)
 
 
 def _stream_for_subprocess(stream):
-    """Return *stream* if it has a real OS fd, else None: Windows will not inherit std handles
-    unless passed explicitly, and a test-captured stream has no fd."""
+    """Return None without a real OS fd; Windows needs std handles passed explicitly."""
     if stream is None:
         return None
     try:
@@ -371,8 +370,7 @@ def _is_wildcard_bind(host: str) -> bool:
 
 
 def _openable_host_for_bind(run_mod, host: str) -> str:
-    """Host to print in a URL: the LAN address when one resolves, else loopback. A
-    wildcard bind must never be printed as-is; no browser can open it."""
+    """URL host: the LAN address if one resolves, else loopback, never a wildcard bind."""
     share_host = _network_share_host_for_bind(run_mod, host)
     if _is_wildcard_bind(share_host):
         return _loopback_bind_host_for(host)
@@ -505,8 +503,7 @@ def _running_in_studio_venv(venv_dir: Path) -> bool:
 
 
 def _managed_cli_site_packages_layout(python: Path) -> bool:
-    """On-disk hint that the venv still carries the CLI. Weaker than the import probe: an empty
-    unsloth_cli/ or an orphaned dist-info passes here."""
+    """Weaker than the import probe: an empty unsloth_cli/ or orphaned dist-info still passes."""
     site_packages = python.parent.parent / "Lib" / "site-packages"
     if (site_packages / "unsloth_cli").is_dir():
         return True
@@ -853,14 +850,9 @@ def _wait_for_server(
 
 
 def _cli_api_key_secret_path(name: str) -> Path:
-    """Cache path for the raw API key named *name*.
-
-    Identity is the digest; the stem is only so a human can tell the files apart.
-    Sharing a stem would hand one label's credential to another (`foo/bar` vs
-    `foo?bar`, past the 64-char cut, `cli` vs `CLI` on APFS/NTFS). ASCII-only
-    keeps 64 chars at 64 bytes: NAME_MAX is 255 BYTES, so multibyte alnums made a
-    282-byte name that failed to cache and re-minted every launch (#10595 again).
-    """
+    """Identity is the digest, so a shared stem (foo/bar vs foo?bar, cli vs CLI) cannot share a
+    credential; ASCII-only keeps names within NAME_MAX (255 bytes); multibyte names were
+    re-minted every launch (issue 10595)."""
     safe = "".join(
         ch if (ch.isascii() and ch.isalnum()) or ch in "-_" else "_" for ch in name
     ).strip("_")
@@ -1204,8 +1196,7 @@ _UNATTENDED_PROMPT_DONE_ENV = "UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE"
 
 
 def _deadline_sentence() -> str:
-    """Say what will actually happen: BOOTSTRAP_TIMEOUT=0 arms no deadline, and promising one an
-    operator acts on is worse than saying nothing."""
+    """Say only what happens: BOOTSTRAP_TIMEOUT=0 arms no deadline, so promising one misleads."""
     if _bootstrap_deadline_active():
         return (
             "Unsloth shuts down after the bootstrap deadline "
@@ -1317,9 +1308,8 @@ def _cli_update_password(
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
-    """Non-interactively set the INITIAL admin password before the server binds. Only ever the
-    FIRST one: an override would be an auth bypass, and the parent runs it so the secret never
-    crosses to child argv."""
+    """Set the INITIAL admin password before the server binds, and only the first: an override would
+    be an auth bypass; the parent runs it so the secret stays out of child argv."""
     if not supplied_password:
         return
     try:
@@ -3175,8 +3165,7 @@ PID_FILE_GLOB = "studio-*.pid"
 
 
 def _pid_alive(pid: int) -> bool:
-    """Return True if a process with ``pid`` exists. os.kill(pid, 0) raises WinError 87 for
-    every pid on Windows, so use tasklist there."""
+    """True if pid exists; os.kill(pid, 0) raises WinError 87 on Windows, so tasklist is used."""
     if sys.platform == "win32":
         try:
             out = subprocess.run(
@@ -3229,8 +3218,7 @@ def _read_pid_record(path: Path) -> "tuple[int, RecordedStart, str | None] | Non
 
 
 def _unlink_quietly(path: Path) -> None:
-    """Drop a record without letting one bad file end the loop: an undeletable record must
-    not stop us reaching the other servers."""
+    """Unlink quietly: an undeletable record must not stop us reaching the other servers."""
     try:
         path.unlink(missing_ok = True)
     except OSError as e:
@@ -3250,9 +3238,8 @@ def _report_unreadable(paths: "list[Path]") -> None:
 def _pid_file_entries(
     unreadable: "list[Path] | None" = None,
 ) -> "list[tuple[int, list[RecordedStart], list[Path]]]":
-    """(pid, create_times, files) per recorded server, including the legacy studio.pid. Grouped by
-    PID: a second SIGTERM would hard-kill a server mid-shutdown. Every recorded time is kept, so a
-    stale file cannot veto a live server."""
+    """Per recorded server (pid, create_times, files), grouped by PID so a second SIGTERM cannot
+    hard-kill mid-shutdown; stale files cannot veto a live server."""
     by_pid: "dict[int, tuple[list[RecordedStart], list[Path]]]" = {}
     try:
         paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
@@ -3743,12 +3730,9 @@ _UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 
 def _uv_no_cache_requested() -> bool:
-    """uv --no-cache caches in a temporary directory and discards it, outranks --cache-dir,
-    and recording it would aim later updates at a cache that never existed.
-
-    Not stripped, matching clap and therefore both installers: uv rejects a padded value
-    outright rather than reading it as true, so ` true ` leaves uv's cache ON and this must
-    not stand the selection down for it."""
+    """uv --no-cache discards its cache and outranks --cache-dir, so recording it aims updates at a
+    nonexistent cache; UV_NO_CACHE is not stripped, so a padded value leaves the uv cache on and
+    this must not stand the selection down."""
     return (os.environ.get("UV_NO_CACHE") or "").lower() in _UV_TRUE
 
 
@@ -3919,8 +3903,7 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
 
 
 def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
-    """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
-    what the install had just fetched."""
+    """Without the installer or _setup_cache_env, uv re-downloads what the install fetched."""
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         return env
     if _uv_no_cache_requested():
@@ -4661,9 +4644,8 @@ class _WindowsLauncherUpdateTransaction:
             return False
 
     def _move_launcher_aside(self) -> None:
-        """Free the canonical path so the installer can publish a replacement: uv deletes a third-party
-        console script outright and hard-errors when it is in use, after which the pip fallback
-        no-ops. Non-fatal; it costs only the upgrade."""
+        """Frees the canonical launcher path so the installer can publish a replacement (uv deletes
+        third-party scripts and hard-errors when in use); non-fatal, it costs only the upgrade."""
         assert self.launcher is not None and self.stale is not None
         if not self._is_valid_pe(self.launcher):
             return
@@ -4685,8 +4667,7 @@ class _WindowsLauncherUpdateTransaction:
         return None
 
     def _recovery_candidates(self) -> List[Path]:
-        """Copies that could stand in for the launcher, best first. All are kept: passing the header
-        check does not make any of them runnable."""
+        """Stand-in copies, best first; passing the header check does not make one runnable."""
         seen: List[Path] = []
         for path in (self.backup, self.stale, self.legacy_backup, self.shim):
             if path is None or not self._is_valid_pe(path):
@@ -4717,9 +4698,8 @@ class _WindowsLauncherUpdateTransaction:
         return self._restore_failure_reason() is None
 
     def _restore_failure_reason(self) -> Optional[str]:
-        """Put back the first copy that actually runs; return why the CLI still cannot, or None.
-        Under Application Control every --version dies in CreateProcess, so this degrades to the
-        shape check."""
+        """Restore the first runnable copy, or return why the CLI still cannot run; under
+        Application Control --version dies in CreateProcess, so only shape is checked."""
         if self._launcher_health_error() is None:
             return None
         candidates = self._recovery_candidates()
@@ -4759,9 +4739,8 @@ class _WindowsLauncherUpdateTransaction:
         return None
 
     def _launcher_health_error(self) -> Optional[str]:
-        """Whether the update left a working CLI. Identical to _launcher_runs_error except for an
-        Application Control denial, which happens before Python starts: ask the signed interpreter,
-        or every update on such a machine rolls a good install back (#8490)."""
+        """Whether the update left a working CLI; asks the signed interpreter on an Application
+        Control denial, else good installs roll back (issue 8490)."""
         error = self._launcher_runs_error()
         if error is self._POLICY_BLOCKED:
             return self._interpreter_health_error(error)
