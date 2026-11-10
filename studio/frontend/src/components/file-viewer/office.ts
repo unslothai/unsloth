@@ -849,10 +849,18 @@ function flattenMarkup(text: string): string {
   );
 }
 
+function decodeXstring(text: string): string {
+  return text.replace(
+    /_x005[fF]_(x[0-9a-fA-F]{4}_)|_x([0-9a-fA-F]{4})_/g,
+    (_match, literal?: string, hex?: string) =>
+      literal ? `_${literal}` : String.fromCharCode(parseInt(hex!, 16)),
+  );
+}
+
 function stringText(xmlText: string): string {
   let out = "";
   for (const match of flattenMarkup(xmlText).replace(PHONETIC, "").matchAll(TEXT_RUN)) {
-    out += decodeXml(match[1]!.slice(0, MAX_CELL_BYTES));
+    out += decodeXstring(decodeXml(match[1]!.slice(0, MAX_CELL_BYTES)));
     if (out.length >= MAX_CELL_TEXT) return out.slice(0, MAX_CELL_TEXT);
   }
   return out;
@@ -933,7 +941,7 @@ function readSheet(
       let numeric = false;
       if (raw === "" && formula && !(type === "str" && cached)) value = `=${formula}`;
       else if (type === "s" || type === "inlineStr" || type === "str") {
-        value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : raw, cellStyle.format);
+        value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : decodeXstring(raw), cellStyle.format);
       } else if (type === "b") value = isTrue(raw) ? "TRUE" : "FALSE";
       else if (type !== "str" && type !== "e" && raw !== "" && Number.isFinite(Number(raw))) {
         value = formatNumber(Number(raw), cellStyle.format, date1904);
@@ -1241,6 +1249,7 @@ export interface SlideBox {
 
 export interface Slide {
   boxes: SlideBox[];
+  notes?: string[];
 }
 
 export interface Deck {
@@ -1502,7 +1511,10 @@ function degrees(xfrm: Element | undefined): number {
   return Number(xfrm?.getAttribute("rot")) / 60000 || 0;
 }
 
-export function readPptx(bytes: Uint8Array, { images = true, maxSlides = MAX_SLIDES } = {}): Deck {
+export function readPptx(
+  bytes: Uint8Array,
+  { images = true, maxSlides = MAX_SLIDES, notes = false } = {},
+): Deck {
   const read = archive(bytes);
   const main = mainPart(read, "ppt/presentation.xml");
   if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
@@ -1672,8 +1684,20 @@ export function readPptx(bytes: Uint8Array, { images = true, maxSlides = MAX_SLI
     };
     const tree = first(doc, "spTree");
     if (tree) walk(tree);
+    const notesPath = notes ? slideRelList.find((rel) => rel.type.endsWith("/notesSlide"))?.path : undefined;
+    const notesDoc = notesPath ? partDoc(notesPath) : null;
+    const slideNumber = new Set(
+      (notesDoc ? all(notesDoc, "sp") : [])
+        .filter((sp) => first(sp, "ph")?.getAttribute("type") === "sldNum")
+        .flatMap((sp) => all(sp, "p")),
+    );
+    const noteLines = (notesDoc ? all(notesDoc, "p") : [])
+      .filter((p) => !slideNumber.has(p))
+      .map(paragraphText)
+      .filter((text) => text.trim());
+    textLeft -= noteLines.reduce((n, text) => n + text.length, 0);
     if (cut) boxes.push({ paragraphs: [{ text: "…" }] });
-    slides.push({ boxes });
+    slides.push(noteLines.length ? { boxes, notes: noteLines } : { boxes });
     if (textLeft <= 0) {
       truncated = index < slidePaths.length - 1;
       break;

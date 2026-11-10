@@ -4,7 +4,7 @@
 import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { toast } from "@/lib/toast";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
-import { getActiveModelDownloads } from "./api";
+import { getActiveModelDownloads, getDownloadTransportCapabilities } from "./api";
 import {
   DOWNLOAD_KIND,
   mismatchStartAction,
@@ -187,11 +187,18 @@ export async function requestStart(
         err,
       );
     }
+    // A limit moves the backend onto HTTP unless a file passes the HTTPS ceiling, which only it can see:
+    // preflight assumes HTTP (or a live sibling's transport), and the start still sends the preference.
+    const speedLimited = await getDownloadTransportCapabilities()
+      .then((caps) => caps.speed_limited === true)
+      .catch(() => false);
+    if (speedLimited) mode = TRANSPORT.HTTP;
     let siblingTransport: ResolvedTransport | null = null;
     let siblingProbed = false;
     try {
       siblingTransport = await activeSiblingTransport(req);
       siblingProbed = true;
+      if (speedLimited) mode = siblingTransport ?? TRANSPORT.HTTP;
       if (
         siblingTransport &&
         siblingTransport !== mode &&
@@ -278,7 +285,7 @@ export async function requestStart(
     }
 
     await startJob(req, {
-      useXet: mode === TRANSPORT.XET,
+      useXet: speedLimited ? undefined : mode === TRANSPORT.XET,
       originRoute,
       originSelectionEpoch,
       restartDisclosure,

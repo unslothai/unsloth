@@ -107,10 +107,13 @@ def _stub_props(
         headers = None,
         timeout = None,
         trust_env = None,
+        verify = None,
     ):
         assert url.endswith("/props")
 
         assert trust_env is False
+        # Shared context: httpx otherwise parses the CA bundle on every /props read.
+        assert verify is llama_cpp_mod._local_ssl_context()
         # /props is behind the api-key middleware; no key means no header, not 'Bearer None'.
         assert headers is None or headers == {"Authorization": "Bearer test-key"}
         if exc is not None:
@@ -268,9 +271,8 @@ _CAPS_NONE = {"supports_kv_unified": False, "supports_fit_ctx": False}
 
 
 def test_kv_unified_added_for_multi_slot():
-    """Explicit --parallel N disables llama-server's auto-slots kv-unified
-    default, splitting -c into per-slot windows of -c/N; Unsloth must restore
-    the shared pool so one request can use the full advertised context."""
+    """Explicit --parallel N disables the auto-slots kv-unified default, splitting -c into -c/N
+    windows; Unsloth must restore the shared pool so one request gets the full context."""
     flags = LlamaCppBackend._ctx_integrity_flags(4, False, False, 98304, 98304, _CAPS_ALL)
     assert "--kv-unified" in flags
 

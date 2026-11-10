@@ -327,18 +327,23 @@ test("the workspace chords land where the guard lets them", async () => {
     SRC__ROOT,
     /const chatOnlyMeasured = usePlatformStore\(\n\s*\(s\) => s\.isChatOnly\(\) && !s\.capabilitiesUnknown\(\),/,
   );
+  // Train follows its own verdict: a CPU training host is chat-only yet trains.
+  assert.match(
+    SRC__ROOT,
+    /const trainBlocked = usePlatformStore\(\n\s*\(s\) => s\.isTrainUnavailable\(\) && !s\.capabilitiesUnknown\(\),/,
+  );
   assert.match(
     SRC__ROOT,
     /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
   );
   assert.match(
     SRC__ROOT,
-    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !chatOnlyMeasured,/,
+    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !trainBlocked,/,
   );
   // /video checks only auth, so the chord would land on the unsupported-hardware gate.
   assert.match(
     SRC__ROOT,
-    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\) !== undefined;/,
+    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining\) !== undefined;/,
   );
   assert.match(
     SRC__ROOT,
@@ -346,7 +351,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\);/,
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining\);/,
   );
   assert.match(APP_SIDEBAR, /disabled: videoDisabled,/);
 
@@ -365,10 +370,8 @@ test("the workspace chords land where the guard lets them", async () => {
   }
 });
 
-// A chord behind a hidden developer menu is not one the browser took from the
-// user, and these sets drive a warning the user reads. Safari has ⌥⌘E (and
-// ⌥⌘R, which Firefox's Reader View flags anyway) only once the Develop menu is
-// switched on, so reserving it would tell every macOS user something untrue.
+// Safari has ⌥⌘E and ⌥⌘R only once its Develop menu is switched on (Firefox's Reader View flags ⌥⌘R
+// anyway), so reserving them would falsely warn every macOS user.
 test("an opt-in developer chord is not treated as taken", () => {
   for (const value of ["Mod+Alt+KeyE"]) {
     for (const mac of [true, false]) {
@@ -1674,9 +1677,8 @@ test("a selection chord does not fall through to the open chat", async () => {
   assert.match(APP_SIDEBAR, /const SELECTION_ACTION_GRACE_MS = \d+;/);
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
     const body = sidebarShortcut(id);
-    // Both halves name the action. A shared latch would hold back Archive
-    // after Pin took the selection, and that is a different command the user
-    // chose, not the repeat this guard exists for.
+    // Each action stamps the latch under its own name, since a shared latch would hold back Archive
+    // after Pin took the selection, a different command, not a repeat.
     assert.match(
       body,
       new RegExp(`actOnSelection\\("${id}",`),

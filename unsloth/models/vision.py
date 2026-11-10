@@ -257,6 +257,10 @@ from ._utils import (
     resolve_attention_implementation,
     requests_flex_attention,
     _EXPLICIT_FLEX_ATTR,
+    _config_prefers_flex_attention,
+    _config_set,
+    _iter_attention_configs,
+    _text_attention_configs,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -279,6 +283,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
@@ -287,6 +292,7 @@ from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_cust
 from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
+from . import _decode_graphs, _generic_decode_graphs
 from .loader_utils import (
     _bnb_bits_requested,
     vlm_gradient_checkpointing_reentrant,
@@ -310,6 +316,7 @@ from .loader_utils import (
     planner_class_mismatch_reason,
     planner_model_class,
     exclude_no_placement_params,
+    backfill_fp8_modules_to_convert,
     planner_quantization_kwargs,
     raise_if_bnb_cpu_spill,
     requested_device_map,
@@ -393,6 +400,7 @@ import warnings
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
+import threading
 
 try:
     from huggingface_hub.utils import get_token
@@ -1497,6 +1505,9 @@ def _eager_decodes(model):
     return _is_decode_compile_model(model) and "forward" not in model.__dict__
 
 
+_NO_FORWARD = object()
+
+
 class _EagerDecodeSteps:
     """One generate() call. Each eager decode step (one new token per row) runs inside zoo's
     `unsloth_eager_decode()`, so compiled regions call their eager originals; prefill and
@@ -1524,12 +1535,301 @@ class _EagerDecodeSteps:
         def forward(*args, **kwargs):
             return step(*args, **kwargs)
 
+        self._previous = self.model.__dict__.get("forward", _NO_FORWARD)
         self.model.forward = forward
         return self
 
     def __exit__(self, *exc):
-        del self.model.forward
+        if self._previous is _NO_FORWARD:
+            del self.model.forward
+        else:
+            self.model.forward = self._previous
         return False
+
+
+try:
+    from unsloth_zoo.decode_graph_state import (
+        graph_generate as _zoo_graph_generate,
+        graph_decode_step as _zoo_graph_decode_step,
+    )
+except ImportError:
+    _zoo_graph_generate = _zoo_graph_decode_step = None
+
+
+def _one_token_step(kwargs):
+    ids = kwargs.get("input_ids")
+    if ids is None:
+        ids = kwargs.get("inputs_embeds")
+    return isinstance(ids, torch.Tensor) and ids.dim() >= 2 and ids.shape[1] == 1
+
+
+class _GraphDecodeSteps(_EagerDecodeSteps):
+    """One generate() call over a static cache with decode CUDA graphs on: each one-token decode
+    step replays a captured graph of the step the eager path runs (_generic_decode_graphs), else
+    runs as before (inside `unsloth_eager_decode()` for the models that compile their decode)."""
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.eager_decodes = _eager_decodes(model)
+        # Diagnostic: =1 graphs the eager originals of compiled regions (not what eager decode runs).
+        self.eager_regions = self.eager_decodes or (
+            os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_EAGER_REGIONS", "0") == "1"
+        )
+        # Set by generate() after the call: keep the graphs and their cache for the next call.
+        self.keep = False
+        self.caches = _generic_decode_graphs.reuse_kept_cache(model)
+
+    def _forward(self, *args, **kwargs):
+        # zoo picks its graph-safe decode kernels (gpt-oss dense sink attention, routed MoE below sm80) for
+        # one-token steps in this scope: the eager warm-up, the capture and every eager step agree.
+        if _zoo_graph_decode_step is not None and _one_token_step(kwargs):
+            with _zoo_graph_decode_step():
+                return self._graph_forward(*args, **kwargs)
+        return self._graph_forward(*args, **kwargs)
+
+    def _graph_forward(self, *args, **kwargs):
+        if not args and not torch.compiler.is_compiling():
+            # Compiled regions stay compiled unless this model's eager decode leaves them: a
+            # different kernel mix rounds differently and greedy tokens drift after a few dozen steps.
+            out = _generic_decode_graphs.decode_step(
+                self.model,
+                self.forward,
+                kwargs,
+                unsloth_eager_decode if self.eager_regions else None,
+            )
+            if out is not None:
+                return out
+        if self.eager_decodes:
+            return super()._forward(*args, **kwargs)
+        return self.forward(*args, **kwargs)
+
+    def __enter__(self):
+        _generic_decode_graphs.begin(self.model)
+        self.caches.__enter__()
+        # Masks are built in prepare_inputs_for_generation, outside the forward: the call-wide scope covers them.
+        self._zoo_scope = _zoo_graph_generate() if _zoo_graph_generate is not None else None
+        if self._zoo_scope is not None:
+            self._zoo_scope.__enter__()
+        try:
+            return super().__enter__()
+        except BaseException:
+            if self._zoo_scope is not None:
+                self._zoo_scope.__exit__(None, None, None)
+            self.caches.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, *exc):
+        try:
+            return super().__exit__(*exc)
+        finally:
+            if self._zoo_scope is not None:
+                self._zoo_scope.__exit__(None, None, None)
+            self.caches.__exit__(*exc)
+            _generic_decode_graphs.end(self.model, keep = self.keep and exc[0] is None)
+
+
+# One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
+# dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built.
+_FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
+_FLEX_GENERATE_LOCK = threading.Lock()
+
+
+# Kept outside the model: an RLock in __dict__ breaks deepcopy / pickle.
+class _ModelMap:
+    def __init__(self):
+        self.weak, self.strong = weakref.WeakKeyDictionary(), {}
+
+    def _where(self, model):
+        try:
+            weakref.ref(model)
+            return self.weak, model
+        except TypeError:
+            return self.strong, id(model)
+
+    def get(
+        self,
+        model,
+        default = None,
+    ):
+        table, key = self._where(model)
+        return table.get(key, default)
+
+    def set(self, model, value):
+        table, key = self._where(model)
+        table[key] = value
+
+    def pop(self, model):
+        table, key = self._where(model)
+        table.pop(key, None)
+
+
+_FLEX_GENERATE_SERIAL = _ModelMap()
+_FLEX_GENERATE_ROUTING = _ModelMap()
+_NON_FLEX_DECODE = "eager"
+
+
+def _flex_generate_configs(model):
+    if os.environ.get(_FLEX_GENERATE_ENV_VAR, "0") == "1":
+        return []
+    config = getattr(model, "config", None)
+    if config is None or not _config_prefers_flex_attention(config):
+        return []
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
+        return []
+    return [
+        c
+        for c in _text_attention_configs(config)
+        if _config_get(c, "_attn_implementation", None) == "flex_attention"
+    ]
+
+
+def _step_query_length(model_inputs):
+    if not isinstance(model_inputs, dict):
+        return None
+    for key in ("inputs_embeds", "input_ids", "decoder_input_ids"):
+        x = model_inputs.get(key)
+        if isinstance(x, torch.Tensor) and x.dim() >= 2:
+            return int(x.shape[1])
+    return None
+
+
+class _NonFlexGenerate:
+    """Threads are serialised per model: they share one config, switched between mask build and forward."""
+
+    def __init__(self, model):
+        self.model = model
+        self.active = False
+        self.serial = None
+        self.base = model.get_base_model() if hasattr(model, "get_base_model") else model
+
+    def _set(self, decode):
+        state = self.model.__dict__
+        if state.get("_unsloth_non_flex_generate_pinned", False):
+            decode = True
+        value = _NON_FLEX_DECODE if decode else "flex_attention"
+        for c in state.get("_unsloth_non_flex_generate_configs", ()):
+            if _config_get(c, "_attn_implementation", None) != value:
+                _config_set(c, "_attn_implementation", value)
+
+    def _wrap_prepare(self, prepare):
+        scope = self
+
+        @functools.wraps(prepare)
+        def prepare_inputs_for_generation(*args, **kwargs):
+            cache_position = kwargs.get("cache_position")
+            if isinstance(cache_position, torch.Tensor) and cache_position.dim() == 1:
+                decode = cache_position.shape[0] == 1
+            else:
+                decode = scope.steps > 0
+            scope.steps += 1
+            scope._set(decode)
+            model_inputs = prepare(*args, **kwargs)
+            q_len = _step_query_length(model_inputs)
+            if q_len is not None and (q_len == 1) != decode:
+                scope._set(q_len == 1)
+                model_inputs = prepare(*args, **kwargs)
+            return model_inputs
+
+        return prepare_inputs_for_generation
+
+    def __enter__(self):
+        state = self.model.__dict__
+        with _FLEX_GENERATE_LOCK:
+            routed = _FLEX_GENERATE_ROUTING.get(self.base, 0) > 0 or bool(
+                _flex_generate_configs(self.model)
+            )
+            serial = None
+            if routed:
+                serial = _FLEX_GENERATE_SERIAL.get(self.base)
+                if serial is None:
+                    serial = threading.RLock()
+                    _FLEX_GENERATE_SERIAL.set(self.base, serial)
+        if serial is not None:
+            serial.acquire()
+            self.serial = serial
+        with _FLEX_GENERATE_LOCK:
+            depth = state.get("_unsloth_non_flex_generate", 0)
+            if depth == 0:
+                configs = _flex_generate_configs(self.model)
+                if not configs:
+                    self._release()
+                    return self
+                # Parents first: the transformers setter also writes sub-configs.
+                saved = [
+                    (c, field, _config_get(c, field, None))
+                    for c in _iter_attention_configs(self.model.config)
+                    for field in ("_attn_implementation", "attn_implementation")
+                    if _config_get(c, field, None) is not None
+                ]
+                state["_unsloth_non_flex_generate_saved"] = saved
+                state["_unsloth_non_flex_generate_configs"] = configs
+                _FLEX_GENERATE_ROUTING.set(self.base, _FLEX_GENERATE_ROUTING.get(self.base, 0) + 1)
+                self.steps = 0
+                # PeftModelForCausalLM.generate calls the base model's prepare_inputs_for_generation: wrap both.
+                targets = [self.model]
+                base = (
+                    self.model.get_base_model() if hasattr(self.model, "get_base_model") else None
+                )
+                if base is not None and base is not self.model:
+                    targets.append(base)
+                wrapped = []
+                for target in targets:
+                    prepare = getattr(target, "prepare_inputs_for_generation", None)
+                    if prepare is None:
+                        continue
+                    wrapped.append(
+                        (
+                            target,
+                            "prepare_inputs_for_generation" in target.__dict__,
+                            target.__dict__.get("prepare_inputs_for_generation"),
+                        )
+                    )
+                    target.prepare_inputs_for_generation = self._wrap_prepare(prepare)
+                if wrapped:
+                    state["_unsloth_non_flex_generate_prepare"] = wrapped
+                else:
+                    state["_unsloth_non_flex_generate_pinned"] = True
+                    self._set(True)
+            state["_unsloth_non_flex_generate"] = depth + 1
+            self.active = True
+        return self
+
+    def _release(self):
+        if self.serial is not None:
+            self.serial.release()
+            self.serial = None
+
+    def __exit__(self, *exc):
+        if not self.active:
+            return False
+        try:
+            self._restore()
+        finally:
+            self._release()
+        return False
+
+    def _restore(self):
+        state = self.model.__dict__
+        with _FLEX_GENERATE_LOCK:
+            depth = state.get("_unsloth_non_flex_generate", 1) - 1
+            state["_unsloth_non_flex_generate"] = depth
+            if depth == 0:
+                state.pop("_unsloth_non_flex_generate", None)
+                if state.pop("_unsloth_non_flex_generate_configs", None) is not None:
+                    left = _FLEX_GENERATE_ROUTING.get(self.base, 1) - 1
+                    if left > 0:
+                        _FLEX_GENERATE_ROUTING.set(self.base, left)
+                    else:
+                        _FLEX_GENERATE_ROUTING.pop(self.base)
+                state.pop("_unsloth_non_flex_generate_pinned", None)
+                for target, had, previous in state.pop("_unsloth_non_flex_generate_prepare", ()):
+                    if had:
+                        target.__dict__["prepare_inputs_for_generation"] = previous
+                    else:
+                        target.__dict__.pop("prepare_inputs_for_generation", None)
+                for c, field, value in state.pop("_unsloth_non_flex_generate_saved", ()):
+                    _config_set(c, field, value)
 
 
 def _compiles_decode(model):
@@ -1622,6 +1922,18 @@ try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
     torch_compiler_set_stance = None
+
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_reset_inference_runs
+except ImportError:
+    # Older unsloth_zoo: each compiled module counts its own inference forwards.
+    def unsloth_reset_inference_runs():
+        for name, module in list(sys.modules.items()):
+            if (
+                name.startswith("unsloth_compiled_module_")
+                and type(getattr(module, "INFERENCE_RUNS", None)) is int
+            ):
+                module.INFERENCE_RUNS = 0
 
 
 # Image and video only: get_block_sequence_ids_for_mask blocks token types 1 and 2.
@@ -1812,8 +2124,7 @@ def _static_cache_does_not_fit(model, input_ids, kwargs):
         need = _static_cache_bytes(model, input_ids, kwargs, exact = False)
         if need is None:
             return False
-        # mem_get_info is a driver call (p90 7-10 ms on a busy host), so a cache under 1/16
-        # of the card never pays it.
+        # mem_get_info is a slow driver call, so caches under 1/16 of the card skip it.
         if need * 16 <= backend.get_device_properties(device).total_memory:
             return False
         free = backend.mem_get_info(device)[0]
@@ -1933,6 +2244,9 @@ def _uses_flash_attention_for_generation(config):
 
 
 def _clear_generation_caches(model):
+    # The StaticCache decode graphs keep for the next call stays. Guarded: tests exec this function alone.
+    graphs = globals().get("_generic_decode_graphs")
+    kept = graphs.kept_cache(model) if graphs is not None else None
     for name, module in model.named_modules():
         if hasattr(module, "_flex_attention_cache"):
             try:
@@ -1940,6 +2254,8 @@ def _clear_generation_caches(model):
             except:
                 pass
         # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'.
+        if kept is not None and module.__dict__.get("_cache") is kept:
+            continue
         if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
             try:
                 del module._cache
@@ -2165,10 +2481,49 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs["compile_config"] = compile_config
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
-    eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
+
+    def _eager_scope():
+        return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
+
+    def _run(scope, plan):
+        with (
+            _NonFlexGenerate(self),
+            decode_scope,
+            scope,
+            _decode_graphs.plan_scope(plan),
+            _get_inference_mode_context_manager(self),
+            autocaster,
+        ):
+            out = self._old_generate(*args, **kwargs)
+            if isinstance(scope, _GraphDecodeSteps):
+                scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
+            return out
+
     try:
-        with decode_scope, eager_scope, _get_inference_mode_context_manager(self), autocaster:
-            output = self._old_generate(*args, **kwargs)
+        with _decode_graphs.generate_scope():
+            if cache_implementation == "static" and not force_dynamic_cache and not compile_decode:
+                plan = _generic_decode_graphs.plan(self, args, kwargs, input_ids)
+            else:
+                plan = _generic_decode_graphs.ineligible(self)
+            if plan != "graph":
+                output = _run(_eager_scope(), "eager")
+            else:
+                rng = _generic_decode_graphs.rng_state(input_ids.device)
+                out_of_memory = False
+                try:
+                    output = _run(_GraphDecodeSteps(self), "graph")
+                except torch.cuda.OutOfMemoryError:
+                    if not _generic_decode_graphs.replayable(kwargs):
+                        raise
+                    out_of_memory = True
+                if out_of_memory:
+                    # Outside the handler: its traceback holds the failed call's frames (cache, graph
+                    # buffers), which would stay allocated through the redo.
+                    _generic_decode_graphs.redo_eagerly(self)
+                    _clear_generation_caches(self)
+                    _generic_decode_graphs.set_rng_state(rng)
+                    with _decode_graphs.eager_scope():
+                        output = _run(_eager_scope(), "eager")
     finally:
         _clear_generation_caches(self)
 
@@ -3853,6 +4208,16 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
+        backfill_fp8_modules_to_convert(
+            auto_config,
+            model_name,
+            token,
+            _revision,
+            local_files_only = local_files_only,
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            variant = kwargs.get("variant"),
+        )
         # Remote classes shadowing a native name can differ in attention flags.
         _builds_remote_class, _remote_class = resolve_remote_code_model_class(
             auto_model,
@@ -4050,8 +4415,6 @@ class FastBaseModel:
             ),
         )
 
-        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
-
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
@@ -4107,6 +4470,8 @@ class FastBaseModel:
         if (_offload_layers or _embedding_needed) and _block_swap_device is not None:
             # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
             device_map = {"": _block_swap_device}
+        # After the Block Swap decisions: Auto plans only `{"": N}`, and the collapse above would re-cover the CPU-kept table.
+        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
         _block_swap_state = None
 
         # Prefetch the repo (killable child) so the in-process load is a cache hit. vLLM owns the download only when actually available; if it was requested but is missing, the load falls through in-process, so warm the weights here.
@@ -4183,7 +4548,13 @@ class FastBaseModel:
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
-            if dtype == torch.bfloat16:
+            if do_forced_float32 and not SUPPORTS_BFLOAT16:
+                # Forced float32 loads bf16 then casts, but without bf16 the trainer keeps float32 (no autocast).
+                print(
+                    f"Unsloth: {model_type_arch} cannot train in float16 and this GPU has no bfloat16, "
+                    "so full finetuning runs in float32."
+                )
+            elif dtype == torch.bfloat16:
                 if float32_mixed_precision != True:
                     print(
                         f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
@@ -4881,6 +5252,9 @@ class FastBaseModel:
                     revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
+                from ..tokenizer_utils import _sync_pad_token_id
+
+                model = _sync_pad_token_id(model, _fallback_tok)
                 # Re-attach as a processor wrapper if the original was a processor (audio ones included).
                 if any(
                     hasattr(tokenizer, k)
@@ -5521,8 +5895,16 @@ class FastBaseModel:
             _LoraModel._create_and_replace = _patched_car
 
         from .lora_init import fast_lora_init, record_fast_pissa
+        from ._utils import block_swap_shaped
 
-        with fast_lora_init() as fast:
+        with (
+            fast_lora_init() as fast,
+            block_swap_shaped(
+                model,
+                init_lora_weights,
+                lora_config = lora_config,
+            ),
+        ):
             model = _get_peft_model(model, lora_config)
         if fast["pissa"]:
             record_fast_pissa(model)
@@ -5574,6 +5956,7 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        enable_fp8_lora(model)
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -5769,6 +6152,7 @@ class FastBaseModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
         _tensor_parallel_for_inference(model)
+        restore_fp8_lora_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5806,6 +6190,9 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
+        # A count left at 1 by a 1-token generate would go eager right after the next prefill.
+        if unsloth_reset_inference_runs is not None:
+            unsloth_reset_inference_runs()
         return model
 
     @staticmethod
@@ -5815,6 +6202,7 @@ class FastBaseModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
+        _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
@@ -5844,6 +6232,7 @@ class FastBaseModel:
             m = m.model
         _for_training(m)
         apply_training_mode()
+        enable_fp8_lora(model)
         # Since transformers 4.53, this must be turned on explicitly.
         for module in checkpointing:
             set_module_gradient_checkpointing(module, use_gradient_checkpointing)

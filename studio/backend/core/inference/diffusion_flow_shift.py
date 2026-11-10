@@ -100,6 +100,19 @@ def apply_scheduler_overrides(
     return True
 
 
+def apply_comfy_schedule(
+    pipe: Any,
+    shift: Optional[float],
+    overrides: Any = (),
+    logger: Any = None,
+) -> bool:
+    """``shift``, then scheduler ``overrides``; the opt-out keeps the shipped scheduler. True when it changed."""
+    if not comfy_sigmas_enabled():
+        return False
+    shifted = apply_comfy_flow_shift(pipe, shift, logger)
+    return apply_scheduler_overrides(pipe, overrides, logger) or shifted
+
+
 # A pipeline config's fixed sampling grid, terminal sigma excluded (QwenImage21Pipeline, huggingface/diffusers#14950).
 SAMPLE_SIGMAS_KEY = "sample_sigmas"
 
@@ -213,10 +226,9 @@ def requested_flow_shift(
     height: Optional[int] = None,
     defaults: Optional[dict] = None,
 ) -> Optional[float]:
-    """The static flow shift a request asks for, or None when it sets none (today's schedule).
-
-    ``defaults`` (``shift_control``'s) fills the base / max shift a request leaves out, so changing one
-    starts from what the load resolved. Raises ValueError for a field this family's node does not take."""
+    """The static flow shift a request asks for (None keeps today's schedule); a missing base or max
+    shift comes from shift_control's defaults, and ValueError is raised for a field the node does
+    not take."""
     if shift is None and base_shift is None and max_shift is None:
         return None
     if node not in SHIFT_NODES:
@@ -254,10 +266,9 @@ def requested_flow_shift(
 
 
 def scheduler_with_flow_shift(scheduler: Any, shift: float) -> Any:
-    """A copy of ``scheduler`` sampling at static ``shift`` (dynamic shifting and terminal stretch off), or
-    ``scheduler`` itself when it already samples there (the resolved value: no rebuild, identical render).
-
-    Raises ValueError when the scheduler has no flow shift Studio can set."""
+    """Returns a copy of the scheduler sampling at static shift (dynamic shifting and terminal
+    stretch off), or the scheduler itself when it already samples there (no rebuild, identical
+    render); ValueError if it has no flow shift."""
     config = getattr(scheduler, "config", None)
     overrides = flow_shift_overrides(config, shift) if config is not None else None
     if not overrides:

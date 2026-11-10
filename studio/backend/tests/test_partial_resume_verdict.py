@@ -26,8 +26,7 @@ NONCE_PARTIAL = f"{BLOB}.deadbeef{hf_cache_state.INCOMPLETE_SUFFIX}"
 
 @pytest.fixture
 def cache(monkeypatch, tmp_path):
-    """A repo cache with a legacy huggingface_hub installed, so only the per-file check can
-    reject a partial."""
+    """A legacy huggingface_hub is installed, so only the per-file check can reject a partial."""
     root = tmp_path / "hub"
     entry = root / "models--Org--Model"
     (entry / "blobs").mkdir(parents = True)
@@ -41,8 +40,7 @@ def cache(monkeypatch, tmp_path):
 
 
 def _record(transport: str, entry: Path):
-    """What a worker leaves behind: the manifest the row reads, and the marker naming the
-    writer that produced the partial."""
+    """A worker leaves a manifest and a marker naming the writer of its partial."""
     download_manifest.write_manifest(
         "model",
         "Org/Model",
@@ -83,8 +81,7 @@ def test_a_row_with_no_partial_left_has_nothing_to_resume(cache):
 
 
 def test_a_writer_that_cannot_reopen_anything_never_promises_a_resume(cache, monkeypatch):
-    """The ordinary install: hub >= 1.18 refetches from zero, so even a legacy-named
-    survivor is litter."""
+    """With hub >= 1.18 the refetch starts from zero, so even a legacy-named partial is litter."""
     monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: False)
     _record("http", cache)
     _partial(cache, LEGACY_PARTIAL)
@@ -159,8 +156,7 @@ def test_an_unmarked_companion_partial_is_not_a_resume(cache):
 
 
 def test_the_variants_own_partial_still_decides_for_the_variant(cache):
-    """A companion marker disagreeing says nothing about the main shard, which this
-    variant's own marker vouches for."""
+    """A disagreeing companion says nothing of the main shard; the variant's marker decides."""
     _record_with_companion("http", cache)
     download_registry._write_companion_marker(cache, "xet")
     _partial(cache, LEGACY_PARTIAL)
@@ -172,8 +168,7 @@ def test_the_variants_own_partial_still_decides_for_the_variant(cache):
 
 @pytest.fixture
 def split_cache(monkeypatch, tmp_path):
-    """Two active entries for one repo. The names are stand-ins so the test also runs on a
-    case-insensitive filesystem, where the real pair cannot coexist."""
+    """Stand-in names for a pair that cannot coexist on case-insensitive filesystems."""
     root = tmp_path / "hub"
     first = root / "models--Org--Model"
     second = root / "models--Org--Model.case-variant"

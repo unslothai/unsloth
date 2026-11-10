@@ -5,7 +5,7 @@ import type { useNavigate } from "@tanstack/react-router";
 import { getAuthSessionEpoch } from "@/features/auth";
 // eslint-disable-next-line no-restricted-imports -- the chat barrel imports the Library back
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { createModelConfigHandoffRequestId } from "@/features/model-picker";
+import { createModelConfigHandoffRequestId } from "@/features/model-picker/model-config/model-config-handoff";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";

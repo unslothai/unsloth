@@ -15,4 +15,13 @@ from .q_galore_adamw import QGaLoreAdamW8bit
 __all__ = [
     "GaLoreProjector",
     "QGaLoreAdamW8bit",
+    "AdamWBF16",
+    "prepare_bf16_training",
 ]
+
+
+def __getattr__(name):
+    if name in ("AdamWBF16", "prepare_bf16_training"):
+        from . import bf16_adamw
+        return getattr(bf16_adamw, name)
+    raise AttributeError(name)

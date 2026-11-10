@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -232,6 +233,7 @@ export function TaskDialog({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const ids = useId();
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const create = useScheduledTasksStore((state) => state.create);

@@ -175,8 +175,7 @@ def test_a_cold_process_loads_without_building_an_orchestrator(monkeypatch):
 
     monkeypatch.setattr(orch, "peek_inference_backend", lambda: None)
     monkeypatch.setattr(orch, "get_inference_backend", _never)
-    # Same functions the orchestrator's methods forward to, so neither path
-    # can drift from the other.
+    # Same functions the orchestrator's methods forward to, so the two paths cannot drift.
     assert ri._stt_lifecycle() == (stt_registry.load, stt_registry.unload)
 
 
@@ -194,8 +193,7 @@ def test_load_never_blocks_on_an_engine_that_is_serving_a_request(monkeypatch):
 
 
 def test_a_busy_sidecar_keeps_its_model_and_an_idle_one_releases_it():
-    """wait=False must decline a busy sidecar; RLock.locked() is 3.14-only and mtmd drops _lock over
-    HTTP."""
+    """wait=False declines a busy sidecar; RLock.locked() is 3.14-only and mtmd drops _lock."""
     from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
     from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
 
@@ -245,9 +243,8 @@ def test_a_failed_load_leaves_the_engine_the_user_was_using(monkeypatch):
 
 
 def test_a_non_curated_whisper_cache_row_cannot_chat():
-    """`_hidden_stt` comes from the config sniff, so it covers distil-whisper and a user's own
-    fine-tune, not just the seven curated ids. can_chat is what auto-load and the chat picker
-    filter on, and neither looks at the task."""
+    """_hidden_stt comes from the config sniff, covering distil-whisper and user fine-tunes;
+    can_chat gates auto-load and the picker, which ignore the task."""
     from hub.services.models.cache_inventory import _cache_inventory_fields
 
     fields = _cache_inventory_fields(
@@ -369,9 +366,8 @@ def _racing_sidecar():
 
 
 def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
-    """The under-lock recheck only guarded wait=False, so the blocking unload training
-    uses could reap llama-server underneath a transcription that had just started, losing
-    the recording rather than honoring the drain window."""
+    """The under-lock recheck only guarded wait=False; a blocking unload could reap llama-server
+    under a new transcription and lose the recording."""
     import threading
 
     from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
@@ -404,8 +400,7 @@ def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
 
 
 def test_a_blocking_unload_still_gives_up_after_the_drain_window(monkeypatch):
-    """Training claiming the VRAM cannot wait forever, so a request that never finishes
-    must not turn the bounded window into a permanent block."""
+    """Training needs the VRAM, so a stuck request must not turn the drain window into a hang."""
     from core.inference import stt_mtmd_sidecar
     from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
 
@@ -437,7 +432,9 @@ def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
         ri,
         "_stt_lifecycle",
         lambda: (
-            lambda model, engine, cancel = None, device = None: loaded.append((model, engine)),
+            lambda model, engine, cancel = None, device = None, **options: loaded.append(
+                (model, engine)
+            ),
             lambda *a: [],
         ),
     )
@@ -456,8 +453,7 @@ def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
 
 
 def test_the_registry_load_is_what_frees_the_other_engines(monkeypatch):
-    """The lifecycle the route calls is the registry's, whose contract is single
-    residency; this pins that it releases the others rather than only allocating."""
+    """Registry load must free the other engines (single residency), not only allocate."""
     from core.inference import stt_registry
 
     released: list = []
@@ -477,9 +473,8 @@ def test_the_registry_load_is_what_frees_the_other_engines(monkeypatch):
 
 
 def test_a_scoped_unload_leaves_another_surfaces_newer_model_alone():
-    """Ownership is decided by the caller, so a queued Eject can arrive after another
-    surface switched the same engine. The comparison happens under the sidecar's own
-    lock, which is the only place the answer cannot go stale."""
+    """The caller decides ownership; a queued Eject can arrive after another surface switched the
+    engine, so compare under the sidecar's lock, where the answer cannot go stale."""
     import threading
 
     from core.inference.stt_sidecar import WhisperSttSidecar
@@ -654,3 +649,18 @@ def test_no_stt_sidecar_points_at_a_settings_path_for_downloads():
         "stt_sidecar.py",
     ):
         assert "Settings, then Voice" not in (inference / name).read_text(encoding = "utf-8"), name
+
+
+@pytest.mark.parametrize("engine", stt_registry.STT_ENGINES)
+def test_registry_forwards_voice_context_only_to_mtmd(monkeypatch, engine):
+    calls = []
+    sidecar = _Sidecar(engine)
+    sidecar.load = lambda *args, **kwargs: calls.append(kwargs)
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecar)
+    monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda *args: True)
+    monkeypatch.setattr(stt_registry, "unload", lambda *args, **kwargs: [])
+    stt_registry.load("qwen3-asr-0.6b", engine, context_length = 4096)
+    if engine == "mtmd":
+        assert calls[0]["context_length"] == 4096
+    else:
+        assert "context_length" not in calls[0]

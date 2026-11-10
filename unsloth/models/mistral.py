@@ -20,13 +20,16 @@ from ..utils.packing import (
     mask_packed_boundary_labels,
     mask_packed_sequence_boundaries,
 )
+from ..context_parallel import get_cp_manager
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
+    context_parallel_attention,
     run_attention,
     SDPA,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -62,6 +65,8 @@ except:
 from unsloth_zoo.utils import Version
 
 
+@applies_prefix_seg_info
+@context_parallel_attention
 def MistralAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -103,9 +108,13 @@ def MistralAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    # Under context parallel this rank holds a shard of the sequence but its positions are global.
+    cp_manager = get_cp_manager()
+    rope_seq_len = kv_seq_len * cp_manager.size if cp_manager is not None else kv_seq_len
+
     # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
-    self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
+    self.rotary_emb.extend_rope_embedding(V, seq_len = rope_seq_len)
+    cos, sin = self.rotary_emb.get_cached(rope_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     # Useful for LongRoPE

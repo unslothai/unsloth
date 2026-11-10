@@ -295,8 +295,7 @@ def test_the_server_comes_up_when_a_port_the_harness_could_pick_is_taken(tmp_pat
 
 
 def test_a_note_survives_to_the_next_tool_call_in_one_chat(server):
-    """The behaviour the shared session exists for. Reconnecting per call loses
-    whatever the server kept."""
+    """A shared session keeps server state; reconnecting per call loses what the server kept."""
     saved = _call(server, "save_note", {"text": "buy milk"}, scope = SCOPE)
     listed = _call(server, "list_notes", scope = SCOPE)
     assert "buy milk" in listed, listed
@@ -339,9 +338,8 @@ def test_state_survives_a_long_run_of_calls_in_one_chat(server):
 
 
 def test_parallel_calls_in_one_chat_are_not_serialized(server):
-    """Regression: sharing a session must not cost the parallelism the one-shot
-    path had. MCP Streamable HTTP posts each message separately, so there is
-    nothing to interleave."""
+    """Regression: sharing a session must not serialize calls; MCP Streamable HTTP posts each
+    message separately, so there is nothing to interleave."""
     _call(server, "reset_stats", scope = "s=admin:t=admin")
     results: list[str] = []
     lock = threading.Lock()
@@ -365,9 +363,8 @@ def test_parallel_calls_in_one_chat_are_not_serialized(server):
 
 
 def test_an_expired_session_is_replaced_before_the_users_call_fails(monkeypatch, server):
-    """A server may drop an HTTP session at any time and no HTTP transport
-    exposes a liveness probe, so without the idle recheck the user's next tool
-    call is the thing that discovers it."""
+    """No HTTP transport exposes a liveness probe and a server may drop a session at any time, so
+    the idle recheck, not the user's call, must find it."""
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     _call(server, "list_notes", scope = SCOPE)
     _call(server, "expire_me", scope = SCOPE)
@@ -397,8 +394,7 @@ def test_ipv6_loopback_works(tmp_path):
 
 
 def test_a_json_rpc_error_does_not_cost_the_chat_its_state(server):
-    """The server replied, so the connection is fine and the notes it is holding
-    for this chat must survive."""
+    """A JSON-RPC error still proves the connection is live, so chat notes must survive."""
     _call(server, "save_note", {"text": "before-the-error"}, scope = SCOPE)
     failed = _call(server, "protocol_error", scope = SCOPE)
     assert failed.startswith("Error:"), failed

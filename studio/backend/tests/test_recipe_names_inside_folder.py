@@ -73,8 +73,7 @@ def test_a_processor_name_that_is_not_one_folder_is_refused(name):
 
 @pytest.fixture
 def python_validator(monkeypatch):
-    # The two methods below are data_designer 0.5.4's PythonValidator, verbatim: the patch must keep
-    # writing and reading back the same module name.
+    # Verbatim from data_designer 0.5.4 PythonValidator; the patch keeps the module name in sync.
     class PythonValidator:
         def _write_code_to_file(self, row, code_column, path):
             with open(

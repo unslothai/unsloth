@@ -236,6 +236,19 @@ def test_never_moves_away_from_residency(q21_pipe):
 
 
 @pytest.mark.parametrize("budget", list(range(3000, 30001, 250)))
+def test_a_held_text_encoder_never_streams_the_transformer(q21_pipe, budget):
+    """Encoder residency shrinks first: while any part of the 8.7 GiB encoder stays resident, the whole transformer
+    does too (it runs every step; the encoder once per prompt)."""
+    total = max(8188, budget + 3000)
+    new = _refine(q21_pipe, _flat_plan(budget, total))
+    te_resident = (
+        not new.stream_text_encoders and new.offload_policy != dm.OFFLOAD_STREAMING
+    ) or int(new.resident_text_encoder_mib or 0) > 0
+    dit_whole = not new.stream_transformer or int(new.resident_transformer_mib or 0) >= 6922
+    assert dit_whole or not te_resident, (budget, new.offload_policy, new.resident_transformer_mib)
+
+
+@pytest.mark.parametrize("budget", list(range(3000, 30001, 250)))
 def test_every_tier_fits_measured_need(q21_pipe, budget):
     """Whatever the refinement picks, the bytes it keeps on the device plus the measured peak x margin plus the base
     overhead fit the safe budget (the reserve below it is untouched), and it is never slower than the flat pick."""
@@ -390,9 +403,8 @@ def test_only_measured_family_moves(q21_pipe, speed, budget, total):
 
 
 def test_resident_group_keeps_copy_stream_wait(monkeypatch):
-    """A streamed group that prefetched its successor skips its own wait and relies on the successor's onload_ to
-    synchronize the copy stream. A resident successor must still do that wait (else the streamed group computes on
-    weights in flight), and its offload must free nothing."""
+    """A resident successor must still wait for the copy stream, or the streamed group computes on
+    weights in flight; and its offload must free nothing"""
     pytest.importorskip("torch")
     pytest.importorskip("diffusers.hooks")
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
@@ -794,9 +806,8 @@ def _whole_plan(whole_mib, encode_mib):
 
 
 def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkeypatch):
-    """12 GB whole-resident tier: while the text encoder runs, the denoiser groups past the flat room stream again
-    (the device state the partial placement had during the encode); the denoiser is whole again before step 0 and
-    stays bit-identical."""
+    """During encode, denoiser groups past the flat room stream; whole again before step 0,
+    bit-identical."""
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     block_mib = 4  # each 1024x1024 fp32 block is 4 MiB + bias
     whole = 1024
@@ -810,9 +821,8 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
 
 
 def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
-    """The encode release streams groups and pins them back on every new prompt. It leaves the freed blocks cached:
-    an encoder allocation that needs the room gets it back from the allocator itself. An empty_cache per prompt cost a
-    device sync plus fresh cudaMallocs for the encoder on every render."""
+    """Freed blocks stay cached: an empty_cache per prompt would force device syncs and fresh
+    cudaMallocs."""
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     block_mib = 4
     assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 1

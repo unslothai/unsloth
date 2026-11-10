@@ -12,6 +12,11 @@ export type PersonalizationProfile = {
   avatarDataUrl: string | null;
   avatarShape: "circle" | "rounded";
   showGreetingSloth: boolean;
+  greetingStyle: "text" | "image";
+  greetingIcon: "sloth" | "custom" | "none";
+  greetingIconDataUrl: string | null;
+  greetingText: string;
+  greetingImageDataUrl: string | null;
 };
 
 export type PersonalizationAppearance = {
@@ -32,6 +37,7 @@ export type Personalization = {
   sentAttachmentsSaved?: boolean;
   paletteSaved: boolean;
   greetingSlothSaved: boolean;
+  greetingCustomSaved?: boolean;
 };
 
 export async function loadPersonalization(): Promise<Personalization> {
@@ -53,6 +59,7 @@ export async function savePersonalization(
     | "sentAttachmentsSaved"
     | "paletteSaved"
     | "greetingSlothSaved"
+    | "greetingCustomSaved"
   >,
 ): Promise<void> {
   const res = await authFetch("/api/settings/personalization", {

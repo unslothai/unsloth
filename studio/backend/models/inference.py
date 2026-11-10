@@ -17,6 +17,8 @@ from pydantic import (
     Discriminator,
     Field,
     PrivateAttr,
+    StrictFloat,
+    StrictInt,
     Tag,
     field_validator,
     model_serializer,
@@ -36,7 +38,7 @@ from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
-from models.providers import ProviderReasoningConfig
+from models.providers import ProviderReasoningConfig, normalize_provider_extra_headers
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 # A 24 MB reference audio as a base64 data URL, with room for its header.
@@ -222,6 +224,15 @@ class LoadRequest(BaseModel):
             "GPU for faster prompt processing. Lossy: the Neural Engine uses int8 weights, so "
             "outputs change slightly. Applied only when the model supports it and the split is "
             "measured faster here; the status reports the reason otherwise."
+        ),
+    )
+    mlx_fast_verify: bool = Field(
+        False,
+        description = (
+            "Experimental, MLX only: verify a drafter's tokens on faster kernels during speculative "
+            "decoding. Changes decode output slightly against plain greedy decoding, repeatably. "
+            "Applied only when the load attaches a drafter and the model supports it; the status "
+            "reports the reason otherwise. Decided at load: changing it reloads the model."
         ),
     )
     mlx_ple_offload: MlxOffload = Field(
@@ -576,7 +587,32 @@ class SearchImagesLookupRequest(BaseModel):
     )
 
 
-class TranscribeRequest(BaseModel):
+def validate_stt_context_length(value: Any) -> int:
+    """A zero selects Auto; fixed lengths are multiples of 256, since llama-server pads n_ctx to that."""
+    if type(value) is not int or (value != 0 and not (1024 <= value <= 65536 and value % 256 == 0)):
+        raise ValueError(
+            "Voice context length must be 0 (Auto) or a multiple of 256 from 1024 to 65536."
+        )
+    return value
+
+
+class SttContextSettings(BaseModel):
+    context_length: int = Field(
+        0,
+        ge = 0,
+        le = 65536,
+        description = (
+            "Qwen3-ASR on llama.cpp only: 0 (Auto) sizes context for the recording; "
+            "a multiple of 256 from 1024 to 65536 fixes the context limit. Ignored by other STT engines."
+        ),
+    )
+
+    _validate_context_length = field_validator("context_length", mode = "before")(
+        validate_stt_context_length
+    )
+
+
+class TranscribeRequest(SttContextSettings):
     """Speech-to-text request for the dictation STT sidecar."""
 
     audio: str = Field(..., description = "Base64-encoded audio (any common format)")
@@ -601,7 +637,7 @@ class TranscribeRequest(BaseModel):
     )
 
 
-class SttLoadRequest(BaseModel):
+class SttLoadRequest(SttContextSettings):
     """Warm the STT sidecar with a model without transcribing."""
 
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
@@ -1211,6 +1247,27 @@ class AnePrefillAvailabilityResponse(BaseModel):
     )
 
 
+class FastVerifyAvailabilityRequest(BaseModel):
+    """A model whose run settings may offer MLX Fast Verify."""
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class FastVerifyAvailabilityResponse(BaseModel):
+    """Whether a load of this model could run MLX Fast Verify, judged from its downloaded files."""
+
+    available: bool
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_downloaded', 'unsupported_model', "
+        "'unsupported_zoo', or unsloth_zoo's own reason ('no_lane_kernel', "
+        "'no_eligible_projections', 'probe_failed').",
+    )
+
+
 class MlxDraftersRequest(BaseModel):
     model_path: str = Field(..., description = "Model identifier or local path of the target")
 
@@ -1676,6 +1733,10 @@ class _InferenceRuntimeFields(BaseModel):
     audio_convert_route: Optional[str] = Field(
         None, description = "Seed-VC route the running server was started with."
     )
+    audio_clone: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Clone rules (transcript, emotion clip, voice description); None when it does not clone.",
+    )
 
     @model_validator(mode = "after")
     def derive_audio_workflows(self):
@@ -1872,6 +1933,16 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Why requested Neural Engine prefill is not active, as unsloth_zoo reports it "
         "(for example no_neural_engine, no_eligible_mlps, no_gain, not_enough_memory or released)",
+    )
+    mlx_fast_verify: Optional[bool] = Field(
+        None, description = "Whether MLX Fast Verify is active for the loaded model"
+    )
+    mlx_fast_verify_requested: Optional[bool] = Field(
+        None, description = "Whether the load asked for MLX Fast Verify"
+    )
+    mlx_fast_verify_reason: Optional[str] = Field(
+        None,
+        description = "Why requested Fast Verify is not active: no_drafter, unsupported_zoo, or unsloth_zoo's reason",
     )
     mlx_offload: Optional[MlxOffloadStatus] = Field(None, description = "MLX: weights read from disk")
     chat_template: Optional[str] = Field(
@@ -2316,6 +2387,10 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
+    resident_on_gpu: Optional[bool] = Field(
+        None,
+        description = "True when resident_mib is model buffers on the GPUs /api/system reports, false for a CPU-only llama.cpp build, null when unknown (Vulkan or SYCL buffers are not parsed).",
     )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
@@ -2801,7 +2876,9 @@ class SandboxAttachment(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """Accept unknown fields so future OpenAI fields are not dropped before route code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest."""
+    """OpenAI-compatible chat completion request.
+
+    Non-OpenAI extension fields are marked with 'x-unsloth'."""
 
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
@@ -3226,6 +3303,22 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
+    extra_headers: Optional[dict[str, str]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Extra request headers when the request carries an API key. "
+            "Saved connections send these from the stored record instead, so an "
+            "explicit key cannot bind saved metadata."
+        ),
+    )
+
+    @field_validator("extra_headers", mode = "before")
+    @classmethod
+    def _validate_chat_extra_headers(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return normalize_provider_extra_headers(value)
+
     enable_prompt_caching: Optional[Union[bool, str]] = Field(
         None,
         description = (
@@ -3549,6 +3642,13 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
             "[x-unsloth] The thread being counted. A thread with a conversation archive puts "
             "search_conversation and its compaction nudge in the prompt, so the count needs "
             "the same id the completion sends to price them."
+        ),
+    )
+    session_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] The tool session the completion sends. A project's chosen working "
+            "folder adds a sentence to the tool nudge, so the count needs it to price that."
         ),
     )
     rag_scope: Optional[dict] = Field(
@@ -3938,7 +4038,7 @@ class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
     Covers ``reasoning`` items and future types, so unrelated turns don't 422.
-    Normalisation replays reasoning text and drops every other unknown item.
+    Normalisation replays reasoning text, refuses ``item_reference``, drops the rest.
     """
 
     type: str
@@ -3947,9 +4047,7 @@ class ResponsesUnknownInputItem(BaseModel):
 
 
 def _responses_input_item_discriminator(v: Any) -> str:
-    """Route a Responses input item to the correct tagged variant. Pydantic's smart-union matching
-    misreports errors when a strict-``Literal`` variant doesn't match; an explicit discriminator
-    makes routing deterministic and falls through to the catch-all."""
+    """Explicit discriminator, since pydantic smart-union misreports errors when a strict Literal misses."""
     if isinstance(v, dict):
         t = v.get("type")
         r = v.get("role")
@@ -5065,6 +5163,78 @@ class LocalizedEditSpec(BaseModel):
 # All images of one request, base64: ten maximal uploads would otherwise buffer ~320 MiB.
 _MAX_CONDITION_PAYLOAD = 128 * 1024 * 1024
 
+MAX_XY_CELLS = 64
+
+XYAxisField = Literal[
+    "seed",
+    "steps",
+    "guidance",
+    "sampler",
+    "schedule_type",
+    "shift",
+    "base_shift",
+    "max_shift",
+    "strength",
+    "clip_skip",
+    "cfg_rescale",
+    "variation_seed",
+    "variation_strength",
+    "lora_weight",
+    "prompt_sr",
+]
+
+
+class XYAxisSpec(BaseModel):
+    """One axis of an X/Y grid: a request field and the values its cells take."""
+
+    field: XYAxisField = Field(
+        ...,
+        description = "Request field the axis varies. lora_weight sets the weight of loras[index]; "
+        "prompt_sr (AUTOMATIC1111 Prompt S/R) replaces the first value in the prompt and negative "
+        "prompt with each value in turn, so the first cell keeps the prompt as typed.",
+    )
+    values: list[Union[StrictInt, StrictFloat, str]] = Field(
+        ...,
+        min_length = 1,
+        max_length = MAX_XY_CELLS,
+        description = "Values, one column (X) or row (Y) each",
+    )
+    index: Optional[int] = Field(
+        None, ge = 0, le = 7, description = "lora_weight only: which `loras` entry the axis weights"
+    )
+
+    @model_validator(mode = "after")
+    def _index_only_for_lora(self) -> "XYAxisSpec":
+        if (self.field == "lora_weight") != (self.index is not None):
+            raise ValueError("`index` is required for a lora_weight axis and only allowed there")
+        if self.field == "prompt_sr" and not all(isinstance(v, str) for v in self.values):
+            raise ValueError("prompt_sr values must be strings")
+        if self.field == "prompt_sr" and not self.values[0]:
+            raise ValueError(
+                "prompt_sr: the first value is the text searched for and cannot be empty"
+            )
+        return self
+
+
+class XYGridSpec(BaseModel):
+    """X/Y grid: every combination of the axes' values renders as its own gallery image, plus one
+    labelled grid image (X values across the top, Y values down the left)."""
+
+    x: XYAxisSpec = Field(..., description = "Column axis")
+    y: Optional[XYAxisSpec] = Field(None, description = "Row axis; omitted = a single row")
+
+    @model_validator(mode = "after")
+    def _bounded(self) -> "XYGridSpec":
+        cells = len(self.x.values) * (len(self.y.values) if self.y else 1)
+        if cells > MAX_XY_CELLS:
+            raise ValueError(
+                f"{cells} grid cells is over the limit of {MAX_XY_CELLS}; use fewer values"
+            )
+        y = self.y
+        if y and y.field == self.x.field and y.field != "prompt_sr" and y.index == self.x.index:
+            raise ValueError(f"x and y both vary {y.field}")
+        return self
+
 
 class DiffusionDetailerSpec(BaseModel):
     """Detailer (face fix) post-pass, after ADetailer and ComfyUI-Impact-Pack's FaceDetailer: SAM 3 finds the targets,
@@ -5417,6 +5587,12 @@ class DiffusionGenerateRequest(BaseModel):
     model: Optional[str] = Field(
         None, description = "Model name on the connection named by `provider_id`."
     )
+    xy: Optional[XYGridSpec] = Field(
+        None,
+        description = "X/Y grid: render one image per combination of the axes' values, each saved to "
+        "the gallery with its own recipe, plus one labelled grid image (returned as `grid`). Every "
+        "cell runs at batch size 1 on the same seed unless seed is an axis. Local models only.",
+    )
 
     @field_validator("loras")
     @classmethod
@@ -5460,6 +5636,21 @@ class DiffusionGenerateRequest(BaseModel):
         if value % 16 != 0:
             raise ValueError("must be a multiple of 16")
         return value
+
+    @model_validator(mode = "after")
+    def _xy_single_image_cells(self) -> "DiffusionGenerateRequest":
+        if self.xy is None:
+            return self
+        if self.batch_size != 1 or self.prompts is not None or self.seeds is not None:
+            raise ValueError(
+                "xy runs every cell at batch size 1: drop batch_size, prompts and seeds"
+            )
+        if self.provider_id:
+            raise ValueError("xy runs on the loaded local model, not a connection")
+        for axis in (self.xy.x, self.xy.y):
+            if axis and axis.field == "lora_weight" and axis.index >= len(self.loras or []):
+                raise ValueError(f"lora_weight axis index {axis.index} has no entry in loras")
+        return self
 
     @model_validator(mode = "after")
     def _batch_seeds_json_safe(self) -> "DiffusionGenerateRequest":
@@ -5508,6 +5699,13 @@ class GalleryImage(BaseModel):
     batch_size: int = Field(
         1, description = "Batch size used; with batch_index it lets restore replay this image"
     )
+    generation_seconds: Optional[float] = Field(
+        None,
+        description = "Elapsed generation seconds until images are ready to save, shared by the request",
+    )
+    generation_count: Optional[int] = Field(
+        None, description = "Number of images in the timed request; absent on older records"
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
     engine: Optional[str] = Field(
@@ -5538,6 +5736,11 @@ class GalleryImage(BaseModel):
         None,
         description = "Offload policy actually engaged: none | group | model | sequential. Part of "
         "the build: an offloaded pipeline declines the torchao text-encoder modes.",
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where this generation's denoiser ran: resident | partial | "
+        "streamed (streamed blocks move from CPU on every step). Null for other policies and older records.",
     )
     speed_mode: Optional[str] = Field(
         None,
@@ -5658,6 +5861,11 @@ class GalleryImage(BaseModel):
     inpaint_padding: Optional[int] = Field(
         None, description = "Padding (px) around the mask for an only-masked inpaint"
     )
+    xy_grid: Optional[dict[str, Any]] = Field(
+        None,
+        description = "Set on an X/Y grid image: its axes ({field, index, values, labels}) and the "
+        "cell image ids row by row. Its other recipe fields are the first cell's, as in AUTOMATIC1111.",
+    )
     detailer: Optional[Dict[str, Any]] = Field(
         None,
         description = "The Detailer pass this image ran: its settings, each detection (target, score, box, crop, "
@@ -5705,6 +5913,11 @@ class DiffusionGenerateResponse(BaseModel):
     """The persisted gallery records for one generation call (a batch)."""
 
     images: list[GalleryImage] = Field(..., description = "Saved records, one per image in the batch")
+    grid: Optional[GalleryImage] = Field(
+        None,
+        description = "xy only: the labelled grid image, also saved to the gallery; `images` holds "
+        "the cells row by row",
+    )
 
 
 class GalleryListResponse(BaseModel):
@@ -5712,6 +5925,50 @@ class GalleryListResponse(BaseModel):
 
     images: list[GalleryImage] = Field(default_factory = list)
     has_more: bool = Field(False, description = "Whether older images remain past this page")
+
+
+class ImageQueueJob(BaseModel):
+    """One job in the image generation queue: the settings that tell it apart, its state and, once done, its images."""
+
+    id: str
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
+    position: Optional[int] = Field(
+        None, description = "0-based place among your queued jobs; null once started"
+    )
+    prompt: str
+    width: int
+    height: int
+    steps: Optional[int] = Field(
+        None, description = "Requested steps; null follows the loaded model's default"
+    )
+    seed: Optional[int] = Field(
+        None, description = "Requested seed; null draws one when the job runs"
+    )
+    batch_size: int
+    workflow: Optional[str] = None
+    loras: list[str] = Field(default_factory = list, description = "Applied adapters as id:weight")
+    created_at: float
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    error: Optional[str] = None
+    image_ids: list[str] = Field(
+        default_factory = list, description = "Gallery ids of the finished images"
+    )
+    seed_used: Optional[int] = Field(
+        None, description = "The run's base seed once done, for Reuse last seed"
+    )
+
+
+class ImageQueueResponse(BaseModel):
+    """Your image jobs in run order: running first, then queued, then the most recent finished ones."""
+
+    jobs: list[ImageQueueJob] = Field(default_factory = list)
+
+
+class ImageQueueMoveRequest(BaseModel):
+    """Body of POST /images/queue/{job_id}/move."""
+
+    index: int = Field(..., ge = 0, description = "New 0-based place among your queued jobs (clamped)")
 
 
 class PromptUpsamplerDownloadRequest(BaseModel):
@@ -5904,6 +6161,11 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
         "repo id is not the id the caller picked and the role cannot be recovered downstream.",
     )
+    hosted_denoiser: bool = Field(
+        False,
+        description = "This checkpoint entry holds a hosted denoiser replacing the pipeline's "
+        "dense weights, which a pinned snapshot of that pipeline does not contain.",
+    )
 
 
 class DiffusionDownloadPlanResponse(BaseModel):
@@ -6009,6 +6271,11 @@ class DiffusionStatusResponse(BaseModel):
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | streaming | sequential"
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where the denoiser lives now: resident (only the text encoders "
+        "stream) | partial | streamed (blocks move from CPU on every step). Null for other policies.",
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
@@ -6767,7 +7034,7 @@ class AudioInputRecord(BaseModel):
     expires_at: str
 
 
-class AudioInputTranscribeRequest(BaseModel):
+class AudioInputTranscribeRequest(SttContextSettings):
     model_config = ConfigDict(extra = "forbid")
 
     model: str = Field(..., min_length = 1, max_length = 512)
@@ -6800,7 +7067,7 @@ class TranscribeSourceRef(BaseModel):
         return self
 
 
-class TranscribeSourceRequest(BaseModel):
+class TranscribeSourceRequest(SttContextSettings):
     """``POST /audio/transcribe/source``: Audio page audio named by id, transcribed and saved."""
 
     model_config = ConfigDict(extra = "forbid")
@@ -6919,6 +7186,11 @@ class AudioCatalogModel(BaseModel):
     languages: Optional[List[str]] = None
     status: Optional[Literal["supported", "community", "experimental", "testing", "wip"]] = None
     size_bytes: Optional[int] = None
+    # GiB of GPU memory the load check requires for size_bytes; set per request (it reads the GPUs).
+    estimated_resident_gb: Optional[float] = None
+    # The smallest variant a GPU runs: a row fits a card when that variant does.
+    smallest_size_bytes: Optional[int] = None
+    smallest_estimated_resident_gb: Optional[float] = None
     downloaded: bool = False
     unsupported_reason: Optional[str] = None
 
@@ -7369,6 +7641,21 @@ class VideoGenerateRequest(BaseModel):
         "cover-cropped onto the canvas.",
     )
 
+    continuation_video: Optional[str] = Field(
+        None,
+        max_length = 96 * 1024 * 1024,
+        description = "Base64/data-URL video to continue (Cosmos3-Nano only, status "
+        "supports_video_continuation): the clip keeps 5 frames from one end of it and generates "
+        "what follows. At most 15 seconds; frames are resampled onto fps and centre-cropped to "
+        "the canvas aspect. With width and height omitted the canvas is the preset nearest the "
+        "clip's aspect. Cannot be combined with keyframes or references.",
+    )
+    continuation_keep: Optional[Literal["last", "first"]] = Field(
+        None,
+        description = "Which end of continuation_video to keep: last (default) continues the "
+        "clip from its final frames; first keeps its opening frames and generates on from there.",
+    )
+
     # Separate lists preserve the model's image, video, then audio packing order.
     reference_images: Optional[list[str]] = Field(
         None,
@@ -7436,6 +7723,14 @@ class VideoGenerateRequest(BaseModel):
             raise ValueError(
                 "reference audio needs at least one reference image or video to go with"
             )
+        if self.continuation_video and (
+            images or videos or audios or self.first_frame or self.last_frame
+        ):
+            raise ValueError(
+                "A clip to continue cannot be combined with a start frame, end frame or references."
+            )
+        if self.continuation_keep is not None and not self.continuation_video:
+            raise ValueError("continuation_keep needs a continuation_video.")
         if (images or videos or audios) and (self.first_frame or self.last_frame):
             raise ValueError(
                 "keyframes and references cannot be combined: MiniMax-H3 runs them against "
@@ -7597,6 +7892,18 @@ class VideoGenerationDefaults(BaseModel):
     guidance: float = Field(..., description = "Default guidance scale")
     num_frames: int = Field(..., description = "Default frame count")
     fps: int = Field(..., description = "Default playback frame rate")
+    fps_range: Optional[list[int]] = Field(
+        None,
+        description = "Inclusive [min, max] frame rate a request may pick, or null (see fps_choices)",
+    )
+    fps_choices: list[int] = Field(
+        default_factory = list,
+        description = "Frame rates a request may pick; with neither this nor fps_range the rate is fixed",
+    )
+    min_num_frames: Optional[int] = Field(None, description = "Smallest frame count the family takes")
+    max_num_frames: Optional[int] = Field(
+        None, description = "Largest frame count the family takes, or null for no family cap"
+    )
     frame_step: int = Field(..., description = "Temporal lattice stride")
     frame_offset: int = Field(
         1, description = "Temporal lattice offset: valid counts are k * frame_step + frame_offset"
@@ -7784,6 +8091,11 @@ class VideoStatusResponse(BaseModel):
         description = "Whether the LOADED checkpoint takes reference images / videos / audio "
         "(gates the reference-to-video controls). Never true at the same time as "
         "supports_keyframes: MiniMax-H3 serves the two from different denoiser partitions.",
+    )
+    supports_video_continuation: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes continuation_video (Cosmos3-Nano "
+        "only): it keeps frames from one end of a clip and generates what happens next",
     )
     h3_task: Optional[str] = Field(
         None,

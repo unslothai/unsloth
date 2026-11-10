@@ -23,10 +23,11 @@ import {
   forgetMeasuredVerdict,
   usePlatformStore,
 } from "@/config/env";
+import { routeNeedsHardware } from "@/config/hardware-verdict";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
 import { DeepLinkHandler } from "@/features/deep-links";
-import { receiveSharedRunConfigUrls } from "@/features/model-picker";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker/sharing/receive-link";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
@@ -36,16 +37,19 @@ import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain
 import {
   NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
-  applyCustomizationToDocument,
-  applyInterfaceScale,
   getAppliedInterfaceZoom,
-  notifyRendererReady,
   subscribeAppliedInterfaceZoom,
+} from "@/features/settings/lib/interface-scale-runtime";
+import {
+  applyCustomizationToDocument,
   useAppearanceCustomStore,
+} from "@/features/settings/stores/appearance-custom-store";
+import {
+  applyInterfaceScale,
   useInterfaceScaleStore,
-  usePalette,
-  useTheme,
-} from "@/features/settings";
+} from "@/features/settings/stores/interface-scale-store";
+import { notifyRendererReady } from "@/features/settings/api/gpu-rendering";
+import { usePalette, useTheme } from "@/features/settings/stores/theme-store";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
 import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
@@ -82,6 +86,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import {
   type LogicalWindowSize,
   PREFERRED_SETUP_WINDOW_SIZE,
@@ -118,11 +123,9 @@ type TauriMonitor = NonNullable<
 // Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 
-// Room the corner rail keeps around its cards so its overflow clip does not cut their shadows off (#9246).
-// Sized off the deepest card shadow, the dark-mode one: 0 8px 28px -6px reaches 22px to a card's left
-// and 14px above it, and a shorter gutter ends the halo on a hard line. Only those two edges show it:
-// the rail is flush with the bottom-right corner, so the clip there lands on the screen edge. Both
-// gutters come out of the cap, never out of the cards: 100dvh less 16 and 16 is the band they had.
+// Gutters keep the rail's overflow clip from cutting card shadows (#9246), sized to the dark-mode
+// shadow (22px left, 14px above); only the left and top edges show, and both come out of the cap,
+// never the cards.
 const STACK_SHADOW_GUTTER_BOTTOM = 16;
 const STACK_SHADOW_GUTTER_TOP = 16;
 const STACK_SHADOW_GUTTER_LEFT = 28;
@@ -501,17 +504,17 @@ function getTauriWindowMode(
 }
 
 function TauriUpdateLayer({
-  isExternalServer,
+  externalServerPort,
   children,
   appContent,
   onUpdateScreenChange,
 }: {
-  isExternalServer: boolean;
+  externalServerPort: number | null;
   children?: ReactNode;
   appContent: ReactNode;
   onUpdateScreenChange: (shown: boolean) => void;
 }) {
-  const update = useTauriUpdate(isExternalServer);
+  const update = useTauriUpdate(externalServerPort);
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -567,7 +570,7 @@ function TauriUpdateLayer({
         info={update.info}
         dismissed={update.dismissed}
         lastFailure={update.lastFailure}
-        isExternalServer={isExternalServer}
+        externalServerPort={externalServerPort}
         updatePolicyMode={update.updatePolicyMode}
         manualReleaseUrl={update.manualReleaseUrl}
         releasePageUrl={update.releasePageUrl}
@@ -691,12 +694,14 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const blockingScreenRef = useSurfaceRef<HTMLDivElement>(MODAL_SURFACE);
   const {
     status,
     logs,
     error,
     installDiskFull,
     isExternalServer,
+    externalServerPort,
     currentStepIndex,
     progressDetail,
     startupMessage,
@@ -886,6 +891,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // Set once a backend that already answered goes away: the next one measures its hardware again.
   const servedRef = useRef(false);
   const verdictStaleRef = useRef(false);
+  // Read at reconnect time only: a navigation must not trigger another health read.
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
   useEffect(() => {
     if (status === "running") servedRef.current = true;
     else if (servedRef.current) verdictStaleRef.current = true;
@@ -897,7 +905,11 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       verdictStaleRef.current = false;
       forgetMeasuredVerdict();
     }
-    void fetchDeviceType({ force: true }).catch(() => undefined);
+    void fetchDeviceType({
+      force: true,
+      // The open page's beforeLoad will not rerun, so it asks for detection here.
+      detectHardware: routeNeedsHardware(pathnameRef.current),
+    }).catch(() => undefined);
   }, [status, desktopAuthReady]);
 
   useEffect(() => {
@@ -974,7 +986,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         >
           <AppReadinessBoundary onReady={setAppShellReady} revealed={showApp}>
             <TauriUpdateLayer
-              isExternalServer={isExternalServer}
+              externalServerPort={externalServerPort}
               onUpdateScreenChange={setUpdateScreenShown}
               appContent={
                 <>
@@ -995,6 +1007,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       )}
       {!showApp && (
         <div
+          ref={blockingScreenRef}
           data-blocking-screen=""
           className="fixed inset-0 z-40 bg-background"
         >
@@ -1059,7 +1072,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             <div
               data-tauri-drag-region={true}
               aria-hidden="true"
-              className="pointer-events-auto fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+              className="pointer-events-auto modal-pe-live fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
             />
           ) : null}
           {chromeVars}

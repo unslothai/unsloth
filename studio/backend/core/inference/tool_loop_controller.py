@@ -18,6 +18,7 @@ from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
+from core.inference.tool_facts import REPEATABLE, awaits_user, reads_only, repeatable
 
 # Provenance the envelope is trusted on; stamped by mcp_client.
 MCP_TOOL_PREFIX = "mcp__"
@@ -26,7 +27,7 @@ MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 # Never deduplicated: an identical call is new work (the page as it is now, another render).
-REPEATABLE_TOOL_NAMES = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
+REPEATABLE_TOOL_NAMES = REPEATABLE
 
 
 _CANONICAL_HEAL_ARG = {
@@ -450,8 +451,7 @@ _KNOWN_KEYWORDS = _READ_KEYWORDS | _INERT_KEYWORDS | _UNION_KEYWORDS
 
 
 def _readable(spec: Any) -> bool:
-    """An allowlist, because composition, reference and a later draft's keywords can all move
-    a declaration out of this walk's reach."""
+    """Allowlist: composition, references or newer drafts can move declarations out of reach."""
     return isinstance(spec, Mapping) and spec.keys() <= _KNOWN_KEYWORDS
 
 
@@ -627,25 +627,29 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
 def _mcp_tool_spec(tool_name: str) -> Any:
     try:
         from core.inference.tools import mcp_tool_spec  # noqa: PLC0415 -- cycle at import time
-        return mcp_tool_spec(tool_name)
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
+
+        specs = neutralize_tool_descriptions([mcp_tool_spec(tool_name)])
+        return specs[0] if specs else None
     except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
         return None
 
 
-def _mcp_fit_loaded(specs: list) -> list:
-    try:
-        from core.inference.tools import mcp_fit_loaded  # noqa: PLC0415 -- cycle at import time
-        return mcp_fit_loaded(specs)
-    except Exception:  # noqa: BLE001 -- unsized, the newest load still goes through
-        return specs[:1]
-
-
-def _mcp_tool_search_specs(arguments: Any) -> list:
-    try:
-        from core.inference.tools import mcp_tool_search_specs  # noqa: PLC0415 -- cycle at import time
-        return mcp_tool_search_specs(arguments)
-    except Exception:  # noqa: BLE001 -- a failed load leaves the listing as it was
-        return []
+def _mcp_tool_search_specs(result: str) -> list:
+    specs = []
+    # The worker's result budget is absent here; its returned schemas are authoritative.
+    for line in result.splitlines():
+        if not line.startswith("  schema: "):
+            continue
+        try:
+            schema = json.loads(line.removeprefix("  schema: "))
+        except (ValueError, TypeError):
+            continue
+        name = _tool_name_from_schema(schema) if isinstance(schema, Mapping) else None
+        spec = _mcp_tool_spec(name) if name else None
+        if spec is not None:
+            specs.append(spec)
+    return specs
 
 
 def _tool_name_key(name: str) -> str:
@@ -765,8 +769,7 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
 
 
 def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
-    """Provisional-card provenance, MCP display name included so an early or
-    orphaned card (cancel/error before the real tool_start) never shows the id."""
+    """Provisional card provenance with MCP name; an early or orphaned card never shows the id."""
     mcp = mcp_display_parts(tool_name)
     return tool_event_provenance(
         provisional = True,
@@ -880,6 +883,12 @@ def _browser_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return "Moving the mouse"
     if tool_name == "browser_drag":
         return "Dragging"
+    if tool_name == "browser_tabs":
+        return "Switching tabs" if text("tab") else "Listing browser tabs"
+    if tool_name == "browser_read_file":
+        return "Reading the file"
+    if tool_name == "browser_edit_file":
+        return "Editing the file"
     return f"Calling: {tool_name}"
 
 
@@ -1049,9 +1058,7 @@ _MCP_TOOL_PREFIX = "mcp__"
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution", "generate_image"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
-# Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
-_WORKSPACE_READ_TOOLS = frozenset({"view_image"})
-_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | _WORKSPACE_READ_TOOLS
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file", "view_image"}
 
 
 def _reruns_after_new_work(tool_name: Any) -> bool:
@@ -1059,9 +1066,8 @@ def _reruns_after_new_work(tool_name: Any) -> bool:
     return tool_name in _WORKSPACE_TOOLS or str(tool_name or "").startswith(_MCP_TOOL_PREFIX)
 
 
-# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
-# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
-# so re-running is a no-op.
+# Cached in the clear for CLI reuse; masked before the model, and the mask has no prefix to
+# re-match.
 _STUDIO_API_KEY_RE = re.compile(
     # 8, not 32: a truncated result can end mid-key. Hex only, so `sk-unsloth-internal-...` survives.
     r"sk-unsloth-[0-9a-fA-F]{8,}"
@@ -1170,10 +1176,9 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
         return (
             f"One earlier request to call tool '{tool_name}' in this batch was "
             "not executed because an identical call had already completed "
-            "successfully. Do not repeat the same "
-            "tool call. Continue with a different enabled tool if that would "
-            "materially help, or provide the final answer if you have enough "
-            "information."
+            "successfully and nothing has changed since, so its result above still holds. "
+            "Do not repeat the same tool call. Answer from the results you have; call a "
+            "different tool only if it would return information you do not have yet."
         )
     if reason == "render_html_repeat":
         return (
@@ -1195,6 +1200,24 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
     )
 
 
+_SCHEMA_ATOMS = (str, int, float, bool, type(None))
+
+
+def _copy_schema(value: Any) -> Any:
+    """copy.deepcopy for JSON schemas minus its memo: no alias or cycle tracking; non-plain nodes still deepcopy."""
+    kind = type(value)
+    if kind is dict:
+        return {
+            key: item if type(item) in _SCHEMA_ATOMS else _copy_schema(item)
+            for key, item in value.items()
+        }
+    if kind is list:
+        return [item if type(item) in _SCHEMA_ATOMS else _copy_schema(item) for item in value]
+    if kind in _SCHEMA_ATOMS:
+        return value
+    return copy.deepcopy(value)
+
+
 class ToolLoopController:
     """Per-response ledger for local agentic tool loops."""
 
@@ -1212,13 +1235,11 @@ class ToolLoopController:
         self._session_id = session_id
         self._thread_id = thread_id
         self._restrict_to_allowed = tools is not None
-        self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
+        self._tools = [_copy_schema(dict(tool)) for tool in (tools or [])]
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
-        self._listed_count = len(self._tools)
-        self._mcp_loaded: list[dict[str, Any]] = []
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -1232,6 +1253,15 @@ class ToolLoopController:
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
         self._force_final_answer = False
+        self._awaiting_user = False
+
+    @property
+    def awaiting_user(self) -> bool:
+        """A result in the latest batch said only the user can unblock this turn."""
+        return self._awaiting_user
+
+    def begin_batch(self) -> None:
+        self._awaiting_user = False
 
     @property
     def history(self) -> tuple[_ToolCallRecord, ...]:
@@ -1242,16 +1272,31 @@ class ToolLoopController:
         """True once a terminal no-op should transition to a no-tools pass."""
         return self._force_final_answer
 
-    def active_tools(self) -> list[dict[str, Any]]:
-        """Return tools still worth advertising to the next model call."""
+    def has_active_tools(self) -> bool:
+        """bool(active_tools()) without copying a schema."""
+        return not self._force_final_answer and any(
+            _tool_name_from_schema(tool) not in self._completed_one_shot_tools
+            for tool in self._tools
+        )
+
+    def active_tools(self, *, include_deferred: bool = False) -> list[dict[str, Any]]:
+        """Return prompt tools, optionally including deferred schemas for decoding."""
         if self._force_final_answer:
             return []
         active: list[dict[str, Any]] = []
-        for tool in self._tools:
+        tools = self._tools
+        if include_deferred and self._mcp_search:
+            declared = {_tool_name_from_schema(tool) for tool in tools}
+            tools = tools + [
+                spec
+                for name in sorted(self._allowed_tool_names - declared)
+                if (spec := _mcp_tool_spec(name)) is not None
+            ]
+        for tool in tools:
             name = _tool_name_from_schema(tool)
             if name in self._completed_one_shot_tools:
                 continue
-            active.append(copy.deepcopy(tool))
+            active.append(_copy_schema(tool))
         return active
 
     def prepare_call(
@@ -1271,17 +1316,21 @@ class ToolLoopController:
             canonical = _canonical_tool_name(tool_name, self._allowed_tool_names)
             if canonical is not None:
                 tool_name, name_healed = canonical, True
+        # Deferred schemas must not shift the cached prompt prefix.
+        extra_schema = None
         if (
             self._mcp_search
             and tool_name.startswith(MCP_TOOL_PREFIX)
-            and tool_name not in self._allowed_tool_names
+            and tool_name not in {_tool_name_from_schema(tool) for tool in self._tools}
         ):
-            self._load_mcp_tools([_mcp_tool_spec(tool_name)])
+            extra_schema = _mcp_tool_spec(tool_name)
+            if extra_schema is not None:
+                self._allowed_tool_names.add(tool_name)
         coerced = coerce_tool_arguments(
             function.get("arguments", {}),
             heal = self._auto_heal_tool_calls,
             tool_name = tool_name,
-            tool_schemas = self._tools,
+            tool_schemas = self._tools + ([extra_schema] if extra_schema is not None else []),
         )
         arguments = coerced.arguments
         if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
@@ -1310,13 +1359,12 @@ class ToolLoopController:
         elif (
             self._deduplicate_tool_calls
             and key in self._successful_keys
-            and tool_name not in REPEATABLE_TOOL_NAMES
+            and not repeatable(tool_name)
             and tool_name != MCP_TOOL_SEARCH_NAME
         ):
             # Not the browser tools: each acts on or reads the page as it is now, so a second
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
             # Nor the media tools: the same prompt again is another image with a fresh seed.
-            # Nor mcp_tool_search: a repeat restores tools a later load evicted.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
@@ -1350,8 +1398,7 @@ class ToolLoopController:
             provisional = provisional,
             allowed_tool_names = allowed_tool_names,
         )
-        # The second pass receives an argument mapping, so retain provenance from the first parse,
-        # notably whether a local model's bare argument was healed.
+        # Keep first-parse provenance, e.g. whether a local model's bare argument was healed.
         refreshed.provenance.update(decision.provenance)
         return refreshed
 
@@ -1359,6 +1406,8 @@ class ToolLoopController:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
+        # Sticky for the batch: a parallel call that succeeds does not unblock the user.
+        self._awaiting_user = self._awaiting_user or awaits_user(result_text)
         result_text = self._cap_result(result_text, decision.tool_name)
         self._history.append(
             _ToolCallRecord(
@@ -1372,9 +1421,9 @@ class ToolLoopController:
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
         if _reruns_after_new_work(decision.tool_name):
-            if (
-                decision.tool_name not in _WORKSPACE_READ_TOOLS
-                and decision.key not in self._workspace_ran
+            # A repeatable writer (an unseeded generator) makes something new on every run.
+            if not reads_only(decision.tool_name) and (
+                decision.key not in self._workspace_ran or repeatable(decision.tool_name)
             ):
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
@@ -1391,7 +1440,10 @@ class ToolLoopController:
         if not failed:
             self._successful_keys.add(decision.key)
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
-                self._load_mcp_tools(_mcp_tool_search_specs(decision.arguments))
+                for spec in _mcp_tool_search_specs(result_text):
+                    name = _tool_name_from_schema(spec) if isinstance(spec, Mapping) else None
+                    if name:
+                        self._allowed_tool_names.add(name)
             elif decision.tool_name.startswith(MCP_TOOL_PREFIX):
                 # Also while the catalog is listed in full, for a later turn that defers it.
                 self._remember_mcp_tools([decision.tool_name])
@@ -1403,33 +1455,6 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
-
-    def _load_mcp_tools(self, specs) -> None:
-        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
-
-        # Remote text, swept as the loops sweep the catalog this controller was built from (#7066); with no model's
-        # profile at hand, against every family's markup.
-        specs = (
-            neutralize_tool_descriptions([dict(s) for s in specs if isinstance(s, Mapping)]) or []
-        )
-        listed = self._tools[: self._listed_count]
-        listed_names = {_tool_name_from_schema(tool) for tool in listed}
-        fresh = [s for s in specs if _tool_name_from_schema(s) not in listed_names]
-        fresh_names = {_tool_name_from_schema(s) for s in fresh}
-        # Newest first into the turn's load share, so a later search can retire an older load but never overflow.
-        kept = _mcp_fit_loaded(
-            fresh
-            + [
-                s
-                for s in reversed(self._mcp_loaded)
-                if _tool_name_from_schema(s) not in fresh_names
-            ]
-        )
-        self._mcp_loaded = [copy.deepcopy(s) for s in reversed(kept)]
-        self._tools = listed + self._mcp_loaded
-        self._allowed_tool_names = {
-            name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
-        }
 
     def _remember_mcp_tools(self, names) -> None:
         if not names:

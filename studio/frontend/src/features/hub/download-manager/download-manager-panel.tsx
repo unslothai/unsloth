@@ -99,10 +99,9 @@ function repoLabel(repoId: string): string {
 
 function isRequiredAssetJob(job: RowSubject): boolean {
   if (!job.variant?.startsWith("@")) return false;
-  // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
-  // can be a curated single .safetensors and companion repos carry .safetensors too, so the
-  // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
-  // which would otherwise change label mid-download after a restart.
+  // The staging page's checkpoint tag is the only reliable answer, since the extension decides
+  // nothing and companion repos carry .safetensors too; the old guess stays for jobs persisted
+  // before the flag, so labels do not change after a restart.
   const isModelFile =
     job.checkpoint ??
     job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));

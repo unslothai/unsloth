@@ -451,7 +451,8 @@ class TestCheckpointsNeverReachAVramFigure:
 
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "0 if self._rollback_state_bytes(1) > 0 else _requested_ctx_checkpoints" in source
-        assert source.count("ctx_checkpoints = _fit_ctx_checkpoints,") == 1
+        # Host-memory budgets only: Metal unified memory and the CPU-only host RAM fit.
+        assert source.count("ctx_checkpoints = _fit_ctx_checkpoints,") == 2
         # +1: the drafter probe's one-slot fit (#8872)
         # Per subset (incl. the drafter's slot search): a discrete-tier subset pays none.
         # The context ceiling (best_cap) prices per subset too.

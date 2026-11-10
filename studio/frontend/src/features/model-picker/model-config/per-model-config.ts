@@ -36,6 +36,7 @@ export interface PerModelConfig {
   mlxKvQuant?: MlxKvQuant | null;
   mlxInt8Prefill?: boolean;
   mlxAnePrefill?: boolean;
+  mlxFastVerify?: boolean;
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlxPleOffload?: MlxOffload;
   mlxExpertOffload?: MlxOffload;
@@ -86,6 +87,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   mlxKvQuant: null,
   mlxInt8Prefill: false,
   mlxAnePrefill: false,
+  mlxFastVerify: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
   speculativeType: null,
@@ -409,9 +411,10 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill. v8 is skipped: nightly builds stamped it for the reverted custom
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill, v14 mlxFastVerify. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 13;
+const STORAGE_SCHEMA_VERSION = 14;
+const PRE_MLX_FAST_VERIFY_SCHEMA_VERSION = 13;
 const PRE_MLX_ANE_PREFILL_SCHEMA_VERSION = 12;
 const PRE_MLX_OFFLOAD_SCHEMA_VERSION = 11;
 const PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;
@@ -461,6 +464,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "mlxKvQuant",
   "mlxInt8Prefill",
   "mlxAnePrefill",
+  "mlxFastVerify",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadIn4bit",
@@ -1086,6 +1090,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
     mlxInt8Prefill: partial.mlxInt8Prefill === true,
     mlxAnePrefill: partial.mlxAnePrefill === true,
+    mlxFastVerify: partial.mlxFastVerify === true,
     mlxPleOffload: normalizeMlxOffload(partial.mlxPleOffload),
     mlxExpertOffload: normalizeMlxOffload(partial.mlxExpertOffload),
     kvCacheDtype:
@@ -1172,8 +1177,11 @@ function storedSchemaVersion(normalized: PerModelConfig): number {
   const mode = normalized.speculativeType;
   // A kept Auto and the MLX-only modes are values an older client folds back to unset.
   const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
-  if (normalized.mlxAnePrefill) {
+  if (normalized.mlxFastVerify) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.mlxAnePrefill) {
+    return PRE_MLX_FAST_VERIFY_SCHEMA_VERSION;
   }
   if (normalized.mlxPleOffload != null || normalized.mlxExpertOffload != null) {
     return PRE_MLX_ANE_PREFILL_SCHEMA_VERSION;
@@ -1370,6 +1378,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
     !config.mlxInt8Prefill &&
     !config.mlxAnePrefill &&
+    !config.mlxFastVerify &&
     config.mlxPleOffload == null &&
     config.mlxExpertOffload == null &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
