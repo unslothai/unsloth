@@ -715,6 +715,14 @@ _SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
     "failed during workspace capacity check",
     "failed during allocated capacity check",
 )
+# Allocator failures on any memory: the host RAM that weight preparation stages into (ggml's CPU buffer, the model
+# manager's params buffer) as well as the device.
+_ALLOCATION_FAILURE_MARKERS: tuple[str, ...] = (
+    *_HOST_OOM_MARKERS,
+    "erroroutofhostmemory",
+    "failed to allocate",
+    "backend buffer failed",
+)
 # sd.cpp fills free-512 MiB with cached weights, so each phase needs memory the last one released; half leaves it
 # unclaimed when the driver reports the release late (Windows may defer destroying allocations).
 IMAGE_VRAM_RETRY_SCALE = 0.5
@@ -725,7 +733,14 @@ def is_vram_refusal_text(text: Optional[str]) -> bool:
     lines = str(text or "").lower().splitlines()
     if not any(marker in line for line in lines for marker in _SEGMENT_REFUSAL_MARKERS):
         return False
-    return not any("failed during" not in line and is_device_oom_text(line) for line in lines)
+    return not any(
+        "failed during" not in line
+        and (
+            is_device_oom_text(line)
+            or any(marker in line for marker in _ALLOCATION_FAILURE_MARKERS)
+        )
+        for line in lines
+    )
 
 
 def image_vram_retry_budget(

@@ -3280,6 +3280,13 @@ def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
         {"error": "sd-server generation failed: generation_failed: invalid sampler"},
         {"error": _ALLOCATION_FAILURE.format(stage = "workspace allocation")},
         {"error": _ALLOCATION_FAILURE.format(stage = "weight preparation")},
+        {
+            "error": _VRAM_REFUSAL.replace(
+                "Last output:\n",
+                "Last output:\n[E] ggml: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of "
+                "size 220288512\n",
+            )
+        },
     ],
     ids = [
         "no_plan",
@@ -3292,6 +3299,7 @@ def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
         "other_error",
         "workspace_allocation_failure",
         "weight_staging_allocation_failure",
+        "host_allocation_failure",
     ],
 )
 def test_a_vram_refusal_without_a_usable_budget_is_surfaced_unchanged(monkeypatch, kwargs):
