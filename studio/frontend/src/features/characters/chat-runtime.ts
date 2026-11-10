@@ -6,6 +6,7 @@ import { getAuthToken } from "@/features/auth";
 import { loginDisplayName } from "@/features/profile/hooks/use-effective-profile";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { decodeJwtSubject } from "@/features/profile/utils/jwt-subject";
+import { getCharacter } from "./api";
 import { roleplayMetaOf } from "./meta";
 import {
   buildCharacterPrompt,
@@ -88,6 +89,24 @@ async function ensureLoaded(): Promise<void> {
   ]);
 }
 
+/** Re-reads the cast and the personas before a send: another tab or device may have edited a card. */
+async function revalidateParticipants(scene: ChatScene): Promise<void> {
+  await Promise.all([
+    ...scene.cast.map((member) =>
+      getCharacter(member.characterId).then(
+        (fresh) => {
+          const kept = useCharactersStore.getState().characters[fresh.id];
+          if (kept?.updatedAt !== fresh.updatedAt || kept.avatarRev !== fresh.avatarRev) {
+            useCharactersStore.getState().upsert(fresh);
+          }
+        },
+        () => undefined,
+      ),
+    ),
+    useCharactersStore.getState().refreshPersonas().catch(() => undefined),
+  ]);
+}
+
 /**
  * The chat's characters and persona, loaded for a model call. Refuses rather than fall back: a stale
  * library would drop a member from the prompt, and unloaded personas would speak as the account.
@@ -145,6 +164,7 @@ export async function prepareCharacterRun(args: {
     if (!scene && knownCharacterChat) throw new CharacterChatUnavailableError(error);
   }
   if (!scene) return null;
+  if (args.revalidate) await revalidateParticipants(scene);
   const { cast, persona } = await loadParticipants(scene);
   if (cast.length === 0) {
     // Every character in the chat was deleted: it carries on as an ordinary chat.

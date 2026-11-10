@@ -72,10 +72,11 @@ function useReplySpeaker() {
     const meta = roleplayMetaOf(message);
     return meta?.kind === "reply" ? meta.speakerName : "";
   });
-  const characters = useCharactersStore((s) => s.characters);
+  // Only this reply's speaker, so an edit to another character does not re-render every reply.
+  const speaker = useCharactersStore((s) => (speakerId ? s.characters[speakerId] : undefined));
   if (!thread) return null;
   if (speakerId) {
-    const character = characters[speakerId] ?? null;
+    const character = speaker ?? null;
     return { id: speakerId, name: character?.name ?? speakerName, character, group: thread.group };
   }
   if (thread.cast.length === 1) {

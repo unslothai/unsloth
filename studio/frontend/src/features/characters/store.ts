@@ -11,6 +11,7 @@ import {
   updateChatScene,
   type ScenePatch,
 } from "./api";
+import { mergeCharacters } from "./meta";
 import type { Character, ChatScene, Persona } from "./types";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -71,8 +72,9 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     refreshPromise = listCharacters()
       .then((list) => {
         if (started !== epoch) return;
-        const characters = Object.fromEntries(list.map((c) => [c.id, c]));
-        set({ characters, order: sortIds(characters), status: "ready" });
+        const characters = mergeCharacters(get().characters, list);
+        if (characters === get().characters) set({ status: "ready" });
+        else set({ characters, order: sortIds(characters), status: "ready" });
       })
       .catch((error) => {
         set({ status: get().status === "ready" ? "ready" : "error" });
@@ -90,7 +92,10 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     const started = epoch;
     personasPromise = listPersonas()
       .then((personas) => {
-        if (started === epoch) set({ personas, personasStatus: "ready" });
+        if (started !== epoch) return;
+        // Kept as is when nothing changed, so a re-read before each send re-renders nothing.
+        const same = JSON.stringify(personas) === JSON.stringify(get().personas);
+        set(same ? { personasStatus: "ready" } : { personas, personasStatus: "ready" });
       })
       .catch((error) => {
         set({ personasStatus: get().personasStatus === "ready" ? "ready" : "error" });

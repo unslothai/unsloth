@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { CharacterChatMark } from "@/features/characters/sidebar-mark";
 import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
@@ -323,6 +322,8 @@ import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
 import {
   Fragment,
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -332,6 +333,11 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+
+// Off the startup path: the mark, its store and the portraits load after the first paint.
+const CharacterChatMark = lazy(() =>
+  import("@/features/characters/sidebar-mark").then((m) => ({ default: m.CharacterChatMark })),
+);
 import { toast } from "@/lib/toast";
 import {
   folderRingKey,
@@ -5520,7 +5526,9 @@ export function AppSidebar() {
                 <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
               )}
               {item.type !== "compare" && !(isPinned && variant !== "project") ? (
-                <CharacterChatMark threadId={item.id} />
+                <Suspense fallback={null}>
+                  <CharacterChatMark threadId={item.id} />
+                </Suspense>
               ) : null}
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}

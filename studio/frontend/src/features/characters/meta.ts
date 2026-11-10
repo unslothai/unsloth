@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { RoleplayMessageMeta } from "./types";
+import type { Character, RoleplayMessageMeta } from "./types";
 
 type MessageLike = {
   role?: string;
@@ -47,4 +47,28 @@ export function roundPlanOf(message: MessageLike | null | undefined): string[] |
   const custom = (metadata?.custom as Record<string, unknown> | undefined) ?? metadata;
   const plan = (custom?.roleplay as Record<string, unknown> | undefined)?.plan;
   return Array.isArray(plan) && plan.every((id) => typeof id === "string") ? (plan as string[]) : null;
+}
+
+/**
+ * A refreshed library that keeps each unchanged record, and the whole map when nothing changed, so a
+ * refetch does not re-render every message and portrait that reads the store.
+ */
+export function mergeCharacters(
+  previous: Record<string, Character>,
+  list: readonly Character[],
+): Record<string, Character> {
+  let changed = list.length !== Object.keys(previous).length;
+  const next: Record<string, Character> = {};
+  for (const character of list) {
+    const kept = previous[character.id];
+    const same =
+      kept !== undefined &&
+      kept.updatedAt === character.updatedAt &&
+      kept.avatarRev === character.avatarRev &&
+      kept.lastChatAt === character.lastChatAt &&
+      kept.chatCount === character.chatCount;
+    if (!same) changed = true;
+    next[character.id] = same ? kept : character;
+  }
+  return changed ? next : previous;
 }

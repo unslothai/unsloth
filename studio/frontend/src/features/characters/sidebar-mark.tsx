@@ -15,9 +15,17 @@ function refreshSoon(): void {
   if (timer !== null) window.clearTimeout(timer);
   timer = window.setTimeout(() => {
     timer = null;
-    const store = useCharactersStore.getState();
-    void store.refreshIndex().catch(() => undefined);
-    if (store.status === "idle") void store.refresh().catch(() => undefined);
+    // The library is fetched only once a character chat exists, so other accounts pay one small read.
+    void useCharactersStore
+      .getState()
+      .refreshIndex()
+      .then(() => {
+        const store = useCharactersStore.getState();
+        if (store.status === "idle" && Object.keys(store.chatIndex).length > 0) {
+          void store.refresh().catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
   }, 400);
 }
 
