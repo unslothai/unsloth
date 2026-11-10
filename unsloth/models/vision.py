@@ -292,6 +292,7 @@ from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_cust
 from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
+from . import _decode_graphs, _generic_decode_graphs
 from .loader_utils import (
     _bnb_bits_requested,
     vlm_gradient_checkpointing_reentrant,
@@ -1504,6 +1505,9 @@ def _eager_decodes(model):
     return _is_decode_compile_model(model) and "forward" not in model.__dict__
 
 
+_NO_FORWARD = object()
+
+
 class _EagerDecodeSteps:
     """One generate() call. Each eager decode step (one new token per row) runs inside zoo's
     `unsloth_eager_decode()`, so compiled regions call their eager originals; prefill and
@@ -1531,12 +1535,97 @@ class _EagerDecodeSteps:
         def forward(*args, **kwargs):
             return step(*args, **kwargs)
 
+        self._previous = self.model.__dict__.get("forward", _NO_FORWARD)
         self.model.forward = forward
         return self
 
     def __exit__(self, *exc):
-        del self.model.forward
+        if self._previous is _NO_FORWARD:
+            del self.model.forward
+        else:
+            self.model.forward = self._previous
         return False
+
+
+try:
+    from unsloth_zoo.decode_graph_state import (
+        graph_generate as _zoo_graph_generate,
+        graph_decode_step as _zoo_graph_decode_step,
+    )
+except ImportError:
+    _zoo_graph_generate = _zoo_graph_decode_step = None
+
+
+def _one_token_step(kwargs):
+    ids = kwargs.get("input_ids")
+    if ids is None:
+        ids = kwargs.get("inputs_embeds")
+    return isinstance(ids, torch.Tensor) and ids.dim() >= 2 and ids.shape[1] == 1
+
+
+class _GraphDecodeSteps(_EagerDecodeSteps):
+    """One generate() call over a static cache with decode CUDA graphs on: each one-token decode
+    step replays a captured graph of the step the eager path runs (_generic_decode_graphs), else
+    runs as before (inside `unsloth_eager_decode()` for the models that compile their decode)."""
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.eager_decodes = _eager_decodes(model)
+        # Diagnostic: =1 graphs the eager originals of compiled regions (not what eager decode runs).
+        self.eager_regions = self.eager_decodes or (
+            os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_EAGER_REGIONS", "0") == "1"
+        )
+        # Set by generate() after the call: keep the graphs and their cache for the next call.
+        self.keep = False
+        self.caches = _generic_decode_graphs.reuse_kept_cache(model)
+
+    def _forward(self, *args, **kwargs):
+        # zoo picks its graph-safe decode kernels (gpt-oss dense sink attention, routed MoE below sm80) for
+        # one-token steps in this scope: the eager warm-up, the capture and every eager step agree.
+        if _zoo_graph_decode_step is not None and _one_token_step(kwargs):
+            with _zoo_graph_decode_step():
+                return self._graph_forward(*args, **kwargs)
+        return self._graph_forward(*args, **kwargs)
+
+    def _graph_forward(self, *args, **kwargs):
+        if not args and not torch.compiler.is_compiling():
+            # Compiled regions stay compiled unless this model's eager decode leaves them: a
+            # different kernel mix rounds differently and greedy tokens drift after a few dozen steps.
+            out = _generic_decode_graphs.decode_step(
+                self.model,
+                self.forward,
+                kwargs,
+                unsloth_eager_decode if self.eager_regions else None,
+            )
+            if out is not None:
+                return out
+        if self.eager_decodes:
+            return super()._forward(*args, **kwargs)
+        return self.forward(*args, **kwargs)
+
+    def __enter__(self):
+        _generic_decode_graphs.begin(self.model)
+        self.caches.__enter__()
+        # Masks are built in prepare_inputs_for_generation, outside the forward: the call-wide scope covers them.
+        self._zoo_scope = _zoo_graph_generate() if _zoo_graph_generate is not None else None
+        if self._zoo_scope is not None:
+            self._zoo_scope.__enter__()
+        try:
+            return super().__enter__()
+        except BaseException:
+            if self._zoo_scope is not None:
+                self._zoo_scope.__exit__(None, None, None)
+            self.caches.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, *exc):
+        try:
+            return super().__exit__(*exc)
+        finally:
+            if self._zoo_scope is not None:
+                self._zoo_scope.__exit__(None, None, None)
+            self.caches.__exit__(*exc)
+            _generic_decode_graphs.end(self.model, keep = self.keep and exc[0] is None)
 
 
 # One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
@@ -2155,6 +2244,9 @@ def _uses_flash_attention_for_generation(config):
 
 
 def _clear_generation_caches(model):
+    # The StaticCache decode graphs keep for the next call stays. Guarded: tests exec this function alone.
+    graphs = globals().get("_generic_decode_graphs")
+    kept = graphs.kept_cache(model) if graphs is not None else None
     for name, module in model.named_modules():
         if hasattr(module, "_flex_attention_cache"):
             try:
@@ -2162,6 +2254,8 @@ def _clear_generation_caches(model):
             except:
                 pass
         # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'.
+        if kept is not None and module.__dict__.get("_cache") is kept:
+            continue
         if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
             try:
                 del module._cache
@@ -2387,16 +2481,49 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs["compile_config"] = compile_config
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
-    eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
-    try:
+
+    def _eager_scope():
+        return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
+
+    def _run(scope, plan):
         with (
             _NonFlexGenerate(self),
             decode_scope,
-            eager_scope,
+            scope,
+            _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
         ):
-            output = self._old_generate(*args, **kwargs)
+            out = self._old_generate(*args, **kwargs)
+            if isinstance(scope, _GraphDecodeSteps):
+                scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
+            return out
+
+    try:
+        with _decode_graphs.generate_scope():
+            if cache_implementation == "static" and not force_dynamic_cache and not compile_decode:
+                plan = _generic_decode_graphs.plan(self, args, kwargs, input_ids)
+            else:
+                plan = _generic_decode_graphs.ineligible(self)
+            if plan != "graph":
+                output = _run(_eager_scope(), "eager")
+            else:
+                rng = _generic_decode_graphs.rng_state(input_ids.device)
+                out_of_memory = False
+                try:
+                    output = _run(_GraphDecodeSteps(self), "graph")
+                except torch.cuda.OutOfMemoryError:
+                    if not _generic_decode_graphs.replayable(kwargs):
+                        raise
+                    out_of_memory = True
+                if out_of_memory:
+                    # Outside the handler: its traceback holds the failed call's frames (cache, graph
+                    # buffers), which would stay allocated through the redo.
+                    _generic_decode_graphs.redo_eagerly(self)
+                    _clear_generation_caches(self)
+                    _generic_decode_graphs.set_rng_state(rng)
+                    with _decode_graphs.eager_scope():
+                        output = _run(_eager_scope(), "eager")
     finally:
         _clear_generation_caches(self)
 
@@ -6075,6 +6202,7 @@ class FastBaseModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
+        _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
