@@ -833,7 +833,7 @@ class _MarkdownRenderer(HTMLParser):
         site_links: SiteLinks | None = None,
         page_span_limit: int | None = None,
     ):
-        # references decode inside their text run, as a browser reads them, and route with that text
+        # charrefs must decode inside their text run: decoded apart, they left <pre> and gained a stray ';' (#17199)
         super().__init__(convert_charrefs = True)
         self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
@@ -2037,12 +2037,11 @@ class _MarkdownRenderer(HTMLParser):
             self._count_header_text(data)
             self._emit(data)
             return
-        # Collapse whitespace (including newlines) per HTML rules, which keep U+00A0 and other Unicode spaces.
+        # Collapse ASCII whitespace (including newlines) per HTML rules.
         text = _COLLAPSIBLE_RUN.sub(" ", data)
         # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
-        # Suppress whitespace-only nodes between table elements (source indentation, a lone &nbsp;),
-        # but keep a caption's &nbsp; or &emsp;, which separates tabs such as Javadoc's method summary.
+        # Drop whitespace-only nodes between table elements, except a caption's &nbsp; (Javadoc tab separators).
         if (
             self._in_table
             and not self._in_cell
