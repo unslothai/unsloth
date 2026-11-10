@@ -11695,6 +11695,7 @@ class DiffusionBackend:
                             load_bg_compile.close()
                             load_bg_compile = None
                         restore_backend_flags(backend_flags_before)
+                        _release_streamed_expandable()
                         _release_rocm_tunableop(pipe)
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent

@@ -135,3 +135,29 @@ def test_streamed_expandable_leaves_a_configured_allocator(allocator, monkeypatc
     monkeypatch.setattr(seg, "_live_settings", lambda torch: None)
     assert not seg.engage_streamed()
     assert allocator == []
+
+
+def test_a_rolled_back_load_releases_streamed_expandable_segments():
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    rollbacks = [
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.UnaryOp)
+        and isinstance(n.test.op, ast.Not)
+        and isinstance(n.test.operand, ast.Name)
+        and n.test.operand.id == "state_committed"
+    ]
+    assert rollbacks
+    for block in rollbacks:
+        called = {
+            c.func.id
+            for c in ast.walk(block)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+        }
+        assert "_release_streamed_expandable" in called
