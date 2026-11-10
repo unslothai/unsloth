@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from utils.optional_pdf import PDFDependencyUnavailable
+from utils.optional_pdf import PDFDependencyUnavailable, ensure_pdf_support
 
 from core.training.account_jobs import account_path, managed_account
 import base64
@@ -1173,6 +1173,9 @@ _document_extraction_limiter = CapacityLimiter(2)
 
 
 async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
+    if ext == ".pdf" or ext in _MUPDF_EBOOK_EXTS:
+        # Install here, not in the worker: a cancelled upload kills the worker but not its installer.
+        await to_thread.run_sync(ensure_pdf_support)
     if ext in _MUPDF_EBOOK_EXTS:
         from core.rag import parsers
 

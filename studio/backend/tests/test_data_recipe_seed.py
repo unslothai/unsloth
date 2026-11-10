@@ -207,6 +207,24 @@ def test_optional_pdf_failure_keeps_install_guidance_and_cleans_upload(
     assert set(result.model_dump()) == {"file_id", "filename", "size_bytes", "status", "error"}
 
 
+@pytest.mark.parametrize("filename", ["paper.pdf", "book.mobi", "notes.txt"])
+def test_pdf_support_installs_before_the_cancellable_worker(monkeypatch, tmp_path, filename):
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+    calls = []
+    monkeypatch.setattr(seed_route, "ensure_pdf_support", lambda: calls.append("install"))
+
+    async def worker(*args, cancellable, limiter):
+        calls.append("worker")
+        return "text"
+
+    monkeypatch.setattr(seed_route.to_process, "run_sync", worker)
+    monkeypatch.setattr(seed_route, "_chunking", lambda: None)
+    path = tmp_path / filename
+    path.write_text("text", encoding = "utf-8")
+    asyncio.run(seed_route._extract_text_from_file_async(path, path.suffix))
+    assert calls == ([] if path.suffix == ".txt" else ["install", "worker"])
+
+
 def test_unstructured_upload_keeps_txt_path_working(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
 
