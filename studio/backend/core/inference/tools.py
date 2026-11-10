@@ -6875,7 +6875,7 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 return True
             continue
         if not any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens):
-            if mentioned and re.search(r"(?:\$\(|`)[^)`]*<<(?!<)", line):
+            if mentioned and any(re.search(r"<<(?!<)", x) for x in _shell_expansions(line)):
                 return True
             continue
         commands, current = [], []
