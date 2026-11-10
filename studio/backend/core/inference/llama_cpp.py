@@ -8660,8 +8660,7 @@ class LlamaCppBackend:
         self._mmproj_accepts_image: bool = True
         # Set in _kill_process (monotonic); load_model reads it to decide whether to wait for VRAM reclaim.
         self._last_kill_monotonic: float = 0.0
-        # {GPU: (free MiB, MiB of weights the child held there)} read just before the last kill; lets the
-        # settle wait tell a release the driver has not reported yet from one that landed.
+        # {GPU: (free MiB, child's weights MiB)} read just before the last kill.
         self._last_kill_vram_baseline: Optional[dict[int, tuple[int, float]]] = None
         self._planned_vram_mib: dict[int, int] = {}
         self._pending_plan_mib: dict[int, int] = {}
@@ -16436,14 +16435,13 @@ class LlamaCppBackend:
 
     # Weights under this on a GPU cannot be told from noise in its free-VRAM figure.
     _VRAM_RELEASE_MIN_HELD_MIB: float = 512.0
-    # How long a load waits for the VRAM of the server it just stopped to show as free. Windows
-    # (WDDM) frees it after the process is gone, so the figure trails the exit. A bound, not a measurement.
+    # Windows (WDDM) reports a dead child's VRAM as free after it exits. A bound, not a measurement.
     _VRAM_RELEASE_WAIT_S: float = 10.0
 
     @staticmethod
     def _free_vram_counts_only_this_process() -> bool:
-        """Windows ROCm: free VRAM leaves out every other process, the child included. IS_ROCM is
-        only set once hardware detection has run, so an already imported ROCm torch answers too."""
+        """Windows ROCm: free VRAM leaves out other processes, the child included. A ROCm torch
+        also answers, since IS_ROCM is only set once hardware detection has run."""
         if sys.platform != "win32":
             return False
         from utils.hardware import rocm_windows_free_is_untrusted
@@ -16454,12 +16452,9 @@ class LlamaCppBackend:
         return torch is not None and LlamaCppBackend._torch_is_rocm(torch)
 
     def _vram_baseline_before_kill(self) -> Optional[dict[int, tuple[int, float]]]:
-        """{GPU: (free MiB, MiB of weights the child holds there)}, read while the child is alive.
-
-        None unless every GPU it occupies has a reading that already counts those weights as used:
-        one that does not (a ceiling, an unknown total) will not show their release either, and
-        waiting on it would only stall the load. None on Windows ROCm outright: free there counts
-        only this process's allocations, which can pass that check without counting the child.
+        """{GPU: (free MiB, child's weights MiB)}, read while the child is alive. None unless every
+        GPU it occupies reads those weights as used (a reading that does not cannot show their
+        release), and on Windows ROCm, whose figure can pass that check without counting the child.
         Never raises."""
         try:
             if self._free_vram_counts_only_this_process():
@@ -16500,10 +16495,8 @@ class LlamaCppBackend:
     ) -> None:
         """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi.
 
-        ``baseline`` is ``_vram_baseline_before_kill``'s read. With it, a stable reading only counts
-        once the killed child's VRAM shows as free on every GPU it occupied: two equal samples
-        taken before the driver reports the release are stale, not settled, and a load planned on
-        them offloads a model the card holds. That wait is bounded by ``_VRAM_RELEASE_WAIT_S``."""
+        With ``baseline``, equal samples count only once the child's VRAM shows as free on every
+        GPU it held, up to ``_VRAM_RELEASE_WAIT_S``: before that they are stale."""
         now = time.monotonic()
         if since_kill <= 0.0:
             return
@@ -16524,8 +16517,7 @@ class LlamaCppBackend:
                 return None
 
         def _released(sample) -> bool:
-            # Per GPU, so a card that reports late is not covered by one that already did. Half the
-            # weights: KV and scratch come back with them, another tenant may take some.
+            # Per GPU; half the weights, since another tenant may take some of the freed memory.
             free = dict(sample)
             return all(
                 free.get(idx, before) - before >= held / 2.0
@@ -16553,10 +16545,9 @@ class LlamaCppBackend:
             if curr is None or not curr or len(curr) != len(prev):
                 return
             if awaiting_release:
-                # Stable is not settled yet: the release has not reached the driver's figure.
                 if _released(curr):
                     awaiting_release = False
-                    # The usual settle budget, counted from the moment the release shows.
+                    # A full settle budget from when the release shows.
                     deadline = time.monotonic() + max_wait
                 prev = curr
                 continue

@@ -873,11 +873,6 @@ def test_kill_orphaned_servers_procfs_still_kills_the_same_process(tmp_path):
     assert n == 1
 
 
-# ── A release the driver reports late ────────────────────────────────────────
-#
-# Windows frees a dead process's VRAM after the process is gone, so the free figure can sit at
-# its pre-kill value for a while. Two equal samples taken in that window are stale, not settled.
-
 _HELD = 16000.0  # MiB of weights the killed child had on a GPU
 _BEFORE = [(0, 4000)]  # free while it was alive
 _AFTER = [(0, 20000)]  # free once the driver reports the release
@@ -912,12 +907,10 @@ def _settle(
 
 
 def test_without_a_baseline_a_stale_stable_reading_still_ends_the_wait():
-    """The behaviour the baseline exists to change, pinned so the two are told apart."""
     assert _settle([_BEFORE, _BEFORE, _AFTER], None) == (2, 1)
 
 
 def test_a_stale_stable_reading_waits_for_the_release():
-    # Three stale reads, the read that shows the release, and one stable read after it.
     assert _settle([_BEFORE, _BEFORE, _BEFORE, _AFTER, _AFTER], _BASELINE) == (5, 4)
 
 
@@ -973,7 +966,6 @@ def test_the_settle_budget_restarts_when_the_release_shows():
     """A release near the end of the bound still gets its stable read."""
     draining = [(0, 18000)]
     log = _Warnings()
-    # Stale reads up to one poll short of the bound, the release still moving, then stable past it.
     stale = int(LlamaCppBackend._VRAM_RELEASE_WAIT_S / 0.25) - 1
     samples = [_BEFORE] * stale + [draining, _AFTER, _AFTER]
     ctx, state = _patch_probe(samples)
@@ -1060,8 +1052,6 @@ def test_kill_keeps_a_baseline_per_gpu_the_child_occupies():
     ids = ["ceiling", "own-allocations-only", "unknown-total", "gpu-not-listed"],
 )
 def test_a_reading_that_does_not_count_the_childs_weights_is_no_baseline(rows):
-    """Windows ROCm reports the card's size less this process's own allocations, before and
-    after the child exits: waiting for that figure to rise would stall every reload."""
     order: list[str] = []
     backend = _killable_backend(order, [_HELD])
     with _ordered_memory(order, rows):
@@ -1072,9 +1062,7 @@ def test_a_reading_that_does_not_count_the_childs_weights_is_no_baseline(rows):
 
 @pytest.mark.parametrize("untrusted", [False, True], ids = ["live-figure", "windows-rocm"])
 def test_windows_rocm_takes_no_baseline_even_when_studios_own_vram_passes_the_check(untrusted):
-    """24 GiB card, Studio's own torch reservation 6 GiB, the child's weights 8 GiB: free reads
-    18 GiB before and after the kill. 6 GiB is over half the child's weights, so the reading alone
-    looks as if it counted the child; on Windows ROCm it never does."""
+    """Studio's own 6 GiB on a 24 GiB card passes the used check for 8 GiB of child weights."""
     order: list[str] = []
     backend = _killable_backend(order, [8192.0])
     with (
