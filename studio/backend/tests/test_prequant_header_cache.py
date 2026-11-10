@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A hosted checkpoint's header, read once over the network, is kept per content digest (the Hub ETag) so a fresh
-process asks the Hub one HEAD instead of HEAD plus two ranged GETs. The HEAD still runs every time: a re-upload
-(new ETag) reads again, a 404 is still a 404, and the kill switch reads every time.
-
-The Hub side is a real HTTP server on localhost with Range support; only the huggingface_hub URL / HEAD helpers
-are pointed at it.
-"""
+"""Hosted headers are cached per Hub ETag: a fresh process does one HEAD, not HEAD + two ranged GETs."""
 
 from __future__ import annotations
 
@@ -28,7 +22,6 @@ def _write_safetensors(
     meta,
     payload = 4 << 20,
 ):
-    """A minimal safetensors file: an Unsloth-format header followed by ``payload`` zero bytes."""
     from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
 
     header = {
