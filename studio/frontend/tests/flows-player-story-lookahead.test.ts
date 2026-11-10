@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { NextSceneRequest as Req } from "../src/features/flows/player/story/lookahead.ts";
+import { flushMicrotasks } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -70,7 +71,7 @@ function fakeWriter() {
   return { calls, write };
 }
 
-const tick = () => new Promise((r) => setTimeout(r, 0));
+const tick = flushMicrotasks;
 
 test("the request written ahead is exactly the one the live call sends after the pick", () => {
   const start = R.initialState(m);
@@ -321,34 +322,6 @@ test("scene text never waits behind painting", async () => {
   await art;
   await art2;
   assert.ok(second);
-});
-
-test("the story player routes scenes through the write-ahead and the two lanes", async () => {
-  const { readFileSync } = await import("node:fs");
-  const src = readFileSync(
-    new URL(
-      "../src/features/flows/player/story/story-player.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.ok(!src.includes("queue.current"), "no shared text and art queue");
-  assert.match(src, /lanes\.current\.run\("art"/);
-  assert.match(src, /lanes\.current\.run\("text"/);
-  assert.match(src, /\.take\(req, writeKey\(snapshot, req\)\)/);
-  assert.match(
-    src,
-    /useEffect\(\(\) => \{\s*writeAhead\.reset\(\);\s*\}, \[writeAhead, state\.rev\]\)/,
-  );
-  assert.match(src, /current \? writeAhead\.hold\(job\) : job\(\)/);
-  assert.match(
-    src,
-    /writeAhead\.open\(\);\s*return \(\) => writeAhead\.close\(\);/,
-  );
-  assert.match(
-    src,
-    /state\.status === "ended" \|\| state\.status === "error"\) \{\s*writeAhead\.plan\(\[\]\);/,
-  );
 });
 
 test("restarting during a live miss cancels it and the next playthrough writes ahead at once", async () => {

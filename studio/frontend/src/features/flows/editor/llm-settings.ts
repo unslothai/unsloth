@@ -6,6 +6,8 @@
 // core/flows/model_settings.py); any edit forks the card onto its own copy. No React or store
 // imports, so the rules stay unit-testable.
 
+// eslint-disable-next-line no-restricted-imports -- pure parser, not exported by the barrel.
+import { parseExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import type { ModelChoice, NodeSpec } from "../types";
 
 export const LLM_SETTINGS_NODES: ReadonlySet<string> = new Set([
@@ -332,4 +334,40 @@ export function paramsAsSaved(params: Params): SavedModelSettings {
   }
   if (out.minP !== undefined) out.minPMode = "custom";
   return out;
+}
+
+/** JSON output always runs without thinking: the switch reads off and is locked while a schema is set. */
+export function thinkingSwitch(params: Params): { checked: boolean; disabled: boolean } {
+  return {
+    checked: params.thinking === true && !params.json_schema,
+    disabled: !!params.json_schema,
+  };
+}
+
+/** A reasoning level only does something with thinking on and no JSON schema. */
+export function showsReasoningEffort(params: Params): boolean {
+  return params.thinking === true && !params.json_schema;
+}
+
+/** The tag a saved-load read is stored under, so a model switch never shows the last model's. */
+export function savedLoadTag(key: string | null, variant: string | null): string {
+  return `${key ?? ""}\u0000${variant ?? ""}`;
+}
+
+/** The saved load only when it was read for the model asked about. */
+export function savedLoadFor(
+  saved: { at: string; load: LoadSettings | null } | null,
+  at: string,
+): LoadSettings | null {
+  return saved?.at === at ? saved.load : null;
+}
+
+/** Extra llama-server arguments commit on every keystroke (a keyboard run sends what is shown),
+ *  except while a quote is still open. `commit: false` leaves the card as it was. */
+export function extraArgsEdit(
+  text: string,
+): { commit: true; value: string[] | undefined } | { commit: false } {
+  const found = parseExtraArgs(text);
+  if (found.unterminatedQuote) return { commit: false };
+  return { commit: true, value: found.tokens.length > 0 ? found.tokens : undefined };
 }

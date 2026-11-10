@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { flushMicrotasks, storyFixture } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -13,12 +13,7 @@ const R = await import("../src/features/flows/player/story/reducer.ts");
 type Manifest = import("../src/features/flows/types.ts").StoryManifest;
 type State = import("../src/features/flows/player/story/reducer.ts").StoryState;
 
-const moon = JSON.parse(
-  readFileSync(
-    new URL("./fixtures/flows-sloth-moon.story.json", import.meta.url),
-    "utf8",
-  ),
-) as Manifest;
+const moon = storyFixture<Manifest>("sloth-moon");
 
 const media = (ref: string) => ({ type: "audio", ref }) as never;
 
@@ -252,28 +247,33 @@ test("cues passed while leaving a scene play at the next stop", () => {
   assert.deepEqual(R.stageAt(staged, loaded).sounds, []);
 });
 
-test("a cue whose media resolves after a save load stays silent", async () => {
-  const S = await import("../src/features/flows/player/story/sound-cues.ts");
-  let resolve = (_url: string) => {};
-  const lookup = () =>
-    new Promise<string>((r) => {
-      resolve = r;
-    });
-  const played: string[] = [];
-  let rev = 0;
-  const cued = rev;
-  S.playCues(
-    ["door"],
-    staged.sounds,
-    lookup,
-    () => rev === cued,
-    async (url) => played.push(url),
-  );
-  rev = 1;
-  resolve("old-scene-door");
-  await new Promise((r) => setImmediate(r));
-  assert.deepEqual(played, []);
-});
+for (const [name, loadedMeanwhile, expected] of [
+  ["a cue whose media resolves after a save load stays silent", true, []],
+  ["a cue whose media resolves in the same playthrough plays", false, ["door-url"]],
+] as const) {
+  test(name, async () => {
+    const S = await import("../src/features/flows/player/story/sound-cues.ts");
+    let resolve = (_url: string) => {};
+    const lookup = () =>
+      new Promise<string>((r) => {
+        resolve = r;
+      });
+    const played: string[] = [];
+    let rev = 0;
+    const cued = rev;
+    S.playCues(
+      ["door"],
+      staged.sounds,
+      lookup,
+      () => rev === cued,
+      async (url) => played.push(url),
+    );
+    if (loadedMeanwhile) rev = 1;
+    resolve("door-url");
+    await flushMicrotasks();
+    assert.deepEqual(played, expected);
+  });
+}
 
 test("a carried cue plays once while the next scene generates", () => {
   const m: Manifest = {

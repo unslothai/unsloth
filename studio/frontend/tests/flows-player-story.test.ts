@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { storyFixture } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -13,18 +13,8 @@ const R = await import("../src/features/flows/player/story/reducer.ts");
 type Manifest = import("../src/features/flows/types.ts").StoryManifest;
 type State = import("../src/features/flows/player/story/reducer.ts").StoryState;
 
-const picnic = JSON.parse(
-  readFileSync(
-    new URL("./fixtures/flows-lantern-picnic.story.json", import.meta.url),
-    "utf8",
-  ),
-) as Manifest;
-const moon = JSON.parse(
-  readFileSync(
-    new URL("./fixtures/flows-sloth-moon.story.json", import.meta.url),
-    "utf8",
-  ),
-) as Manifest;
+const picnic = storyFixture<Manifest>("lantern-picnic");
+const moon = storyFixture<Manifest>("sloth-moon");
 
 function readToChoice(m: Manifest, from: State): State {
   let s = from;
@@ -341,4 +331,27 @@ test("lines written after the reader moved on do not replace the scene under the
   });
   assert.equal(after, s);
   assert.equal(R.currentLine(m, after)?.text, "Two.");
+});
+
+test("dialogue written while the reader is mid-scene is held for the next visit", async () => {
+  const { initialState, linesWaitForNextVisit, reduce } = await import(
+    "../src/features/flows/player/story/reducer.ts"
+  );
+  const manifest = {
+    start: "a",
+    scenes: [
+      { id: "a", lines: [{ text: "one" }, { text: "two" }, { text: "three" }], generate_lines: true },
+    ],
+  } as never;
+  const start = initialState(manifest);
+  const lines = [{ text: "new" }];
+  assert.equal(linesWaitForNextVisit(manifest, start, start.rev, "a"), false, "at the scene start lines land now");
+  const midScene = { ...start, line: 2 };
+  assert.equal(linesWaitForNextVisit(manifest, midScene, start.rev, "a"), true);
+  assert.equal(
+    reduce(manifest, midScene, { type: "setLines", sceneId: "a", lines, rev: start.rev }),
+    midScene,
+    "the reducer refuses them mid-scene, so the player must hold them",
+  );
+  assert.equal(linesWaitForNextVisit(manifest, midScene, start.rev + 1, "a"), false, "a stale revision is dropped");
 });

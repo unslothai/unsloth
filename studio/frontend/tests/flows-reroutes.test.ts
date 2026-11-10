@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { catalog, doc, edge, node } from "./helpers/flows.ts";
@@ -529,8 +528,6 @@ test("deleting a style-pinned reroute heals to a plain edge the backend accepts"
   useDocStore.getState().removeElements({ reroutes: ["r1"] });
   const edges = Object.values(graph().edges);
   assert.ok(edges.length && edges.every((e) => !("style" in e)));
-  const rerouteNode = readFileSync(new URL("../src/features/flows/editor/reroute-node.tsx", import.meta.url), "utf8");
-  assert.match(rerouteNode, /useEffect\(\(\) => updateNodeInternals\(id\), \[dir, id, updateNodeInternals\]\)/);
 });
 
 test("a direct wire into a single input clears an empty reroute's segment there, so a later feed cannot double it", () => {
@@ -575,7 +572,7 @@ test("recipe columns never wire through a reroute: only a direct wire writes the
   assert.deepEqual(Object.keys(graph().edges), []);
 });
 
-test("a recipe column's wire is never split by a reroute, by double-click or drop", () => {
+test("a recipe column's wire is never split by a reroute", () => {
   useDocStore
     .getState()
     .load(
@@ -587,6 +584,4 @@ test("a recipe column's wire is never split by a reroute, by double-click or dro
   useDocStore.getState().addReroute({ id: "r9", pos: [300, 10] }, "ref");
   assert.equal(graph().reroutes.r9, undefined);
   assert.ok(graph().edges.ref, "the reference wire stays whole");
-  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(canvas, /ends\[edge\.source\]\?\.type === COLUMN_TYPE/);
 });

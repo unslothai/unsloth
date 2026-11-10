@@ -62,11 +62,11 @@ import {
   CHOICE_SPEAKER,
   type StoryAction,
   type StoryState,
-  atSceneStart,
   backgroundFor,
   currentLine,
   initialState,
   interpolate,
+  linesWaitForNextVisit,
   nextSceneIds,
   pauseOf,
   reduce,
@@ -562,10 +562,7 @@ export function StoryPlayer({
             const now = stateRef.current;
             if (
               written?.lines?.length &&
-              now.rev === rev &&
-              now.sceneId === scene.id &&
-              now.status === "reading" &&
-              !atSceneStart(manifest, now)
+              linesWaitForNextVisit(manifest, now, rev, scene.id)
             )
               heldLines.current.set(key, written.lines);
             else if (written?.lines?.length)

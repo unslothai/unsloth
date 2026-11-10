@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { doc, node } from "./helpers/flows.ts";
+import { doc, flushMicrotasks, node } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -73,19 +73,101 @@ test("a saved chat keeps a bounded tail of the conversation", () => {
   assert.equal(C.restoreChat(saved).length, C.SAVED_TURNS);
 });
 
-test("a failed load keeps the chat blocked and offers Retry instead of opening an empty history", async () => {
-  const { readSrc } = await import("./helpers/kit.ts");
-  const src = readSrc("features/flows/player/chat/chat-player.tsx");
-  assert.ok(
-    !src.includes(
-      ".catch(() => undefined)\n      .finally(() => {\n        if (live) setLoaded(true);",
-    ),
+// ChatPlayer rendered with stubbed React hooks: state persists across renders, effects run when
+// their deps change, and the returned element tree is inspected directly.
+function chatHarness(loadSession: () => Promise<unknown>) {
+  const { elementsOf, loadWithStubs, stubEveryImport, stubJsxRuntime } =
+    harnessDeps;
+  const slots: unknown[] = [];
+  const effectDeps: (unknown[] | undefined)[] = [];
+  const cleanups: ((() => void) | undefined)[] = [];
+  const toasts: { message: string; opts?: { action?: { label: string; onClick: () => void } } }[] = [];
+  let slot = 0;
+  let effect = 0;
+  let pending: (() => void)[] = [];
+  const react = {
+    useState(init: unknown) {
+      const i = slot++;
+      if (!(i in slots)) slots[i] = init;
+      return [slots[i], (v: unknown) => {
+        slots[i] = typeof v === "function" ? (v as (x: unknown) => unknown)(slots[i]) : v;
+      }];
+    },
+    useRef(init: unknown) {
+      const i = slot++;
+      if (!(i in slots)) slots[i] = { current: init };
+      return slots[i];
+    },
+    useEffect(fn: () => (() => void) | undefined, deps?: unknown[]) {
+      const i = effect++;
+      const prev = effectDeps[i];
+      if (prev && deps && prev.length === deps.length && prev.every((d, k) => Object.is(d, deps[k]))) return;
+      effectDeps[i] = deps;
+      pending.push(() => {
+        cleanups[i]?.();
+        cleanups[i] = fn() ?? undefined;
+      });
+    },
+  };
+  const { ChatPlayer } = loadWithStubs<{ ChatPlayer: (p: unknown) => unknown }>(
+    new URL("../src/features/flows/player/chat/chat-player.tsx", import.meta.url),
+    stubEveryImport({
+      react,
+      "react/jsx-runtime": stubJsxRuntime(),
+      sonner: { toast: (message: string, opts?: never) => toasts.push({ message, opts }) },
+      "./chat-state": C,
+    }),
   );
-  assert.match(src, /label: "Retry", onClick: \(\) => setAttempt/);
+  let loads = 0;
+  const api = {
+    loadSession: () => {
+      loads++;
+      return loadSession();
+    },
+    saveSession: () => Promise.resolve(),
+  };
+  const props = { flowId: "f", api, entry: { output: "out", welcome: "Hi" }, title: "T", onExit: () => {} };
+  const render = () => {
+    slot = 0;
+    effect = 0;
+    pending = [];
+    const tree = ChatPlayer(props);
+    for (const run of pending) run();
+    return elementsOf(tree);
+  };
+  const resetButton = (els: ReturnType<typeof render>) =>
+    els.find((e) => e.props["data-testid"] === "chat-reset");
+  return { render, resetButton, toasts, loads: () => loads };
+}
+
+const harnessDeps = await import("./helpers/module-stubs.ts");
+
+test("a failed load keeps the chat blocked and offers Retry instead of opening an empty history", async () => {
+  let fail = true;
+  const h = chatHarness(() =>
+    fail ? Promise.reject(new Error("offline")) : Promise.resolve({ state: C.serializeChat([{ role: "user", content: "hi" }]) }),
+  );
+  h.render();
+  await flushMicrotasks();
+  let els = h.render();
+  assert.equal(h.resetButton(els)?.props.disabled, true, "still blocked after the failure");
+  const retry = h.toasts.at(-1)?.opts?.action;
+  assert.equal(retry?.label, "Retry");
+  fail = false;
+  retry?.onClick();
+  h.render();
+  assert.equal(h.loads(), 2, "Retry loads again");
+  await flushMicrotasks();
+  els = h.render();
+  assert.equal(h.resetButton(els)?.props.disabled, false, "opens once the load succeeds");
 });
 
 test("New chat waits for the saved conversation so a late load cannot restore it", async () => {
-  const { readSrc } = await import("./helpers/kit.ts");
-  const src = readSrc("features/flows/player/chat/chat-player.tsx");
-  assert.match(src, /onClick=\{reset\}\s*disabled=\{!loaded\}/);
+  let finish: (v: unknown) => void = () => {};
+  const h = chatHarness(() => new Promise((r) => (finish = r)));
+  const els = h.render();
+  assert.equal(h.resetButton(els)?.props.disabled, true);
+  finish(null);
+  await flushMicrotasks();
+  assert.equal(h.resetButton(h.render())?.props.disabled, false);
 });

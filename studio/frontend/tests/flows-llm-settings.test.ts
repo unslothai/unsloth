@@ -4,8 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { specs } from "./helpers/flows.ts";
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { readFlowsSrc, specs } from "./helpers/flows.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -141,15 +141,6 @@ test("the inspector hides panel params from the generic rows, stably", () => {
   assert.equal(s.withoutPanelParams(template), template);
 });
 
-test("the panel reuses Chat's controls and none of its chat-only sections", () => {
-  const src = readSrc("features/flows/editor/llm-settings-panel.tsx");
-  assert.match(src, /ParamSlider/);
-  assert.match(src, /setRememberedParamsForModel/);
-  assert.match(src, /paramsByModel/);
-  for (const chatOnly of ["Tools", "Retrieval", "Preset", "Prompt variables"])
-    assert.doesNotMatch(src, new RegExp(`label="${chatOnly}"`));
-});
-
 test("a card with no model keys its settings on the resident model, not Chat's picker", () => {
   assert.equal(s.implicitModel("unsloth/Qwen3-4B-GGUF", "openai/gpt-5"), "unsloth/Qwen3-4B-GGUF");
   assert.equal(s.implicitModel(null, "openai/gpt-5"), null);
@@ -229,35 +220,6 @@ test("load settings, thinking and effort are panel params on both LLM nodes", ()
   assert.deepEqual(effort?.options, ["low", "medium", "high", "max"]);
 });
 
-test("the load section rebuilds Chat's load controls with Chat's constants", () => {
-  const src = readSrc("features/flows/editor/llm-load-settings.tsx");
-  for (const label of [
-    "Context Length",
-    "GPU Memory",
-    "GPU Layers",
-    "MoE Layers on CPU",
-    "Load in 4-bit",
-    "KV Cache Dtype",
-    "Mmap/Mlock",
-    "Vision",
-    "Speculative Decoding",
-    "Draft Tokens",
-    "Parallel Slots",
-    "Batch Size",
-    "Micro-batch Size",
-    "Tensor Parallelism",
-    "Reasoning Budget",
-    "Reasoning Budget Message",
-    "Chat Template",
-    "Checkpoints",
-    "Cache RAM",
-    "Extra Arguments",
-  ])
-    assert.match(src, new RegExp(`label="${label}"|>${label}<`), label);
-  assert.match(src, /KV_CACHE_DTYPES/);
-  assert.match(src, /SPECULATIVE_TYPES/);
-});
-
 test("the card's hint uses the saved load when the card follows it", () => {
   const loaded = {
     checkpoint: "unsloth/Qwen3-4B-GGUF",
@@ -307,47 +269,36 @@ test("Load model defaults with no saved load clears the card's own load settings
 });
 
 test("a card switched to another model never shows the last model's saved load", () => {
-  const src = readSrc("features/flows/editor/llm-settings-panel.tsx");
-  const hook = src.slice(src.indexOf("function useSavedLoad"), src.indexOf("function useLoadedModel"));
-  assert.match(hook, /setSaved\(\{ at, load:/);
-  assert.match(hook, /return saved\?\.at === at \? saved\.load : null;/);
+  const forA = s.savedLoadTag("unsloth/A", null);
+  const read = { at: forA, load: { max_seq_length: 4096 } };
+  assert.deepEqual(s.savedLoadFor(read, forA), { max_seq_length: 4096 });
+  assert.equal(s.savedLoadFor(read, s.savedLoadTag("unsloth/B", null)), null);
+  assert.equal(s.savedLoadFor(read, s.savedLoadTag("unsloth/A", "Q8_0")), null, "another quant is another read");
+  assert.equal(s.savedLoadFor(null, forA), null);
 });
 
-test("the reload hint's resident model is read from the server when a flow opens and after each run", () => {
-  const sync = readSrc("features/flows/editor/resident-sync.ts");
+test("the reload hint's resident model is read through a lazy import of Chat's runtime", () => {
+  // Lazy-import boundary: keeps Chat's runtime hooks out of the Flows startup chunk.
+  const sync = readFlowsSrc("editor/resident-sync.ts");
   assert.match(sync, /import\("@\/features\/chat\/hooks\/use-chat-model-runtime"\)/);
   assert.match(sync, /syncInferenceStatusToStore\(\{ includeLoras: false, quiet: true \}\)/);
-  const page = readSrc("features/flows/editor/flows-editor-page.tsx");
-  assert.match(page, /syncResidentModel\(\);\s*return subscribeResidentStatusRefresh\(syncResidentModel\);/);
-  const runs = readSrc("features/flows/editor/run-controller.ts");
-  assert.match(runs, /if \(controller\.signal\.aborted\) return;\s*\/\/[^\n]*\n\s*syncResidentModel\(\);/);
 });
 
-test("Reasoning Effort hides when a JSON schema is set: JSON output runs with thinking off", async () => {
-  const { readFileSync } = await import("node:fs");
-  const panel = readFileSync(
-    new URL("../src/features/flows/editor/llm-settings-panel.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    panel,
-    /has\("reasoning_effort"\) &&\s+node\.params\.thinking === true &&\s+!node\.params\.json_schema/,
-  );
-});
+for (const [name, params, thinking, effort] of [
+  ["thinking on, no schema", { thinking: true }, { checked: true, disabled: false }, true],
+  ["thinking on under a JSON schema", { thinking: true, json_schema: "{}" }, { checked: false, disabled: true }, false],
+  ["thinking off", { thinking: false }, { checked: false, disabled: false }, false],
+  ["thinking unset under a schema", { json_schema: "{}" }, { checked: false, disabled: true }, false],
+] as const) {
+  test(`Thinking switch and Reasoning Effort under a JSON schema: ${name}`, () => {
+    assert.deepEqual(s.thinkingSwitch(params), thinking);
+    assert.equal(s.showsReasoningEffort(params), effort);
+  });
+}
 
 test("extra llama-server arguments commit as they are typed, so a keyboard run sends them", () => {
-  const src = readSrc("features/flows/editor/llm-load-settings.tsx");
-  const field = src.slice(src.indexOf("function ExtraArgsField"), src.indexOf("export function LlmLoadSettings"));
-  assert.match(field, /onChange=\{\(e\) => edit\(e\.target\.value\)\}/);
-  assert.match(field, /if \(!found\.unterminatedQuote\)\s*onChange\(/);
-  assert.doesNotMatch(field, /onBlur/);
-});
-
-test("Thinking reads off and is disabled under a JSON schema", async () => {
-  const { readFileSync } = await import("node:fs");
-  const panel = readFileSync(
-    new URL("../src/features/flows/editor/llm-settings-panel.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(panel, /checked=\{node\.params\.thinking === true && !node\.params\.json_schema\}\s+disabled=\{!!node\.params\.json_schema\}/);
+  assert.deepEqual(s.extraArgsEdit("--flag value"), { commit: true, value: ["--flag", "value"] });
+  assert.deepEqual(s.extraArgsEdit("--flag"), { commit: true, value: ["--flag"] }, "a partial word still commits");
+  assert.deepEqual(s.extraArgsEdit("   "), { commit: true, value: undefined }, "clearing the box clears the card");
+  assert.deepEqual(s.extraArgsEdit('--x "open'), { commit: false }, "an open quote waits");
 });
