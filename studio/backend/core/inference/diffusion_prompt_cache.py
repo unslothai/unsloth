@@ -231,8 +231,7 @@ TRANSPARENT_WRAPPER_ATTR = "_unsloth_prompt_cache_transparent"
 
 
 def mark_transparent_wrapper(fn: Any) -> Any:
-    """Mark ``fn`` with a reference to itself: ``functools.wraps`` copies the attribute onto an outer
-    wrapper, where it then names a different function and is not trusted."""
+    """Self-reference, so a ``functools.wraps`` copy on an outer wrapper is not trusted."""
     setattr(fn, TRANSPARENT_WRAPPER_ATTR, fn)
     return fn
 

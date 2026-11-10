@@ -106,7 +106,6 @@ def select_final_hidden_state(pipe: Any, logger: Any = None) -> bool:
     from .diffusion_prompt_cache import is_transparent_wrapper, mark_transparent_wrapper
 
     if is_transparent_wrapper(original):
-        # only reads the text encoder, so it stays as transparent as the wrapper it wraps
         mark_transparent_wrapper(_get_qwen_prompt_embeds)
     pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
     if logger is not None:

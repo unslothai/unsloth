@@ -1073,8 +1073,7 @@ def test_a_wraps_copy_of_the_transparent_marker_keeps_the_full_key(monkeypatch):
 
 class _Qwen21SelectablePipe(_Qwen21LikePipe):
     def _get_qwen_prompt_embeds(self, prompt):
-        # source carries the markers select_final_hidden_state looks for:
-        # norm.register_forward_hook outputs.hidden_states[-1]
+        # select_final_hidden_state markers: norm.register_forward_hook outputs.hidden_states[-1]
         return self.text_encoder(torch.full((1, 2), float(len(prompt))))
 
 
