@@ -587,6 +587,7 @@ def test_backend_loads_and_generates(h3i, release, tmp_path, monkeypatch):
 
     # A real CPU load memoizes the SDPA probe process-wide; later tests run against a faked torch.
     monkeypatch.setattr(diffusion_attention, "_SDPA_PROBE_CACHE", {})
+    monkeypatch.setenv(h3i.ALLOW_ANY_DEVICE_ENV, "1")
 
     root, _ref, te = release
     te.save_pretrained(str(root / "text_encoder"))
@@ -793,3 +794,29 @@ def test_the_prepare_hook_installs_the_curve_form(h3i):
     dense = h3i.transformer_class()(**cfg).eval()
     prepare(dense, {})
     assert dense.transformer_blocks[0].adaln_proj.linear.in_features != 8
+
+
+# -- devices ---------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "device, where",
+    [("mps", "Apple Silicon"), ("cpu", "the CPU"), ("xpu", "this xpu device")],
+)
+def test_only_cuda_and_rocm_hosts_may_load(h3i, monkeypatch, device, where):
+    monkeypatch.delenv(h3i.ALLOW_ANY_DEVICE_ENV, raising = False)
+    assert h3i.h3_image_device_refusal("cuda") is None
+    assert h3i.h3_image_device_refusal("cuda:1") is None
+    refusal = h3i.h3_image_device_refusal(device)
+    assert refusal.startswith("MiniMax-H3-Image needs an NVIDIA or AMD GPU") and where in refusal
+
+
+def test_the_backend_refuses_a_cpu_host_before_loading(h3i, release, monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.delenv(h3i.ALLOW_ANY_DEVICE_ENV, raising = False)
+    root, _ref, _te = release
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "needs an NVIDIA or AMD GPU"):
+        backend.validate_load_request(str(root), model_kind = "pipeline")
+    assert backend._state is None
