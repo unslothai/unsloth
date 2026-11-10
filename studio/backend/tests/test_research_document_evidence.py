@@ -74,6 +74,7 @@ def _synthesis_prompt(
     knowledge_base,
     context_length = None,
     query = "pump",
+    max_sources = 100,
 ) -> str:
     from core import research_runs as worker
 
@@ -92,7 +93,7 @@ def _synthesis_prompt(
             "question": "how does the pump work?",
             "budgets": {
                 "maxSteps": STEPS,
-                "maxSources": 100,
+                "maxSources": max_sources,
                 "modelTimeoutSeconds": 900,
                 "toolTimeoutSeconds": 10,
             },
@@ -136,6 +137,14 @@ def test_every_step_keeps_its_top_document_passage_in_the_report_prompt(research
 
     assert all(f"manual-fact-{step}" in prompt for step in range(STEPS))
     assert all(f"web-{step}-0" in prompt for step in range(STEPS))
+
+
+def test_web_results_do_not_use_up_the_room_for_document_passages(research_home, monkeypatch):
+    prompt = _synthesis_prompt(monkeypatch, _knowledge_base_results, max_sources = 40)
+
+    assert all(f"manual-fact-{step}" in prompt for step in range(STEPS))
+    assert all(f"Chunk ID: chunk-{step}\n" in prompt for step in range(STEPS))
+    assert len(research_db.get_run("run-1")["sources"]) == 40
 
 
 def test_web_results_keep_their_room_when_the_documents_match_nothing(research_home, monkeypatch):

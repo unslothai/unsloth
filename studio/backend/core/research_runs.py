@@ -2347,8 +2347,7 @@ class ResearchSupervisor:
             raise LeaseLost()
         if resuming:
             sources = list(run.get("sources") or [])[:max_sources]
-            remaining = max(0, max_sources - len(sources))
-            document_sources = list(run.get("documentSources") or [])[:remaining]
+            document_sources = list(run.get("documentSources") or [])[:max_sources]
 
         for step in run.get("steps") or []:
             result = step.get("result") if isinstance(step.get("result"), dict) else {}
@@ -2393,7 +2392,7 @@ class ResearchSupervisor:
                     or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
                 )
                 if source_key not in document_source_keys:
-                    if len(sources) + len(document_sources) >= max_sources:
+                    if len(document_sources) >= max_sources:
                         continue
                     written = await asyncio.to_thread(
                         db.upsert_document_source,
@@ -2666,7 +2665,7 @@ class ResearchSupervisor:
                     or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
                 )
                 if source_key not in document_source_keys:
-                    if len(sources) + len(document_sources) >= max_sources:
+                    if len(document_sources) >= max_sources:
                         continue
                     written = await asyncio.to_thread(
                         db.upsert_document_source,
@@ -2691,7 +2690,7 @@ class ResearchSupervisor:
                 rag_result = ""
             rag_sources = accepted_rag_sources
             for source in mcp_sources:
-                if len(sources) + len(document_sources) >= max_sources:
+                if len(document_sources) >= max_sources:
                     break
                 written = await asyncio.to_thread(
                     db.upsert_document_source,
@@ -2705,7 +2704,7 @@ class ResearchSupervisor:
                 rag_sources.append(source)
             step_sources = []
             for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
-                if len(sources) + len(document_sources) >= max_sources:
+                if len(sources) >= max_sources:
                     break
                 source = {k: match.group(k).strip() for k in ("title", "url", "snippet")}
                 allowed, _reason, _hostname = check_url_access(
