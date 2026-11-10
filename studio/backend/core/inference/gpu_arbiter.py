@@ -71,7 +71,7 @@ class MultiModelAlwaysRefusal(RuntimeError):
 
     def as_http_exception(self, path: Optional[str] = None):
         from fastapi import HTTPException
-        from utils.api_errors import error_body_for_path
+        from utils.api_errors import error_body_for_path, problem_headers
 
         message = str(self)
         detail = (
@@ -79,9 +79,11 @@ class MultiModelAlwaysRefusal(RuntimeError):
             if path and path.startswith("/v1/")
             else message
         )
-        return HTTPException(
-            status_code = 409, detail = detail, headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
-        )
+        headers = {
+            **MULTI_MODEL_REFUSAL_HEADERS,
+            **problem_headers("multi_model_always", kind = self.kind),
+        }
+        return HTTPException(status_code = 409, detail = detail, headers = headers)
 
 
 def always_refusal_message(
@@ -295,8 +297,7 @@ def _evict_decisions() -> None:
     evict_for_gpu()
 
 
-# Patchable in tests via monkeypatch.setitem. Under the default policy acquire_for evicts every other resident, so this
-# generalises to any number of owners.
+# Under the default policy acquire_for evicts all other residents, so any owner count works.
 _EVICTORS = {
     CHAT: _evict_chat,
     DIFFUSION: _evict_diffusion,
@@ -695,8 +696,7 @@ def acquire_for(
         if (register is not None or replacing) and not coreside:
             raise_if_other_accounts_active(acting)
         elif (register is not None or replacing) and not (owner == CHAT and alongside):
-            # Only another account's work on this model blocks reloading it; residents it would evict are
-            # checked one by one.
+            # Only another account's work on this model blocks reloading it.
             from core.inference.gpu_residency import foreign_on
             busy = foreign_on(owner, acting)
             if busy:
@@ -809,8 +809,7 @@ def would_evict(
     need_mib: Optional[dict] = None,
     gpu_ids: Optional[Iterable[int]] = None,
 ) -> bool:
-    """Lock-free peek: will ``acquire_for(owner, policy = ..., need_mib = ..., gpu_ids = ...)`` unload
-    the chat model? Never call it under ``_lock``."""
+    """Lock-free peek: would acquire_for unload the chat model? Do not call under _lock."""
     if owner == CHAT or owner not in _EVICTORS:
         return False
     holds = globals().get("holds")
@@ -921,12 +920,8 @@ def release(owner: str) -> None:
 
 
 def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
-    """Drop ``owner``'s residency only if it still holds it AND ``predicate()`` is true, atomically.
-
-    A slow unload's idle check and its ``release`` must not straddle a concurrent same-owner load
-    whose ``acquire_for(register=...)`` re-registers ownership under this lock; evaluating the
-    predicate under the lock keeps them atomic so ``release`` never clears the newer claim.
-    ``predicate`` must be quick and not re-enter the arbiter. Returns True iff ownership was dropped."""
+    """Drops residency only if owner still holds it and predicate() is true, atomically under _lock;
+    predicate must be quick and not re-enter the arbiter; returns True iff ownership dropped."""
     with _lock:
         if owner not in _view() or not predicate():
             return False

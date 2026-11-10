@@ -138,7 +138,9 @@ import {
   richPasteMarkdown,
   currentDictationEntryMode,
   isStudioDictationAvailable,
+  micRecordsForModel,
   notifyStudioDictationUnavailable,
+  setMicAudioClipTarget,
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
   ChatComposerFocusableContext,
@@ -191,7 +193,10 @@ import {
   exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "@/features/chat/components/export-format-items";
 import {
   listPromptEntries,
   listPromptLists,
@@ -219,9 +224,11 @@ import {
   NativeAttachmentDragContext,
   type NativeIntent,
   useNativeAttachmentTargetKey,
+  useNativeAttachmentOwnerScope,
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
+import { wasAttachmentAddCancelled } from "@/features/chat/draft-attachment-adapter";
 import {
   attachLibraryChatFiles,
   useLibraryChatHandoffStore,
@@ -326,6 +333,8 @@ import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   splitPlusMenuItems,
   CONVERSATION_MARKDOWN_LABEL,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
   chatHistoryClearBoundary,
@@ -363,6 +372,7 @@ import {
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
   dictationFailed,
+  dictationProducedClip,
   dictationProducedTranscript,
   readComposerDraft,
   type PromptQueueUIEntry,
@@ -396,9 +406,14 @@ import {
   updateStoredChatThread,
 } from "@/features/chat/utils/chat-history-storage";
 import {
+  clipStillAttached,
   dictationSendBlocked,
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
+import {
+  micSendsAudioToModel,
+  pickAudioForModel,
+} from "@/features/chat/utils/mic-target";
 import {
   isRagClientError,
   listProjectDocuments,
@@ -2093,7 +2108,6 @@ export const Thread: FC<{
   // bottom while the user scrolls up (see the hook for the full explanation).
   const {
     ref: viewportRef,
-    markerRef,
     context: autoScrollContext,
   } = useIntentAwareAutoScroll();
 
@@ -2317,7 +2331,6 @@ export const Thread: FC<{
           scrollToBottomOnRunStart={false}
           scrollToBottomOnInitialize={false}
           scrollToBottomOnThreadSwitch={false}
-          ref={markerRef}
           className="aui-thread-host hidden"
           onDragEnter={onDragEnter}
           onDragOver={onDragOver}
@@ -3166,6 +3179,7 @@ const Composer: FC<{
         event,
         async (file) => {
           await aui.composer().addAttachment(file);
+          if (wasAttachmentAddCancelled(file)) return;
           dropReplacedSelection();
         },
         () =>
@@ -3351,7 +3365,11 @@ const Composer: FC<{
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const nativeAttachmentOwnerScope = useNativeAttachmentOwnerScope();
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
 
@@ -3365,6 +3383,10 @@ const Composer: FC<{
         throw new Error("The chat changed before this file was attached.");
       }
       await aui.composer().addAttachment(file);
+      // The draft-scoped adapter resolves a cancelled add; throwing keeps the file held.
+      if (wasAttachmentAddCancelled(file)) {
+        throw new Error("The chat changed before this file was attached.");
+      }
     };
     const drain = async () => {
       const held = await attachLibraryChatFiles(targetKey, add);
@@ -3454,6 +3476,11 @@ const Composer: FC<{
   // A parked send must not fire on a failed drop. Assigned below once the callback exists.
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
   const composerIdentityRef = useRef("");
+  const nativeAttachmentOwner = nativeAttachmentOwnerScope
+    ? JSON.stringify([nativeAttachmentOwnerScope, threadListItemId ?? ""])
+    : threadListItemId ?? "";
+  const nativeAttachmentOwnerRef = useRef(nativeAttachmentOwner);
+  nativeAttachmentOwnerRef.current = nativeAttachmentOwner;
   const imageDropFailures = useNativeIntentStore(
     (s) => (nativeAttachmentTargetKey ? s.imageDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
   );
@@ -3486,20 +3513,22 @@ const Composer: FC<{
   }, [videoDropFailures]);
   // Hold the send gate while the dropped clip is registered and read.
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    // aui.composer() is still the previous chat until the runtime reaches this route's thread.
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimAudioAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     // A re-key follows the same composer; a thread switch parks the clip back.
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     // A remount hides the new key, so tag the batch; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
@@ -3546,6 +3575,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // The adapter toasted. Keep going: a later, smaller clip may still fit.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3593,23 +3636,24 @@ const Composer: FC<{
       setMaterializingDroppedAudio(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   // Same drain as audio: one clip per message, and the send gate holds across the read.
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimVideoAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3654,6 +3698,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // Chat-wide failure and the adapter already toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3697,23 +3755,24 @@ const Composer: FC<{
       setMaterializingDroppedVideo(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     // A fresh chat re-keys from "single:new" to its thread id under the same composer, so follow it.
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeueKey = () =>
       stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3769,6 +3828,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // Chat-wide failure and the adapter already toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3793,7 +3866,7 @@ const Composer: FC<{
         const pending =
           useNativeIntentStore.getState().pendingImageAttachments[targetKey]
             ?.length ?? 0;
-        if (pending > 0) {
+        if (pending > 0 && stillThisComposer()) {
           void drainPendingImages();
         } else {
           setMaterializingDroppedImages(false);
@@ -3826,21 +3899,22 @@ const Composer: FC<{
       setMaterializingDroppedImages(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3885,6 +3959,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
             }
@@ -3929,7 +4017,7 @@ const Composer: FC<{
       setMaterializingDroppedOpenDocuments(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   const hasMaterializingImageAttachments =
     registeringImageDrops ||
     hasPendingImageAttachments ||
@@ -3945,9 +4033,6 @@ const Composer: FC<{
     hasPendingVideoAttachments ||
     materializingDroppedVideo;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const threadListItemId = useAuiState(
-    ({ threadListItem }) => threadListItem.id,
-  );
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
   );
@@ -5338,10 +5423,14 @@ const Composer: FC<{
   const startDictation = useCallback(() => {
     if (audioUpload.busy || dictationEntryDisabled) return;
     if (currentDictationEntryMode() === "recording-file") {
-      audioUpload.openDialog();
+      if (micRecordsForModel()) {
+        pickAudioForModel((file) => aui.composer().addAttachment(file));
+      } else {
+        audioUpload.openDialog();
+      }
       return;
     }
-    if (!isStudioDictationAvailable()) {
+    if (!micRecordsForModel() && !isStudioDictationAvailable()) {
       notifyStudioDictationUnavailable();
       return;
     }
@@ -5351,6 +5440,21 @@ const Composer: FC<{
       notifyStudioDictationUnavailable();
     }
   }, [aui, audioUpload, dictationEntryDisabled]);
+  useEffect(
+    () =>
+      setMicAudioClipTarget({
+        add: (file) => aui.composer().addAttachment(file),
+        attached: () =>
+          aui
+            .composer()
+            .getState()
+            .attachments.flatMap((attachment) =>
+              attachment.file ? [attachment.file] : [],
+            ),
+      }),
+    // Per chat: the old chat's unregister discards its unfinished clip.
+    [aui, composerIdentity],
+  );
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -5463,6 +5567,10 @@ const Composer: FC<{
         originComposer: dictationComposerRef.current,
         currentComposer: composerIdentity,
         producedTranscript: dictationProducedTranscript(),
+        producedClip: clipStillAttached(
+          dictationProducedClip(),
+          aui.composer().getState().attachments,
+        ),
         baseText: dictationBaseTextRef.current,
         text,
       });
@@ -7163,56 +7271,33 @@ const ComposerToolsMenu: FC<{
           collisionPadding={16}
           className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
-          <DropdownMenuItem
-            onSelect={() => {
+          <ExportFormatItems
+            options={[
+              { key: "raw", label: "Training JSONL" },
+              { key: "messages", label: "Message JSONL" },
+              { key: "csv", label: "CSV" },
+              { key: "sharegpt", label: "ShareGPT JSONL" },
+              { key: "markdown", label: CONVERSATION_MARKDOWN_LABEL },
+              { key: "html", label: CONVERSATION_HTML_LABEL },
+              { key: "pdf", label: CONVERSATION_PDF_LABEL },
+            ]}
+            subContentClassName="unsloth-plus-menu w-[calc(176px*var(--ui-space-scale,1))]"
+            onSelect={(key) => {
               if (!activeThreadId) return;
-              exportConversationRawJsonl(activeThreadId).catch((error) => {
+              const exporters = {
+                raw: exportConversationRawJsonl,
+                messages: exportConversationMessagesJsonl,
+                csv: exportConversationCsv,
+                sharegpt: exportConversationShareGPT,
+                markdown: exportConversationMarkdown,
+                html: exportConversationHtml,
+                pdf: exportConversationPdf,
+              };
+              exporters[key](activeThreadId).catch((error) => {
                 if (!isDownloadCancelled(error)) toast.error("Export failed.");
               });
             }}
-          >
-            Training JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationMessagesJsonl(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            Message JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationCsv(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            CSV
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationShareGPT(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            ShareGPT JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationMarkdown(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            {CONVERSATION_MARKDOWN_LABEL}
-          </DropdownMenuItem>
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
@@ -7473,6 +7558,16 @@ const ComposerRightControls: FC<{
   const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const micTarget = useVoiceSettingsStore((s) => s.micTarget);
+  const modelHearsAudio = useChatRuntimeStore(
+    (s) =>
+      !s.modelLoading &&
+      s.models.find((model) => model.id === s.params.checkpoint)
+        ?.hasAudioInput === true,
+  );
+  const micLabel = micSendsAudioToModel(micTarget, modelHearsAudio)
+    ? t("settings.voice.dictation.micRecordForModel")
+    : "Dictate";
   // A boolean, so typing re-renders this only when a line break comes or goes.
   const multiline = useAuiState(({ composer }) => composer.text.includes("\n"));
   const shortcutLabels = composerShortcutLabels(
@@ -7602,8 +7697,8 @@ const ComposerRightControls: FC<{
           </Button>
         ) : (
           <TooltipIconButton
-            tooltip="Dictate"
-            aria-label="Dictate"
+            tooltip={micLabel}
+            aria-label={micLabel}
             type="button"
             variant="ghost"
             className="size-9 rounded-full text-foreground"

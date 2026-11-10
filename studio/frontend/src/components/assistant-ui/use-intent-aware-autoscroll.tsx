@@ -47,12 +47,8 @@ type AutoScrollContextValue = {
   /** Detach as if scrolled up: composer growth must not let observer pins shove the chat up. */
   detachFromBottom: () => void;
   /**
-   * `deltaPx` of content was inserted ABOVE the viewport; shift by it so the
-   * user keeps looking at the same thing. Progressive mounting (see
-   * progressive-mount-controller) is the only caller and calls on EVERY
-   * widening commit, zero included, since a zero correction still resyncs the
-   * intent bookkeeping below. A method rather than a scrollTop write at the
-   * inserting commit because this hook owns scrollTop.
+   * Called on every widening commit, zero included, since this hook owns scrollTop and resyncs
+   * intent.
    */
   adjustForContentInsertedAbove: (deltaPx: number) => boolean;
   notifyContentResized: () => void;
@@ -110,15 +106,10 @@ export function useIsThreadAtBottom(): boolean {
 
 export function useIntentAwareAutoScroll(): {
   ref: RefCallback<HTMLElement>;
-  markerRef: RefCallback<HTMLElement>;
   context: AutoScrollContextValue;
 } {
   const aui = useAui();
   const cleanupRef = useRef<(() => void) | null>(null);
-  const markerElRef = useRef<HTMLElement | null>(null);
-  const markerRef = useCallback<RefCallback<HTMLElement>>((node) => {
-    markerElRef.current = node;
-  }, []);
 
   const userDetachedRef = useRef(false);
   const followUntilRef = useRef(0);
@@ -204,11 +195,14 @@ export function useIntentAwareAutoScroll(): {
       const atBottomStrict = (): boolean =>
         distanceFromBottom() <= AT_BOTTOM_THRESHOLD_PX;
 
-      const marker = (): HTMLElement => markerElRef.current ?? el;
+      // On the viewport itself, matched as the subject: reaching it through the hidden host made
+      // WebKit restyle the whole thread on every flip (40-70 ms each at 150 turns).
+      const setFollowing = (on: boolean): void => {
+        el.toggleAttribute("data-aui-following", on);
+      };
 
-      // Room to scroll upward. Guards wheel/touch detach: a gesture on a viewport with nothing
-      // above can't express intent to leave the bottom and must not flip userDetachedRef, else
-      // later streaming skips extendFollow and auto-follow stays dead for the session.
+      // Upward wheel/touch detaches only with room above, else auto-follow stays dead for the
+      // session.
       const canScrollUp = (): boolean => el.scrollTop > 0;
 
       // An inner scroller with room above consumes the upward delta, so it must not detach.
@@ -368,7 +362,7 @@ export function useIntentAwareAutoScroll(): {
           (settling || performance.now() < followUntilRef.current);
 
         if (following) {
-          marker().toggleAttribute("data-aui-following", true);
+          setFollowing(true);
           const scrollHeight = stabilize();
           const pinned = atBottomStrict();
           if (!pinned && scrollHeight > el.clientHeight) {
@@ -384,7 +378,7 @@ export function useIntentAwareAutoScroll(): {
           return;
         }
 
-        marker().toggleAttribute("data-aui-following", false);
+        setFollowing(false);
         setIsAtBottom(atBottomStrict());
       };
 
@@ -662,9 +656,8 @@ export function useIntentAwareAutoScroll(): {
       el.addEventListener("pointerdown", onPointerDown, { passive: true });
       el.ownerDocument.addEventListener("pointerup", onPointerUp, true);
       el.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
-      // ResizeObserver covers window resizes. visualViewport.resize is the
-      // only signal for iOS software-keyboard changes, where the visual
-      // viewport shrinks without the element's clientHeight changing.
+      // visualViewport resize is the only signal for iOS keyboard changes, where clientHeight stays
+      // put.
       window.visualViewport?.addEventListener("resize", onViewportResize);
 
       const unsubscribePreferences = useChatPreferencesStore.subscribe(
@@ -691,7 +684,7 @@ export function useIntentAwareAutoScroll(): {
           rafId = null;
         }
         clearSettleCheck();
-        marker().removeAttribute("data-aui-following");
+        setFollowing(false);
         resizeObserver.disconnect();
         mutationObserver.disconnect();
         el.removeEventListener("wheel", onWheel);
@@ -777,5 +770,5 @@ export function useIntentAwareAutoScroll(): {
     ],
   );
 
-  return { ref, markerRef, context };
+  return { ref, context };
 }

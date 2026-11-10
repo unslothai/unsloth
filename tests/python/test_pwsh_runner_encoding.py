@@ -32,9 +32,7 @@ SAMPLES = {
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("name", sorted(SAMPLES), ids = sorted(SAMPLES))
 def test_a_non_ascii_string_survives_the_round_trip(shell: str, name: str):
-    """The whole point. Built from code points inside PowerShell so the script itself stays
-    ASCII: a script that carried the character would be testing how the -Command argument is
-    encoded, which is a different pipe."""
+    """Built from code points so the script stays ASCII, else it would test -Command encoding instead."""
     text = SAMPLES[name]
     literal = " + ".join(f"[char]::ConvertFromUtf32({ord(c)})" for c in text)
     done = run_pwsh(
@@ -57,8 +55,7 @@ def test_a_non_ascii_string_survives_the_round_trip(shell: str, name: str):
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_prologue_adds_no_bom(shell: str):
-    """[Text.Encoding]::UTF8 carries a preamble; the one we set must not, or every caller's
-    first assertion sees a U+FEFF it did not print."""
+    """The UTF-8 encoding we set must have no BOM, or every caller sees a stray U+FEFF first."""
     done = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", "Write-Output 'plain'"],
         check = True,
@@ -72,9 +69,8 @@ def test_the_prologue_adds_no_bom(shell: str):
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_without_the_fix_the_same_string_does_not_survive(shell: str):
-    """The control. Same script, run the old way, on this host. It is allowed to pass -- a
-    box whose console is already UTF-8 was never broken -- so this asserts the two agree
-    when it does, and that the fixed one is right when they do not."""
+    """Control runs the old invocation; a UTF-8 console may pass, so the two must agree then, and
+    the fixed one must be right when they do not"""
     script = "Write-Output ('<' + [char]::ConvertFromUtf32(0x00e4) + '>')"
     argv = [shell, "-NoProfile", "-NonInteractive", "-Command", script]
     # pwsh_env, not run_pwsh: the control must call pwsh as call sites did before the prologue.
@@ -145,8 +141,7 @@ def test_errors_alone_does_not_count_as_choosing_an_encoding():
     ids = ["-File", "no-command", "trailing-command"],
 )
 def test_an_invocation_with_no_script_string_still_gets_the_decode_half(argv):
-    """-File names a path, so there is nothing to prepend to. Decoding UTF-8 is still right
-    for pwsh 7, and is the only half available here."""
+    """With -File there is no string to prepend to; only the UTF-8 decode half applies."""
     kwargs = {"text": True}
     assert _agree_on_utf8(list(argv), kwargs) == argv
     assert kwargs["encoding"] == "utf-8"

@@ -420,6 +420,7 @@ export {
   OpenProjectFolderItem,
 } from "./components/open-chat-folder-item";
 export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
+export { ExportFormatItems } from "./components/export-format-items";
 export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
@@ -545,6 +546,12 @@ export {
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
 export {
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html";
+export {
   COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
@@ -604,13 +611,16 @@ export {
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {
   dictationFailed,
+  dictationProducedClip,
   dictationProducedTranscript,
 } from "./adapters/dictation-outcome";
 export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
   isStudioDictationAvailable,
+  micRecordsForModel,
   notifyStudioDictationUnavailable,
+  setMicAudioClipTarget,
 } from "./adapters/studio-dictation-adapter";
 export {
   StudioModelDictationAdapter,

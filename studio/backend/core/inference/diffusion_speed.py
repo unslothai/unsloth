@@ -350,10 +350,9 @@ def compile_eligible(
     family: Any,
     probe: bool = True,
 ) -> bool:
-    """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
-    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only.
-    ``probe=False`` never runs the allocating ROCm probe (preflight / status, before eviction): an unprobed install
-    counts as eligible, a recorded failure does not."""
+    """Whether the repeated block is regionally compiled: CUDA or ROCm bf16, or fp16 on NVIDIA
+    sm_75+, compile-friendly family with inductor; probe=False never runs the ROCm probe,
+    unprobed counts eligible, a recorded failure does not."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -522,6 +521,8 @@ def apply_speed_optims(
         return applied
     if mode in (SPEED_DEFAULT, SPEED_MAX):
         _pin_compile_defaults()
+        if is_gguf:
+            _prepare_lowbit_iq_tables(pipe, target)
 
     if getattr(target, "backend", None) == "rocm":
         try:
@@ -682,6 +683,24 @@ def apply_speed_optims(
                 _warn(logger, "cuda graph capture", exc)
 
     return applied
+
+
+def _prepare_lowbit_iq_tables(pipe: Any, target: Any) -> None:
+    """Low-bit IQ lookup tables on the execution device before compile, so a compiled block reads a device constant."""
+    device = getattr(target, "torch_device", None)
+    if not isinstance(device, str) or not device:
+        return
+    try:
+        from .diffusion_gguf_lowbit import prepare_lowbit_iq_tables
+
+        modules = list(_denoiser_dits(pipe))
+        unet = _denoiser_unet(pipe)
+        if unet is not None:
+            modules.append(unet)
+        if modules:
+            prepare_lowbit_iq_tables(device, *modules)
+    except Exception:  # noqa: BLE001 - optimisation only: the lookup still builds traceably
+        pass
 
 
 def _onload_device(target: Any) -> Optional[str]:
@@ -1004,9 +1023,8 @@ def fused_qkv_added_bytes(pipe: Any) -> int:
         return 0
     try:
         import torch
-        from .diffusion_native_quant import is_native_quantised
 
-        if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+        if _quantised_projections(pipe):
             return 0
         if unfused_projections_will_drop(unet):
             return 0  # the fused weights replace the projections they were built from
@@ -1265,8 +1283,7 @@ def _compile_repeated_blocks(
                 )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
-        # Registered per-denoiser patches after the int8 GEMM swap (Qwen RoPE, Z-Image fused attention, Q2.1 ConvRot
-        # sharing, which reads the swap's leftovers).
+        # Patches run after the int8 GEMM swap; ConvRot sharing reads the swap's leftovers.
         _install_compile_patches(
             "pre_compile",
             transformer,
@@ -1721,9 +1738,7 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on.
-
-    Never when the fused eager VAE path engages: it is faster than the compiled decode, with no cold compile."""
+    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE."""
     if _fused_vae_planned(pipe):
         return False
     if _denoiser_unet(pipe) is not None:
@@ -2050,18 +2065,38 @@ def _enable_fp16_accumulation(
         return False
 
 
-def _fuse_qkv(pipe: Any, logger: Any) -> bool:
-    from .diffusion_native_quant import is_native_quantised
+def _quantised_projections(pipe: Any) -> bool:
+    """Whether a denoiser keeps native int8 / fp8 or packed nvfp4 / mxfp8 Linears, whose ``.weight`` is a dense
+    widen: diffusers' fuse would concatenate those into a persistent dense ``to_qkv`` beside the compact buffers."""
+    from .diffusion_native_quant import is_native_linear
+    from .diffusion_packed_block import is_packed_block_linear
 
-    # Fusing reads each projection's .weight, which a native layer dequantises: a dense to_qkv beside the int8 buffers.
-    if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+    # the pipe-level fuse reaches any U-Net, not only the whole-compile ones
+    for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
+        if model is None or not callable(getattr(model, "modules", None)):
+            continue
+        try:
+            if any(is_native_linear(m) or is_packed_block_linear(m) for m in model.modules()):
+                return True
+        except Exception:  # noqa: BLE001 -- a probe must never replace the failure it describes
+            continue
+    return False
+
+
+def _fuse_qkv(pipe: Any, logger: Any) -> bool:
+    # Fusing reads each projection's .weight, which a quantised layer dequantises: a dense to_qkv beside its buffers.
+    if _quantised_projections(pipe):
         if logger is not None:
-            logger.info(
-                "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
-            )
+            logger.info("diffusion.speed: fuse_qkv skipped (quantised projections stay unfused)")
         return False
     from . import diffusion_lora_quant_merge as lora_quant_merge
+    from .diffusion_manual_cast import manual_cast_info
 
+    # A fused to_qkv is a plain Linear at the stored dtype, which a manual-cast (float32) forward cannot feed.
+    if any(manual_cast_info(m) for m in _denoiser_dits(pipe)):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (manual-cast weights stay unfused)")
+        return False
     # A fused to_qkv copy would miss in-place re-merges of merged adapter weights.
     if lora_quant_merge.merged(pipe):
         if logger is not None:

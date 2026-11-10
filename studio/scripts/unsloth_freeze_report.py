@@ -292,17 +292,9 @@ def studio_backend_pids() -> list[int]:
 
 
 def stop_leftover_backend():
-    """Stop a backend left behind by the previous candidate.
-
-    Closing the app does not necessarily stop the backend it started, and an orphaned one
-    is the worst possible state to measure in: it still answers, so the next launch attaches
-    to it (`OwnedReady`) instead of starting its own, but the process that copied its output
-    into the log died with the app. The result is a backend that serves and is never written
-    down, and every candidate after the first reads zero.
-
-    Only processes attributable to Unsloth are touched. Matching on the port alone would
-    happily kill an unrelated program that happens to be listening there.
-    """
+    """Stops the backend a previous candidate left behind: an orphan still answers (attaching as
+    OwnedReady) but its log copier died with the app; only Unsloth processes are killed, never by
+    port alone."""
     for pid in studio_backend_pids():
         try:
             os.kill(pid, signal.SIGTERM)
@@ -312,13 +304,9 @@ def stop_leftover_backend():
 
 
 def wait_for_leftover_backend_to_stop(timeout = 30):
-    """Wait for OUR backend to go, but say so, and give up early.
-
-    This used to wait 120s per candidate in silence, and on any listener at all. A port held
-    by something that is not Unsloth never clears and never needed to: the backend walks on
-    to the next free port in the range (_resolve_port in studio/backend/run.py). Waiting on
-    it turned an unrelated service into an eight minute hang with no output and no reason.
-    """
+    """Waits up to a bounded timeout, with progress output, for the leftover Unsloth backend to
+    exit; a port held by another program is never waited on because _resolve_port in
+    studio/backend/run.py moves to the next free port."""
     if not studio_backend_pids():
         return True
     print(f"    waiting up to {timeout}s for the previous backend to exit", flush = True)
@@ -342,11 +330,8 @@ def backend_offsets() -> dict:
 
 
 def backend_tail(before: dict) -> str:
-    """Everything appended to any supervised backend log since `before`.
-
-    Re-globbed rather than reusing the earlier listing, because the run being measured
-    usually creates its own log file, which was not there when the offsets were taken.
-    """
+    """Returns everything appended to any supervised backend log since the before offsets; logs are
+    re-globbed because the measured run usually creates its own log file."""
     out = []
     try:
         logs = list(BACKEND_LOGS.glob("backend-*.log"))
@@ -413,12 +398,8 @@ def _last_rise(samples: list, column: int) -> int | None:
 
 
 def _first_heard(samples: list, column: int) -> int | None:
-    """Elapsed time of the earliest sample that proves that counter was moving.
-
-    A rise between two samples proves it, and so does a first sample that is already above
-    zero: that count was accumulated during the interval before it. None means the counter
-    never moved while the run was being watched.
-    """
+    """Elapsed time of the earliest sample proving the counter moved: a rise between samples, or a
+    first sample already above zero; None if it never moved while watched."""
     if not samples:
         return None
     if samples[0][column] > 0:
