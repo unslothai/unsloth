@@ -1359,10 +1359,16 @@ async def upload_unstructured_file(
     _validate_safe_id(block_id, "block_id")
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
-    async with _BLOCK_UPLOAD_LOCKS.setdefault(block_id, _AnyioLock()):
-        original_filename, content, raw_path, file_id = await _store_unstructured_raw(
-            file, block_dir, native_path_lease
-        )
+    lock = _BLOCK_UPLOAD_LOCKS.setdefault(block_id, _AnyioLock())
+    try:
+        async with lock:
+            original_filename, content, raw_path, file_id = await _store_unstructured_raw(
+                file, block_dir, native_path_lease
+            )
+    finally:
+        # Released with no waiter: drop it so the dict holds only blocks with an upload in flight.
+        if not lock.locked() and not lock.statistics().tasks_waiting:
+            _BLOCK_UPLOAD_LOCKS.pop(block_id, None)
     ext = Path(original_filename).suffix.lower()
     size_bytes = len(content)
 

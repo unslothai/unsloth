@@ -2016,3 +2016,40 @@ def test_an_anyio_cancel_scope_leaves_no_file(monkeypatch, tmp_path, slow):
     asyncio.run(cancel_by_scope())
     time.sleep(0.4)
     assert _block_files(seed_route) == []
+
+
+def test_a_slow_raw_write_does_not_block_the_event_loop(monkeypatch, tmp_path):
+    import time
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    real_write = Path.write_bytes
+
+    def slow_write(self, data):
+        time.sleep(0.3)
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", slow_write)
+
+    async def upload_while_ticking():
+        ticks = 0
+        done = False
+
+        async def ticker():
+            nonlocal ticks
+            while not done:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        tick_task = asyncio.ensure_future(ticker())
+        await asyncio.sleep(0)
+        result = await seed_route.upload_unstructured_file(
+            _FakeUpload("notes.txt", b"text to keep"), "block"
+        )
+        done = True
+        await tick_task
+        return result, ticks
+
+    result, ticks = asyncio.run(upload_while_ticking())
+    assert result.status == "ok"
+    assert ticks >= 10
+    assert seed_route._BLOCK_UPLOAD_LOCKS == {}
