@@ -579,7 +579,6 @@ def delete_documents(
     commit: bool = True,
     vec: bool = True,
 ) -> None:
-    """``delete_document`` for many documents, scanning chunks_fts/chunks_vec once per id batch."""
     ids = list(document_ids)
     rag_db._delete_documents_chunks(conn, ids, vec = vec)
     for batch, marks in rag_db._id_batches(ids):

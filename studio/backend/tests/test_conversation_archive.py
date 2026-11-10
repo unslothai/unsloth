@@ -5247,7 +5247,6 @@ def test_a_repeat_that_came_back_into_the_prompt_keeps_one_copy(conn):
 
 @pytest.mark.parametrize("vec", [True, False])
 def test_deleting_a_thread_scans_the_fts_table_once_not_once_per_turn(conn, monkeypatch, vec):
-    """chunk_id is unindexed in chunks_fts, so each delete statement scans the whole table: batch them."""
     thread = f"many-turns-{vec}"
     turns = []
     for i in range(4):

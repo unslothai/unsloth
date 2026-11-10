@@ -624,8 +624,7 @@ def _delete_documents_chunks(
     *,
     vec: bool = True,
 ) -> None:
-    """chunk_id is unindexed in fts5 and vec0, so each delete full-scans its table: one scan per id
-    batch, not per document. ``vec=False`` leaves chunks_vec alone for connections without vec0."""
+    """chunk_id is unindexed in fts5 and vec0: one full scan per id batch, not per document."""
     has_vec = None if vec else False
     for batch, marks in _id_batches(document_ids):
         owned = f"SELECT id FROM chunks WHERE document_id IN ({marks})"

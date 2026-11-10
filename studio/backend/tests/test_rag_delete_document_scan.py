@@ -203,7 +203,6 @@ def test_delete_cost_does_not_scale_with_chunks_times_corpus(rag_conn):
 
 
 def _scope_fixture(conn, rng):
-    """Scope ``kb:gone`` (retired, plus a removable linked folder in ``kb:keep``) beside rows that survive."""
     conn.execute(
         "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, delete_remove_index, "
         "status, created_at, updated_at) VALUES('F1','kb','keep','kb:keep','/tmp/x','x',1,'idle',?,?)",
@@ -240,8 +239,6 @@ def _full_dump(conn):
 
 @pytest.mark.parametrize("op", ["scope", "folder"])
 def test_retired_scope_and_folder_deletes_scan_indexes_once(rag_conn, monkeypatch, op):
-    """Retiring a scope or a removable folder deleted per document, so each document full-scanned
-    chunks_fts and chunks_vec under the write lock. The end state must match per-document deletes."""
     from core.rag import folder_sync
 
     conn = rag_conn
