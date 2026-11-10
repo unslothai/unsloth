@@ -124,3 +124,19 @@ export function rewardDraftMarkdown(draft: RewardDraft): string {
   };
   return `---\n${yaml.dump(head, options)}---\n${yaml.dump(rule, options)}`;
 }
+
+export function parseKeyList(text: string): string[] {
+  return text
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+/** The typed text while it still parses to `keys` (so "answer," keeps its comma), else `keys`. */
+export function keyListText(text: string, keys: string[]): string {
+  const typed = parseKeyList(text);
+  return typed.length === keys.length &&
+    typed.every((key, i) => key === keys[i])
+    ? text
+    : keys.join(", ");
+}

@@ -12,7 +12,9 @@ registerBundlerResolver();
 const {
   copyRewardName,
   defaultRewardRule,
+  keyListText,
   normalizeRewardName,
+  parseKeyList,
   rewardDraftMarkdown,
 } = await import("../src/features/training/lib/reward-editor.ts");
 const { canEditReward, RULE_TYPES } = await import(
@@ -118,4 +120,16 @@ test("only valid, active rule rewards of a known type open in the editor", () =>
   assert.equal(canEditReward({ ...ok, kind: "python" }), false);
   assert.equal(canEditReward({ ...ok, rule: { type: "custom" } }), false);
   assert.equal(canEditReward(undefined), false);
+});
+
+test("required keys keep the typed separator while the list is being written", () => {
+  let text = "";
+  let keys: string[] = [];
+  for (const typed of "answer, reasoning") {
+    text = keyListText(text, keys) + typed;
+    keys = parseKeyList(text);
+  }
+  assert.deepEqual(keys, ["answer", "reasoning"]);
+  assert.equal(keyListText("answer,", ["answer"]), "answer,");
+  assert.equal(keyListText("answer", ["question"]), "question");
 });

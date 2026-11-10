@@ -39,7 +39,9 @@ import {
   type RewardDraft,
   copyRewardName,
   defaultRewardRule,
+  keyListText,
   normalizeRewardName,
+  parseKeyList,
   rewardDraftMarkdown,
 } from "@/features/training/lib/reward-editor";
 import { type TranslationKey, useT } from "@/i18n";
@@ -69,6 +71,32 @@ function NumberInput({
         onChange={(e) => onChange(e.target.value)}
       />
     </SectionField>
+  );
+}
+
+/** Keeps the typed text (a trailing comma included) and sends the parsed keys. */
+function KeyListInput({
+  label,
+  keys,
+  onChange,
+}: {
+  label: string;
+  keys: string[];
+  onChange: (keys: string[]) => void;
+}): ReactElement {
+  const [text, setText] = useState(() => keys.join(", "));
+  const shown = keyListText(text, keys);
+  return (
+    <Input
+      aria-label={label}
+      className="font-mono text-xs"
+      placeholder="answer, reasoning"
+      value={shown}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(parseKeyList(e.target.value));
+      }}
+    />
   );
 }
 
@@ -426,21 +454,11 @@ export function RewardEditorDialog({
                 />
                 {schema.type === "object" && (
                   <SectionField label={t("rl.rewardEditor.requiredKeys")}>
-                    <Input
-                      aria-label={t("rl.rewardEditor.requiredKeys")}
-                      className="font-mono text-xs"
-                      placeholder="answer, reasoning"
-                      value={schema.required.join(", ")}
-                      onChange={(e) =>
-                        setRule({
-                          schema: {
-                            type: "object",
-                            required: e.target.value
-                              .split(",")
-                              .map((key) => key.trim())
-                              .filter(Boolean),
-                          },
-                        })
+                    <KeyListInput
+                      label={t("rl.rewardEditor.requiredKeys")}
+                      keys={schema.required}
+                      onChange={(required) =>
+                        setRule({ schema: { type: "object", required } })
                       }
                     />
                   </SectionField>
