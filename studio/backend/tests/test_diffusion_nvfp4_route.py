@@ -276,7 +276,6 @@ def _finetune_file(
 def test_a_custom_nvfp4_checkpoint_keeps_its_own_weights(
     monkeypatch, tmp_path, model_path, name, base_model
 ):
-    """Only official NVFP4 checkpoints are swapped for their base; a fine-tune whose name spells one is not."""
     _fake_device(monkeypatch, "cuda", (8, 9))
     if model_path in ("local", "hf_cache"):
         folder = tmp_path / "models"

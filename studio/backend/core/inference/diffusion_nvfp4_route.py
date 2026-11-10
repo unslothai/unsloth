@@ -381,9 +381,8 @@ def _stem(repo: str) -> str:
     return _fold(re.sub(r"-diffusers$", "", repo.rsplit("/", 1)[-1], flags = re.IGNORECASE))
 
 
-# Vendor-published NVFP4 checkpoints, beside the hosted repos the family tables register:
-# (media, repo, file in repo, base whose INT8 build replaces it). Only these, and the hosted files, are
-# ever replaced: a name spelling a base does not make a fine-tune the base's weights.
+# Vendor NVFP4 checkpoints (media, repo, file, base whose INT8 build replaces it). Only these and the
+# hosted files are replaced: a name spelling a base does not make a fine-tune the base's weights.
 _VENDOR_NVFP4_FILES = (
     (
         "image",
@@ -446,7 +445,6 @@ def _family_of_base(media: str, base: str) -> Optional[tuple]:
 
 
 def trusted_nvfp4_files(media: str) -> list:
-    """``(repo, file, family, base)`` for every official NVFP4 checkpoint: vendor files and hosted ones."""
     rows: list = []
     for row_media, repo, name, base in _VENDOR_NVFP4_FILES:
         if row_media == media:
@@ -477,7 +475,6 @@ def trusted_nvfp4_files(media: str) -> list:
 
 
 def _hf_cache_repo(path: str) -> Optional[str]:
-    """``owner/name`` when ``path`` sits in a Hub cache snapshot (``models--owner--name``)."""
     for part in str(path).replace("\\", "/").split("/"):
         if part.startswith("models--") and part.count("--") >= 2:
             return "/".join(part[len("models--") :].split("--", 1))
