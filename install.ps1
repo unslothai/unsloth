@@ -4520,6 +4520,7 @@ function Install-UnslothStudio {
                 }
             }
             $exitCode = [int]$LASTEXITCODE
+            $script:LastInstallOutput = if ($exitCode -eq 0) { "" } else { $collected.ToString() }
             if ($exitCode -eq 0) {
                 Clear-TauriInstallError "$Label recovered"
             } else {
@@ -4562,6 +4563,28 @@ function Install-UnslothStudio {
         return $code
     }
 
+    # uv reuses a damaged unpacked wheel from its cache on every run, --refresh included (#17375);
+    # `uv cache clean <name>` drops it so the next run unpacks a fresh download.
+    function Repair-UvDamagedWheels {
+        param([string]$Output, [hashtable]$Cleaned)
+        $names = @(foreach ($m in [regex]::Matches("$Output", '(?m)Failed to install: \S+ \(([A-Za-z0-9][A-Za-z0-9._-]*)(?:==| @ )[^\r\n]*\r?\n\s*(?:cause|Caused by): The wheel is invalid')) {
+            $n = $m.Groups[1].Value.ToLowerInvariant()
+            if (-not $Cleaned.ContainsKey($n) -and $Cleaned.Count -lt 50) { $Cleaned[$n] = $true; $n }
+        })
+        if (-not $names) { return $false }
+        substep "clearing damaged uv cache entries for $($names -join ', ')..." "Yellow"
+        # Bounded: a uv process elsewhere holding the cache lock must not stall the install.
+        $prevLock = $env:UV_LOCK_TIMEOUT
+        if (-not $prevLock) { $env:UV_LOCK_TIMEOUT = "60" }
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { & $script:UvExe cache clean @names 2>&1 | Out-Null } finally {
+            $ErrorActionPreference = $prevEap
+            $env:UV_LOCK_TIMEOUT = $prevLock
+        }
+        return ($LASTEXITCODE -eq 0)
+    }
+
     function Invoke-InstallCommandRetry {
         param(
             [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
@@ -4578,9 +4601,13 @@ function Install-UnslothStudio {
             $delay = $parsedDelay
         }
         $attempt = 1
+        $cleaned = @{}
         while ($true) {
+            $script:LastInstallOutput = ""
             $code = Invoke-InstallCommand -Command $Command -Label $Label -NoMirror:($attempt -lt $maxAttempts)
             if ($code -eq 0) { return 0 }
+            # Not an attempt: uv names one damaged package per run.
+            if (Repair-UvDamagedWheels -Output $script:LastInstallOutput -Cleaned $cleaned) { continue }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
             Start-Sleep -Seconds $delay

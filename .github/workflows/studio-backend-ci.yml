@@ -573,6 +573,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      # test_uv_damaged_cache_repair.sh drives a real uv.
+      - run: pip install uv
+
       - name: Shell installer tests
         # Auto-discovered; tests/studio/test_ci_shell_suite_coverage.py guards discovery and skips.
         # Skipped: test_install_rollback_lifecycle.sh (covered by cross-platform-parity-ci.yml).
