@@ -6,9 +6,15 @@ import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
+let loads = 0;
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-async function loadStorage(rows: Map<string, any>, puts: any[], gate?: Promise<void>) {
+async function loadStorage(
+  rows: Map<string, any>,
+  puts: any[],
+  gate?: Promise<void>,
+  fails: (row: any) => boolean = () => false,
+) {
   const dependencies: Record<string, any> = {
     Dexie: class {
       version() { return { stores() {} }; }
@@ -19,6 +25,7 @@ async function loadStorage(rows: Map<string, any>, puts: any[], gate?: Promise<v
           put: async (row: any) => {
             puts.push(row);
             if (gate) await gate;
+            if (fails(row)) throw new Error("QuotaExceededError");
             rows.set(row.id, row);
           },
           delete: async (key: string) => rows.delete(key),
@@ -39,7 +46,7 @@ async function loadStorage(rows: Map<string, any>, puts: any[], gate?: Promise<v
   async function load(relative: string) {
     const source = stripTypeScriptTypes(readSrc(`features/${relative}`))
       .replace(/^import[\s\S]*?;\n/gm, "");
-    const bindings = `const {${Object.keys(dependencies).join(",")}} = globalThis.__backgroundDrag;\n`;
+    const bindings = `// ${++loads}\nconst {${Object.keys(dependencies).join(",")}} = globalThis.__backgroundDrag;\n`;
     const module = await import(`data:text/javascript;base64,${Buffer.from(bindings + source).toString("base64")}`);
     Object.assign(dependencies, module);
     return module;
@@ -80,6 +87,34 @@ test("a slider drag stores the image once per idle write, not once per tick, and
     assert.equal(changes, 40);
     assert.equal(storage.useBackgroundStore.getState().error, null);
     assert.equal(storage.useBackgroundStore.getState().value.visibility, 40);
+  } finally {
+    release();
+    delete (globalThis as any).__backgroundDrag;
+  }
+});
+
+test("patches before an upload are still stored when the upload write fails", async () => {
+  const image = new Blob(["image"]);
+  const upload = new Blob(["upload"]);
+  const rows = new Map<string, any>([
+    ["current", { id: "current", value: { blob: image, visibility: 50 }, sha256: "abc" }],
+    ["sync", { id: "sync", state: { updatedAt: 1, dirty: false } }],
+  ]);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    const storage = await loadStorage(rows, [], gate, (row) => row.value?.blob === upload);
+    await storage.hydrateBackground();
+    storage.patchBackground({ visibility: 1 });
+    await tick();
+    for (let visibility = 2; visibility <= 5; visibility++) storage.patchBackground({ visibility });
+    const ticket = storage.beginBackgroundUpload();
+    release();
+    await storage.finishBackgroundUpload(ticket, { blob: upload, visibility: 70 });
+    assert.equal(rows.get("current").value.visibility, 5);
+    assert.equal(rows.get("current").value.blob, image);
+    assert.equal(storage.useBackgroundStore.getState().value.visibility, 5);
+    assert.equal(storage.useBackgroundStore.getState().error, "storage");
   } finally {
     release();
     delete (globalThis as any).__backgroundDrag;
