@@ -577,13 +577,13 @@ def delete_documents(
     document_ids,
     *,
     commit: bool = True,
+    vec: bool = True,
 ) -> None:
     """``delete_document`` for many documents, scanning chunks_fts/chunks_vec once per id batch."""
-    ids = list(dict.fromkeys(document_ids))
-    rag_db._delete_documents_chunks(conn, ids)
-    for start in range(0, len(ids), rag_db._DOC_ID_BATCH):
-        batch = ids[start : start + rag_db._DOC_ID_BATCH]
-        conn.execute(f"DELETE FROM documents WHERE id IN ({','.join('?' * len(batch))})", batch)
+    ids = list(document_ids)
+    rag_db._delete_documents_chunks(conn, ids, vec = vec)
+    for batch, marks in rag_db._id_batches(ids):
+        conn.execute(f"DELETE FROM documents WHERE id IN ({marks})", batch)
     if commit:
         conn.commit()
 

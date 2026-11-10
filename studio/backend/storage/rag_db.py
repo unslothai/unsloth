@@ -601,8 +601,15 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
-# One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
+# Under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
 _DOC_ID_BATCH = 900
+
+
+def _id_batches(ids):
+    ids = list(dict.fromkeys(ids))
+    for start in range(0, len(ids), _DOC_ID_BATCH):
+        batch = ids[start : start + _DOC_ID_BATCH]
+        yield batch, ",".join("?" * len(batch))
 
 
 def _delete_document_chunks(conn, document_id: str) -> None:
@@ -611,14 +618,16 @@ def _delete_document_chunks(conn, document_id: str) -> None:
     _delete_documents_chunks(conn, [document_id])
 
 
-def _delete_documents_chunks(conn, document_ids) -> None:
-    """``_delete_document_chunks`` for many documents. chunk_id is unindexed in fts5 and vec0, so each
-    statement full-scans its table: one IN scan per batch of documents, not one per document or chunk."""
-    ids = list(dict.fromkeys(document_ids))
-    has_vec = None
-    for start in range(0, len(ids), _DOC_ID_BATCH):
-        batch = ids[start : start + _DOC_ID_BATCH]
-        marks = ",".join("?" * len(batch))
+def _delete_documents_chunks(
+    conn,
+    document_ids,
+    *,
+    vec: bool = True,
+) -> None:
+    """chunk_id is unindexed in fts5 and vec0, so each delete full-scans its table: one scan per id
+    batch, not per document. ``vec=False`` leaves chunks_vec alone for connections without vec0."""
+    has_vec = None if vec else False
+    for batch, marks in _id_batches(document_ids):
         owned = f"SELECT id FROM chunks WHERE document_id IN ({marks})"
         if conn.execute(f"{owned} LIMIT 1", batch).fetchone() is None:
             continue

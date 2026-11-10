@@ -2735,19 +2735,7 @@ def _delete_scope_without_vec(
     try:
         conn = rag_db.get_metadata_connection()
         documents = conn.execute(*_scope_select(scope, created_before)).fetchall()
-        ids = [row["id"] for row in documents]
-        # chunk_id is unindexed in fts5: one scan per batch of documents, not one per document.
-        for start in range(0, len(ids), rag_db._DOC_ID_BATCH):
-            batch = ids[start : start + rag_db._DOC_ID_BATCH]
-            marks = ",".join("?" * len(batch))
-            conn.execute(
-                "DELETE FROM chunks_fts WHERE chunk_id IN "
-                f"(SELECT id FROM chunks WHERE document_id IN ({marks}))",
-                batch,
-            )
-            conn.execute(f"DELETE FROM chunks WHERE document_id IN ({marks})", batch)
-            conn.execute(f"DELETE FROM documents WHERE id IN ({marks})", batch)
-        conn.commit()
+        store.delete_documents(conn, [row["id"] for row in documents], vec = False)
         removed = [row["stored_path"] for row in documents]
     except Exception:
         logger.warning(
