@@ -3255,7 +3255,11 @@ def _h3_residency_budget_bytes(
         if free is None:
             return 0
         cached = cuda_reusable_cache_bytes(device)
-        available = int(free) + cached + int(residency.resident_bytes())
+        # The conditioner's device share is demotable like a resident block (and it yields first).
+        held = getattr(residency, "device_bytes", None)
+        available = (
+            int(free) + cached + int(held() if callable(held) else residency.resident_bytes())
+        )
         te_gb = (
             H3_TE_STREAMED_GB
             if te_streamed
@@ -12448,6 +12452,11 @@ class VideoBackend:
                                         lambda _te = _te_for_yield: top_up_h3_te_resident(
                                             _te, logger = logger
                                         )
+                                    )
+                                    from .video_minimax_h3_te import h3_te_device_share
+
+                                    residency.te_share = h3_te_device_share(
+                                        _te_for_yield, device, te_streamed, logger = logger
                                     )
                                     big_w, big_h = max(
                                         fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
