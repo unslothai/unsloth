@@ -8,6 +8,7 @@ import functools
 import os
 import sys
 import types
+import weakref
 
 import pytest
 import torch
@@ -250,7 +251,7 @@ def test_compiled_update_is_one_graph_per_bucket(monkeypatch):
 
     torch._dynamo.reset()
     layer = KV.GrowableLayer(max_cache_len = 64)
-    layer.group.members.append(layer)
+    layer.group.members.append(weakref.ref(layer))
     k = torch.randn(1, 2, 4, 8)
     layer.update(
         k, k, {"cache_position": torch.arange(4)}
@@ -289,12 +290,16 @@ def test_a_short_call_after_a_long_one_replays_the_kept_bucket(host, llama, monk
         llama, "_previous_max_cache_length", GG._kept_len(llama.__dict__[GG._ATTR]), raising = False
     )
     s2 = _stats(llama)
-    outs = [_gen(llama, new = 10) for _ in range(2)]
+    # 6 + 20 - 1 = 25 slots needed: the 45-slot bucket is within 2x, so its graphs replay.
+    outs = [_gen(llama, new = 20) for _ in range(2)]
     s3 = _stats(llama)
     assert torch.equal(outs[0], outs[1])
     assert GG.kept_cache(llama) is kept and KV.capacity(kept) == 45
     assert s3["captures"] == s2["captures"], (s2, s3)
-    assert s3["replays"] - s2["replays"] == 2 * 9, (s2, s3)
+    assert s3["replays"] - s2["replays"] == 2 * 19, (s2, s3)
+    # 15 slots needed: judged against this call, not transformers' longest-ever limit, so a smaller cache.
+    _gen(llama, new = 10)
+    assert GG.kept_cache(llama) is not kept and KV.capacity(GG.kept_cache(llama)) <= 30
 
 
 def _no_growth_in_graphs(host):
@@ -443,3 +448,30 @@ def test_models_sizing_masks_by_the_max_cache_shape_keep_static_cache(monkeypatc
 
     assert not KV.supports(Old())
     assert KV.supports(_load(LLAMA))
+    # transformers 5.x BLOOM sizes its padded mask / ALiBi by past_key_values.get_max_length() (the full limit).
+    from transformers import BloomConfig, BloomForCausalLM
+
+    bloom = BloomForCausalLM(BloomConfig(vocab_size = 64, hidden_size = 16, n_layer = 2, n_head = 2))
+    KV._SUPPORTS.pop(BloomForCausalLM, None)
+    assert not KV.supports(bloom)
+
+
+def test_released_cache_frees_its_kv_without_a_gc_pass(monkeypatch):
+    # The group must not own its layers: a layer -> group -> layer cycle kept a dropped cache's KV until gc ran.
+    import gc
+    import weakref
+
+    from transformers import StaticCache
+
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV_MIN", "4")
+    cache = KV.make_growable(StaticCache(config = _load(LLAMA).config, max_cache_len = 64))
+    k = torch.zeros(1, 4, 3, 4)
+    cache.update(k, k.clone(), 0)
+    KV.reserve(cache, 20)
+    alive = weakref.ref(next(KV._members(cache)).keys)
+    gc.disable()
+    try:
+        del cache
+        assert alive() is None
+    finally:
+        gc.enable()

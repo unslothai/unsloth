@@ -477,7 +477,7 @@ def plan(model, args, kwargs, input_ids):
             need = max(need, previous)
         if KV.is_growable(state.kept):
             length = KV.capacity(state.kept)
-            kept = length is not None and length <= _KEEP_MAX_RATIO * max(need, 1)
+            kept = length is not None and length <= _KEEP_MAX_RATIO * max(max_len - 1, 1)
         else:
             kept = length is not None and need <= length <= _KEEP_MAX_RATIO * max(need, 1)
     if state is not None and state.kept is not None and not kept:
@@ -849,15 +849,23 @@ def release(model):
             state.invalidate()
 
 
-def _kept_compatible(state, batch_size, max_cache_len, offloading):
+def _kept_compatible(
+    state,
+    batch_size,
+    max_cache_len,
+    offloading,
+    need = None,
+):
     kept = state.kept
     if kept is None:
         return False
     if KV.is_growable(kept):
         length = KV.capacity(kept)
+        # A growable bucket is judged against this call's need, not transformers' longest-ever limit.
+        need = max_cache_len if need is None else need
         fits = (
             length is not None
-            and length <= _KEEP_MAX_RATIO * max(int(max_cache_len), 1)
+            and length <= _KEEP_MAX_RATIO * max(int(need), 1)
             and not KV.short_layers(kept, max_cache_len)
         )
     else:
@@ -964,7 +972,11 @@ class reuse_kept_cache:
             and prefill_chunk is None
             and not getattr(model.config, "is_encoder_decoder", False)
             and _kept_compatible(
-                state, batch_size, effective, "offloaded" in str(cache_implementation)
+                state,
+                batch_size,
+                effective,
+                "offloaded" in str(cache_implementation),
+                need = max_cache_len,
             )
         ):
             cache = state.kept

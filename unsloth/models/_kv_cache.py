@@ -9,6 +9,7 @@ check reads only the host counter `cumulative_length_int`, never the device."""
 import inspect
 import os
 import sys
+import weakref
 
 import torch
 
@@ -53,7 +54,8 @@ def bucket(needed, limit):
 
 
 class _Group:
-    """Shared by the growable layers of one cache: they grow together, and graphs key on the epoch."""
+    """Shared by the growable layers of one cache: they grow together, and graphs key on the epoch. Members are
+    weak references: a strong layer -> group -> layer cycle kept a released cache's KV alive until a gc pass."""
 
     __slots__ = ("members", "epoch", "__weakref__")
 
@@ -166,8 +168,10 @@ class frozen:
 
 
 def _grow_group(group, size):
-    for layer in group.members:
-        layer._grow(size)
+    for ref in group.members:
+        layer = ref()
+        if layer is not None:
+            layer._grow(size)
     group.epoch += 1
 
 
@@ -175,14 +179,16 @@ _SUPPORTS = {}
 
 
 def _sizes_by_max_cache_shape(module):
-    # Old-style models size the mask / ALiBi by get_max_cache_shape(), which would disagree with the bucket.
+    # Models sizing the mask / ALiBi by the cache's full limit (get_max_cache_shape(), BLOOM's get_max_length())
+    # would disagree with the bucket.
     if module is None:
         return False
     if hasattr(module, "_prepare_4d_causal_attention_mask_with_cache_position"):
         return True
     source = sys.modules.get(type(module).__module__)
     try:
-        return "get_max_cache_shape(" in inspect.getsource(source) if source is not None else False
+        text = inspect.getsource(source) if source is not None else ""
+        return "get_max_cache_shape(" in text or "get_max_length(" in text
     except (OSError, TypeError):
         return True
 
@@ -216,7 +222,7 @@ def make_growable(cache):
         if group is None:
             group = _Group()
         grown = GrowableLayer(max_cache_len = layer.max_cache_len, group = group)
-        group.members.append(grown)
+        group.members.append(weakref.ref(grown))
         layers[i] = grown
     return cache
 
