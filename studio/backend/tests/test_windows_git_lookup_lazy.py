@@ -67,12 +67,10 @@ def _layout(
 
 
 SCENARIOS = {
-    # shutil.which already lands in Program Files: the PATH scan is not needed.
     "which_trusted": dict(
         which_hit = "Program Files/Git/cmd",
         path_dirs = [("Program Files/Git/cmd", True), ("scoop/shims", True)],
     ),
-    # which returns a user shim; a later PATH entry is the trusted install.
     "which_untrusted_then_trusted": dict(
         which_hit = "scoop/shims",
         path_dirs = [("scoop/shims", True), ("Program Files/Git/cmd", True)],
@@ -128,7 +126,6 @@ def test_trusted_which_hit_skips_the_path_scan(win_env, tmp_path, monkeypatch):
     win_env(prog, path, which)
     calls = _count_isfile(monkeypatch)
     assert tools._resolve_trusted_windows_git()[0]
-    # Eager scan stats every PATH entry x PATHEXT extension (42 x 4 here).
     assert calls == []
 
 
@@ -137,7 +134,6 @@ def test_trusted_path_entry_stops_the_scan(win_env, tmp_path, monkeypatch):
     win_env(prog, path, which)
     calls = _count_isfile(monkeypatch)
     assert tools._resolve_trusted_windows_git()[0]
-    # scoop/shims (git.EXE hit on the first ext) + Program Files/Git/cmd (first ext): 2 stats.
     assert len(calls) <= 2 * len(_PATHEXT.split(os.pathsep))
     assert not any("filler" in c for c in calls)
 
@@ -151,7 +147,6 @@ def test_untrusted_only_still_scans_everything(win_env, tmp_path, monkeypatch):
 
 
 def test_trust_is_rechecked_every_call(win_env, tmp_path, monkeypatch):
-    # No verdict is cached: dropping the trusted root flips the next result.
     prog, path, which = _layout(tmp_path, **SCENARIOS["which_trusted"])
     win_env(prog, path, which)
     assert tools._resolve_trusted_windows_git()[0]
