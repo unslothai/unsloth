@@ -3369,8 +3369,7 @@ def stop():
         raise typer.Exit(0)
 
     pending = list(signalled)
-    # Same 5 s budget everywhere. A POSIX liveness check is one kill(pid, 0), so poll often and
-    # return as soon as the server exits; on Windows each check spawns tasklist, so keep 0.5 s steps.
+    # 5 s budget; POSIX checks are one kill(pid, 0), Windows checks spawn tasklist.
     step = 0.5 if sys.platform == "win32" else 0.05
     for attempt in range(round(5 / step) + 1):
         if not pending:
