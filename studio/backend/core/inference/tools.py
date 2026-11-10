@@ -32,6 +32,7 @@ import random
 import re
 import sqlite3
 import shlex
+import posixpath
 import shutil
 import ssl
 import stat
@@ -6659,6 +6660,348 @@ _BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?
 _HERESTRING_TO_INTERPRETER_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
 )
+_HEREDOC_INTERPRETER_RE = re.compile(
+    r"(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)"
+)
+_HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;", "\n"})
+_PYTHON_STDIN_DATA_MODULES = frozenset({"json.tool", "base64"})
+_SHELL_LINE_OPERATORS = (
+    "&>>",
+    "&>",
+    "<<-",
+    "<<<",
+    "&&",
+    "||",
+    ";;",
+    "|&",
+    ">>",
+    "<<",
+    ">&",
+    "<&",
+    "<>",
+    ">|",
+    ";",
+    "&",
+    "|",
+    "(",
+    ")",
+    "<",
+    ">",
+    "\n",
+)
+_HEREDOC_INTERPRETER_MENTION_RE = re.compile(
+    r"(?<![\w.-])(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)(?![\w-])"
+)
+_COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
+_SHELL_KEYWORDS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "{"})
+_HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
+
+
+def _heredoc_name(word: str) -> str:
+    return re.sub(r"\.exe$", "", ntpath.basename(word), flags = re.IGNORECASE)
+
+
+# Commands that only read a heredoc as data; any other owner may forward stdin to an interpreter.
+_HEREDOC_DATA_COMMANDS = _AUTO_SAFE_TERMINAL_COMMANDS | {
+    "tee",
+    "git",
+    "gh",
+    "read",
+    ":",
+    "base64",
+    "patch",
+}
+_SOURCE_ENCODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
+_PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
+
+
+def _quote_end(line: str, i: int) -> int:
+    """Index of the quote closing the one at ``i``; a `$(` or backtick inside double quotes opens a
+    fresh quoting context, as in bash. -1 when unterminated."""
+    quote, j, n = line[i], i + 1, len(line)
+    while j < n and line[j] != quote:
+        if quote == '"' and line[j] == "\\":
+            j += 2
+        elif quote == '"' and line.startswith("$(", j):
+            j = _substitution_end(line, j + 2)
+            if j < 0:
+                return -1
+        elif quote == '"' and line[j] == "`":
+            j = line.find("`", j + 1) + 1
+            if not j:
+                return -1
+        else:
+            j += 1
+    return j if j < n else -1
+
+
+def _substitution_end(line: str, j: int) -> int:
+    depth, n = 1, len(line)
+    while j < n:
+        ch = line[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch in "'\"":
+            j = _quote_end(line, j)
+            if j < 0:
+                return -1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if not depth:
+                return j + 1
+        j += 1
+    return -1
+
+
+def _shell_line_tokens(line: str) -> "list | None":
+    """Bash's word split of one line as (kind, text, quoted), kind word / op / fd; adjacent quoted
+    parts concatenate. None on an unterminated quote or arithmetic expansion."""
+    tokens, word, quoted, active = [], [], False, False
+    i, n = 0, len(line)
+
+    def flush(kind = "word"):
+        nonlocal word, quoted, active
+        if active:
+            tokens.append((kind, "".join(word), quoted))
+        word, quoted, active = [], False, False
+
+    while i < n:
+        ch = line[i]
+        if ch in " \t":
+            flush()
+            i += 1
+        elif ch == "#" and not active:
+            j = line.find("\n", i)
+            if j < 0:
+                break
+            i = j
+        elif ch == "\\":
+            word.append(line[i + 1 : i + 2])
+            quoted = active = True
+            i += 2
+        elif ch in "'\"":
+            j = _quote_end(line, i)
+            if j < 0:
+                return None
+            text = line[i + 1 : j]
+            word.append(re.sub(r'\\([$`"\\\n])', r"\1", text) if ch == '"' else text)
+            quoted = active = True
+            i = j + 1
+        elif line.startswith("$((", i) or (line.startswith("((", i) and not active):
+            j = line.find("))", i)
+            if j < 0:
+                return None
+            word.append(line[i : j + 2])
+            active = True
+            i = j + 2
+        else:
+            op = next((o for o in _SHELL_LINE_OPERATORS if line.startswith(o, i)), None)
+            if op is None:
+                word.append(ch)
+                active = True
+                i += 1
+                continue
+            text = "".join(word)
+            flush("fd" if op[0] in "<>" and text.isdigit() and not quoted else "word")
+            tokens.append(("op", op, False))
+            i += len(op)
+    flush()
+    return tokens
+
+
+def _expansion_has_heredoc(expansion: str) -> bool:
+    inner = expansion[2:] if expansion.startswith("$(") else expansion.strip("`")
+    tokens = _shell_line_tokens(inner[:-1] if inner.endswith(")") else inner)
+    return tokens is None or any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens)
+
+
+def _python_reads_stdin_program(words: list) -> "bool | None":
+    """CPython's option grammar: True when stdin is executed (program `-`, or -i), False when it is
+    only data (-c, -m, a script operand), None when the words cannot be resolved."""
+    interactive = False
+    words = iter(words)
+    for word in words:
+        if any(ch in word for ch in "$`*?[{~"):
+            return None
+        if word == "-" or posixpath.normpath(word) in (
+            "/dev/stdin",
+            "/dev/fd/0",
+            "/proc/self/fd/0",
+        ):
+            return True
+        if posixpath.normpath(word).startswith(("/dev/", "/proc/")):
+            return None
+        if word == "--check-hash-based-pycs":
+            if re.search(r"[$`]", next(words, "")):
+                return None
+        elif word.startswith("--"):
+            if not word.startswith("--check-hash-based-pycs="):
+                return None
+        elif word.startswith("-"):
+            for i, ch in enumerate(word[1:], 1):
+                if ch == "c":
+                    return interactive
+                if ch == "m":
+                    module = word[i + 1 :] or next(words, "")
+                    return interactive if module in _PYTHON_STDIN_DATA_MODULES else None
+                if ch in "WX":
+                    if i == len(word) - 1 and re.search(r"[$`]", next(words, "")):
+                        return None
+                    break
+                if ch == "i":
+                    interactive = True
+                elif ch not in _PYTHON_FLAG_LETTERS:
+                    return None
+        else:
+            return interactive
+    return True
+
+
+def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
+    """Heredocs taken in shell order, each owned by its simple command: Python executing stdin gets
+    the body screened. Other interpreters, a second stdin redirection, expansions in an unquoted
+    body, or any owner or terminator this cannot resolve while an interpreter is named fail closed."""
+    mentioned = bool(_HEREDOC_INTERPRETER_MENTION_RE.search(command))
+    lines = command.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        while i < len(lines) and (len(line) - len(line.rstrip("\\"))) % 2:
+            if "#" in line and mentioned:
+                return True
+            line = line[:-1] + lines[i]
+            i += 1
+        if "<<" not in line and "'" not in line and '"' not in line:
+            continue
+        tokens = _shell_line_tokens(line)
+        while tokens is None and i < len(lines):
+            line += "\n" + lines[i]
+            i += 1
+            tokens = _shell_line_tokens(line)
+        if tokens is None:
+            if mentioned:
+                return True
+            continue
+        if not any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens):
+            if mentioned and any(map(_expansion_has_heredoc, _shell_expansions(line))):
+                return True
+            continue
+        commands, current = [], []
+        for token in tokens:
+            if token[0] == "op" and token[1] in _HEREDOC_COMMAND_BREAKS:
+                commands.append(current)
+                current = []
+            else:
+                current.append(token)
+        commands.append(current)
+        pending = []
+        for words in commands:
+            names, stdin_redirects, expect = [], 0, None
+            for kind, text, quoted in words:
+                if kind == "op":
+                    stdin_redirects += text[0] == "<"
+                    expect = "heredoc" if text in ("<<", "<<-") else "target"
+                    if expect == "heredoc":
+                        pending.append([None, text == "<<-", False, None])
+                elif expect:
+                    if expect == "heredoc" and kind == "word":
+                        pending[-1][0], pending[-1][2] = text, quoted
+                    expect = None
+                elif kind == "word":
+                    names.append(text)
+            for heredoc in pending:
+                if heredoc[3] is None:
+                    heredoc[3] = (names, stdin_redirects)
+        for delimiter, dash, quoted, (names, stdin_redirects) in pending:
+            body, terminated = [], False
+            while i < len(lines):
+                text = lines[i].lstrip("\t") if dash else lines[i]
+                i += 1
+                if text == delimiter:
+                    terminated = True
+                    break
+                body.append(text)
+            if not terminated and _HEREDOC_INTERPRETER_MENTION_RE.search("\n".join(body)):
+                return True
+            if mentioned and not quoted and re.search(r"[$`]|\\\n", "\n".join(body) + "\n"):
+                return True
+            command_word, wrapper, skip = "", "", False
+            for w in names:
+                if skip:
+                    skip = False
+                elif re.match(r"\w+=", w) or (not wrapper and w in _SHELL_KEYWORDS):
+                    continue
+                elif wrapper and w.startswith("-"):
+                    skip = w in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, ())
+                elif wrapper == "timeout" and _WRAPPER_DURATION_RE.match(w):
+                    wrapper = "timeout:"
+                elif _heredoc_name(w) in _COMMAND_PREFIXES:
+                    wrapper = _heredoc_name(w)
+                else:
+                    command_word = w
+                    break
+            if mentioned and [w for w in names if not re.match(r"\w+=", w)] == ["exec"]:
+                return True
+            if _heredoc_name(command_word) in _HEREDOC_DATA_COMMANDS:
+                continue
+            if mentioned and (
+                not command_word
+                or command_word in _COMPOUND_CLOSERS
+                or any(ch in command_word for ch in "$`")
+            ):
+                return True
+            at = next(
+                (
+                    n
+                    for n, w in enumerate(names)
+                    if _HEREDOC_INTERPRETER_RE.fullmatch(_heredoc_name(w))
+                ),
+                None,
+            )
+            if any(_HEREDOC_SHELL_RE.fullmatch(_heredoc_name(w)) for w in names):
+                body_text = "\n".join(body)
+                if (
+                    depth >= 3
+                    or _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names) + "\n" + body_text)
+                    or _terminal_is_high_risk(body_text, depth + 1)
+                ):
+                    return True
+                continue
+            if at is None:
+                if mentioned and _heredoc_name(command_word) not in _HEREDOC_DATA_COMMANDS:
+                    return True
+                continue
+            if stdin_redirects > 1 or any("PYTHONINSPECT" in w for w in names[:at]):
+                return True
+            if not _heredoc_name(names[at]).lower().startswith(("python", "pypy")) or depth >= 3:
+                return True
+            if any(_HEREDOC_INTERPRETER_RE.fullmatch(_heredoc_name(w)) for w in names[at + 1 :]):
+                return True
+            reads = _python_reads_stdin_program(names[at + 1 :])
+            if reads is None:
+                return True
+            if not reads:
+                continue
+            program = "\n".join(body)
+            cookie = next(filter(None, map(_SOURCE_ENCODING_RE.match, body[:2])), None)
+            if cookie and cookie.group(1).lower().replace("_", "-") not in (
+                "utf-8",
+                "utf8",
+                "ascii",
+                "latin-1",
+            ):
+                return True
+            if not quoted and re.search(r"[$`]|\\[\\$`\n]", program + "\n"):
+                return True
+            if _inline_python_is_high_risk(program):
+                return True
+    return False
+
+
 # Generated script content is unscreenable; diff <(...) only reads and stays out.
 _PROC_SUBST_EXEC_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|source|eval|python[0-9.]*|node|nodejs|bun|ruby|perl|php)\b"
@@ -7387,6 +7730,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     _herestring = _HERESTRING_TO_INTERPRETER_RE.search(command)
     if _herestring:
+        return True
+    if "<<" in command and _heredoc_feeds_risky_program(command, _depth):
         return True
     # shlex reads newlines as whitespace; ANSI-C quoting hides names.
     decoded = _decode_ansi_c(command, keep_one_word = True)
