@@ -26884,6 +26884,10 @@ _MAX_VIDEO_BYTES = 256 * 1024 * 1024
 # llama-server's HTTP layer refuses bodies over 100 MB, so a clip larger than this is transcoded first.
 _LLAMA_VIDEO_FORWARD_BYTES = 64 * 1024 * 1024
 _LLAMA_VIDEO_FORWARD_B64_CHARS = 4 * math.ceil(_LLAMA_VIDEO_FORWARD_BYTES / 3)
+_VIDEO_OVER_FORWARD_BUDGET = (
+    "Video is too large to send to the model even after compressing it. "
+    "Trim it to a shorter clip and try again."
+)
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil(_MAX_VIDEO_BYTES / 3)
 # Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
 _MAX_VIDEO_SCHEME_CHARS = 16
@@ -27890,12 +27894,21 @@ async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
         ) from None
     # The helper hands back the original on failure; llama-server would 413 it with no reason given.
     if len(shrunk) > _LLAMA_VIDEO_FORWARD_B64_CHARS:
-        raise HTTPException(
-            status_code = 413,
-            detail = "Video is too large to send to the model even after compressing it. "
-            "Trim it to a shorter clip and try again.",
-        )
+        raise HTTPException(status_code = 413, detail = _VIDEO_OVER_FORWARD_BUDGET)
     return shrunk
+
+
+def _forwarded_video_chars(messages: list[dict]) -> int:
+    total = 0
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "input_video":
+                data = (part.get("input_video") or {}).get("data")
+                total += len(data) if isinstance(data, str) else 0
+    return total
 
 
 async def _shrink_video_parts(messages: list[dict], llama_backend) -> None:
@@ -32440,6 +32453,9 @@ async def produce_openai_chat_completions(
             _inject_video_part(gguf_messages, video_b64)
         await _shrink_video_parts(gguf_messages, llama_backend)
         _translate_video_parts(gguf_messages)
+        # The budget bounds the whole llama-server body, so several clips count together.
+        if _forwarded_video_chars(gguf_messages) > _LLAMA_VIDEO_FORWARD_B64_CHARS:
+            raise _reject(413, _VIDEO_OVER_FORWARD_BUDGET)
 
         cancel_event = _chat_cancel_event(request)
 
