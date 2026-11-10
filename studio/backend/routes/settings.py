@@ -4986,7 +4986,6 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "export": False,
     "api": False,
     "tasks": False,
-    "benchmarks": False,
 }
 
 MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
@@ -5031,7 +5030,6 @@ SidebarNavItemId = Literal[
     "export",
     "api",
     "tasks",
-    "benchmarks",
 ]
 
 
