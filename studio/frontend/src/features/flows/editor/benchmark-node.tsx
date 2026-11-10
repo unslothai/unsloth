@@ -4,6 +4,7 @@
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useDocStore } from "../stores/doc-store";
+import { wiresInto } from "../stores/wire-index";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import type { FlowNode } from "../types";
 import {
@@ -39,9 +40,7 @@ function keyFields(node: FlowNode): FieldRow[] {
 function BenchmarkNodeBody({ node }: { node: FlowNode }) {
   const runtime = useRuntimeStore((s) => s.nodes[node.id]) ?? IDLE_RUNTIME;
   const hasRows = useDocStore((s) =>
-    Object.values(s.graph.edges).some(
-      (e) => e.target === node.id && e.target_port === "dataset",
-    ),
+    wiresInto(s.graph, node.id).some((e) => e.target_port === "dataset"),
   );
   const view = benchmarkView({
     status: runtime.status,

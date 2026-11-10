@@ -19,6 +19,7 @@ const { applySuperCards, readSuperCards } = await import(
 const { combineSelection } = await import("../src/features/flows/editor/super-card-actions.ts");
 const { useUiStore } = await import("../src/features/flows/stores/ui-store.ts");
 const { setupLayout } = await import("../src/features/flows/recipe/recipe-setup.ts");
+const { wiresInto, wireIndexStats } = await import("../src/features/flows/stores/wire-index.ts");
 
 function graph() {
   useDocStore.getState().load(
@@ -86,6 +87,18 @@ test("a closed super card rebuilt with nothing changed is the same node object",
     new Map([[card.id, card]]) as never,
   );
   assert.notEqual(selected.nodes.find((n) => n.id === card.id), card, "a real change makes a new node");
+});
+
+test("card selectors look up their own wires: one index build per edge set", () => {
+  graph();
+  const g = useDocStore.getState().graph;
+  const before = wireIndexStats.builds;
+  // Three cards' selectors over 50 store updates that leave the edges alone.
+  for (let k = 0; k < 50; k += 1)
+    for (const id of ["tpl", "img", "view"]) wiresInto(g, id);
+  assert.equal(wireIndexStats.builds - before, 1);
+  assert.deepEqual(wiresInto(g, "img").map((e) => e.id), ["e2"]);
+  assert.deepEqual(wiresInto(g, "prompt"), []);
 });
 
 test("a flow card re-measures its content floor only when its content or width changes", () => {
