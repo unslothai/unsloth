@@ -6,6 +6,8 @@
 import os
 import uuid
 
+import time
+
 import pytest
 
 from core.inference.mcp_client import MCP_TOOL_PREFIX
@@ -1128,6 +1130,12 @@ def test_terminal_high_risk_classifier(command, high_risk):
 )
 def test_code_fed_to_an_interpreter_through_a_heredoc_is_screened(command, high_risk):
     assert is_high_risk_tool_call("terminal", {"command": command}) is high_risk
+
+
+def test_heredoc_option_scan_is_linear():
+    started = time.perf_counter()
+    is_high_risk_tool_call("terminal", {"command": "python3" + " -Xa" * 40 + " x"})
+    assert time.perf_counter() - started < 1.0
 
 
 @pytest.mark.parametrize(

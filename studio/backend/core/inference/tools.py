@@ -6680,12 +6680,25 @@ _BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?
 _HERESTRING_TO_INTERPRETER_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
 )
-# Groups: interpreter, <<- dash, quote, quoted delimiter, bare delimiter.
+# Groups: interpreter, args, <<- dash, quote, quoted delimiter, bare delimiter.
 _HEREDOC_TO_INTERPRETER_RE = re.compile(
     r"\b((?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php))\b"
-    r"(?:[ \t]+(?:-[WX][ \t]*[^\s<>;&|-]\S*|-[\w-]*|run|/dev/stdin))*"
-    r"[ \t]*<<(-?)[ \t]*(?:([\"'])([^\"'\n]+)\3|\\?([^\s<>;&|()\"']+))"
+    r"([^\n<>;&|]*?)<<(-?)[ \t]*(?:([\"'])([^\"'\n]+)\4|\\?([^\s<>;&|()\"']+))"
 )
+
+
+def _heredoc_is_program(args: str) -> bool:
+    """Whether the interpreter reads its program from stdin: only flags (-W/-X take a value), `-`,
+    `run` or /dev/stdin before the heredoc; a script operand makes the heredoc plain data."""
+    words = iter(args.split())
+    for word in words:
+        if word in ("-W", "-X"):
+            next(words, None)
+        elif not (word.startswith("-") or word in ("run", "/dev/stdin")):
+            return False
+    return True
+
+
 # Generated script content is unscreenable; diff <(...) only reads and stays out.
 _PROC_SUBST_EXEC_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|source|eval|python[0-9.]*|node|nodejs|bun|ruby|perl|php)\b"
@@ -7417,12 +7430,14 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     if _herestring:
         return True
     for heredoc in _HEREDOC_TO_INTERPRETER_RE.finditer(command):
+        if not _heredoc_is_program(heredoc.group(2)):
+            continue
         if not heredoc.group(1).lower().startswith(("python", "pypy")) or _depth >= 3:
             return True
-        delimiter = heredoc.group(4) or heredoc.group(5)
+        delimiter = heredoc.group(5) or heredoc.group(6)
         body = []
         for line in command[heredoc.end() :].splitlines()[1:]:
-            if heredoc.group(2):
+            if heredoc.group(3):
                 line = line.lstrip("\t")
             if line == delimiter:
                 break
