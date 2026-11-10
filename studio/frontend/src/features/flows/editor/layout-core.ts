@@ -53,7 +53,6 @@ export function wrapBands(
   aspect: number,
 ): LayoutResult {
   const lr = request.direction !== "TB";
-  // Measured along the flow (main) and across it (cross).
   const boxes: Box[] = request.nodes
     .filter((n) => result[n.id])
     .map((n) => {

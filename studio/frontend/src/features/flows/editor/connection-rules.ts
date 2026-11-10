@@ -72,7 +72,7 @@ const JSON_LIKE: ReadonlySet<PortType> = new Set<PortType>([
   "tensor",
 ]);
 
-/** Whether a value of `source` type may flow into a `target` port; mirrors the compiler's `port_compatible`. */
+/** Mirrors the compiler's `port_compatible`. */
 export function typesCompatible(source: PortSpec, target: PortSpec): boolean {
   const s: PortType = source.type;
   const t: PortType = target.type;
@@ -104,8 +104,7 @@ export interface ConnectionCheck {
   targetPort?: string;
 }
 
-/** Whether a node sits in a Loop's frame: one drawn as a Loop group, or any frame holding a Loop node
- * (a Loop added to an ordinary frame), as the compiler finds a Loop's body. */
+/** Matches how the compiler finds a Loop's body: a Loop group or any frame holding a Loop node. */
 export function inLoopFrame(
   graph: {
     nodes: Record<string, { type: string; group?: string | null }>;

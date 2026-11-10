@@ -64,8 +64,7 @@ export type RecipeCheck = {
   rawDetail: string | null;
 };
 
-/** Recipe Studio's check of the group as it would run: its client checks, then the server's validate, over
- * the columns a run sends and with a bare Hub seed resolved. Every check and run gate in Flows uses this. */
+/** Client checks then server validate, over the columns a run sends with a bare Hub seed resolved. */
 export async function checkRecipeGroupDetail(groupId: string): Promise<RecipeCheck> {
   const graph = useDocStore.getState().graph;
   const group = graph.groups[groupId];
@@ -73,8 +72,7 @@ export async function checkRecipeGroupDetail(groupId: string): Promise<RecipeChe
   try {
     const columns = runColumns(graph, groupId);
     const { clientErrors } = await import("./recipe-adapter");
-    // A wired seed replaces the group's own when it runs, and the run validates against it, so the
-    // group's own seed (often an empty file seed) is not checked here.
+    // A wired seed replaces the group's own at run time, so the group's seed is not checked.
     const wired = seedWired(groupId);
     const local = clientErrors(
       wired ? { ...group, config: { ...group.config, seed_config: undefined } } : group,
@@ -82,8 +80,7 @@ export async function checkRecipeGroupDetail(groupId: string): Promise<RecipeChe
     );
     if (local.length) return { valid: false, errors: local, rawDetail: null };
     if (wired) {
-      // The server's validate needs the seed's columns, which a wired seed only has at run time; what
-      // the columns alone decide is still checked, as the run's compile does.
+      // Server validate needs seed columns a wired seed only has at run time.
       const loop = columnLoop(columns.map(columnOf));
       return loop
         ? {
@@ -120,7 +117,6 @@ export async function checkRecipeGroupDetail(groupId: string): Promise<RecipeChe
   }
 }
 
-/** The check's messages; empty when the recipe is ready to run. */
 export async function checkRecipeGroup(groupId: string): Promise<string[]> {
   return (await checkRecipeGroupDetail(groupId)).errors;
 }

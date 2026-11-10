@@ -23,12 +23,10 @@ export function wireEdgeOptions(enabled: boolean) {
   return enabled ? EDGE_OPTIONS : LOCKED_OPTIONS;
 }
 
-/** A dragged wire end let go: removed only when it moved nowhere and landed on no port. */
 export function dropRemovesWire(moved: boolean, toHandle: unknown): boolean {
   return !moved && !toHandle;
 }
 
-/** Moves a wire to another input as one undo step; restores it if the new input refuses. */
 export function reconnectWire(
   old: RfEdge,
   connection: Connection,
@@ -69,8 +67,7 @@ export function reconnectWire(
     useDocStore.setState({ graph, past, future });
     return error;
   }
-  // The removal and the new wire are one step: history goes back to the graph before the move,
-  // whatever the bounded stack dropped in between.
+  // One undo step, even if the bounded stack dropped entries in between.
   useDocStore.setState({
     past: [...past, { graph, meta }].slice(-HISTORY_LIMIT),
   });
@@ -82,10 +79,7 @@ function isWireSegment(graph: object, id: string): boolean {
   return !!wires?.[id];
 }
 
-/**
- * Drag a wire's end to another port to move it, or off onto the canvas to remove it.
- * `reconnecting` is true for the length of that drag, so the canvas can keep it out of Quick Add.
- */
+/** `reconnecting` lets the canvas keep the drag out of Quick Add. */
 export function useWireReconnect(enabled: boolean) {
   const { deleteElements } = useReactFlow();
   const moved = useRef(false);

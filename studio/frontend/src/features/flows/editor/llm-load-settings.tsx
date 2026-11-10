@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat's model load settings for one card. Chat's own controls live inline in its run-settings page, bound to
-// that page's per-model draft, so they are rebuilt here with the same labels, ranges, help text and classes.
-// Values are kept in the saved-override shape (`max_seq_length`, `kv_cache_dtype`, ...), which is what Chat
-// remembers per model and what the engine loads with.
+// Chat's load controls are bound to its per-model draft, so they are rebuilt here; values use the saved-override shape the engine loads with.
 
 import { InfoHint } from "@/components/ui/info-hint";
 import {

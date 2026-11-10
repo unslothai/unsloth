@@ -6,10 +6,7 @@ import type { WirePoint } from "./wire-router";
 
 const TOLERANCE = 2;
 
-/**
- * The wires a drag re-routes live: those touching a moved card, plus the ones sharing an output
- * or an input with them, since those share a lane. Never every wire.
- */
+// Wires sharing an output or input with a moved card's wires share a lane, so they re-route too.
 export function wiresToReroute(
   edges: RfEdge[],
   moving: ReadonlySet<string>,
@@ -33,7 +30,6 @@ export function wiresToReroute(
   );
 }
 
-/** The point halfway along a routed wire, where its × button sits. */
 export function wireMidpoint(points: WirePoint[]): WirePoint {
   let total = 0;
   for (let i = 1; i < points.length; i++)
@@ -55,10 +51,7 @@ export function wireMidpoint(points: WirePoint[]): WirePoint {
   return points[0] ?? { x: 0, y: 0 };
 }
 
-/**
- * The route a frame behind a moving card: its first and last legs carried to the handles, so the
- * wire follows the card until the new route lands. Null when the legs would fold back.
- */
+// Stretches the old route's end legs to the handles until the new route lands.
 export function stretchToHandles(
   points: WirePoint[],
   sourceX: number,
@@ -85,7 +78,6 @@ export function stretchToHandles(
   return out;
 }
 
-/** A wire's × shows on hover or selection, never on a wire that cannot be removed (a read-only canvas). */
 export function wireDeleteShown(
   deletable: boolean | undefined,
   hover: boolean,

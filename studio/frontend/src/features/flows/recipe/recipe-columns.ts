@@ -87,8 +87,7 @@ function tagNames(
     // A loop's filter reads its own variables: `for x in items if x > 0`.
     if (part?.bound.includes(match[0]) && (match.index ?? 0) >= filterAt)
       continue;
-    // `{{gross-discount}}` subtracts two columns unless one column has that hyphenated name: both
-    // readings count, as `recipe_import._template_names` reads them.
+    // `{{gross-discount}}` may be a subtraction or a hyphenated name: count both, as `recipe_import._template_names` does.
     names.push(
       match[0],
       ...(match[0].includes("-") ? match[0].split("-").filter(Boolean) : []),
@@ -221,8 +220,7 @@ export function recipeSignature(graph: DocGraph, groupId: string): string {
   const group = graph.groups[groupId];
   if (!group) return "";
   const columns = groupColumns(graph, groupId);
-  // Runs as a store selector on every update: records are immutable, so the same group and column
-  // objects mean the same text.
+  // Store selector on every update: immutable records make identity comparison enough.
   const cached = signatures.get(group);
   if (
     cached &&
@@ -299,11 +297,9 @@ export function withReference(
 
 const TEXT_FIELDS = ["prompt", "system_prompt", "expr"];
 
-/** The template without the `{{ ... }}` tags that read `ref`, plain (`{{ ref }}`) or not (`{{ ref.key }}`,
- * `{{ ref | upper }}`); `{% ... %}` tags are left, since dropping one would break the template. */
+/** `{% ... %}` tags are left in place, since dropping one would break the template. */
 function withoutOutputTags(template: string, ref: string): string {
-  // Read against the whole template, so a loop's own variable of that name is kept. A tag is removed
-  // line by line, so a line left empty by it goes too (removeRef's rule).
+  // Whole-template read keeps a loop variable of that name; emptied lines go too (removeRef's rule).
   const scopes = jinjaScopes(template);
   const raw = rawSpans(template);
   let offset = 0;
@@ -351,7 +347,6 @@ export function withoutReference(
   return next;
 }
 
-/** A short badge and line for a column in a list. */
 export function columnSummary(column: RecipeColumn): {
   badge: string;
   line: string;

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Reroutes are canvas-only waypoints. The document keeps one plain edge from the real output to the
-// real input for every wire that runs through reroutes (so the compiler and engine never see them),
-// and stores the reroutes and the wire segments around them under `editor`. In the editor the
-// segments are the truth; the plain edges are derived from them.
+// Reroutes are canvas-only: the document keeps a plain edge per wire so the compiler never sees them; segments under `editor` are the truth.
 
 import type { FlowEdge } from "../types";
 
@@ -96,7 +93,6 @@ export function rerouteDownstream(
   return out;
 }
 
-/** True when `from` is `rerouteId` or sits downstream of it. */
 export function rerouteFeeds(
   graph: Pick<RerouteGraph, "reroutes" | "wires" | "wireOrder">,
   rerouteId: string,

@@ -22,9 +22,7 @@ type StyleOf = (el: Element) => Pick<
   "position" | "rowGap" | "paddingTop" | "paddingBottom"
 >;
 
-/** Height a card needs to show its header, ports, fields and errors. Only the output preview
- *  (`data-card-grow`) gives way; it clips instead. Absolutely placed children (resize lines,
- *  progress bar) take no room. */
+/** Only the output preview (`data-card-grow`) gives way; absolutely placed children take no room. */
 export function cardContentMinHeight(
   card: HTMLElement,
   styleOf: StyleOf = (el) => getComputedStyle(el),

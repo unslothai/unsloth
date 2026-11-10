@@ -37,8 +37,7 @@ import { flushSave } from "./use-autosave";
 // Clears the run drawer (h-65) under the canvas column.
 const DRAWER_CLEARANCE = "calc(16.25rem + 0.75rem)";
 
-/** Run and the flow's other actions, floating bottom centre the way Recipe Studio's
- *  RunValidateFloatingControls do, so the window corners stay clear. */
+/** Floats bottom centre so the window corners stay clear. */
 // Status colour of the latest run: the dot and the one-off outline pulse when it ends.
 const STATUS_INK: Partial<Record<RunStatus, string>> = {
   completed: "var(--color-emerald-500)",

@@ -8,7 +8,6 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from "re
 import { usePlacement } from "./placement";
 import { REROUTE_TYPE } from "./reroutes";
 
-/** A wire's stroke: dashed for a flow (control) wire, else its port colour. */
 export function wireStroke(
   flow: boolean,
   selected: boolean | undefined,
@@ -61,7 +60,6 @@ export function WireHalo({ path }: { path: string }) {
   );
 }
 
-/** A small × at a wire's midpoint, shown on hover or selection; removes the wire as one undo step. */
 export function WireDelete({
   id,
   x,

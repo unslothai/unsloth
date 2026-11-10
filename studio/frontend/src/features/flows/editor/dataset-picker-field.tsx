@@ -13,7 +13,6 @@ export const HF_DATASET_NODE = "data.hf_dataset";
 
 const noop = () => undefined;
 
-/** The Train page's dataset picker and subset/split dropdowns over the node's repo, subset and split params. */
 export function FlowHfDatasetFields({
   params,
   onChange,

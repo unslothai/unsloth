@@ -38,7 +38,6 @@ export const SUPER_PREFIX = "super:";
 export interface SuperCardData {
   cardId: string;
   title: string;
-  /** The colour of a group folded into the card, if any. */
   color?: string;
   memberIds: string[];
   /** Frames, notes and reroutes folded in with the blocks, where they sit; they move with the card. */
@@ -209,8 +208,6 @@ function boxOf(nodes: RfNode[]): Box | null {
   };
 }
 
-/** Closed cards become one node at their blocks' top-left; wires crossing in or out re-attach
- *  to the card's ports. */
 /** Each group whose blocks all sit in one closed card, with that card, in the order both the
  * canvas and Tidy up check their frames, so a note where two folded frames overlap has one owner. */
 function foldedFrames(
@@ -285,7 +282,6 @@ export function extraOwners(
   return found;
 }
 
-/** The card list with ``id`` closed and its notes and reroutes recorded as they sit now. */
 export function closeWithExtras(
   graph: DocGraph,
   cards: SuperCard[],
@@ -324,11 +320,8 @@ export function applySuperCards(
     const box = boxOf(card.members.flatMap((id) => byId.get(id) ?? []));
     if (box) boxes.set(card.id, box);
   }
-  // A group whose blocks are all in one card folds with it, so a combined recipe shows no
-  // empty frame; notes and reroutes drawn among the blocks fold too.
-  // Things inside a folded frame fold too (a recipe's notes sit below its blocks).
-  // Folded frames first: a note in a frame belongs to that frame's card even where
-  // another card's blocks overlap it.
+  // Groups wholly in a card fold with it (no empty frame). Folded frames claim notes first,
+  // even where another card's blocks overlap them.
   const areas: [string, Box][] = [];
   const colors = new Map<string, string>();
   // A card that recorded its notes and reroutes when it closed keeps exactly those.
@@ -503,7 +496,6 @@ export function applySuperCards(
   };
 }
 
-/** Where everything folded into a closed card sits, so dragging the card carries it along. */
 export function superCardDragMembers(
   node: RfNode,
   graph: Pick<DocGraph, "nodes">,
@@ -550,7 +542,6 @@ export function rollUpStatus(statuses: (NodeStatus | undefined)[]): {
   return { status, done, total: list.length };
 }
 
-/** Auto layout places a closed card as one block and moves its blocks by the same amount. */
 /** The graph Tidy up's request is built from: a closed card's blocks leave a group the card holds only
  *  part of, so their wires reach the card instead of the group's placeholder. */
 export function tidyGraph(
@@ -647,7 +638,6 @@ export function foldLayout(
   return { request: { ...request, nodes, edges }, unfold };
 }
 
-/** Whether a selection box (screen coords inside the pane) fully covers a flow-space rect. */
 export function boxCovers(
   box: { x: number; y: number; width: number; height: number },
   [tx, ty, k]: [number, number, number],

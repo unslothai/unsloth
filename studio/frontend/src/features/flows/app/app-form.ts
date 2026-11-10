@@ -25,7 +25,7 @@ export interface AppField {
   options?: string[];
 }
 
-/** The param that holds each input block's value; mirrors INPUT_VALUE_PARAM in core/flows/nodes/inputs.py. */
+/** Mirrors INPUT_VALUE_PARAM in core/flows/nodes/inputs.py. */
 const NODE_FIELDS: Record<string, { param: string; kind: AppFieldKind }> = {
   "input.text": { param: "value", kind: "textarea" },
   "input.number": { param: "value", kind: "number" },
@@ -52,7 +52,7 @@ function byCanvas(a: FlowNode, b: FlowNode): number {
   return a.pos[1] - b.pos[1] || a.pos[0] - b.pos[0];
 }
 
-/** Nodes inside a For Each body; mirrors _members in core/flows/compiler.py (a plain frame is not a loop). */
+/** Mirrors _members in core/flows/compiler.py (a plain frame is not a loop). */
 export function loopMembers(nodes: FlowNode[]): Set<string> {
   const loops = new Set<string>();
   for (const node of nodes) {

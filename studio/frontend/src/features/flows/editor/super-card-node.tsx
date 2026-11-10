@@ -164,8 +164,7 @@ function Outline({ rect, pad }: { rect: Rect; pad: number }) {
   );
 }
 
-/** Two or more selected blocks get the combine button above them and a dashed outline each,
- *  the same affordance as Recipe Studio's super cards. */
+/** Mirrors Recipe Studio's super-card combine affordance. */
 function SuperCardCombineToolbarImpl({ readOnly }: { readOnly: boolean }) {
   const nodeIds = useUiStore(
     useShallow((s) => {
@@ -317,7 +316,6 @@ function OpenSuperCardsImpl({ readOnly }: { readOnly: boolean }) {
 
 export const OpenSuperCards = memo(OpenSuperCardsImpl);
 
-/** The canvas's nodes and edges with every closed super card folded in. */
 export function useSuperCardView(
   nodes: RfNode[],
   edges: RfEdge[],

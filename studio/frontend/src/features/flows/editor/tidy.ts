@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Tidy up, minus the DOM: what goes to the layout worker, and where everything lands after.
-// A group is laid out as one block, so its cards keep their spots inside it and the frame keeps its
-// size. Notes and empty frames ride along with the card nearest them. Reroutes are not laid out:
-// they are put back on the new wire, between the ends they join.
+// Tidy up, minus the DOM. Groups lay out as one block; notes ride with the nearest card;
+// reroutes are put back on their new wire.
 
 import type { DocGraph, TidyPatch } from "../stores/doc-store";
 import {
@@ -34,9 +32,7 @@ export const TIDY_WRAP_ASPECT = 16 / 9;
 
 export interface TidyContext {
   graph: DocGraph;
-  /** A card's size once fitted. */
   size: (id: string) => Size;
-  /** A port's height from the top of its card. */
   portY: (id: string, port: string, side: "in" | "out") => number | undefined;
   wireStyle: "bus" | "curved";
   direction?: "LR" | "TB";
@@ -256,7 +252,6 @@ function placeReroutes(
   return out;
 }
 
-/** Fits a card to its output: wide and tall enough to read, never past the cap. */
 export const CARD_FIT_MAX = { width: 420, height: 460 } as const;
 
 export function fittedCardSize(
@@ -270,7 +265,6 @@ export function fittedCardSize(
       hidden > 60
         ? Math.min(CARD_FIT_MAX.width, Math.max(current.width, 340))
         : current.width;
-    // Wider text wraps into fewer lines.
     const textW = (w: number) => Math.max(1, w - 48);
     const extra = hidden * (textW(current.width) / textW(width));
     return [

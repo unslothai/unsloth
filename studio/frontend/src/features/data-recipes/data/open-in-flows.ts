@@ -6,7 +6,7 @@ import { toastError } from "@/shared/toast";
 import type { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 
-/** The saved recipe as a Flows recipe group (the same flow again while the recipe is unchanged). */
+/** Reuses the same flow while the recipe is unchanged. */
 export async function openRecipeInFlows(
   recipeId: string,
   navigate: ReturnType<typeof useNavigate>,

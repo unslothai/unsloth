@@ -290,7 +290,6 @@ export function numericChartX(chart: Pick<ChartValue, "type" | "x">): boolean {
   );
 }
 
-/** A judge column's {score, reasoning} as "key: value" lines instead of raw JSON. */
 export function readable(value: unknown, depth = 0): string {
   if (value === null || typeof value !== "object") return String(value);
   if (depth > 1) return JSON.stringify(value);

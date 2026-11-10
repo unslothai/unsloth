@@ -182,8 +182,7 @@ export function checkRerouteConnection(
     if (!port) return { ok: false, reason: "Unknown port" };
     multi = !!port.multi;
   }
-  // A wire between recipe columns is a reference in the target's prompt, which only a direct
-  // connection writes.
+  // Recipe column wires are prompt references, which only a direct connection writes.
   if (
     [upstream, ...targets].some(
       (ref) => ref && graph.nodes[ref.node]?.type === COLUMN_TYPE,
@@ -193,8 +192,7 @@ export function checkRerouteConnection(
       ok: false,
       reason: "Recipe columns connect directly, not through a reroute",
     };
-  // An empty chain takes any mix of inputs: some outputs are typed `any` (Get JSON's value, a
-  // file) and feed them all. The source is checked against every one once it is wired in.
+  // Empty chain takes any inputs (some outputs are `any`); the source is checked once wired in.
   const source = portSpec(graph, upstream, "out");
   const edges = Object.values(graph.edges);
   for (const ref of targets) {
@@ -245,7 +243,6 @@ export function connectThroughReroute(req: RerouteRequest): string | null {
   return null;
 }
 
-/** Adds a reroute centred on `centre`, cutting `splitId` if given. */
 export function addReroute(
   centre: { x: number; y: number },
   opts: {
@@ -271,7 +268,6 @@ export function addReroute(
   return id;
 }
 
-/** Turns reroutes to their next direction about their centres. */
 export function turnReroutes(ids: string[]): boolean {
   const { graph, replaceReroutes } = useDocStore.getState();
   const turned = ids.flatMap((id) => {

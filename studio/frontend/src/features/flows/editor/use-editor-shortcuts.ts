@@ -59,7 +59,6 @@ export function cutSelection(): GraphFragment | null {
   return fragment;
 }
 
-/** Select All: every block, closed super card and wire, so Delete removes them all. */
 export function selectAll(): void {
   const doc = useDocStore.getState();
   useUiStore

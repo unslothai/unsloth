@@ -40,7 +40,6 @@ import {
 } from "./reroutes";
 import { snapToWire, wireUnder } from "./wire-snap";
 
-// React Flow Controls' fit (default padding), animated.
 const FIT_VIEW_OPTIONS = { duration: 200, minZoom: FIT_MIN_ZOOM };
 const MINIMAP_STYLE = { width: 168, height: 112 };
 // Above every node, recipe notes and frames included.
@@ -109,7 +108,6 @@ function placeArmed(
   }
 }
 
-/** The data wire an armed reroute would thread into at a screen point, and where on it. */
 function rerouteTarget(
   clientX: number,
   clientY: number,
@@ -133,8 +131,7 @@ function rerouteTarget(
   };
 }
 
-/** While a Nodes panel item or a toolbar Group, Note or Reroute is armed: each click on empty canvas, a group or a note places one;
- *  Esc, right-click or leaving the editor stops. Clicks on cards and on controls are left alone. */
+/** Clicks on cards and controls are left alone while placing. */
 function ArmedPlacement() {
   const armed = usePlacement((s) => s.armed);
   const spec = useCatalogStore((s) =>
@@ -166,8 +163,7 @@ function ArmedPlacement() {
       if (e.button !== 0 || e.detail > 1) return;
       const hit = onWire(e);
       if (hit) {
-        // Centred on the wire, not the grid: snapping off it would kink the wire. Shift pins the
-        // cut wire to the other style.
+        // Centred on the wire, not the grid: snapping would kink it.
         const id = addReroute(hit.at, {
           splitId: hit.wire,
           dir: hit.dir,
@@ -199,7 +195,6 @@ function ArmedPlacement() {
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") stopPlacement();
-      // Typing an R in a field turns nothing.
       else if (turnsArmedReroute(e, armed === REROUTE_TYPE)) {
         e.preventDefault();
         // Turns from what the ghost shows now, which on a wire is the wire's direction.
@@ -256,7 +251,6 @@ function ArmedPlacement() {
   );
 }
 
-/** Recipe Studio's canvas controls: round floating buttons, the minimap behind a toggle. */
 function CanvasControlsImpl({ readOnly }: { readOnly: boolean }) {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
   const paletteOpen = useUiStore((s) => s.paletteOpen);

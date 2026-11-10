@@ -33,8 +33,7 @@ import {
   syncRerouteEdges,
 } from "./reroute-graph";
 
-/** Graph state normalized by id. Every record is immutable: an edit replaces only what it touches,
- *  so a node component selecting `nodes[id]` re-renders only when that node changed. */
+/** Immutable records so a node selecting `nodes[id]` re-renders only when it changed. */
 export interface DocGraph {
   nodes: Record<string, FlowNode>;
   nodeOrder: string[];
@@ -63,8 +62,7 @@ interface Snapshot {
 export interface GraphFragment {
   nodes: FlowNode[];
   edges: FlowEdge[];
-  /** Each copied node's frame where it was copied from: a pasted reader is renamed only after
-   * copies from its own recipe. */
+  /** Source frames, so a pasted reader is renamed only after copies from its own recipe. */
   from?: Record<string, string | null>;
 }
 
@@ -749,8 +747,7 @@ export const useDocStore = create<DocState>((set, get) => {
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
           const group = frameAt(s.graph, node.pos, folded);
-          // A recipe's blocks mean nothing outside a recipe frame (they carry none of its models or
-          // seed), and one alone would stop the whole flow compiling: such a paste skips them.
+          // Recipe blocks outside a frame would break compiling the whole flow, so such a paste skips them.
           if (outsideRecipe(node, group, s.graph.groups)) continue;
           const extra = extraDataset(node, group, nodes, nodeOrder);
           const unique = uniqueColumn(
@@ -807,8 +804,7 @@ export const useDocStore = create<DocState>((set, get) => {
         const groups = { ...s.graph.groups, [group.id]: group };
         const graph = { ...s.graph, groups };
         const nodes = { ...s.graph.nodes };
-        // A frame folded into a closed card keeps its blocks and takes no others; a block hidden in
-        // a closed card keeps its frame too, since its saved position no longer says where it sits.
+        // A collapsed card's saved positions no longer say where blocks sit, so membership is frozen.
         const folded = foldedGroups(s.meta.editor, s.graph);
         const hidden = new Set(
           readSuperCards(s.meta.editor, s.graph)
@@ -924,10 +920,7 @@ export const useDocStore = create<DocState>((set, get) => {
   };
 });
 
-/**
- * Drops reroutes and the wires touching removed nodes or removed segments. A removed reroute heals:
- * what fed it is wired straight to what it fed.
- */
+/** A removed reroute heals: its input is wired straight to its outputs. */
 function removeReroutes(
   graph: DocGraph,
   dropReroutes: Set<string>,

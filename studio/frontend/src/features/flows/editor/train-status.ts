@@ -117,7 +117,6 @@ function withKind(state: TrainState, detail: string | null, m: Metrics): TrainVi
   };
 }
 
-/** SVG path for a sparkline in a width x height box; flat when every value is the same. */
 export function sparklinePath(
   values: number[],
   width: number,

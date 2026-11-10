@@ -17,8 +17,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Handle, Position } from "@xyflow/react";
 import { type ComponentProps, type ReactNode, useState } from "react";
 
-/** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
- *  is what keeps panning a thousand-node graph smooth. */
+/** Hiding unreadable text (layout kept) keeps panning large graphs smooth. */
 const LOW_DETAIL_ZOOM = 0.45;
 export const lowDetailSelector = (s: { transform: [number, number, number] }) =>
   s.transform[2] < LOW_DETAIL_ZOOM;
@@ -27,8 +26,7 @@ import { CopyTextButton } from "./copy-text";
 import { accentTone } from "./node-tones";
 import { portInk } from "./theme-colors";
 
-/** Recipe Studio's node card (BaseNode + header), shared by every Flows node. Per-type
- *  content plugs in through `node-looks.ts`. */
+/** Per-type content plugs in through `node-looks.ts`. */
 
 /** Centre of the two-line header: where flow-in and collapsed ports sit. */
 export const HEADER_MID = 22;
@@ -146,9 +144,7 @@ export function NodeCardHeader({
   accent?: string;
   title: string;
   subtitle?: string;
-  /** Handles anchored to the header, such as flow-in. */
   leading?: ReactNode;
-  /** Right side: badges and actions. */
   children?: ReactNode;
 }) {
   return (
@@ -253,7 +249,6 @@ function PortHandle({
   );
 }
 
-/** Labelled ports, inputs on the left and outputs on the right. */
 export function NodePorts({
   inputs,
   outputs,

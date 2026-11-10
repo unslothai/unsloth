@@ -18,7 +18,6 @@ function inputsOf(graph: DocGraph): Map<string, string> {
   return new Map([...wires].map(([id, list]) => [id, list.sort().join("|")]));
 }
 
-/** Cards whose incoming wires differ between two graphs. */
 export function rewiredCards(before: DocGraph, after: DocGraph): string[] {
   const a = inputsOf(before);
   const b = inputsOf(after);

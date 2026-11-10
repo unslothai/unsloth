@@ -14,7 +14,6 @@ export interface LoopRound {
 }
 
 export interface LoopView {
-  /** "Round 2 of 3", "Reached 92% in round 2", ... */
   headline: string;
   detail: string;
   rounds: LoopRound[];

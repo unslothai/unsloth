@@ -10,8 +10,7 @@ import { NodeIconTile } from "./node-card";
 import { CATEGORY_TONES } from "./node-tones";
 import { GRAB, PLACE_GROUP, PLACE_SHAPES } from "./placement";
 
-/** The card-to-be under the pointer, at canvas zoom, exactly where placementPosition puts it.
- *  Portaled to body: a transformed ancestor would otherwise shift a `fixed` box. */
+/** Portaled to body: a transformed ancestor would otherwise shift a `fixed` box. */
 export function PlacementGhost({
   spec,
   x,

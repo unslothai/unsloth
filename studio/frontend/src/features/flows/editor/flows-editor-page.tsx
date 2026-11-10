@@ -59,8 +59,7 @@ const Inspector = lazy(() =>
 const RecipeEditor = lazy(() => import("../recipe/recipe-editor"));
 const RecipeRuns = lazy(() => import("../recipe/recipe-runs"));
 const SAVE_WAIT_MS = 10_000;
-// The shell gives this chat-like route no top inset; start below the titlebar on Mac and
-// Windows the way Train and Recipe Studio do.
+// The shell gives this route no top inset; clear the Mac/Windows titlebar as Train does.
 const BELOW_TITLEBAR =
   "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
@@ -102,7 +101,7 @@ function EditorBody({
   const inspecting = useUiStore(
     (s) => s.inspectorNodeId !== null || s.recipeSetup !== null,
   );
-  // Mounted from its first use on, so it keeps its state across closes as it did when eager.
+  // Mounted from its first use on, so it keeps its state across closes.
   const [inspectorUsed, setInspectorUsed] = useState(false);
   if (inspecting && !inspectorUsed) setInspectorUsed(true);
   useEffect(() => void loadInspector(), []);
@@ -131,7 +130,7 @@ function EditorBody({
 
   return (
     <div
-      // The titlebar strip and toolbar share the sidebar's colour, so the top reads as one surface with it.
+      // Sidebar colour, so the top reads as one surface with it.
       className={`flows-editor flex h-full min-h-0 w-full flex-col text-foreground ${macChrome ? "bg-background" : `bg-sidebar ${BELOW_TITLEBAR}`}`}
       data-testid="flows-editor"
     >

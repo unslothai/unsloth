@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Orthogonal, obstacle-avoiding wire router for the Flows canvas ("Bus" wires), ported from Recipe
-// Studio. A* runs over a sparse grid built from the card edges (plus clearance) and the port stubs,
-// with a cost for every bend, crossing and stretch shared with another wire. Wires that end up on the
-// same line are then spread into lanes, crossings get a hop and fan-out points get a junction dot;
-// wires into one input meet at its stub and share the last leg in.
-// Group frames are zones: only wires with an end inside a zone may enter it. Graphs too big for one
-// grid route each wire on a grid of the cards around it instead.
+// Orthogonal A* wire router ("Bus" wires), ported from Recipe Studio. Group frames are zones only
+// wires with an end inside may enter; graphs too big for one grid route each wire on a local grid.
 
 export type WireSide = "left" | "top" | "right" | "bottom";
 
@@ -27,14 +22,12 @@ export type WireEdgeInput = {
   target: string;
   sourceSide: WireSide;
   targetSide: WireSide;
-  /** Wires with the same net (one output handle) may share a path and fan out. */
   net: string;
   /** Wires into the same input handle may merge before it. Defaults to target + side. */
   sink?: string;
   /** Port position down the side from the card's top edge; the middle of the side if unset. */
   sourceOffset?: number;
   targetOffset?: number;
-  /** Cards this wire belongs to, for highlighting. Defaults to source and target. */
   ends?: string[];
 };
 
@@ -76,7 +69,6 @@ export type WireRouterCache = {
 export type WireRouterResult = {
   routes: Map<string, WireRoute>;
   cache: WireRouterCache;
-  /** Edges actually searched this call; the rest came from the cache. */
   rerouted: number;
 };
 
@@ -261,13 +253,10 @@ type Grid = {
   nx: number;
   ny: number;
   blockedPoint: Uint8Array;
-  // Segment from point i to its right (h) or lower (v) neighbour passes through a card.
   blockedH: Uint8Array;
   blockedV: Uint8Array;
-  // Segment runs through the clearance band around a card.
   softH: Uint8Array;
   softV: Uint8Array;
-  // Innermost zone over a point or segment, -1 outside every zone.
   zonePoint: Int32Array;
   zoneH: Int32Array;
   zoneV: Int32Array;
@@ -279,7 +268,6 @@ type Grid = {
   // Port stub points, kept clear for the wires that own them.
   reservedNet: Int32Array;
   reservedSink: Int32Array;
-  /** Card bounds; grid lines outside them are the outer ring. */
   inner: { x0: number; x1: number; y0: number; y1: number };
   stamp: Int32Array;
   closed: Int32Array;
@@ -512,7 +500,6 @@ function claim(values: Int32Array, p: number, id: number): void {
   values[p] = current === -1 || current === id ? id : -2;
 }
 
-// Calls `visit` for every unit segment of a path: vertical, then its grid index.
 function forEachUnit(
   grid: Grid,
   points: WirePoint[],
@@ -546,10 +533,7 @@ function markPath(grid: Grid, points: WirePoint[], owner: Owner): void {
   });
 }
 
-/**
- * Every owner on each marked unit segment, so one wire's marks can be taken back out without
- * re-marking every other wire. A segment's net and sink depend only on the set of owners on it.
- */
+// Owners per segment, so one wire's marks can be removed without re-marking the rest.
 class Claims {
   private owners = new Map<number, Owner[]>();
   private grid: Grid;
@@ -591,7 +575,6 @@ class Claims {
   }
 }
 
-/** Source net (fan-out) and sink (fan-in) of a wire; wires sharing either may share a path. */
 type Owner = { net: number; sink: number };
 
 function sharesWith(net: number, sink: number, owner: Owner): boolean {
@@ -845,7 +828,6 @@ function simplify(points: WirePoint[]): WirePoint[] {
   return out;
 }
 
-/** Plain orthogonal path for when no clean route exists (a card fully boxed in). */
 function fallbackPath(
   sourcePort: WirePoint,
   sourceStub: WirePoint,
@@ -937,7 +919,6 @@ function byLine(segments: Segment[]): Map<string, Segment[]> {
   return groups;
 }
 
-/** Wires that run along the same line as an unrelated wire. */
 function findOverlaps(paths: WirePoint[][], owners: Owner[]): number[] {
   const out = new Set<number>();
   for (const line of byLine(collectSegments(paths, owners)).values()) {
@@ -959,10 +940,7 @@ function findOverlaps(paths: WirePoint[][], owners: Owner[]): number[] {
   return [...out];
 }
 
-/**
- * Splits a long first or last leg into a fixed stub plus a movable remainder joined by a
- * zero-length jog, so two wires whose ports face each other can still take separate lanes.
- */
+// A zero-length jog after the stub lets wires with facing ports take separate lanes.
 function withPortJogs(points: WirePoint[], stub: number): WirePoint[] {
   if (points.length < 2) {
     return points;
@@ -974,8 +952,7 @@ function withPortJogs(points: WirePoint[], stub: number): WirePoint[] {
     x: a.x + Math.sign(b.x - a.x) * distance,
     y: a.y + Math.sign(b.y - a.y) * distance,
   });
-  // A leg of exactly stub length still gets a (zero-length) jog: otherwise a lane shift on the
-  // next segment would move the stub's corner and bend the stub off its port.
+  // Even a stub-length leg gets a jog, or a lane shift would bend the stub off its port.
   if (legLength(out[0], out[1]) > stub - EPS) {
     const jog = towards(out[0], out[1], stub);
     out.splice(1, 0, jog, { ...jog });
@@ -1006,7 +983,6 @@ function assignLanes(
       continue;
     }
     group.sort((a, b) => a.lo - b.lo);
-    // Clusters of segments whose spans overlap or nearly meet.
     let cluster: Segment[] = [];
     let clusterHi = Number.NEGATIVE_INFINITY;
     const flush = (): void => {
@@ -1021,8 +997,7 @@ function assignLanes(
       };
       const nets = cluster.map((segment) => new Set([segment.net]));
       const sinks = cluster.map((segment) => new Set([segment.sink]));
-      // A bundle is one output's fan-out or one input's fan-in, never a chain of both: that
-      // would draw two unrelated wires as one.
+      // Never chain a fan-out and a fan-in: two unrelated wires would read as one.
       const join = (a: number, b: number): void => {
         const ra = find(a);
         const rb = find(b);
@@ -1064,8 +1039,7 @@ function assignLanes(
           order.push(root);
         }
       });
-      // A port leg pins its bundle to the line only where another bundle runs beside it; a wire
-      // whose own stub sits apart from the clash can still leave the line before its port.
+      // A port leg pins its bundle only where another bundle runs beside it.
       cluster.forEach((segment, index) => {
         if (
           segment.fixed &&
@@ -1087,7 +1061,6 @@ function assignLanes(
       const gap = Math.min(laneGap, slots > 1 ? (maxOffset * 2) / (slots - 1) : laneGap);
       const bundleOffset = new Map<number, number>();
       if (fixedBundles.size > 0) {
-        // Fixed wires keep the line; the rest alternate either side of it.
         movable.forEach((root, index) => {
           const step = Math.floor(index / 2) + 1;
           const sign = index % 2 === 0 ? 1 : -1;
@@ -1131,7 +1104,6 @@ function assignLanes(
       [a, -1],
       [b, 1],
     ] as const) {
-      // Look past a zero-length jog to the port leg it continues.
       let at = step < 0 ? segment.index - 1 : segment.index + 2;
       let length = 0;
       while (points[at] && Math.abs(length) < EPS && Math.abs(at - segment.index) < 5) {
@@ -1225,7 +1197,6 @@ function lowerSegment(sorted: Segment[], coord: number): number {
   return lo;
 }
 
-/** Point where two wires of one net stop sharing a path, or null if they part at the port. */
 function divergencePoint(a: WirePoint[], b: WirePoint[]): WirePoint | null {
   let ia = 0;
   let ib = 0;
@@ -1305,11 +1276,7 @@ function findJunctions(paths: WirePoint[][], owners: Owner[]): WirePoint[][] {
 
 type FanIn = { port: WirePoint; side: WireSide; sink: number };
 
-/**
- * Wires into one input meet at its stub, a fixed distance out, and share the last leg: each
- * member's final run is moved to the stub's line, so they never hop or lane-split each other
- * right at the port. A member stays as routed when the move would cross a card or zone.
- */
+// Fan-in wires share the last leg from the stub so they never hop or lane-split at the port.
 function mergeFanIn(
   paths: WirePoint[][],
   ends: FanIn[],
@@ -1394,7 +1361,6 @@ function mergeFanIn(
 
 type Walls = { cards: WireRect[]; zones: WireRect[] };
 
-/** Free gap across a segment: the nearest card or frame edge on either side over its span. */
 function channelAround(
   walls: Walls,
   vertical: boolean,
@@ -1443,7 +1409,6 @@ function channelAround(
   return { low, high };
 }
 
-/** Runs a few px apart that overlap become one line, which the lanes then spread evenly. */
 function snapNearRuns(
   paths: WirePoint[][],
   owners: Owner[],
@@ -1477,10 +1442,7 @@ function snapNearRuns(
   return out;
 }
 
-/**
- * Parallel runs sharing one free channel between cards become a bus: kept in their order,
- * packed at lane pitch around the channel's middle instead of strung out across it.
- */
+// Parallel runs in one channel pack at lane pitch around its middle, in order.
 function runSpan(runs: Segment[]): { lo: number; hi: number } {
   return {
     lo: Math.min(...runs.map((run) => run.lo)),
@@ -1606,7 +1568,7 @@ function intersects(a: WireRect, b: { x0: number; y0: number; x1: number; y1: nu
 
 const BUCKET = 512;
 
-/** Rect indices by coarse grid bucket, so large graphs don't scan every card per wire. */
+// Bucketed so large graphs don't scan every card per wire.
 function bucketIndex(rects: WireRect[]): (box: { x0: number; y0: number; x1: number; y1: number }) => number[] {
   const buckets = new Map<number, number[]>();
   const keyOf = (bx: number, by: number): number => bx * 65_536 + by;
@@ -1636,7 +1598,6 @@ function bucketIndex(rects: WireRect[]): (box: { x0: number; y0: number; x1: num
   };
 }
 
-/** The strip of `band` beside `rect` on the side `point` (outside the card) lies. */
 function clearanceSide(rect: WireRect, band: WireRect, point: WirePoint): WireRect {
   const right = rect.x + rect.width;
   const bottom = rect.y + rect.height;
@@ -1661,10 +1622,7 @@ function contains(rect: WireRect, point: WirePoint): boolean {
   );
 }
 
-/**
- * Routes every wire around the cards (`rects`) and through only the zones (group frames) it has an
- * end in. Pass the previous call's cache so only wires near a moved card are searched again.
- */
+/** Pass the previous call's cache so only wires near a moved card are searched again. */
 export function routeWires(
   rects: WireRect[],
   edges: WireEdgeInput[],
@@ -1872,7 +1830,6 @@ export function routeWires(
     sortedUnique([...extraXs, ...obstacles.flatMap((r) => [r.x, r.x + r.width])]).length *
     sortedUnique([...extraYs, ...obstacles.flatMap((r) => [r.y, r.y + r.height])]).length;
 
-  // A windowed grid of just the cards around one wire.
   const localRoute = (item: Prepared, by: number): WirePoint[] | null => {
     let points: WirePoint[] | null = null;
     for (const pad of [SEARCH_WINDOW_PAD, SEARCH_WINDOW_PAD * 4]) {
@@ -1924,8 +1881,7 @@ export function routeWires(
   };
 
   if (lineCount * 2 > costs.cellBudget) {
-    // Too big for one grid: each wire gets a grid of just the cards around it. Wires no longer see
-    // each other while searching; lanes, hops and junctions below still apply to all of them.
+    // Too big for one grid: local grids; lanes, hops and junctions below still apply to all.
     for (const index of order) {
       const item = prepared[index];
       const points = localRoute(item, hard);
@@ -1991,8 +1947,7 @@ export function routeWires(
       routeOne(index, costs);
     }
 
-    // Rip up and reroute: a wire that still overlaps an unrelated one is routed again with every
-    // other wire in place and a steeper overlap cost.
+    // Rip up and reroute overlapping wires with a steeper overlap cost.
     const rerouteCosts = { ...costs, overlapPenalty: costs.overlapPenalty * 3 };
     let claims: Claims | null = null;
     for (let pass = 0; pass < 4; pass += 1) {
@@ -2020,8 +1975,7 @@ export function routeWires(
     }
   }
 
-  // Cards packed closer than twice the clearance leave no legal gap; squeeze through rather than
-  // draw a blocked wire straight over them.
+  // Cards closer than twice the clearance leave no legal gap: squeeze through instead.
   for (const index of order) {
     if (raw[index].blocked) {
       const points = localRoute(prepared[index], 0);
@@ -2111,7 +2065,3 @@ function lowerIndex(values: number[], value: number): number {
 }
 
 
-/**
- * SVG path for a routed wire: every bend rounded with up to `corner` px (0 keeps square corners),
- * and a small arc wherever it hops another wire.
- */
