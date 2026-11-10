@@ -34,6 +34,9 @@ export interface ProviderRegistryEntry {
   auth_kind?: ProviderAuthKind;
   base_url_editable?: boolean;
   model_ids_editable?: boolean;
+  /** Listed for the owner while Claude Agent is off, so Add connection can turn it on. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  available_but_off?: boolean;
 }
 
 export type ProviderApiType = "chat_completions" | "responses";
@@ -385,6 +388,43 @@ export async function testProviderConnection(payload: {
     });
     return parseJsonOrThrow<ProviderTestResult>(response);
   });
+}
+
+export interface ClaudeAgentModel {
+  id: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  display_name?: string | null;
+  alias?: boolean;
+  efforts?: string[];
+  // biome-ignore lint/style/useNamingConvention: API schema
+  thinking_off?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  context_window?: number | null;
+}
+
+export interface ClaudeAgentStatus {
+  ready: boolean;
+  version: string | null;
+  account: string | null;
+  models: Array<ClaudeAgentModel | string>;
+  message: string | null;
+  problem?: "sdk_missing" | "cli_missing" | "signed_out" | "failed" | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  sdk_missing?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  host_os?: "windows" | "unix";
+}
+
+export async function getClaudeAgentStatus(): Promise<ClaudeAgentStatus> {
+  const response = await authFetch("/api/providers/claude-agent/status");
+  return parseJsonOrThrow<ClaudeAgentStatus>(response);
+}
+
+export async function installClaudeAgentSdk(): Promise<ClaudeAgentStatus> {
+  const response = await authFetch("/api/providers/claude-agent/install-sdk", {
+    method: "POST",
+  });
+  return parseJsonOrThrow<ClaudeAgentStatus>(response);
 }
 
 export async function listProviderModels(payload: {

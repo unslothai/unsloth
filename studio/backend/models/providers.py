@@ -156,6 +156,9 @@ class ProviderRegistryEntry(BaseModel):
         "remote",
         description = "remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only",
     )
+    available_but_off: bool = Field(
+        False, description = "Listed for the owner to turn on; it cannot be connected or used yet"
+    )
 
 
 class ExtraHeadersMixin(BaseModel):

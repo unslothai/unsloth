@@ -336,6 +336,12 @@ def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[
         config = providers_db.get_provider(provider_id)
         if config is None or not config["is_enabled"]:
             raise RunFailed("connection_unavailable")
+        if config["provider_type"] == "claude_agent":
+            from core.inference.providers import CLAUDE_AGENT_OFF, claude_agent_enabled
+
+            # Allowed on purpose: the owner's task runs on the owner's own Claude login.
+            if not claude_agent_enabled():
+                raise RunFailed(None, CLAUDE_AGENT_OFF)
         # The proxy relays a stream:false provider body as is, so stream and collect the chunks.
         return (
             {

@@ -5,9 +5,12 @@
 
 import asyncio
 import hashlib
+import importlib.util
+import inspect
 import ipaddress
 import json
 import re
+import sys
 import time
 import uuid
 from typing import Optional
@@ -34,7 +37,10 @@ from core.inference.key_exchange import (
     get_public_key_pem,
 )
 from core.inference.providers import (
+    CLAUDE_AGENT_OFF,
     answers_decisions_only,
+    claude_agent_available,
+    claude_agent_enabled,
     get_base_url,
     get_connectable_provider_info,
     get_provider_info,
@@ -45,6 +51,7 @@ from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
 
 from core.inference import openai_codex_auth, openai_codex_client
+from core.inference.claude_agent import claude_agent_status
 from core.inference.provider_model_capabilities import (
     MODEL_CAPABILITY_PROVIDERS,
     MODELS_DEV_URL,
@@ -206,6 +213,8 @@ def _validate_share_request(
         raise HTTPException(
             status_code = 400, detail = "A ChatGPT subscription connection cannot be shared."
         )
+    if provider_type == "claude_agent":
+        raise HTTPException(status_code = 400, detail = "A Claude Agent connection cannot be shared.")
     if providers_db.base_url_carries_credential(base_url):
         # Other accounts are shown the base URL, so a credential inside it would be shared too.
         raise HTTPException(
@@ -317,6 +326,56 @@ async def get_pricing_snapshot(current_subject: str = Depends(get_current_subjec
     return pricing_snapshot()
 
 
+def _require_claude_agent_access(via_api_key: bool) -> None:
+    require_ui_session(via_api_key)
+    if account_access.managed_account():
+        raise HTTPException(
+            status_code = 403, detail = "Claude Agent is available only to the installation owner."
+        )
+    if not claude_agent_enabled():
+        raise HTTPException(status_code = 403, detail = CLAUDE_AGENT_OFF)
+
+
+async def _claude_agent_status_with_sdk() -> dict:
+    status = await claude_agent_status()
+    return {
+        **status,
+        "sdk_missing": importlib.util.find_spec("claude_agent_sdk") is None,
+        # The CLI is installed on this machine, so the UI shows this OS's install command.
+        "host_os": "windows" if sys.platform == "win32" else "unix",
+    }
+
+
+async def _owner_claude_agent_status(via_api_key: bool) -> dict:
+    _require_claude_agent_access(via_api_key)
+    return await _claude_agent_status_with_sdk()
+
+
+@router.get("/claude-agent/status")
+async def get_claude_agent_status(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Whether the local `claude` CLI is installed and signed in. It starts without a prompt."""
+    return await _owner_claude_agent_status(via_api_key)
+
+
+@router.post("/claude-agent/install-sdk")
+async def install_claude_agent_sdk(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Install the Claude Agent SDK into Studio's own Python, then report the status again."""
+    _require_claude_agent_access(via_api_key)
+    from utils import claude_agent_runtime
+
+    try:
+        await asyncio.to_thread(claude_agent_runtime.ensure_claude_agent_sdk)
+    except claude_agent_runtime.ClaudeAgentSdkUnavailable as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from None
+    return await _claude_agent_status_with_sdk()
+
+
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/", response_model = list[ProviderResponse])
 def list_provider_configs(
@@ -325,7 +384,13 @@ def list_provider_configs(
 ):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
-    return [_provider_response(row, hide_headers = via_api_key) for row in rows]
+    # Kept while Claude Agent is off, so turning it back on restores them.
+    hide_claude_agent = not claude_agent_available()
+    return [
+        _provider_response(row, hide_headers = via_api_key)
+        for row in rows
+        if not (hide_claude_agent and row["provider_type"] == "claude_agent")
+    ]
 
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
@@ -337,6 +402,12 @@ async def create_provider_config(
     """Create a saved provider configuration and optional encrypted API key."""
 
     require_ui_session(via_api_key)
+    if payload.provider_type == "claude_agent":
+        _require_claude_agent_access(via_api_key)
+        # It runs the local CLI, so no endpoint, key or headers apply.
+        payload = payload.model_copy(
+            update = {"base_url": None, "encrypted_api_key": None, "extra_headers": {}}
+        )
     info = get_connectable_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
@@ -418,6 +489,18 @@ async def update_provider_config(
 
     require_ui_session(via_api_key)
     existing = _own_provider_or_error(provider_id)
+    if existing["provider_type"] == "claude_agent":
+        _require_claude_agent_access(via_api_key)
+        ignored = {"base_url", "encrypted_api_key", "clear_api_key", "extra_headers"}
+        payload = payload.model_copy(
+            update = {
+                "base_url": None,
+                "encrypted_api_key": None,
+                "clear_api_key": False,
+                "extra_headers": None,
+            }
+        )
+        payload.model_fields_set.difference_update(ignored)
     _validate_share_request(
         payload.shared if payload.shared is not None else existing.get("shared"),
         existing["provider_type"],
@@ -980,6 +1063,15 @@ async def test_provider(
             detail = f"Unknown provider type: {payload.provider_type}",
         )
 
+    if payload.provider_type == "claude_agent":
+        status = await _owner_claude_agent_status(via_api_key)
+        if not status["ready"]:
+            return ProviderTestResult(success = False, message = status["message"])
+        return ProviderTestResult(
+            success = True,
+            message = f"Signed in ({status['account']}), Claude Code {status['version']}.",
+        )
+
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,
         payload.encrypted_api_key,
@@ -1242,6 +1334,37 @@ def _model_capability_names(model: dict) -> Optional[list[str]]:
     return [name for name in values if isinstance(name, str) and name]
 
 
+def _model_field(model, key: str):
+    return model.get(key) if isinstance(model, dict) else getattr(model, key, None)
+
+
+async def _claude_agent_model_infos() -> list[ProviderModelInfo]:
+    from core.inference import claude_agent
+
+    lister = getattr(claude_agent, "claude_agent_models", None)
+    if lister is None:
+        return []
+    models = lister()
+    if inspect.isawaitable(models):
+        models = await models
+    infos = []
+    for model in models or []:
+        model_id = model if isinstance(model, str) else _model_field(model, "id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        display_name = None if isinstance(model, str) else _model_field(model, "display_name")
+        context_window = None if isinstance(model, str) else _model_field(model, "context_window")
+        infos.append(
+            ProviderModelInfo(
+                id = model_id,
+                display_name = display_name or model_id,
+                context_length = context_window if isinstance(context_window, int) else None,
+                owned_by = "anthropic",
+            )
+        )
+    return infos
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
@@ -1262,6 +1385,12 @@ async def list_provider_models(
             status_code = 400,
             detail = f"Unknown provider type: {payload.provider_type}",
         )
+
+    if payload.provider_type == "claude_agent":
+        _require_claude_agent_access(via_api_key)
+        listed = await _claude_agent_model_infos()
+        if listed:
+            return [m for m in listed if shared_models is None or m.id in shared_models]
 
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,

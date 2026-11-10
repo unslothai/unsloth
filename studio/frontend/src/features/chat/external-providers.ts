@@ -119,6 +119,13 @@ export function isDecisionConnection(
   );
 }
 
+/** Speech, transcription and image pickers: Claude Agent answers chat only. */
+export function servesMediaRequests(
+  provider: Pick<ExternalProviderConfig, "providerType" | "decisionsOnly">,
+): boolean {
+  return !isDecisionConnection(provider) && provider.providerType !== "claude_agent";
+}
+
 export function connectionApiFields(
   apiType: ConnectionApiType | undefined,
 ): Pick<ExternalProviderConfig, "apiType" | "decisionsOnly"> {
@@ -136,6 +143,7 @@ const NON_VISION_PROVIDER_TYPES = new Set<string>([
 const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([
   "openai",
   "anthropic",
+  "claude_agent",
   "gemini",
   "minimax",
   "openrouter",
@@ -350,6 +358,7 @@ export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
 const OPENAI_CODEX_PROVIDER_TYPE = "openai_codex";
+export const CLAUDE_AGENT_PROVIDER_TYPE = "claude_agent";
 export const PROVIDER_MAX_OUTPUT_TOKENS_MIN = 64;
 
 export function normalizeProviderMaxOutputTokens(

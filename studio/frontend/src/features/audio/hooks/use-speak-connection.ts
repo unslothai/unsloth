@@ -4,7 +4,7 @@
 import { useMemo, useState } from "react";
 import {
   buildExternalModelId,
-  isDecisionConnection,
+  servesMediaRequests,
   useExternalProvidersStore,
 } from "@/features/chat";
 import type { ExternalModelOption } from "@/features/model-picker/components/model-selector/types";
@@ -27,7 +27,7 @@ export function useSpeakConnection() {
     () =>
       connectionsEnabled
         ? connections
-            .filter((c) => !isDecisionConnection(c))
+            .filter((c) => servesMediaRequests(c))
             .flatMap((c) =>
               connectionSpeechModels(c).map((model) => ({
                 id: buildExternalModelId(c.id, model),

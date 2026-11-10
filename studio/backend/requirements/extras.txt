@@ -79,3 +79,6 @@ tabulate==0.9.0; python_version < "3.10"
 openai==3.2.0; python_version >= "3.10"
 openai==2.48.0; python_version < "3.10"
 websockets>=15.0.1
+# Claude Agent connection. Always built from its 0.4 MB sdist (SDIST_ONLY_PACKAGES): every wheel
+# bundles a ~150 MB copy of the Claude Code CLI, and Studio only ever runs the user's own `claude`.
+claude-agent-sdk==0.2.178; python_version >= "3.10"

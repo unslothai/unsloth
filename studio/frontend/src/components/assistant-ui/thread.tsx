@@ -7995,6 +7995,9 @@ const GeneratingStatus: FC = () => {
   const compacting = useChatRuntimeStore(
     (s) => s.liveGenerationByThreadId[threadKey]?.compacting === true,
   );
+  const starting = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.starting === true,
+  );
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
   const t = useT();
@@ -8005,6 +8008,16 @@ const GeneratingStatus: FC = () => {
         className="generating-glint text-sm text-muted-foreground"
       >
         {t("generationStats.compactingContext")}
+      </span>
+    );
+  }
+  if (starting && prefill === null && !decoding) {
+    return (
+      <span
+        data-slot="starting-claude"
+        className="generating-glint text-sm text-muted-foreground"
+      >
+        {t("generationStats.startingClaude")}
       </span>
     );
   }

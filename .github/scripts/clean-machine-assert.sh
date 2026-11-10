@@ -347,7 +347,7 @@ for check in "$@"; do
     nobuild)
       # Pure-Python sdists (no compiled extensions); keep in sync with assert-nobuild.ps1.
       # Drop diffusers once a release has the wheel pin. UNSLOTH_ALLOW_SDIST extends the list.
-      _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime triton-kernels diffusers ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"
+      _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime claude-agent-sdk triton-kernels diffusers ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"
       if [ ! -f "$LOG" ]; then
         fail "nobuild requested but $LOG is missing"
       else

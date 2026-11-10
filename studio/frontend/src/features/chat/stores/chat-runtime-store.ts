@@ -452,6 +452,8 @@ export type LiveGenerationProgress = {
   decode: LiveDecodeProgress | null;
   /** The context fit is evicting turns; ends with this pass's context_truncated or its first prefill sample. */
   compacting?: boolean;
+  /** A Claude Agent reply is starting its `claude` process; ends with the first streamed chunk. */
+  starting?: boolean;
   /** This pass's own context_usage has landed: it counts the reply exactly, so live figures step aside. */
   settled?: boolean;
 };
@@ -2744,6 +2746,7 @@ type ChatRuntimeStore = {
   setLivePrefill: (threadId: string | null, prefill: LivePrefillProgress) => void;
   setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
   setLiveCompacting: (threadId: string | null, compacting: boolean) => void;
+  setLiveStarting: (threadId: string | null, starting: boolean) => void;
   clearLiveGenerationForThread: (threadId: string | null) => void;
   settleLiveGeneration: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -6021,6 +6024,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const next: LiveGenerationProgress = compacting
         ? { prefill: null, prefillShown: false, decode: null, compacting: true }
         : { ...current!, compacting: false };
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: next },
+      };
+    }),
+  setLiveStarting: (threadId, starting) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (!starting && !current?.starting) return state;
+      const next: LiveGenerationProgress = {
+        prefill: current?.prefill ?? null,
+        prefillShown: current?.prefillShown ?? false,
+        decode: current?.decode ?? null,
+        ...(current?.compacting ? { compacting: true } : {}),
+        ...(current?.settled ? { settled: true } : {}),
+        starting,
+      };
       return {
         liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: next },
       };

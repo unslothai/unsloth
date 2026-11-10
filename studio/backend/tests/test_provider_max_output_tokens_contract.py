@@ -51,6 +51,12 @@ finally:
 
 CREDENTIAL = ("alice", None)
 
+
+@pytest.fixture(autouse = True)
+def _claude_agent_on(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_CLAUDE_AGENT", "1")
+
+
 NON_CUSTOM_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "custom")
 OVERRIDABLE_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "openai_codex")
 

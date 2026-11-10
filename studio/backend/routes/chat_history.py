@@ -1011,8 +1011,22 @@ async def delete_threads(
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
     # Archives and uploads are keyed by thread id; drop them so each deleted chat does not leak a scope.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
+    await run_in_threadpool(_forget_claude_agent_sessions, payload.ids)
     await run_in_threadpool(chat_originals.sweep)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
+
+
+def _forget_claude_agent_sessions(thread_ids) -> None:
+    """Drop each deleted chat's Claude Agent session record and transcript. Never raises."""
+    try:
+        from core.inference import claude_agent_sessions
+    except Exception:
+        return
+    for thread_id in thread_ids or []:
+        try:
+            claude_agent_sessions.forget(str(thread_id))
+        except Exception:
+            logger.warning("Could not remove the Claude Agent session for %s", thread_id)
 
 
 def _archive_cutoff() -> str:
@@ -1572,6 +1586,7 @@ async def delete_project(
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
+    await run_in_threadpool(_forget_claude_agent_sessions, member_ids)
     await run_in_threadpool(chat_originals.sweep)
     if project.get("sandboxPath"):
         from core.inference.tools import (
@@ -2047,6 +2062,9 @@ async def clear_history(
     # Same cleanup as DELETE /threads, or cleared chats stay searchable in rag.db.
     await run_in_threadpool(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+    )
+    await run_in_threadpool(
+        _forget_claude_agent_sessions, list(dict.fromkeys(thread_ids + cleared))
     )
     await run_in_threadpool(chat_originals.sweep)
     # delete_files off by default, as in DELETE /threads: the files are the user's.

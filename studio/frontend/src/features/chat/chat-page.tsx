@@ -181,6 +181,7 @@ import {
 } from "./artifacts/store";
 import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
 import { McpServersDialogMount } from "./mcp-composer-button";
+import { connectionModelLabel, useClaudeAgentModelNames } from "./claude-agent";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
   ResearchActivityPanel,
@@ -4453,6 +4454,7 @@ export function ChatPage({
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
+  const claudeAgentNames = useClaudeAgentModelNames((s) => s.names);
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
       externalProvidersForChat
@@ -4465,7 +4467,11 @@ export function ChatPage({
         .flatMap((provider) =>
           provider.models.map((model) => {
             // OpenRouter free router: show `openrouter:<chosen>` minus `/free` and the org prefix.
-            let displayName = model;
+            let displayName = connectionModelLabel(
+              provider.providerType,
+              model,
+              claudeAgentNames,
+            );
             if (
               provider.providerType === "openrouter" &&
               model === "openrouter/free" &&
@@ -4487,7 +4493,7 @@ export function ChatPage({
             };
           }),
         ),
-    [externalProvidersForChat, lastOpenRouterChosenModel],
+    [externalProvidersForChat, lastOpenRouterChosenModel, claudeAgentNames],
   );
   // An unticked model looks like a withdrawn one; the connection's cached catalog tells them apart.
   const externalConnections = useMemo<ExternalConnectionRef[]>(
