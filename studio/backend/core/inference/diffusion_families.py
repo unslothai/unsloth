@@ -2287,7 +2287,6 @@ def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[floa
 
 
 def sd_cpp_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
-    """The family's sd.cpp ``--flow-shift`` under its ``sd_cpp_scheduler``, per checkpoint."""
     row = _first_variant(getattr(fam, "sd_cpp_flow_shift_variants", ()), identifiers)
     return row[1] if row else getattr(fam, "sd_cpp_flow_shift", None)
 

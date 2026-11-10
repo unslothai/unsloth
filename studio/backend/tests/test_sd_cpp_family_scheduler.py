@@ -18,7 +18,6 @@ from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
 from .test_sd_cpp_backend import _FakeEngine, _FakeServer
 
-# (repo, gguf, --scheduler, --flow-shift)
 CASES = [
     ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", "simple", None),
     ("unsloth/MOSS-Image-SFT-GGUF", "MOSS-Image-SFT-Q8_0.gguf", "simple", None),
