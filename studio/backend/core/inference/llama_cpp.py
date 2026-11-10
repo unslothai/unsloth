@@ -16440,8 +16440,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _free_vram_counts_only_this_process() -> bool:
-        """Windows ROCm: free VRAM leaves out other processes, the child included. A ROCm torch
-        also answers, since IS_ROCM is only set once hardware detection has run."""
+        """Windows ROCm free VRAM excludes other processes; checks torch too, as IS_ROCM is set late."""
         if sys.platform != "win32":
             return False
         from utils.hardware import rocm_windows_free_is_untrusted
@@ -16452,10 +16451,8 @@ class LlamaCppBackend:
         return torch is not None and LlamaCppBackend._torch_is_rocm(torch)
 
     def _vram_baseline_before_kill(self) -> Optional[dict[int, tuple[int, float]]]:
-        """{GPU: (free MiB, child's weights MiB)}, read while the child is alive. None unless every
-        GPU it occupies reads those weights as used (a reading that does not cannot show their
-        release), and on Windows ROCm, whose figure can pass that check without counting the child.
-        Never raises."""
+        """{GPU: (free MiB, child's weights MiB)} while the child lives; None if any GPU's reading
+        does not count those weights as used (cannot show their release) or on Windows ROCm."""
         try:
             if self._free_vram_counts_only_this_process():
                 return None
@@ -16494,9 +16491,7 @@ class LlamaCppBackend:
         baseline: Optional[dict[int, tuple[int, float]]] = None,
     ) -> None:
         """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi.
-
-        With ``baseline``, equal samples count only once the child's VRAM shows as free on every
-        GPU it held, up to ``_VRAM_RELEASE_WAIT_S``: before that they are stale."""
+        With ``baseline``, samples count only once the child's VRAM shows freed (up to ``_VRAM_RELEASE_WAIT_S``)."""
         now = time.monotonic()
         if since_kill <= 0.0:
             return
@@ -16547,7 +16542,6 @@ class LlamaCppBackend:
             if awaiting_release:
                 if _released(curr):
                     awaiting_release = False
-                    # A full settle budget from when the release shows.
                     deadline = time.monotonic() + max_wait
                 prev = curr
                 continue

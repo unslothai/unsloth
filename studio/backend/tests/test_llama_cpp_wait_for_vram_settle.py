@@ -975,8 +975,6 @@ def test_the_settle_budget_restarts_when_the_release_shows():
 
 
 class _LiveThenDead:
-    """A child that is alive until terminated, with no pid so no real process is signalled."""
-
     def __init__(self, order):
         self._order = order
         self._dead = False
@@ -996,7 +994,6 @@ class _LiveThenDead:
 
 
 def _killable_backend(order, buffers_mib):
-    """A healthy child whose load log put ``buffers_mib[i]`` MiB of weights on CUDA<i>."""
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = _LiveThenDead(order)
     backend._healthy = True
