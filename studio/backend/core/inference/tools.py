@@ -8378,19 +8378,22 @@ def _windows_program_roots() -> list[str]:
 def _resolve_trusted_windows_git() -> tuple[str, str]:
     """Finds git in a trusted Program Files dir; the first PATH match may be an untrusted shim, so the other entries are scanned."""
     exts = [e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)]
-    candidates: list[str] = []
-    primary = shutil.which("git")
-    if primary:
-        candidates.append(primary)
-    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
-        entry = entry.strip().strip('"')
-        if not entry or not os.path.isabs(entry):
-            continue
-        for ext in exts:
-            cand = os.path.join(entry, "git" + ext)
-            if os.path.isfile(cand):
-                candidates.append(cand)
-    for git_exe in candidates:
+
+    def _candidates():
+        # Lazy, in the original order: a trusted hit stops the PATH x PATHEXT stat scan.
+        primary = shutil.which("git")
+        if primary:
+            yield primary
+        for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if not entry or not os.path.isabs(entry):
+                continue
+            for ext in exts:
+                cand = os.path.join(entry, "git" + ext)
+                if os.path.isfile(cand):
+                    yield cand
+
+    for git_exe in _candidates():
         git_dir = os.path.dirname(git_exe)
         if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
             return os.path.realpath(git_dir), os.path.splitext(git_exe)[1].upper()
