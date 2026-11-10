@@ -71,6 +71,7 @@ on:
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'tests/studio/test_uv_damaged_cache_repair.ps1'
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
@@ -177,6 +178,7 @@ on:
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'tests/studio/test_uv_damaged_cache_repair.ps1'
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
@@ -280,6 +282,14 @@ jobs:
       - name: Intel registry fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
+      - name: uv damaged cache repair tests
+        shell: pwsh
+        run: |
+          python -m pip install uv
+          pwsh -NoProfile -File tests/studio/test_uv_damaged_cache_repair.ps1
+      - name: uv damaged cache repair tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -File tests\studio\test_uv_damaged_cache_repair.ps1
       - name: Setup XPU pre-report tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_setup_xpu_runtime_prereport.ps1

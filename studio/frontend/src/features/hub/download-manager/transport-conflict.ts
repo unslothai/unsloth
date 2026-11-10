@@ -123,13 +123,18 @@ function scopedFileSetDiffers(
   );
 }
 
+/** The guard below refuses this start as "busy" without a toast: another job owns the repo. */
+export function startRefusedAsBusy(req: DownloadRequest): boolean {
+  return hasActiveOrPendingStart(req) && !isJobActiveFor(req);
+}
+
 async function runWithPendingStartGuard(
   req: DownloadRequest,
   action: () => Promise<DownloadStartOutcome>,
 ): Promise<DownloadStartOutcome> {
   const startKey = pendingStartKey(req);
   if (hasActiveOrPendingStart(req)) {
-    if (!isJobActiveFor(req)) return "busy";
+    if (startRefusedAsBusy(req)) return "busy";
     // Returns "started" without running the action, so this is the only feedback.
     showCallerToast(
       jobKeyOf(req.kind, req.repoId, req.variant),

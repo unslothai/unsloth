@@ -2131,11 +2131,6 @@ _AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
     r"powershell|pwsh|terminal|subprocess|interpreter)(?:[_\-]|$)",
     re.IGNORECASE,
 )
-_AUTO_EXEC_MCP_RUNTIME_NOUN_RE = re.compile(
-    r"(?:^|[_\-])(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|"
-    r"script|repl|sandbox|notebook)(?:[_\-]|$)",
-    re.IGNORECASE,
-)
 # Code/command runners run on the MCP server outside the sandbox; whole segments only.
 _AUTO_EXEC_MCP_TOOL_RE = re.compile(
     r"(?:^|[_\-])(?:"
@@ -3302,20 +3297,6 @@ def _references_studio_credential(text: str) -> bool:
 
 # Any run of text that could be a path argument, used to read one token at a time.
 _PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]+")
-# Only traversal is worth resolving: a relative path without `..` stays inside the sandbox.
-_TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
-# Used only after a `cd`, where `auth/auth.db` stops meaning "inside the sandbox".
-_RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
-# Case-insensitive: the shell is `cmd /c` on Windows without a trusted bash.
-_CD_TARGET_RE = re.compile(
-    # `builtin cd`, `command cd`, `! cd` and `time cd` move like a bare `cd`.
-    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
-    # Bash allows assignment words before a special builtin, so `X=1 cd ../..` moves like a bare `cd`.
-    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
-    r"(?:cd|pushd)\s+"
-    r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
-    re.IGNORECASE,
-)
 # `cd -` and `popd` return; matched in one pass so order is kept.
 _DIRECTORY_MOVE_RE = re.compile(
     r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
@@ -6609,8 +6590,6 @@ _HIGH_RISK_FORWARDING_COMMANDS = frozenset(
         "valgrind",
     }
 )
-# Tracers and profilers run the rest of the line as a child.
-_TRACER_LAUNCHERS = frozenset({"strace", "ltrace", "ktrace", "dtruss", "perf", "valgrind"})
 _EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
 _EXEC_FORWARD_FLAGS = frozenset(
     {"-exec", "-execdir", "-ok", "-okdir", "--exec", "--exec-batch", "-x", "-X"}
@@ -6718,7 +6697,6 @@ _INLINE_CODE_INTERPRETERS = frozenset(
         "php",
     }
 )
-_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
 # Flags are per interpreter (`python -E` is not eval). Value: (exact flags, cluster letters).
 _INLINE_CODE_FLAG_SPEC = {
     "python": (frozenset({"-c"}), "c"),
@@ -10067,15 +10045,6 @@ def live_project_owns(
     return False
 
 
-def _project_exists(project_id: str) -> bool:
-    """Whether a project of the user's is stored under this exact id."""
-    try:
-        from storage.studio_db import get_chat_project
-        return get_chat_project(project_id) is not None
-    except Exception:  # noqa: BLE001 - a storage hiccup must not delete files
-        return True
-
-
 def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
     """Compares with the sandbox path, not the working-folder setting, which can change before the chmod."""
     if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
@@ -12522,9 +12491,11 @@ _MCP_LISTING_THREAD: ContextVar = ContextVar("mcp_listing_thread", default = Non
 _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
+_MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
-_MCP_RANKED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
+# (account, thread) -> (held ranked tools, the last listing's order).
+_MCP_HELD_THREADS: "OrderedDict[tuple, tuple[list[str], list[str]]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -12537,11 +12508,13 @@ def set_mcp_listing_context_tokens(
     messages = None,
     tool_choice = None,
     mcp_image = None,
+    remember = True,
 ) -> None:
     """The local window the next MCP listing in this context is sized against; unset lists every tool in full.
     ``thread_id`` keeps the tools a chat ran listed; ``messages`` ranks the deferred ones listed up front; a
     ``tool_choice`` forcing a tool keeps that one listed, and an attached image (in the message or, sent to MCP tools
-    only, as ``mcp_image``) keeps the tools mapped to take it listed."""
+    only, as ``mcp_image``) keeps the tools mapped to take it listed. ``remember = False`` (token counts) reads the
+    held listing without replacing it."""
     from core.inference.chat_template_helpers import forced_tool_name, last_user_text  # noqa: PLC0415
 
     valid = isinstance(context_tokens, int) and context_tokens > 0
@@ -12550,6 +12523,7 @@ def set_mcp_listing_context_tokens(
     dicts = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages or []]
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
+    _MCP_LISTING_REMEMBER.set(bool(remember))
     last_user = next(
         (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
     )
@@ -12751,23 +12725,24 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
-def _mcp_held_ranking(by_name: dict) -> list[str]:
+def _mcp_held(by_name: dict) -> tuple[list[str], list[str]]:
     key = _mcp_thread_key()
     if key is None:
-        return []
+        return [], []
     with _MCP_LOADED_LOCK:
-        return [n for n in _MCP_RANKED_THREADS.get(key, ()) if n in by_name]
+        ranked, listed = _MCP_HELD_THREADS.get(key, ((), ()))
+    return [n for n in ranked if n in by_name], list(listed)
 
 
-def _mcp_hold_ranking(names: list[str]) -> None:
+def _mcp_hold(ranked: list[str], listed: list[str]) -> None:
     key = _mcp_thread_key()
-    if key is None:
+    if key is None or not _MCP_LISTING_REMEMBER.get():
         return
     with _MCP_LOADED_LOCK:
-        _MCP_RANKED_THREADS.pop(key, None)
-        _MCP_RANKED_THREADS[key] = names
-        while len(_MCP_RANKED_THREADS) > _MCP_LOADED_THREADS_MAX:
-            _MCP_RANKED_THREADS.popitem(last = False)
+        _MCP_HELD_THREADS.pop(key, None)
+        _MCP_HELD_THREADS[key] = (ranked, listed)
+        while len(_MCP_HELD_THREADS) > _MCP_LOADED_THREADS_MAX:
+            _MCP_HELD_THREADS.popitem(last = False)
 
 
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
@@ -12837,7 +12812,7 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
                 left -= cost
         return chosen
 
-    held = _mcp_held_ranking(by_name)
+    held, listed_before = _mcp_held(by_name)
     chosen = filled(held)
     held = [name for name in held if by_name[name] in chosen]
     if ranked and (not held or by_name[ranked[0]] not in chosen):
@@ -12845,8 +12820,11 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         # A best match too big to list is not worth dropping the held tools for.
         if not held or by_name[ranked[0]] in fresh:
             chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
-    _mcp_hold_ranking(held)
-    return chosen
+    # Listed tools keep their places, new ones go last: a reorder in the tool block reprocesses the whole chat.
+    names = [spec["function"]["name"] for spec in chosen[1:]]
+    order = list(dict.fromkeys([name for name in listed_before if name in names] + names))
+    _mcp_hold(held, order)
+    return chosen[:1] + [by_name[name] for name in order]
 
 
 def _cached_mcp_catalog() -> list[dict]:

@@ -130,10 +130,18 @@ def _int8_convrot_linear_class() -> Any:
                 )
             else:
                 self.bias = None
+            # float16: scale the weight before the matmul; the unscaled int8 sum overflows 65504.
+            self.scale_weight_first = False
 
         def forward(self, x: Any) -> Any:  # noqa: D102
             h = build_convrot_hadamard(self.group_size, device = x.device, dtype = x.dtype)
             rotated = rotate_convrot_activation(x, h, self.group_size)
+            if getattr(self, "scale_weight_first", False):
+                weight = (self.weight.to(torch.float32) * self.weight_scale).to(x.dtype)
+                out = torch.nn.functional.linear(rotated, weight)
+                if self.bias is not None:
+                    out = out + self.bias.to(out.dtype)
+                return out
             out = torch.nn.functional.linear(rotated, self.weight.to(x.dtype))
             out = out * self.weight_scale.reshape(1, -1).to(dtype = out.dtype, device = out.device)
             if self.bias is not None:

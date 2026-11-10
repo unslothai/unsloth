@@ -653,6 +653,8 @@ _INTEL_XPU_PCI_IDS = frozenset((
     0xB084, 0xB085, 0xB086, 0xB087,  # PTL Arc Pro (Mesa iris_pci_ids.h)
     0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
 ))  # fmt: skip
+# The iGPUs above: their device memory is host RAM. Kept literal, installer tests parse _INTEL_XPU_PCI_IDS.
+_INTEL_XPU_IGPU_PCI_IDS = frozenset((0x7D55, 0x7D51, 0x64A0, *range(0xB080, 0xB088)))
 
 
 def _is_intel_xpu_pci_id(device_id: int) -> bool:
@@ -5164,25 +5166,6 @@ def _reconcile_cuda_integrated_memory(
         dev["vram_utilization_pct"] = (
             round((pool_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
         )
-
-
-def _reconcile_primary_rocm_unified_memory(
-    utilization: Dict[str, Any], parent_visible_spec: Dict[str, Any]
-) -> None:
-    """Same fix as _reconcile_rocm_unified_memory for the flat primary-GPU dict."""
-    numeric_ids = parent_visible_spec.get("numeric_ids")
-    if numeric_ids is None:
-        # No visibility env var set: torch ordinal 0 is the primary device.
-        primary_idx = [0]
-    elif len(numeric_ids) == 0:
-        # Empty mask: no GPU visible. Querying torch device 0 would raise or return stale data, so bail rather than write bad values.
-        return
-    else:
-        primary_idx = [int(numeric_ids[0])]
-    torch_devices = _torch_get_per_device_info(primary_idx)
-    if not torch_devices:
-        return
-    _apply_unified_memory_correction(utilization, torch_devices[0])
 
 
 def _rocm_visibility_mask_active() -> bool:

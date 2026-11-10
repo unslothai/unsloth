@@ -4964,6 +4964,8 @@ def _video_offload_vram_floor_mib(
             if bool(getattr(plan, "stream_text_encoders", False)):
                 streamed |= encoders
         elif policy == OFFLOAD_STREAMING:
+            from .diffusion_memory import run_once_companions
+            encoders |= {n for n in run_once_companions(pipe) if n in sizes}
             streamed = denoisers | encoders
         else:
             return None

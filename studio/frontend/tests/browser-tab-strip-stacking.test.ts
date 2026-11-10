@@ -45,5 +45,5 @@ test("a native page's hole drops backdrop filters and masks the wallpaper layer"
 
 test("the docked Windows glass surface never clips the floating browser's rounded border", () => {
   const panel = readSrc("features/browser/browser-panel.tsx");
-  assert.match(panel, /data-windows-browser=\{!floating && usesWindowsTitlebar\(\)/);
+  assert.match(panel, /data-windows-browser=\{!floating && shouldUseCustomWindowTitlebar\(\)/);
 });
