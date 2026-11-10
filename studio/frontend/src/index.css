@@ -6713,13 +6713,20 @@ html.dark[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .unsloth-files-
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .11), rgb(255 255 255 / .022) 62%, rgb(255 255 255 / .044));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .154), inset 0 -1px 0 rgb(255 255 255 / .033), inset 0 0 0 1px rgb(255 255 255 / .039);
 }
-/* WebKit only (data-glass-layers): the sheen fades a few percent of white out across half the surface, and
-   WebKit does not dither gradients, so each 8-bit step shows as a wide diagonal stripe (five of them across
-   a dark Settings dialog) on the macOS and Linux apps. Chromium dithers the same gradient smooth. No sheen
-   on WebKit; the rims and glows carry the look. After every sheen above: equal specificity, so order decides. */
+/* The sheen fades a few percent of white out across half the surface. Chromium dithers that gradient smooth;
+   WebKit and Firefox do not, so each 8-bit step shows as a wide diagonal stripe (five of them across a dark
+   Settings dialog). No sheen on either; the rims and glows carry the look. WebKit is data-glass-layers (the
+   macOS and Linux apps, Safari). After every sheen above: equal specificity, so order decides. */
 html[data-glass^="liquid"][data-glass-layers],
 html[data-glass^="liquid"][data-glass-layers] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-sheen: none;
+}
+/* Firefox sets no flag: the repeated attribute matches the specificity of the dark sheens above. */
+@supports (-moz-appearance: none) {
+  html[data-glass^="liquid"][data-glass],
+  html[data-glass^="liquid"][data-glass] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+    --glass-sheen: none;
+  }
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before,
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {

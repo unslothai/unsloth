@@ -104,6 +104,29 @@ test("WebKit liquid glass drops the sheen, which bands into stripes without dith
   assert.equal((CSS.slice(0, at).match(/--glass-sheen: linear-gradient/g) ?? []).length, 8);
 });
 
+test("Firefox drops the sheen too, with a selector as specific as the dark sheens it overrides", () => {
+  let found = 0;
+  postcss.parse(CSS).walkAtRules("supports", (at) => {
+    if (at.params !== "(-moz-appearance: none)") return;
+    at.walkRules((rule) => {
+      if (!rule.selector.startsWith('html[data-glass^="liquid"][data-glass]')) return;
+      found += 1;
+      assert.equal(at.parent?.type, "root", "unlayered");
+      assert.deepEqual(
+        rule.selectors,
+        [
+          'html[data-glass^="liquid"][data-glass]',
+          'html[data-glass^="liquid"][data-glass] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer)',
+        ],
+        "two attributes on html, like html.dark[data-glass=\"liquid-3d\"]",
+      );
+      assert.match(rule.toString(), /--glass-sheen: none;/);
+      assert.doesNotMatch(CSS.slice(CSS.indexOf(rule.toString())), /--glass-sheen: linear-gradient/, "after every sheen definition");
+    });
+  });
+  assert.equal(found, 1);
+});
+
 test("the WebKitGTK rules are unlayered top-level rules", () => {
   const found: string[] = [];
   postcss.parse(CSS).walkRules((rule) => {
