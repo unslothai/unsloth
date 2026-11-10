@@ -16,7 +16,7 @@ import { useCatalogStore } from "../stores/catalog-store";
 import { useUiStore } from "../stores/ui-store";
 import type { RfEdge, RfNode } from "./derive-rf";
 import { portInk } from "./theme-colors";
-import { WireDelete, WireHalo, useWireHover } from "./wire-delete";
+import { WireDelete, WireHalo, useWireHover, wireStroke } from "./wire-delete";
 import { routingVersion } from "./wire-obstacles";
 import { stretchToHandles, wireMidpoint } from "./wire-live";
 import type { RouteRequest, RouteResponse } from "./wire-router.worker";
@@ -240,18 +240,7 @@ function BusEdgeImpl({
   );
   const { hover, enter, leave } = useWireHover();
   const flow = data?.kind === "flow";
-  const base: CSSProperties = flow
-    ? {
-        stroke: selected ? "var(--foreground)" : "var(--muted-foreground)",
-        strokeWidth: selected ? 3 : 2.25,
-        strokeDasharray: "8 5",
-        opacity: selected ? 1 : 0.8,
-      }
-    : {
-        stroke: portInk(color),
-        strokeWidth: selected ? 2.5 : 1.75,
-        opacity: selected || hover ? 1 : 0.75,
-      };
+  const base = wireStroke(flow, selected, hover, portInk(color));
   const style: CSSProperties = {
     ...base,
     fill: "none",

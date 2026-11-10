@@ -48,15 +48,11 @@ import {
 } from "./node-card";
 import { NODE_LOOKS } from "./node-looks";
 import { CATEGORY_TONES } from "./node-tones";
+import { lowDetailSelector } from "./node-card";
 import { CopyTextButton } from "./copy-text";
 import { outputCopyText, shownOutputIds } from "./value-kinds";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
-/** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
- *  is what keeps panning a thousand-node graph smooth. */
-const LOW_DETAIL_ZOOM = 0.45;
-const lowDetailSelector = (s: { transform: [number, number, number] }) =>
-  s.transform[2] < LOW_DETAIL_ZOOM;
 
 function portColorOf(
   colors: Record<string, string> | undefined,

@@ -31,6 +31,7 @@ import {
   NodeCardHeader,
   NodePorts,
   NodeStatusBadges,
+  lowDetailSelector,
 } from "./node-card";
 import {
   combineSelection,
@@ -48,8 +49,6 @@ import {
 
 const FOCUS_MIN_ZOOM = 0.8;
 
-const lowDetailSelector = (s: { transform: [number, number, number] }) =>
-  s.transform[2] < 0.45;
 
 function SuperCardViewImpl({ id, data }: NodeProps<RfNode>) {
   const { cardId, title, color, memberIds, inputs, outputs } =

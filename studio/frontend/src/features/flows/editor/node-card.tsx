@@ -16,6 +16,12 @@ import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Handle, Position } from "@xyflow/react";
 import { type ComponentProps, type ReactNode, useState } from "react";
+
+/** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
+ *  is what keeps panning a thousand-node graph smooth. */
+const LOW_DETAIL_ZOOM = 0.45;
+export const lowDetailSelector = (s: { transform: [number, number, number] }) =>
+  s.transform[2] < LOW_DETAIL_ZOOM;
 import type { NodeRuntime } from "../stores/runtime-store";
 import { CopyTextButton } from "./copy-text";
 import { accentTone } from "./node-tones";

@@ -33,14 +33,6 @@ export function needsNewerStudio(node: { type: string; v?: number }): boolean {
   return !spec || (node.v ?? 1) > spec.v;
 }
 
-export function portColor(type: string): string {
-  return useCatalogStore.getState().catalog?.port_colors[type] ?? "#cbd5e1";
-}
-
-export function categoryColor(category: string): string {
-  return useCatalogStore.getState().categories[category]?.color ?? "#64748b";
-}
-
 export function findPort(
   spec: NodeSpec | undefined,
   side: "in" | "out",

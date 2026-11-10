@@ -4,9 +4,30 @@
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { EdgeLabelRenderer, useReactFlow } from "@xyflow/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { usePlacement } from "./placement";
 import { REROUTE_TYPE } from "./reroutes";
+
+/** A wire's stroke: dashed for a flow (control) wire, else its port colour. */
+export function wireStroke(
+  flow: boolean,
+  selected: boolean | undefined,
+  hover: boolean,
+  ink: string,
+): CSSProperties {
+  return flow
+    ? {
+        stroke: selected ? "var(--foreground)" : "var(--muted-foreground)",
+        strokeWidth: selected ? 3 : 2.25,
+        strokeDasharray: "8 5",
+        opacity: selected ? 1 : 0.8,
+      }
+    : {
+        stroke: ink,
+        strokeWidth: selected ? 2.5 : 1.75,
+        opacity: selected || hover ? 1 : 0.75,
+      };
+}
 
 /** Hover state for one wire that survives the move from the wire onto its × button. */
 export function useWireHover() {
