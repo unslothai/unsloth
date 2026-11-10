@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2's text connectors run once before step 0: streaming offload streams them leaf by leaf beside the text
-encoders, so the denoise-time floor (and the denoiser's resident groups) no longer pay for them."""
+"""Streaming offload streams LTX-2's run-once text connectors with the encoders, off the denoise floor."""
 
 import sys
 import types
@@ -17,8 +16,6 @@ _ENV = "UNSLOTH_VIDEO_STREAM_RUN_ONCE_COMPANIONS"
 
 
 class LTX2TextConnectors(torch.nn.Module):
-    """Stand-in named like diffusers' class; ``to`` calls are recorded instead of moving to a device."""
-
     def __init__(self, mib):
         super().__init__()
         self.layers = torch.nn.ModuleList([_linear(2) for _ in range(mib // 2)])
@@ -74,7 +71,7 @@ def test_streaming_floor_leaves_the_connectors_off_the_card(monkeypatch):
 
     monkeypatch.delenv(_ENV, raising = False)
     pipe = _pipe()
-    # vae 3 + the DiT window (two 2 MiB blocks; the connectors' two-leaf window is no larger), no 6 MiB connectors
+    # vae 3 + DiT window (2x2 MiB); 6 MiB connectors excluded
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming")) == 3 + 4
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming"), phase = "decode") == 3
 
@@ -84,7 +81,6 @@ def test_kill_switch_and_other_tiers_keep_the_connectors_resident(monkeypatch):
 
     pipe = _pipe()
     monkeypatch.delenv(_ENV, raising = False)
-    # group offload keeps companions resident by plan: unchanged
     assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 3 + 6 + 4
     assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True)) == 3 + 6 + 4
     monkeypatch.setenv(_ENV, "0")
@@ -148,9 +144,9 @@ def test_streaming_offload_streams_the_connectors_when_they_pin(monkeypatch):
     pipe = _pipe()
     dm._apply_streaming_offload(pipe, "cuda", None)
     hooked = {id(m): (t, low) for m, t, low in calls}
-    assert hooked[id(pipe.connectors)] == ("leaf_level", False)  # pinned up front
+    assert hooked[id(pipe.connectors)] == ("leaf_level", False)
     assert pipe.connectors.moved_to == []
-    assert pipe.vae.moved_to  # the VAE stays resident
+    assert pipe.vae.moved_to
 
 
 @pytest.mark.parametrize("why", ["budget", "kill_switch"])

@@ -3257,13 +3257,12 @@ def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
 
 # "0" keeps run-once companions resident under streaming offload.
 STREAM_RUN_ONCE_COMPANIONS_ENV = "UNSLOTH_VIDEO_STREAM_RUN_ONCE_COMPANIONS"
-# Companions that run once per request, before step 0 (LTX-2's text connectors finish the prompt encode).
+# Run once per request before step 0 (LTX-2 text connectors).
 _RUN_ONCE_COMPANION_CLASSES = ("LTX2TextConnectors",)
 
 
 def run_once_companions(pipe: Any) -> dict[str, Any]:
-    """name -> module of the run-once companions streaming offload streams leaf by leaf beside the text encoders, so
-    they leave the card for the denoise instead of shrinking the denoiser's resident groups."""
+    """Run-once companions to stream leaf by leaf with the encoders, keeping them off the card for the denoise."""
     if _env_off(STREAM_RUN_ONCE_COMPANIONS_ENV):
         return {}
     components = getattr(pipe, "components", None)
@@ -3278,8 +3277,7 @@ def run_once_companions(pipe: Any) -> dict[str, Any]:
 
 
 def _run_once_companions_pin(dit_mib: int, leaf_mib: int, companion_mib: int, device: Any) -> bool:
-    """Whether the host pins the companions beside everything the streamed tier already pins (unpinned they would
-    re-pin on every onload, slower than leaving them resident)."""
+    """Pin budget fits the companions too; unpinned streaming is slower than resident."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
     if forced in ("0", "off", "false", "no") or not host_pinning_allowed(device):
         return False
