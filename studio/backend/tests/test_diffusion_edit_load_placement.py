@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """An edit-capable load places for a reference's denoise, so the first edit does not hook the resident transformer;
-CPU only.
+CPU only. The encoder gives way at load only where releasing it at render time could not cover the reference;
+elsewhere text-to-image keeps it resident and an edit releases what it lacks from the encoder alone.
 
 From a Qwen-Image-2.1 int8 edit under a 16 GiB budget: the load kept the 6922 MiB transformer resident and 1488 MiB of
 the 8917 MiB encoder, and every edit then released the flat 8192 MiB/MP x 0.32 x 1.15 = 3014 MiB, more than the
@@ -136,19 +137,25 @@ def _edit_extra(pipe, plan, **kw):
     return dm.measured_request_extra_mib(pipe, **args)
 
 
+def _room(budget):
+    return budget - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
+
+
 # 24 GiB (the encoder whole beside the transformer), an L4 (most of it), 16 GiB (part of it)
 @pytest.mark.parametrize("budget,total", [(21432, 24576), (20000, 23034), (14500, 16376)])
-def test_an_edit_needs_no_mid_render_release_on_a_group_load(q21, budget, total):
+def test_where_the_encoder_can_cover_an_edit_text_to_image_keeps_it_resident(q21, budget, total):
     plan = _refine(q21, _plan(budget, total))
     assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_text_encoders
     assert plan.resident_transformer_mib in (None, 6922)
     # the guidance-free 1024 edit: 768 x 2 joint sequence + 2048 MiB condition cache x 1.15 -> 4096
     assert plan.estimates["measured_reference_need_mib"] == 4096
-    assert plan.estimates["measured_reference_reserve_mib"] >= 4096
-    assert _edit_extra(q21, plan) == 0
-    # the reference's room comes out of the encoder, never the transformer
-    room = budget - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
-    assert int(plan.resident_text_encoder_mib or 0) == min(8959, room - (4096 - 2304))
+    # the text-to-image placement is untouched
+    assert plan.resident_text_encoder_mib == min(8959, _room(budget))
+    assert plan.estimates["measured_reference_te_cut_mib"] == 0
+    # the edit is priced from its tokens (not the flat 3014 MiB) and the resident encoder alone covers it: no hooks
+    extra = _edit_extra(q21, plan)
+    assert extra == 4096 - plan.estimates["measured_reference_reserve_mib"] < FLAT_EXTRA
+    assert extra <= plan.resident_text_encoder_mib
 
 
 def test_text_to_image_requests_are_priced_as_before(q21):
@@ -160,8 +167,8 @@ def test_text_to_image_requests_are_priced_as_before(q21):
 
 def test_a_guidance_edit_is_still_priced_past_the_placement(q21):
     plan = _refine(q21, _plan(14500, 16376))
-    # 2 x (1536 + 2355) = 7782 -> 7936 against the 4096 placed
-    assert _edit_extra(q21, plan, cfg = None) == 7936 - 4096
+    # 2 x (1536 + 2355) = 7782 -> 7936 against the 2304 placed
+    assert _edit_extra(q21, plan, cfg = None) == 7936 - 2304
 
 
 def test_kill_switch_keeps_the_text_to_image_placement(q21, monkeypatch):
@@ -194,11 +201,14 @@ def test_a_streaming_tier_load_is_untouched(q21):
 
 
 def test_the_encoders_give_way_down_to_none(q21):
-    """Just past the 16 GiB budget the whole encoder streams; the reserve still records what the load covered."""
+    """The logged 16 GiB budget: the 1489 MiB of resident encoder cannot cover the 1792 MiB the edit adds, so the guard
+    would hook the transformer; the whole encoder streams instead, and the reserve still records what it covered."""
     plan = _refine(q21, _plan(13407, 16376))
+    assert _room(13407) == 1489 < 4096 - 2304
     assert plan.resident_text_encoder_mib is None
-    assert plan.estimates["measured_reference_te_cut_mib"] > 0
-    assert 0 < _edit_extra(q21, plan) < FLAT_EXTRA
+    assert plan.estimates["measured_reference_te_cut_mib"] == 1489
+    assert plan.estimates["measured_reference_reserve_mib"] == 2304 + 1489
+    assert 0 < _edit_extra(q21, plan) == 4096 - 3793 < FLAT_EXTRA
 
 
 def test_generate_releases_only_the_live_shortfall_for_a_priced_edit():
@@ -206,7 +216,11 @@ def test_generate_releases_only_the_live_shortfall_for_a_priced_edit():
     at = src.index("reference_need = load_covered_reference_need_mib(")
     hook = src.index("hook_resident_denoiser(state.pipe, guard_target.torch_device, logger)")
     assert at < hook
-    assert "extra_mib = min(extra_mib, short)" in src[at:hook]
+    trim = src[at:hook]
+    # the trim never runs looser than the activation guard: a request it would refuse keeps the planned release
+    assert "image_activation_verdict(" in trim and "fits.action != ACTIVATION_REFUSE" in trim
+    assert trim.index("fits.action != ACTIVATION_REFUSE") < trim.index("extra_mib = short")
+    assert "guard_kwargs = _guard_kwargs()" in src
     stored = src.index("MEASURED_RESERVE_REFERENCE_INDEX: the edit the placement priced")
     assert "measured_reference_reserve_mib" in src[stored : stored + 400]
 
@@ -221,7 +235,7 @@ def _q21_family():
 )
 def test_the_load_and_the_first_edit_guard_agree_on_a_default_edit(q21, budget, total):
     """The guard's inputs for a default edit (no reference_resolution sent, one source image), built the way generate()
-    builds them, against the reserve the load stored: no release, so no "oversized request" mid-render."""
+    builds them, against the reserve the load stored: the guard never needs to hook the transformer."""
     from core.inference.diffusion_conditioning import (
         effective_reference_resolution,
         reference_request_pixels,
@@ -252,11 +266,13 @@ def test_the_load_and_the_first_edit_guard_agree_on_a_default_edit(q21, budget, 
         workflow = "edit",
     )
     covered = plan.estimates["measured_reference_reserve_mib"]
-    if covered >= need:
-        assert extra == 0
-    else:
+    assert extra == max(0, need - covered) < FLAT_EXTRA
+    if plan.estimates["measured_reference_te_cut_mib"]:
         # every encoder layer already gave way: only the part the plan could not cover is left to the live check
-        assert plan.resident_text_encoder_mib is None and 0 < extra == need - covered < FLAT_EXTRA
+        assert plan.resident_text_encoder_mib is None
+    else:
+        # what the edit adds fits in the encoder the guard can release first
+        assert extra <= int(plan.resident_text_encoder_mib or 0)
 
 
 def _with_reserve(pipe, plan):

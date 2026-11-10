@@ -5031,7 +5031,11 @@ def _refine_plan_from_loaded_weights(
                 spare = max(
                     0, int(room) + int(headroom) - int(basis) - int(dit_room) - int(te_room)
                 )
-                reference_cut = min(int(te_room), max(0, int(reference[1]) - int(basis) - spare))
+                short = max(0, int(reference[1]) - int(basis) - spare)
+                # Only where releasing the resident encoder at render time could not cover the reference (the guard
+                # would hook the transformer) does every encoder layer give way here; elsewhere text-to-image keeps its
+                # encoder resident and an edit releases what it lacks from it.
+                reference_cut = int(te_room) if short > int(te_room) else 0
                 te_room -= reference_cut
                 if lend > 0:
                     lend = max(0, lend - reference_cut)

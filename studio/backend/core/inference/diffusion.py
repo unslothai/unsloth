@@ -233,6 +233,8 @@ from .diffusion_memory import (
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
+    image_activation_verdict,
+    ACTIVATION_REFUSE,
     raise_on_unified_memory_shortfall,
     scoped_allow_oversized_load,
     UNIFIED_OVERSIZE_REFUSAL_CODE,
@@ -15125,6 +15127,30 @@ class DiffusionBackend:
                         guard_capture_gen = cuda_graph.capture_generation(_peak_device_index(state))
                     # groups an earlier oversized request streamed out stay out when this one streams them all too
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
+
+                    def _guard_kwargs() -> dict:
+                        return dict(
+                            # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
+                            device_memory = reclaimable_snapshot_device_memory(guard_target),
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            # The hint the load planned with, so the distilled / edit multipliers match.
+                            family = state.variant_hint,
+                            # Only img2img is bounded by the Resolution control (_fit_within); others need an upload-side fix.
+                            source_driven = source_sized and workflow != "img2img",
+                            condition_pixels = guard_condition_pixels,
+                            vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
+                            vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
+                            quadratic_attention = guard_quadratic,
+                            allow_oversized = allow_oversized,
+                            calibrated_placement = bool(
+                                getattr(state, "calibrated_placement", False)
+                            ),
+                            controlnet = workflow == "controlnet" and control_pil is not None,
+                            logger = logger,
+                        )
+
                     if extra_mib > 0 and guard_reference_pixels > 0:
                         # a load that priced an edit: release only what free memory lacks right now
                         reference_need = load_covered_reference_need_mib(
@@ -15140,8 +15166,14 @@ class DiffusionBackend:
                             short = live_reference_shortfall_mib(
                                 state.pipe, reference_need, guard_target.torch_device
                             )
-                            if short is not None:
-                                extra_mib = min(extra_mib, short)
+                            # never looser than the activation guard below: a request it would refuse on the
+                            # current memory keeps the planned release
+                            if short is not None and short < extra_mib:
+                                fits = image_activation_verdict(
+                                    **{k: v for k, v in _guard_kwargs().items() if k != "logger"}
+                                )
+                                if fits.action != ACTIVATION_REFUSE:
+                                    extra_mib = short
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (
@@ -15157,25 +15189,7 @@ class DiffusionBackend:
                             if restore_resident is None
                             else chained_restore(carried_restore, restore_resident)
                         )
-                    guard_kwargs = dict(
-                        # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
-                        device_memory = reclaimable_snapshot_device_memory(guard_target),
-                        width = guard_width,
-                        height = guard_height,
-                        batch_size = guard_batch,
-                        # The hint the load planned with, so the distilled / edit multipliers match.
-                        family = state.variant_hint,
-                        # Only img2img is bounded by the Resolution control (_fit_within); others need an upload-side fix.
-                        source_driven = source_sized and workflow != "img2img",
-                        condition_pixels = guard_condition_pixels,
-                        vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
-                        vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
-                        quadratic_attention = guard_quadratic,
-                        allow_oversized = allow_oversized,
-                        calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
-                        controlnet = workflow == "controlnet" and control_pil is not None,
-                        logger = logger,
-                    )
+                    guard_kwargs = _guard_kwargs()
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)
