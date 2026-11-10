@@ -870,12 +870,6 @@ def video_sample(
                 break
         return filled
 
-    # Read only the missing columns when rows hold exactly the known columns (whole rows decode every media cell).
-    select_columns = getattr(dataset, "select_columns", None)
-    columns = getattr(dataset, "column_names", None)
-    fmt = getattr(dataset, "format", None)
-
-    # The subset only pays off when a filled column decodes media; text-only rows are cheaper whole.
     def _is_media(value):
         if isinstance(value, (list, tuple)):
             return bool(value) and _is_media(value[0])
@@ -885,19 +879,22 @@ def video_sample(
             )
         return value is not None and not isinstance(value, (str, int, float, bool))
 
+    # Whole rows decode every media cell, so read only the missing columns; text-only rows are cheaper whole.
+    # Only when rows are exactly the known columns and no custom transform can derive a missing one.
     missing_keys = set(missing)
-    media_known = any(_is_media(v) for k, v in sample.items() if k not in missing_keys)
-    if (
-        callable(select_columns)
-        and media_known
-        and len(missing) < len(sample)
-        and isinstance(columns, list)
-        and set(columns) == set(sample)
-        and not (isinstance(fmt, dict) and fmt.get("type") == "custom")
+    if len(missing) < len(sample) and any(
+        _is_media(v) for k, v in sample.items() if k not in missing_keys
     ):
         try:
-            return _fill(select_columns(missing))
-        except Exception:  # noqa: BLE001
+            columns = dataset.column_names
+            fmt = getattr(dataset, "format", None)
+            if (
+                isinstance(columns, list)
+                and set(columns) == set(sample)
+                and not (isinstance(fmt, dict) and fmt.get("type") == "custom")
+            ):
+                return _fill(dataset.select_columns(missing))
+        except Exception:  # noqa: BLE001 -- no column subset: read whole rows
             pass
     try:
         return _fill(dataset)
