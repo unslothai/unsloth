@@ -161,3 +161,51 @@ def test_tied_partners_rebuild_one_shared_copy():
     assert copied == shared.data.nbytes
     assert a.cpu_param_dict[shared] is b.cpu_param_dict[shared]
     assert dm.rebuild_dropped_host_copy(b) == 0
+
+
+def test_cuda_dropped_encoder_streams_bit_identical_after_an_eviction(monkeypatch):
+    """Real diffusers leaf-level group offload on CUDA: the deferred encoder pin drops every resident group's host
+    copy, an oversized release copies them back in one registered slab, the streamed forward and the restored one
+    match the reference bit for bit."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA-only: diffusers group offloading with a copy stream")
+    pytest.importorskip("diffusers.hooks")
+    from diffusers.hooks import apply_group_offloading
+
+    monkeypatch.delenv(dm.RESIDENT_HOST_DROP_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(*(torch.nn.Linear(256, 256) for _ in range(6)))
+    x = torch.randn(4, 256)
+    ref = net.to("cuda")(x.cuda()).cpu()
+    net.to("cpu")
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "leaf_level",
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+        low_cpu_mem_usage = True,
+    )
+    pipe = types.SimpleNamespace(components = {"text_encoder": net})
+    assert dm._defer_pinning(pipe, net, torch.device("cuda"), None, fast = False, lazy_resident = True)
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    dm.start_background_pins(pipe)
+    dm.finish_background_pins(pipe)
+    groups = dm._offload_groups(net)
+    dropped = [g for g in groups if getattr(g, dm._HOST_DROPPED_ATTR, None)]
+    assert dropped and all(not g.cpu_param_dict for g in dropped)
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+    restore = dm.release_resident_groups(pipe, 1024)
+    assert restore is not None
+    assert not any(getattr(g, dm._HOST_DROPPED_ATTR, None) for g in groups)
+    assert all(next(m.parameters()).device.type == "cpu" for m in net)
+    assert all(h.is_pinned() for g in groups for h in g.cpu_param_dict.values())
+    for _ in range(2):
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    restore()
+    assert all(next(m.parameters()).device.type == "cuda" for m in net)
+    assert torch.equal(net(x.cuda()).cpu(), ref)

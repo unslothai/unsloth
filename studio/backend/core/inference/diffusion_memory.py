@@ -5388,6 +5388,20 @@ def release_resident_groups(
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
         left = int(need_mib) * 1024 * 1024
+        # Groups the load kept no host copy of get theirs back in one batch (one slab, one sync) before any streams.
+        pending: list = []
+        budget = left
+        for module in modules:
+            for group in reversed(_offload_groups(module) or []):
+                if budget <= 0:
+                    break
+                if not getattr(group, "_unsloth_resident", False):
+                    continue
+                for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
+                    if getattr(member, "_unsloth_resident", False) and member not in pending:
+                        pending.append(member)
+                        budget -= int(getattr(member, "_unsloth_resident_bytes", 0))
+        rebuild_dropped_host_copies(pending)
         for module in modules:
             for group in reversed(_offload_groups(module) or []):
                 if left <= 0:
@@ -7240,47 +7254,64 @@ def drop_resident_host_copies(
 
 def rebuild_dropped_host_copy(group: Any) -> int:
     """Give ``group`` (and its tied partners) host copies of their device weights again; returns bytes copied."""
-    if not getattr(group, _HOST_DROPPED_ATTR, None):
-        return 0
+    return rebuild_dropped_host_copies([group])
+
+
+_REBUILD_ALIGN = 512
+
+
+def rebuild_dropped_host_copies(groups: Iterable[Any]) -> int:
+    """Host copies of the device weights of every dropped group in ``groups`` (tied partners included), in one
+    registered slab filled by device-to-host copies; returns bytes copied. Each tensor shared by tied partners is
+    copied once. Without a registered slab (refused, or no CUDA) each tensor gets its own pageable copy."""
     import torch
 
-    closure = [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]
-    device = None
-    for member in closure:
+    members: list = []
+    seen_groups: set = set()
+    for group in groups:
+        for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
+            if id(member) not in seen_groups and getattr(member, _HOST_DROPPED_ATTR, None):
+                seen_groups.add(id(member))
+                members.append(member)
+    if not members:
+        return 0
+    tensors: dict = {}
+    for member in members:
         for t in getattr(member, _HOST_DROPPED_ATTR, None) or ():
-            device = t.device
-            break
-        if device is not None:
-            break
-    if device is not None and device.type == "cuda":
-        torch.cuda.current_stream(device).synchronize()
-    memo: dict = {}
-    copied = 0
+            tensors.setdefault(id(t), t)
+    lives = {key: (t.data if hasattr(t, "data") else t) for key, t in tensors.items()}
+    offsets: dict = {}
+    total = 0
+    for key, live in lives.items():
+        offsets[key] = total
+        total += -(-int(live.nbytes) // _REBUILD_ALIGN) * _REBUILD_ALIGN
+    device = next((live.device for live in lives.values() if live.device.type == "cuda"), None)
+    slab = None
+    if device is not None and host_pinning_allowed(device):
+        try:
+            slab = registered_pinned_empty(total)
+        except Exception:  # noqa: BLE001 - per-tensor pageable copies below
+            slab = None
+    hosts: dict = {}
     with torch.no_grad():
-        for member in closure:
-            keys = getattr(member, _HOST_DROPPED_ATTR, None)
-            if not keys:
-                continue
-            cpu = member.cpu_param_dict
-            for t in keys:
-                host = memo.get(id(t))
-                if host is None:
-                    live = t.data if hasattr(t, "data") else t
-                    try:
-                        host = (
-                            registered_host_copy(live)
-                            if host_pinning_allowed(live.device)
-                            else None
-                        )
-                    except Exception:  # noqa: BLE001 - registration refused: a pageable copy streams too
-                        host = None
-                    if host is None:
-                        host = live.detach().to("cpu", copy = True)
-                    memo[id(t)] = host
-                    copied += int(host.nbytes)
-                cpu[t] = host
-            setattr(member, _HOST_DROPPED_ATTR, None)
-    return copied
+        if device is not None:
+            torch.cuda.current_stream(device).synchronize()
+        for key, live in lives.items():
+            if slab is not None:
+                off = offsets[key]
+                host = slab[off : off + int(live.nbytes)].view(live.dtype).view(live.shape)
+                host.copy_(live, non_blocking = True)
+            else:
+                host = live.detach().to("cpu", copy = True)
+            hosts[key] = host
+        if slab is not None:
+            torch.cuda.current_stream(device).synchronize()
+    for member in members:
+        cpu = member.cpu_param_dict
+        for t in getattr(member, _HOST_DROPPED_ATTR, None) or ():
+            cpu[t] = hosts[id(t)]
+        setattr(member, _HOST_DROPPED_ATTR, None)
+    return sum(int(live.nbytes) for live in lives.values())
 
 
 def _encoder_background_pin_wanted(pipe: Any, device: Any = None) -> bool:
