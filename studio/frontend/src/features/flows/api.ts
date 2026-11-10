@@ -96,13 +96,6 @@ export interface ValidationIssue {
   message: string;
 }
 
-export const validateFlow = (doc: FlowDocument) =>
-  request<{
-    ok: boolean;
-    errors: ValidationIssue[];
-    warnings: ValidationIssue[];
-  }>("/validate", json("POST", { doc }));
-
 export interface PlanModel {
   ref?: string | null;
   kind: string;
@@ -168,9 +161,6 @@ export interface RunSnapshot {
   nodes: Record<string, RunNodeState>;
   last_seq: number;
 }
-
-export const getRun = (runId: string) =>
-  request<RunSnapshot>(`/runs/${encodeURIComponent(runId)}`);
 
 export const cancelRun = (runId: string) =>
   request<{ status: string }>(`/runs/${encodeURIComponent(runId)}/cancel`, {

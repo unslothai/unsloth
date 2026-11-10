@@ -5,7 +5,9 @@
 // Kept free of Recipe Studio's editor code so the canvas can load it eagerly.
 
 import {
+  JINJA_TAG_RE,
   type JinjaScope,
+  QUOTED_RE,
   boundAt,
   inRaw,
   jinjaScopes,
@@ -57,8 +59,6 @@ export function groupGenerate(
 }
 
 const NAME = /[A-Za-z_][A-Za-z0-9_-]*/g;
-const BLOCK = /\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g;
-const QUOTED = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
 
 /** The names a tag at ``at`` reads, leaving out the template's own variables there. */
 function tagNames(
@@ -70,10 +70,10 @@ function tagNames(
   // A quoted string is text, not a column: `{{ "topic" }}` reads nothing.
   const part = statement === undefined ? null : tagReadPart(statement);
   const body = (part ? `${part.read} ${part.filter}` : (output ?? "")).replace(
-    QUOTED,
+    QUOTED_RE,
     '""',
   );
-  const filterAt = part ? part.read.replace(QUOTED, '""').length : Infinity;
+  const filterAt = part ? part.read.replace(QUOTED_RE, '""').length : Infinity;
   const names: string[] = [];
   for (const match of body.matchAll(NAME)) {
     const before = body.slice(0, match.index).trimEnd();
@@ -101,7 +101,7 @@ function templateNames(text: string): string[] {
   const scopes = jinjaScopes(text);
   // A raw block's insides are literal text.
   const raw = rawSpans(text);
-  return [...text.matchAll(BLOCK)].flatMap((block) =>
+  return [...text.matchAll(JINJA_TAG_RE)].flatMap((block) =>
     inRaw(raw, block.index ?? 0)
       ? []
       : tagNames(block[1], block[2], block.index ?? 0, scopes),
@@ -219,10 +219,23 @@ export function groupPayload(group: FlowGroup, columns: FlowNode[]) {
 /** Everything the group's recipe is made of, to notice it changing under an open form. */
 export function recipeSignature(graph: DocGraph, groupId: string): string {
   const group = graph.groups[groupId];
-  return group
-    ? JSON.stringify(groupPayload(group, groupColumns(graph, groupId)))
-    : "";
+  if (!group) return "";
+  const columns = groupColumns(graph, groupId);
+  // Runs as a store selector on every update: records are immutable, so the same group and column
+  // objects mean the same text.
+  const cached = signatures.get(group);
+  if (
+    cached &&
+    cached.columns.length === columns.length &&
+    cached.columns.every((node, i) => node === columns[i])
+  )
+    return cached.text;
+  const text = JSON.stringify(groupPayload(group, columns));
+  signatures.set(group, { columns, text });
+  return text;
 }
+
+const signatures = new WeakMap<FlowGroup, { columns: FlowNode[]; text: string }>();
 
 /** The first loop of columns reading each other (`a -> b -> a`), else null; mirrors recipe_compile's check. */
 export function columnLoop(columns: RecipeColumn[]): string[] | null {

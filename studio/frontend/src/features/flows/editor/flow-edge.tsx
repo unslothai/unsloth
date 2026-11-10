@@ -12,7 +12,7 @@ import { useCatalogStore } from "../stores/catalog-store";
 import { useUiStore } from "../stores/ui-store";
 import type { RfEdge } from "./derive-rf";
 import { portInk } from "./theme-colors";
-import { WireDelete, WireHalo, useWireHover } from "./wire-delete";
+import { WireDelete, WireHalo, useWireHover, wireStroke } from "./wire-delete";
 import { BusEdge } from "./wire-routing";
 
 function CurvedEdgeImpl({
@@ -50,18 +50,7 @@ function CurvedEdgeImpl({
         sourcePosition,
         targetPosition,
       });
-  const style = flow
-    ? {
-        stroke: selected ? "var(--foreground)" : "var(--muted-foreground)",
-        strokeWidth: selected ? 3 : 2.25,
-        strokeDasharray: "8 5",
-        opacity: selected ? 1 : 0.8,
-      }
-    : {
-        stroke: portInk(color),
-        strokeWidth: selected ? 2.5 : 1.75,
-        opacity: selected || hover ? 1 : 0.75,
-      };
+  const style = wireStroke(flow, selected, hover, portInk(color));
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: hover only reveals the × button
     <g onMouseEnter={enter} onMouseLeave={leave}>

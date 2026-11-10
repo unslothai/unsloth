@@ -35,7 +35,6 @@ import { usePinsStore } from "../stores/pins-store";
 import { useUiStore } from "../stores/ui-store";
 import { FlowCanvas } from "./canvas";
 import { CapabilityBanner } from "./capability-banner";
-import { Inspector } from "./inspector";
 import { addNodeConnected } from "./node-factory";
 import { Palette } from "./palette";
 import { placementPosition } from "./placement";
@@ -53,6 +52,10 @@ import {
 } from "./use-autosave";
 import { useEditorShortcuts } from "./use-editor-shortcuts";
 
+const loadInspector = () => import("./inspector");
+const Inspector = lazy(() =>
+  loadInspector().then((m) => ({ default: m.Inspector })),
+);
 const RecipeEditor = lazy(() => import("../recipe/recipe-editor"));
 const RecipeRuns = lazy(() => import("../recipe/recipe-runs"));
 const SAVE_WAIT_MS = 10_000;
@@ -96,6 +99,13 @@ function EditorBody({
   const paletteOpen = useUiStore((s) => s.paletteOpen);
   const recipeEditorOpen = useUiStore((s) => s.recipeEditor !== null);
   const recipeRunsOpen = useUiStore((s) => s.recipeRuns !== null);
+  const inspecting = useUiStore(
+    (s) => s.inspectorNodeId !== null || s.recipeSetup !== null,
+  );
+  // Mounted from its first use on, so it keeps its state across closes as it did when eager.
+  const [inspectorUsed, setInspectorUsed] = useState(false);
+  if (inspecting && !inspectorUsed) setInspectorUsed(true);
+  useEffect(() => void loadInspector(), []);
   const { screenToFlowPosition } = useReactFlow();
   const sidebar = useOptionalSidebar();
   const sidebarBeside = !!sidebar?.open && !sidebar.isMobile;
@@ -154,7 +164,11 @@ function EditorBody({
           </div>
           <RunDrawer />
         </div>
-        <Inspector />
+        {inspectorUsed && (
+          <Suspense fallback={null}>
+            <Inspector />
+          </Suspense>
+        )}
         {/* Over the whole editor body, not the canvas, so it stays put as panels open. */}
         <RunBar
           onPlay={() =>

@@ -237,19 +237,6 @@ export interface DatasetValue {
   made_by?: "preview" | "recipe" | "rows" | null;
 }
 
-export interface ModelValue {
-  kind: "model";
-  model_kind: string;
-  repo: string;
-  variant?: string | null;
-}
-
-export interface CheckpointValue {
-  kind: "checkpoint";
-  name: string;
-  base_model?: string | null;
-}
-
 // Model param value on a node: null = "use the loaded model".
 export interface ModelChoice {
   repo: string;

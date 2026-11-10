@@ -10,35 +10,29 @@ import {
   useStore,
   useStoreApi,
 } from "@xyflow/react";
-import { type CSSProperties, memo, useEffect } from "react";
+import { type CSSProperties, memo, useEffect, useState } from "react";
 import { create } from "zustand";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useUiStore } from "../stores/ui-store";
 import type { RfEdge, RfNode } from "./derive-rf";
 import { portInk } from "./theme-colors";
-import { WireDelete, WireHalo, useWireHover } from "./wire-delete";
-import { isWireObstacle, routingKey } from "./wire-obstacles";
-import { stretchToHandles, wireMidpoint, wiresToReroute } from "./wire-live";
+import { WireDelete, WireHalo, useWireHover, wireStroke } from "./wire-delete";
+import { routingVersion } from "./wire-obstacles";
+import { stretchToHandles, wireMidpoint } from "./wire-live";
 import type { RouteRequest, RouteResponse } from "./wire-router.worker";
+import { buildWirePath, wireEmphasis } from "./wire-path";
+import type { WirePoint, WireRoute } from "./wire-router";
 import {
-  type WireEdgeInput,
-  type WirePoint,
-  type WireRect,
-  type WireRoute,
-  type WireSide,
-  buildWirePath,
-  routeWires,
-  wireEmphasis,
-} from "./wire-router";
+  type RouteResult,
+  WireScheduler,
+  requestRouting,
+} from "./wire-schedule";
 
 const HOP_RADIUS = 4;
 const CORNER_RADIUS = 10;
 const DIM_OPACITY = 0.3;
-const ZONE_MARGIN = 12;
 // Handles sit a few px outside the card; more than this means the route is from before a move.
 const ENDPOINT_TOLERANCE = 2;
-// Matches the canvas's VISIBLE_ONLY_THRESHOLD.
-const MEASURE_ALL_LIMIT = 300;
 
 interface WireRouteState {
   routes: Map<string, WireRoute>;
@@ -98,104 +92,27 @@ function applyRoutes(
   );
 }
 
-function handleCenter(
-  node: InternalNode<RfNode> | undefined,
-  handleId: string | null | undefined,
-  kind: "source" | "target",
-): number | undefined {
-  const bounds = node?.internals.handleBounds?.[kind]?.find(
-    (handle) => handle.id === (handleId ?? null),
-  );
-  return bounds ? bounds.y + bounds.height / 2 : undefined;
-}
-
-/** The side a handle sits on: a turned reroute's are on its top and bottom. */
-function handleSide(
-  node: InternalNode<RfNode> | undefined,
-  handleId: string | null | undefined,
-  kind: "source" | "target",
-): WireSide | undefined {
-  return node?.internals.handleBounds?.[kind]?.find(
-    (handle) => handle.id === (handleId ?? null),
-  )?.position as WireSide | undefined;
-}
-
-function buildRequest(
-  lookup: Map<string, InternalNode<RfNode>>,
-  edges: RfEdge[],
-): Omit<RouteRequest, "id" | "scope" | "hopRadius"> {
-  const rects: WireRect[] = [];
-  const zones: WireRect[] = [];
-  for (const node of lookup.values()) {
-    const width = node.measured.width;
-    const height = node.measured.height;
-    if (!(width && height) || node.hidden || !isWireObstacle(node.type))
-      continue;
-    const { x, y } = node.internals.positionAbsolute;
-    if (node.type === "flowGroup") {
-      zones.push({
-        id: node.id,
-        x: x - ZONE_MARGIN,
-        y: y - ZONE_MARGIN,
-        width: width + ZONE_MARGIN * 2,
-        height: height + ZONE_MARGIN * 2,
-      });
-      continue;
-    }
-    rects.push({ id: node.id, x, y, width, height });
-  }
-  const wires: WireEdgeInput[] = [];
-  for (const edge of edges) {
-    if (edge.hidden) continue;
-    wires.push({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      sourceSide: handleSide(lookup.get(edge.source), edge.sourceHandle, "source") ?? "right",
-      targetSide: handleSide(lookup.get(edge.target), edge.targetHandle, "target") ?? "left",
-      sourceOffset: handleCenter(
-        lookup.get(edge.source),
-        edge.sourceHandle,
-        "source",
-      ),
-      targetOffset: handleCenter(
-        lookup.get(edge.target),
-        edge.targetHandle,
-        "target",
-      ),
-      net: `${edge.source}:${edge.sourceHandle ?? ""}`,
-      sink: `${edge.target}:${edge.targetHandle ?? ""}`,
-      ends: edge.data?.ends ?? [edge.source, edge.target],
-    });
-  }
-  return { rects, zones, edges: wires };
-}
-
-/** The wires drawn as bus lines: the toolbar's style unless a wire is pinned to one. */
-function busEdges(edges: RfEdge[], global: "bus" | "curved"): RfEdge[] {
-  return edges.filter((edge) => (edge.data?.wireStyle ?? global) === "bus");
-}
-
 let worker: Worker | null = null;
-let nextId = 0;
-let inflight = false;
-let pending: (() => RouteRequest) | null = null;
+let landed: ((result: RouteResult) => void) | null = null;
 
-function send(request: RouteRequest): void {
+function route(request: RouteRequest, done: (result: RouteResult) => void): void {
   if (typeof Worker === "undefined") {
-    const started = performance.now();
-    const result = routeWires(
-      request.rects,
-      request.edges,
-      { hopRadius: request.hopRadius },
-      undefined,
-      request.zones,
-    );
-    applyRoutes(
-      [...result.routes.values()],
-      performance.now() - started,
-      request.partial,
-    );
+    // No worker (tests, old browsers): route here, loading the router only when needed.
+    void import("./wire-router").then(({ routeWires }) => {
+      const started = performance.now();
+      const result = routeWires(
+        request.rects,
+        request.edges,
+        { hopRadius: request.hopRadius },
+        undefined,
+        request.zones,
+      );
+      done({
+        routes: [...result.routes.values()],
+        ms: performance.now() - started,
+        partial: request.partial,
+      });
+    });
     return;
   }
   if (!worker) {
@@ -203,37 +120,29 @@ function send(request: RouteRequest): void {
       type: "module",
     });
     worker.onmessage = (event: MessageEvent<RouteResponse>) => {
-      inflight = false;
-      if (event.data.routes)
-        applyRoutes(
-          event.data.routes,
-          event.data.ms ?? null,
-          event.data.partial,
-        );
-      pump();
+      const finish = landed;
+      landed = null;
+      finish?.({
+        routes: event.data.routes,
+        ms: event.data.ms ?? null,
+        partial: event.data.partial,
+      });
     };
   }
-  inflight = true;
+  landed = done;
   worker.postMessage(request);
 }
 
-// One request in flight; while it runs, only the latest graph is kept, and built when it is sent.
-function pump(): void {
-  if (inflight || !pending) return;
-  const build = pending;
-  pending = null;
-  send(build());
-}
-
-// A drag sends at most one request per animation frame.
-let frame = 0;
-function pumpNextFrame(): void {
-  if (frame || typeof requestAnimationFrame === "undefined") return pump();
-  frame = requestAnimationFrame(() => {
-    frame = 0;
-    pump();
-  });
-}
+const scheduler = new WireScheduler({
+  route,
+  nextFrame: (run) => {
+    if (typeof requestAnimationFrame === "undefined") return false;
+    requestAnimationFrame(run);
+    return true;
+  },
+  apply: ({ routes, ms, partial }) =>
+    applyRoutes(routes ?? [], ms ?? null, partial),
+});
 
 /**
  * Routes the canvas wires off the main thread whenever nodes or edges change. Bus mode only.
@@ -250,53 +159,18 @@ export const WireRouterController = memo(function WireRouterController({
   const store = useStoreApi<RfNode, RfEdge>();
   const global = useUiStore((s) => s.wireStyle);
   // Sizes live in the lookup: a view-built node (a closed super card) never gets them back in s.nodes.
-  const nodesKey = useStore((s) => routingKey([...s.nodeLookup.values()]));
+  const [versionOf] = useState(routingVersion);
+  const nodesVersion = useStore((s) => versionOf(s.nodeLookup.values()));
   const edges = useStore((s) => s.edges);
 
   useEffect(() => {
     if (!edges) return;
-    // Route once every card has its size, so the first pass does not depend on measure timing.
-    // Past the canvas's render-visible-only size off-screen cards never measure: route anyway.
-    const lookup = store.getState().nodeLookup;
-    if (lookup.size <= MEASURE_ALL_LIMIT)
-      for (const node of lookup.values())
-        if (!node.hidden && !(node.measured.width && node.measured.height))
-          return;
-    if (moving?.size) {
-      const live = wiresToReroute(
-        busEdges(store.getState().edges, global),
-        moving,
-      );
-      // A note or a frame on its own moves no wire.
-      if (!live.length) return;
-      pending = () => ({
-        id: ++nextId,
-        scope,
-        hopRadius: HOP_RADIUS,
-        partial: true,
-        ...buildRequest(
-          store.getState().nodeLookup,
-          wiresToReroute(busEdges(store.getState().edges, global), moving),
-        ),
-      });
-      pumpNextFrame();
-      return;
-    }
-    pending = () => ({
-      id: ++nextId,
-      scope,
-      hopRadius: HOP_RADIUS,
-      ...buildRequest(
-        store.getState().nodeLookup,
-        busEdges(store.getState().edges, global),
-      ),
-    });
-    pump();
-  }, [nodesKey, edges, scope, store, moving, global]);
+    requestRouting(scheduler, () => store.getState(), scope, moving, global);
+  }, [nodesVersion, edges, scope, store, moving, global]);
 
   useEffect(
     () => () => {
-      pending = null;
+      scheduler.reset();
       useWireRoutes.setState({ routes: new Map(), hovered: null });
     },
     [],
@@ -366,18 +240,7 @@ function BusEdgeImpl({
   );
   const { hover, enter, leave } = useWireHover();
   const flow = data?.kind === "flow";
-  const base: CSSProperties = flow
-    ? {
-        stroke: selected ? "var(--foreground)" : "var(--muted-foreground)",
-        strokeWidth: selected ? 3 : 2.25,
-        strokeDasharray: "8 5",
-        opacity: selected ? 1 : 0.8,
-      }
-    : {
-        stroke: portInk(color),
-        strokeWidth: selected ? 2.5 : 1.75,
-        opacity: selected || hover ? 1 : 0.75,
-      };
+  const base = wireStroke(flow, selected, hover, portInk(color));
   const style: CSSProperties = {
     ...base,
     fill: "none",

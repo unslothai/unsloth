@@ -4,8 +4,7 @@
 // A Recipe group seen through Recipe Studio's own configs, so its block dialogs, reference sync and payload
 // builders edit a flow without the Recipe Studio store. Loaded with the editor dialogs, not with the canvas.
 
-import { syncSubcategoryConfigsForCategoryUpdate } from "@/features/recipe-studio/stores/helpers/edge-sync";
-import { applyRenameToConfigs } from "@/features/recipe-studio/stores/helpers/reference-sync";
+import { syncConfigsForPatch } from "@/features/recipe-studio/stores/helpers/config-patch";
 import { renameRoot, replaceRef } from "@/features/recipe-studio/utils/refs";
 import type {
   NodeConfig,
@@ -24,6 +23,7 @@ import {
   buildValidatorColumn,
 } from "@/features/recipe-studio/utils/payload/builders";
 import type { FlowGroup, FlowNode } from "../types";
+import { jsonEqual } from "./json-equal";
 import {
   COLUMN_TYPE,
   type RecipeColumn,
@@ -96,7 +96,6 @@ export function studioView(group: FlowGroup, columns: FlowNode[]): StudioView {
   };
 }
 
-/** Recipe Studio's `updateConfig` without the store: the patch plus subcategory, rename and provider sync. */
 /** A tool server is one recipe-wide definition shared by name: an edit made through one tool profile is
  * made in every profile that names it, so the copies never disagree (the payload keeps only one). */
 function withSharedMcpProviders(
@@ -107,7 +106,7 @@ function withSharedMcpProviders(
   const was = new Map(before.mcp_providers.map((p) => [p.id, p]));
   const edited = after.mcp_providers.filter((p) => {
     const old = was.get(p.id);
-    return old && old.name === p.name && JSON.stringify(old) !== JSON.stringify(p);
+    return old && old.name === p.name && !jsonEqual(old, p);
   });
   if (!edited.length) return configs;
   const byName = new Map(edited.map((p) => [p.name, p]));
@@ -125,6 +124,7 @@ function withSharedMcpProviders(
   return result;
 }
 
+/** Recipe Studio's `updateConfig` without the store: the patch plus subcategory, rename and provider sync. */
 export function applyConfigPatch(
   configs: Record<string, NodeConfig>,
   id: string,
@@ -133,36 +133,10 @@ export function applyConfigPatch(
   const current = configs[id];
   if (!current) return configs;
   const next = { ...current, ...patch } as NodeConfig;
-  const nameChanged = current.name !== next.name;
   let result: Record<string, NodeConfig> = { ...configs, [id]: next };
   if (next.kind === "tool_config" && current.kind === "tool_config")
     result = withSharedMcpProviders(result, current, next);
-  result = syncSubcategoryConfigsForCategoryUpdate(
-    current,
-    next,
-    result,
-    current.name,
-    next.name,
-    nameChanged,
-  );
-  if (nameChanged)
-    result = applyRenameToConfigs(result, current.name, next.name);
-  if (
-    current.kind === "model_provider" &&
-    next.kind === "model_provider" &&
-    (current.is_local === true) !== (next.is_local === true)
-  ) {
-    for (const [cid, cfg] of Object.entries(result)) {
-      if (cfg.kind === "model_config" && cfg.provider === next.name) {
-        // biome-ignore lint/style/useNamingConvention: api schema
-        result = {
-          ...result,
-          [cid]: { ...cfg, model: "", gguf_variant: undefined },
-        };
-      }
-    }
-  }
-  return result;
+  return syncConfigsForPatch(result, current, next);
 }
 
 export function isColumnConfig(config: NodeConfig): boolean {
@@ -314,8 +288,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-
 /** `form` with each field the form left as it was (`prior` = the form's value before the edit) taken from
  * `original`, so a value the form cannot show (a uniform temperature) survives an edit of another field. */
 function untouchedFromSaved(
@@ -326,7 +298,7 @@ function untouchedFromSaved(
 ): Record<string, unknown> {
   const next = { ...form };
   for (const f of fields) {
-    if (!prior || !same(prior[f], form[f])) continue;
+    if (!prior || !jsonEqual(prior[f], form[f])) continue;
     if (f in original) next[f] = original[f];
     else delete next[f];
   }
@@ -337,14 +309,14 @@ function untouchedFromSaved(
  * taken from `saved`, nested objects part by part. */
 function keepUntouched(built: unknown, saved: unknown, prior: unknown): unknown {
   if (saved === undefined) return built;
-  if (same(prior, built)) return saved;
+  if (jsonEqual(prior, built)) return saved;
   const b = asRecord(built);
   const v = asRecord(saved);
   const p = asRecord(prior);
   if (!b || !v || !p) return built;
   const next: Record<string, unknown> = {};
   for (const k of new Set([...Object.keys(b), ...Object.keys(v), ...Object.keys(p)])) {
-    const kept = same(p[k], b[k]) ? v[k] : keepUntouched(b[k], v[k], p[k]);
+    const kept = jsonEqual(p[k], b[k]) ? v[k] : keepUntouched(b[k], v[k], p[k]);
     if (kept !== undefined) next[k] = kept;
   }
   return next;
@@ -505,8 +477,8 @@ export function commitStudioEdit(
     // show (a uniform's decimal_places, a uuid's short_form).
     if (
       prior &&
-      same(prior.column_type, built.column_type) &&
-      same((prior as Record<string, unknown>).sampler_type, (built as Record<string, unknown>).sampler_type)
+      jsonEqual(prior.column_type, built.column_type) &&
+      jsonEqual((prior as Record<string, unknown>).sampler_type, (built as Record<string, unknown>).sampler_type)
     )
       kept.params = keepUntouched(kept.params, saved.params, (prior as Record<string, unknown>).params);
     if (kept.conditional_params === saved.conditional_params && conditions !== undefined)
@@ -516,8 +488,7 @@ export function commitStudioEdit(
     const formImages = (c: unknown) => (c as Record<string, unknown> | null)?.multi_modal_context;
     if (
       Array.isArray(saved.multi_modal_context) &&
-      JSON.stringify(renamedImages(formImages(prior), renames) ?? null) ===
-        JSON.stringify(formImages(built) ?? null)
+      jsonEqual(renamedImages(formImages(prior), renames) ?? null, formImages(built) ?? null)
     )
       (column as Record<string, unknown>).multi_modal_context = images;
     nodes.push({

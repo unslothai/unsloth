@@ -48,15 +48,11 @@ import {
 } from "./node-card";
 import { NODE_LOOKS } from "./node-looks";
 import { CATEGORY_TONES } from "./node-tones";
+import { lowDetailSelector } from "./node-card";
 import { CopyTextButton } from "./copy-text";
 import { outputCopyText, shownOutputIds } from "./value-kinds";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
-/** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
- *  is what keeps panning a thousand-node graph smooth. */
-const LOW_DETAIL_ZOOM = 0.45;
-const lowDetailSelector = (s: { transform: [number, number, number] }) =>
-  s.transform[2] < LOW_DETAIL_ZOOM;
 
 function portColorOf(
   colors: Record<string, string> | undefined,
@@ -320,7 +316,7 @@ function CardResizer({
   );
 }
 
-function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
+function FlowNodeViewImpl({ id, width }: NodeProps<RfNode>) {
   const [resizing, setResizing] = useState(false);
   const node = useDocStore((s) => s.graph.nodes[id]);
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
@@ -332,13 +328,15 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
   const lowDetail = useStore(lowDetailSelector);
   const cardRef = useRef<HTMLDivElement>(null);
   const [contentMin, setContentMin] = useState(0);
-  // Re-measured each render: an error or a new field row grows the floor without resizing the card.
+  // Re-measured when the content or the width changes: an error or a new field row grows the floor
+  // without resizing the card. Not on a drag frame or a selection, which would force a layout.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the deps are what the card's content reads
   useLayoutEffect(() => {
     const card = cardRef.current;
     if (!card) return;
     const next = cardContentMinHeight(card);
     if (next !== contentMin) setContentMin(next);
-  });
+  }, [node, spec, category, runtime, lowDetail, resizing, width, contentMin]);
   if (!node) return null;
   if (!spec) {
     return (

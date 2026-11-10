@@ -58,10 +58,7 @@ function readValue(
     : { value: html.slice(i + 1, close), next: close + 1 };
 }
 
-/**
- * Tokenizer attribute states: `>` inside a quoted value does not end the tag, and only an
- * attribute NAME can be `async`/`type`. Regex over tag text got both wrong.
- */
+/** Tokenizer attribute states: a quoted `>` does not end the tag; only a NAME can be async/type. */
 function readAttributes(
   html: string,
   start: number,
@@ -160,10 +157,7 @@ export type EagerSet = {
   blocking: string[];
 };
 
-/**
- * Types the browser runs as classic script: the full frozen JS MIME essence list, exact strings
- * (a parameter like `; charset=utf-8` makes it not run). mimesniff.spec.whatwg.org
- */
+/** Classic-script types: the frozen JS MIME essences, exact (a `; charset` param stops it). */
 const CLASSIC_TYPES = new Set([
   "application/ecmascript",
   "application/javascript",
@@ -296,8 +290,7 @@ function main(): number {
   const { entry, preloads, blocking } = eagerSetFromHtml(html);
   const names = [...blocking, ...entry, ...preloads];
 
-  // Shape guard: one or no Vite chunks means the build shape changed and the number is fiction.
-  // Require an entry too: preloads without an entry means the entry was mis-parsed.
+  // Shape guard: under two Vite chunks, or preloads with no entry, means the parse is wrong.
   const fromVite = entry.length + preloads.length;
   if (entry.length === 0 || fromVite < 2) {
     console.error(

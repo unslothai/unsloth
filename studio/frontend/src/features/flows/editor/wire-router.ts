@@ -406,23 +406,20 @@ function buildGrid(
   const nx = xs.length;
   const ny = ys.length;
   const size = nx * ny;
-  const blockedPoint = new Uint8Array(size);
-  const blockedH = new Uint8Array(size);
-  const blockedV = new Uint8Array(size);
-  const softH = new Uint8Array(size);
-  const softV = new Uint8Array(size);
+  const buffers = gridBuffers(size);
+  const blockedPoint = buffers.blockedPoint;
+  const blockedH = buffers.blockedH;
+  const blockedV = buffers.blockedV;
+  const softH = buffers.softH;
+  const softV = buffers.softV;
   markRects(cards, xs, ys, blockedPoint, blockedH, blockedV);
   // Two bands: close to a card costs most, the outer band a little, so a run takes the middle
   // of a gap between cards rather than either edge of it.
   markRects(outer, xs, ys, null, softH, softV, 1);
   markRects(margins, xs, ys, null, softH, softV, 2);
-  const zonePoint = new Int32Array(size).fill(-1);
-  const zoneH = new Int32Array(size).fill(-1);
-  const zoneV = new Int32Array(size).fill(-1);
+  const { zonePoint, zoneH, zoneV } = buffers;
   markZones(zones, xs, ys, zonePoint, zoneH, zoneV);
 
-  const netH = new Int32Array(size).fill(-1);
-  const netV = new Int32Array(size).fill(-1);
   return {
     xs,
     ys,
@@ -436,18 +433,77 @@ function buildGrid(
     zonePoint,
     zoneH,
     zoneV,
-    netH,
-    netV,
-    sinkH: new Int32Array(size).fill(-1),
-    sinkV: new Int32Array(size).fill(-1),
-    reservedNet: new Int32Array(size).fill(-1),
-    reservedSink: new Int32Array(size).fill(-1),
+    netH: buffers.netH,
+    netV: buffers.netV,
+    sinkH: buffers.sinkH,
+    sinkV: buffers.sinkV,
+    reservedNet: buffers.reservedNet,
+    reservedSink: buffers.reservedSink,
     inner: { x0: minX, x1: maxX, y0: minY, y1: maxY },
-    stamp: new Int32Array(size * 4),
-    closed: new Int32Array(size * 4),
-    gScore: new Float64Array(size * 4),
-    cameFrom: new Int32Array(size * 4),
-    search: 0,
+    stamp: buffers.stamp,
+    closed: buffers.closed,
+    gScore: buffers.gScore,
+    cameFrom: buffers.cameFrom,
+    search: buffers.search,
+  };
+}
+
+type GridPool = {
+  capacity: number;
+  bytes: Uint8Array[];
+  ints: Int32Array[];
+  stamp: Int32Array;
+  closed: Int32Array;
+  gScore: Float64Array;
+  cameFrom: Int32Array;
+};
+
+let pool: GridPool | null = null;
+// Searches number on across grids, so stale stamps in a reused buffer never match a new search.
+let searchCounter = 0;
+
+/** Grids made and buffer sets allocated, for the perf tests. */
+export const wireGridStats = { built: 0, allocated: 0 };
+
+// Only one grid is alive at a time, so every pass reuses one set of buffers, grown when too small.
+function gridBuffers(size: number) {
+  wireGridStats.built += 1;
+  if (!pool || pool.capacity < size || searchCounter > 0x3fffffff) {
+    const capacity = Math.max(size, pool ? pool.capacity : 0);
+    wireGridStats.allocated += 1;
+    pool = {
+      capacity,
+      bytes: Array.from({ length: 5 }, () => new Uint8Array(capacity)),
+      ints: Array.from({ length: 9 }, () => new Int32Array(capacity)),
+      stamp: new Int32Array(capacity * 4),
+      closed: new Int32Array(capacity * 4),
+      gScore: new Float64Array(capacity * 4),
+      cameFrom: new Int32Array(capacity * 4),
+    };
+    searchCounter = 0;
+  }
+  const bytes = pool.bytes.map((values) => values.subarray(0, size).fill(0));
+  const ints = pool.ints.map((values) => values.subarray(0, size).fill(-1));
+  return {
+    blockedPoint: bytes[0],
+    blockedH: bytes[1],
+    blockedV: bytes[2],
+    softH: bytes[3],
+    softV: bytes[4],
+    zonePoint: ints[0],
+    zoneH: ints[1],
+    zoneV: ints[2],
+    netH: ints[3],
+    netV: ints[4],
+    sinkH: ints[5],
+    sinkV: ints[6],
+    reservedNet: ints[7],
+    reservedSink: ints[8],
+    stamp: pool.stamp.subarray(0, size * 4),
+    closed: pool.closed.subarray(0, size * 4),
+    gScore: pool.gScore.subarray(0, size * 4),
+    cameFrom: pool.cameFrom.subarray(0, size * 4),
+    search: searchCounter,
   };
 }
 
@@ -456,30 +512,13 @@ function claim(values: Int32Array, p: number, id: number): void {
   values[p] = current === -1 || current === id ? id : -2;
 }
 
-function markNet(grid: Grid, a: number, b: number, owner: Owner): void {
+// Calls `visit` for every unit segment of a path: vertical, then its grid index.
+function forEachUnit(
+  grid: Grid,
+  points: WirePoint[],
+  visit: (vertical: boolean, p: number) => void,
+): void {
   const { ny } = grid;
-  const ai = Math.floor(a / ny);
-  const aj = a % ny;
-  const bi = Math.floor(b / ny);
-  const bj = b % ny;
-  if (aj === bj) {
-    const j = aj;
-    for (let i = Math.min(ai, bi); i < Math.max(ai, bi); i += 1) {
-      const p = i * ny + j;
-      claim(grid.netH, p, owner.net);
-      claim(grid.sinkH, p, owner.sink);
-    }
-    return;
-  }
-  const i = ai;
-  for (let j = Math.min(aj, bj); j < Math.max(aj, bj); j += 1) {
-    const p = i * ny + j;
-    claim(grid.netV, p, owner.net);
-    claim(grid.sinkV, p, owner.sink);
-  }
-}
-
-function markPath(grid: Grid, points: WirePoint[], owner: Owner): void {
   for (let k = 0; k + 1 < points.length; k += 1) {
     const ai = indexOf(grid.xs, points[k].x);
     const aj = indexOf(grid.ys, points[k].y);
@@ -488,7 +527,67 @@ function markPath(grid: Grid, points: WirePoint[], owner: Owner): void {
     if (ai < 0 || aj < 0 || bi < 0 || bj < 0 || (ai !== bi && aj !== bj)) {
       continue;
     }
-    markNet(grid, ai * grid.ny + aj, bi * grid.ny + bj, owner);
+    if (aj === bj) {
+      for (let i = Math.min(ai, bi); i < Math.max(ai, bi); i += 1) {
+        visit(false, i * ny + aj);
+      }
+    } else {
+      for (let j = Math.min(aj, bj); j < Math.max(aj, bj); j += 1) {
+        visit(true, ai * ny + j);
+      }
+    }
+  }
+}
+
+function markPath(grid: Grid, points: WirePoint[], owner: Owner): void {
+  forEachUnit(grid, points, (vertical, p) => {
+    claim(vertical ? grid.netV : grid.netH, p, owner.net);
+    claim(vertical ? grid.sinkV : grid.sinkH, p, owner.sink);
+  });
+}
+
+/**
+ * Every owner on each marked unit segment, so one wire's marks can be taken back out without
+ * re-marking every other wire. A segment's net and sink depend only on the set of owners on it.
+ */
+class Claims {
+  private owners = new Map<number, Owner[]>();
+  private grid: Grid;
+
+  constructor(grid: Grid) {
+    this.grid = grid;
+  }
+
+  add(points: WirePoint[], owner: Owner): void {
+    forEachUnit(this.grid, points, (vertical, p) => {
+      const key = p * 2 + (vertical ? 1 : 0);
+      const list = this.owners.get(key);
+      if (list) {
+        list.push(owner);
+      } else {
+        this.owners.set(key, [owner]);
+      }
+    });
+  }
+
+  remove(points: WirePoint[], owner: Owner): void {
+    const { grid } = this;
+    forEachUnit(grid, points, (vertical, p) => {
+      const list = this.owners.get(p * 2 + (vertical ? 1 : 0));
+      const at = list ? list.indexOf(owner) : -1;
+      if (!list || at < 0) {
+        return;
+      }
+      list.splice(at, 1);
+      const net = vertical ? grid.netV : grid.netH;
+      const sink = vertical ? grid.sinkV : grid.sinkH;
+      net[p] = -1;
+      sink[p] = -1;
+      for (const other of list) {
+        claim(net, p, other.net);
+        claim(sink, p, other.sink);
+      }
+    });
   }
 }
 
@@ -567,7 +666,8 @@ function searchPath(
   const { xs, ys, ny } = grid;
   const { start, startDir, goal, goalDir, owner, window, exempt, zones } = input;
   const walled = (zone: number): boolean => zone !== -1 && !zones.includes(zone);
-  grid.search += 1;
+  searchCounter = Math.max(searchCounter, grid.search) + 1;
+  grid.search = searchCounter;
   const search = grid.search;
   const goalX = xs[Math.floor(goal / ny)];
   const goalY = ys[goal % ny];
@@ -1853,7 +1953,11 @@ export function routeWires(
       }
     }
 
-    const routeOne = (index: number, searchCosts: Required<WireRouterOptions>): void => {
+    const routeOne = (
+      index: number,
+      searchCosts: Required<WireRouterOptions>,
+      claims?: Claims,
+    ): void => {
       const item = prepared[index];
       const lowX = Math.min(item.sourceStub.x, item.targetStub.x) - SEARCH_WINDOW_PAD;
       const highX = Math.max(item.sourceStub.x, item.targetStub.x) + SEARCH_WINDOW_PAD;
@@ -1879,6 +1983,7 @@ export function routeWires(
         return;
       }
       markPath(grid, points, item.owner);
+      claims?.add(points, item.owner);
       raw[index] = { key: item.key, points, blocked: false };
     };
 
@@ -1889,6 +1994,7 @@ export function routeWires(
     // Rip up and reroute: a wire that still overlaps an unrelated one is routed again with every
     // other wire in place and a steeper overlap cost.
     const rerouteCosts = { ...costs, overlapPenalty: costs.overlapPenalty * 3 };
+    let claims: Claims | null = null;
     for (let pass = 0; pass < 4; pass += 1) {
       const conflicted = findOverlaps(
         raw.map((route) => route.points),
@@ -1897,17 +2003,19 @@ export function routeWires(
       if (conflicted.length === 0) {
         break;
       }
-      for (const index of conflicted) {
-        grid.netH.fill(-1);
-        grid.netV.fill(-1);
-        grid.sinkH.fill(-1);
-        grid.sinkV.fill(-1);
-        prepared.forEach((item, other) => {
-          if (other !== index && !raw[other].blocked) {
-            markPath(grid, raw[other].points, item.owner);
+      if (!claims) {
+        claims = new Claims(grid);
+        for (let other = 0; other < raw.length; other += 1) {
+          if (!raw[other].blocked) {
+            claims.add(raw[other].points, prepared[other].owner);
           }
-        });
-        routeOne(index, rerouteCosts);
+        }
+      }
+      for (const index of conflicted) {
+        if (!raw[index].blocked) {
+          claims.remove(raw[index].points, prepared[index].owner);
+        }
+        routeOne(index, rerouteCosts, claims);
       }
     }
   }
@@ -2007,91 +2115,3 @@ function lowerIndex(values: number[], value: number): number {
  * SVG path for a routed wire: every bend rounded with up to `corner` px (0 keeps square corners),
  * and a small arc wherever it hops another wire.
  */
-export function buildWirePath(
-  points: WirePoint[],
-  hops: WirePoint[] = [],
-  radius = 4,
-  corner = 0,
-): string {
-  if (points.length === 0) {
-    return "";
-  }
-  const length = (a: WirePoint, b: WirePoint): number =>
-    Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-  // Corner k rounds the bend at points[k]; it may take at most half of either leg.
-  const corners = points.map((point, k) =>
-    k === 0 || k === points.length - 1
-      ? 0
-      : Math.min(corner, length(points[k - 1], point) / 2, length(point, points[k + 1]) / 2),
-  );
-  const toward = (from: WirePoint, to: WirePoint, distance: number): WirePoint => ({
-    x: from.x + Math.sign(to.x - from.x) * distance,
-    y: from.y + Math.sign(to.y - from.y) * distance,
-  });
-  const parts = [`M ${points[0].x} ${points[0].y}`];
-  for (let k = 0; k + 1 < points.length; k += 1) {
-    const a = points[k];
-    const b = points[k + 1];
-    const from = toward(a, b, corners[k]);
-    const to = toward(b, a, corners[k + 1]);
-    if (Math.abs(a.y - b.y) < EPS && hops.length > 0) {
-      const sign = Math.sign(b.x - a.x);
-      const onSegment = hops
-        .filter(
-          (hop) =>
-            Math.abs(hop.y - a.y) < EPS &&
-            (hop.x - from.x) * sign > radius &&
-            (to.x - hop.x) * sign > radius,
-        )
-        .sort((p, q) => (p.x - q.x) * sign);
-      for (const hop of onSegment) {
-        parts.push(`L ${hop.x - sign * radius} ${a.y}`);
-        parts.push(
-          `A ${radius} ${radius} 0 0 ${sign > 0 ? 1 : 0} ${hop.x + sign * radius} ${a.y}`,
-        );
-      }
-    }
-    parts.push(`L ${to.x} ${to.y}`);
-    if (corners[k + 1] > EPS) {
-      const next = toward(b, points[k + 2], corners[k + 1]);
-      parts.push(`Q ${b.x} ${b.y} ${next.x} ${next.y}`);
-    }
-  }
-  return parts.join(" ");
-}
-
-/** How a wire should be drawn given the cards in focus (hovered, else selected). */
-export function wireEmphasis(
-  focus: ReadonlySet<string>,
-  ends: ReadonlyArray<string>,
-): "none" | "focus" | "dim" {
-  if (focus.size === 0) {
-    return "none";
-  }
-  return ends.some((id) => focus.has(id)) ? "focus" : "dim";
-}
-
-/** Closest wire within `tolerance` of a point, with the y of the run when it is horizontal there. */
-export function findWireNear(
-  routes: Iterable<WireRoute>,
-  point: WirePoint,
-  tolerance: number,
-): { id: string; y: number | null } | null {
-  let best: { id: string; y: number | null; distance: number } | null = null;
-  for (const route of routes) {
-    const points = route.points;
-    for (let k = 0; k + 1 < points.length; k += 1) {
-      const a = points[k];
-      const b = points[k + 1];
-      const horizontal = Math.abs(a.y - b.y) < EPS;
-      const along = horizontal
-        ? point.x >= Math.min(a.x, b.x) && point.x <= Math.max(a.x, b.x)
-        : point.y >= Math.min(a.y, b.y) && point.y <= Math.max(a.y, b.y);
-      const distance = horizontal ? Math.abs(point.y - a.y) : Math.abs(point.x - a.x);
-      if (along && distance <= tolerance && (!best || distance < best.distance)) {
-        best = { id: route.id, y: horizontal ? a.y : null, distance };
-      }
-    }
-  }
-  return best ? { id: best.id, y: best.y } : null;
-}

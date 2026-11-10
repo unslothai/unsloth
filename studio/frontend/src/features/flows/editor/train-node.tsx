@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useDocStore } from "../stores/doc-store";
+import { wiresInto } from "../stores/wire-index";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import type { FlowNode } from "../types";
 import { type FieldRow, NodeFieldRows } from "./node-card";
@@ -72,9 +73,7 @@ function keyFields(node: FlowNode): FieldRow[] {
 function TrainNodeBody({ node }: { node: FlowNode }) {
   const runtime = useRuntimeStore((s) => s.nodes[node.id]) ?? IDLE_RUNTIME;
   const hasDataset = useDocStore((s) =>
-    Object.values(s.graph.edges).some(
-      (e) => e.target === node.id && e.target_port === "dataset",
-    ),
+    wiresInto(s.graph, node.id).some((e) => e.target_port === "dataset"),
   );
   const navigate = useNavigate();
   const view = trainView({

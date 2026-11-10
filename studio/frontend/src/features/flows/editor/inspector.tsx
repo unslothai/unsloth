@@ -14,6 +14,7 @@ import { Fragment, Suspense, lazy, memo, useCallback, useState } from "react";
 import { loopMembers } from "../app/app-form";
 import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
+import { wiresInto } from "../stores/wire-index";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { removeNodes } from "../recipe/recipe-actions";
@@ -137,8 +138,8 @@ function InspectorImpl() {
   const bound = useDocStore((s) => {
     if (!nodeId) return "";
     const ids: string[] = [];
-    for (const edge of Object.values(s.graph.edges))
-      if (edge.target === nodeId && edge.target_port.startsWith("param:"))
+    for (const edge of wiresInto(s.graph, nodeId))
+      if (edge.target_port.startsWith("param:"))
         ids.push(edge.target_port.slice("param:".length));
     return ids.sort().join("\n");
   });

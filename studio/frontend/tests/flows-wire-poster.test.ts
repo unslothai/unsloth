@@ -48,6 +48,6 @@ test("the same document routes the same way every time: full passes start from s
   assert.deepEqual(a, b);
   const worker = readFileSync(new URL("../src/features/flows/editor/wire-router.worker.ts", import.meta.url), "utf8");
   assert.match(worker, /request\.partial && cache\?\.scope === request\.scope \? cache\.value : undefined/);
-  const routing = readFileSync(new URL("../src/features/flows/editor/wire-routing.tsx", import.meta.url), "utf8");
+  const routing = readFileSync(new URL("../src/features/flows/editor/wire-schedule.ts", import.meta.url), "utf8");
   assert.match(routing, /if \(!node\.hidden && !\(node\.measured\.width && node\.measured\.height\)\)\s*return;/);
 });

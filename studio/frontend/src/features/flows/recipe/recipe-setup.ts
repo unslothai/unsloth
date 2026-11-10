@@ -273,6 +273,16 @@ function canvasBoxes(
   return boxes;
 }
 
+const NO_SETUP: {
+  elements: SetupElement[];
+  links: SetupLink[];
+  heights: Record<string, number>;
+} = Object.freeze({
+  elements: Object.freeze([]) as unknown as SetupElement[],
+  links: Object.freeze([]) as unknown as SetupLink[],
+  heights: Object.freeze({}),
+});
+
 /** Where each card sits: its saved spot in the group, else under the group's Recipe Dataset step, in the
  * first free space (clear of every node, note and earlier card). */
 export function setupLayout(
@@ -285,6 +295,9 @@ export function setupLayout(
   /** recipe groups whose frame grows to hold their cards: group id -> height */
   heights: Record<string, number>;
 } {
+  // Runs on every drag frame: a flow without a recipe skips the box scan and keeps one result.
+  if (!graph.groupOrder.some((id) => isRecipeGroup(graph.groups[id])))
+    return NO_SETUP;
   const elements: SetupElement[] = [];
   const links: SetupLink[] = [];
   const heights: Record<string, number> = {};
