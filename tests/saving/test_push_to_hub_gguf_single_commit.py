@@ -139,3 +139,20 @@ def test_readme_is_not_written_into_the_save_directory(push, tmp_path, monkeypat
     commit = next(kw for name, kw in calls if name == "create_commit")
     assert "Unsloth" in commit["readme"]
     assert (checkpoint / "README.md").read_text() == "my model card"
+
+
+@pytest.mark.parametrize("tags", [["my-tag", "second"], "my-tag"])
+def test_tags_go_in_the_readme_card(push, tags):
+    """HfApi has no add_tags, so tags only reach the Hub through the README card."""
+    calls = push(create_pr = True, tags = tags)
+    assert "add_tags" not in [name for name, _ in calls]
+    readme = next(kw for name, kw in calls if name == "create_commit")["readme"]
+    card_tags = huggingface_hub.ModelCard(readme).data.tags
+    assert set([tags] if isinstance(tags, str) else tags) <= set(card_tags)
+    assert {"gguf", "llama-cpp", "unsloth"} <= set(card_tags)
+
+
+def test_tags_argument_is_not_modified(push):
+    tags = ["my-tag"]
+    push(tags = tags)
+    assert tags == ["my-tag"]
