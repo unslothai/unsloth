@@ -6684,15 +6684,91 @@ _HEREDOC_INTERPRETER_RE = re.compile(
     r"(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)"
 )
 _HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;"})
-_PYTHON_FLAG_LETTERS = frozenset("bBdEhiIOPqsSuvVxR?")
+_SHELL_LINE_OPERATORS = (
+    "<<-",
+    "<<<",
+    "&&",
+    "||",
+    ";;",
+    "|&",
+    ">>",
+    "<<",
+    ">&",
+    "<&",
+    "<>",
+    ">|",
+    ";",
+    "&",
+    "|",
+    "(",
+    ")",
+    "<",
+    ">",
+)
+_PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVxR?")
+
+
+def _shell_line_tokens(line: str) -> "list | None":
+    """Bash's word split of one line as (kind, text, quoted), kind word / op / fd; adjacent quoted
+    parts concatenate. None on an unterminated quote or arithmetic expansion."""
+    tokens, word, quoted, active = [], [], False, False
+    i, n = 0, len(line)
+
+    def flush(kind = "word"):
+        nonlocal word, quoted, active
+        if active:
+            tokens.append((kind, "".join(word), quoted))
+        word, quoted, active = [], False, False
+
+    while i < n:
+        ch = line[i]
+        if ch in " \t":
+            flush()
+            i += 1
+        elif ch == "#" and not active:
+            break
+        elif ch == "\\":
+            word.append(line[i + 1 : i + 2])
+            quoted = active = True
+            i += 2
+        elif ch in "'\"":
+            j = i + 1
+            while j < n and line[j] != ch:
+                j += 2 if ch == '"' and line[j] == "\\" else 1
+            if j >= n:
+                return None
+            word.append(line[i + 1 : j])
+            quoted = active = True
+            i = j + 1
+        elif line.startswith("$((", i) or (line.startswith("((", i) and not active):
+            j = line.find("))", i)
+            if j < 0:
+                return None
+            word.append(line[i : j + 2])
+            active = True
+            i = j + 2
+        else:
+            op = next((o for o in _SHELL_LINE_OPERATORS if line.startswith(o, i)), None)
+            if op is None:
+                word.append(ch)
+                active = True
+                i += 1
+                continue
+            text = "".join(word)
+            flush("fd" if op[0] in "<>" and text.isdigit() and not quoted else "word")
+            tokens.append(("op", op, False))
+            i += len(op)
+    flush()
+    return tokens
 
 
 def _python_reads_stdin_program(words: list) -> "bool | None":
-    """CPython's option grammar: True when the program comes from stdin, False when stdin is data
-    (-c, -m, a script operand), None when the words cannot be resolved."""
+    """CPython's option grammar: True when stdin is executed (program `-`, or -i), False when it is
+    only data (-c, -m, a script operand), None when the words cannot be resolved."""
+    interactive = False
     words = iter(words)
     for word in words:
-        if any(ch in word for ch in "$`\\*?[{~"):
+        if any(ch in word for ch in "$`*?[{~"):
             return None
         if word in ("-", "/dev/stdin"):
             return True
@@ -6704,22 +6780,24 @@ def _python_reads_stdin_program(words: list) -> "bool | None":
         elif word.startswith("-"):
             for i, ch in enumerate(word[1:], 1):
                 if ch in "cm":
-                    return False
+                    return interactive
                 if ch in "WX":
                     if i == len(word) - 1:
                         next(words, None)
                     break
-                if ch not in _PYTHON_FLAG_LETTERS:
+                if ch == "i":
+                    interactive = True
+                elif ch not in _PYTHON_FLAG_LETTERS:
                     return None
         else:
-            return False
+            return interactive
     return True
 
 
 def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
-    """Heredocs taken in shell order, each owned by its simple command: Python reading its program
-    from stdin gets the body screened; other interpreters, a second stdin redirection, expansions in
-    an unquoted body, or a header that does not tokenize fail closed."""
+    """Heredocs taken in shell order, each owned by its simple command: Python executing stdin gets
+    the body screened; other interpreters, a second stdin redirection, expansions in an unquoted
+    body, or a line that does not tokenize fail closed."""
     lines = command.splitlines()
     i = 0
     while i < len(lines):
@@ -6727,40 +6805,38 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
         i += 1
         if "<<" not in line:
             continue
-        lexer = shlex.shlex(line, posix = False, punctuation_chars = True)
-        lexer.whitespace_split = True
-        try:
-            tokens = list(lexer)
-        except ValueError:
+        tokens = _shell_line_tokens(line)
+        if tokens is None:
             if _HEREDOC_INTERPRETER_RE.search(line):
                 return True
             continue
+        commands, current = [], []
+        for token in tokens:
+            if token[0] == "op" and token[1] in _HEREDOC_COMMAND_BREAKS:
+                commands.append(current)
+                current = []
+            else:
+                current.append(token)
+        commands.append(current)
         pending = []
-        start = 0
-        for end in range(len(tokens) + 1):
-            if end < len(tokens) and tokens[end] not in _HEREDOC_COMMAND_BREAKS:
-                continue
-            words = tokens[start:end]
-            start = end + 1
-            heredocs = [k for k, w in enumerate(words) if w in ("<<", "<<-")]
-            for k in heredocs:
-                dash = words[k] == "<<-"
-                raw = words[k + 1] if k + 1 < len(words) else ""
-                if raw == "-" and not dash and k + 2 < len(words):
-                    dash, raw = True, words[k + 2]
-                elif raw.startswith("-") and not dash:
-                    dash, raw = True, raw[1:]
-                quoted = any(ch in raw for ch in "'\"\\")
-                pending.append(
-                    (
-                        raw.replace("'", "").replace('"', "").replace("\\", ""),
-                        dash,
-                        quoted,
-                        words,
-                        k,
-                    )
-                )
-        for delimiter, dash, quoted, words, k in pending:
+        for words in commands:
+            names, stdin_redirects, expect = [], 0, None
+            for kind, text, quoted in words:
+                if kind == "op":
+                    stdin_redirects += text[0] == "<"
+                    expect = "heredoc" if text in ("<<", "<<-") else "target"
+                    if expect == "heredoc":
+                        pending.append([None, text == "<<-", False, None])
+                elif expect:
+                    if expect == "heredoc" and kind == "word":
+                        pending[-1][0], pending[-1][2] = text, quoted
+                    expect = None
+                elif kind == "word":
+                    names.append(text)
+            for heredoc in pending:
+                if heredoc[3] is None:
+                    heredoc[3] = (names, stdin_redirects)
+        for delimiter, dash, quoted, (names, stdin_redirects) in pending:
             body = []
             while i < len(lines):
                 text = lines[i].lstrip("\t") if dash else lines[i]
@@ -6768,25 +6844,21 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 if text == delimiter:
                     break
                 body.append(text)
-            names = [os.path.basename(w.strip("'\"")) for w in words[:k]]
             at = next(
-                (n for n, w in enumerate(names) if _HEREDOC_INTERPRETER_RE.fullmatch(w)), None
+                (
+                    n
+                    for n, w in enumerate(names)
+                    if _HEREDOC_INTERPRETER_RE.fullmatch(os.path.basename(w))
+                ),
+                None,
             )
             if at is None:
                 continue
-            if any(w.startswith("<") for n, w in enumerate(words) if n != k):
+            if stdin_redirects > 1 or any("PYTHONINSPECT" in w for w in names[:at]):
                 return True
-            if not names[at].lower().startswith(("python", "pypy")) or depth >= 3:
+            if not os.path.basename(names[at]).lower().startswith(("python", "pypy")) or depth >= 3:
                 return True
-            args, skip = [], False
-            for w in words[at + 1 :]:
-                if skip or w.isdigit():
-                    skip = False
-                elif w[:1] in "<>":
-                    skip = True
-                else:
-                    args.append(w.replace("'", "").replace('"', ""))
-            reads = _python_reads_stdin_program(args)
+            reads = _python_reads_stdin_program(names[at + 1 :])
             if reads is None:
                 return True
             if not reads:
