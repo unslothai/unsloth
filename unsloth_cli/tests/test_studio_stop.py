@@ -561,7 +561,12 @@ def test_stop_does_not_sleep_when_the_server_is_already_gone(monkeypatch, tmp_pa
     assert not (tmp_path / "studio-8901-8550.pid").exists()
 
 
-def test_stop_still_waits_ten_half_second_steps(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "platform, steps", [("linux", [0.05] * 100), ("darwin", [0.05] * 100), ("win32", [0.5] * 10)]
+)
+def test_stop_waits_the_same_five_seconds_for_a_server_that_keeps_running(
+    monkeypatch, tmp_path, platform, steps
+):
     studio_mod = _studio()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
     monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
@@ -569,10 +574,30 @@ def test_stop_still_waits_ten_half_second_steps(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_mod.time, "sleep", sleeps.append)
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
-    monkeypatch.setattr(studio_mod.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(studio_mod, "_signal_stop", lambda pid: None)
+    monkeypatch.setattr(sys, "platform", platform)
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+
+    result = _run_stop(studio_mod)
+
+    assert sleeps == steps
+    assert "is shutting down" in result.output
+
+
+def test_stop_returns_within_one_short_step_once_a_posix_server_exits(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
+    sleeps = []
+    monkeypatch.setattr(studio_mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: len(sleeps) < 3)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
+    monkeypatch.setattr(studio_mod, "_signal_stop", lambda pid: None)
     monkeypatch.setattr(sys, "platform", "linux")
     _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
 
-    _run_stop(studio_mod)
+    result = _run_stop(studio_mod)
 
-    assert sleeps == [0.5] * 10
+    assert result.exit_code == 0, result.output
+    assert sleeps == [0.05] * 3
+    assert "stopped (1)" in result.output
