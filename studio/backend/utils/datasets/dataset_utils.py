@@ -454,7 +454,9 @@ def _format_dataset(
         raw_result = prepare_raw_text_dataset(
             dataset,
             split_name = split_name,
-            eos_token = getattr(tokenizer, "eos_token", None),
+            # A processor without Unsloth's patch (MLX VLM) keeps eos_token on its inner tokenizer.
+            eos_token = getattr(tokenizer, "eos_token", None)
+            or getattr(getattr(tokenizer, "tokenizer", None), "eos_token", None),
             append_eos = auto_raw,
             text_column = raw_text_column,
         )

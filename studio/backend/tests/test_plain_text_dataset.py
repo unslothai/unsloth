@@ -140,6 +140,15 @@ def test_auto_raw_text_rows_end_in_eos(column):
         ]
 
 
+def test_auto_raw_text_reads_eos_from_a_processors_tokenizer():
+    processor = SimpleNamespace(tokenizer = SimpleNamespace(eos_token = "<|im_end|>"))
+    info = format_and_template_dataset(
+        _text_dataset(), model_name = "unsloth/test", tokenizer = processor
+    )
+
+    assert all(text.endswith("<|im_end|>") for text in info["dataset"]["text"])
+
+
 def test_explicit_raw_leaves_eos_to_the_trainer():
     info = format_and_template_dataset(
         _text_dataset(),
