@@ -6712,8 +6712,13 @@ _HEREDOC_INTERPRETER_MENTION_RE = re.compile(
     r"(?<![\w.-])(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)(?![\w-])"
 )
 _COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
-_COMMAND_WRAPPERS = frozenset({"env", "command", "nohup", "time", "nice", "stdbuf", "sudo"})
 _HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
+
+
+def _heredoc_name(word: str) -> str:
+    return re.sub(r"\.exe$", "", ntpath.basename(word), flags = re.IGNORECASE)
+
+
 # Commands that only read a heredoc as data; any other owner may forward stdin to an interpreter.
 _HEREDOC_DATA_COMMANDS = frozenset(
     {
@@ -6911,17 +6916,24 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 return True
             if mentioned and not quoted and re.search(r"[$`]|\\\n", "\n".join(body) + "\n"):
                 return True
-            command_word, wrapped = "", False
+            command_word, wrapper, skip = "", "", False
             for w in names:
-                if re.match(r"\w+=", w) or (wrapped and w.startswith("-")):
+                if skip:
+                    skip = False
+                elif re.match(r"\w+=", w):
                     continue
-                if os.path.basename(w) not in _COMMAND_WRAPPERS:
+                elif wrapper and w.startswith("-"):
+                    skip = w in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, ())
+                elif wrapper == "timeout" and _WRAPPER_DURATION_RE.match(w):
+                    wrapper = "timeout:"
+                elif _heredoc_name(w) in _COMMAND_PREFIXES:
+                    wrapper = _heredoc_name(w)
+                else:
                     command_word = w
                     break
-                wrapped = True
             if mentioned and names[-1:] == ["exec"]:
                 return True
-            if os.path.basename(command_word) in _HEREDOC_DATA_COMMANDS:
+            if _heredoc_name(command_word) in _HEREDOC_DATA_COMMANDS:
                 continue
             if mentioned and (
                 not command_word
@@ -6933,11 +6945,11 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 (
                     n
                     for n, w in enumerate(names)
-                    if _HEREDOC_INTERPRETER_RE.fullmatch(os.path.basename(w))
+                    if _HEREDOC_INTERPRETER_RE.fullmatch(_heredoc_name(w))
                 ),
                 None,
             )
-            if any(_HEREDOC_SHELL_RE.fullmatch(os.path.basename(w)) for w in names):
+            if any(_HEREDOC_SHELL_RE.fullmatch(_heredoc_name(w)) for w in names):
                 body_text = "\n".join(body)
                 if (
                     depth >= 3
@@ -6947,14 +6959,14 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                     return True
                 continue
             if at is None:
-                if mentioned and os.path.basename(command_word) not in _HEREDOC_DATA_COMMANDS:
+                if mentioned and _heredoc_name(command_word) not in _HEREDOC_DATA_COMMANDS:
                     return True
                 continue
             if stdin_redirects > 1 or any("PYTHONINSPECT" in w for w in names[:at]):
                 return True
-            if not os.path.basename(names[at]).lower().startswith(("python", "pypy")) or depth >= 3:
+            if not _heredoc_name(names[at]).lower().startswith(("python", "pypy")) or depth >= 3:
                 return True
-            if any(_HEREDOC_INTERPRETER_RE.fullmatch(os.path.basename(w)) for w in names[at + 1 :]):
+            if any(_HEREDOC_INTERPRETER_RE.fullmatch(_heredoc_name(w)) for w in names[at + 1 :]):
                 return True
             reads = _python_reads_stdin_program(names[at + 1 :])
             if reads is None:
