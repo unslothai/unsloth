@@ -131,7 +131,7 @@ def test_diffusion_load_settles_vram_outside_the_lock():
 
     src = inspect.getsource(LlamaCppBackend.load_model)
     branch = src[src.index("if self._is_diffusion:") :]
-    settle = branch.index("self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)")
+    settle = branch.index("self._wait_for_vram_settle(")
     assert settle < branch.index("with self._lock:") < branch.index("_start_diffusion_server(")
 
 
