@@ -722,16 +722,20 @@ async def poll_job(
     parse: Callable[[Any], tuple[str, Optional[dict], Optional[str]]],
     cancel: Optional[Callable[[], Awaitable[None]]] = None,
     interval: float = 5.0,
+    settle: bool = False,
 ) -> Any:
     """Follow a started Studio job until it ends and return its last status payload.
 
     ``parse(payload)`` gives (state, progress, error): state is running, completed, failed or cancelled, progress the
     ``ctx.progress`` keywords (or None) and error the failure message. It may raise FlowNodeError itself. ``cancel``
-    stops the job when the run is cancelled."""
+    stops the job when the run is cancelled. The first poll is immediate unless ``settle``: a status route shared
+    by every job can still describe the previous one right after a start."""
     if cancel is not None:
         ctx.on_cancel(cancel)
+    delay = interval if settle else 0.0
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(delay)
+        delay = interval
         payload = await status()
         state, progress, error = parse(payload)
         if progress:
@@ -1254,8 +1258,10 @@ async def generate_image(
         body["seeds"] = [(start + i) % (2**32) for i in range(count)]
     elif base_seed is not None:
         body["seed"] = base_seed
+    init_bytes = b""
     if init_image is not None:
-        body["init_image"] = await data_url(ctx, init_image)
+        init_bytes, init_mime = await media_bytes(ctx, init_image)
+        body["init_image"] = f"data:{init_mime};base64,{base64.b64encode(init_bytes).decode()}"
         if strength is not None and workflow is None:
             body["strength"] = float(strength)
         body.pop("width", None)
@@ -1267,7 +1273,7 @@ async def generate_image(
     if upscale:
         body["upscale"] = float(upscale)
     if mask is not None:
-        body["mask_image"] = await _mask_data_url(ctx, mask, init_image)
+        body["mask_image"] = await _mask_data_url(ctx, mask, init_bytes)
     if control is not None:
         body["controlnet"] = {
             "id": control["id"],
@@ -1407,9 +1413,8 @@ def upright_size(data: bytes) -> tuple[int, int]:
     return exif_upright(Image.open(io.BytesIO(data))).size
 
 
-async def _mask_data_url(ctx: Any, mask: dict, init_image: dict) -> str:
+async def _mask_data_url(ctx: Any, mask: dict, init_bytes: bytes) -> str:
     mask_bytes, _ = await media_bytes(ctx, mask)
-    init_bytes, _ = await media_bytes(ctx, init_image)
     size = await asyncio.to_thread(upright_size, init_bytes)
     fitted, original = await asyncio.to_thread(_fit_mask, mask_bytes, size)
     if original is not None:
@@ -1470,6 +1475,7 @@ async def ensure_segmenter(ctx: Any) -> None:
         parse = parse,
         cancel = cancel,
         interval = 2.0,
+        settle = True,
     )
 
 
@@ -1524,38 +1530,62 @@ def _trim(im: Any) -> Any:
 
 def chroma_key(data: bytes, tolerance: int = 40) -> tuple[bytes, bytes]:
     """Cut out the subject by removing the border colour (a fallback when SAM 3 is not available)."""
-    from PIL import Image, ImageDraw
+    import numpy as np
+    from PIL import Image
 
     im = Image.open(io.BytesIO(data)).convert("RGBA")
     w, h = im.size
-    work = im.convert("RGB")
-    mask = Image.new("L", (w, h), 255)
-    seeds = [
-        (0, 0),
-        (w - 1, 0),
-        (0, h - 1),
-        (w - 1, h - 1),
-        (w // 2, 0),
-        (w // 2, h - 1),
-        (0, h // 2),
-        (w - 1, h // 2),
-    ]
-    marker = (255, 0, 255)
-    for seed in seeds:
-        if work.getpixel(seed) == marker:
+    work = np.asarray(im.convert("RGB")).astype(np.int16)
+    seeds = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w // 2, 0), (w // 2, h - 1), (0, h // 2), (w - 1, h // 2)]  # fmt: skip
+    marker = np.array((255, 0, 255), dtype = np.int16)
+    for x, y in seeds:
+        background = work[y, x].copy()
+        if np.abs(marker - background).sum() <= tolerance:
             continue
-        ImageDraw.floodfill(work, seed, marker, thresh = tolerance)
-    pixels = work.load()
-    mpx = mask.load()
-    for y in range(h):
-        for x in range(w):
-            if pixels[x, y] == marker:
-                mpx[x, y] = 0
+        # What ImageDraw.floodfill fills: the 4-connected region of colours within the 1-norm tolerance.
+        region = _seed_region(np.abs(work - background).sum(axis = -1) <= tolerance, x, y)
+        work[region] = marker
+    mask = Image.fromarray(np.where((work == marker).all(axis = -1), 0, 255).astype(np.uint8), "L")
     im.putalpha(mask)
     out, mask_out = io.BytesIO(), io.BytesIO()
     im.save(out, "PNG")
     mask.save(mask_out, "PNG")
     return out.getvalue(), mask_out.getvalue()
+
+
+def _seed_region(candidates: Any, x: int, y: int) -> Any:
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return _flood_region(candidates, x, y)
+    labels, _ = ndimage.label(candidates)
+    return labels == labels[y, x]
+
+
+def _flood_region(candidates: Any, x: int, y: int) -> Any:
+    """``ndimage.label``'s seed component without scipy: a row-span flood fill."""
+    import numpy as np
+
+    h, w = candidates.shape
+    region = np.zeros_like(candidates, dtype = bool)
+    stack = [(x, y)]
+    while stack:
+        x, y = stack.pop()
+        if region[y, x] or not candidates[y, x]:
+            continue
+        row, done = candidates[y], region[y]
+        left = x
+        while left > 0 and row[left - 1] and not done[left - 1]:
+            left -= 1
+        right = x
+        while right < w - 1 and row[right + 1] and not done[right + 1]:
+            right += 1
+        done[left : right + 1] = True
+        for ny in (y - 1, y + 1):
+            if 0 <= ny < h:
+                fresh = candidates[ny, left : right + 1] & ~region[ny, left : right + 1]
+                stack.extend((left + int(i), ny) for i in np.flatnonzero(fresh))
+    return region
 
 
 async def remove_background(
