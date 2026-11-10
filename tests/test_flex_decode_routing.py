@@ -95,6 +95,23 @@ def test_static_decode_steps_use_flex_decode_and_prefill_keeps_sdpa(flex_on):
     assert model.config._attn_implementation == "sdpa"
 
 
+def test_requested_attention_weights_keep_the_model_attention(flex_on, monkeypatch):
+    # Flex decode returns no attention weights: output_attentions keeps every step on the model's attention.
+    monkeypatch.setenv(FD.ENV, "1")
+    for kwargs in (
+        {"output_attentions": True},
+        {"generation_config": types.SimpleNamespace(output_attentions = True)},
+    ):
+        model = _model("gemma4_text", "eager")
+        assert vision._wants_attentions(model, kwargs)
+        with _NonFlexGenerate(model, flex_decode = not vision._wants_attentions(model, kwargs)):
+            _steps(model, _Static())
+        assert model.seen == ["eager", "eager", "eager"], kwargs
+    assert not vision._wants_attentions(
+        _model("gemma4_text", "eager"), {"output_attentions": False}
+    )
+
+
 def test_auto_routes_only_graph_planned_calls(flex_on, monkeypatch):
     # Eager flex decode is slower than SDPA: auto switches only calls that decode through CUDA graphs, =1 forces.
     import unsloth.models._decode_graphs as G

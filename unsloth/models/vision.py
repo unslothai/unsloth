@@ -1694,13 +1694,21 @@ def _model_device(model):
         return None
 
 
-def _generate_routes(model):
+def _wants_attentions(model, kwargs):
+    if kwargs.get("output_attentions") is not None:
+        return bool(kwargs["output_attentions"])
+    config = kwargs.get("generation_config") or getattr(model, "generation_config", None)
+    return bool(getattr(config, "output_attentions", False))
+
+
+def _generate_routes(model, flex_decode = True):
     """(config, prefill attention, decode attention) per text attention config the generate call switches.
     Flex-preferred configs prefill on flex and decode on flex decode or the non-flex path; other configs of a
-    flex-decode model keep their attention for prefill and decode on flex decode."""
+    flex-decode model keep their attention for prefill and decode on flex decode. flex_decode=False (attention
+    weights requested: flex decode returns none) keeps every decode on its non-flex attention."""
     routes = [(c, "flex_attention", _NON_FLEX_DECODE) for c in _flex_generate_configs(model)]
     config = getattr(model, "config", None)
-    if config is None or not _flex_decode.wanted(_model_device(model)):
+    if config is None or not flex_decode or not _flex_decode.wanted(_model_device(model)):
         return routes
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
     if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
@@ -1737,8 +1745,13 @@ def _step_query_length(model_inputs):
 class _NonFlexGenerate:
     """Threads are serialised per model: they share one config, switched between mask build and forward."""
 
-    def __init__(self, model):
+    def __init__(
+        self,
+        model,
+        flex_decode = True,
+    ):
         self.model = model
+        self.flex_decode = flex_decode
         self.active = False
         self.serial = None
         self.base = model.get_base_model() if hasattr(model, "get_base_model") else model
@@ -1792,7 +1805,7 @@ class _NonFlexGenerate:
         state = self.model.__dict__
         with _FLEX_GENERATE_LOCK:
             routed = _FLEX_GENERATE_ROUTING.get(self.base, 0) > 0 or bool(
-                _generate_routes(self.model)
+                _generate_routes(self.model, self.flex_decode)
             )
             serial = None
             if routed:
@@ -1806,7 +1819,7 @@ class _NonFlexGenerate:
         with _FLEX_GENERATE_LOCK:
             depth = state.get("_unsloth_non_flex_generate", 0)
             if depth == 0:
-                configs = _generate_routes(self.model)
+                configs = _generate_routes(self.model, self.flex_decode)
                 if not configs:
                     self._release()
                     return self
@@ -2543,7 +2556,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     def _run(scope, plan):
         with (
-            _NonFlexGenerate(self),
+            _NonFlexGenerate(self, flex_decode = not _wants_attentions(self, kwargs)),
             decode_scope,
             scope,
             _decode_graphs.plan_scope(plan),
