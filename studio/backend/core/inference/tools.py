@@ -6913,6 +6913,8 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
             command_word = next((w for w in names if not re.match(r"\w+=", w)), "")
             if mentioned and names[-1:] == ["exec"]:
                 return True
+            if os.path.basename(command_word) in _HEREDOC_DATA_COMMANDS:
+                continue
             if mentioned and (
                 not command_word
                 or command_word in _COMPOUND_CLOSERS

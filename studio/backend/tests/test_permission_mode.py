@@ -1174,6 +1174,7 @@ def test_terminal_high_risk_classifier(command, high_risk):
             True,
         ),
         ("cat <<EOF > f\n$HOME\nEOF", False),
+        ("grep python3 <<'EOF'\nINFO python3 finished successfully\nEOF", False),
         ("python3 - <<'PY'\n# -*- coding: utf-8 -*-\nprint(1)\nPY", False),
         ("env bash <<'SH'\npython3 - <<'PY'\nimport shutil; shutil.rmtree('build')\nPY\nSH", True),
         (
