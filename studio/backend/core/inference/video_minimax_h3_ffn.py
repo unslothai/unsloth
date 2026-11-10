@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 SwiGLU MLP on the int8 ConvRot GEMM swap: the down projection reads the value / gate halves straight
-from the input projection's output (``rotq_h16x``), so ``value * silu(gate)`` is never written and read back.
-Checked per call; anything else (hooks, dropout, an unswapped or unrotated down projection, an unarmed card) runs
-the stock ``FeedForward.forward``. Kill switch ``UNSLOTH_H3_FUSED_SWIGLU=0``."""
+"""MiniMax-H3 SwiGLU MLP: the int8 down projection reads value / gate halves straight from the input projection
+(``rotq_h16x``); anything ineligible per call runs the stock forward. Kill switch ``UNSLOTH_H3_FUSED_SWIGLU=0``."""
 
 from __future__ import annotations
 
@@ -43,7 +41,6 @@ def _classes() -> bool:
 
 
 def _eligible(module: Any) -> bool:
-    """A diffusers ``FeedForward(activation_fn="swiglu")``: [SwiGLU, Dropout, Linear] plus trailing Dropouts."""
     if not _classes() or type(module) is not _CLS["ff"]:
         return False
     net = getattr(module, "net", None)
@@ -102,9 +99,7 @@ def install(
     device: Any = None,
     logger: Any = None,
 ) -> int:
-    """After the int8 GEMM swap, before the first (compiled) forward: patch every eligible SwiGLU MLP of the H3
-    denoiser and arm ``rotq_h16x`` on ``device``'s card (now when ``rotq_h16`` is already armed there, else right
-    before the first forward). Returns the patched count; 0 under the kill switch."""
+    """Call after the int8 GEMM swap, before the first (compiled) forward. Returns the patched count."""
     if transformer is None or not fused_swiglu_enabled():
         return 0
     modules = getattr(transformer, "modules", None)

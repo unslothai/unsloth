@@ -107,20 +107,17 @@ def test_kill_switch_keeps_stock(env, monkeypatch):
 def test_per_call_gates_run_stock(env):
     torch, ffn, build, calls = env
     x = _x(torch)
-    # down projection not swapped
     h = build(swapped = False)
     with torch.no_grad():
         ref = h(x)
         ffn.install(h)
         assert torch.equal(h(x), ref)
     assert calls["producer"] == 0
-    # live dropout
     h = build()
     h.ff.net[1].p = 0.5
     h.ff.net[1].train()
     ffn.install(h)
     assert not ffn._ready(h.ff)
-    # a hook on the SwiGLU the fused path would skip
     h = build()
     with torch.no_grad():
         ref = h(x)
