@@ -7887,10 +7887,7 @@ def _monitor_anthropic_response(
 
         def _watch(line: str) -> None:
             nonlocal terminal
-            if (
-                _monitor_anthropic_sse_line(monitor_id, line.strip(), context_length)
-                == "error"
-            ):
+            if _monitor_anthropic_sse_line(monitor_id, line.strip(), context_length) == "error":
                 terminal = True
 
         try:
@@ -31078,9 +31075,7 @@ async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
     decoder = SSELineDecoder()
 
     def _record(line: str) -> None:
-        if line.startswith("data:") and (
-            '"tool_calls"' in line or '"extra_content"' in line
-        ):
+        if line.startswith("data:") and ('"tool_calls"' in line or '"extra_content"' in line):
             try:
                 recorder.chunk(json.loads(line[5:]))
             except ValueError:

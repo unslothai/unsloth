@@ -14,12 +14,12 @@ from core.inference.sse import SSEDecoder, SSELineDecoder, iter_sse_lines
 # text that a split lands inside a UTF-8 sequence somewhere no matter where the cut falls.
 STREAM = (
     b": keep-alive\n\n"
-    b"data: {\"choices\":[{\"delta\":{\"content\":\"h\xc3\xa9llo \xe4\xb8\x96\xe7\x95\x8c\"}}]}\r\n"
+    b'data: {"choices":[{"delta":{"content":"h\xc3\xa9llo \xe4\xb8\x96\xe7\x95\x8c"}}]}\r\n'
     b"\r\n"
-    b"data:{\"choices\":[{\"delta\":{\"content\":\"no space\"}}]}\n"
+    b'data:{"choices":[{"delta":{"content":"no space"}}]}\n'
     b"\n"
-    b"data: {\"part\":\"one\"}\r"
-    b"data:{\"part\":\"two\"}\r"
+    b'data: {"part":"one"}\r'
+    b'data:{"part":"two"}\r'
     b"\r"
     b"data: [DONE]\r\n\r\n"
 )
@@ -104,9 +104,7 @@ def test_split_inside_utf8_sequence_produces_no_replacement_char():
 @pytest.mark.parametrize("cut", [1, 2, 3])
 def test_split_inside_four_byte_utf8_sequence(cut):
     emoji = b"\xf0\x9f\x98\x80"
-    events = _reframe_events(
-        [b'data: {"t":"x' + emoji[:cut], emoji[cut:] + b'"}\n\n']
-    )
+    events = _reframe_events([b'data: {"t":"x' + emoji[:cut], emoji[cut:] + b'"}\n\n'])
     (payload,) = events
     assert json.loads(payload)["t"].encode("utf-8") == b"x\xf0\x9f\x98\x80"
 
@@ -280,10 +278,7 @@ def _aiter(pieces):
 
 def test_iter_sse_lines_accepts_str_pieces_and_yields_tail():
     async def _run():
-        return [
-            line
-            async for line in iter_sse_lines(_aiter([b"data: 1\n\n", "data: tail"]))
-        ]
+        return [line async for line in iter_sse_lines(_aiter([b"data: 1\n\n", "data: tail"]))]
 
     assert asyncio.run(_run()) == ["data: 1", "", "data: tail"]
 
