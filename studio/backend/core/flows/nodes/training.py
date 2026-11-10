@@ -249,6 +249,7 @@ async def finetune(ctx: NodeContext) -> dict:
         parse = parse,
         cancel = cancel,
         interval = POLL_S,
+        settle = True,
     )
     slot = _training(payload if isinstance(payload, dict) else {})
     details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
@@ -489,6 +490,50 @@ def trained_system_prompt(config: dict) -> str:
     return ""
 
 
+# (run, lookup, its arguments) -> answer: a run asks the Hub and reads a dataset once, however many of its
+# steps key on them.
+_RUN_MEMO: dict[tuple, Any] = {}
+RUN_MEMO_MAX = 256
+
+
+async def _per_run(
+    ctx: NodeContext,
+    fn: Any,
+    *args: Any,
+    files: Optional[str] = None,
+) -> Any:
+    """``fn(*args)`` off the event loop, once per run; ``files`` (a path or glob) keys it on their sizes and times too."""
+    import hashlib
+
+    run = getattr(ctx, "run_id", None)
+    if not run:
+        return await asyncio.to_thread(fn, *args)
+    seen = await asyncio.to_thread(_stat_signature, files) if files is not None else None
+    raw = json.dumps([args, seen], sort_keys = True, default = str)
+    key = (run, fn, hashlib.sha256(raw.encode()).hexdigest())
+    if key in _RUN_MEMO:
+        return _RUN_MEMO[key]
+    value = await asyncio.to_thread(fn, *args)
+    if len(_RUN_MEMO) >= RUN_MEMO_MAX:
+        _RUN_MEMO.pop(next(iter(_RUN_MEMO)))
+    _RUN_MEMO[key] = value
+    return value
+
+
+def _stat_signature(path: str) -> list:
+    import glob
+
+    found = []
+    for file in sorted(glob.glob(path)) if "*" in path else [path]:
+        try:
+            st = os.stat(file)
+        except OSError:
+            found.append([file, None])
+            continue
+        found.append([file, st.st_size, st.st_mtime_ns])
+    return found
+
+
 def _hub_revision(dataset: dict, token: Any) -> Optional[str]:
     from huggingface_hub import HfApi
     return HfApi().dataset_info(str(dataset["ref"]), token = token).sha
@@ -617,19 +662,19 @@ async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
         # New weights pushed to the same Hub repo must train again too.
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            found["base_model_revision"] = await asyncio.to_thread(_hub_model_revision, base, token)
+            found["base_model_revision"] = await _per_run(ctx, _hub_model_revision, base, token)
             loaded = {}
             for repo in _loader_repos(base, _loads_4bit(ctx.params, base)):
                 # The loader may fetch a 4-bit or 16-bit mirror instead: its changes count too.
-                loaded[repo] = await asyncio.to_thread(_hub_model_revision, repo, token)
+                loaded[repo] = await _per_run(ctx, _hub_model_revision, repo, token)
                 if not loaded[repo]:
                     return None
             if loaded:
                 found["loader_revisions"] = loaded
             if not found["base_model_revision"]:
                 return None
-            under = await asyncio.to_thread(
-                _hub_adapter_base, base, found["base_model_revision"], token
+            under = await _per_run(
+                ctx, _hub_adapter_base, base, found["base_model_revision"], token
             )
         except Exception:
             return None
@@ -742,12 +787,13 @@ async def dataset_material(ctx: NodeContext) -> Optional[dict]:
         return None
     if dataset.get("source") == "hf":
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
-        sha = await asyncio.to_thread(_hub_revision, dataset, token)
+        sha = await _per_run(ctx, _hub_revision, {"ref": dataset["ref"]}, token)
         return {"hub": sha} if sha else None
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset["ref"]):
         # A recipe job id names one run's rows and is never reused.
         return {"job": str(dataset["ref"])}
-    found = await asyncio.to_thread(_content_hash, local_seed_path(dataset["ref"]))
+    path = local_seed_path(dataset["ref"])
+    found = await _per_run(ctx, _content_hash, path, files = path)
     return {"sha256": found} if found else None
 
 
@@ -1139,55 +1185,29 @@ def _is_csv(dataset: dict) -> bool:
 async def _upload_parquet(ctx: NodeContext, table: Any, name: str) -> dict:
     import io
 
-    from core.flows.nodes.data import upload_ref
+    from core.flows.nodes.data import upload_dataset
 
     out = io.BytesIO()
     table.to_parquet(out)
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
-    saved = await ctx.call(
-        "POST",
-        "/api/hub/datasets/upload",
-        files = {"file": (f"{name}.parquet", out.getvalue(), "application/octet-stream")},
+    return await upload_dataset(
+        ctx, name, "parquet", out.getvalue(), len(table), sorted(table.column_names)
     )
-    stored = saved.get("stored_path") if isinstance(saved, dict) else None
-    if not isinstance(stored, str) or not stored:
-        raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
-    return {
-        "kind": "dataset",
-        "source": "local",
-        "ref": upload_ref(stored),
-        "rows": len(table),
-        "columns": sorted(table.column_names),
-    }
 
 
 async def _upload_csv(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     import csv
     import io
 
-    from core.flows.nodes.data import upload_ref
+    from core.flows.nodes.data import upload_dataset
 
     columns = list(dict.fromkeys(k for r in rows for k in r))
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames = columns)
     writer.writeheader()
     writer.writerows({k: "" if v is None else v for k, v in r.items()} for r in rows)
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
-    saved = await ctx.call(
-        "POST",
-        "/api/hub/datasets/upload",
-        files = {"file": (f"{name}.csv", out.getvalue().encode(), "application/octet-stream")},
+    return await upload_dataset(
+        ctx, name, "csv", out.getvalue().encode(), len(rows), sorted(columns)
     )
-    stored = saved.get("stored_path") if isinstance(saved, dict) else None
-    if not isinstance(stored, str) or not stored:
-        raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
-    return {
-        "kind": "dataset",
-        "source": "local",
-        "ref": upload_ref(stored),
-        "rows": len(rows),
-        "columns": sorted(columns),
-    }
 
 
 def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:

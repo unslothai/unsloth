@@ -255,11 +255,36 @@ def chat_model_name(ctx: Any) -> str:
 MULTI_MODEL_MODES = ("fit", "always")
 
 
+class Residency:
+    """One read of what each slot holds (chat, image and video status), shared by the checks of one model step;
+    a load drops it so the next check reads again."""
+
+    __slots__ = ("_caller", "_read")
+
+    def __init__(self, ctx: Any):
+        self._caller = _caller(ctx)
+        self._read: Optional[tuple[dict, dict]] = None
+
+    async def get(self) -> tuple[dict, dict]:
+        from studio_mcp import loading
+        if self._read is None:
+            self._read = await loading._resident(self._caller)
+        return self._read
+
+    def drop(self) -> None:
+        self._read = None
+
+
+async def _resident(ctx: Any, snap: Optional[Residency]) -> tuple[dict, dict]:
+    return await (snap or Residency(ctx)).get()
+
+
 async def _alongside(
     ctx: Any,
     repo: str,
     variant: Optional[str],
     options: Optional[dict] = None,
+    snap: Optional[Residency] = None,
 ) -> Optional[dict]:
     """Under Keep multiple models loaded (fit or always), serve ``repo`` from its own slot beside the primary chat
     model instead of replacing it: bind to it when it is already kept alongside, else load it alongside. None means
@@ -267,7 +292,7 @@ async def _alongside(
     from studio_mcp import loading
 
     try:
-        _slots, status = await loading._resident(_caller(ctx))
+        _slots, status = await _resident(ctx, snap)
     except Exception:
         return None
     if status.get("multi_model_mode") not in MULTI_MODEL_MODES:
@@ -319,6 +344,8 @@ async def _alongside(
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
+    if snap is not None:
+        snap.drop()
     ctx.resident.clear()
     _alongside_loaded(before)[repo.lower()] = options_hash(options)
     note_loaded(ctx, "llm", repo)
@@ -327,13 +354,16 @@ async def _alongside(
     return {"repo": repo, "variant": variant}
 
 
-async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
+async def resident_name(
+    ctx: Any,
+    model_kind: str,
+    snap: Optional[Residency] = None,
+) -> Optional[str]:
     from core.flows.engine import MODEL_SLOT
-    from studio_mcp import loading
 
     slot = MODEL_SLOT.get(model_kind, model_kind)
     try:
-        slots = await loading.resident_slots(_caller(ctx))
+        slots, _status = await _resident(ctx, snap)
     except Exception:
         return None
     names = slots.get(slot) or []
@@ -439,7 +469,12 @@ def options_hash(options: Optional[dict]) -> Optional[str]:
     ]
 
 
-async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
+async def _resident_variant(
+    ctx: Any,
+    slot: str,
+    repo: str,
+    snap: Optional[Residency] = None,
+) -> Optional[str]:
     if slot != "llm":
         loaded = _LOADED_VARIANT.get(slot)
         if not loaded or loaded[0] != repo.lower():
@@ -448,22 +483,18 @@ async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
             _LOADED_VARIANT.pop(slot, None)
             return None
         return loaded[1]
-    from studio_mcp import loading
-
     try:
-        _slots, status = await loading._resident(_caller(ctx))
+        _slots, status = await _resident(ctx, snap)
     except Exception:
         return None
     variant = status.get("gguf_variant")
     return variant.lower() if isinstance(variant, str) else None
 
 
-async def resident_gguf_variant(ctx: Any) -> Optional[str]:
+async def resident_gguf_variant(ctx: Any, snap: Optional[Residency] = None) -> Optional[str]:
     """The quant the loaded chat model runs, as its status spells it, or None."""
-    from studio_mcp import loading
-
     try:
-        _slots, status = await loading._resident(_caller(ctx))
+        _slots, status = await _resident(ctx, snap)
     except Exception:
         return None
     variant = status.get("gguf_variant") if isinstance(status, dict) else None
@@ -483,22 +514,27 @@ async def ensure_model(
     decoding); the model counts as resident only when it was loaded with the same settings. ``primary``
     puts it in Chat's main slot even under Keep multiple models loaded, for a caller (a recipe job)
     that only reaches the main model."""
-    found = await _ensure_model(ctx, model_kind, choice, options, primary)
+    snap = Residency(ctx)
+    found = await _ensure_model(ctx, model_kind, choice, options, primary, snap)
     requires = (getattr(ctx, "spec", None) or {}).get("requires")
     if requires:
-        await _check_backend(ctx, model_kind, requires)
+        await _check_backend(ctx, model_kind, requires, snap)
     return found
 
 
-async def _check_backend(ctx: Any, model_kind: str, requires: list[str]) -> None:
+async def _check_backend(
+    ctx: Any,
+    model_kind: str,
+    requires: list[str],
+    snap: Optional[Residency] = None,
+) -> None:
     from core.flows.engine import MODEL_SLOT
-    from studio_mcp import loading
 
     if MODEL_SLOT.get(model_kind, model_kind) != "llm":
         return
     title = (getattr(ctx, "spec", None) or {}).get("title") or "This step"
     try:
-        _slots, status = await loading._resident(_caller(ctx))
+        _slots, status = await _resident(ctx, snap)
     except Exception:
         status = None
     if not isinstance(status, dict) or not isinstance(status.get("is_gguf"), bool):
@@ -518,6 +554,7 @@ async def _ensure_model(
     choice: Optional[dict],
     options: Optional[dict],
     primary: bool = False,
+    snap: Optional[Residency] = None,
 ) -> Optional[dict]:
     from core.flows.engine import LOAD_KIND, MODEL_SLOT
     from studio_mcp import loading
@@ -530,7 +567,7 @@ async def _ensure_model(
     variant = choice.get("variant") if isinstance(choice, dict) else None
     if not repo:
         if model_kind in ("chat", "vision", "tts", "audio", "image", "video"):
-            name = await resident_name(ctx, model_kind)
+            name = await resident_name(ctx, model_kind, snap)
             if not name:
                 what = {"image": "image", "video": "video"}.get(model_kind, "chat")
                 raise FlowNodeError(
@@ -543,10 +580,10 @@ async def _ensure_model(
         raise FlowNodeError("Load settings apply to chat models only")
     if slot == "llm":
         ctx.chat_model = None
-    resident = await resident_name(ctx, model_kind)
+    resident = await resident_name(ctx, model_kind, snap)
     if primary and slot == "llm":
         # Chat's main slot, not just any slot: a recipe job reads the model from there.
-        resident = await _into_primary(ctx, repo)
+        resident = await _into_primary(ctx, repo, snap)
     if (
         slot == "llm"
         and not primary
@@ -554,7 +591,7 @@ async def _ensure_model(
         and not (resident and resident.lower() == repo.lower())
     ):
         # The card's load settings ride along, so they never cost the resident model its slot.
-        kept = await _alongside(ctx, repo, variant, options)
+        kept = await _alongside(ctx, repo, variant, options, snap)
         if kept is not None:
             return kept
     wanted = (repo.lower(), (variant or "").lower())
@@ -570,7 +607,7 @@ async def _ensure_model(
     if (
         resident
         and resident.lower() == repo.lower()
-        and (not variant or await _resident_variant(ctx, slot, repo) == variant.lower())
+        and (not variant or await _resident_variant(ctx, slot, repo, snap) == variant.lower())
         and same_settings
     ):
         return {"repo": repo, "variant": variant}
@@ -611,7 +648,13 @@ async def _ensure_model(
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo}: {exc}") from None
-    if primary and slot == "llm" and not loading._same_id(await _primary_name(ctx) or "", repo):
+    if snap is not None:
+        snap.drop()
+    if (
+        primary
+        and slot == "llm"
+        and not loading._same_id(await _primary_name(ctx, snap) or "", repo)
+    ):
         raise FlowNodeError(
             f"{repo} did not load into Chat's main slot; unload the other models and run again"
         )
@@ -628,22 +671,25 @@ async def _ensure_model(
     return {"repo": repo, "variant": variant}
 
 
-async def _primary_name(ctx: Any) -> Optional[str]:
-    from studio_mcp import loading
+async def _primary_name(ctx: Any, snap: Optional[Residency] = None) -> Optional[str]:
     try:
-        _, status = await loading._resident(_caller(ctx))
+        _, status = await _resident(ctx, snap)
     except Exception:
         return None
     return _checkpoint(status.get("model_identifier"))
 
 
-async def _into_primary(ctx: Any, repo: str) -> Optional[str]:
+async def _into_primary(
+    ctx: Any,
+    repo: str,
+    snap: Optional[Residency] = None,
+) -> Optional[str]:
     """Chat's main model; ``repo`` kept in an extra slot is unloaded there first, since a load of a
     model a slot already serves stays in that slot."""
     from studio_mcp import loading
 
     try:
-        slots, status = await loading._resident(_caller(ctx))
+        slots, status = await _resident(ctx, snap)
     except Exception:
         return None
     main = _checkpoint(status.get("model_identifier"))
@@ -651,6 +697,8 @@ async def _into_primary(ctx: Any, repo: str) -> Optional[str]:
         return main
     if any(loading._same_id(_checkpoint(name) or name, repo) for name in slots.get("llm") or []):
         await ctx.call("POST", "/api/inference/unload", json = {"model_path": repo})
+        if snap is not None:
+            snap.drop()
     return main
 
 
@@ -674,16 +722,20 @@ async def poll_job(
     parse: Callable[[Any], tuple[str, Optional[dict], Optional[str]]],
     cancel: Optional[Callable[[], Awaitable[None]]] = None,
     interval: float = 5.0,
+    settle: bool = False,
 ) -> Any:
     """Follow a started Studio job until it ends and return its last status payload.
 
     ``parse(payload)`` gives (state, progress, error): state is running, completed, failed or cancelled, progress the
     ``ctx.progress`` keywords (or None) and error the failure message. It may raise FlowNodeError itself. ``cancel``
-    stops the job when the run is cancelled."""
+    stops the job when the run is cancelled. The first poll is immediate unless ``settle``: a status route shared
+    by every job can still describe the previous one right after a start."""
     if cancel is not None:
         ctx.on_cancel(cancel)
+    delay = interval if settle else 0.0
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(delay)
+        delay = interval
         payload = await status()
         state, progress, error = parse(payload)
         if progress:
@@ -1206,8 +1258,10 @@ async def generate_image(
         body["seeds"] = [(start + i) % (2**32) for i in range(count)]
     elif base_seed is not None:
         body["seed"] = base_seed
+    init_bytes = b""
     if init_image is not None:
-        body["init_image"] = await data_url(ctx, init_image)
+        init_bytes, init_mime = await media_bytes(ctx, init_image)
+        body["init_image"] = f"data:{init_mime};base64,{base64.b64encode(init_bytes).decode()}"
         if strength is not None and workflow is None:
             body["strength"] = float(strength)
         body.pop("width", None)
@@ -1219,7 +1273,7 @@ async def generate_image(
     if upscale:
         body["upscale"] = float(upscale)
     if mask is not None:
-        body["mask_image"] = await _mask_data_url(ctx, mask, init_image)
+        body["mask_image"] = await _mask_data_url(ctx, mask, init_bytes)
     if control is not None:
         body["controlnet"] = {
             "id": control["id"],
@@ -1359,9 +1413,8 @@ def upright_size(data: bytes) -> tuple[int, int]:
     return exif_upright(Image.open(io.BytesIO(data))).size
 
 
-async def _mask_data_url(ctx: Any, mask: dict, init_image: dict) -> str:
+async def _mask_data_url(ctx: Any, mask: dict, init_bytes: bytes) -> str:
     mask_bytes, _ = await media_bytes(ctx, mask)
-    init_bytes, _ = await media_bytes(ctx, init_image)
     size = await asyncio.to_thread(upright_size, init_bytes)
     fitted, original = await asyncio.to_thread(_fit_mask, mask_bytes, size)
     if original is not None:
@@ -1422,6 +1475,7 @@ async def ensure_segmenter(ctx: Any) -> None:
         parse = parse,
         cancel = cancel,
         interval = 2.0,
+        settle = True,
     )
 
 
@@ -1476,38 +1530,62 @@ def _trim(im: Any) -> Any:
 
 def chroma_key(data: bytes, tolerance: int = 40) -> tuple[bytes, bytes]:
     """Cut out the subject by removing the border colour (a fallback when SAM 3 is not available)."""
-    from PIL import Image, ImageDraw
+    import numpy as np
+    from PIL import Image
 
     im = Image.open(io.BytesIO(data)).convert("RGBA")
     w, h = im.size
-    work = im.convert("RGB")
-    mask = Image.new("L", (w, h), 255)
-    seeds = [
-        (0, 0),
-        (w - 1, 0),
-        (0, h - 1),
-        (w - 1, h - 1),
-        (w // 2, 0),
-        (w // 2, h - 1),
-        (0, h // 2),
-        (w - 1, h // 2),
-    ]
-    marker = (255, 0, 255)
-    for seed in seeds:
-        if work.getpixel(seed) == marker:
+    work = np.asarray(im.convert("RGB")).astype(np.int16)
+    seeds = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w // 2, 0), (w // 2, h - 1), (0, h // 2), (w - 1, h // 2)]  # fmt: skip
+    marker = np.array((255, 0, 255), dtype = np.int16)
+    for x, y in seeds:
+        background = work[y, x].copy()
+        if np.abs(marker - background).sum() <= tolerance:
             continue
-        ImageDraw.floodfill(work, seed, marker, thresh = tolerance)
-    pixels = work.load()
-    mpx = mask.load()
-    for y in range(h):
-        for x in range(w):
-            if pixels[x, y] == marker:
-                mpx[x, y] = 0
+        # What ImageDraw.floodfill fills: the 4-connected region of colours within the 1-norm tolerance.
+        region = _seed_region(np.abs(work - background).sum(axis = -1) <= tolerance, x, y)
+        work[region] = marker
+    mask = Image.fromarray(np.where((work == marker).all(axis = -1), 0, 255).astype(np.uint8), "L")
     im.putalpha(mask)
     out, mask_out = io.BytesIO(), io.BytesIO()
     im.save(out, "PNG")
     mask.save(mask_out, "PNG")
     return out.getvalue(), mask_out.getvalue()
+
+
+def _seed_region(candidates: Any, x: int, y: int) -> Any:
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return _flood_region(candidates, x, y)
+    labels, _ = ndimage.label(candidates)
+    return labels == labels[y, x]
+
+
+def _flood_region(candidates: Any, x: int, y: int) -> Any:
+    """``ndimage.label``'s seed component without scipy: a row-span flood fill."""
+    import numpy as np
+
+    h, w = candidates.shape
+    region = np.zeros_like(candidates, dtype = bool)
+    stack = [(x, y)]
+    while stack:
+        x, y = stack.pop()
+        if region[y, x] or not candidates[y, x]:
+            continue
+        row, done = candidates[y], region[y]
+        left = x
+        while left > 0 and row[left - 1] and not done[left - 1]:
+            left -= 1
+        right = x
+        while right < w - 1 and row[right + 1] and not done[right + 1]:
+            right += 1
+        done[left : right + 1] = True
+        for ny in (y - 1, y + 1):
+            if 0 <= ny < h:
+                fresh = candidates[ny, left : right + 1] & ~region[ny, left : right + 1]
+                stack.extend((left + int(i), ny) for i in np.flatnonzero(fresh))
+    return region
 
 
 async def remove_background(

@@ -127,6 +127,26 @@ def test_poll_job_raises_the_job_error_and_reports_a_stop_as_cancelled():
         )
 
 
+@pytest.mark.parametrize("settle, waited", [(False, [0.0]), (True, [5.0])])
+def test_poll_job_polls_at_once_unless_told_to_settle(monkeypatch, settle, waited):
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(_common.asyncio, "sleep", fake_sleep)
+    asyncio.run(
+        _common.poll_job(
+            _PollCtx(),
+            status = _states({"state": "completed"}),
+            parse = _parse,
+            interval = 5.0,
+            settle = settle,
+        )
+    )
+    assert slept == waited
+
+
 def _rows_spec():
     return spec(
         "test.rows",

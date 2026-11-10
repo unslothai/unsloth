@@ -1151,11 +1151,16 @@ def test_a_primary_load_never_goes_alongside_the_main_model(monkeypatch):
         repo,
         variant,
         options = None,
+        snap = None,
     ):
         went.append(repo)
         return {"repo": repo, "variant": variant}
 
-    async def resident_name(ctx, kind):
+    async def resident_name(
+        ctx,
+        kind,
+        snap = None,
+    ):
         return "org/model-a"
 
     monkeypatch.setattr(_common, "_alongside", alongside)

@@ -477,7 +477,11 @@ def test_a_model_unset_card_runs_on_the_model_whose_settings_it_took(monkeypatch
     other = "unsloth/gemma-3-4b-it-GGUF"
     loads = _load_fakes(monkeypatch, [GGUF])
 
-    async def resident(ctx, kind):
+    async def resident(
+        ctx,
+        kind,
+        snap = None,
+    ):
         return (await loading.resident_slots(None))["llm"][0]
 
     monkeypatch.setattr(_common, "resident_name", resident)
@@ -515,7 +519,11 @@ def test_saved_settings_equal_to_the_cards_still_bind_the_model_they_came_from(m
     other = "unsloth/gemma-3-4b-it-GGUF"
     loads = _load_fakes(monkeypatch, [GGUF])
 
-    async def resident(ctx, kind):
+    async def resident(
+        ctx,
+        kind,
+        snap = None,
+    ):
         return (await loading.resident_slots(None))["llm"][0]
 
     monkeypatch.setattr(_common, "resident_name", resident)

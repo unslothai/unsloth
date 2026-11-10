@@ -692,26 +692,35 @@ async def upload_rows(
     first: Sequence[str] = (),
 ) -> dict:
     """Save rows as a JSONL training dataset and return its DatasetValue; ``first`` columns lead."""
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
     data = "\n".join(json.dumps(r, ensure_ascii = False) for r in rows).encode()
+    value = await upload_dataset(
+        ctx, name, "jsonl", data, len(rows), lead_columns({k for r in rows for k in r}, first)
+    )
+    if made_by:
+        value["made_by"] = made_by
+    return value
+
+
+async def upload_dataset(
+    ctx: NodeContext, name: str, ext: str, data: bytes, rows: int, columns: list[str]
+) -> dict:
+    """Save one dataset file to the account's uploads and return its DatasetValue."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
     saved = await ctx.call(
         "POST",
         "/api/hub/datasets/upload",
-        files = {"file": (f"{name}.jsonl", data, "application/octet-stream")},
+        files = {"file": (f"{name}.{ext}", data, "application/octet-stream")},
     )
     stored = saved.get("stored_path") if isinstance(saved, dict) else None
     if not isinstance(stored, str) or not stored:
         raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
-    value = {
+    return {
         "kind": "dataset",
         "source": "local",
         "ref": upload_ref(stored),
-        "rows": len(rows),
-        "columns": lead_columns({k for r in rows for k in r}, first),
+        "rows": rows,
+        "columns": columns,
     }
-    if made_by:
-        value["made_by"] = made_by
-    return value
 
 
 def lead_columns(names: Iterable[str], first: Sequence[str]) -> list[str]:
