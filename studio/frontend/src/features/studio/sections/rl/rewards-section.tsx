@@ -332,7 +332,6 @@ export function RewardsSection(): ReactElement {
       setPreviewTotal(null);
       return;
     }
-    // Each reward compares against its own compare_to column, as in training.
     const groups = new Map<string, typeof rewards>();
     for (const reward of rewards) {
       const column = byName.get(reward.name)?.rule?.compare_to;

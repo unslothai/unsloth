@@ -405,8 +405,7 @@ def normalize_gradient_checkpointing(value) -> Union[str, bool]:
 
 
 def grpo_completion_rows(prompts: int, rl_args) -> int:
-    """Completion rows one GRPO epoch trains: TRL's sampler drops a trailing partial group of
-    prompts, and each kept prompt becomes num_generations rows."""
+    """Completion rows one GRPO epoch trains: full prompt groups x num_generations."""
     generations = int(getattr(rl_args, "num_generations", 1) or 1)
     group = (getattr(rl_args, "generation_batch_size", None) or 0) // generations
     if group > 0:
@@ -3233,7 +3232,6 @@ class UnslothTrainer:
             has_separate_eval_source = False
             # Not `eval_steps > 0`: inf and NaN pass that and codec-encode a split later discarded.
             eval_enabled = evaluation_enabled(eval_steps)
-            # RL rows are built from column roles, whatever format the SFT settings name.
             raw_text_mode = objective == "sft" and (is_cpt or format_type == "raw")
             dataset_loaded_from_cache = False
 
@@ -3823,8 +3821,7 @@ class UnslothTrainer:
             _raise_if_empty_train_split(dataset, "")
 
             if objective in ("dpo", "orpo") and (self.is_vlm or self.model_has_vision):
-                # TRL's preference batches carry no token_type_ids, which Gemma 3-style
-                # multimodal forwards require in training, text-only datasets included.
+                # TRL preference batches lack token_type_ids, which Gemma 3-style forwards require.
                 raise ValueError(
                     f"{objective.upper()} is not available for vision-language models yet; "
                     "use SFT or GRPO."
@@ -3945,7 +3942,6 @@ class UnslothTrainer:
         split_eval: bool,
         system_prompt: Optional[str] = None,
     ) -> tuple:
-        """Shape rows for DPO/ORPO/GRPO; TRL applies the chat template itself."""
         from core.training.rl import format_rl_dataset
 
         num_proc = dataset_map_num_proc(None)

@@ -43,8 +43,7 @@ _RL_ARGS = {
     "temperature": "temperature",
     "beta": "beta",
 }
-# Notebook reward function name -> library reward. Checked in order, format names first so
-# match_format_exactly is a format reward, not an exact answer.
+# Notebook reward function name -> library reward; format names first (match_format_exactly).
 _REWARD_NAMES = (
     (("strict_format", "format_exactly"), "strict-xml-format"),
     (("soft_format", "format_approximately", "xmlcount"), "soft-xml-format"),
@@ -290,7 +289,6 @@ class _Reader(ast.NodeVisitor):
                 value = self.kw(node, arg)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     if arg == "max_completion_length" and fn != "GRPOConfig":
-                        # Only GRPO's generation budget reaches the trainer.
                         self.approximated.append(
                             f"{fn}(max_completion_length = {value}): not carried over, so responses are "
                             "not truncated to it"

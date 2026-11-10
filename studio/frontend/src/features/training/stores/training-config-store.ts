@@ -578,7 +578,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
 
             // Model YAML LRs are SFT-tuned; keep the RL objective's rate.
-            // Judged against the incoming model: an embedding or audio model runs SFT.
             const objective = effectiveTrainingObjective({
               ...get(),
               modelType: inferredModelType,

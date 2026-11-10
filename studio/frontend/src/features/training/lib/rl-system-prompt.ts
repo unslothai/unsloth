@@ -22,8 +22,7 @@ function ownSystemMessage(prompt: unknown): string | null {
   return typeof content === "string" ? content : JSON.stringify(content ?? "");
 }
 
-/** The system message GRPO trains this row with: the prompt's own, else the mapped system
- * column's, else the configured one (format_rl_dataset's precedence). */
+/** GRPO's system message for this row: its own, else the mapped column, else the configured one. */
 export function effectiveSystemPrompt(
   row: Record<string, unknown> | null | undefined,
   mapping: Record<string, string>,

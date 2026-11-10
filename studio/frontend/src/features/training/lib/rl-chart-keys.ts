@@ -3,8 +3,7 @@
 
 import type { RlMetricPoint } from "../types/runtime";
 
-/** Metric keys worth a chart. KL stays out while every value is 0: with beta 0 TRL never
- * measures it, so a flat line would read as "no drift" when nothing was computed. */
+/** Metric keys worth a chart; KL stays out while all 0 (beta 0: TRL never measures it). */
 export function rlChartKeys(history: readonly RlMetricPoint[]): Set<string> {
   const keys = new Set<string>();
   let klMeasured = false;

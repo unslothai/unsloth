@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""DPO, ORPO and GRPO for Studio training: dataset shaping and trainer construction.
+"""DPO, ORPO and GRPO for Studio: dataset shaping and trainer construction.
 
-GRPO runs without vLLM: Unsloth only switches TRL to vLLM rollouts when the model carries a
-``vllm_engine``, which Studio never loads, so generation goes through TRL's own path.
+No vLLM: Unsloth uses it only when the model has a ``vllm_engine``, which Studio never loads.
 """
 
 from __future__ import annotations
@@ -22,9 +21,7 @@ RL_ROLES = {
     "orpo": ("prompt", "chosen", "rejected", "system"),
     "grpo": ("prompt", "answer", "system"),
 }
-# A preference set may hold whole conversations in chosen/rejected, the shared turns being the
-# prompt (TRL's implicit prompt), so a prompt column is optional there; format_rl_dataset still
-# refuses a row that ends up with no prompt.
+# Preference rows may hold the prompt as chosen/rejected's shared turns, so prompt is optional.
 _REQUIRED_ROLES = {
     "dpo": ("chosen", "rejected"),
     "orpo": ("chosen", "rejected"),
@@ -38,8 +35,7 @@ _AUTO_ROLE_NAMES = {
     "system": ("system", "system_prompt"),
 }
 DEFAULT_BETA = {"dpo": 0.1, "orpo": 0.1, "grpo": 0.0}
-# variant -> (loss_type, importance_sampling_level). dapo is TRL's and Unsloth's default; gspo is
-# sequence-level ratios with the dr_grpo normaliser, as in the Unsloth vision GRPO notebooks.
+# variant -> (loss_type, importance_sampling_level); gspo = sequence-level dr_grpo.
 GRPO_VARIANTS = {
     "dapo": ("dapo", "token"),
     "dr_grpo": ("dr_grpo", "token"),
@@ -62,9 +58,9 @@ _RL_LOG_PREFIXES = (
 
 
 def install_fsdp_import_stub() -> bool:
-    """TRL's GRPOTrainer imports FSDP at module level, which needs ``torch._C._distributed_c10d``.
-    AMD's Windows ROCm torch wheels ship without it, so GRPO cannot even import there. Single-GPU
-    GRPO never wraps the model in FSDP, so a stand-in class is enough. Call before importing unsloth."""
+    """Stub FSDP for torch wheels lacking ``torch._C._distributed_c10d`` (Windows ROCm).
+
+    GRPO never wraps the model in FSDP. Call before importing unsloth."""
     import sys
     import types
 
@@ -90,8 +86,7 @@ def install_fsdp_import_stub() -> bool:
 
 
 def rl_log_metrics(logs: dict) -> Optional[dict]:
-    """GRPO/DPO/ORPO log keys (reward, rewards/<fn>/mean, kl, rewards/margins, ...) that the fixed
-    progress fields have no slot for."""
+    """RL log keys the fixed progress fields have no slot for."""
     out = {}
     for key, value in logs.items():
         if not isinstance(key, str) or not key.startswith(_RL_LOG_PREFIXES):
@@ -160,7 +155,6 @@ def resolve_role_columns(
 
 
 def _content_text(content: Any) -> str:
-    # OpenAI-style text blocks, as utils/datasets/format_conversion.py reads them for SFT.
     if isinstance(content, list):
         return "\n".join(
             part["text"]
@@ -170,8 +164,7 @@ def _content_text(content: Any) -> str:
     return str(content)
 
 
-# ShareGPT speakers, as utils/datasets/format_conversion.py maps them for SFT; function_call and
-# observation stay for _sharegpt_tool_turns, which builds real tool calls from them.
+# function_call/observation stay for _sharegpt_tool_turns.
 _SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
 
 
@@ -223,15 +216,13 @@ def format_rl_dataset(
     num_proc: Optional[int] = None,
     system_prompt: Optional[str] = None,
 ):
-    """Shape a raw dataset into TRL's conversational prompt/chosen/rejected or prompt/answer rows.
-    ``system_prompt`` fills in for rows with no system message of their own."""
+    """Shape a raw dataset into TRL conversational rows; ``system_prompt`` fills rows lacking one."""
     columns = list(getattr(dataset, "column_names", None) or [])
     if not columns:
         raise ValueError(f"{objective.upper()} training needs a dataset with known columns.")
     roles = resolve_role_columns(columns, objective, mapping)
     # Rewards read their compare_to column by name, so keep it even when it also fills a role.
     extra = [c for c in keep_columns if c in columns and c not in _RL_OUTPUT_COLUMNS[objective]]
-    # Each row's own tool schemas and template kwargs; GRPO prompts are rendered with its tools.
     row_columns = _TRL_ROW_COLUMNS if objective != "grpo" else ("tools",)
     used = set(roles.values())
     extra += [c for c in row_columns if c in columns and c not in used and c not in extra]
@@ -256,7 +247,6 @@ def format_rl_dataset(
             and isinstance(extra_input, str)
             and extra_input.strip()
         ):
-            # Alpaca: the input column holds the instruction's material.
             value = f"{value}\n\n{extra_input}"
         prompt = _as_messages(value, "user") if "prompt" in roles else []
         mapped = list(prompt)
@@ -276,20 +266,16 @@ def format_rl_dataset(
                 chosen_cell, rejected_cell = _implicit_text_prompt(chosen_cell, rejected_cell)
             chosen = _as_messages(chosen_cell, "assistant")
             rejected = _as_messages(rejected_cell, "assistant")
-            # Like TRL's extract_prompt: the longest shared prefix is the prompt, the rest is each
-            # completion. The prompt column then holds only the conversation's first turn.
+            # Longest shared prefix is the prompt (TRL's extract_prompt).
             shared = 0
-            # Compared without nulls: Arrow pads each column's tool arguments with the other
-            # calls' keys, so identical context differs between the two columns.
+            # Ignore nulls: Arrow pads tool arguments with other calls' keys.
             while shared < min(len(chosen), len(rejected)) and _strip_nulls(
                 chosen[shared]
             ) == _strip_nulls(rejected[shared]):
                 shared += 1
             if shared == min(len(chosen), len(rejected)):
-                # One is a prefix of the other: its last turn is its completion (TRL's extract_prompt).
                 shared -= 1
-            # Branches repeating the mapped prompt are full conversations, even when it opens on an
-            # assistant greeting; only other assistant-first lists are completion-only.
+            # Branches repeating the mapped prompt are full conversations, even if assistant-first.
             repeats_prompt = 0 < len(mapped) <= shared and _strip_nulls(
                 chosen[: len(mapped)]
             ) == _strip_nulls(mapped)
@@ -299,13 +285,11 @@ def format_rl_dataset(
                 and chosen[0]["role"] == "assistant"
                 and rejected[0]["role"] == "assistant"
             ):
-                # Completion-only lists (the prompt is its own column): every turn is the answer. With no
-                # prompt column the shared turns are the prompt, even when they open on a greeting.
+                # Completion-only lists: every turn is the answer.
                 out["chosen"], out["rejected"] = chosen, rejected
             elif 0 < shared < min(len(chosen), len(rejected)) and any(
                 m["role"] != "assistant" for m in chosen[:shared]
             ):
-                # The mapped prompt's own system message still applies to the branches' context.
                 system = system or next(
                     (m["content"] for m in out["prompt"] if m["role"] == "system"), None
                 )
@@ -365,10 +349,7 @@ def render_grpo_prompts(
     enable_thinking: Optional[bool],
     num_proc: Optional[int] = None,
 ):
-    """Render GRPO prompts to text when TRL's own templating would get them wrong. TRL applies the
-    chat template with no kwargs, so a Qwen3-style template always opens a thinking block; and
-    Arrow gives a message every key another row's message has, as None, which templates such as
-    GPT-OSS's read as set. TRL passes text prompts through untouched."""
+    """Render GRPO prompts to text: TRL templates with no kwargs, and Arrow pads messages with None keys."""
     template = getattr(tokenizer, "chat_template", None) or ""
     thinking = enable_thinking is not None and "enable_thinking" in template
     columns = getattr(dataset, "column_names", None) or []
@@ -384,8 +365,7 @@ def render_grpo_prompts(
     from core.training.rewards import PREFILL_COLUMN
 
     kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
-    # TRL continues an assistant-ended prompt and puts it back in front of the completion before
-    # scoring; a text prompt loses both, so the prefill is kept for the rewards (make_reward_func).
+    # A text prompt loses TRL's assistant prefill, so keep it for the rewards (make_reward_func).
     prefills = any(
         isinstance(p, list) and p and isinstance(p[-1], dict) and p[-1].get("role") == "assistant"
         for p in dataset["prompt"]
@@ -443,7 +423,6 @@ def _row_tools(row: dict):
 
     tools = row.get("tools")
     if isinstance(tools, list):
-        # A list of serialized schemas, one JSON string per tool, is as common as one string.
         tools = [tool for tool in map(decode, tools) if tool]
     else:
         tools = decode(tools)
@@ -451,8 +430,7 @@ def _row_tools(row: dict):
 
 
 def _implicit_text_prompt(chosen: Any, rejected: Any) -> tuple[Any, Any]:
-    """Text pairs with no prompt column (hh-rlhf's transcripts) hold the prompt as their shared start:
-    split it off as TRL's extract_prompt does, as one user turn both conversations open with."""
+    """Split prompt-less text pairs at their shared start, as TRL's extract_prompt does."""
     if not (isinstance(chosen, str) and isinstance(rejected, str)):
         return chosen, rejected
     cut = 0
@@ -510,8 +488,7 @@ def _allows_null(schema: Any) -> bool:
 
 
 def _without_padded_arguments(messages: Any, tools: Any) -> Any:
-    """Drop a null argument the called tool's schema does not accept as null: Arrow pads each
-    call's arguments with the keys other calls use. Nullable declared arguments keep their null."""
+    """Drop null arguments the tool schema does not allow (Arrow padding); nullable ones keep theirs."""
     if not isinstance(messages, list) or not isinstance(tools, list):
         return messages
     declared = {}
@@ -539,12 +516,11 @@ def _without_padded_arguments(messages: Any, tools: Any) -> Any:
 
 
 def _without_nulls(value: Any) -> Any:
-    # Arrow gives every message every field another one has, as None; templates would render
-    # those as real values. A message's own null content and its tool-call arguments stay.
+    # Drop Arrow's None padding; a message's own null content and tool-call arguments stay.
     if isinstance(value, list):
         from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
-        # JSON-string arguments as mappings, as SFT renders them: templates `tojson` a string twice.
+        # JSON-string arguments as mappings: templates `tojson` a string twice.
         return _normalize_tool_call_arguments(
             [
                 {**_drop_nulls(m), "content": m.get("content")} if isinstance(m, dict) else m
@@ -580,8 +556,7 @@ def _shows_every_call(tokenizer, messages: list, **kwargs) -> bool:
 
 
 def _template_variants(tokenizer, conversations: list, **kwargs) -> list[Callable]:
-    """Message fixes to try in order, as SFT renders: one call per message when the template
-    shows only the first (gpt-oss), and null content omitted first, kept for templates needing it."""
+    """Message fixes to try in order: one call per message (gpt-oss), then null content omitted, then kept."""
     from utils.datasets.chat_templates import _one_call_per_message
 
     split = not all(_shows_every_call(tokenizer, c, **kwargs) for c in conversations)
@@ -615,8 +590,7 @@ def render_preference_rows(
     tokenizer,
     trl_appends_eos: bool = False,
 ):
-    """Template preference rows here, as TRL would, so each row keeps its own tools and
-    chat_template_kwargs (TRL before 1.x reads neither) and Arrow's null fields never reach it."""
+    """Template preference rows here so each keeps its tools/kwargs (TRL before 1.x reads neither)."""
     columns = getattr(dataset, "column_names", None) or []
     if tokenizer is None or not columns:
         return dataset
@@ -625,7 +599,6 @@ def render_preference_rows(
 
     def messages(value: Any, tools: Any) -> Any:
         value = _without_padded_arguments(_without_nulls(value), tools)
-        # A `thinking` field renders as the template's reasoning, as in SFT.
         return (
             _thinking_as_reasoning_content(tokenizer, value) if isinstance(value, list) else value
         )
@@ -633,8 +606,7 @@ def render_preference_rows(
     eos = getattr(getattr(tokenizer, "tokenizer", tokenizer), "eos_token", None)
 
     def ends_at_eos(completion: str) -> str:
-        # TRL appends EOS to text completions not ending in it (`<|im_end|>\n` would get a second);
-        # DPO before 0.29 appends it unconditionally, so there the template's own one goes.
+        # TRL appends EOS to text not ending in it; DPO before 0.29 always does, so drop the template's.
         trimmed = completion.rstrip()
         if not (eos and trimmed.endswith(eos)):
             return completion
@@ -651,15 +623,13 @@ def render_preference_rows(
         prompt = row.get("prompt")
         if not (isinstance(prompt, list) and prompt):
             return row
-        # Rendered as TRL's apply_chat_template does, but sliced once from the prompt both
-        # branches share: TRL shortens it for rejected after slicing chosen (Qwen3 think block),
-        # refuses a tool-ended prompt and, before 0.21, takes no template kwargs.
+        # Slice once from the shared prompt: TRL shortens it for rejected (Qwen3 think block),
+        # refuses tool-ended prompts and, before 0.21, takes no template kwargs.
         render_kwargs = {"tools": tools, "tokenize": False, **kwargs}
         prefill = prompt[-1].get("role") == "assistant"
         keys = ("chosen", "rejected")
 
         def rendered(fix: Callable) -> tuple[str, dict]:
-            # One fix for the prompt and both branches, so the shared prefix still lines up.
             text = tokenizer.apply_chat_template(
                 fix(prompt),
                 add_generation_prompt = not prefill,
@@ -686,8 +656,7 @@ def render_preference_rows(
 
 
 def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
-    """TRL 0.28 removed GRPOConfig.max_prompt_length; filter overlong prompts out instead, as TRL
-    advises, so prompt + completion still fits max_seq_length."""
+    """TRL 0.28 removed max_prompt_length: drop overlong prompts so prompt + completion fits."""
     if tokenizer is None or not hasattr(dataset, "filter"):
         return dataset
     text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
@@ -695,7 +664,6 @@ def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
     def fits(row: dict) -> bool:
         prompt = row["prompt"]
         if not isinstance(prompt, str):
-            # Rendered as TRL will: with the row's own template kwargs and tools.
             tools = _row_tools(row)
             kwargs = _row_template_kwargs(row)
             if tools:
@@ -734,8 +702,7 @@ def _template_takes_system(tokenizer) -> bool:
 
 
 def fold_system_into_user(dataset):
-    """For templates that reject a system turn (Gemma 2: "System role not supported"), put the
-    system text at the top of the first user message instead, as the Gemma notebooks do."""
+    """Fold the system text into the first user message for templates rejecting it (Gemma 2)."""
 
     def fold(row: dict) -> dict:
         prompt = row["prompt"]
@@ -800,8 +767,7 @@ def build_rl_trainer(
     reward_specs: Optional[list[dict]] = None,
     on_warning: Optional[Callable[[str], None]] = None,
 ):
-    """Construct the TRL trainer for a non-SFT objective. Unsloth's PatchFastRL has already
-    swapped these classes for its own on import."""
+    """Build the TRL trainer for a non-SFT objective (PatchFastRL already swapped the classes)."""
     import trl
 
     max_seq_length = int(config_args.get("max_seq_length") or 2048)
@@ -886,8 +852,7 @@ def build_rl_trainer(
             settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"]
         )
         if loss_type == "dapo" and _trl_older_than("0.22"):
-            # TRL before 0.22 passes no num_items_in_batch, which DAPO's normaliser needs;
-            # Unsloth picks BNPO there too.
+            # TRL before 0.22 passes no num_items_in_batch, which DAPO needs; Unsloth picks BNPO there too.
             loss_type = "bnpo"
             if on_warning is not None:
                 on_warning("DAPO needs TRL 0.22 or newer; this run uses BNPO instead.")
@@ -918,8 +883,7 @@ def build_rl_trainer(
         num_generations = int(settings.get("num_generations") or 4)
         grpo_base = {**base, "max_prompt_length": max_prompt_length}
         if _fp16_only_gpu():
-            # Gemma 3 overflows in fp16 sampling on these cards (T4): non-finite logits crash
-            # multinomial with a device-side assert. Drop them before sampling instead.
+            # Gemma 3 fp16 sampling (T4) gives non-finite logits that crash multinomial: drop them.
             grpo_base["generation_kwargs"] = {
                 **(grpo_base.get("generation_kwargs") or {}),
                 "remove_invalid_values": True,
@@ -949,7 +913,6 @@ def build_rl_trainer(
             )
         eval_batch = grpo_base.get("per_device_eval_batch_size")
         if eval_batch:
-            # TRL evaluates whole prompt groups: global eval batch % num_generations == 0.
             step = num_generations // math.gcd(world, num_generations)
             grpo_base["per_device_eval_batch_size"] = -(-int(eval_batch) // step) * step
         args = trl.GRPOConfig(

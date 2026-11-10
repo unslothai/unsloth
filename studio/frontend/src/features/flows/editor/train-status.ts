@@ -127,7 +127,6 @@ export function trainView(input: {
     };
   if (sftColumns && prompt && prompt === response)
     return { state: "setup", detail: "Use two different columns", history: [], reward: false };
-  // Unset means the node's default rewards, as the backend trains with.
   const rewards = Array.isArray(params.rewards)
     ? params.rewards.filter((r) => String(r?.name ?? "").trim())
     : params.rewards == null

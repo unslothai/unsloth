@@ -54,8 +54,7 @@ interface CardSpec {
   series: SeriesSpec[];
 }
 
-// TRL log keys: GRPO logs reward, reward_std, rewards/<fn>/mean, kl, completions/mean_length;
-// DPO/ORPO log rewards/chosen, rewards/rejected, rewards/margins, rewards/accuracies.
+// TRL log keys (GRPO reward/kl/completions, DPO/ORPO rewards/chosen|rejected|margins|accuracies).
 function buildCards(
   keys: Set<string>,
   t: (k: TranslationKey) => string,

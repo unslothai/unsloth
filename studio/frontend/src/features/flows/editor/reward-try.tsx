@@ -111,11 +111,10 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
           }[]
         >(res),
       );
-      // A user reward shadows the bundled one of its name, as in training.
       const rules = Object.fromEntries(
         library.filter((r) => !r.shadowed).map((r) => [r.name, r.rule]),
       );
-      // Each reward is scored against the column it compares to, as in training; "answer" is the role.
+      // Each reward is scored against its compare_to column, as in training.
       const rows = await Promise.all(
         rewards.map((reward) => {
           const column = rules[reward.name]?.compare_to;

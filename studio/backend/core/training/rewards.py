@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GRPO reward library: REWARD.md folders on disk, and the evaluator for rule rewards.
+"""GRPO reward library: ``rewards/<name>/REWARD.md`` folders and the rule-reward evaluator.
 
-A reward lives in ``rewards/<name>/REWARD.md``: YAML frontmatter (name, kind, description) followed
-by a YAML body describing the rule. Rule rewards are pure data scored here, so an imported one runs
-no user code. ``kind: python`` is reserved for sandboxed code rewards and is refused for now.
+Rule rewards are pure data, so an imported one runs no user code; ``kind: python`` is refused.
 """
 
 from __future__ import annotations
@@ -135,9 +133,7 @@ def _validate_extract(extract: Any) -> Optional[dict]:
     return {"regex": extract["regex"]}
 
 
-# Names GRPOTrainer passes to reward functions itself (or never passes); a column cannot use them.
-# Names TRL passes to rewards itself, plus dataset schema keys it reinterprets (chosen next to a
-# conversational prompt raises "Invalid keys in the example").
+# Names TRL passes to rewards itself, or schema keys it reinterprets; a column cannot use them.
 _TRL_REWARD_ARGS = frozenset(
     {"prompt", "prompts", "completion", "completions", "completion_ids", "trainer_state"}
     | {"chosen", "rejected", "messages", "label", "images"}
@@ -219,7 +215,6 @@ def _validate_score(score: Any, keys: Iterable[str]) -> dict:
 
 
 def validate_rule(rule: dict) -> dict:
-    """Return a cleaned copy of a rule body, or raise RewardError."""
     kind = rule.get("type")
     if kind not in RULE_TYPES:
         raise RewardError(f"type must be one of {', '.join(RULE_TYPES)}.")
@@ -232,7 +227,6 @@ def validate_rule(rule: dict) -> dict:
             raise RewardError("regex mode must be 'fullmatch' or 'search'.")
         out["mode"] = mode
         if rule.get("extract") is not None:
-            # Kept only when given, so rules saved without one keep their shape.
             out["extract"] = _validate_extract(rule["extract"])
         out["score"] = _validate_score(rule.get("score", {}), ("match", "miss"))
     elif kind in ("exact_match", "numeric"):
@@ -249,7 +243,7 @@ def validate_rule(rule: dict) -> dict:
         if column in ("tools", PREFILL_COLUMN):
             raise RewardError(f"compare_to cannot be '{column}': Studio uses that column itself.")
         out["compare_to"] = column
-        # GSM8K-style references ("...reasoning #### 72") need their answer pulled out too.
+        # GSM8K-style "#### 72" references.
         out["reference_extract"] = _validate_extract(rule.get("reference_extract"))
         out["missing"] = _number(rule.get("missing", 0.0), "missing")
         if kind == "exact_match":
@@ -274,7 +268,7 @@ def validate_rule(rule: dict) -> dict:
                 ),
                 key = lambda b: b["within"],
             )
-            # The error a band is compared with is never negative, so the band would never match.
+            # The compared error is never negative, so such a band never matches.
             if out["bands"][0]["within"] < 0:
                 raise RewardError("bands.within can't be negative.")
             out["else"] = _number(rule.get("else", 0.0), "else")
@@ -305,11 +299,9 @@ def validate_rule(rule: dict) -> dict:
     elif kind == "length":
         out["max_chars"] = int(_number(rule.get("max_chars"), "max_chars"))
         out["score"] = _validate_score(rule.get("score", {}), ("over", "under"))
-    # Dropped silently, it would score a different text than the rule says.
     for key in ("extract", "reference_extract"):
         if rule.get(key) is not None and key not in out:
             raise RewardError(f"{kind} rules take no {key}.")
-    # A misspelled field (normalise) would fall back to its default instead.
     unknown = [str(k) for k in rule if k not in out and k not in ("extract", "reference_extract")]
     if unknown:
         raise RewardError(f"{kind} rules take no {unknown[0]}.")
@@ -386,7 +378,6 @@ def _read_root(source: str, root: Path) -> list[dict]:
 
 
 def list_rewards() -> list[dict]:
-    """User rewards shadow bundled ones of the same name."""
     with _LOCK:
         seen: set[str] = set()
         out: list[dict] = []
@@ -412,7 +403,6 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
     spec = parse_reward_markdown(raw)
     target = _user_root() / spec["name"]
     with _LOCK:
-        # Same rule as the listing: never write through a link planted in the library.
         if target.is_symlink() or (target / "REWARD.md").is_symlink():
             raise RewardError(f"'{spec['name']}' is a link; remove it before importing.")
         if (target / "REWARD.md").exists() and not overwrite:
@@ -425,8 +415,7 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
         ):
             # The listing reads only the first MAX_REWARDS_PER_ROOT entries, so more would vanish.
             raise RewardError(f"The reward library is full ({MAX_REWARDS_PER_ROOT} rewards).")
-        # Re-render from the parsed spec so only validated fields reach disk; defaults it fills in
-        # can push a file near the limit over it.
+        # Re-render from the parsed spec: only validated fields reach disk (defaults can grow it).
         text = render_reward_markdown(spec)
         if len(text.encode("utf-8")) > MAX_REWARD_MD_BYTES:
             raise RewardError(
@@ -434,7 +423,7 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
             )
         created = not target.exists()
         target.mkdir(parents = True, exist_ok = True)
-        # Replace atomically so a failed write never leaves a truncated reward (or an empty folder).
+        # Atomic replace: a failed write never leaves a truncated reward.
         tmp = target / f".REWARD.md.{os.getpid()}.tmp"
         try:
             tmp.write_text(text, encoding = "utf-8")
@@ -524,8 +513,7 @@ _JSON_TYPES = {"object": dict, "array": list, "string": str, "number": (int, flo
 
 
 def _json_matches(text: str, schema: dict) -> bool:
-    # No \s* before the body: with .*? it backtracks quadratically on an unclosed fence, and
-    # json.loads skips the whitespace anyway.
+    # No \s* before the body: with .*? it backtracks quadratically on an unclosed fence.
     fenced = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
     try:
         value = json.loads(fenced.group(1) if fenced else text, parse_constant = _reject_constant)
@@ -572,7 +560,6 @@ def score_rule(
         return rule["missing"]
     reference = str(reference)
     if rule.get("reference_extract"):
-        # No match means the reference is already the bare answer.
         extracted = _extract(reference, rule["reference_extract"])
         reference = reference if extracted is None else extracted
     if kind == "exact_match":
@@ -603,7 +590,6 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
         **kwargs,
     ) -> list[float]:
         references = kwargs.get(column) if column else None
-        # A pre-rendered prompt's assistant prefill, which TRL would have restored itself.
         prefills = kwargs.get(PREFILL_COLUMN)
         out = []
         for i, completion in enumerate(completions or []):

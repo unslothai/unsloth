@@ -155,8 +155,7 @@ function DatasetConfiguration({
   return <LocalDatasetMetadata dataset={selectedLocalDataset} />;
 }
 
-/** Text SFT runs only: embedding and decision models train no tokens a chat mask would pick, and
- * the preview endpoint formats rows as SFT, not with DPO / ORPO / GRPO roles. */
+/** Text SFT runs only: embedding/decision models have no chat mask and the preview formats rows as SFT. */
 function canPreviewTokens(
   state: Parameters<typeof effectiveTrainingObjective>[0] & {
     selectedModel: string | null;

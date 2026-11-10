@@ -86,8 +86,7 @@ export function resolveRlMapping(
     if (Object.values(out).includes(role)) {
       continue;
     }
-    // Aliases in priority order, as the backend resolves them: an Alpaca `instruction`
-    // beats an earlier `input` column.
+    // Aliases in backend priority order: Alpaca `instruction` beats an earlier `input`.
     const column = AUTO_NAMES[role]
       .map((alias) =>
         columns.find(
@@ -116,8 +115,7 @@ export function missingRlRoles(
   return RL_REQUIRED_ROLES[objective].filter((role) => !mapped.has(role));
 }
 
-/** compare_to columns of the selected GRPO rewards that the dataset cannot supply. The worker
- * renames the answer role's column to "answer"; any other name must be a dataset column. */
+/** GRPO reward compare_to columns the dataset cannot supply ("answer" is the renamed answer role). */
 export function missingRewardColumns(
   compareTo: readonly string[],
   columns: readonly string[],
@@ -131,8 +129,7 @@ export function missingRewardColumns(
   );
 }
 
-/** resolveRlMapping, keeping columns mapped to another objective's roles so switching back
- * restores them; the backend ignores roles the objective does not use. */
+/** resolveRlMapping, keeping other objectives' roles so switching back restores them. */
 export function syncRlMapping(
   objective: RlObjective,
   columns: readonly string[],
