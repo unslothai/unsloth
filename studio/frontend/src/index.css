@@ -7741,8 +7741,10 @@ html[data-glass="liquid-3d"][data-glass-menus][data-glass-motion].dark :is([data
    paint of the surface. Glass keeps its live blur, its fills and its strength there; only the two paint
    costs below are swapped out. */
 /* Frosted's grain is an SVG feTurbulence tile that WebKitGTK renders again on every paint of the surface
-   (the composer repaints with each scrolled frame): about as much as the rest of a frame. Plain there. */
-html[data-glass="frosted"][data-glass-cpu] :is([data-slot="sidebar-inner"], .unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+   (the composer repaints with each scrolled frame): about as much as the rest of a frame. Plain there,
+   on every surface that takes the grain, the pinned sidebar's shared title bar frame included. */
+html[data-glass="frosted"][data-glass-cpu] :is([data-slot="sidebar-inner"], .unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer),
+html[data-glass="frosted"][data-glass-cpu] [data-windows-glass-frame]::before {
   background-image: none !important;
 }
 /* Liquid 3D's wide inner glows and lifts are blurred box-shadows, which WebKitGTK re-rasterises on the

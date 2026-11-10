@@ -67,6 +67,19 @@ test("WebKitGTK Frosted drops only its grain tile", () => {
     "the Frosted grain (an SVG turbulence tile) is rendered again on every paint there",
   );
   assert.doesNotMatch(rule, /backdrop-filter|background-color/);
+  // Every surface the grain rule paints must be covered: the title bar frame is a pseudo-element the :is() list cannot hold.
+  const grain = postcss.parse(CSS).nodes.find(
+    (node): node is postcss.Rule => node.type === "rule" && node.toString().includes("feTurbulence"),
+  );
+  assert.ok(grain, "the Frosted grain rule exists");
+  for (const selector of grain.selectors) {
+    const target = selector.includes("[data-windows-glass-frame]::before")
+      ? "[data-windows-glass-frame]::before"
+      : /(\[data-slot="sidebar-inner"\]|\.wallpaper-preview-composer|\.unsloth-composer-surface)/.exec(selector)?.[1];
+    assert.ok(target, `known grain surface: ${selector}`);
+    assert.ok(rule.includes(target), `the WebKitGTK rule clears the grain on ${target}`);
+  }
+  assert.ok(grain.selectors.some((selector) => selector.includes(".unsloth-files-panel")) && rule.includes(".unsloth-files-panel"));
 });
 
 test("WebKitGTK liquid 3D draws its wide inner glows as gradients, not blurred shadows", () => {
