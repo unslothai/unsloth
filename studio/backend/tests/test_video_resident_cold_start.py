@@ -32,7 +32,7 @@ def _env(monkeypatch):
         "UNSLOTH_VIDEO_DIT_RESIDENT_OOM_RETRY",
     ):
         monkeypatch.delenv(name, raising = False)
-    monkeypatch.setattr(vr, "_PEAKS", {KEY: {WORK: 2031}})  # what the earlier process stored
+    monkeypatch.setattr(vr, "_PEAKS", {KEY: {WORK: 2031}})
     if hasattr(vr, "_WARM"):
         monkeypatch.setattr(vr, "_WARM", set())
 
@@ -52,9 +52,7 @@ def _card(monkeypatch):
     monkeypatch.setattr(dm, "stream_window_pad_mib", lambda pipe: 0)
     monkeypatch.setattr(dm, "_offload_groups", lambda module: [])
     monkeypatch.setattr(vr, "resident_mib", lambda module: 0)
-    monkeypatch.setattr(
-        vr, "room_mib", lambda **kw: 0
-    )  # the estimate keeps nothing resident on this card
+    monkeypatch.setattr(vr, "room_mib", lambda **kw: 0)
     monkeypatch.setattr(vr, "_open_window", lambda module, dev: dev)
     monkeypatch.setattr(vr, "_failed_captures", lambda: 0)
     monkeypatch.setattr(vr, "_store_key", lambda key: None)
@@ -125,7 +123,7 @@ def test_an_oom_with_groups_resident_streams_them_and_rearms_the_measurement(mon
     assert vr.may_stream_after_oom(pipe)
     assert vr.stream_after_oom(pipe) is True
     assert state["held"] == 0
-    assert pipe.transformer._unsloth_resident_room is None  # no re-pin inside this request
+    assert pipe.transformer._unsloth_resident_room is None
     assert pipe.transformer._unsloth_video_pending == (WORK, 7000 << 20, "cuda:0")
     assert not vr.may_stream_after_oom(pipe)  # once per request: nothing left to stream
 
@@ -186,7 +184,7 @@ def test_a_retried_render_restarts_the_nvfp4_protect_schedule():
     ctl = NVFP4StepController("0,-1")
     assert ctl.begin(5) == (0, 4)
     ctl.advance()
-    ctl.advance()  # OOM after two steps
+    ctl.advance()
     ctl.restart()
     seen = [ctl.protected]
     for _ in range(4):
