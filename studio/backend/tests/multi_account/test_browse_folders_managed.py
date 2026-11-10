@@ -34,3 +34,5 @@ def test_managed_browse_opens_when_the_install_root_is_a_symlink(
     response = run_as(ALICE, models_routes.browse_folders, None, False, "alice")
     assert response.current == str(root.resolve())
     assert [entry.name for entry in response.entries] == ["models"]
+    nested = run_as(ALICE, models_routes.browse_folders, str(root / "models"), False, "alice")
+    assert nested.current == str((root / "models").resolve())
