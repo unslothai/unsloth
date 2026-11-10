@@ -132,8 +132,7 @@ def _scan_maybe(
     bound = frozenset(),
     killed = frozenset(),
 ):
-    """Walk a body that may not run. Keep what it learns, drop what it unbinds; the
-    body's own `bound`/`killed` names escape in neither direction."""
+    """Body that may not run: keep what it learns, drop what it unbinds; its names never leak."""
     local = (set(aliases) | set(bound)) - set(killed)
     found = _scan(body, local, guarded)
     aliases |= local - (set(bound) - aliases)
@@ -141,9 +140,7 @@ def _scan_maybe(
 
 
 def _join(aliases, arms, exhaustive):
-    """Union the arms: a name holds the catalog if it does on any. Falling past every
-    arm is a path too, so the incoming set counts unless an `{% else %}` is present -
-    which is what keeps a rebinding on every arm a rebinding."""
+    """Arms union: a name holds the catalog if any arm does; incoming set counts unless {% else %}."""
     merged = set() if exhaustive else set(aliases)
     for arm in arms:
         merged |= arm

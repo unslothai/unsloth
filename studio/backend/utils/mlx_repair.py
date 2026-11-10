@@ -67,12 +67,9 @@ def _zoo_declared_specifier(package: str) -> str:
 
 
 def _install_packages() -> tuple[str, ...]:
-    """MLX_PACKAGES, with mlx-lm and mlx-vlm narrowed to what the installed unsloth-zoo declares.
-
-    The ranged two, whose call shapes the zoo has to match: a zoo pinning mlx-lm 0.31.3 keeps 0.31.3.
-    mlx is pinned exactly at both ends, so intersecting it would just empty the range on any zoo a
-    patch release behind. Both specifiers are passed and uv intersects them.
-    """
+    """mlx-lm and mlx-vlm are narrowed to the specifier unsloth-zoo declares, as their call shapes
+    must match it; mlx is pinned exactly at both ends, so intersecting it would empty the range;
+    uv intersects both."""
     packages = []
     for name, spec in _MLX_INSTALL_SPECS.items():
         declared = _zoo_declared_specifier(name) if name in ("mlx-lm", "mlx-vlm") else ""

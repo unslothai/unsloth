@@ -708,6 +708,8 @@ export const zhTW = {
     keepsRunning: "關閉此視窗不會停止設定。結果會顯示在「設定 > 安全性」中。",
   },
   composerSettings: {
+    shareDraft: "跨聊天共用草稿",
+    shareDraftDescription: "在聊天和比較中使用同一份草稿。預設關閉；每個聊天保留各自的草稿。",
     title: "輸入框",
     plainText: "純文字輸入框",
     plainTextDescription:
@@ -1864,6 +1866,13 @@ export const zhTW = {
         audioUploadCancel: "取消轉錄",
         audioUploadTranscribing: "正在轉錄音訊…",
         sectionTitle: "聽寫",
+        micTargetLabel: "麥克風按鈕",
+        micTargetAsr: "使用 ASR 轉寫",
+        micTargetModel: "將音訊傳送給模型",
+        micTargetAsrDescription: "麥克風按鈕會把你說的話輸入到訊息框中。",
+        micTargetModelDescription: "載入支援音訊輸入的模型後，麥克風會錄製一段音訊並附加到你的訊息中。其他模型仍使用聽寫。",
+        micTargetModelUnavailable: "載入支援音訊輸入的模型（例如 LFM3-Omni）即可向它傳送語音。",
+        micRecordForModel: "為模型錄製音訊",
         engineLabel: "聽寫引擎",
         engineBrowser: "瀏覽器",
         engineBrowserDescription:
@@ -1887,6 +1896,13 @@ export const zhTW = {
         sttQuantDescription:
           "選擇或搜尋要在本機執行的 STT 模型，再選擇其量化版本。",
         sttDeviceLabel: "載入至",
+        sttContextLabel: "語音上下文",
+        sttContextAuto: "自動（建議）",
+        sttContextAutoDescription:
+          "依每段錄音調整，較長的音訊會使用較多記憶體。較舊的執行環境可能需要固定大小以減少記憶體用量。適用於「語音」與「轉錄」中的 Qwen3-ASR。",
+        sttContextFixedDescription:
+          "較小的上限使用較少記憶體。無法容納的錄音需要較高的上限或自動。適用於「語音」與「轉錄」中的 Qwen3-ASR。",
+        sttContextTokens: "{count} 個 token",
         sttDeviceAuto: "有 GPU 時使用 GPU",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription: "有 GPU 時使用 GPU，否則使用 CPU。",

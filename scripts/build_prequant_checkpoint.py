@@ -28,12 +28,8 @@ def resolve_build_family(base: str, override: Optional[str] = None) -> Optional[
 def convrot_refusal(
     group: int, rotatable: Sequence[str], not_divisible: Sequence[str]
 ) -> Optional[str]:
-    """Why a ConvRot build must not be quantised and saved, or None when it is fine.
-
-    An empty rotatable set means the group divides no quantized input axis (a group larger than
-    every Linear, say). The build would still stamp the v2 tag and an empty fqn list, which
-    ``rotation_metadata_error`` refuses at load time, so the only thing it produces is a
-    multi-gigabyte artifact nothing can ever open. Refuse before the hours, not after."""
+    """Refuse a ConvRot build with no rotatable Linear before the hours of quantising, not after:
+    its empty fqn list is refused at load time, leaving an unopenable artifact"""
     if rotatable:
         return None
     return (

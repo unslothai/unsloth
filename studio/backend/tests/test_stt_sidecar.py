@@ -867,8 +867,7 @@ def test_a_worker_that_outlived_the_kill_stays_resident_rather_than_reported_unl
 
 
 def test_a_new_load_is_refused_while_the_previous_worker_still_holds_its_memory(monkeypatch):
-    # Starting a second child over one that never exited doubles the memory the
-    # first was unloaded to release, so refuse and let the caller retry.
+    # Refuse a second child while the first never exited; it doubles the memory being freed.
     _shared_setup_1(monkeypatch)
     workers = _install_unkillable_worker(monkeypatch)
 
@@ -997,8 +996,7 @@ def test_a_child_that_outlived_the_kill_inside_start_stays_accounted(monkeypatch
 
 
 def test_a_load_whose_child_outlived_the_kill_is_not_retried_onto_a_second_child(monkeypatch):
-    # The accelerator attempt failed leaving a live child, so the CPU retry would
-    # put a second child beside it and, installing that one, forget the first.
+    # A live child left by a failed accelerator load must not get a second child beside it.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(
         stt_sidecar_module, "_pick_device", lambda _preference = None: ("cuda", "float16")
@@ -1015,8 +1013,7 @@ def test_a_load_whose_child_outlived_the_kill_is_not_retried_onto_a_second_child
 
 
 def test_an_idle_unload_retries_a_worker_that_outlived_the_kill(monkeypatch):
-    # Keeping the survivor resident must not strand it: the idle timer is rearmed
-    # so the release is tried again once the child finally goes.
+    # The idle timer is rearmed for a surviving child, so release is retried once it exits.
     _shared_setup_1(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module.threading, "Timer", _FakeTimer)
     workers = _install_unkillable_worker(monkeypatch)
@@ -1070,8 +1067,7 @@ def _closed(worker):
 
 
 def test_a_worker_whose_liveness_cannot_be_read_stays_resident(monkeypatch):
-    # An unanswerable probe is not evidence that the context was released, so reporting
-    # nothing resident would let training be admitted against memory still held.
+    # An unanswerable liveness probe is not proof of release, so the worker stays resident.
     _shared_setup_1(monkeypatch)
 
     def unreadable(_worker):
@@ -1088,8 +1084,7 @@ def test_a_worker_whose_liveness_cannot_be_read_stays_resident(monkeypatch):
 
 
 def test_a_close_that_raises_is_a_failed_release(monkeypatch):
-    # close() raising out of join/terminate/kill confirms nothing dead, so discarding
-    # the only handle would advertise memory the child is still holding as free.
+    # A raising close() proves nothing dead, so discarding the only handle hides held memory.
     _shared_setup_1(monkeypatch)
 
     def raising(_worker):
@@ -1103,8 +1098,7 @@ def test_a_close_that_raises_is_a_failed_release(monkeypatch):
 
 
 def test_a_close_that_raises_over_a_child_already_gone_still_releases(monkeypatch):
-    # The other direction: bookkeeping that raised over a confirmed dead child
-    # holds no memory, and keeping it would refuse every later load.
+    # A raise over a dead child holds no memory, and keeping it would refuse every later load.
     _shared_setup_1(monkeypatch)
 
     def raising_after_death(worker):
@@ -1928,8 +1922,7 @@ def test_download_status_is_idle_before_any_download():
         "completed_download_ids": [],
         "error": None,
         "cancelled": False,
-        # Only set alongside cancelled: "model" goes None once the download thread stops, so
-        # this is what tells a settled cancellation from an unrelated one.
+        # Set only with cancelled: model is None once the thread ends; marks a settled cancel.
         "cancelled_model": None,
         "bytes_total": None,
         "bytes_done": None,
@@ -2035,8 +2028,7 @@ def test_cpu_retry_releases_failed_accelerator_load(monkeypatch):
 
     def fake_build(self, repo, device, dtype, cancel_event):
         if device != "cpu":
-            # The frame local stands in for a partly loaded accelerator model
-            # kept alive only through the raised traceback.
+            # A frame local keeps a partial accelerator model alive only via the traceback.
             marker = Marker()
             seen["ref"] = weakref.ref(marker)
             raise RuntimeError("accelerator load failed")
@@ -2048,15 +2040,13 @@ def test_cpu_retry_releases_failed_accelerator_load(monkeypatch):
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
     sidecar.load("small")
 
-    # The failed attempt must be collectable before the CPU model loads, or
-    # its accelerator memory stays stranded for the whole retry.
+    # Collect the failed attempt before the CPU load or its accelerator memory is stranded.
     assert seen["alive_during_retry"] is False
     assert sidecar.device == "cpu"
 
 
 def test_decoding_stops_as_soon_as_the_request_is_cancelled(monkeypatch):
-    """Checking only after the decode returned let an abandoned upload run to EOF or the
-    30-minute cap, and several could do that at once."""
+    """Cancel is checked mid-decode, or abandoned uploads run to EOF or the 30-minute cap."""
     import threading
 
     monkeypatch.setattr(stt_sidecar_module, "_decode_audio_bounded", _REAL_DECODE_AUDIO_BOUNDED)
