@@ -220,8 +220,7 @@ def verify_cards(
     cards: Any,
     logger: Any = None,
 ) -> int:
-    """The install probe ran on the primary only: probe each card a layer split places blocks on and, if any fails,
-    restore the stock processors everywhere. Returns the number restored; never raises."""
+    """Probe each split card (install probed the primary only); any failure restores stock processors. Never raises."""
     try:
         import torch
         from diffusers.models.transformers import transformer_flux3 as tf3
