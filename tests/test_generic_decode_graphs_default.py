@@ -219,6 +219,8 @@ def test_kept_graph_hook_is_inert_in_a_compiled_training_forward(host, llama):
 def test_a_short_call_after_a_long_one_replays_the_kept_graph(host, llama, monkeypatch):
     # transformers 5.x sizes every later cache to the longest call so far (_previous_max_cache_length), so a short
     # call after a long one gets a cache as long as the kept one: it must reuse it, not re-capture every call.
+    # (StaticCache only: a growable bucket is judged against the call's own need, test_growable_kv_cache.)
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "0")
     _gen(llama, new = 40)
     s1 = _stats(llama)
     assert s1["captures"] == 1 and GG.kept_cache(llama) is not None, s1
