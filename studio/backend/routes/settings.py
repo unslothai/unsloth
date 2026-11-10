@@ -5260,6 +5260,7 @@ class BrowserPrefsPayload(BaseModel):
     saveDownloadHistory: Optional[bool] = None
     askWhereToSave: Optional[bool] = None
     askBeforeDownloading: Optional[bool] = None
+    askBeforeProgramDownloads: Optional[bool] = None
     annotationScreenshots: Optional[Literal["always", "never"]] = None
 
 
