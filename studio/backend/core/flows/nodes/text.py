@@ -54,8 +54,7 @@ def _prompt(ctx: NodeContext, param: str, port: str) -> str:
 
 
 async def _model_and_load(ctx: NodeContext, kind: str) -> tuple[Any, Optional[dict]]:
-    """The model to ask for and the load options its card wants. A card on the loaded model that has load
-    settings names that model, so a different load reloads it."""
+    """The model to ask for and the load options its card wants."""
     choice = ctx.params.get("model")
     load = ctx.params.get(model_settings.LOAD)
     if not load:

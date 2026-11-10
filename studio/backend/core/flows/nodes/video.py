@@ -123,8 +123,7 @@ MAX_CONCAT_FRAMES = 20_000
 
 
 def concat_clips(clips: list[bytes]) -> bytes:
-    """One H.264 MP4 of the clips back to back, at the first clip's size and frame rate (audio is dropped). A clip at
-    another frame rate is resampled by time (frames repeated or skipped), so it keeps its length and speed."""
+    """One H.264 MP4 of the clips back to back, at the first clip's size and frame rate (audio is dropped)."""
     import io
     from fractions import Fraction
 

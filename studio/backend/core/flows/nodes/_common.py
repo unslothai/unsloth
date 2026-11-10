@@ -1174,7 +1174,6 @@ async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[li
     resident = status.get("repo_id")
     if not status.get("loaded") or not resident:
         return False
-    # Named as this node names it, so the next node's residency check still matches.
     repo = (model.get("repo") if isinstance(model, dict) else None) or resident
     asked = model.get("variant") if isinstance(model, dict) else None
     variant = resident_variant(status, asked)

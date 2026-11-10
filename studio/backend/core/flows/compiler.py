@@ -156,7 +156,6 @@ class Plan:
     waits: dict[str, set[str]] = field(default_factory = dict)
     flow_edges: list[dict] = field(default_factory = list)
     warnings: list[dict] = field(default_factory = list)
-    # Loop node id -> its feeds-the-next-round edge.
     feedback: dict[str, dict] = field(default_factory = dict)
     _upstream: dict[str, frozenset[str]] = field(
         default_factory = dict, init = False, repr = False, compare = False

@@ -217,7 +217,7 @@ async def _loaded_identity(
 
 
 async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
-    """Load what is being scored; (label, is_lora)."""
+    """Returns (label, is_lora)."""
     wired = ctx.inputs.get("model")
     if isinstance(wired, dict) and wired.get("repo"):
         return await _load_export(ctx, wired)
@@ -488,7 +488,6 @@ def mapped_question(row: dict, spec: dict) -> Any:
         return _mapped_cells(row, users, labels, "turns" if join == "turns" else "lines")
     question = _mapped_cells(row, users, labels, "lines")
     extra = _mapped_cells(row, inputs, labels, "lines").strip() if inputs else ""
-    # As Benchmark asks any Alpaca row: its instruction, then its input.
     return f"{question}\n\n{extra}" if extra else question
 
 
@@ -614,7 +613,6 @@ async def _recipe_heldout(
             named_reference,
             REFERENCE_GUESSES,
         )
-    # The failures output keeps the original rows.
     if systems and system_col:
         asked = [{**r, MAPPED_SYSTEM: system_message(r, systems)} for r in asked]
         system_col = MAPPED_SYSTEM
@@ -716,7 +714,6 @@ async def _recipe_heldout(
         "score": summary.get("score"),
         "passed": summary.get("passed", 0),
         "scored": summary.get("scored", 0),
-        # Rows the model or judge failed to answer (HTTP errors): left out of the score.
         "errored": len(errored),
         "base_score": baseline.get("score") if baseline else None,
         "metric": "reference match" if scorer == "reference" else "LLM judge",

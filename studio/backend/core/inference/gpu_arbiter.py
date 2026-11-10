@@ -692,8 +692,8 @@ def operation_lease(
     ttl: float,
     label: Optional[str] = None,
 ) -> Iterator[None]:
-    """Hold the GPU against other residency changes for ``ttl`` seconds at most; raises GpuLeaseHeldError if
-    another holder has it. Code inside (and tasks or threads it starts with the context copied) is the holder."""
+    """Hold the GPU against other residency changes for ``ttl`` seconds at most; raises
+    GpuLeaseHeldError if another holder has it."""
     global _lease
     import time
 
@@ -1082,8 +1082,7 @@ def owner_account(owner: Optional[str] = None) -> Optional[str]:
 
 
 def load_count(owner: Optional[str] = None) -> int:
-    """How many residency-changing loads have gone through; a changed value means some model was (re)loaded.
-    With ``owner``, only that owner's loads count."""
+    """How many residency-changing loads have gone through; a changed value means some model was (re)loaded."""
     return _loads if owner is None else _owner_loads.get(owner, 0)
 
 

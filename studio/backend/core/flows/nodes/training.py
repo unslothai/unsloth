@@ -50,9 +50,7 @@ EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": 
 
 
 async def checkpoint_source(ctx: NodeContext, checkpoint: dict) -> tuple[str, bool]:
-    """Where to continue from and whether it is a LoRA. A Fine-tune checkpoint carries its run name
-    only, so the path and the kind come from the checkpoint listing; a Full Finetuning run is a
-    plain model, which the adapter preflight would refuse."""
+    """Where to continue from and whether it is a LoRA."""
     if checkpoint.get("output_dir"):
         return str(checkpoint["output_dir"]), checkpoint.get("adapter") is not False
     from studio_mcp import checkpoints as named
@@ -66,8 +64,7 @@ async def checkpoint_source(ctx: NodeContext, checkpoint: dict) -> tuple[str, bo
 
 
 def _picked_cache(cache: Any) -> dict:
-    """The On device copy the base model was picked from: train on those weights, as the Train page
-    does. A path missing here (a flow from another machine) falls back to the plain repo."""
+    """The On device copy the base model was picked from: train on those weights, as the Train page does."""
     if not isinstance(cache, dict) or cache.get("known_cached") is not True:
         return {}
     path = cache.get("local_path")
@@ -99,7 +96,6 @@ async def finetune(ctx: NodeContext) -> dict:
     base_model = config["model_name"]
     start = ctx.inputs.get("start")
     if isinstance(start, dict) and start.get("kind") == "checkpoint":
-        # Keep training that LoRA instead of stacking a new one on the base model.
         path, adapter = await checkpoint_source(ctx, start)
         config["model_name"] = path
         # Its own weights: an On device pick of the base model's copy does not apply.
@@ -307,8 +303,7 @@ def method_fields(
     config: dict,
     base_model: Optional[str] = None,
 ) -> None:
-    """Method, precision, sequence length and learning rates, as the Train page sends them. ``base_model``
-    is the model a continued checkpoint was trained on, since ``model_name`` is then its folder."""
+    """Method, precision, sequence length and learning rates, as the Train page sends them."""
     method = str(params.get("training_type") or "lora")
     config["training_type"] = TRAINING_TYPES.get(method, TRAINING_TYPES["lora"])
     if method == "lora":
@@ -406,8 +401,7 @@ def drafter_request(params: dict) -> dict:
 
 
 def auto_conversation(row: Any) -> Optional[str]:
-    """The column of whole conversations (``messages``, ``conversations``) automatic formatting
-    reads, or None."""
+    """The conversation column automatic formatting reads, or None."""
     if not isinstance(row, dict) or not row:
         return None
     try:
@@ -443,9 +437,7 @@ def auto_mapping(row: Any) -> dict:
 
 
 def mapping_facts(mapping: Any, format_type: Any = "auto") -> dict:
-    """How training read the rows, so Benchmark asks and scores the hold-out the same way: each
-    row's own system message (none when the mapping names no system column), and the names
-    numeric labels became."""
+    """How training read the rows, so Benchmark asks and scores the hold-out the same way."""
     if not isinstance(mapping, dict) or not mapping:
         return {}
     from utils.datasets.dataset_utils import _TO_CHATML
@@ -459,7 +451,6 @@ def mapping_facts(mapping: Any, format_type: Any = "auto") -> dict:
     per_row = [] if templated else [c for c, role in roles.items() if role == "system"]
     facts = {"system_column": per_row[0] if per_row else ""}
     if len(per_row) > 1:
-        # Each of them goes in as a system message, in order.
         facts["system_columns"] = per_row
     # The columns that made each row's question and answer: several user columns are one
     # message per column, or one message of their lines under the template mapping. The
@@ -625,7 +616,7 @@ def _adapter_base(path: str) -> Optional[str]:
 
 async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
     """What identifies the weights a run starts from: a local folder's files, a Hub repo's revision,
-    and for a saved LoRA folder the same for the base it loads under it. None = cannot tell."""
+    and for a saved LoRA folder the same for the base it loads under it."""
     found: dict = {}
     if base.startswith("ref:"):
         # A model picked from Studio's inventory names its folder by a handle, as training resolves it.
@@ -688,8 +679,7 @@ async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
 
 
 def _hub_adapter_base(repo: str, revision: str, token: Any) -> Optional[str]:
-    """The base a Hub LoRA repo names in its adapter_config.json at ``revision``; None when the repo is
-    not an adapter. Any other failure raises, so the caller trains again rather than guess."""
+    """The base a Hub LoRA repo names in its adapter_config.json at ``revision``; None when the repo is not an adapter."""
     import json
 
     from huggingface_hub import hf_hub_download
@@ -715,9 +705,7 @@ def _loads_4bit(params: dict, base: str) -> bool:
 
 
 def _loader_repos(base: str, load_in_4bit: bool) -> list[str]:
-    """The repos Unsloth's loader can fetch in place of ``base``: its mirror for each load mode the run
-    can end in (a 4-bit request falls back to 16-bit, never the reverse) and that mirror without its
-    4-bit suffix (what a GPU without pre-quantized support downloads). The worker scans the same set."""
+    """The mirror repos Unsloth's loader can fetch in place of ``base``; the worker scans the same set."""
     from utils.models.unsloth_mirror import unsloth_public_mirror
 
     repos: list[str] = []
@@ -733,8 +721,7 @@ def _loader_repos(base: str, load_in_4bit: bool) -> list[str]:
 
 
 async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
-    """What the params can't show: the dataset's content and the base model's weights.
-    None (an unreachable Hub, a missing file) means train again rather than guess."""
+    """What the params can't show: the dataset's content and the base model's weights."""
     dataset = ctx.inputs.get("dataset")
     if str(ctx.params.get("task") or "text") in ("vision", "audio") and not (
         isinstance(dataset, dict) and dataset.get("source") == "hf"
@@ -887,9 +874,7 @@ def _stream_rows(streamed: Any, start: int, end: Optional[int]) -> Any:
 def _compound_rows(
     ref: str, subset: Optional[str], split: str, token: Any, start: int, end: Optional[int]
 ) -> Any:
-    """Percent slices and joined splits (`train[:50%]`, `train+validation`), resolved against the
-    Hub's split sizes and streamed one bounded range at a time, so nothing past the hold-out's rows
-    or the cap is downloaded. Percents need those sizes; without them the split is refused."""
+    """Percent slices and joined splits, streamed in bounded ranges so nothing past the cap is downloaded."""
     from datasets import Dataset, ReadInstruction, load_dataset, load_dataset_builder
 
     try:
@@ -979,9 +964,7 @@ def _first_row(dataset: dict, token: Any) -> Optional[dict]:
 
 
 def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
-    """A Hub split, without downloading more than the hold-out can use: a slice streams just its
-    rows, a split the Hub says is over the cap is refused before anything is fetched, and one of
-    unknown size streams at most the cap plus one row."""
+    """A Hub split, without downloading more than the hold-out can use."""
     from datasets import load_dataset, load_dataset_builder
 
     ref, subset = str(dataset["ref"]), dataset.get("subset") or None
@@ -1160,14 +1143,12 @@ async def holdout_split(
         train = await upload_rows(ctx, [rows[i] for i in kept], f"{tag}-train")
         holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
     elif dataset.get("source") != "hf" and _is_csv(dataset):
-        # Saved as CSV again, so training reads it as it reads the source: a numeric id column stays
-        # out of a raw-text run's text, which the JSONL's all-string rows would lose.
+        # CSV again, so a numeric id column stays out of a raw-text run's text (JSONL would stringify it).
         rows = _jsonable(table.to_list())
         train = await _upload_csv(ctx, [rows[i] for i in kept], f"{tag}-train")
         holdout = await _upload_csv(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
     else:
-        # Saved as Parquet with the source's column types: a decimal or date column stringified into
-        # JSONL would become the text column a raw-text run picks.
+        # Parquet keeps column types: a stringified decimal or date would become the raw-text column.
         train = await _upload_parquet(ctx, table.select(kept), f"{tag}-train")
         holdout = await _upload_parquet(ctx, table.select(held_ids), f"{tag}-holdout")
     holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": count})
@@ -1221,8 +1202,7 @@ def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:
 
 
 def _auto_eval_split(dataset: dict, train_split: str, token: Any) -> Optional[str]:
-    """The split the trainer would pick for a blank eval split: the first candidate the Hub has with
-    enough rows."""
+    """The split the trainer would pick for a blank eval split: the first candidate the Hub has with enough rows."""
     from datasets import get_dataset_split_names, load_dataset, load_dataset_builder
 
     from core.training.eval_dataset import EVAL_SPLIT_CANDIDATES, MIN_EVAL_ROWS
@@ -1397,7 +1377,6 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
     if not isinstance(model, str) or not model.strip():
         return None
     found = {"repo": model, "variant": status.get("gguf_variant") or None}
-    # How it was loaded, so putting it back keeps its context and precision.
     context = status.get("requested_context_length")
     # 0 is a request too: automatic sizing.
     if isinstance(context, int) and not isinstance(context, bool) and context >= 0:
@@ -1411,8 +1390,7 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
     # A GGUF placed by hand (all in RAM at gpu_layers 0, say) goes back where it was.
     if status.get("gpu_memory_mode") == "manual":
         extra.update({k: status[k] for k in PLACEMENT_FIELDS if status.get(k) is not None})
-    # The GPUs it was asked to use (tensor parallel over two, or pinned to another card); a status
-    # from before requested_gpu_ids reports only the effective ones. None means automatic.
+    # The GPUs it was asked to use; None means automatic.
     gpus = status.get("requested_gpu_ids", status.get("gpu_ids"))
     if isinstance(gpus, list) and gpus:
         extra["gpu_ids"] = gpus

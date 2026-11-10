@@ -134,9 +134,7 @@ async def _embed_batch(ctx: NodeContext, texts: list[str]) -> Optional[tuple[lis
 async def _embed_missing(
     ctx: NodeContext, records: list[dict], queries: list[str]
 ) -> Optional[list]:
-    """One embedding call for the queries plus any record still without a vector; fills records in place.
-
-    Vectors from a different embedding model live in another space, so those records are embedded again."""
+    """One embedding call for the queries plus any record still without a vector; fills records in place."""
     missing = [r for r in records if not isinstance(r.get("embedding"), list)]
     got = await _embed(ctx, queries + [r["text"] for r in missing])
     if got is None:
@@ -157,8 +155,7 @@ RATE_BATCH = 32
 
 
 async def rate_importance(ctx: NodeContext, texts: list[str]) -> list[int]:
-    """The paper's poignancy prompt, up to RATE_BATCH texts per structured call so a bulk import fits a
-    local model's context."""
+    """The paper's poignancy prompt, up to RATE_BATCH texts per structured call so a bulk import fits a local model's context."""
     out: list[int] = []
     for start in range(0, len(texts), RATE_BATCH):
         out += await _rate_batch(ctx, texts[start : start + RATE_BATCH])
