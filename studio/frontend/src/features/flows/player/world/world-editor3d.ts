@@ -58,7 +58,6 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
   };
   let h: PropHistory = startHistory(ctx.map.props ?? []);
   let selected: string | null = null;
-  // The props a pending place request was laid out against.
   let placeBasis: WorldProp3d[] | null = null;
   let mode: GizmoMode = "translate";
   const listeners = new Set<() => void>();

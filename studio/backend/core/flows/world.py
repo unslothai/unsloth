@@ -1262,8 +1262,7 @@ def npc_prompt(
     )
     item_list = ", ".join("{} (id {})".format(i["name"], i["id"]) for i in items.values())
     quest_list = "\n".join(q_lines)
-    # The conversation comes first: what changes between turns (quests, inventory, variables) follows it, so a
-    # picked-up item does not make llama-server process the whole conversation again.
+    # Conversation first, per-turn state (quests, inventory, vars) after, so llama-server reuses the cached prefix.
     head = (
         f"Conversation so far:\n{convo or '(just met)'}\n"
         f"Your quests:\n{quest_list or '- none'}\n"

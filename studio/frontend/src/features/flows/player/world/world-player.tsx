@@ -1368,7 +1368,6 @@ export function WorldPlayer({
         spec: played,
         map,
         areas,
-        // Items still in an unopened chest are not on the ground to race for.
         items: Object.fromEntries(
           Object.entries({
             ...map.items,

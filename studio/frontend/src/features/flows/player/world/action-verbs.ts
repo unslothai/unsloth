@@ -193,7 +193,6 @@ export const NOISE = {
   crouch: 0.8,
 } as const;
 
-/** How far a footstep carries: crouching is near silent, sprinting loud. */
 export const stepNoise = (b: Pick<Body, "crouched">, sprint: boolean) =>
   b.crouched ? NOISE.crouch : sprint ? NOISE.sprint : NOISE.walk;
 
