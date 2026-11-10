@@ -6713,6 +6713,31 @@ _HEREDOC_INTERPRETER_MENTION_RE = re.compile(
 )
 _COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
 _HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
+# Commands that only read a heredoc as data; any other owner may forward stdin to an interpreter.
+_HEREDOC_DATA_COMMANDS = frozenset(
+    {
+        "cat",
+        "tee",
+        "git",
+        "gh",
+        "grep",
+        "head",
+        "tail",
+        "wc",
+        "sort",
+        "uniq",
+        "tr",
+        "cut",
+        "jq",
+        "read",
+        ":",
+        "true",
+        "base64",
+        "diff",
+        "patch",
+    }
+)
+_SOURCE_ENCODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
 _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
 
@@ -6842,6 +6867,8 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 return True
             continue
         if not any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens):
+            if mentioned and re.search(r"(?:\$\(|`)[^)`]*<<(?!<)", line):
+                return True
             continue
         commands, current = [], []
         for token in tokens:
@@ -6907,7 +6934,7 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                     return True
                 continue
             if at is None:
-                if _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names)):
+                if mentioned and os.path.basename(command_word) not in _HEREDOC_DATA_COMMANDS:
                     return True
                 continue
             if stdin_redirects > 1 or any("PYTHONINSPECT" in w for w in names[:at]):
@@ -6922,6 +6949,14 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
             if not reads:
                 continue
             program = "\n".join(body)
+            cookie = next(filter(None, map(_SOURCE_ENCODING_RE.match, body[:2])), None)
+            if cookie and cookie.group(1).lower().replace("_", "-") not in (
+                "utf-8",
+                "utf8",
+                "ascii",
+                "latin-1",
+            ):
+                return True
             if not quoted and re.search(r"[$`]|\\[\\$`\n]", program + "\n"):
                 return True
             if _inline_python_is_high_risk(program):

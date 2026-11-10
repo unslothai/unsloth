@@ -1154,6 +1154,14 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("bash <<'SH'\npython3 - <<'PY'\nprint(1)\nPY\nSH", True),
         ("bash <<'SH'\npython3 -\nimport shutil; shutil.rmtree('build')\nSH", True),
         ("W=''; python3 -W $W ignore <<'PY'\nimport shutil; shutil.rmtree('build')\nPY", True),
+        ("result=\"$(python3 - <<'PY'\nimport shutil; shutil.rmtree('build')\nPY\n)\"", True),
+        (
+            "python3 - <<'PY'\n# coding: utf-7\n# +AAo-import shutil; shutil.rmtree('build')\nPY",
+            True,
+        ),
+        ("run_py() { python3 -; }\nrun_py <<'PY'\nimport shutil; shutil.rmtree('build')\nPY", True),
+        ("cat <<'EOF' > s.py\nprint(1)\nEOF\npython3 s.py", False),
+        ("python3 - <<'PY'\n# -*- coding: utf-8 -*-\nprint(1)\nPY", False),
         ("env bash <<'SH'\npython3 - <<'PY'\nimport shutil; shutil.rmtree('build')\nPY\nSH", True),
         (
             'OP=rmtree\nbash <<SH\npython3 - <<\'PY\'\nimport shutil; getattr(shutil, "$OP")("build")\nPY\nSH',
