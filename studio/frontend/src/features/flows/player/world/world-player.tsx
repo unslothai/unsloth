@@ -55,6 +55,7 @@ import {
   type LiveReply,
   OFFLINE_NOTE,
   appendReplyDelta,
+  cancelLiveWork,
   isNoChatModelError,
   offlineLine,
 } from "./live-reply";
@@ -473,10 +474,7 @@ export function WorldPlayer({
   const planEntry = sim ? spec.entry_points?.npc_plan : undefined;
   const chatEntry = sim ? spec.entry_points?.npc_chat : undefined;
   const queue = useMemo(
-    () =>
-      new BackgroundQueue(
-        sim?.calls_per_minute ?? 0,
-      ),
+    () => new BackgroundQueue(sim?.calls_per_minute ?? 0),
     [sim, baseSpec],
   );
   useEffect(() => () => queue.clear(), [queue]);
@@ -1029,12 +1027,7 @@ export function WorldPlayer({
                   ...m,
                   plan: blocks,
                   planDay: day,
-                  ...Life.lifePlanned(
-                    m,
-                    res.outputs.plan,
-                    st.clock,
-                    askedSeq,
-                  ),
+                  ...Life.lifePlanned(m, res.outputs.plan, st.clock, askedSeq),
                 },
                 text
                   ? [
@@ -1438,6 +1431,11 @@ export function WorldPlayer({
   const [offer, setOffer] = useState<{ npc: string; good: Good } | null>(null);
 
   const replyRun = useRef<AbortController | null>(null);
+  useEffect(
+    () => () =>
+      cancelLiveWork(loads, messages, [replyRun, summaryRun, directorRun]),
+    [],
+  );
   const send = (raw: string): boolean => {
     const text = raw.trim();
     if (!text || !talking || thinking) return false;
@@ -1657,14 +1655,7 @@ export function WorldPlayer({
       toast("That save is empty or from another world");
       return;
     }
-    loads.current += 1;
-    replyRun.current?.abort();
-    replyRun.current = null;
-    messages.current += 1;
-    summaryRun.current?.abort();
-    summaryRun.current = null;
-    directorRun.current?.abort();
-    directorRun.current = null;
+    cancelLiveWork(loads, messages, [replyRun, summaryRun, directorRun]);
     queue.clear();
     busy.current.clear();
     setBackground(null);

@@ -289,7 +289,7 @@ test("the player keeps the map from the generated world and adds through the gam
 	assert.match(src, /await direct\(completed, state\)/);
 	assert.match(src, /const s = from \?\? wsRef\.current;/);
 	assert.match(src, /if \(turn === messages\.current\) await direct/);
-	assert.match(src, /loads\.current \+= 1;[^}]*messages\.current \+= 1;/);
+	assert.match(src, /cancelLiveWork\(loads, messages, \[replyRun, summaryRun, directorRun\]\);/);
 	assert.match(src, /for \(const n of specRef\.current\.npcs\)/);
 });
 

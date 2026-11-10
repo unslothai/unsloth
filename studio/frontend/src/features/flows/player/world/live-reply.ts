@@ -38,10 +38,31 @@ const OFFLINE_LINES = [
   "Lovely day for a walk, isn't it?",
 ];
 
-export function offlineLine(greeting: string | undefined, npcTurnsSoFar: number): string {
+export function offlineLine(
+  greeting: string | undefined,
+  npcTurnsSoFar: number,
+): string {
   if (npcTurnsSoFar === 0 && greeting?.trim()) return greeting.trim();
   return OFFLINE_LINES[npcTurnsSoFar % OFFLINE_LINES.length];
 }
 
 export const OFFLINE_NOTE =
   "Talking needs a chat model: load one in Chat, or pick one on the NPC Reply block.";
+
+interface Ref<T> {
+  current: T;
+}
+
+// Bumping the counters makes any in-flight reply continuation bail before it schedules summary or director work.
+export function cancelLiveWork(
+  loads: Ref<number>,
+  messages: Ref<number>,
+  runs: Ref<AbortController | null>[],
+): void {
+  loads.current += 1;
+  messages.current += 1;
+  for (const run of runs) {
+    run.current?.abort();
+    run.current = null;
+  }
+}
