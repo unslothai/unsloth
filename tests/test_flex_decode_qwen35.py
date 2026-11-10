@@ -45,6 +45,15 @@ def _torch_linear_attention(monkeypatch):
                 monkeypatch.setattr(module, fn, original)
 
 
+def _native_torch_moe(monkeypatch):
+    # The float64 stand-in needs the per-expert loop: a CUDA host selects grouped_mm (half / fp32 only) process-wide.
+    import sys
+    monkeypatch.setenv("UNSLOTH_MOE_BACKEND", "native_torch")
+    for module in list(sys.modules.values()):
+        if "_SELECTED_MOE_BACKEND" in getattr(module, "__dict__", {}):
+            monkeypatch.setattr(module, "_SELECTED_MOE_BACKEND", None)
+
+
 def _qwen(moe):
     from transformers import (
         Qwen3_5ForCausalLM,
@@ -100,6 +109,7 @@ def test_qwen35_flex_decode_matches_sdpa(flex, monkeypatch, moe, batch, zoo_mask
         zoo = pytest.importorskip("unsloth_zoo.flex_attention.decode")
         monkeypatch.setattr(FD, "decode_block_mask", zoo.decode_block_mask)
     _torch_linear_attention(monkeypatch)
+    _native_torch_moe(monkeypatch)
     model = _qwen(moe)
     assert FD._model_type(model.config) in FD.MODEL_TYPES
     ids, mask = _inputs(48, batch)
