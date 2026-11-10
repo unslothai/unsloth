@@ -242,6 +242,12 @@ class DiffusionFamily:
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
+    # sd-cli --scheduler; "simple" matches the diffusers grid (sd.cpp's default ends at sigma ~0.003). None = sd.cpp's.
+    sd_cpp_scheduler: Optional[str] = None
+    # (id substring, shift) overriding sd_cpp_flow_shift under sd_cpp_scheduler; first match wins, None = sd.cpp's.
+    sd_cpp_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
+        default_factory = tuple
+    )
     # Literal an sd.cpp build carries once it can run this family; matched against binary bytes
     # since old runnable builds are never upgraded and release tags cannot answer it.
     sd_cpp_arch_marker: Optional[str] = None
@@ -535,6 +541,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
+        # schnell mu 0; dev rows (sd.cpp's mu 1.15) stop a dev GGUF matching a schnell id later in the list.
+        sd_cpp_scheduler = "simple",
+        sd_cpp_flow_shift_variants = tuple(
+            (f"{prefix}-{model}", shift)
+            for model, shift in (("schnell", 0.0), ("krea-dev", None), ("dev", None))
+            for prefix in ("flux.1", "flux1", "flux-1", "flux")
+        ),
     ),
     # Must precede a generic flux match.
     DiffusionFamily(
@@ -827,6 +840,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(
         # Specific aliases first so detect_family prefers this over qwen-image.
@@ -903,6 +917,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         sd_cpp_sampling_method = "euler",
         sd_cpp_flow_shift = 3.0,
+        sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(
         # Listed before qwen-image so the name outranks it.
@@ -948,6 +963,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         sd_cpp_sampling_method = "euler",
         sd_cpp_flow_shift = 1.0,
+        sd_cpp_scheduler = "simple",
         # Layered support landed upstream in master-744 (556f04b); an older reused build has no such literal.
         sd_cpp_arch_marker = "qwen_image_layers",
     ),
@@ -1016,6 +1032,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen-Image's supported sd.cpp invocation (docs/qwen_image.md).
         sd_cpp_sampling_method = "euler",
         sd_cpp_flow_shift = 3.0,
+        sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(
         # Different architecture from qwen-image, so its own family.
@@ -1213,6 +1230,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same BF16 file
         # klein 4B reads, so one download serves both.
         sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-BF16.gguf", "llm"),),
+        sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(
         name = "krea-2",
@@ -1245,6 +1263,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae = ("unsloth/Krea-2-Turbo", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
         sd_cpp_sampling_method = "euler",
+        sd_cpp_scheduler = "simple",
         sd_cpp_arch_marker = _KREA2_SD_CPP_ARCH_MARKER,
     ),
     # HunyuanImage 2.1: 17B dual-stream DiT. HiDream-I1 repos lack text_encoder_4 (Llama-3.1-8B), loaded from the open unsloth mirror; one family for Full/Dev/Fast
@@ -1452,6 +1471,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_tokenizer = ("unsloth/MOSS-Image-SFT-FP8", "tokenizer/tokenizer.json"),
         # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
+        sd_cpp_scheduler = "simple",
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
@@ -2264,6 +2284,11 @@ def family_for_checkpoint(fam: Any, *identifiers: Optional[str]) -> Any:
 def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
     row = _first_variant(getattr(fam, "comfy_flow_shift_variants", ()), identifiers)
     return row[1] if row else getattr(fam, "comfy_flow_shift", None)
+
+
+def sd_cpp_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
+    row = _first_variant(getattr(fam, "sd_cpp_flow_shift_variants", ()), identifiers)
+    return row[1] if row else getattr(fam, "sd_cpp_flow_shift", None)
 
 
 # FLUX.3 single files and GGUFs can take the other variant's transformer config from the companion

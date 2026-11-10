@@ -84,6 +84,7 @@ class SdCppGenParams:
     guidance: Optional[float] = None
     seed: Optional[int] = None
     sampling_method: Optional[str] = None
+    scheduler: Optional[str] = None
     batch_count: int = 1
     init_img: Optional[str] = None
     strength: Optional[float] = None
@@ -912,6 +913,8 @@ def build_sd_cpp_command(
         cmd += ["--guidance", _fmt_float(params.guidance)]
     if params.sampling_method:
         cmd += ["--sampling-method", str(params.sampling_method)]
+    if params.scheduler:
+        cmd += ["--scheduler", str(params.scheduler)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     if params.batch_count and params.batch_count != 1:
@@ -1151,6 +1154,7 @@ def build_img_gen_request(
     seed: Optional[int] = None,
     batch_count: int = 1,
     sample_method: Optional[str] = None,
+    scheduler: Optional[str] = None,
     flow_shift: Optional[float] = None,
     cfg_scale: Optional[float] = None,
     distilled_guidance: Optional[float] = None,
@@ -1177,6 +1181,8 @@ def build_img_gen_request(
         sample_params["sample_steps"] = int(steps)
     if sample_method:
         sample_params["sample_method"] = str(sample_method)
+    if scheduler:
+        sample_params["scheduler"] = str(scheduler)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
     if custom_sigmas:
@@ -1227,6 +1233,15 @@ def sd_cli_output_paths(output_path: str, num_results: int) -> list[str]:
 H3_SERVER_REFS_ENV = "UNSLOTH_H3_SERVER_REFS"
 # sd-cli's --ref-video reader (examples/cli/main.cpp load_images_from_dir): these extensions, byte-ordered names.
 _SD_CLI_FRAME_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+# "0" = no family --scheduler / flow-shift variants (sd.cpp default schedule).
+FAMILY_SCHEDULER_ENV = "UNSLOTH_SD_CPP_FAMILY_SCHEDULER"
+
+
+def family_scheduler_enabled() -> bool:
+    value = os.environ.get(FAMILY_SCHEDULER_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
 
 
 def h3_server_refs_enabled() -> bool:
