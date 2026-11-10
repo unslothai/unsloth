@@ -209,8 +209,8 @@ class _Reader(ast.NodeVisitor):
         elif fn in _RL_TRAINERS:
             self.found.setdefault("objectives", []).append(_RL_TRAINERS[fn])
         elif fn in _SFT_TRAINERS:
-            self.found["sft_stage"] = True
-        elif fn and fn.endswith("Trainer") and fn not in _SFT_TRAINERS:
+            pass
+        elif fn and fn.endswith("Trainer"):
             self.unsupported.add(f"{fn} training")
         elif fn and fn.endswith("Loss"):
             self.losses.add(fn)
