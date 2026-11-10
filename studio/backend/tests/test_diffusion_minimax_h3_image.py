@@ -925,3 +925,106 @@ def test_the_hosted_files_conditioning_path_runs_dense(h3i, monkeypatch):
     assert torch.equal(model.context_embedder.weight, want)
     # The denoiser blocks keep their quantized weights.
     assert is_quantized_linear(model.transformer_blocks[0])
+
+
+# -- an encoder larger than the plan budgeted (bf16 fallback, local text_encoder/ folder) ---------------------------
+
+
+def _release_copy(root, dst, with_encoder):
+    import shutil
+    shutil.copytree(
+        root, dst, ignore = None if with_encoder else shutil.ignore_patterns("text_encoder")
+    )
+    return dst
+
+
+def _bf16_sized(h3i, monkeypatch, encoder_cls):
+    """``_module_gb`` reports the 66.7 GB bf16 encoder for the tiny one; the planner calls are recorded."""
+    real_gb, real_plan = h3i._module_gb, h3i.plan_placement
+    sized = []
+    monkeypatch.setattr(
+        h3i,
+        "_module_gb",
+        lambda m: h3i.H3_IMAGE_TE_BF16_GB if isinstance(m, encoder_cls) else real_gb(m),
+    )
+    monkeypatch.setattr(
+        h3i, "plan_placement", lambda **kw: sized.append(kw["te_gb"]) or real_plan(**kw)
+    )
+    return sized
+
+
+def test_the_plan_is_redone_when_the_int8_encoder_falls_back_to_bf16(
+    h3i, release, tmp_path, monkeypatch
+):
+    import copy
+
+    root, _ref, te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    monkeypatch.setattr(
+        h3i, "load_h3_image_text_encoder", lambda scheme, **kw: (copy.deepcopy(te), None)
+    )
+    sized = _bf16_sized(h3i, monkeypatch, type(te))
+    pipe = h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert sized == [h3i.H3_IMAGE_TE_INT8_GB, h3i.H3_IMAGE_TE_BF16_GB]
+    assert pipe._unsloth_h3_plan.te_gb == h3i.H3_IMAGE_TE_BF16_GB
+    assert "planned again" in pipe._unsloth_h3_plan.reasons[0]
+    pipe.release()
+
+
+def test_the_plan_is_redone_for_a_local_text_encoder_folder(h3i, release, tmp_path, monkeypatch):
+    import transformers
+
+    root, _ref, te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    te.save_pretrained(str(rel / "text_encoder"))
+    sized = _bf16_sized(h3i, monkeypatch, transformers.Qwen3VLForConditionalGeneration)
+    pipe = h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert sized == [h3i.H3_IMAGE_TE_INT8_GB, h3i.H3_IMAGE_TE_BF16_GB]
+    assert pipe._unsloth_h3_plan.te_gb == h3i.H3_IMAGE_TE_BF16_GB
+    pipe.release()
+
+
+def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
+    args = {
+        "vram_gb": 95.0,
+        "host_gb": 177.0,
+        "dit_gb": 21.9,
+        "width": 2048,
+        "height": 2048,
+        "forced": None,
+    }
+    plan = h3i.plan_placement(te_gb = h3i.H3_IMAGE_TE_INT8_GB, **args)
+    assert plan.placement == h3i.PLACE_RESIDENT
+    # The whole bf16 encoder no longer fits beside the DiT: the DiT stays, the encoder streams.
+    again = h3i.replan_for_encoder(plan, h3i.H3_IMAGE_TE_BF16_GB, args)
+    assert again.placement == h3i.PLACE_DIT_RESIDENT and again.te_gb == h3i.H3_IMAGE_TE_BF16_GB
+    # Within the slack: the plan is kept as it is.
+    assert h3i.replan_for_encoder(plan, h3i.H3_IMAGE_TE_INT8_GB + 0.5, args) is plan
+    small = dict(args, vram_gb = 6.0)
+    with pytest.raises(RuntimeError, match = "no placement fits"):
+        h3i.replan_for_encoder(
+            h3i.plan_placement(te_gb = 27.2, **small), h3i.H3_IMAGE_TE_BF16_GB, small
+        )
+
+
+def test_the_per_prompt_encoder_refuses_a_bf16_fallback(h3i, release, tmp_path, monkeypatch):
+    import copy
+
+    root, _ref, te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    real_plan = h3i.plan_placement
+
+    def low_host(**kw):
+        plan = real_plan(**kw)
+        plan.te_kept_on_host = False  # the low-host tier: the encoder loads for each prompt
+        return plan
+
+    monkeypatch.setattr(h3i, "plan_placement", low_host)
+    pipe = h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert pipe.text_encoder is None and pipe._unsloth_h3_te_loader is not None
+    monkeypatch.setattr(
+        h3i, "load_h3_image_text_encoder", lambda scheme, **kw: (copy.deepcopy(te), None)
+    )
+    with pytest.raises(RuntimeError, match = "bf16 encoder it would fall back to"):
+        pipe._unsloth_h3_te_loader()
+    pipe.release()

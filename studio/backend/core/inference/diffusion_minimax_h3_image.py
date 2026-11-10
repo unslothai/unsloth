@@ -948,6 +948,34 @@ def plan_placement(
     return plan
 
 
+def replan_for_encoder(
+    plan: H3ImagePlan,
+    te_gb: float,
+    plan_args: dict,
+    slack_gb: float = 1.0,
+) -> H3ImagePlan:
+    """The plan again with the encoder's real size when it is larger than the one budgeted (a bf16 fallback for the
+    int8 encoder, a local text_encoder/ folder); the plan unchanged otherwise. Raises when no tier fits."""
+    if te_gb <= plan.te_gb + slack_gb:
+        return plan
+    new = plan_placement(te_gb = te_gb, **plan_args)
+    vram = plan_args.get("vram_gb")
+    if vram is not None and new.placement == PLACE_STREAM and not plan_args.get("forced"):
+        floor = activation_gb(plan_args.get("width", 2048), plan_args.get("height", 2048), 0) + 1.5
+        floor += H3_IMAGE_VAE_GB + DIT_TOP_GB + TE_TOP_GB
+        if vram < floor:
+            raise RuntimeError(
+                f"MiniMax-H3-Image: the text encoder loaded is {te_gb:.1f} GB (the bf16 one, not Studio's 27.2 GB "
+                f"int8 encoder) and no placement fits {vram:.1f} GB of GPU memory with it. Load it with the int8 "
+                f"text encoder."
+            )
+    new.reasons = [
+        f"encoder is {te_gb:.1f} GB, not the {plan.te_gb:.1f} GB planned: planned again"
+    ] + list(new.reasons)
+    logger.warning("diffusion.minimax_h3_image: %s", new.reasons[0])
+    return new
+
+
 class ModuleListStreamer:
     """Streams the non-resident members of a ModuleList through the device: a forward pre-hook swaps each tensor for
     a device copy, the post-hook swaps the host original back (no device-to-host copy). Works for torchao
@@ -2407,14 +2435,17 @@ def load_minimax_h3_image_pipeline(
     )
     te_scheme = "int8" if (text_encoder_quant or "").strip().lower() == "int8" else None
     table = adaln_table_enabled()
+    plan_args = {
+        "vram_gb": vram if device.type == "cuda" else None,
+        "host_gb": host,
+        "dit_gb": dit_gb_for(scheme, table),
+        "width": plan_width,
+        "height": plan_height,
+        "forced": (os.environ.get(PLACEMENT_ENV) or "").strip().lower() or None,
+    }
     plan = plan_placement(
-        vram_gb = vram if device.type == "cuda" else None,
-        host_gb = host,
-        dit_gb = dit_gb_for(scheme, table),
         te_gb = te_gb_for(te_scheme) if text_encoder is None else _module_gb(text_encoder),
-        width = plan_width,
-        height = plan_height,
-        forced = (os.environ.get(PLACEMENT_ENV) or "").strip().lower() or None,
+        **plan_args,
     )
     logger.info(
         "diffusion.minimax_h3_image: dit=%s (%s) te=%s placement=%s reasons=%s",
@@ -2499,6 +2530,10 @@ def load_minimax_h3_image_pipeline(
     if text_encoder is None and plan.te_kept_on_host:
         text_encoder, engaged_te = load_h3_image_text_encoder(te_scheme, **te_kwargs)
     check()
+    if text_encoder is not None:
+        # The plan sized the encoder as the scheme it asked for; a bf16 fallback or a local text_encoder/ folder is
+        # 66.7 GB, not 27.2: plan again with the real size, so the encoder is never placed under the int8 budget.
+        plan = replan_for_encoder(plan, _module_gb(text_encoder), plan_args)
     pipe = MiniMaxH3ImagePipeline(
         transformer = transformer,
         vae = vae,
@@ -2513,7 +2548,16 @@ def load_minimax_h3_image_pipeline(
     if text_encoder is None:
         # Low-host tier: load the encoder for each prompt, free it after.
         def _te_loader() -> Any:
-            encoder, _ = load_h3_image_text_encoder(te_scheme, **te_kwargs)
+            encoder, engaged = load_h3_image_text_encoder(te_scheme, **te_kwargs)
+            if te_scheme is not None and engaged != te_scheme:
+                # Placed under this plan, the bf16 fallback would overrun the budget the plan made for the int8 one.
+                free_module_storage(encoder)
+                raise RuntimeError(
+                    "MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the 66.7 GB bf16 "
+                    "encoder it would fall back to does not fit this machine's memory plan (it loads the encoder "
+                    "for each prompt because host memory is short). Check the network or the Hugging Face cache "
+                    "and load the model again."
+                )
             return _place_text_encoder(pipe, encoder, plan, device)
 
         pipe._unsloth_h3_te_loader = _te_loader
@@ -2524,6 +2568,9 @@ def load_minimax_h3_image_pipeline(
         vae.to(device)
     if plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
         transformer.to(device)
+    elif plan.placement == PLACE_SEQUENTIAL:
+        # A replan can land here after the DiT was loaded onto the card for a resident tier.
+        transformer.to("cpu")
     elif plan.placement == PLACE_STREAM:
         for name, child in transformer.named_children():
             if name != "transformer_blocks":
