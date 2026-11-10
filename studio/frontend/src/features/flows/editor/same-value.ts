@@ -10,6 +10,7 @@ export function sameValue(a: unknown, b: unknown): boolean {
   if (ka.length !== Object.keys(b).length) return false;
   for (const key of ka)
     if (
+      !Object.hasOwn(b, key) ||
       !sameValue(
         (a as Record<string, unknown>)[key],
         (b as Record<string, unknown>)[key],

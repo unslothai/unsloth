@@ -205,7 +205,7 @@ export function ChartViewer({
               position: "insideBottom",
               offset: -2,
               fill: "var(--muted-foreground)",
-              fontSize: 11,
+              fontSize: "calc(0.6875rem * var(--ui-font-scale, 1))",
             }
           : undefined
       }
@@ -221,7 +221,7 @@ export function ChartViewer({
               angle: -90,
               position: "insideLeft",
               fill: "var(--muted-foreground)",
-              fontSize: 11,
+              fontSize: "calc(0.6875rem * var(--ui-font-scale, 1))",
             }
           : undefined
       }

@@ -723,3 +723,34 @@ def test_a_stalled_body_cannot_outlast_the_deadline_or_stop(monkeypatch, clock, 
         release.set()
         server.shutdown()
         server.server_close()
+
+
+def test_two_trigger_fires_at_once_start_one_run(monkeypatch):
+    from core.flows.compiler import parse_document
+    from storage import flows_db
+
+    from ._flows_helpers import doc, node
+
+    async def slow(ctx):
+        await asyncio.sleep(0.3)
+        return {"payload": {}}
+
+    eng = engine_mod.FlowEngine()
+    eng.handlers = {"trigger.webhook": slow}
+    eng.mint_key = lambda account: ("sk-unsloth-test", None)
+    eng.revoke_key = lambda key_id: None
+    monkeypatch.setattr(engine_mod, "get_engine", lambda: eng)
+    monkeypatch.setattr(capabilities, "is_approved", lambda *a, **k: True)
+    flows_db.save_flow(
+        parse_document(doc([node("w", "trigger.webhook", enabled = True)], id = "race1"))[0]
+    )
+
+    async def go():
+        ids = await asyncio.gather(
+            triggers.fire(None, "race1", "w", {}), triggers.fire(None, "race1", "w", {})
+        )
+        await asyncio.gather(*(rs.task for rs in eng.runs.values() if rs.task))
+        return ids
+
+    started = [i for i in asyncio.run(go()) if i]
+    assert len(started) == 1, started
