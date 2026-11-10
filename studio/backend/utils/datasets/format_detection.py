@@ -875,8 +875,22 @@ def video_sample(
     select_columns = getattr(dataset, "select_columns", None)
     columns = getattr(dataset, "column_names", None)
     fmt = getattr(dataset, "format", None)
+
+    # The subset only pays off when a filled column decodes media; text-only rows are cheaper whole.
+    def _is_media(value):
+        if isinstance(value, (list, tuple)):
+            return bool(value) and _is_media(value[0])
+        if isinstance(value, dict):
+            return any(k in value for k in ("bytes", "array", "path")) or any(
+                map(_is_media, value.values())
+            )
+        return value is not None and not isinstance(value, (str, int, float, bool))
+
+    missing_keys = set(missing)
+    media_known = any(_is_media(v) for k, v in sample.items() if k not in missing_keys)
     if (
         callable(select_columns)
+        and media_known
         and len(missing) < len(sample)
         and isinstance(columns, list)
         and set(columns) == set(sample)

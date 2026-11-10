@@ -119,3 +119,15 @@ def test_a_complete_first_row_reads_nothing_and_lists_still_work():
     assert fd.video_sample(rows, rows[0]) == {"video": "x.mp4", "text": "a"}
     complete = {"video": "x.mp4", "text": "a"}
     assert fd.video_sample([complete], complete) is complete
+
+
+def test_a_text_only_dataset_scans_whole_rows(monkeypatch):
+    rows = [
+        {f"c{i}": (None if i % 2 and r == 0 else f"v{r}{i}") for i in range(40)} for r in range(4)
+    ]
+    dataset = Dataset.from_list(rows)
+    seen = []
+    monkeypatch.setattr(Dataset, "select_columns", lambda self, *a, **k: seen.append(a) or self)
+    filled = fd.video_sample(dataset, dataset[0])
+    assert seen == []
+    assert filled == _full_scan(dataset, dataset[0])
