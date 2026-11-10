@@ -379,10 +379,14 @@ def latest_node_outputs(flow_id: str) -> dict[str, dict]:
         }
 
 
+# Distinct outputs a node's history lists; pruning keeps the rows behind them.
+HISTORY_KEPT = 10
+
+
 def node_output_history(
     flow_id: str,
     node_id: str,
-    limit: int = 10,
+    limit: int = HISTORY_KEPT,
 ) -> list[dict]:
     """A node's last ``limit`` distinct successful outputs across the flow's runs, newest first.
 
@@ -507,7 +511,8 @@ _OLD_RUNS_SQL = """
 def prune_runs(flow_id: str, keep: Optional[int] = None) -> None:
     """Drop the events and node results of the flow's runs older than the newest ``keep``.
 
-    A node's newest successful output stays wherever it is: the editor restores it from any run."""
+    Each node keeps the rows behind its last ``HISTORY_KEPT`` distinct outputs, wherever they are: the editor
+    restores the newest and lists the rest as the node's history."""
     with _db() as conn:
         keep = RUNS_KEPT_PER_FLOW if keep is None else keep
         conn.execute(
@@ -517,15 +522,20 @@ def prune_runs(flow_id: str, keep: Optional[int] = None) -> None:
             f"""
             DELETE FROM flow_node_results WHERE run_id IN ({_OLD_RUNS_SQL}) AND (run_id, node_id) NOT IN (
                 SELECT run_id, node_id FROM (
-                    SELECT r.run_id, r.node_id, ROW_NUMBER() OVER (
-                        PARTITION BY r.node_id ORDER BY f.created_at DESC, r.updated_at DESC
+                    SELECT run_id, node_id, ROW_NUMBER() OVER (
+                        PARTITION BY node_id ORDER BY created_at DESC, updated_at DESC
                     ) AS newest
-                    FROM flow_node_results r JOIN flow_runs f ON f.id = r.run_id
-                    WHERE f.flow_id = ?1 AND r.status IN ('done', 'cached') AND r.outputs_json IS NOT NULL
-                ) WHERE newest = 1
+                    FROM (
+                        SELECT r.run_id, r.node_id, f.created_at, r.updated_at, ROW_NUMBER() OVER (
+                            PARTITION BY r.node_id, r.outputs_json ORDER BY f.created_at DESC, r.updated_at DESC
+                        ) AS take
+                        FROM flow_node_results r JOIN flow_runs f ON f.id = r.run_id
+                        WHERE f.flow_id = ?1 AND r.status IN ('done', 'cached') AND r.outputs_json IS NOT NULL
+                    ) WHERE take = 1
+                ) WHERE newest <= ?3
             )
             """,
-            (flow_id, keep),
+            (flow_id, keep, HISTORY_KEPT),
         )
         conn.commit()
 

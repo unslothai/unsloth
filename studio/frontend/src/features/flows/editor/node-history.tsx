@@ -147,7 +147,7 @@ export function NodeHistory({
                       media={card.media}
                       className="h-full w-full object-cover"
                     />
-                    <span className="absolute bottom-1 left-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[10px] leading-none text-white tabular-nums">
+                    <span className="absolute bottom-1 left-1 rounded-full bg-black/55 px-1.5 py-0.5 text-ui-10 leading-none text-white tabular-nums">
                       {ago}
                     </span>
                   </>
@@ -163,7 +163,7 @@ export function NodeHistory({
                         className="size-6 text-muted-foreground"
                       />
                     </span>
-                    <span className="truncate text-[10px] tabular-nums text-muted-foreground">
+                    <span className="truncate text-ui-10 tabular-nums text-muted-foreground">
                       {card.detail} · {ago}
                     </span>
                   </span>
