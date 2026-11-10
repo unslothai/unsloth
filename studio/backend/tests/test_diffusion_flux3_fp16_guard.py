@@ -182,7 +182,6 @@ def _overflowing_model():
     torch.manual_seed(0)
     model = _Flux3Like()
     with torch.no_grad():
-        # FLUX.3-like: the text projection output and the joint MLP output exceed float16's range.
         model.context_embedder.weight.mul_(3000.0)
         for b in model.single_transformer_blocks:
             b.ff.linear_out.weight.mul_(2000.0)

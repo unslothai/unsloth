@@ -104,7 +104,6 @@ def test_fp16_only_cards_promote_flux3_to_fp32_without_its_guard(monkeypatch):
     from core.inference.diffusion import _resolve_diffusion_compute_dtype
     from core.inference.diffusion_fp16_guard import FP16_GUARD_ENV
 
-    # The fp16 guard is covered in test_diffusion_flux3_fp16_guard; without it FLUX.3 promotes to float32.
     monkeypatch.setenv(FP16_GUARD_ENV, "0")
     for fam in (detect_family(DISTILLED), detect_family(BASE)):
         assert fam.fp16_incompatible is True and fam.fp16_guard == "rescale_residual"
