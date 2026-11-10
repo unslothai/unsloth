@@ -1016,6 +1016,7 @@ export const pl = {
       hub: "Centrum modeli",
       train: "Trenowanie",
       recipes: "Przepisy",
+      flows: "Przepływy",
       images: "Obrazy",
       video: "Wideo",
       audio: "Audio",
@@ -1036,6 +1037,7 @@ export const pl = {
       showLess: "Pokaż mniej",
       settings: "Ustawienia",
       api: "API",
+      benchmarks: "Benchmarki",
       lightMode: "Tryb jasny",
       darkMode: "Tryb ciemny",
       guidedTour: "Przewodnik",
@@ -4419,6 +4421,7 @@ export const pl = {
             "Ten zbiór danych wygląda na obrazy, których nie można strumieniować.",
           audioDataset:
             "Ten zbiór danych wygląda na audio, którego nie można strumieniować.",
+          rlObjective: "Strumieniowanie nie jest jeszcze obsługiwane dla DPO, ORPO ani GRPO.",
         },
         options: {
           trainOnCompletions: "tylko odpowiedzi asystenta",

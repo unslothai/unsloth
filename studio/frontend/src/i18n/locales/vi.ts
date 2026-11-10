@@ -1010,6 +1010,7 @@ export const vi = {
       hub: "Trung tâm mô hình",
       train: "Huấn luyện",
       recipes: "Công thức",
+      flows: "Luồng",
       images: "Hình ảnh",
       video: "Video",
       audio: "Âm thanh",
@@ -1030,6 +1031,7 @@ export const vi = {
       showLess: "Ẩn bớt",
       settings: "Cài đặt",
       api: "API",
+      benchmarks: "Đo hiệu năng",
       lightMode: "Chế độ sáng",
       darkMode: "Chế độ tối",
       guidedTour: "Hướng dẫn tham quan",
@@ -4368,6 +4370,7 @@ export const vi = {
             "Tập dữ liệu này có vẻ là hình ảnh, loại không thể truyền trực tuyến.",
           audioDataset:
             "Tập dữ liệu này có vẻ là âm thanh, loại không thể truyền trực tuyến.",
+          rlObjective: "Chưa hỗ trợ truyền phát cho DPO, ORPO hoặc GRPO.",
         },
         options: {
           trainOnCompletions: "chỉ phần trả lời của trợ lý",

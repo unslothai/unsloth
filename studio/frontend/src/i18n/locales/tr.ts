@@ -1005,6 +1005,7 @@ export const tr = {
       hub: "Model merkezi",
       train: "Eğit",
       recipes: "Tarifler",
+      flows: "Akışlar",
       images: "Görseller",
       video: "Video",
       audio: "Ses",
@@ -1025,6 +1026,7 @@ export const tr = {
       showLess: "Daha az göster",
       settings: "Ayarlar",
       api: "API",
+      benchmarks: "Kıyaslamalar",
       lightMode: "Açık Mod",
       darkMode: "Koyu Mod",
       guidedTour: "Rehberli Tur",
@@ -4367,6 +4369,7 @@ export const tr = {
             "Bu veri kümesi görüntülerden oluşuyor gibi görünüyor; görüntüler akış olarak alınamaz.",
           audioDataset:
             "Bu veri kümesi seslerden oluşuyor gibi görünüyor; sesler akış olarak alınamaz.",
+          rlObjective: "Akış henüz DPO, ORPO veya GRPO için desteklenmiyor.",
         },
         options: {
           trainOnCompletions: "yalnızca asistan yanıtları",

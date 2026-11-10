@@ -15,7 +15,7 @@ from urllib.parse import quote
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from studio_mcp import loading
+from studio_mcp import loading, profile
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.outputs import FlowRunInfo, JobStatus, RouteText, ToolOutput
 from studio_mcp.tools import READ_ONLY, WRITES, as_dict, opt_text, route_json
@@ -51,7 +51,7 @@ def _ref(row: dict, example: bool = False) -> FlowRef:
 
 
 async def list_flows() -> FlowList:
-    """The flows saved in Unsloth Studio (newest first) and the bundled examples. A flow is a node graph of Unsloth Studio steps: LLM text, images, video, audio, datasets, training, logic. Run one with run_flow; copy an example first by running it with ``example_id``."""
+    """The flows saved in Unsloth Studio (newest first) and the bundled examples. A flow is a node graph of Unsloth Studio steps: LLM text, images, video, audio, datasets, training, logic.<<run_flow:  Run one with run_flow; copy an example first by running it with ``example_id``.>>"""
     caller = current_caller()
     saved = as_dict(await route_json("GET", f"{FLOWS}/", caller = caller))
     examples = as_dict(await route_json("GET", f"{FLOWS}/examples", caller = caller))
@@ -148,7 +148,7 @@ async def run_flow(
         ),
     ] = 0,
 ) -> JobStatus:
-    """Run a flow in Unsloth Studio: one of ``flow_id``, ``example_id`` or ``document``. Returns the run's status at once (or after ``wait_s``); when it completes, ``flow.outputs`` holds the results of its Flow Output nodes. A run keeps going after this returns: follow it with get_job(kind="flow", id=…, wait_s=…) and stop it with cancel(kind="flow", id=…). Steps load the models their nodes name, unloading others to make room; GPU steps run one at a time."""
+    """Run a flow in Unsloth Studio: one of ``flow_id``, ``example_id`` or ``document``. Returns the run's status at once (or after ``wait_s``); when it completes, ``flow.outputs`` holds the results of its Flow Output nodes. A run keeps going after this returns: follow it with get_job(kind="flow", id=…, wait_s=…)<<cancel:  and stop it with cancel(kind="flow", id=…)>>. Steps load the models their nodes name, unloading others to make room; GPU steps run one at a time."""
     caller = current_caller()
     if sum(x is not None for x in (flow_id, example_id, document)) != 1:
         raise ToolError("Pass exactly one of flow_id, example_id or document.")
@@ -180,6 +180,9 @@ async def run_flow(
         raise ToolError("Unsloth Studio did not start the run.")
     return await wait_run(caller, run_id, wait_s)
 
+
+# A run loads the models its steps name and keeps going after the call returns.
+FACTS = {"run_flow": {profile.SWAPS_MODELS, profile.OUTLIVES_CALL}}
 
 TOOLS = (
     (list_flows, READ_ONLY, FlowList.model_json_schema()),

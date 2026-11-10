@@ -188,8 +188,30 @@ function trainingExtras(payload: TrainingStartRequest): Record<string, unknown> 
   ) {
     extras.custom_format_mapping = payload.custom_format_mapping;
   }
+  if (payload.objective && payload.objective !== "sft") {
+    for (const key of RL_EXTRAS) {
+      const value = payload[key];
+      if (value != null && value !== "") extras[key] = value;
+    }
+  }
   return extras;
 }
+
+// An RL run's own settings; an SFT example leaves them out so it stays SFT.
+const RL_EXTRAS = [
+  "objective",
+  "rl_beta",
+  "rl_max_prompt_length",
+  "grpo_num_generations",
+  "grpo_max_completion_length",
+  "grpo_temperature",
+  "rl_system_prompt",
+  "grpo_enable_thinking",
+  "grpo_variant",
+  "grpo_mask_truncated_completions",
+  "grpo_epsilon_high",
+  "grpo_rewards",
+] as const satisfies readonly (keyof TrainingStartRequest)[];
 
 /** `payload` is what Start would send; `datasetName` the uploaded file's display name. */
 export function trainingApiRequestFromPayload(

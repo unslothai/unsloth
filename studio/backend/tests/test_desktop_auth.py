@@ -830,6 +830,10 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     benchmarks_module = ModuleType("routes.benchmarks")
     benchmarks_module.router = APIRouter()
     benchmarks_module.BenchmarkTrafficMiddleware = lambda app: app
+    flows_module = ModuleType("routes.flows")
+    flows_module.router = APIRouter()
+    flows_module.hooks_router = APIRouter()
+    flows_module.WEBHOOK_MAX_BYTES = 1 << 20
 
     # Derived from main.py's import block: hand-listed stubs went stale and broke this file.
     for name in _routers_main_imports():
@@ -858,6 +862,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.systemone", systemone_module)
     monkeypatch.setitem(sys.modules, "routes.browser", browser_module)
     monkeypatch.setitem(sys.modules, "routes.benchmarks", benchmarks_module)
+    monkeypatch.setitem(sys.modules, "routes.flows", flows_module)
 
     import studio.backend.main as backend_main
 

@@ -958,6 +958,7 @@ export const th = {
       hub: "ฮับโมเดล",
       train: "เทรน",
       recipes: "สูตร",
+      flows: "โฟลว์",
       images: "รูปภาพ",
       video: "วิดีโอ",
       audio: "เสียง",
@@ -978,6 +979,7 @@ export const th = {
       showLess: "แสดงน้อยลง",
       settings: "การตั้งค่า",
       api: "API",
+      benchmarks: "เบนช์มาร์ก",
       lightMode: "โหมดสว่าง",
       darkMode: "โหมดมืด",
       guidedTour: "ทัวร์แนะนำ",
@@ -4181,6 +4183,7 @@ export const th = {
             "โมเดล embedding ไม่รองรับการสตรีม (การเทรนต้องใช้ชุดข้อมูลทั้งหมด)",
           imageDataset: "ชุดข้อมูลนี้ดูเหมือนเป็นรูปภาพ ซึ่งสตรีมไม่ได้",
           audioDataset: "ชุดข้อมูลนี้ดูเหมือนเป็นเสียง ซึ่งสตรีมไม่ได้",
+          rlObjective: "ยังไม่รองรับการสตรีมสำหรับ DPO, ORPO หรือ GRPO",
         },
         options: {
           trainOnCompletions: "เฉพาะคำตอบของผู้ช่วย",

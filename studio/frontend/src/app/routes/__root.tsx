@@ -88,7 +88,6 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   type ComponentType,
   lazy,
-
   type ReactNode,
   Suspense,
   useCallback,
@@ -96,7 +95,6 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-
   useState,
 } from "react";
 import { FIND_SCOPE_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
@@ -510,8 +508,8 @@ function RootLayout() {
   const playFlowId = FLOW_PLAY_ROUTE.exec(pathname)?.[1] ?? null;
   const isFlowPlayRoute = playFlowId !== null;
   const isFlowEditorRoute = !isFlowPlayRoute && pathname.startsWith("/flows/");
-  const isChatLike =
-    isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute || isFlowPlayRoute || isFlowEditorRoute;
+  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
+  const fillsViewport = isChatLike || isFlowPlayRoute || isFlowEditorRoute;
   const mobileShell = useIsMobileShell();
   const nonChatTopInset = mobileShell
     ? "pt-14"
@@ -762,7 +760,7 @@ function RootLayout() {
           )}
           <SidebarInset
             className={
-              isChatLike
+              fillsViewport
                 ? "overflow-hidden"
                 :
                   isLibraryRoute
@@ -774,7 +772,7 @@ function RootLayout() {
             <div
               ref={findScopeRef}
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${fillsViewport ? "overflow-hidden" : "overflow-visible"} ${fillsViewport ? "" : nonChatTopInset}`}
             >
               <FindInPage enabled={routeShortcutEnabled} />
               {/* Keep generation mounted across routes; active closes hidden page overlays. */}

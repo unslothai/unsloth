@@ -955,6 +955,7 @@ export const zhTW = {
       hub: "模型中心",
       train: "訓練",
       recipes: "配方",
+      flows: "流程",
       images: "圖片",
       video: "影片",
       audio: "音訊",
@@ -975,6 +976,7 @@ export const zhTW = {
       showLess: "顯示較少",
       settings: "設定",
       api: "API",
+      benchmarks: "基準測試",
       lightMode: "淺色模式",
       darkMode: "深色模式",
       guidedTour: "導覽",
@@ -4150,6 +4152,7 @@ export const zhTW = {
           embeddingModel: "嵌入模型不支援串流（訓練需要完整的資料集）。",
           imageDataset: "此資料集看起來是圖片，無法串流。",
           audioDataset: "此資料集看起來是音訊，無法串流。",
+          rlObjective: "DPO、ORPO 和 GRPO 尚不支援串流載入。",
         },
         options: {
           trainOnCompletions: "僅訓練助理回覆",

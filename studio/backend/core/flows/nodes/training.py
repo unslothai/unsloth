@@ -90,7 +90,7 @@ def _picked_cache(cache: Any) -> dict:
 
 @handler("train.finetune")
 async def finetune(ctx: NodeContext) -> dict:
-    from studio_mcp.tools.jobs import TRAINING_STATUS, _run_folder
+    from studio_mcp.job_kinds import TRAINING_STATUS, _run_folder
     from studio_mcp.tools.status import _training
 
     dataset = ctx.inputs["dataset"]

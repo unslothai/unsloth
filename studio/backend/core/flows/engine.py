@@ -1629,16 +1629,20 @@ class FlowEngine:
             logger.debug("flows: unload after the run failed", exc_info = True)
 
     async def _unload_loaded(self, rs: RunState, wanted: dict[str, str]) -> None:
+        from core.inference.model_identity import split_variant
         from studio_mcp import loading
 
+        def repo(name: str) -> str:
+            return split_variant(name)[0].lower()
+
         slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
-        wanted = {loading._repo(repo): nid for repo, nid in wanted.items()}
+        wanted = {repo(name): nid for name, nid in wanted.items()}
         for slot, names in (slots or {}).items():
             if slot not in rs.initial_resident:
                 continue
-            before = {loading._repo(n).lower() for n in rs.initial_resident[slot]}
+            before = {repo(n) for n in rs.initial_resident[slot]}
             for name in names or []:
-                key = loading._repo(name).lower()
+                key = repo(name)
                 if key in before or key not in wanted:
                     continue
                 if slot == "llm":

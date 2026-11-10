@@ -1003,6 +1003,7 @@ export const fa = {
       hub: "مرکز مدل‌ها",
       train: "آموزش",
       recipes: "دستورالعمل‌ها",
+      flows: "جریان‌ها",
       images: "تصاویر",
       video: "ویدیو",
       audio: "صدا",
@@ -1023,6 +1024,7 @@ export const fa = {
       showLess: "نمایش کمتر",
       settings: "تنظیمات",
       api: "API",
+      benchmarks: "بنچمارک‌ها",
       lightMode: "حالت روشن",
       darkMode: "حالت تیره",
       guidedTour: "تور راهنما",
@@ -4354,6 +4356,7 @@ export const fa = {
             "به نظر می‌رسد این مجموعه‌داده شامل تصویر است که قابل جریان‌دهی نیست.",
           audioDataset:
             "به نظر می‌رسد این مجموعه‌داده شامل صدا است که قابل جریان‌دهی نیست.",
+          rlObjective: "پخش جریانی هنوز برای DPO، ORPO یا GRPO پشتیبانی نمی‌شود.",
         },
         options: {
           trainOnCompletions: "فقط تکمیل‌های دستیار",

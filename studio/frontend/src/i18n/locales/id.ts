@@ -1009,6 +1009,7 @@ export const id = {
       hub: "Hub model",
       train: "Latih",
       recipes: "Resep",
+      flows: "Alur",
       images: "Gambar",
       video: "Video",
       audio: "Audio",
@@ -1029,6 +1030,7 @@ export const id = {
       showLess: "Tampilkan lebih sedikit",
       settings: "Pengaturan",
       api: "API",
+      benchmarks: "Benchmark",
       lightMode: "Mode Terang",
       darkMode: "Mode Gelap",
       guidedTour: "Tur Terpandu",
@@ -4367,6 +4369,7 @@ export const id = {
             "Dataset ini tampaknya berupa gambar, yang tidak dapat di-streaming.",
           audioDataset:
             "Dataset ini tampaknya berupa audio, yang tidak dapat di-streaming.",
+          rlObjective: "Streaming belum didukung untuk DPO, ORPO, atau GRPO.",
         },
         options: {
           trainOnCompletions: "hanya completion asisten",

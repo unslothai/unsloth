@@ -1011,6 +1011,7 @@ export const cs = {
       hub: "Centrum modelů",
       train: "Trénovat",
       recipes: "Recepty",
+      flows: "Toky",
       images: "Obrázky",
       video: "Video",
       audio: "Zvuk",
@@ -1031,6 +1032,7 @@ export const cs = {
       showLess: "Zobrazit méně",
       settings: "Nastavení",
       api: "API",
+      benchmarks: "Benchmarky",
       lightMode: "Světlý režim",
       darkMode: "Tmavý režim",
       guidedTour: "Průvodce",
@@ -4389,6 +4391,7 @@ export const cs = {
             "Tato datová sada vypadá jako obrázky, které nelze streamovat.",
           audioDataset:
             "Tato datová sada vypadá jako zvuk, který nelze streamovat.",
+          rlObjective: "Streamování zatím není podporováno pro DPO, ORPO ani GRPO.",
         },
         options: {
           trainOnCompletions: "pouze odpovědi asistenta",

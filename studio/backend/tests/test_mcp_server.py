@@ -164,7 +164,7 @@ def test_the_catalog_is_the_registered_tools_in_order(fresh_access):
     ]
     assert [entry["name"] for entry in tool_catalog()] == registered
     assert list(tool_names()) == registered
-    assert len(registered) == 23
+    assert len(registered) == 25
     areas = {module.__name__.rsplit(".", 1)[-1] for module in TOOL_MODULES}
     assert {entry["area"] for entry in tool_catalog()} == areas
     assert tool_catalog()[0] == {"name": "studio_status", "area": "status"}

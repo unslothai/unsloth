@@ -136,7 +136,7 @@ def test_loss_history_is_downsampled_for_the_node():
 
 
 def test_live_metrics_stream_to_the_node_as_a_partial(monkeypatch):
-    import studio_mcp.tools.jobs as jobs
+    import studio_mcp.job_kinds as jobs
 
     async def run_folder(caller, out):
         return "run-1", None
@@ -1582,7 +1582,7 @@ def test_grpo_prompt_and_answer_roles_reach_the_checkpoint():
     ],
 )
 def test_the_checkpoint_names_the_columns_training_read(monkeypatch, objective, row, facts):
-    import studio_mcp.tools.jobs as jobs
+    import studio_mcp.job_kinds as jobs
 
     async def run_folder(caller, out):
         return "run-1", None
@@ -1646,7 +1646,7 @@ def test_a_loop_s_seed_bookkeeping_never_reaches_training(monkeypatch):
 
 @pytest.mark.parametrize("objective", ["grpo", "dpo", "orpo"])
 def test_an_rl_alpaca_row_is_benchmarked_with_its_input(monkeypatch, objective):
-    import studio_mcp.tools.jobs as jobs
+    import studio_mcp.job_kinds as jobs
 
     from core.flows.nodes.benchmark import mapped_question
 
