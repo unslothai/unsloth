@@ -112,9 +112,8 @@ class TestStackedMasksAreNotResolvable:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_the_load_still_gets_torchs_figures(self, three_identical_cards, monkeypatch):
-        """End to end: deferring is not dropping the GPU. The torch branch answers
-        for the one device HIP opened, in HIP's own index space, which is what
-        _get_gpu_memory returned before the amd-smi branch existed."""
+        """Deferring must not drop the GPU; the torch branch reports the device HIP opened, in HIP
+        indices."""
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1,2")
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         _hip_sees(monkeypatch, 1, {0: 24576})
@@ -140,8 +139,7 @@ class TestStackedMasksAreNotResolvable:
 
 
 class TestOneMaskIsStillAnswerable:
-    """The guard is about two layers filtering at once, not about the variables
-    existing. A single mask maps to physical ids exactly as before."""
+    """The guard targets two stacked filters; a single mask still maps to physical ids."""
 
     def test_a_lone_rocr_mask_still_answers(self, three_identical_cards, monkeypatch):
         """No HIP layer above it, so the ROCR ids ARE the physical ids

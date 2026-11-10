@@ -3,7 +3,7 @@
 
 /*
  * Under software compositing every frame redraws the window and recomputes every backdrop-filter, the
- * still sidebar's included. So while something moves, the moving surface and the standing glass carry
+ * still sidebar's included. So while something moves, or keys and presses arrive, the moving surface and the standing glass carry
  * data-glass-moving, which index.css turns into a near-opaque fill; the blur returns after SETTLE_MS.
  * The flag sits on each surface and only that surface's rules read it, so it never restyles the chat.
  */
@@ -39,6 +39,9 @@ const PAGE_REFRESH_MS = 2000;
 const THREAD_SCROLLER = ".aui-thread-viewport";
 const TEXT_FIELDS = 'textarea, input, [contenteditable]:not([contenteditable="false"])';
 
+/** Keys, presses and edits (paste, IME, autocomplete) each draw frames: the glass pauses through a burst of them. */
+export const INTERACTION_EVENTS = ["keydown", "pointerdown", "input"] as const;
+
 export const GLASS_MOVING_ATTR = "data-glass-moving";
 export const GLASS_SETTLING_ATTR = "data-glass-settling";
 /** How long transitions stay off after the blur returns: a few frames, so its style is resolved without one. */
@@ -58,6 +61,13 @@ export interface GlassMotion {
   /** Surfaces a scroll of `scroller` moves: the surface holding it and the glass floating over it (null: typing). */
   scrollTargets(scroller: Element): Element[] | null;
   stop(): void;
+}
+
+let active: GlassMotion | null = null;
+
+/** Pause `el` for `ms`: a surface animated from script fires no animation events. No-op while glass motion is off. */
+export function holdGlassMotion(el: Element | null, ms: number): void {
+  if (el && active) active.hold(el, ms);
 }
 
 function isElement(node: unknown): node is Element {
@@ -166,6 +176,15 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     holdMotion(null, SETTLE_MS);
   };
 
+  // A key or a press redraws the window like any motion: typing a character, pasting, an IME step or a click
+  // that opens a reasoning block would otherwise compute every blur on screen again for each of its frames.
+  // The standing glass, and the surface the event lands in (a dialog's search field, a menu), pause with it.
+  const onInteraction = (event: Event) => {
+    const target = event.target;
+    const own = isElement(target) ? target.closest(GLASS_MOTION_SURFACES) : null;
+    holdMotion(own, SETTLE_MS);
+  };
+
   const onAnimationStart = (event: Event) => {
     const el = event.target;
     if (isElement(el) && el.matches(GLASS_MOTION_SURFACES)) holdMotion(el, ANIMATION_HOLD_MS, MOUNT_HOLD_MS);
@@ -195,13 +214,16 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
 
   const opts = { capture: true, passive: true } as const;
   doc.addEventListener("scroll", onScroll, opts);
+  for (const type of INTERACTION_EVENTS) doc.addEventListener(type, onInteraction, opts);
   doc.addEventListener("animationstart", onAnimationStart, opts);
   doc.addEventListener("animationend", onAnimationEnd, opts);
   doc.addEventListener("animationcancel", onAnimationEnd, opts);
 
   const stop = () => {
+    if (active === controller) active = null;
     observer?.disconnect();
     doc.removeEventListener("scroll", onScroll, opts);
+    for (const type of INTERACTION_EVENTS) doc.removeEventListener(type, onInteraction, opts);
     doc.removeEventListener("animationstart", onAnimationStart, opts);
     doc.removeEventListener("animationend", onAnimationEnd, opts);
     doc.removeEventListener("animationcancel", onAnimationEnd, opts);
@@ -219,5 +241,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     lastTargets = null;
     page = [];
   };
-  return { hold, scrollTargets, stop };
+  const controller: GlassMotion = { hold, scrollTargets, stop };
+  active = controller;
+  return controller;
 }
