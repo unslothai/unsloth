@@ -62,3 +62,23 @@ def run_async(fn):
         return asyncio.run(fn(*args, **kwargs))
 
     return wrapper
+
+
+def chat_entry_spec(type: str, **flags) -> dict:
+    """A live entrypoint on the loaded chat model, like the ones a game player calls."""
+    from core.flows.specs import P, inp, out, spec
+    return spec(
+        type,
+        type,
+        "test",
+        "test",
+        inputs = [inp("state", "json", optional = True)],
+        outputs = [out("reply", "json")],
+        params = [P("model", "model", None, "Model", model_kind = "chat")],
+        lane = "gpu",
+        model_kind = "chat",
+        entrypoint = True,
+        cacheable = False,
+        shares_chat = True,
+        **flags,
+    )

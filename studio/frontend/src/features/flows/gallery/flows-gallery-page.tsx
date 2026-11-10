@@ -38,7 +38,6 @@ import {
   Delete02Icon,
   FileImportIcon,
   FlowConnectionIcon,
-  GameController01Icon,
   GridViewIcon,
   PlusSignIcon,
   TestTube01Icon,
@@ -72,17 +71,11 @@ const KIND_STYLE: Record<
     className: "bg-violet-500/15 text-violet-600 dark:text-violet-300",
     icon: BookOpen01Icon,
   },
-  world: {
-    label: "World game",
-    className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300",
-    icon: GameController01Icon,
-  },
 };
 
 const COVER_GRADIENT: Record<FlowKind, string> = {
   pipeline: "from-sky-500/30 via-indigo-500/20 to-transparent",
   story: "from-violet-500/35 via-fuchsia-500/20 to-transparent",
-  world: "from-emerald-500/35 via-lime-500/15 to-transparent",
 };
 
 function relativeTime(ms: number): string {
@@ -578,13 +571,12 @@ export function FlowsGalleryPage(): ReactElement {
         </Button>
       </header>
 
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {(["pipeline", "story", "world"] as const).map((kind) => {
+      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {(["pipeline", "story"] as const).map((kind) => {
           const style = KIND_STYLE[kind];
           const copy = {
             pipeline: "Chain models together, like text → image → video.",
             story: "A branching visual novel with generated art.",
-            world: "A little world to walk around and talk to its people.",
           }[kind];
           return (
             <button

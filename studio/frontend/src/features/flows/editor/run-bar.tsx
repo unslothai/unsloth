@@ -155,7 +155,7 @@ function RunBarImpl({
             Run
           </Button>
         )}
-        {(kind === "story" || kind === "world" || playsChat) && (
+        {(kind === "story" || playsChat) && (
           <Button
             type="button"
             variant="outline"

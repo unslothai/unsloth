@@ -636,16 +636,6 @@ class NodeContextImpl:
             raise FlowNodeError(f"This run passed the limit of {MAX_GPU_OPS_PER_RUN} GPU steps")
 
 
-SHARED_CHAT_NODES = frozenset(
-    {
-        "story.next_scene",
-        "world.npc_reply",
-        "world.npc_plan",
-        "world.npc_chat",
-        "world.describe_place",
-    }
-)
-BACKGROUND_NODES = frozenset({"world.npc_plan", "world.npc_chat"})
 BACKGROUND_TASKS = frozenset({"summarise", "director"})
 
 
@@ -1014,7 +1004,7 @@ class FlowEngine:
         state = overrides.get("state")
         rs.background = (
             background
-            or spec["type"] in BACKGROUND_NODES
+            or spec.get("background")
             or (isinstance(state, dict) and state.get("task") in BACKGROUND_TASKS)
         )
         need = {entry}
@@ -1971,7 +1961,7 @@ class FlowEngine:
                     rs.set_status(nid, "waiting", "Waiting for the GPU")
                 rs.marks.setdefault("gpu_wait", time.monotonic())
                 outputs = None
-                shared = spec["type"] in SHARED_CHAT_NODES and not spec.get("exclusive_gpu")
+                shared = bool(spec.get("shares_chat")) and not spec.get("exclusive_gpu")
                 if shared:
                     try:
                         async with lock.shared(

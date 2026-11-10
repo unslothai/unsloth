@@ -10,7 +10,7 @@ import pytest
 from core.flows.compiler import parse_document
 from core.flows.engine import FlowEngine, GpuLease
 
-from ._flows_helpers import doc, node, run_async
+from ._flows_helpers import chat_entry_spec, doc, node, run_async
 
 
 def _engine(handlers: dict) -> FlowEngine:
@@ -146,19 +146,22 @@ class _Probe:
         self.gates.setdefault(name, asyncio.Event()).set()
 
 
-def _world(monkeypatch, slots: int):
+def _live_chat(monkeypatch, slots: int):
     from core.flows import engine as engine_mod
+    from core.flows.specs import SPECS_BY_TYPE
 
     monkeypatch.setattr(engine_mod, "chat_slots", lambda *_a: slots)
+    monkeypatch.setitem(SPECS_BY_TYPE, "test.reply", chat_entry_spec("test.reply"))
+    monkeypatch.setitem(SPECS_BY_TYPE, "test.plan", chat_entry_spec("test.plan", background = True))
     probe = _Probe()
     eng = _engine(
         {
-            "world.npc_reply": probe.handler("reply"),
-            "world.npc_plan": probe.handler("plan"),
+            "test.reply": probe.handler("reply"),
+            "test.plan": probe.handler("plan"),
             "story.scene_art": probe.handler("image"),
         }
     )
-    d = _doc("world.npc_reply", "world.npc_plan", "story.scene_art")
+    d = _doc("test.reply", "test.plan", "story.scene_art")
     return eng, d, probe
 
 
@@ -169,9 +172,9 @@ async def _settle():
 
 def test_chat_calls_on_the_loaded_model_run_side_by_side(monkeypatch):
     async def go():
-        eng, d, probe = _world(monkeypatch, slots = 4)
-        a = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "a"}))
-        b = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "b"}))
+        eng, d, probe = _live_chat(monkeypatch, slots = 4)
+        a = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "a"}))
+        b = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "b"}))
         await probe.wait_started("a")
         await probe.wait_started("b")
         assert probe.running == {"a", "b"}
@@ -184,10 +187,10 @@ def test_chat_calls_on_the_loaded_model_run_side_by_side(monkeypatch):
 
 def test_one_slot_keeps_chat_calls_one_at_a_time(monkeypatch):
     async def go():
-        eng, d, probe = _world(monkeypatch, slots = 1)
-        a = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "a"}))
+        eng, d, probe = _live_chat(monkeypatch, slots = 1)
+        a = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "a"}))
         await probe.wait_started("a")
-        b = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "b"}))
+        b = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "b"}))
         await _settle()
         assert probe.running == {"a"}
         probe.release("a")
@@ -200,12 +203,12 @@ def test_one_slot_keeps_chat_calls_one_at_a_time(monkeypatch):
 
 def test_an_image_step_waits_for_chat_calls_and_holds_new_ones_back(monkeypatch):
     async def go():
-        eng, d, probe = _world(monkeypatch, slots = 4)
-        a = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "a"}))
+        eng, d, probe = _live_chat(monkeypatch, slots = 4)
+        a = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "a"}))
         await probe.wait_started("a")
         img = asyncio.create_task(_invoke(eng, d, "story_scene_art", {"name": "img"}))
         await _settle()
-        b = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "b"}))
+        b = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "b"}))
         await _settle()
         assert probe.running == {"a"}
         probe.release("a")
@@ -223,16 +226,16 @@ def test_an_image_step_waits_for_chat_calls_and_holds_new_ones_back(monkeypatch)
 
 def test_background_calls_leave_a_slot_for_the_player(monkeypatch):
     async def go():
-        eng, d, probe = _world(monkeypatch, slots = 2)
-        p1 = asyncio.create_task(_invoke(eng, d, "world_npc_plan", {"name": "p1"}))
+        eng, d, probe = _live_chat(monkeypatch, slots = 2)
+        p1 = asyncio.create_task(_invoke(eng, d, "test_plan", {"name": "p1"}))
         await probe.wait_started("p1")
-        p2 = asyncio.create_task(_invoke(eng, d, "world_npc_plan", {"name": "p2"}))
+        p2 = asyncio.create_task(_invoke(eng, d, "test_plan", {"name": "p2"}))
         summary = asyncio.create_task(
-            _invoke(eng, d, "world_npc_reply", {"name": "s", "task": "summarise"})
+            _invoke(eng, d, "test_reply", {"name": "s", "task": "summarise"})
         )
         await _settle()
         assert probe.running == {"p1"}
-        reply = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "player"}))
+        reply = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "player"}))
         await probe.wait_started("player")
         assert probe.running == {"p1", "player"}
         for name in ("p1", "player"):
@@ -253,8 +256,8 @@ def test_background_calls_leave_a_slot_for_the_player(monkeypatch):
 
 def test_a_cancelled_chat_call_gives_its_slot_back(monkeypatch):
     async def go():
-        eng, d, probe = _world(monkeypatch, slots = 4)
-        a = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "a"}))
+        eng, d, probe = _live_chat(monkeypatch, slots = 4)
+        a = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "a"}))
         await probe.wait_started("a")
         a.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -272,7 +275,7 @@ def test_a_cancelled_chat_call_gives_its_slot_back(monkeypatch):
 def test_a_chat_call_that_needs_a_load_waits_to_run_alone(monkeypatch):
     from core.flows.engine import NeedsExclusiveGpu
     async def go():
-        eng, d, probe = _world(monkeypatch, slots = 4)
+        eng, d, probe = _live_chat(monkeypatch, slots = 4)
         loads: list[set[str]] = []
         tries: list[bool] = []
 
@@ -283,11 +286,11 @@ def test_a_chat_call_that_needs_a_load_waits_to_run_alone(monkeypatch):
             loads.append(set(probe.running))
             return {"reply": {"text": "hi"}}
 
-        eng.handlers["world.npc_reply"] = needs_load
-        eng.handlers["world.npc_plan"] = probe.handler("plan")
-        p = asyncio.create_task(_invoke(eng, d, "world_npc_plan", {"name": "p"}))
+        eng.handlers["test.reply"] = needs_load
+        eng.handlers["test.plan"] = probe.handler("plan")
+        p = asyncio.create_task(_invoke(eng, d, "test_plan", {"name": "p"}))
         await probe.wait_started("p")
-        r = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "r"}))
+        r = asyncio.create_task(_invoke(eng, d, "test_reply", {"name": "r"}))
         await _settle()
         assert loads == []
         probe.release("p")

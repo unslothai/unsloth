@@ -39,7 +39,6 @@ JSON_LIKE = (
     "json",
     "list",
     "story",
-    "world",
     "table",
     "chart",
     "heatmap",

@@ -20,7 +20,7 @@ const {
 } = await import("../src/features/flows/ux-rules.ts");
 
 test("examples land in every category their kind, tags or models say", () => {
-  assert.deepEqual(categoriesOf({ kind: "world", tags: ["npc"], needs: ["chat"] }), ["games"]);
+  assert.deepEqual(categoriesOf({ kind: "story", tags: ["npc"], needs: ["chat"] }), ["games"]);
   assert.deepEqual(
     categoriesOf({ kind: "pipeline", tags: ["video", "image"], needs: ["chat", "image", "video"] }),
     ["images", "video"],

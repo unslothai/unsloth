@@ -66,7 +66,6 @@ const JSON_LIKE: ReadonlySet<PortType> = new Set<PortType>([
   "json",
   "list",
   "story",
-  "world",
   "table",
   "chart",
   "heatmap",

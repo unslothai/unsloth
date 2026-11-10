@@ -82,11 +82,11 @@ def _package(blob: bytes) -> bytes:
     doc = {
         "id": "f",
         "name": "w",
-        "kind": "world",
+        "kind": "pipeline",
         "nodes": [
             {
                 "id": "play",
-                "type": "world.play",
+                "type": "input.text",
                 "pos": [0, 0],
                 "params": {
                     "props3d": [

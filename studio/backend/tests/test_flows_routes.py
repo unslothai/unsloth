@@ -70,7 +70,6 @@ def test_catalog_lists_every_spec(client):
         "llm.generate",
         "image.generate",
         "story.scene",
-        "world.npc",
     }
 
 
@@ -232,7 +231,7 @@ def test_import_export_assets_round_trip(client, monkeypatch):
     assert imported["report"]["baked_nodes"] == ["i"]
     assert imported["report"]["replication"] == [] and "live_note" not in imported["report"]
     world = doc(
-        [node("r", "world.npc_reply"), node("i", "input.image", asset = uploaded)],
+        [node("r", "story.next_scene"), node("i", "input.image", asset = uploaded)],
         id = "baked_world",
         baked = {"i": {"image": uploaded}},
     )
@@ -267,7 +266,7 @@ def test_examples_list_and_copy(client, monkeypatch):
 
 def test_bundled_examples_are_listed_and_copy(client):
     listed = client.get("/api/flows/examples").json()["examples"]
-    assert len(listed) == 65 and "lantern-picnic" in {e["id"] for e in listed}
+    assert len(listed) == 60 and "lantern-picnic" in {e["id"] for e in listed}
     copied = client.post("/api/flows/examples/lantern-picnic/copy").json()
     assert copied["doc"]["kind"] == "story"
     needs = {e["id"]: e["needs"] for e in listed}
@@ -476,7 +475,7 @@ def test_glb_models_upload_and_travel_in_packages(client, monkeypatch):
     )
     assert refused.status_code == 415 and "outside files" in refused.json()["detail"]
     prop = {"id": "m-1", "kind": "model", "x": 1.5, "y": 1.5, "asset": media}
-    d = doc([node("play", "world.play", props3d = [prop])], id = "scenery")
+    d = doc([node("play", "input.text", props3d = [prop])], id = "scenery")
     client.post("/api/flows", json = {"doc": d})
     exported = client.get("/api/flows/scenery/export", params = {"mode": "package"})
     assert exported.status_code == 200

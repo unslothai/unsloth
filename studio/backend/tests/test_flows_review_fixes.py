@@ -209,8 +209,8 @@ async def test_a_full_run_leaves_player_entrypoints_idle():
     async def reply(ctx):
         raise AssertionError("an entrypoint ran in a full run")
 
-    eng = _engine({**BASE, "world.npc_reply": reply})
-    d = doc([node("a", "input.text", value = "x"), node("r", "world.npc_reply")])
+    eng = _engine({**BASE, "story.next_scene": reply})
+    d = doc([node("a", "input.text", value = "x"), node("r", "story.next_scene")])
     rs = await _run(eng, d)
     assert rs.status == "completed", rs.error
     assert _status(rs, "r") == "idle"
@@ -350,18 +350,6 @@ def test_transcribe_downloads_a_missing_speech_model_once(monkeypatch):
     ctx = Ctx()
     assert asyncio.run(audio.transcribe(ctx))["text"] == "hello"
     assert downloads == [None] and ctx.calls == 2
-
-
-def test_finishing_an_item_quest_takes_that_item():
-    from core.flows.world import validate_npc_reply
-
-    from .test_flows_world import _state
-
-    out = validate_npc_reply(
-        {"text": "thanks", "take_item": "pie", "complete_quest": "q"},
-        _state(inventory = ["rod", "pie"]),
-    )
-    assert out["complete_quest"] == "q" and out["take_item"] == "rod"
 
 
 def test_two_flow_outputs_cannot_share_a_name():
@@ -505,8 +493,8 @@ async def test_a_run_value_change_is_not_served_from_the_cache():
     assert _status(again, "t") == "cached"
 
 
-def test_zero_temperature_and_zero_items_are_kept():
-    from core.flows.nodes import text, world as world_nodes
+def test_zero_temperature_is_kept():
+    from core.flows.nodes import text
 
     from .flows_player_fakes import FakeCtx
 
@@ -515,16 +503,6 @@ def test_zero_temperature_and_zero_items_are_kept():
     )
     asyncio.run(text.generate(ctx))
     assert ctx.llm_calls[0]["temperature"] == 0.0
-
-    ctx = FakeCtx(
-        "world.generator", params = {"premise": "a quiet pond", "items": 0}, llm = lambda **kw: {}
-    )
-    try:
-        asyncio.run(world_nodes.world_generator(ctx))
-    except Exception:
-        pass
-    assert "0 items" in ctx.llm_calls[0]["prompt"]
-    assert ctx.llm_calls[0]["schema"]["properties"]["items"]["maxItems"] == 0
 
 
 def test_a_truncated_recipe_is_reported():

@@ -5,39 +5,24 @@ import asyncio
 import json
 
 from core.flows import engine as engine_mod
-from core.flows.nodes._common import JsonFieldStream
+import pytest
+
+from core.flows.specs import SPECS_BY_TYPE
 from utils.account_context import OWNER, bind_account, reset_account
 
-from ._flows_helpers import doc, node
+from ._flows_helpers import chat_entry_spec, doc, node
 from .test_flows_routes import client  # noqa: F401 - the routes fixture
 
-STATE = {"world": {"npcs": []}, "npc_id": "tom", "history": [], "player_message": "hi"}
+STATE = {"history": [], "player_message": "hi"}
 
 
-def _feed_all(raw: str, step: int) -> str:
-    stream = JsonFieldStream("text")
-    return "".join(stream.feed(raw[:end]) for end in range(step, len(raw) + step, step))
+@pytest.fixture(autouse = True)
+def _reply_spec(monkeypatch):
+    monkeypatch.setitem(SPECS_BY_TYPE, "test.reply", chat_entry_spec("test.reply"))
 
 
-def test_text_field_streams_decoded_whatever_the_chunking():
-    raw = json.dumps(
-        {"text": 'Hi "friend", a \\ path\nnext line é \U0001f41d done', "give_item": "bell"}
-    )
-    want = json.loads(raw)["text"]
-    for step in (1, 2, 3, 5, 7, len(raw)):
-        assert _feed_all(raw, step) == want, step
-
-
-def test_text_field_ignores_what_comes_before_and_after():
-    stream = JsonFieldStream("text")
-    assert stream.feed('{"te') == ""
-    assert stream.feed('{"text": "ab') == "ab"
-    assert stream.feed('{"text": "abc", "take_item": "x"}') == "c"
-    assert stream.feed('{"text": "abc", "take_item": "xyz"}') == ""
-
-
-def _npc_flow():
-    return doc([node("r", "world.npc_reply")], [], id = "village")
+def _reply_flow():
+    return doc([node("r", "test.reply")], [], id = "village")
 
 
 def _streaming_reply(pieces):
@@ -55,8 +40,8 @@ def _sse(text: str) -> list[dict]:
 
 
 def test_streamed_invoke_sends_text_then_the_result(client):  # noqa: F811
-    engine_mod.ENGINE.handlers["world.npc_reply"] = _streaming_reply(["Hel", "lo ", "there"])
-    client.post("/api/flows", json = {"doc": _npc_flow()})
+    engine_mod.ENGINE.handlers["test.reply"] = _streaming_reply(["Hel", "lo ", "there"])
+    client.post("/api/flows", json = {"doc": _reply_flow()})
     body = {"entry": "r", "inputs": {"state": STATE}, "stream": True, "rev": 3}
     res = client.post("/api/flows/village/invoke", json = body)
     assert res.status_code == 200 and res.headers["content-type"].startswith("text/event-stream")
@@ -69,8 +54,8 @@ def test_streamed_invoke_sends_text_then_the_result(client):  # noqa: F811
 
 
 def test_plain_invoke_still_answers_in_one_json(client):  # noqa: F811
-    engine_mod.ENGINE.handlers["world.npc_reply"] = _streaming_reply(["Hi"])
-    client.post("/api/flows", json = {"doc": _npc_flow()})
+    engine_mod.ENGINE.handlers["test.reply"] = _streaming_reply(["Hi"])
+    client.post("/api/flows", json = {"doc": _reply_flow()})
     res = client.post("/api/flows/village/invoke", json = {"entry": "r", "inputs": {"state": STATE}})
     assert res.status_code == 200
     assert res.json()["outputs"]["reply"]["text"] == "Hi"
@@ -83,8 +68,8 @@ def test_a_failed_streamed_answer_ends_with_an_error_event(client):  # noqa: F81
         ctx.text_delta("reply", "Hm")
         raise FlowNodeError("The model is busy", status = 409)
 
-    engine_mod.ENGINE.handlers["world.npc_reply"] = broken
-    client.post("/api/flows", json = {"doc": _npc_flow()})
+    engine_mod.ENGINE.handlers["test.reply"] = broken
+    client.post("/api/flows", json = {"doc": _reply_flow()})
     res = client.post(
         "/api/flows/village/invoke", json = {"entry": "r", "inputs": {"state": STATE}, "stream": True}
     )
@@ -104,7 +89,7 @@ def test_warm_loads_the_entry_model_once_for_concurrent_callers(monkeypatch):
 
     monkeypatch.setattr(engine_mod.NodeContextImpl, "ensure_model", fake_ensure)
     model = {"repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "variant": "Q4_K_M"}
-    d = doc([node("r", "world.npc_reply", model = model)], [], id = "village")
+    d = doc([node("r", "test.reply", model = model)], [], id = "village")
 
     async def go():
         token = bind_account(OWNER)
