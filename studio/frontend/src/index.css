@@ -7529,25 +7529,25 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
   mask-image: linear-gradient(to bottom, #000 62%, transparent 97%);
 }
 /* In stage view it stands beside the conversation instead of filling a tile. */
-.stage-figure:has([data-cutout]) {
+.stage-figure[data-cutout] {
   overflow: visible;
   border-radius: 0;
   background: none;
   box-shadow: none;
 }
-.stage-figure:has([data-cutout]) img {
+.stage-figure[data-cutout] img {
   filter: drop-shadow(0 22px 28px rgb(0 0 0 / .3));
 }
-.stage-figure:has([data-cutout]) figcaption {
+.stage-figure[data-cutout] figcaption {
   background: none;
   color: var(--foreground);
 }
 /* The name can fall over the figure, so it carries a halo in the page color instead of the tile's scrim. */
-.stage-figure:has([data-cutout]) figcaption * {
+.stage-figure[data-cutout] figcaption * {
   color: inherit;
   text-shadow: 0 0 3px var(--background), 0 0 8px var(--background), 0 0 14px var(--background);
 }
-.stage-figure:has([data-cutout]) figcaption .animate-bounce {
+.stage-figure[data-cutout] figcaption .animate-bounce {
   background-color: var(--muted-foreground);
 }
 .novel-figure:focus-visible .novel-figure-picture {

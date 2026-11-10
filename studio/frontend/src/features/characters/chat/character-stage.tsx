@@ -6,7 +6,7 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 import { Portrait } from "../components/portrait";
-import { viewPicture } from "../images";
+import { useImageUrl, useIsCutout, viewPicture } from "../images";
 import { chatViewOf, useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
 import { NovelNameplate, NovelScene, SpeakingDots } from "./novel-scene";
@@ -55,6 +55,9 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
   const t = useT();
   const { focus, speaking } = useStageFocus(threadId, cast);
   const ask = useAskToReply();
+  // Marked on the figure itself: a :has() rule above it would restyle the whole thread on every change.
+  const focusUrl = useImageUrl("character", focus?.id, focus?.avatarRev ?? 0, Boolean(focus?.hasAvatar));
+  const cutout = useIsCutout(focusUrl, true);
   if (!focus) return null;
   const others = cast.filter((c) => c.id !== focus.id);
   return (
@@ -65,6 +68,7 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
     >
       <figure
         key={focus.id}
+        data-cutout={cutout || undefined}
         className="stage-figure relative min-h-0 overflow-hidden rounded-[26px] bg-muted shadow-[0_24px_60px_-30px_rgb(0_0_0/0.6)] animate-in fade-in-0 zoom-in-[0.985] duration-500 max-md:aspect-[2/3] max-md:h-full md:flex-1"
       >
         <button
