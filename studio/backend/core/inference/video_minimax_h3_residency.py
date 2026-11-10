@@ -1360,8 +1360,7 @@ class _DropFallbackWarning(logging.Filter):
 
 
 class H3QuietOffloadStrategy:
-    """The wrapped strategy's decisions, verbatim, minus its "offloading all models" warning: with only the VAEs in
-    the rotation, evicting every resident component before the next one onloads is this tier's policy."""
+    """The wrapped strategy, minus its "offloading all models" warning (evict-all is this tier's policy)."""
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
@@ -1390,10 +1389,8 @@ def install_h3_rotation_park(
     park: bool,
     logger: Any = None,
 ) -> bool:
-    """Streamed tiers only. ``park`` (a streamed denoiser, whose pre-hook evicts every rotating component at each
-    render's first forward, prompt-cache hit or not): park them when a render returns instead, so the next request's
-    VRAM floor and resident-set fit stop counting the last decode's audio VAE as used. A park is a re-point under
-    the pinned swap and moves nothing the next render would not. UNSLOTH_H3_ROTATION_PARK=0 keeps both as before."""
+    """Streamed tiers only. ``park`` (streamed denoiser): evict the rotation when a render returns, not at the next
+    forward, so the next request's VRAM floor stops counting the last decode's audio VAE."""
     if pipe is None or not h3_rotation_park_enabled():
         return False
     manager = getattr(pipe, "_components_manager", None)
@@ -1431,7 +1428,7 @@ def install_h3_rotation_park(
 
 
 def park_h3_rotation(pipe: Any) -> bool:
-    """Evict every rotating component resident on the execution device (the pre-hooks' own eviction); never raises."""
+    """Evict resident rotating components (the pre-hooks' own eviction); never raises."""
     if pipe is None or not getattr(pipe, _PARK_ATTR, False):
         return False
     try:

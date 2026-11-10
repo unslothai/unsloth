@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 streamed tiers: the rotating VAEs park when a render returns (so the next request's VRAM floor and
-resident-set fit do not count the last decode's audio VAE), and the rotation's evict-all decision stays the
-diffusers one while its "offloading all models" warning is muted."""
+"""MiniMax-H3 streamed tiers: rotating VAEs park on render return; diffusers' evict-all warning is muted."""
 
 from __future__ import annotations
 
@@ -104,13 +102,11 @@ def test_strategy_keeps_the_diffusers_decision_and_mutes_only_its_warning(monkey
     )
     assert got == expected
     assert not any("no combination of models" in m for m in cm_log.messages)
-    # Its other records still pass, and the filter is gone once the decision returns.
     assert any("search for models to offload" in m for m in cm_log.messages)
     assert not any(
         isinstance(f, residency._DropFallbackWarning)
         for f in logging.getLogger(residency._COMPONENTS_MANAGER_LOGGER).filters
     )
-    # Room for the incoming model: nothing evicted, same as stock.
     monkeypatch.setattr(
         torch.cuda, "mem_get_info", lambda *a, **k: (60 * _GB, 80 * _GB), raising = False
     )
@@ -123,7 +119,6 @@ def test_strategy_keeps_the_diffusers_decision_and_mutes_only_its_warning(monkey
         )
         == []
     )
-    # Idempotent: a second install does not wrap the wrapper.
     assert residency.install_h3_rotation_park(pipe, park = True)
     assert audio.hook.offload_strategy is quiet
 
@@ -152,7 +147,7 @@ class _FakeHook:
 
 
 def _fake_pipe(*, parked_device = "meta"):
-    vae = _FakeHook("vae", "cpu")  # the audio decode's onload already evicted it
+    vae = _FakeHook("vae", "cpu")
     audio = _FakeHook("audio_vae", parked_device)  # still on the device after the last decode
     manager = types.SimpleNamespace(
         model_hooks = [vae, audio], _auto_offload_device = torch.device("meta"), _offload_strategy = None
@@ -167,11 +162,10 @@ def test_render_return_parks_what_the_next_forward_would_evict():
     assert len(logger.lines) == 1 and "video.h3_rotation" in logger.lines[0]
     assert residency.park_h3_rotation(pipe)
     assert audio.offloads == 1 and audio.model.weight.device.type == "cpu"
-    assert vae.offloads == 0  # nothing resident, nothing moved
+    assert vae.offloads == 0
 
 
 def test_no_park_without_a_streamed_denoiser():
-    # Only the conditioner streams: a prompt-cache hit skips its evicting pre-hook, so the audio VAE may stay put.
     pipe, _vae, audio = _fake_pipe()
     assert residency.install_h3_rotation_park(pipe, park = False)
     assert not residency.park_h3_rotation(pipe)
