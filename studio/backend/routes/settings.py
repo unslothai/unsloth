@@ -4336,6 +4336,8 @@ class LanAccessAddressesPayload(BaseModel):
 class LanAccessAddress(BaseModel):
     address: str
     public: bool = False
+    # a virtual switch (virbr0, docker0): reaches only this machine's VMs or containers
+    host_only: bool = False
 
 
 class LanAccessResponse(BaseModel):

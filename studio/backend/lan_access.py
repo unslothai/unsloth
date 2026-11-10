@@ -71,30 +71,13 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
     else:
         raise ValueError("ip_version must be 4 or 6")
 
-    addresses: list[str] = []
-
-    def _add(candidate: str) -> None:
-        candidate = candidate.split("%", 1)[0]
-        try:
-            parsed = ipaddress.ip_address(candidate)
-        except ValueError:
-            return
-        if parsed.version != ip_version:
-            return
-        if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
-            return
-        if parsed.is_unspecified or parsed.is_reserved:
-            return
-        normalized = str(parsed)
-        if normalized not in addresses:
-            addresses.append(normalized)
-
+    found: list[str] = []
     # a UDP connect only fixes the local end of the socket; nothing is sent to the target
     probe = None
     try:
         probe = socket.socket(socket_family, socket.SOCK_DGRAM)
         probe.connect(route_probe)
-        _add(probe.getsockname()[0])
+        found.append(probe.getsockname()[0])
     except OSError:
         pass
     finally:
@@ -102,8 +85,34 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
             probe.close()
 
     # Route probes and hostname lookup miss other adapters; an isolated LAN has no route at all.
-    for address in _interface_addresses(ip_version):
-        _add(address)
+    found.extend(_interface_addresses(ip_version))
+    return _usable_addresses(found, ip_version)
+
+
+def detect_host_only_addresses(ip_version: int = 4) -> list[str]:
+    """Addresses on virtual switches (libvirt, Docker, ...) that detection skips: offered for an explicit
+    choice, e.g. serving VMs on virbr0 (#17017), never bound by Automatic."""
+    if _wsl_networking_mode() not in (None, "mirrored"):
+        return []
+    return _usable_addresses(_interface_addresses(ip_version, host_only = True), ip_version)
+
+
+def _usable_addresses(found, ip_version: int) -> list[str]:
+    addresses: list[str] = []
+    for candidate in found:
+        try:
+            parsed = ipaddress.ip_address(candidate.split("%", 1)[0])
+        except ValueError:
+            continue
+        if parsed.version != ip_version:
+            continue
+        if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
+            continue
+        if parsed.is_unspecified or parsed.is_reserved:
+            continue
+        normalized = str(parsed)
+        if normalized not in addresses:
+            addresses.append(normalized)
     return addresses
 
 
@@ -154,13 +163,16 @@ def _is_host_only_interface(name: str) -> bool:
     )
 
 
-def _interface_addresses(ip_version: int = 4) -> list[str]:
-    """Addresses for one IP version on every interface that is up. Falls back to resolving the hostname
-    where psutil is unavailable. That fallback is not an enumeration: a Linux host mapping its name
-    to 127.0.1.1 reports nothing, which is why it is the last resort rather than the source."""
+def _interface_addresses(ip_version: int = 4, host_only: bool = False) -> list[str]:
+    """Addresses for one IP version on every interface that is up, or on every virtual switch when
+    ``host_only``. Falls back to resolving the hostname where psutil is unavailable. That fallback is
+    not an enumeration: a Linux host mapping its name to 127.0.1.1 reports nothing, which is why it
+    is the last resort rather than the source."""
     try:
         import psutil
     except ImportError:
+        if host_only:
+            return []
         try:
             return [
                 info[4][0]
@@ -177,64 +189,15 @@ def _interface_addresses(ip_version: int = 4) -> list[str]:
         family = socket.AF_INET if ip_version == 4 else socket.AF_INET6
         addresses = []
         for name, entries in psutil.net_if_addrs().items():
-            if _is_host_only_interface(name):
+            if _is_host_only_interface(name) != host_only:
                 continue
             interface = stats.get(name)
-            if interface is not None and not interface.isup:
+            # a bridge has no carrier until a guest attaches, yet its assigned address still binds
+            if not host_only and interface is not None and not interface.isup:
                 continue
             addresses.extend(e.address for e in entries if e.family == family)
         return addresses
     except Exception:
-        return []
-
-
-def _selectable_interface_addresses(ip_version: int = 4) -> list[str]:
-    """Addresses on active interfaces, including virtual bridges.
-
-    Used only for explicit user selection, not automatic LAN binding.
-    Fail closed when local interfaces cannot be verified.
-    """
-    # WSL NAT and unknown modes do not expose addresses reachable from other devices.
-    if _wsl_networking_mode() not in (None, "mirrored"):
-        return []
-
-    try:
-        import psutil
-
-        family = socket.AF_INET if ip_version == 4 else socket.AF_INET6
-        stats = psutil.net_if_stats()
-        addresses = []
-
-        for name, entries in psutil.net_if_addrs().items():
-            interface = stats.get(name)
-            if interface is None or not interface.isup:
-                continue
-
-            for entry in entries:
-                if entry.family != family:
-                    continue
-
-                address = entry.address.split("%", 1)[0]
-                try:
-                    parsed = ipaddress.ip_address(address)
-                except ValueError:
-                    continue
-
-                if (
-                    parsed.is_loopback
-                    or parsed.is_link_local
-                    or parsed.is_multicast
-                    or parsed.is_unspecified
-                    or parsed.is_reserved
-                ):
-                    continue
-
-                normalized = str(parsed)
-                if normalized not in addresses:
-                    addresses.append(normalized)
-
-        return addresses
-    except (ImportError, OSError, ValueError, AttributeError):
         return []
 
 
@@ -332,21 +295,15 @@ def start_lan_listener(
             return _bound_addresses
 
         candidates = detect_lan_addresses()
-
         if selected_addresses is not None:
-            allowed = set(candidates)
-            allowed.update(_selectable_interface_addresses())
-
-            missing = [address for address in selected_addresses if address not in allowed]
-
+            candidates += [a for a in detect_host_only_addresses() if a not in candidates]
+        if not candidates:
+            _error = "no_lan_address"
+            raise RuntimeError(_error)
+        if selected_addresses is not None:
+            # never widened back to the detected set: that would bind the addresses the user excluded
+            missing = [address for address in selected_addresses if address not in candidates]
             candidates = [address for address in candidates if address in selected_addresses]
-
-            candidates.extend(
-                address
-                for address in selected_addresses
-                if address in allowed and address not in candidates
-            )
-
             if not candidates:
                 _error = "selected_address_unavailable"
                 logger.warning(
@@ -354,16 +311,11 @@ def start_lan_listener(
                     ", ".join(selected_addresses),
                 )
                 raise RuntimeError(_error)
-
             if missing:
                 logger.info(
                     "LAN access skipped chosen addresses not on this machine: %s",
                     ", ".join(missing),
                 )
-
-        elif not candidates:
-            _error = "no_lan_address"
-            raise RuntimeError(_error)
 
         sockets: list[socket.socket] = []
         bound: list[str] = []

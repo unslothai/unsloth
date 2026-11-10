@@ -4,7 +4,18 @@
 export type LanAccessState = "off" | "online" | "error";
 export type LanAccessOwner = "launch" | "settings" | null;
 export type LanKeylessScope = "off" | "inference" | "full";
-export type LanAccessAddress = { address: string; public: boolean };
+// hostOnly: a virtual switch (virbr0, docker0) only this machine's VMs or containers reach
+export type LanAccessAddress = {
+  address: string;
+  public: boolean;
+  hostOnly?: boolean;
+};
+type ApiLanAccessAddress = {
+  address: string;
+  public: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  host_only?: boolean;
+};
 export type LanAccessAddressChoice = LanAccessAddress & { detected: boolean };
 
 export type LanAccessStatus = {
@@ -50,7 +61,7 @@ export type ApiLanAccessStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   configured_addresses?: string[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
-  available_addresses?: LanAccessAddress[] | null;
+  available_addresses?: ApiLanAccessAddress[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   configured_public_addresses?: string[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -81,7 +92,13 @@ function normalizeAddresses(value: unknown): LanAccessAddress[] {
   }
   return value.flatMap((entry) =>
     entry && typeof entry.address === "string"
-      ? [{ address: entry.address, public: entry.public === true }]
+      ? [
+          {
+            address: entry.address,
+            public: entry.public === true,
+            ...(entry.host_only === true ? { hostOnly: true } : {}),
+          },
+        ]
       : [],
   );
 }
@@ -241,7 +258,7 @@ export function defaultLanAccessAddressSelection(
   status: LanAccessStatus | null,
 ): string[] {
   return (status?.availableAddresses ?? [])
-    .filter((entry) => !entry.public)
+    .filter((entry) => !(entry.public || entry.hostOnly))
     .map((entry) => entry.address);
 }
 
