@@ -5310,11 +5310,11 @@ class SdCppDiffusionBackend:
 
         sd.cpp's auto-fit budgets the card at its free VRAM less 512 MiB and fills that with cached weights, so
         a phase change (text encoder to denoiser, denoiser to VAE) needs memory the previous phase has just
-        released. Its model manager decides on the driver's free-memory figure. Windows' video memory manager
-        defers the destruction of allocations, so that figure can trail a release: the request is refused while
-        the memory is free and the job ends in ``generate_image returned no results``. Half the planned free
-        VRAM leaves the released memory unclaimed, at the cost of re-staging weights that no longer stay
-        cached.
+        released. Its model manager decides on the driver's free-memory figure. If that figure trails a
+        release (Windows' video memory manager may defer destroying allocations; not observed on a Windows
+        host), the request is refused while the memory is free and the job ends in ``generate_image returned
+        no results``. Half the planned free VRAM leaves the released memory unclaimed, at the cost of
+        re-staging weights that no longer stay cached. An allocation that failed outright is not retried.
 
         The caller allows one restart per request. The budget is computed once, from the plan of the first
         server that refused, and reused after that: a server restarted while another application held the

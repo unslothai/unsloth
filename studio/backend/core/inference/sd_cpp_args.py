@@ -709,24 +709,27 @@ def is_device_oom_text(text: Optional[str]) -> bool:
     return False
 
 
-# The stages at which sd.cpp's model manager declines a graph segment for device memory (``fail_segment`` in
-# ``src/core/ggml_runner.cpp``). A raw allocation failure is not one of them and keeps its error.
+# The stages at which sd.cpp's model manager declines a graph segment after checking device memory
+# (``fail_segment`` in ``src/core/ggml_runner.cpp``). "workspace allocation" is not one: there the allocator failed.
 _SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
     "failed during weight preparation",
     "failed during workspace capacity check",
-    "failed during workspace allocation",
     "failed during allocated capacity check",
 )
 # Share of the free VRAM sd-server planned with that the image retry may use. sd.cpp fills its budget (free less
 # 512 MiB) with cached weights, so each phase needs memory the previous one just released. Half leaves that much
-# unclaimed while the driver still reports the release as in use (Windows defers the destruction of allocations).
+# unclaimed if the driver still reports the release as in use (Windows may defer destroying allocations).
 IMAGE_VRAM_RETRY_SCALE = 0.5
 
 
 def is_vram_refusal_text(text: Optional[str]) -> bool:
-    """A failed render whose output shows sd.cpp declining a segment for device memory."""
-    lowered = str(text or "").lower()
-    return any(marker in lowered for marker in _SEGMENT_REFUSAL_MARKERS)
+    """A failed render whose output shows sd.cpp's model manager declining a segment for device memory, and no
+    allocation that failed outright. Weight preparation also fails when staging the weights cannot allocate;
+    that, like any other allocation failure, keeps its error."""
+    lines = str(text or "").lower().splitlines()
+    if not any(marker in line for line in lines for marker in _SEGMENT_REFUSAL_MARKERS):
+        return False
+    return not any("failed during" not in line and is_device_oom_text(line) for line in lines)
 
 
 def image_vram_retry_budget(

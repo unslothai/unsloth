@@ -3145,6 +3145,18 @@ _VRAM_REFUSAL = (
 )
 
 
+# The allocator itself failed: what sd-server prints when cudaMalloc returns out of memory under a segment.
+_ALLOCATION_FAILURE = (
+    "sd-server generation failed: generation_failed: generate_image returned no results\n"
+    "Last output:\n"
+    "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 210.08 MiB on device 0: "
+    "cudaMalloc failed: out of memory\n"
+    "[E] ggml: alloc_tensor_range: failed to allocate CUDA0 buffer of size 220288512\n"
+    "[E] MOSS-Image segment 12/43 (moss_image.layers.11) failed during {stage} --- ggml_runner.cpp:934\n"
+    "[E] diffusion model compute failed --- diffusion_engine.cpp:2729"
+)
+
+
 def _vram_refusal_backend(
     monkeypatch,
     *,
@@ -3280,11 +3292,12 @@ def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
         {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 5771}, "per_device_supported": False},
         # A CPU render is not short of VRAM.
         {"device": "cpu"},
-        # Not a memory refusal, and an allocation that failed outright rather than a segment sd.cpp declined.
+        # Not a memory refusal.
         {"error": "sd-server generation failed: generation_failed: invalid sampler"},
-        {
-            "error": "[E] ggml: alloc_tensor_range: failed to allocate CUDA0 buffer of size 220288512"
-        },
+        # An allocation that failed outright, at the workspace and while staging weights, not a segment the model
+        # manager declined.
+        {"error": _ALLOCATION_FAILURE.format(stage = "workspace allocation")},
+        {"error": _ALLOCATION_FAILURE.format(stage = "weight preparation")},
     ],
     ids = [
         "no_plan",
@@ -3295,7 +3308,8 @@ def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
         "no_per_device_budgets",
         "cpu",
         "other_error",
-        "allocation_failure",
+        "workspace_allocation_failure",
+        "weight_staging_allocation_failure",
     ],
 )
 def test_a_vram_refusal_without_a_usable_budget_is_surfaced_unchanged(monkeypatch, kwargs):

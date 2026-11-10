@@ -953,22 +953,43 @@ def test_h3_card_probes_never_fall_back_to_a_torch_context(monkeypatch):
     assert touched == []
 
 
-def test_image_vram_refusal_text_covers_every_segment_stage():
-    for stage in (
-        "weight preparation",
-        "workspace capacity check",
-        "workspace allocation",
-        "allocated capacity check",
-    ):
-        assert args_mod.is_vram_refusal_text(
-            f"[E] MOSS-Image segment 1/43 (moss_image.layers.0) failed during {stage} --- ggml_runner.cpp:934"
-        )
+def test_image_vram_refusal_text_is_the_model_manager_declining_a_segment():
+    segment = (
+        "[E] MOSS-Image segment 1/43 (moss_image.layers.0) failed during {} --- ggml_runner.cpp:934"
+    )
+    for stage in ("weight preparation", "workspace capacity check", "allocated capacity check"):
+        assert args_mod.is_vram_refusal_text(segment.format(stage))
+    # The model manager's own warning beside it is not an allocation failure.
+    assert args_mod.is_vram_refusal_text(
+        "[W] model manager cannot make enough memory available on CUDA0: need 512.63 MB device / 0.63 MB "
+        "budget, available 0.00 MB device / 5549.38 MB budget --- model_manager.cpp:2101\n"
+        + segment.format("weight preparation")
+    )
     assert not args_mod.is_vram_refusal_text("generation_failed: invalid sampler")
     assert not args_mod.is_vram_refusal_text(None)
-    # An allocation that failed outright is the video path's retry, not this one, and the reverse holds for
-    # weight preparation.
-    assert args_mod.is_device_oom_text(_AUDIT_OOM) and not args_mod.is_vram_refusal_text(_AUDIT_OOM)
-    assert not args_mod.is_device_oom_text("segment 1/43 failed during weight preparation")
+
+
+def test_image_vram_refusal_text_leaves_failed_allocations_alone():
+    segment = "[E] MOSS-Image segment 12/43 (moss_image.layers.11) failed during {} --- ggml_runner.cpp:934"
+    allocator = (
+        "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 210.08 MiB on device 0: "
+        "cudaMalloc failed: out of memory\n"
+        "[E] ggml: alloc_tensor_range: failed to allocate CUDA0 buffer of size 220288512\n"
+    )
+    # The workspace allocator failing is not a capacity check, with or without the allocator's own lines.
+    assert not args_mod.is_vram_refusal_text(segment.format("workspace allocation"))
+    assert not args_mod.is_vram_refusal_text(allocator + segment.format("workspace allocation"))
+    # Staging weights can fail the same way, and a Vulkan allocation reads differently.
+    assert not args_mod.is_vram_refusal_text(allocator + segment.format("weight preparation"))
+    assert not args_mod.is_vram_refusal_text(
+        "vk::Device::allocateMemory: ErrorOutOfDeviceMemory\n"
+        + segment.format("weight preparation")
+    )
+    assert not args_mod.is_vram_refusal_text(_AUDIT_OOM)
+    # The video path's markers are unchanged: it retries both kinds, and not weight preparation.
+    assert args_mod.is_device_oom_text(_AUDIT_OOM)
+    assert args_mod.is_device_oom_text(segment.format("workspace allocation"))
+    assert not args_mod.is_device_oom_text(segment.format("weight preparation"))
 
 
 def test_image_vram_retry_budget_is_half_the_planned_free_vram():
