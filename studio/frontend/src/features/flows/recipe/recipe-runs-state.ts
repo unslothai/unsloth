@@ -62,3 +62,39 @@ export function savedRunDataset(
       }
     : null;
 }
+
+/** One page of a full run's rows. The recipe job manager keeps only the newest job, so an older run
+ * pages from its saved parquet; a schema transform's pages always read its own output, since the
+ * job's dataset is the untransformed one. */
+export async function readRunPage(
+  record: Pick<RecipeExecutionRecord, "jobId" | "artifact_path" | "output_ref">,
+  offset: number,
+  size: number,
+  read: {
+    job: (
+      jobId: string,
+      page: { limit: number; offset: number },
+    ) => Promise<{ dataset?: unknown; total?: unknown }>;
+    saved: (
+      value: NonNullable<ReturnType<typeof savedRunDataset>>,
+      offset: number,
+      limit: number,
+    ) => Promise<{ rows: unknown; total: number | null; view_rows: number }>;
+  },
+): Promise<{ dataset?: unknown; total?: unknown }> {
+  const saved = savedRunDataset(record);
+  const fromJob =
+    record.output_ref || !record.jobId
+      ? Promise.reject(new Error("transformed output"))
+      : read.job(record.jobId, { limit: size, offset });
+  return fromJob.catch(async (error) => {
+    if (!saved) throw error;
+    const page = await read.saved(saved, offset, size);
+    // That reader stops at its view window; pages past it would load empty.
+    const total =
+      typeof page.total === "number"
+        ? Math.min(page.total, page.view_rows)
+        : page.total;
+    return { dataset: page.rows, total };
+  });
+}

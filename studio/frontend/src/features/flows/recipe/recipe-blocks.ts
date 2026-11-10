@@ -118,3 +118,17 @@ export function addRecipeBlock(
     name: config.kind === "seed" ? "seed" : config.name,
   });
 }
+
+/** Whether another block of the recipe (a column, seed, provider, preset or tool profile: they share one
+ * namespace) has this name. A recipe with two blocks of one name does not open again, so such a name
+ * stays a draft in the form. */
+export function nameTaken(
+  configs: Record<string, NodeConfig>,
+  id: string,
+  name: string,
+): boolean {
+  const wanted = name.trim();
+  return Object.values(configs).some(
+    (other) => other.id !== id && other.name.trim() === wanted,
+  );
+}

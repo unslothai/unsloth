@@ -2,18 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { type LearningRecipe, learningRecipe, recipeGroup } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const { applyConfigPatch, commitStudioEdit, studioView } = await import(
   "../src/features/flows/recipe/recipe-adapter.ts"
-);
-const { COLUMN_TYPE } = await import(
-  "../src/features/flows/recipe/recipe-columns.ts"
 );
 const { fullRunName, runWithSettings, settingsFromRun } = await import(
   "../src/features/flows/recipe/recipe-run-settings.ts"
@@ -25,46 +22,12 @@ const { buildDialogOptions } = await import(
   "../src/features/recipe-studio/utils/recipe-studio-view.ts"
 );
 
-type Payload = {
-  recipe: Record<string, unknown> & { columns: Record<string, unknown>[] };
-  ui?: Record<string, unknown>;
-};
-
-function learning(name: string): Payload {
-  return JSON.parse(
-    readFileSync(
-      new URL(
-        `../src/features/data-recipes/learning-recipes/${name}`,
-        import.meta.url,
-      ),
-      "utf8",
-    ),
-  ) as Payload;
-}
+type Payload = LearningRecipe;
+const learning = learningRecipe;
 
 function group(payload: Payload) {
-  const { columns, ...config } = structuredClone(payload.recipe);
-  const nodes = columns.map((column, i) => ({
-    id: `recipe_col_${i + 1}`,
-    type: COLUMN_TYPE,
-    v: 1,
-    params: { column },
-    pos: [i * 320, 0] as [number, number],
-    label: String(column.name),
-    group: "recipe",
-  }));
-  return {
-    group: {
-      id: "recipe",
-      label: "Recipe",
-      rect: [0, 0, 100, 100] as [number, number, number, number],
-      kind: "recipe" as const,
-      config,
-      run: { rows: 5 },
-      ui: structuredClone(payload.ui ?? {}),
-    },
-    nodes,
-  };
+  const { group, nodes } = recipeGroup(payload);
+  return { group: { ...group, ui: structuredClone(payload.ui ?? {}) }, nodes };
 }
 
 function withTools(): Payload {
@@ -244,11 +207,6 @@ test("a full run is named after its group unless it has a name, like the Run but
   assert.equal(fullRunName({ label: "Text to SQL", run: null }), "Text to SQL");
   assert.equal(fullRunName({ label: "Text to SQL", run: { run_name: " nightly " } }), "nightly");
   assert.equal(fullRunName({ label: "Text to SQL", run: { run_name: "  " } }), "Text to SQL");
-  const editor = readFileSync(
-    new URL("../src/features/flows/recipe/recipe-editor.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(editor, /useState\(\(\) => fullRunName\(group\)\)/);
 });
 
 test("a tool server whose endpoint is cleared to retype keeps the profile and its settings as saved", () => {

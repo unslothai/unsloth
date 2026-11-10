@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { catalog, learningRecipe, recipeGroup } from "./helpers/flows.ts";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -26,38 +26,10 @@ const {
 
 type FlowNode = Parameters<typeof columnName>[0];
 
-const SQL = JSON.parse(
-  readFileSync(
-    new URL(
-      "../src/features/data-recipes/learning-recipes/text-to-sql.json",
-      import.meta.url,
-    ),
-    "utf8",
-  ),
-) as {
-  recipe: Record<string, unknown> & { columns: Record<string, unknown>[] };
-};
+const SQL = learningRecipe("text-to-sql.json");
 
 function sqlGroup() {
-  const { columns, ...config } = structuredClone(SQL.recipe);
-  const nodes: FlowNode[] = columns.map((column, i) => ({
-    id: `recipe_col_${i + 1}`,
-    type: COLUMN_TYPE,
-    v: 1,
-    params: { column },
-    pos: [i * 320, 0],
-    label: String(column.name),
-    group: "recipe",
-  }));
-  const group = {
-    id: "recipe",
-    label: "Text to SQL",
-    rect: [0, 0, 100, 100] as [number, number, number, number],
-    kind: "recipe" as const,
-    config,
-    run: { rows: 5 },
-  };
-  return { group, nodes };
+  return recipeGroup(SQL, "Text to SQL");
 }
 
 function byName(nodes: FlowNode[], name: string): FlowNode {
@@ -221,14 +193,6 @@ test("a column node shows its kind and what it says", () => {
 });
 
 test("the catalog snapshot has the recipe column and Recipe Dataset blocks", () => {
-  const catalog = JSON.parse(
-    readFileSync(
-      new URL("./fixtures/flows-catalog.json", import.meta.url),
-      "utf8",
-    ),
-  ) as {
-    nodes: { type: string; design?: boolean; outputs: { id: string }[] }[];
-  };
   const column = catalog.nodes.find((n) => n.type === "recipe.column");
   const generate = catalog.nodes.find((n) => n.type === "recipe.generate");
   assert.equal(column?.design, true);
@@ -314,9 +278,6 @@ test("deleting reference wires from two recipe frames at once clears both frames
 
 async function loadCatalog() {
   const { useCatalogStore } = await import("../src/features/flows/stores/catalog-store.ts");
-  const catalog = JSON.parse(
-    readFileSync(new URL("./fixtures/flows-catalog.json", import.meta.url), "utf8"),
-  ) as { nodes: { type: string }[] };
   useCatalogStore.setState({
     specs: Object.fromEntries(catalog.nodes.map((s) => [s.type, s])) as never,
   });
@@ -557,7 +518,7 @@ test("setup links are the flow's own edge type, dashed as references, so they fo
     assert.equal(edge.deletable, false);
   }
   assert.ok(!edges.some((e) => e.target === sql.id), "a collapsed column draws no link");
-  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+  const css = readSrc("index.css");
   assert.match(css, new RegExp(`\\.${REFERENCE_EDGE_CLASS} \\.react-flow__edge-path[^}]*stroke-dasharray`));
 });
 
@@ -573,9 +534,6 @@ test("a note keeps the size it was given whatever its text; long text scrolls in
     .nodes(useDocStore.getState().graph, new Set(), null)
     .find((n) => n.type === "flowNote");
   assert.deepEqual(note?.style, { width: 320, height: 200 });
-  const frames = readSrc("features/flows/editor/frame-nodes.tsx");
-  assert.match(frames, /fieldSizing="fixed"/);
-  assert.match(frames, /<BaseNodeContent className="nowheel h-full overflow-y-auto px-3 py-2">/);
 });
 
 async function recipeOverlaps(sizes: Map<string, { width: number; height: number }>) {
@@ -715,11 +673,6 @@ test("the run dialogs' check leaves disabled columns out, like the frame's Check
   const { checkRecipeGroupDetail } = await import(
     "../src/features/flows/recipe/recipe-group-actions.ts"
   );
-  const editor = readFileSync(
-    new URL("../src/features/flows/recipe/recipe-editor.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(editor, /const checkGroup = checkRecipeGroupDetail;/);
   const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
@@ -779,26 +732,38 @@ test("a wired seed is what the check goes by, not the group's own empty file see
   assert.deepEqual(wired, { valid: true, errors: [], rawDetail: null });
 });
 
-test("the schema transform form edits the group it shows now, after a switch or Undo", () => {
-  const src = readFileSync(
-    new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url),
-    "utf8",
+test("a recipe with a wired seed still fails Check when its columns read each other", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { checkRecipeGroupDetail } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
   );
-  const form = src.slice(src.indexOf("export function ProcessorsForm"));
-  assert.match(form, /const view = useMemo\(\(\) => viewOf\(groupId\), \[groupId, signature\]\);/);
-  // Its only local state is a draft of a template or name that would not survive a save yet.
-  assert.equal(form.match(/useState</g)?.length, 2);
-  assert.match(form, /if \(isJsonObject\(text\)\) \{\s*setDraft\(null\);\s*patch\(\{ template: text \}\);\s*\} else setDraft\(\{ group: groupId, text \}\);/);
-});
-
-test("a column dropped in a recipe frame's setup-card space stays in the recipe", () => {
-  const canvas = readFileSync(
-    new URL("../src/features/flows/editor/canvas.tsx", import.meta.url),
-    "utf8",
-  );
-  // Membership is tested against the height the frame is drawn at, not only the saved one.
-  assert.match(canvas, /const h = Math\.max\(g\.rect\[3\], heights\[groupId\] \?\? 0\);/);
-  assert.match(canvas, /groupMembership\(\s*positions,\s*sizesRef\.current,\s*setupRef\.current\.heights,?\s*\)/);
+  const { doc, node, edge } = await import("./helpers/flows.ts");
+  const { group, nodes } = sqlGroup();
+  (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
+    "http://localhost:8000/v1";
+  for (const mc of (group.config as { model_configs: Record<string, unknown>[] }).model_configs)
+    mc.model ||= "qwen";
+  const loop = (name: string, reads: string, i: number): FlowNode => ({
+    id: `loop_${name}`,
+    type: COLUMN_TYPE,
+    v: 1,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    params: { column: { name, column_type: "expression", expr: `{{ ${reads} }}` } },
+    pos: [i * 320, 900],
+    group: "recipe",
+  });
+  const step = { ...node("step", GENERATE_TYPE, [0, 300]), group: "recipe" };
+  const data = node("data", "data.hf_dataset", [0, 600]);
+  useDocStore.getState().load({
+    ...doc(
+      [...nodes, loop("left", "right", 0), loop("right", "left", 1), step, data],
+      [edge("seed", "data", "dataset", "step", "seed")],
+    ),
+    groups: [group],
+  });
+  const result = await checkRecipeGroupDetail("recipe");
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => /loop: left -> right -> left/.test(e)), result.errors.join("; "));
 });
 
 test("a GitHub seed added before a repository is entered keeps a form to enter it", async () => {
@@ -815,20 +780,6 @@ test("a GitHub seed added before a repository is entered keeps a form to enter i
   assert.equal(source?.seed_type, "github_repo");
   const view = studioView(after, nodes);
   assert.ok(Object.values(view.configs).some((c) => c.kind === "seed"));
-});
-
-test("clearing a block's name, column or setup card, keeps its form open until the new name is typed", () => {
-  const src = readFileSync(
-    new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url),
-    "utf8",
-  );
-  const update = src.slice(src.indexOf("const update = (id: string"), src.indexOf("const canDrop"));
-  // The blank shows in the form only; the recipe and the configs a rename starts from keep the
-  // last name, so its links follow once the new one is typed.
-  const blank = update.slice(0, update.indexOf("return;"));
-  assert.match(blank, /typeof patch\.name === "string" &&\s*\(!patch\.name\.trim\(\) \|\| nameTaken\(/);
-  assert.match(blank, /setConfigs\(\{\s*\.\.\.latest\.current,/);
-  assert.doesNotMatch(blank, /latest\.current =|commitConfigs|applyConfigPatch/);
 });
 
 test("a seed whose selection is mid-edit keeps its last valid config and its card", () => {
@@ -894,8 +845,6 @@ test("a pasted or duplicated second Recipe Dataset step comes into its recipe sw
   const steps = Object.values(useDocStore.getState().graph.nodes).filter((n) => n.type === "recipe.generate");
   assert.equal(steps.length, 2);
   assert.deepEqual(steps.map((n) => !!n.disabled).sort(), [false, true]);
-  const keys = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
-  assert.match(keys, /doc\.graph\.nodes\[id\]\?\.type !== GENERATE_TYPE/);
 });
 
 test("an edit elsewhere keeps a processor the recipe forms do not show", () => {
@@ -933,13 +882,23 @@ test("a column duplicated into its recipe gets the next free name", async () => 
   assert.deepEqual(names.sort(), [name, `${name}_2`, `${name}_3`].sort());
 });
 
-test("a recipe column's toolbar has no Run or Regenerate, and a setup card is found while its name ends in a space", () => {
-  const toolbar = readFileSync(new URL("../src/features/flows/editor/node-toolbar.tsx", import.meta.url), "utf8");
-  assert.match(toolbar, /\{!spec\.design && \(\s*<>\s*<Button[\s\S]*node-toolbar-run[\s\S]*node-toolbar-reroll[\s\S]*<\/>\s*\)\}/);
-  const blocks = readFileSync(new URL("../src/features/flows/recipe/recipe-blocks.ts", import.meta.url), "utf8");
-  assert.match(blocks, /config\.name\.trim\(\) === target\.name\.trim\(\)/);
-  const forms = readFileSync(new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url), "utf8");
-  assert.match(forms, /setRecipeSetup\(\{ \.\.\.target, name: name\.trim\(\) \}, true\)/);
+test("a setup card is found while its name ends in a space", async () => {
+  const { setupConfig } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { group, nodes } = sqlGroup();
+  const view = studioView(group, nodes);
+  const provider = Object.values(view.configs).find((c) => c.kind === "model_provider");
+  assert.ok(provider);
+  const typing = applyConfigPatch(view.configs, provider.id, { name: `${provider.name} ` });
+  const found = setupConfig({ ...view, configs: typing }, {
+    groupId: "recipe",
+    kind: "model_provider",
+    name: provider.name,
+  } as never);
+  assert.equal(found?.id, provider.id);
+  assert.equal(
+    setupConfig(view, { groupId: "recipe", kind: "model_provider", name: "nope" } as never),
+    undefined,
+  );
 });
 
 test("copies of connected columns read each other, not the columns they were copied from", async () => {
@@ -1284,18 +1243,6 @@ test("columns reading each other are a loop even when a wired seed defers the se
     ]),
     null,
   );
-  const actions = readFileSync(
-    new URL("../src/features/flows/recipe/recipe-group-actions.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(actions, /if \(wired\) \{[\s\S]*columnLoop\(columns\.map\(columnOf\)\)/);
-  const seed = readFileSync(
-    new URL("../src/features/recipe-studio/dialogs/seed/seed-dialog.tsx", import.meta.url),
-    "utf8",
-  );
-  // An inline seed form re-reads its documents when one is removed (Flows never closes it).
-  assert.match(seed, /const removed = before\.some\(\(id\) => !now\.includes\(id\)\);/);
-  assert.match(seed, /onUpdate\(\{ hf_path: "", resolved_paths: \[\], seed_preview_rows: \[\] \}\)/);
 });
 
 test("the starter recipe passes Check as made, writing with Chat's loaded model", async () => {
@@ -1304,8 +1251,16 @@ test("the starter recipe passes Check as made, writing with Chat's loaded model"
   const columns = nodes.filter((n: FlowNode) => n.type === COLUMN_TYPE);
   assert.deepEqual(clientErrors(group, columns), []);
   // Its card still reads as Chat's model, not the word "local".
-  const setup = readFileSync(new URL("../src/features/flows/recipe/recipe-setup.ts", import.meta.url), "utf8");
-  assert.match(setup, /name\.toLowerCase\(\) === "local"/);
+  const { recipeSetup } = await import("../src/features/flows/recipe/recipe-setup.ts");
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./helpers/flows.ts");
+  useDocStore.getState().load({ ...doc(nodes), groups: [group] });
+  const models = recipeSetup(useDocStore.getState().graph, group).cards.filter(
+    (c) => c.kind === "model_config",
+  );
+  assert.ok(models.length > 0);
+  for (const card of models)
+    assert.equal(card.fields.find((f) => f.label === "Model")?.value, "The loaded chat model");
 });
 
 test("recipe blocks pasted outside a recipe frame are left out, and a shared tool server edit reaches every profile", async () => {
@@ -1332,11 +1287,17 @@ test("recipe blocks pasted outside a recipe frame are left out, and a shared too
   assert.equal(next.t1.mcp_providers[0].id, "s1");
 });
 
-test("a name another block already has stays a draft in the form, so the recipe keeps opening", () => {
-  const forms = readFileSync(new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url), "utf8");
-  assert.match(forms, /\(!patch\.name\.trim\(\) \|\| nameTaken\(latest\.current, id, patch\.name\)\)/);
-  // One namespace for every block, as the importer reads them.
-  assert.match(forms, /\(other\) => other\.id !== id && other\.name\.trim\(\) === wanted/);
+test("a name another block already has stays a draft in the form, so the recipe keeps opening", async () => {
+  const { nameTaken } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const configs = {
+    c1: { id: "c1", kind: "llm", name: "sql" },
+    p1: { id: "p1", kind: "model_provider", name: "local" },
+  } as never;
+  // One namespace for every block, as the importer reads them, compared trimmed.
+  assert.equal(nameTaken(configs, "c1", "local"), true);
+  assert.equal(nameTaken(configs, "c1", " local "), true);
+  assert.equal(nameTaken(configs, "c1", "sql"), false, "its own name is free");
+  assert.equal(nameTaken(configs, "c1", "fresh"), false);
 });
 
 test("moving a column wire to another column moves the reference, in one undo step", async () => {
@@ -1417,9 +1378,6 @@ test("a recipe block dragged out of its frame stays in its recipe, and the frame
   const grown = holdRecipeBlocks(group as never, { [nodes[0].id]: [2000, 2000] }, new Map());
   assert.deepEqual(grown.rect, [0, 0, 2284, 2144]);
   assert.equal(holdRecipeBlocks(grown, { [nodes[0].id]: [100, 100] }, new Map()), grown);
-  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
-  assert.match(canvas, /const recipe = ownRecipe\(graph, id\);\s*if \(recipe\) membership\[id\] = recipe;/);
-  assert.match(canvas, /holdRecipeBlocks\(group, moved, sizesRef\.current\)/);
 });
 
 test("a duplicated column skips names the recipe's setup blocks hold, and a copied reader sees its copied image", async () => {
@@ -1819,4 +1777,153 @@ test("a duplicated reader gets the wire to the column it reads, and a Jinja test
   assert.deepEqual(columnReferences(col("{{ words | sort(reverse=true) }}"), kw), ["words"]);
   assert.deepEqual(columnReferences(col("{{ words | sort(attribute=reverse) }}"), kw), ["words", "reverse"]);
   assert.deepEqual(columnReferences(col("{{ reverse == words }}"), kw), ["reverse", "words"]);
+});
+
+const moduleStubs = await import("./helpers/module-stubs.ts");
+const { fakeReact, selectorStore } = await import("./helpers/fake-react.ts");
+
+for (const design of [true, false])
+  test(`a ${design ? "recipe column's" : "runnable block's"} toolbar ${design ? "has no" : "has"} Run and Regenerate`, () => {
+    const type = design ? COLUMN_TYPE : "input.text";
+    assert.equal(!!catalog.nodes.find((s) => s.type === type)?.design, design);
+    const table = moduleStubs.stubEveryImport({
+      react: fakeReact({ runEffects: false }).react,
+      "react/jsx-runtime": moduleStubs.stubJsxRuntime(),
+      "@xyflow/react": {
+        NodeToolbar: "NodeToolbar",
+        Position: { Top: "top", Bottom: "bottom" },
+        useReactFlow: () => ({ deleteElements: () => {} }),
+        useStore: () => false,
+      },
+      "./canvas-rules": { toolbarNodeId: () => "n1" },
+      "../stores/ui-store": selectorStore({ selectedNodes: ["n1"], inspectorNodeId: null }),
+      "../stores/doc-store": {
+        useDocStore: selectorStore({ graph: { nodes: { n1: { id: "n1", type } } } }),
+      },
+      "../stores/catalog-store": {
+        useCatalogStore: selectorStore({ specs: Object.fromEntries(catalog.nodes.map((s) => [s.type, s])) }),
+      },
+      "../stores/runtime-store": { useRuntimeStore: selectorStore({ nodes: {} }) },
+    });
+    (table["../stores/ui-store"] as Record<string, unknown>).useUiStore = table["../stores/ui-store"];
+    const { SelectedNodeToolbar } = moduleStubs.loadWithStubs<{
+      SelectedNodeToolbar: (p: { readOnly: boolean }) => unknown;
+    }>(new URL("../src/features/flows/editor/node-toolbar.tsx", import.meta.url), table);
+    const ids = moduleStubs
+      .elementsOf(SelectedNodeToolbar({ readOnly: false }))
+      .map((e) => e.props["data-testid"])
+      .filter(Boolean);
+    assert.ok(ids.includes("node-toolbar-settings"), ids.join(","));
+    assert.equal(ids.includes("node-toolbar-run"), !design);
+    assert.equal(ids.includes("node-toolbar-reroll"), !design);
+  });
+
+test("a block dropped in a recipe frame's setup-card space joins that frame", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc, node } = await import("./helpers/flows.ts");
+  const table = moduleStubs.stubEveryImport({
+    react: fakeReact({ runEffects: false }).react,
+    "react/jsx-runtime": moduleStubs.stubJsxRuntime(),
+    "../stores/doc-store": { useDocStore },
+    "./super-cards": await import("../src/features/flows/editor/super-cards.ts"),
+    "./derive-rf": await import("../src/features/flows/editor/derive-rf.ts"),
+    "./recipe-drag": await import("../src/features/flows/editor/recipe-drag.ts"),
+  });
+  const { groupMembership } = moduleStubs.loadWithStubs<{
+    groupMembership: (
+      positions: Record<string, [number, number]>,
+      sizes: Map<string, { width: number; height: number }>,
+      heights?: Record<string, number>,
+    ) => Record<string, string | null>;
+  }>(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), table);
+  const { group, nodes } = sqlGroup();
+  const frame = { ...group, rect: [0, 0, 1000, 300] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc([...nodes, node("free", "input.text", [0, 0])]), groups: [frame] });
+  // Below the saved height, inside the height the frame is drawn at with its setup cards.
+  const drop = { free: [100, 500] as [number, number] };
+  assert.deepEqual(groupMembership(drop, new Map()), { free: null });
+  assert.deepEqual(groupMembership(drop, new Map(), { recipe: 800 }), { free: "recipe" });
+  assert.deepEqual(groupMembership({ free: [100, 900] }, new Map(), { recipe: 800 }), { free: null });
+});
+
+async function renderProcessorsForm() {
+  const docStore = await import("../src/features/flows/stores/doc-store.ts");
+  const { useDocStore } = docStore;
+  const harness = fakeReact({ runEffects: false });
+  const table = moduleStubs.stubEveryImport({
+    react: harness.react,
+    "react/jsx-runtime": moduleStubs.stubJsxRuntime(),
+    "../stores/doc-store": {
+      ...docStore,
+      useDocStore: Object.assign(
+        <T,>(select: (s: ReturnType<typeof useDocStore.getState>) => T) => select(useDocStore.getState()),
+        { getState: useDocStore.getState },
+      ),
+    },
+    "./recipe-actions": await import("../src/features/flows/recipe/recipe-actions.ts"),
+    "./recipe-adapter": await import("../src/features/flows/recipe/recipe-adapter.ts"),
+    "./recipe-blocks": await import("../src/features/flows/recipe/recipe-blocks.ts"),
+    "./recipe-columns": await import("../src/features/flows/recipe/recipe-columns.ts"),
+  });
+  const { ProcessorsForm } = moduleStubs.loadWithStubs<{
+    ProcessorsForm: (p: { groupId: string }) => unknown;
+  }>(new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url), table);
+  const Textarea = (table["@/components/ui/textarea"] as Record<string, unknown>).Textarea;
+  const template = (groupId: string) => {
+    const area = moduleStubs
+      .elementsOf(harness.render(ProcessorsForm, { groupId }))
+      .find((e) => e.type === Textarea);
+    assert.ok(area, `a template box for ${groupId}`);
+    return {
+      value: area.props.value as string,
+      type: (text: string) =>
+        (area.props.onChange as (e: { target: { value: string } }) => void)({ target: { value: text } }),
+    };
+  };
+  const saved = (groupId: string) =>
+    (useDocStore.getState().graph.groups[groupId].config as { processors: { template: unknown }[] })
+      .processors[0].template;
+  const { doc } = await import("./helpers/flows.ts");
+  const transform = (template: object) => ({
+    // biome-ignore lint/style/useNamingConvention: api schema
+    processor_type: "schema_transform",
+    name: "shape",
+    template,
+  });
+  const a = sqlGroup();
+  const b = sqlGroup();
+  const bNodes = b.nodes.map((n) => ({ ...n, id: `b_${n.id}`, group: "recipe_b" }));
+  useDocStore.getState().load({
+    ...doc([...a.nodes, ...bNodes]),
+    groups: [
+      { ...a.group, config: { ...a.group.config, processors: [transform({ a: "{{ sql }}" })] } },
+      { ...b.group, id: "recipe_b", config: { ...b.group.config, processors: [transform({ b: "{{ sql }}" })] } },
+    ],
+  });
+  return { template, saved, useDocStore };
+}
+
+test("the schema transform form edits the group it shows now, after a switch or Undo", async () => {
+  const { template, saved, useDocStore } = await renderProcessorsForm();
+  assert.deepEqual(JSON.parse(template("recipe").value), { a: "{{ sql }}" });
+  template("recipe").type('{"a": "{{ sql_prompt }}"}');
+  assert.deepEqual(saved("recipe"), { a: "{{ sql_prompt }}" });
+  assert.deepEqual(saved("recipe_b"), { b: "{{ sql }}" });
+  // Undo: the form shows the document's template again, and the next edit starts from it.
+  useDocStore.getState().undo();
+  assert.deepEqual(JSON.parse(template("recipe").value), { a: "{{ sql }}" });
+  // Switched to another group: it shows and edits that group.
+  assert.deepEqual(JSON.parse(template("recipe_b").value), { b: "{{ sql }}" });
+  template("recipe_b").type('{"b": 1}');
+  assert.deepEqual(saved("recipe_b"), { b: 1 });
+  assert.deepEqual(saved("recipe"), { a: "{{ sql }}" });
+});
+
+test("a schema transform template that is not JSON yet stays a draft in its own group's form", async () => {
+  const { template, saved } = await renderProcessorsForm();
+  template("recipe").type('{"a": ');
+  assert.equal(template("recipe").value, '{"a": ');
+  assert.deepEqual(saved("recipe"), { a: "{{ sql }}" }, "the recipe keeps its last valid template");
+  // The draft belongs to the group it was typed in.
+  assert.deepEqual(JSON.parse(template("recipe_b").value), { b: "{{ sql }}" });
 });

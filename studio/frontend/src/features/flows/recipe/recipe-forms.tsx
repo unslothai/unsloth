@@ -29,7 +29,7 @@ import {
   commitStudioEdit,
   isColumnConfig,
 } from "./recipe-adapter";
-import { commitConfigs, setupConfig, viewOf } from "./recipe-blocks";
+import { commitConfigs, nameTaken, setupConfig, viewOf } from "./recipe-blocks";
 import { groupColumns, recipeSignature } from "./recipe-columns";
 
 /** The seed form queues replaced upload dirs for Recipe Studio to delete; a flow can share those dirs with the
@@ -58,20 +58,6 @@ function DropRow({
       </div>
       <Switch checked={checked} onCheckedChange={onChange} />
     </div>
-  );
-}
-
-/** Whether another block of the recipe (a column, seed, provider, preset or tool profile: they share one
- * namespace) has this name. A recipe with two blocks of one name does not open again, so such a name
- * stays a draft in the form. */
-function nameTaken(
-  configs: Record<string, NodeConfig>,
-  id: string,
-  name: string,
-): boolean {
-  const wanted = name.trim();
-  return Object.values(configs).some(
-    (other) => other.id !== id && other.name.trim() === wanted,
   );
 }
 
