@@ -329,8 +329,10 @@ export function HistoryCardGrid({
   const visibleCount = runs.length;
   useEffect(() => {
     if (!hasRunningRun) return;
+    let lastPollAt = 0;
     const poll = async () => {
       if (manualFetchInFlight) return;
+      lastPollAt = Date.now();
       pollControllerRef.current?.abort();
       const controller = new AbortController();
       pollControllerRef.current = controller;
@@ -348,8 +350,14 @@ export function HistoryCardGrid({
     const timer = setInterval(() => {
       if (!document.hidden) void poll();
     }, RUNNING_POLL_INTERVAL_MS);
+    // Catch up on return only if a tick was skipped, so quick tab switches cost nothing extra.
     const onVisibilityChange = () => {
-      if (!document.hidden) void poll();
+      if (
+        !document.hidden &&
+        Date.now() - lastPollAt >= RUNNING_POLL_INTERVAL_MS
+      ) {
+        void poll();
+      }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {

@@ -60,12 +60,18 @@ export function useGpuUtilization(
             }
         }
 
-        void poll();
+        let lastPollAt = 0;
+        const pollNow = () => {
+            lastPollAt = Date.now();
+            void poll();
+        };
+        pollNow();
         timerRef.current = setInterval(() => {
-            if (!document.hidden) void poll();
+            if (!document.hidden) pollNow();
         }, intervalMs);
+        // Catch up on return only if a tick was skipped, so quick tab switches cost nothing extra.
         const onVisibilityChange = () => {
-            if (!document.hidden) void poll();
+            if (!document.hidden && Date.now() - lastPollAt >= intervalMs) pollNow();
         };
         document.addEventListener("visibilitychange", onVisibilityChange);
 

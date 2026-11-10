@@ -43,7 +43,7 @@ function stubReact() {
 }
 
 test("training metrics skip hidden ticks, refetch on return, status keeps polling", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
   const doc = stubDocument();
   const { cleanups, react } = stubReact();
   let statusCalls = 0;
@@ -134,6 +134,18 @@ test("training metrics skip hidden ticks, refetch on return, status keeps pollin
       5,
       "returning to the tab fetches metrics at once",
     );
+
+    doc.hidden = true;
+    doc.dispatch();
+    t.mock.timers.tick(1_000);
+    doc.hidden = false;
+    doc.dispatch();
+    await settle();
+    assert.equal(
+      metricsCalls,
+      5,
+      "a quick tab switch with no skipped tick sends nothing extra",
+    );
   } finally {
     for (const cleanup of cleanups) cleanup();
   }
@@ -175,7 +187,7 @@ for (const [name, path, exportName, url, intervalMs] of [
   ],
 ] as const) {
   test(`${name} polling skips hidden ticks and refetches on return`, async (t) => {
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
     const doc = stubDocument();
     const { cleanups, react } = stubReact();
     const urls: string[] = [];
@@ -203,6 +215,18 @@ for (const [name, path, exportName, url, intervalMs] of [
       doc.dispatch();
       await settle();
       assert.equal(urls.length, 4, "returning to the tab fetches at once");
+
+      doc.hidden = true;
+      doc.dispatch();
+      t.mock.timers.tick(intervalMs / 4);
+      doc.hidden = false;
+      doc.dispatch();
+      await settle();
+      assert.equal(
+        urls.length,
+        4,
+        "a quick tab switch with no skipped tick sends nothing extra",
+      );
 
       for (const cleanup of cleanups) cleanup();
       doc.dispatch();
@@ -245,7 +269,7 @@ test("the runs grid gates its running poll on visibility like the sidebar", () =
   );
   assert.match(
     effect,
-    /const onVisibilityChange = \(\) => \{\s*if \(!document\.hidden\) void poll\(\);/,
-    "returning to the tab must refetch at once",
+    /const onVisibilityChange = \(\) => \{\s*if \(\s*!document\.hidden &&\s*Date\.now\(\) - lastPollAt >= RUNNING_POLL_INTERVAL_MS\s*\) \{\s*void poll\(\);/,
+    "returning to the tab must refetch once a tick was skipped",
   );
 });

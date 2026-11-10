@@ -346,10 +346,12 @@ export function useTrainingRuntimeLifecycle(): void {
       void pollStatus();
     }, STATUS_POLL_INTERVAL_MS);
 
+    let lastMetricsPollAt = 0;
     const pollMetricsIfActive = () => {
       if (isIdle()) return;
       const s = runtimeStore.getState();
       if (shouldUseLiveSync(s) || s.currentStep > 0) {
+        lastMetricsPollAt = Date.now();
         void pollMetrics();
       }
     };
@@ -359,8 +361,14 @@ export function useTrainingRuntimeLifecycle(): void {
       if (document.hidden) return;
       pollMetricsIfActive();
     }, METRICS_POLL_INTERVAL_MS);
+    // Catch up on return only if a tick was skipped, so quick tab switches cost nothing extra.
     const onVisibilityChange = () => {
-      if (!document.hidden) pollMetricsIfActive();
+      if (
+        !document.hidden &&
+        Date.now() - lastMetricsPollAt >= METRICS_POLL_INTERVAL_MS
+      ) {
+        pollMetricsIfActive();
+      }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
