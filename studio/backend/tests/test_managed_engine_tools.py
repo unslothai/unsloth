@@ -241,6 +241,45 @@ def test_client_tools_and_history_reach_native_engine(native, stream):
     assert api.active_generations.count() == 0
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_tool_request_cap_is_fitted_to_the_window(native, monkeypatch, stream):
+    from core.inference import managed_engine
+
+    backend, requests = native
+    counted = []
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(
+            self,
+            url,
+            headers = None,
+            json = None,
+        ):
+            counted.append(json)
+            return SimpleNamespace(raise_for_status = lambda: None, json = lambda: {"count": 3000})
+
+    monkeypatch.setattr(managed_engine.httpx, "Client", _Client)
+    engine = managed_engine.ManagedEngine("vllm")
+    engine.model, engine.context, engine.key = "sf-model", 4096, "private"
+    engine.base_url = "http://native.test"
+    backend._managed_engine = engine
+    request = dict(tools = [route_test.LOOKUP_TOOL], stream = stream, enable_tools = False)
+    run(route_test._request(max_tokens = 2000, **request))
+    assert requests[-1]["max_tokens"] == 1096
+    assert counted[-1]["tools"] == [route_test.LOOKUP_TOOL]
+    run(route_test._request(max_tokens = 64, **request))
+    assert requests[-1]["max_tokens"] == 64
+
+
 def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch):
     from core.inference import studio_tool_loop
 
