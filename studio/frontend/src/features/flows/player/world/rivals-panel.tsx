@@ -30,6 +30,7 @@ import {
   queuedCall,
   offerAction,
   playTurn,
+  takeDeal as runDeal,
   plotKey,
   plotsOf,
   relationOf,
@@ -218,7 +219,7 @@ export function RivalsPanel({
 
   const takeDeal = () => {
     if (!deal || !pid) return;
-    const r = act(board, s, pid, deal.action);
+    const r = runDeal(board, s, deal.fid, deal.action);
     setNote(r.ok ? "" : (r.why ?? ""));
     if (r.ok) onChange(r.state);
     setDeal(null);
