@@ -14107,14 +14107,15 @@ class VideoBackend:
                     if callable(setter) and value is not None:
                         setter(float(value))
                 if fam.name == "minimax-h3":
+                    from .video_minimax_h3 import h3_num_inference_steps
                     from .video_minimax_h3_pdd import (
                         bind_h3_pdd_render,
                         h3_pdd_num_inference_steps,
                     )
 
-                    # A PDD head bank reads each step's (sigma, sigma_next) off this render's video schedule. The
-                    # H3 scheduler's grid holds the terminal 0, so `steps` model evaluations (ComfyUI's count, which
-                    # the bank's 8-step partition is distilled for) is a grid of steps + 1.
+                    # H3 grid includes the terminal 0: `steps` evaluations need steps + 1 points.
+                    kwargs["num_inference_steps"] = h3_num_inference_steps(steps)
+                    # PDD bank is distilled for ComfyUI's count, so it keeps steps + 1 even under the kill switch.
                     if bind_h3_pdd_render(pipe, shift, audio_shift):
                         kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
                         request_shape["pdd"] = True
