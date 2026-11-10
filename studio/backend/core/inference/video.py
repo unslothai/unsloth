@@ -14350,18 +14350,42 @@ class VideoBackend:
                     publish = _publish_preview,
                     total_steps = steps,
                 )
+                render_call = (
+                    ltx25_render_call
+                    if ltx25_render_call is not None
+                    else (
+                        lambda: _carried_call(pipe, kwargs, has_step_callback or carry_by_scheduler)
+                    )
+                )
+
+                def _render_streamed_after_oom() -> Any:
+                    """A render that ran out of memory with denoiser groups resident runs once more streamed."""
+                    try:
+                        return render_call()
+                    except Exception as exc:  # noqa: BLE001 - reraised unless retried
+                        if static_skip or cancel.is_set() or not is_oom_error(exc):
+                            raise
+                        from . import video_stream_residency
+                        if not video_stream_residency.may_stream_after_oom(state.pipe):
+                            raise
+                    from . import diffusion_cuda_graph, video_stream_residency
+
+                    # outside the handler, so the failed attempt's frames and tensors are gone; graph pools hold
+                    # memory empty_cache() cannot reclaim
+                    diffusion_cuda_graph.reset_all(
+                        getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ()
+                    )
+                    video_stream_residency.stream_after_oom(state.pipe, logger = logger)
+                    if state.transformer_cache:
+                        self._reset_step_cache(pipe)
+                    seeded = kwargs.get("generator")
+                    if isinstance(seeded, torch.Generator):
+                        seeded.manual_seed(int(seed))
+                    return render_call()
+
                 try:
                     with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
-                        output = render_thread.run(
-                            "video",
-                            ltx25_render_call
-                            if ltx25_render_call is not None
-                            else (
-                                lambda: _carried_call(
-                                    pipe, kwargs, has_step_callback or carry_by_scheduler
-                                )
-                            ),
-                        )
+                        output = render_thread.run("video", _render_streamed_after_oom)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); offloaded modules would stay on GPU.
                     free_hooks = getattr(pipe, "maybe_free_model_hooks", None)
