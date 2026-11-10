@@ -153,9 +153,8 @@ export function EditProjectDialog({
       <DialogContent
         className="corner-squircle dialog-soft-surface grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-xl"
         {...nameImeHandlers}
-        // Enter saves from the name field, which a multi-line instructions box cannot do; the
-        // chord saves from either. The menus and confirmations inside portal out of here, so
-        // their own keys never reach this.
+        // Enter saves from the name field, which a multi-line instructions box cannot do, and the
+        // chord saves from either; portaled menus and confirmations keep their keys out of here.
         onKeyDown={(e) => {
           if (
             imeOwnsInputKeydown(e, nameImeRef.current, {

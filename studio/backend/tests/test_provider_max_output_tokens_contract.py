@@ -179,8 +179,7 @@ def test_the_migration_is_idempotent(isolated_providers_db: Path):
 
 
 def test_a_missing_table_is_created_then_migrated(isolated_providers_db: Path):
-    """A fresh home has no table at all: CREATE TABLE never lists the column, so the
-    new install reaches it through the same ALTER an upgrade does."""
+    """CREATE TABLE omits the column on a fresh home, so the same ALTER must run."""
     assert providers_db.list_providers() == []
     assert "max_output_tokens" in _columns(isolated_providers_db)
 
@@ -188,8 +187,7 @@ def test_a_missing_table_is_created_then_migrated(isolated_providers_db: Path):
 def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     isolated_providers_db: Path,
 ):
-    """The revert case. The old code selects * and inserts without naming the column,
-    so a migrated file must stay readable and writable by it."""
+    """Old code selects all columns and inserts unnamed, so a migrated file must still work."""
     providers_db.create_provider(
         id = "new-custom",
         provider_type = "custom",
@@ -246,9 +244,7 @@ def _update(provider_id: str, payload: ProviderUpdate):
 def test_a_non_custom_provider_accepts_an_explicit_null_override(
     provider_routes: Path, provider_type: str
 ):
-    """A blank Max Tokens limit field serialises as null rather than as an omission, so
-    an unrelated edit of a row with no override -- a rename, a model change, a key
-    rotation -- sends the null along and rejecting it failed the whole edit."""
+    """A blank limit field serialises as null, so an unrelated edit must not be rejected for it."""
     providers_db.create_provider(
         id = f"{provider_type}-1",
         provider_type = provider_type,
@@ -283,8 +279,7 @@ def test_every_provider_type_but_codex_takes_a_real_override(
 
 
 def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
-    """Codex routing, model list and output cap are fixed, so a stored override would
-    never be read."""
+    """Codex routing, models and output cap are fixed, so a stored override is never read."""
     providers_db.create_provider(
         id = "openai_codex-1",
         provider_type = "openai_codex",
@@ -346,8 +341,7 @@ def test_an_override_only_update_is_recognised_as_a_metadata_request(provider_ro
 
 
 def test_the_largest_accepted_value_round_trips_exactly(provider_routes: Path):
-    """SQLite INTEGER is 8 bytes, so the top of the accepted range must come back
-    identical rather than as a float."""
+    """SQLite INTEGER is 8 bytes, so the top value must come back identical, not as a float."""
     value = 9007199254740991
     created = _create(
         ProviderCreate(

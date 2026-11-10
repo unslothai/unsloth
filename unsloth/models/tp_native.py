@@ -160,6 +160,8 @@ class TPConfig:
     # {"layers.*.self_attn.q_proj": "colwise", ...}; None = the model's TP plan, else structural discovery.
     plan: Optional[dict] = None
     # Broadcast trainable parameters from tp rank 0 first (every rank must start from the same adapter).
+    # False: the caller guarantees it, e.g. a loaded adapter or the same seed before get_peft_model on every
+    # rank (random LoRA inits draw full-size factors, so per-rank seeds give per-rank factors).
     sync_trainable: bool = True
 
 
@@ -897,6 +899,18 @@ def _refuse_base(
     if getattr(type(base), "_unsloth_mxfp4_packed_linear", False):
         raise ValueError(
             f"Unsloth: tensor parallelism v1 does not support packed MXFP4 weights ({path})."
+        )
+    # Every projection runs through the region's own local-shard GEMM, never the module's forward: fp8
+    # training layers would silently train in 16 bit, and per-shard scales would differ from one process.
+    float8_linear = any(
+        c.__name__ == "Float8Linear" and c.__module__.startswith("torchao.")
+        for c in type(base).__mro__
+    )
+    if "_unsloth_fp8_lora" in base.__dict__ or float8_linear:
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support fp8 training layers ({path}: "
+            f"{'torchao Float8Linear' if float8_linear else 'fp8 LoRA base'}); its local-shard GEMMs "
+            "would bypass the fp8 path. Use UNSLOTH_FSDP2=1 (data parallel) for float8_training, or drop it."
         )
     for module in proj_module.modules():
         forward_qat = any("FakeQuantized" in c.__name__ for c in type(module).__mro__)
@@ -2316,20 +2330,21 @@ def _preloaded(t):
 
 
 def _refuse_weight_dependent_lora_init(model):
-    """PiSSA / OLoRA / CorDA / EVA / LoftQ build the factors (and residual) from the weight; on a sharded_loading
-    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank."""
+    """PiSSA / OLoRA / CorDA / EVA / LoftQ / MiCA build the factors (and residual) from the weight; on a sharded_loading
+    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank. Orthogonal init
+    reads only the full in / out features and the dtype, so like gaussian it gives full-size factors."""
     configs = {}
     for level in _tp_chain(model):
         configs.update(getattr(level, "peft_config", None) or {})
     bad = {
         name: cfg.init_lora_weights
         for name, cfg in configs.items()
-        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian")
+        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian", "orthogonal")
     }
     if bad:
         raise ValueError(
             f"Unsloth: init_lora_weights {bad} depends on the base weight, which sharded_loading holds only as "
-            "this rank's slice; use init_lora_weights = True / 'gaussian', or load the full model (no "
+            "this rank's slice; use init_lora_weights = True / 'gaussian' / 'orthogonal', or load the full model (no "
             "sharded_loading) before get_peft_model and apply_tensor_parallel."
         )
 
@@ -3589,8 +3604,7 @@ def _install_tp_accelerate_hooks():
                 init_fn.func, *init_fn.args, **{**init_fn.keywords, "rank": dp_rank}
             )
         cls = type(self)
-        # accelerate shards the batches by num_processes / process_index: give it the dp layout, so the tp
-        # ranks of a replica read the same batches.
+        # accelerate shards by process index: give it the dp layout so tp ranks share batches.
         self.__class__ = type(
             "UnslothTensorParallelDataAccelerator",
             (cls,),

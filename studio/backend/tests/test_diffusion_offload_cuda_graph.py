@@ -187,10 +187,7 @@ class _Encoder(torch.nn.Module):
 
 @pytest.mark.parametrize("stable", [True, False])
 def test_an_encode_release_re_pins_where_the_step_recorded(monkeypatch, stable):
-    """12 GiB tier (partial residency + the encode release): every new prompt encode streams resident groups and pins
-    them again before step 0. The re-pin lands in each group's stable range, so the step recorded on prompt 1 replays
-    on every later prompt (captures per prompt 1, 0, 0, 0), bit-identical to the eager forward; the ranges hold no
-    memory during the encode. UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0 is the stock re-pin: later prompts record again."""
+    """Stable-range re-pin replays prompt 1's recording; UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0 is stock."""
     _cuda()
     if not stable:
         monkeypatch.setenv(sa.REPIN_ENV, "0")
@@ -362,10 +359,7 @@ def test_a_failed_stable_re_pin_leaves_no_range_mapped(monkeypatch):
 
 
 def test_a_re_pin_failing_midway_rolls_back_the_tensors_it_placed(monkeypatch):
-    """A re-pin that raises after it already put an earlier tensor into the range (a later copy or wrapper rebuild
-    failing) points that tensor back at its original storage before re-raising: the caller can then unmap the range
-    and move the whole group the stock way, instead of keeping the range mapped beside the stock copies. CPU only:
-    a fake range whose second view raises."""
+    """A re-pin that fails midway points placed tensors back at their original storage before re-raising."""
     buf = torch.zeros(64)
     calls = [0]
 
@@ -414,10 +408,7 @@ def _due():
 
 
 def test_an_offloaded_re_record_hands_the_dropped_pool_back_first(monkeypatch):
-    """Each new prompt encode moves the resident groups (release, the encoder takes the room, re-pin elsewhere), so
-    the step records again. The encode release no longer flushes the allocator; the re-record itself hands the
-    dropped recording's pool back before it records, so the reserved memory stays flat instead of growing by a pool
-    per prompt, and every output stays exact. The stock re-pin (no stable group range): with it the step replays."""
+    """Re-recording returns the dropped pool before it records, so reserved memory stays flat per prompt."""
     _cuda()
     monkeypatch.setenv(sa.REPIN_ENV, "0")
     _reset_retired(monkeypatch)
@@ -610,9 +601,8 @@ def test_an_immediate_release_acknowledges_the_retirement_it_flushed(monkeypatch
 def test_a_capture_with_a_pool_due_waits_out_another_recording_instead_of_running_eager(
     monkeypatch,
 ):
-    """PyTorch runs no non-captured CUDA work on any thread while a capture is underway. A capture whose retired pool
-    must be flushed while another thread records therefore waits for that recording to end, then flushes and records;
-    it is not refused into an eager step that would run beside the recording."""
+    """No non-captured CUDA work runs during a capture, so a capture needing a pool flush waits for
+    the other recording to end instead of running eager beside it"""
     import threading
     import time
 
@@ -1210,8 +1200,7 @@ def test_model_offload_stable_range_is_rebuilt_when_a_weight_changes_on_the_host
 
 
 def test_model_offload_stable_range_is_rebuilt_when_a_weight_is_removed():
-    """An adapter unloaded after the range was laid out frees its slots: the next onload maps a rebuilt, smaller range
-    instead of the old full-size one."""
+    """Removed weights free their slots, so the next onload maps a rebuilt, smaller range."""
     _cuda()
     pytest.importorskip("accelerate")
     ref, net, hook = _model_offloaded()

@@ -211,6 +211,7 @@ export const zhTW = {
     tabs: "瀏覽器分頁",
     newTab: "新分頁",
     newTabFullView: "以完整檢視開啟新分頁",
+    newTabFloating: "在浮動視窗中開新分頁",
     closeTab: "關閉分頁",
     close: "關閉瀏覽器",
     show: "顯示瀏覽器",
@@ -413,6 +414,12 @@ export const zhTW = {
       openChat: "以完整檢視開啟",
       moveLeft: "移到左側窗格",
       moveRight: "移到右側窗格",
+    },
+    floating: {
+      enter: "浮動視窗",
+      dock: "停駐到側邊",
+      close: "關閉浮動視窗",
+      handle: "移動視窗。方向鍵移動，Shift 加方向鍵調整大小。",
     },
     annotate: {
       countOne: "1 則註解",
@@ -701,6 +708,8 @@ export const zhTW = {
     keepsRunning: "關閉此視窗不會停止設定。結果會顯示在「設定 > 安全性」中。",
   },
   composerSettings: {
+    shareDraft: "跨聊天共用草稿",
+    shareDraftDescription: "在聊天和比較中使用同一份草稿。預設關閉；每個聊天保留各自的草稿。",
     title: "輸入框",
     plainText: "純文字輸入框",
     plainTextDescription:
@@ -834,6 +843,8 @@ export const zhTW = {
     unifiedTightFit: "勉強可容納",
     unifiedTightFitHint:
       "在這台 Mac 上可能會以較短的上下文載入，或執行速度較慢。",
+    residentToRun: "執行所需",
+    residentToRunHint: "載入檢查要求的執行時 GPU 記憶體",
     onDevice: "裝置上",
     huggingFace: "Hugging Face",
     retry: "重試",
@@ -1148,6 +1159,9 @@ export const zhTW = {
         "每行一個模型，例如 unsloth/Qwen3-4B-GGUF，或以 unsloth/* 表示整個組織。留空則允許所有模型。",
       modelAccessSave: "儲存",
       modelAccessLimited: "模型存取權受限",
+      rename: "重新命名",
+      renameTitle: "重新命名 {username}",
+      renameDescription: "選擇此帳號用來登入的名稱。其對話、檔案和 API 金鑰仍保留在該帳號中。該使用者會被登出，需要以新名稱和目前的密碼重新登入。",
       empty: "目前還沒有其他帳號",
       setupCode: "設定碼",
       setupFor: "{username} 的設定碼",
@@ -1728,6 +1742,13 @@ export const zhTW = {
         audioUploadCancel: "取消轉錄",
         audioUploadTranscribing: "正在轉錄音訊…",
         sectionTitle: "聽寫",
+        micTargetLabel: "麥克風按鈕",
+        micTargetAsr: "使用 ASR 轉寫",
+        micTargetModel: "將音訊傳送給模型",
+        micTargetAsrDescription: "麥克風按鈕會把你說的話輸入到訊息框中。",
+        micTargetModelDescription: "載入支援音訊輸入的模型後，麥克風會錄製一段音訊並附加到你的訊息中。其他模型仍使用聽寫。",
+        micTargetModelUnavailable: "載入支援音訊輸入的模型（例如 LFM3-Omni）即可向它傳送語音。",
+        micRecordForModel: "為模型錄製音訊",
         engineLabel: "聽寫引擎",
         engineBrowser: "瀏覽器",
         engineBrowserDescription:
@@ -1751,6 +1772,13 @@ export const zhTW = {
         sttQuantDescription:
           "選擇或搜尋要在本機執行的 STT 模型，再選擇其量化版本。",
         sttDeviceLabel: "載入至",
+        sttContextLabel: "語音上下文",
+        sttContextAuto: "自動（建議）",
+        sttContextAutoDescription:
+          "依每段錄音調整，較長的音訊會使用較多記憶體。較舊的執行環境可能需要固定大小以減少記憶體用量。適用於「語音」與「轉錄」中的 Qwen3-ASR。",
+        sttContextFixedDescription:
+          "較小的上限使用較少記憶體。無法容納的錄音需要較高的上限或自動。適用於「語音」與「轉錄」中的 Qwen3-ASR。",
+        sttContextTokens: "{count} 個 token",
         sttDeviceAuto: "有 GPU 時使用 GPU",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription: "有 GPU 時使用 GPU，否則使用 CPU。",
@@ -2176,6 +2204,12 @@ export const zhTW = {
         autoHint: "依每台電腦自動選擇，若 Xet 在此停滯或失敗則改用 HTTPS。",
         autoCurrently: "「自動」在這台電腦上使用 {transport}。",
         xetMissing: "由於未安裝 hf_xet，無法使用 Xet。",
+        speedLimit: "下載速度限制",
+        speedLimitDescription:
+          "未設定數值時不限速。限速下載使用 HTTPS。",
+        speedLimitNoLimit: "不限速",
+        speedLimitInvalid: "請輸入 Mbit/s 數值，或留空。",
+        speedLimitUsesHttps: "設定速度限制時，下載會使用 HTTPS。超過 50 GB 的檔案仍使用 Xet，不受限制。",
       },
       uploads: {
         sectionTitle: "上傳",
@@ -2562,6 +2596,10 @@ export const zhTW = {
         contrast: {
           label: "對比",
         },
+        elementOutline: {
+          label: "元素外框",
+          description: "按鈕、輸入欄位、卡片和選單的邊框強度。",
+        },
         reduceMotion: {
           label: "減少動態效果",
           description: "減少動畫，或跟隨系統設定。",
@@ -2619,6 +2657,21 @@ export const zhTW = {
         summary: "即時請求、錯誤和 token 用量",
         status: "{active} 個進行中 · {recent} 個最近 · {model}",
         noModelLoaded: "未載入模型",
+        memory: "記憶體",
+        gpuInUse: "GPU 使用中",
+        availableForModels: "可供模型使用",
+        refreshRate: "重新整理頻率",
+        refreshRateDescription: "浮動監視器開啟時讀取記憶體與 GPU 使用量的頻率。",
+        refreshEvery: "每 {seconds} 秒",
+        unsloth: "Unsloth",
+        otherApps: "其他應用程式",
+        otherInUse: "其他使用",
+        freeLabel: "可用",
+        unslothApp: "Unsloth 應用程式",
+        unslothShare: "顯示 Unsloth 的占用",
+        unslothShareDescription: "將記憶體分成 Unsloth 使用的、其他應用程式使用的，以及可用的部分。",
+        modelBreakdown: "依模型細分",
+        modelBreakdownDescription: "將記憶體條中 Unsloth 的部分細分為每個已載入的模型與應用程式其餘部分。",
         autoOpen: "自動開啟浮動監控",
         autoOpenDescription: "收到 API 流量時開啟一個小面板。",
         cpu: "CPU",
@@ -2634,8 +2687,7 @@ export const zhTW = {
         gpuUnusableDetail: "已偵測到，但 PyTorch 無法使用",
         detailedView: "詳細檢視",
         detailedViewDescription:
-          "在浮動視窗中顯示 CPU 負載，以及每個 GPU 的負載、溫度和功耗。",
-        cpuLoad: "CPU 負載",
+          "在浮動視窗中顯示每個 GPU 的負載、溫度和功耗。",
         gpuLoad: "GPU 負載",
         temperature: "溫度",
         power: "功耗",
@@ -2650,7 +2702,7 @@ export const zhTW = {
         unavailable: "無法使用",
         detecting: "正在檢查 GPU...",
         unreadable: "無法讀取此伺服器的硬體資訊。",
-        noGpu: "未偵測到可見的 GPU。上方顯示的是僅 CPU 的資源。",
+        noGpu: "未偵測到獨立 GPU。",
         noUsableGpu: "這台電腦上沒有 PyTorch 可使用的 GPU。",
         mismatchCpuBuild:
           "PyTorch 是僅支援 CPU 的版本（{version}），因此無法使用下列 GPU。請修復安裝以恢復 GPU 支援。",
@@ -2730,7 +2782,7 @@ export const zhTW = {
           "llama.cpp 後端 推論 引擎 加速器 預先建置 切換 自訂 路徑 資料夾 目錄 執行檔 backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "模型記憶體",
+        title: "模型載入",
         keepResident: "將模型保留在 GPU 記憶體中",
         keepResidentDescription: "在提示詞之間持續保留在 VRAM 中。",
         keepResidentHint:
@@ -2920,7 +2972,7 @@ export const zhTW = {
       configurationDocs: "說明文件",
       configurationFlagsSuffix: "以了解可用旗標。",
       modelNote:
-        "Codex 需要由 llama-server 提供的 GGUF 模型。其他代理程式也可以使用以 Transformers 為後端的模型；移除 --model 即可使用 Unsloth 中已載入的模型。",
+        "Claude Code 和 Codex 需要由 llama-server 提供的 GGUF 模型，或 MLX 模型。其他代理程式也可以使用以 Transformers 為後端的模型；移除 --model 即可使用 Unsloth 中已載入的模型。",
       subagent: {
         title: "將本機模型用作子代理程式",
         description:
@@ -2991,6 +3043,8 @@ export const zhTW = {
     },
     chat: {
       groups: {
+        replies: { title: "回覆" },
+        thinkingTools: { title: "思考與工具" },
         conversations: {
           title: "對話",
         },
@@ -3084,11 +3138,20 @@ export const zhTW = {
       showReplyTimesDescription: "在每則回覆下方顯示其完成時間。",
       showReplyTimesKeywords:
         "時間戳記 時間 時鐘 日期 小時 完成 抵達 回覆 回應 訊息 timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "生成詳細資料",
+      showGenerationDetails: "詳細速度與載入資訊",
       showGenerationDetailsDescription:
-        "即時顯示提示詞和回覆的速度及 token 數，以及模型各層的載入位置。",
+        "在即時讀數中加入提示詞讀取速度、token 數和草稿採用率，並顯示模型各層載入在哪裡。",
       showGenerationDetailsKeywords:
         "詳細 開發人員 統計 速度 預填 解碼 層 卸載 專家 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度與上下文統計",
+      generationStatsUpdatesDescription:
+        "即時模式在回覆串流輸出時統計每秒 token 數和上下文用量。完成後模式在每則回覆結束時更新。",
+      generationStatsUpdatesHint:
+        "即時模式會在回覆產生期間，每秒數次重新整理回覆下方的每秒 token 數讀數和聊天頂端的上下文列。完成後模式會在每則回覆結束後更新一次。即時模式可能造成卡頓或效能下降，在較舊或忙碌的電腦上尤其明顯。",
+      generationStatsUpdatesSettled: "完成後",
+      generationStatsUpdatesRealtime: "即時",
+      generationStatsUpdatesKeywords:
+        "即時 動態 更新 速度 上下文 統計 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "在回應上顯示「編輯回應」",
       inlineEditResponseDescription:
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
@@ -3230,12 +3293,10 @@ export const zhTW = {
       exportingAction: "匯出中...",
       exportConversations: "匯出最近項目和專案",
       exportConversationsDescription:
-        "將最近項目，或最近項目加上專案聊天，下載為 Training JSONL、CSV、ShareGPT JSONL 或 Markdown，可合併為一個檔案或每個聊天各一個檔案。Message JSONL 僅提供每個聊天各一個檔案。",
+        "將最近項目，或最近項目加上專案聊天，下載為 Training JSONL、CSV、ShareGPT JSONL、Markdown、HTML 或 PDF，可合併為一個檔案或每個聊天各一個檔案。Message JSONL 僅提供每個聊天各一個檔案。",
       exportConversationsAction: "匯出",
       exportScopeRecents: "最近項目",
       exportScopeAll: "最近項目 + 專案",
-      exportCombinedSuffix: "（合併）",
-      exportPerChatSuffix: "（每個聊天）",
       importChats: "匯入聊天",
       importChatsDescription:
         "將 JSON、JSONL、NDJSON、CSV 或 Markdown 檔案匯入「最近項目」。",
@@ -3635,7 +3696,7 @@ export const zhTW = {
       mcp: {
         title: "代理程式存取（MCP）",
         description:
-          "讓 Claude Code 和 Codex 等程式設計代理程式透過 MCP 使用 Unsloth。代理程式會使用此頁面中的 Unsloth API 金鑰登入。",
+          "讓 Claude Code 和 Codex 等程式設計代理程式透過 MCP 使用 Unsloth。",
         enable: "允許代理程式連線",
         enableDescription: "為帶有 Unsloth API 金鑰的請求提供 /mcp/ 服務。",
         lockedByEnv: "由 {name} 設定。",
@@ -3643,10 +3704,93 @@ export const zhTW = {
         saveError: "無法儲存代理程式存取設定。",
         agent: "代理程式",
         exportKeyHint:
-          "啟動代理程式前，請將 {name} 設為此頁面中的 Unsloth API 金鑰。",
+          "啟動代理程式前，請將 {name} 設為 Unsloth API 金鑰。",
         configFileHint: "將此內容加入 {path}。",
         keywords:
           "mcp model context protocol 模型上下文協定 agents 代理程式 claude codex tools 工具",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "代理程式使用 Unsloth API 金鑰登入。",
+      createKey: "建立 API 金鑰",
+      tools: {
+        title: "工具",
+        count: "已開啟 {on}/{total}",
+        choose: "選擇工具",
+        dialogTitle: "Unsloth MCP 工具",
+        allTools: "所有工具",
+        selectAll: "全選",
+        selectNone: "全不選",
+        description:
+          "每個開啟的工具都會增加代理程式開始前要讀取的內容，所以請關閉不需要的工具。代理程式永遠看不到已關閉的工具，對它的呼叫會被拒絕。已連線的代理程式在重新連線後才會看到變更。",
+        saveError: "無法儲存 Unsloth MCP 工具設定。",
+        chatNote: "聊天永遠不會取得 {tools}。",
+        groups: {
+          models: "模型",
+          generate: "生成",
+          training: "訓練與匯出",
+          library: "資料與媒體庫",
+          jobs: "工作",
+          other: "其他",
+        },
+      },
+      status: {
+        on: "開啟",
+        off: "關閉",
+      },
+      apiKeysRow: {
+        open: "在「代理程式」中開啟",
+      },
+      toolLabels: {
+        studioStatus: "狀態",
+        listModels: "列出模型",
+        loadModel: "載入模型",
+        unloadModel: "卸載模型",
+        planLoad: "規劃載入",
+        downloadModel: "下載模型",
+        chat: "聊天",
+        embed: "文字嵌入",
+        systemOne: "決策模型",
+        generateImage: "生成圖片",
+        generateAudio: "生成音訊",
+        transcribe: "轉錄",
+        analyzeAudio: "分析音訊",
+        generateVideo: "生成影片",
+        runRecipe: "執行 Data Recipe",
+        getJob: "工作狀態",
+        datasets: "資料集",
+        startTraining: "開始訓練",
+        listTrainingRuns: "訓練紀錄",
+        exportModel: "匯出模型",
+        listMedia: "已儲存的媒體",
+        voices: "語音",
+        cancel: "取消工作",
+      },
+      toolDescriptions: {
+        studioStatus: "查看這台電腦上已載入、正在執行和閒置的內容。",
+        listModels: "列出代理程式可載入的模型。",
+        loadModel: "載入模型，讓代理程式用它聊天或生成內容。",
+        unloadModel: "卸載模型以釋放記憶體。",
+        planLoad: "不載入即可預覽下載大小和記憶體用量。",
+        downloadModel: "從 Hugging Face 下載模型。",
+        chat: "與已載入的模型聊天。",
+        embed: "把文字轉換為向量，或依相似度排序文字。",
+        systemOne: "向決策模型提出是非、選擇或評分問題。",
+        generateImage: "生成圖片並儲存到圖庫。",
+        generateAudio: "生成語音或其他音訊。",
+        transcribe: "將語音轉為文字。",
+        analyzeAudio: "檢查片段的說話者、時間以及與腳本的吻合度。",
+        generateVideo: "生成影片。",
+        runRecipe: "執行 Data Recipe 來建立資料集。",
+        getJob: "追蹤一個長工作直到完成。",
+        datasets: "列出並上傳資料集。",
+        startTraining: "開始一次微調。",
+        listTrainingRuns: "列出訓練執行及其結果。",
+        exportModel: "匯出訓練好的模型，例如匯出為 GGUF。",
+        listMedia: "瀏覽已儲存的圖片、音訊和影片。",
+        voices: "列出、儲存、重新命名或刪除聲音。",
+        cancel: "停止正在進行的工作，例如訓練或匯出。",
       },
     },
     about: {
@@ -5256,6 +5400,7 @@ export const zhTW = {
     },
     monitor: {
       dragHandleLabel: "移動即時監視器。可用方向鍵微調位置，按兩下可重設位置。",
+      resizeHint: "拖曳邊緣或角落以變更寬度。按兩下可重設。",
       reconnecting: "正在重新連線…",
     },
   },
@@ -5554,7 +5699,7 @@ export const zhTW = {
     skippedVersion: "已暫時略過 {component} {version}",
     skippedUpdate: "已暫時略過 {component} 更新",
     skippedUpdates: "已暫時略過 {components} 更新",
-    vulkanFaster: "Vulkan 比 ROCM 快 10% 以上。無須重新啟動",
+    vulkanFaster: "快 10% 以上",
     noRestart: "無須重新啟動",
     downloadSize: "下載大小 {size}",
     backendChange: "{change} 後端",
@@ -5563,8 +5708,8 @@ export const zhTW = {
     installingPhase: "正在安裝 {component}（第 {current} 個，共 {total} 個）…",
     installingCount: "正在安裝 {count} 項更新…",
     bundleTitle: "{count} 項執行環境更新",
-    newBackend: "新的 {component} 後端",
-    newUpdate: "新的 {component} 更新",
+    newBackend: "新的執行環境後端",
+    newUpdate: "新的執行環境更新",
     hideUpdate: "在重新開啟 Unsloth 前隱藏 {component} 更新",
     hideUpdates: "在重新開啟 Unsloth 前隱藏 {components} 更新",
     whatsNew: "新功能",

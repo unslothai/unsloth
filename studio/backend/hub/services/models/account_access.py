@@ -22,7 +22,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-from huggingface_hub import HfApi, constants as hf_constants
+from huggingface_hub import constants as hf_constants
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -39,6 +39,20 @@ from utils.account_context import (
     current_account_id,
     is_owner_context,
 )
+
+
+def __getattr__(name):
+    # Lazy (~0.2 s at boot); from the submodule so a patched huggingface_hub.HfApi is never cached.
+    if name == "HfApi":
+        from huggingface_hub.hf_api import HfApi
+        globals()["HfApi"] = HfApi
+        return HfApi
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _hf_api(*args, **kwargs):
+    return (globals().get("HfApi") or __getattr__("HfApi"))(*args, **kwargs)
+
 
 _ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -572,7 +586,7 @@ def _hub_public_answer(
 ) -> bool | None:
     """True when the Hub says public, False for private/gated/missing, None when unaskable."""
     try:
-        info = HfApi(endpoint = endpoint).repo_info(
+        info = _hf_api(endpoint = endpoint).repo_info(
             repo_id, repo_type = repo_type, token = False, timeout = 5.0
         )
     except Exception as exc:  # noqa: BLE001 - classified below, never trusted as public
@@ -1076,7 +1090,7 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
             detail = "Only the installation owner can download while ModelScope is the model source",
         )
     try:
-        api = HfApi()
+        api = _hf_api()
         token = account_hf_token(hf_token)
         info = api.repo_info(repo_id, repo_type = repo_type, token = token, timeout = 5.0)
         if getattr(info, "gated", False):

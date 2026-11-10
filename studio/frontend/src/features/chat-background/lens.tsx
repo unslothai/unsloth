@@ -3,8 +3,8 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useMaterialStore } from "./material";
-import { LENS_SCALE } from "./model";
+import { useAppliedMaterial, useMaterialStore } from "./material";
+import { LENS_SCALE, lensDrawn } from "./model";
 
 const COMPOSER = ".unsloth-composer-surface";
 
@@ -14,10 +14,11 @@ export function ComposerGlassLenses({
 }: {
   wallpaper: HTMLElement | null;
 }) {
-  const material = useMaterialStore((s) => s.material);
+  const material = useAppliedMaterial();
+  const lens = useMaterialStore((s) => s.lens);
   const [hosts, setHosts] = useState<HTMLElement[]>([]);
   const workspace = wallpaper?.parentElement ?? null;
-  const on = Boolean(workspace) && material !== "solid";
+  const on = Boolean(workspace) && lensDrawn(material, lens);
   useEffect(() => {
     if (!workspace || !on) return;
     let frame = 0;
@@ -149,13 +150,11 @@ function Lens({
   }, [host, wallpaper, scale]);
   return (
     <div ref={root} aria-hidden="true" className="glass-lens" data-lens={lens}>
-      {lens !== "off" && (
-        <div className="glass-lens-fill">
-          <div data-lens-copy="" className="glass-lens-copy" />
-          <div data-lens-wash="" className="glass-lens-layer" />
-          <div data-lens-tint="" className="glass-lens-layer" />
-        </div>
-      )}
+      <div className="glass-lens-fill">
+        <div data-lens-copy="" className="glass-lens-copy" />
+        <div data-lens-wash="" className="glass-lens-layer" />
+        <div data-lens-tint="" className="glass-lens-layer" />
+      </div>
       <div className="glass-lens-rim">
         <div data-lens-copy="" className="glass-lens-copy" />
       </div>
