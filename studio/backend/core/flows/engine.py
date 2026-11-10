@@ -15,8 +15,7 @@ already finished. Each run reaches Studio as its own internal API key, revoked w
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict, deque
-import contextlib
+from collections import OrderedDict
 import contextvars
 import base64
 import hashlib
@@ -25,8 +24,7 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Awaitable, Callable, Optional
 
 from core.flows import assets as asset_store
 from core.flows import capabilities
@@ -35,7 +33,9 @@ from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
 from core.flows import loop as loop_rounds
 from core.flows.compiler import FOR_EACH, LOOP, RECIPE_PARAM, CompileError, Plan, compile_flow
+from core.flows.gpu_lease import GpuLease, NeedsExclusiveGpu, chat_model_key, chat_slots
 from core.flows.registry import CACHE_HOOKS, FlowCancelled, FlowNodeError, load_handlers
+from core.flows.run_state import PROGRESS_MIN_INTERVAL_S, Env, RunState
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
 from utils.account_context import AccountContext, arun_as, current_account
@@ -43,13 +43,11 @@ from utils.account_context import AccountContext, arun_as, current_account
 logger = logging.getLogger(__name__)
 
 CPU_CONCURRENCY = 4
-PROGRESS_MIN_INTERVAL_S = 0.2
 SPARE_KEY_IDLE_S = 600.0
 INVOKE_FLUSH_S = 0.05
 CANCEL_GRACE_S = 10.0
 LEASE_RETRY_S = 2.0
 MAX_CALL_DEPTH = 3
-MEMORY_EVENTS = 4000
 FINISHED_RUNS_KEPT = 64
 CACHE_PRUNE_EVERY = 64
 PLANS_KEPT = 32
@@ -87,10 +85,6 @@ class _Skip:
 
 SKIPPED = _Skip()
 TRIGGER_TYPES = ("trigger.schedule", "trigger.webhook")
-
-
-def _now() -> float:
-    return time.time()
 
 
 def _derive_seed(
@@ -141,242 +135,6 @@ def param_values(spec: dict, node: dict) -> dict:
     for key, value in (node.get("params") or {}).items():
         params[key] = _clamp(by_id[key], value) if key in by_id else value
     return params
-
-
-@dataclass(slots = True)
-class NodeState:
-    status: str = "idle"
-    outputs: Optional[dict] = None
-    error: Optional[str] = None
-    progress: Optional[dict] = None
-    message: Optional[str] = None
-    partial: Optional[dict] = None
-
-    def snapshot(self) -> dict:
-        found: dict[str, Any] = {"status": self.status}
-        if self.outputs is not None:
-            found["outputs"] = self.outputs
-        if self.error:
-            found["error"] = self.error
-        if self.progress:
-            found["progress"] = self.progress
-        if self.message:
-            found["message"] = self.message
-        if self.partial:
-            found["partial"] = self.partial
-        return found
-
-
-class Env:
-    """Node outputs visible to a scope; a For Each iteration layers its own over the run's."""
-
-    __slots__ = ("parent", "values")
-
-    def __init__(self, parent: Optional["Env"] = None):
-        self.parent = parent
-        self.values: dict[str, Any] = {}
-
-    def has(self, node_id: str) -> bool:
-        return node_id in self.values or (self.parent is not None and self.parent.has(node_id))
-
-    def get(self, node_id: str) -> Any:
-        if node_id in self.values:
-            return self.values[node_id]
-        if self.parent is not None:
-            return self.parent.get(node_id)
-        return None
-
-
-@dataclass
-class RunState:
-    id: str
-    flow_id: str
-    account: AccountContext
-    doc: dict
-    plan: Plan
-    options: dict
-    persist: bool = True
-    status: str = "queued"
-    seq: int = 0
-    events: deque = field(default_factory = lambda: deque(maxlen = MEMORY_EVENTS))
-    _unsaved_events: list[tuple[int, dict]] = field(default_factory = list, repr = False)
-    _unsaved_results: dict[str, tuple] = field(default_factory = dict, repr = False)
-    _unsaved_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
-    # The batch being written: still a cache hit until it commits.
-    _writing_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
-    _unsaved_touch: set[str] = field(default_factory = set, repr = False)
-    _persist_lock: asyncio.Lock = field(default_factory = asyncio.Lock, repr = False)
-    subscribers: set[asyncio.Queue] = field(default_factory = set)
-    cancel_event: asyncio.Event = field(default_factory = asyncio.Event)
-    nodes: dict[str, NodeState] = field(default_factory = dict)
-    outputs: dict[str, Any] = field(default_factory = dict)
-    error: Optional[str] = None
-    task: Optional[asyncio.Task] = None
-    caller: Any = None
-    key_id: Optional[int] = None
-    app: Any = None
-    resident: dict[str, Optional[str]] = field(default_factory = dict)
-    initial_resident: dict[str, list[str]] = field(default_factory = dict)
-    resident_variant: dict[str, Optional[str]] = field(default_factory = dict)
-    fresh: set[str] = field(default_factory = set)
-    prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
-    prefetched: int = 0
-    prefetch_load: Optional[tuple[str, str]] = None
-    loaded: dict[tuple[str, str], str] = field(default_factory = dict)
-    gpu_ops: int = 0
-    gpu_parent: Optional["RunState"] = field(default = None, repr = False)
-    cancel_hooks: dict[tuple, list[Callable[[], Awaitable[None]]]] = field(default_factory = dict)
-    node_tasks: dict[str, asyncio.Task] = field(default_factory = dict)
-    _last_progress: dict[str, float] = field(default_factory = dict)
-    _pending_progress: dict[str, dict] = field(default_factory = dict)
-    _pending_text: dict[tuple[str, str], list[str]] = field(default_factory = dict)
-    _pending_partial: dict[tuple, dict] = field(default_factory = dict)
-    executed: set[str] = field(default_factory = set)
-    ever_failed: set[str] = field(default_factory = set)
-    input_overrides: dict[str, dict] = field(default_factory = dict)
-    finished_at: Optional[float] = None
-    hf_token: Optional[str] = field(default = None, repr = False)
-    origin: dict = field(default_factory = dict)
-    approvals: dict = field(default_factory = dict)
-    marks: dict[str, float] = field(default_factory = dict)
-    background: bool = False
-    load_keys: dict[tuple, Optional[str]] = field(default_factory = dict, repr = False)
-
-    def node(self, node_id: str) -> NodeState:
-        state = self.nodes.get(node_id)
-        if state is None:
-            state = self.nodes[node_id] = NodeState()
-        return state
-
-    def emit(
-        self,
-        type_: str,
-        node_id: Optional[str] = None,
-        data: Optional[dict] = None,
-    ) -> dict:
-        self.seq += 1
-        event = {
-            "seq": self.seq,
-            "run_id": self.id,
-            "type": type_,
-            "node_id": node_id,
-            "ts": _now(),
-            "data": data or {},
-        }
-        self.events.append(event)
-        for queue in list(self.subscribers):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
-        if self.persist:
-            stored = event
-            if "preview" in event["data"]:
-                stored = {
-                    **event,
-                    "data": {k: v for k, v in event["data"].items() if k != "preview"},
-                }
-            elif type_ == "node.partial":
-                # Partials often repeat everything so far: store the position only, or the table grows quadratically.
-                stored = {**event, "data": {k: v for k, v in event["data"].items() if k != "value"}}
-            self._unsaved_events.append((self.seq, stored))
-        return event
-
-    def pending_cache(self, key: str) -> Optional[tuple[str, dict]]:
-        return self._unsaved_cache.get(key) or self._writing_cache.get(key)
-
-    def take_unsaved(self) -> Optional[tuple[list, list, list, tuple]]:
-        if not (
-            self._unsaved_events
-            or self._unsaved_results
-            or self._unsaved_cache
-            or self._unsaved_touch
-        ):
-            return None
-        batch = (
-            self._unsaved_events,
-            [(nid, *row) for nid, row in self._unsaved_results.items()],
-            [(key, *row) for key, row in self._unsaved_cache.items()],
-            tuple(self._unsaved_touch),
-        )
-        self._writing_cache = self._unsaved_cache
-        self._unsaved_events, self._unsaved_results, self._unsaved_cache = [], {}, {}
-        self._unsaved_touch = set()
-        return batch
-
-    def set_status(
-        self,
-        node_id: str,
-        status: str,
-        message: Optional[str] = None,
-    ) -> None:
-        state = self.node(node_id)
-        state.status = status
-        state.message = message
-        if status == "failed":
-            self.ever_failed.add(node_id)
-        data: dict[str, Any] = {"status": status}
-        if message:
-            data["message"] = message
-        if state.error and status == "failed":
-            data["error"] = state.error
-        self.emit("node.status", node_id, data)
-
-    def progress(self, node_id: str, data: dict) -> None:
-        now = time.monotonic()
-        last = self._last_progress.get(node_id)
-        self.node(node_id).progress = {k: v for k, v in data.items() if k != "preview"}
-        if last is not None and now - last < PROGRESS_MIN_INTERVAL_S:
-            self._pending_progress[node_id] = data
-            return
-        self._last_progress[node_id] = now
-        self._pending_progress.pop(node_id, None)
-        self.emit("node.progress", node_id, data)
-
-    def text_delta(self, node_id: str, port: str, delta: str) -> None:
-        self.marks.setdefault("first_text", time.monotonic())
-        self._pending_text.setdefault((node_id, port), []).append(delta)
-
-    def partial(self, node_id: str, data: dict) -> None:
-        """Keep the newest value per (node, port, iteration); the flusher stores one event per interval."""
-        state = self.node(node_id)
-        state.partial = {**(state.partial or {}), data["port"]: data}
-        key = (node_id, data["port"], tuple(data.get("iteration") or ()))
-        self._pending_partial[key] = data
-
-    def flush(self, node_id: Optional[str] = None) -> None:
-        for nid in list(self._pending_progress):
-            if node_id is None or nid == node_id:
-                self._last_progress[nid] = time.monotonic()
-                self.emit("node.progress", nid, self._pending_progress.pop(nid))
-        for key in list(self._pending_text):
-            if node_id is None or key[0] == node_id:
-                parts = self._pending_text.pop(key)
-                if parts:
-                    self.emit("node.text_delta", key[0], {"port": key[1], "delta": "".join(parts)})
-        for key in list(self._pending_partial):
-            if node_id is None or key[0] == node_id:
-                self.emit("node.partial", key[0], self._pending_partial.pop(key))
-
-    def snapshot(self) -> dict:
-        return {
-            "run": self.summary(),
-            "nodes": {nid: state.snapshot() for nid, state in self.nodes.items()},
-            "last_seq": self.seq,
-        }
-
-    def summary(self) -> dict:
-        return {
-            "id": self.id,
-            "flow_id": self.flow_id,
-            "status": self.status,
-            "error": self.error,
-            "outputs": self.outputs,
-        }
-
-    @property
-    def cancelled(self) -> bool:
-        return self.cancel_event.is_set()
 
 
 class NodeContextImpl:
@@ -640,131 +398,6 @@ class NodeContextImpl:
 
 
 BACKGROUND_TASKS = frozenset({"summarise", "director"})
-
-
-class NeedsExclusiveGpu(Exception):
-    """The loaded model is not this shared step's: rerun it exclusively."""
-
-
-def _llama_slots(backend: Any) -> int:
-    return max(1, int(backend.effective_parallel_slots)) if backend.is_loaded else 1
-
-
-def chat_slots(model: Optional[str] = None) -> int:
-    """How many requests a loaded chat model serves at once: its llama-server's slots, else 1 (a Transformers model
-    generates one request at a time). ``model`` names a model kept alongside the primary one; any other is the
-    primary's."""
-    try:
-        slot = _kept_slot(model)
-        if slot is not None:
-            return _llama_slots(slot.llama)
-        from routes.inference import get_llama_cpp_backend
-
-        return _llama_slots(get_llama_cpp_backend())
-    except Exception:
-        return 1
-
-
-def _kept_slot(model: Optional[str]) -> Any:
-    """The slot keeping ``model`` loaded alongside the primary chat model, or None."""
-    if not model:
-        return None
-    try:
-        from core.inference import model_slots
-        wanted = model.split(":", 1)[0].lower()
-        for slot in model_slots.visible():
-            names = (
-                getattr(slot.llama, "model_identifier", None),
-                getattr(slot.llama, "_openai_advertised_id", None),
-            )
-            if any(isinstance(n, str) and n.lower() == wanted for n in names):
-                return slot
-    except Exception:
-        return None
-    return None
-
-
-def chat_model_key(params: dict) -> Optional[str]:
-    """The lease key of a chat step: the repo it names when that model is kept alongside the primary one (it has
-    its own slots), else None, the primary."""
-    choice = params.get("model") if isinstance(params, dict) else None
-    repo = choice.get("repo") if isinstance(choice, dict) else None
-    if not (isinstance(repo, str) and repo) or _kept_slot(repo) is None:
-        return None
-    return repo.lower()
-
-
-class GpuLease:
-    """Exclusive holders run alone; ``shared()`` holders run up to the slot count, never while an exclusive
-    holder runs or waits, so a model is never swapped under a generation."""
-
-    def __init__(self) -> None:
-        self._cond = asyncio.Condition()
-        self._exclusive = False
-        self._waiting = 0
-        self._shared = 0
-        self._by_model: dict[Optional[str], list[int]] = {}
-
-    def locked(self) -> bool:
-        return self._exclusive or self._shared > 0 or self._waiting > 0
-
-    async def __aenter__(self) -> "GpuLease":
-        async with self._cond:
-            self._waiting += 1
-            try:
-                await self._cond.wait_for(lambda: not self._exclusive and self._shared == 0)
-            finally:
-                self._waiting -= 1
-                # A cancelled exclusive waiter must not leave shared callers asleep behind it.
-                self._cond.notify_all()
-            self._exclusive = True
-        return self
-
-    async def __aexit__(self, *_exc: Any) -> None:
-        async with self._cond:
-            self._exclusive = False
-            self._cond.notify_all()
-
-    @contextlib.asynccontextmanager
-    async def shared(
-        self,
-        *,
-        background: bool = False,
-        slots: Union[int, Callable[[], int]] = 1,
-        model: Union[Optional[str], Callable[[], Optional[str]]] = None,
-    ):
-        """``model`` keys the slot count: calls on different models kept loaded do not count against each other."""
-        key: Optional[str] = None
-
-        def admit() -> bool:
-            nonlocal key
-            key = model() if callable(model) else model
-            n = max(1, int(slots() if callable(slots) else slots))
-            cap = max(1, n - 1) if background else n
-            held, held_bg = self._by_model.get(key, (0, 0))
-            return (
-                not self._exclusive
-                and self._waiting == 0
-                and held < n
-                and (not background or held_bg < cap)
-            )
-
-        async with self._cond:
-            await self._cond.wait_for(admit)
-            self._shared += 1
-            held, held_bg = self._by_model.get(key, (0, 0))
-            self._by_model[key] = [held + 1, held_bg + background]
-        try:
-            yield
-        finally:
-            async with self._cond:
-                self._shared -= 1
-                counts = self._by_model[key]
-                counts[0] -= 1
-                counts[1] -= background
-                if not counts[0]:
-                    del self._by_model[key]
-                self._cond.notify_all()
 
 
 def timing_of(marks: dict[str, float]) -> dict:
