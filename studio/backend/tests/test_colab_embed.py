@@ -307,8 +307,7 @@ def test_finalize_colab_admin_password_redisplay_on_rerun(monkeypatch):
 
 
 def test_finalize_colab_admin_password_drops_stale_cached_credentials(monkeypatch):
-    """After an in-app password change the cached first-run password no longer
-    authenticates, so it must not be redisplayed (#7349 Codex review)."""
+    """After an in-app password change the cached first-run password must not be redisplayed."""
     monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
     monkeypatch.setattr(
         colab,

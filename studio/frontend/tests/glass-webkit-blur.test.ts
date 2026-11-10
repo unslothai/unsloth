@@ -32,8 +32,9 @@ test("the CPU glass flag is WebKitGTK only and follows the layer flag's material
   );
 });
 
-test("WebKitGTK glass drops every live blur except the sidebar's", () => {
-  const rule = ruleAt(`${GATE} *:not([data-slot="sidebar-inner"], [class*="backdrop-"]),`);
+test("WebKitGTK glass drops every live Glass blur, the sidebar's included", () => {
+  const rule = ruleAt(`${GATE} *:not([class*="backdrop-"]),`);
+  assert.doesNotMatch(rule, /sidebar-inner/, "the sidebar's blur re-ran on every composite while the thread scrolled");
   assert.ok(
     rule.includes(`${GATE} *:not([data-windows-glass-frame], [class*="backdrop-"])::before,`),
     "the framed sidebar's glass keeps its blur",
@@ -58,7 +59,13 @@ test("dialogs and menus go opaque on that path, so nothing behind them ghosts th
   assert.match(body, /--glass-opacity: max\(\.9, var\(--glass-opacity-set\)\);/);
   const floors = ruleAt(`${GATE} {`);
   assert.match(floors, /--glass-composer-floor: 110%;/, "over 100%, so the default strength reaches the 96% cap");
-  assert.doesNotMatch(floors, /--glass-sidebar-floor/, "the sidebar keeps its blur and its normal tint");
+  assert.doesNotMatch(floors, /--glass-sidebar-floor/, "the page floors stay as they are");
+  assert.match(ruleAt(`${GATE} [data-slot="sidebar-inner"] {`), /--glass-pane-floor: 110%;/, "the unblurred sidebar reaches the 96% fill cap");
+  assert.match(
+    ruleAt('html[data-glass="frosted"][data-glass-cpu] :is([data-slot="sidebar-inner"], .unsloth-composer-surface'),
+    /background-image: none !important;/,
+    "the Frosted grain (an SVG turbulence tile) is rendered again on every paint there",
+  );
   assert.match(floors, /--glass-opacity-set: var\(--glass-opacity, 1\);/);
 });
 

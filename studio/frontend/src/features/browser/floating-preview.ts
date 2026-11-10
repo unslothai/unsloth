@@ -14,6 +14,7 @@ import type {
 import {
   FLOATING_ATTRIBUTE,
   FLOATING_MOVE_EVENT,
+  FLOATING_PRESS_EVENT,
   FLOATING_SCALE_VAR,
 } from "./floating-events";
 
@@ -278,6 +279,7 @@ const CURSORS: Record<FloatingEdge, string> = {
 };
 
 const announceMove = () => window.dispatchEvent(new Event(FLOATING_MOVE_EVENT));
+export const announceGrab = () => window.dispatchEvent(new Event(FLOATING_PRESS_EVENT));
 
 /** A move rides a transform and a resize only rescales, once per frame; a sheet keeps the page's frame off the pointer. */
 export function startFloatingGesture(
@@ -298,6 +300,7 @@ export function startFloatingGesture(
   const room = surface ? roomFor(surface) : null;
   if (!surface || !room) return;
   event.preventDefault();
+  announceGrab();
   const start = currentBox(room);
   const startX = event.clientX;
   const startY = event.clientY;

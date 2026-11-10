@@ -136,9 +136,8 @@ export interface VideoLoadRequest {
   display_repo_id?: string;
   // Required for gguf / single_file; omitted for a from_pretrained pipeline.
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file"
-  // (safetensors transformer) or "pipeline". A single_file .safetensors loads from any repo;
-  // pipeline loads are restricted to unsloth/* or family bases.
+  // Omit to auto-detect from gguf_filename: gguf, single_file (safetensors transformer, any repo)
+  // or pipeline (restricted to unsloth/ repos or family bases).
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
@@ -187,10 +186,9 @@ export interface VideoGenerateRequest {
   // Omitted = the server default (on).
   live_preview?: boolean;
   negative_prompt?: string;
-  // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they
-  // must match that family's rules -- a size near its presets, and num_frames on the
-  // k*frame_step+1 lattice -- or the backend answers 422 with the supported shapes.
-  // Width/height sit on resolution_multiple inside the custom_size_* bounds, or are a preset.
+  // Width, height, num_frames and fps default per family; when sent they must match its rules:
+  // num_frames on the k times frame_step plus 1 lattice, and width and height a preset or on
+  // resolution_multiple within the custom_size bounds, else 422.
   width?: number;
   height?: number;
   num_frames?: number;
@@ -435,4 +433,93 @@ export async function fetchGalleryVideoExport(
   );
   if (!res.ok) throw new Error(await readFastApiError(res));
   return res.blob();
+}
+
+export interface VideoRestyleProgress {
+  active: boolean;
+  pending?: boolean;
+  id?: string;
+  phase: string | null;
+  // Latent frames done out of total; Cosmos3 makes one per 4 output frames.
+  step?: number;
+  total?: number;
+  num_frames?: number;
+  eta_seconds?: number | null;
+  error?: string | null;
+  video?: GalleryVideo | null;
+  seed?: number | null;
+}
+
+export interface VideoRestyleStatus {
+  available: boolean;
+  reason: string | null;
+}
+
+export interface VideoRestylePreview {
+  frames: number;
+  seconds: number;
+  source_seconds: number | null;
+  width: number;
+  height: number;
+  frame_jpeg: string;
+  edges_jpeg: string;
+}
+
+export async function fetchVideoRestyleStatus(): Promise<VideoRestyleStatus> {
+  return parseJson(await authFetch("/api/inference/video/restyle/status"));
+}
+
+function restyleForm(video?: File | null, frames?: File[]): FormData {
+  const form = new FormData();
+  if (video) form.append("video", video);
+  for (const frame of frames ?? []) form.append("frames", frame, frame.name);
+  return form;
+}
+
+/** The frames a restyle would use and one of them with its edge control. Runs no model. */
+export async function previewVideoRestyle(input: {
+  video?: File | null;
+  frames?: File[];
+}): Promise<VideoRestylePreview> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/preview", {
+      method: "POST",
+      body: restyleForm(input.video, input.frames),
+    }),
+  );
+}
+
+export async function startVideoRestyle(input: {
+  prompt: string;
+  seed?: number | null;
+  video?: File | null;
+  frames?: File[];
+}): Promise<VideoRestyleProgress> {
+  const form = restyleForm(input.video, input.frames);
+  form.append("prompt", input.prompt);
+  if (input.seed != null) form.append("seed", String(input.seed));
+  return parseJson(
+    await authFetch("/api/inference/video/restyle", { method: "POST", body: form }),
+  );
+}
+
+export async function fetchVideoRestyleProgress(): Promise<VideoRestyleProgress> {
+  return parseJson(await authFetch("/api/inference/video/restyle/progress"));
+}
+
+export async function cancelVideoRestyle(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/cancel", { method: "POST" }),
+  );
+}
+
+export async function fetchVideoRestyleClip(
+  id: string,
+  kind: "input" | "control" | "output",
+): Promise<Blob> {
+  const response = await authFetch(
+    `/api/inference/video/restyle/${encodeURIComponent(id)}/${kind}.mp4`,
+  );
+  if (!response.ok) throw new Error(await readFastApiError(response));
+  return response.blob();
 }

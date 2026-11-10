@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Safetensors is preferred, so a cached .pt repo must not re-download its safetensors twin."""
+"""Safetensors is preferred, but a cached .pt whose sha256 matches the Hub's record is reused rather than
+re-downloading its safetensors twin; an unverified one (mismatch, no record, offline) keeps safetensors first."""
 
 from __future__ import annotations
 
+import hashlib
 import types
 
 import huggingface_hub
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
+import core.inference.cached_weight_sha as cws
 import core.inference.diffusion_prequant as pq
 import core.inference.diffusion_te_prequant as tpq
 
@@ -34,6 +37,9 @@ class FakeHub:
         # names a 404 was recorded for, as huggingface_hub's .no_exist markers
         self.absent: set = set()
         self.downloads: list = []
+        # sha256 the Hub records per name; None = no LFS record. Default: the bytes cache() writes.
+        self.hub_sha: dict = {}
+        self.sha_calls: list = []
         for name in cached:
             self.cache(name)
 
@@ -90,6 +96,19 @@ def hub(tmp_path, monkeypatch):
     fake = FakeHub(tmp_path)
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake.try_to_load_from_cache)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake.hf_hub_download)
+
+    def hub_sha256s(repo_id, filenames, **_):
+        fake.sha_calls.append(tuple(filenames))
+        out = {}
+        for name in filenames:
+            sha = fake.hub_sha.get(name, hashlib.sha256(b"x").hexdigest())
+            if sha:
+                out[name] = sha
+        return out
+
+    monkeypatch.setattr(cws, "hub_sha256s", hub_sha256s)
+    monkeypatch.setattr(cws, "_store_path", lambda: tmp_path / "weight_sha256.json")
+    monkeypatch.setattr(cws, "_persisted", None)
     monkeypatch.setattr(
         pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
@@ -423,9 +442,7 @@ def _convrot_dit(declared = True):
 
 
 def test_cached_int8_is_not_free_when_a_declared_convrot_is_ahead(hub):
-    """An existing user's INT8 .pt is cached and the family now declares an INT8-ConvRot build.
-    Online the load downloads the ConvRot file first, so the planner and the disk gate must not be
-    told this costs nothing."""
+    """A cached INT8 .pt is not free while a declared ConvRot build is ahead of it online."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit()
     assert pq.cached_checkpoint_path(src, online = True) is None
@@ -442,9 +459,7 @@ def test_offline_the_cached_int8_is_what_loads(hub):
 
 
 def test_an_unpublished_convrot_stops_blocking_once_the_resolver_saw_its_404(hub):
-    """The code names a ConvRot build the repo does not host yet (merged before the upload). The
-    first load asks, gets a 404, and opens the cached INT8 .pt; from then on the probe agrees with
-    the resolver instead of planning a download that never happens on every load."""
+    """Once the resolver has seen a 404 for an unhosted ConvRot build, the probe must stop blocking."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit()
     assert pq.cached_checkpoint_path(src, online = True) is None

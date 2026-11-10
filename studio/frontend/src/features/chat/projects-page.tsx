@@ -14,9 +14,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -85,12 +83,12 @@ import { ArrowDownIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  COMBINED_EXPORT_FORMATS_LIST,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
-  EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
+import { BulkExportItems } from "./components/bulk-export-items";
+import { ExportFormatItems } from "./components/export-format-items";
 import {
   fileImportSource,
   nativeImportSource,
@@ -634,53 +632,13 @@ export function ProjectsPage({
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>{t("projectsPage.exportAllProjects")}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      {t("projectsPage.combined")}
-                    </DropdownMenuLabel>
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      {t("projectsPage.perChat")}
-                    </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
+                  <BulkExportItems onExport={(fmt, merged) => void handleBulkProjectExport("projects", fmt, merged)} />
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>{t("projectsPage.exportProjectsAndRecents")}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      {t("projectsPage.combined")}
-                    </DropdownMenuLabel>
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      {t("projectsPage.perChat")}
-                    </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
+                  <BulkExportItems onExport={(fmt, merged) => void handleBulkProjectExport("all", fmt, merged)} />
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             </DropdownMenuContent>
@@ -1006,17 +964,13 @@ export function ProjectsPage({
                                   <span>{t("common.export")}</span>
                                 </DropdownMenuSubTrigger>
                                 <DropdownMenuSubContent className="w-52">
-                                  {chatExportOptions().map(({ label, format }) => (
-                                    <DropdownMenuItem
-                                      key={`${chat.id}-${label}`}
-                                      onSelect={(e) => {
-                                        e.stopPropagation();
-                                        void handleChatExport(chat, format);
-                                      }}
-                                    >
-                                      {label}
-                                    </DropdownMenuItem>
-                                  ))}
+                                  <ExportFormatItems
+                                    options={chatExportOptions().map(({ label, format }) => ({ key: format, label }))}
+                                    onSelect={(format, e) => {
+                                      e.stopPropagation();
+                                      void handleChatExport(chat, format);
+                                    }}
+                                  />
                                   <DropdownMenuSeparator />
                                   <DropdownMenuItem
                                     onSelect={() =>

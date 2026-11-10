@@ -27,6 +27,7 @@ import {
 import { type ReactElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
+import { watchModalPointerLock } from "./src/lib/modal-pointer-lock";
 
 // Answer ForkCountBadge GETs in-page: a Playwright-side answer would add a CDP round trip per
 // assistant message inside the timed region.
@@ -477,4 +478,7 @@ const root = document.getElementById("root");
 if (!root) {
   throw new Error("missing #root");
 }
+// As in main.tsx: the gate's modal lock check then times the attributes the app mirrors from the
+// body lock, not a bare inline style the modal rules no longer read.
+watchModalPointerLock(document);
 createRoot(root).render(<RouterProvider router={router as unknown as never} />);

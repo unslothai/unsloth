@@ -184,8 +184,7 @@ def test_retirement_ignores_an_escaping_rag_link(account_home, monkeypatch, tmp_
 
 
 def test_a_late_rag_open_does_not_reopen_a_retired_accounts_keeper(account_home):
-    """An open that passed ensure_dir before deletion and resumes after retirement released the
-    keeper must not leave a new one holding the workspace open."""
+    """A late open must not leave a new keeper holding a retired account's workspace."""
     from core.training import account_jobs
 
     alice_db = run_as(ALICE, roots.rag_db_path)
@@ -581,9 +580,8 @@ def test_a_symlinked_database_resolves_its_path_once(account_home, tmp_path):
 def test_no_account_database_recreates_a_retired_workspace(
     account_home, monkeypatch, module_name, connect_name
 ):
-    """A create or update that was in flight when the owner deleted the account must not
-    put the renamed-aside workspace back: the row, and the private headers in it, would
-    live in a directory no identity owns any more."""
+    """A create or update in flight at account deletion must not restore the renamed-aside
+    workspace; its private headers would sit in a directory no identity owns."""
     from routes.accounts import retire_account_roots
 
     monkeypatch.setattr("core.inference.mcp_client.close_mcp_sessions", lambda: None)

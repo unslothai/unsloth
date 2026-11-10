@@ -65,7 +65,7 @@ test("hub README badge rows are marked, not matched with :has()", () => {
 test("the Windows page blur learns about the sidebar frame from the root, not a :has()", () => {
   assert.match(
     css,
-    /\[data-windows-wallpaper-page\] > \[data-slot="page-wallpaper-blur"\]\[data-sidebar-frame\] \{\n {2}border-top-left-radius: 4px;/,
+    /\[data-windows-wallpaper-page\] > \[data-slot="page-wallpaper-blur"\]\[data-sidebar-frame\] \{\n {2}border-top-left-radius: var\(--radius-md\);/,
   );
   const root = readSrc("app/routes/__root.tsx");
   assert.match(

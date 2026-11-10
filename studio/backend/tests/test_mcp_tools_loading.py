@@ -1162,8 +1162,7 @@ def test_the_resident_unload_unloads_what_status_showed(monkeypatch, fast_polls)
 
 
 def test_a_live_token_outlasts_any_number_of_refused_loads(monkeypatch, fast_polls):
-    # The first load registered but its answer failed, so it runs on; the retries are refused while it
-    # does. Its token must still be named by the unload.
+    # A load whose answer failed still runs, so the unload must name its token.
     backend = _TokenVideo(answer_status = 500)
     caller = make_caller(studio_app = backend.app())
 
@@ -1402,7 +1401,13 @@ def test_a_padded_keep_loaded_refusal_names_unload_model(monkeypatch):
         "Loading this model would unload the chat model unsloth/Qwen3-0.6B, and Keep multiple"
         " models loaded is set to Always. Unload that model first, or choose When they fit."
     )
-    padded = " " * 40 + json.dumps({"_deferred_error": {"status_code": 409, "detail": refusal}})
+    # The headers the load route copies into a padded answer.
+    headers = {
+        "x-unsloth-refusal": "multi-model-always",
+        "x-unsloth-problem": "multi_model_always kind=chat",
+    }
+    deferred = {"status_code": 409, "detail": refusal, "headers": headers}
+    padded = " " * 40 + json.dumps({"_deferred_error": deferred})
     routes = {**PAYLOADS, LOAD: Response(padded.encode(), media_type = "application/json")}
     result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
     message = result["content"][0]["text"]
@@ -1492,8 +1497,7 @@ def _status_studio(status, answers = None):
 
 
 def test_an_unload_sends_no_unconditional_unload_when_studio_cannot_name_the_load(monkeypatch):
-    # Studio reports load ids, but this read could not name the state: an unconditional unload
-    # could end a load admitted meanwhile, so none goes out.
+    # Without a load id, no unconditional unload: it could end a load admitted meanwhile.
     studio = _status_studio(
         {"loaded": True, "repo_id": LTX, "load_id": None, "resident_load_id": None}
     )
@@ -1504,8 +1508,7 @@ def test_an_unload_sends_no_unconditional_unload_when_studio_cannot_name_the_loa
 
 
 def test_an_unload_of_a_model_studio_hides_keeps_the_plain_unload(monkeypatch):
-    # Another account's resident (Studio hides its id and status fields): the plain unload as before,
-    # which Studio refuses or performs for this caller.
+    # Another account's resident hides its id and status: send the plain unload as before.
     studio = _status_studio({"loaded": True, "yours": False})
     caller = make_caller(studio_app = studio)
     asyncio.run(loading.unload_media(caller, "video"))

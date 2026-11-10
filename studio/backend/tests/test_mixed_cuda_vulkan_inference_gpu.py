@@ -136,8 +136,7 @@ def test_pci_ids_match_even_when_names_differ(mixed_build):
 
 
 def test_cuda_hidden_nvidia_card_is_still_counted_as_llama_cpp_uses_it(mixed_build):
-    """llama.cpp only skips a Vulkan device a CUDA one already holds; a card CUDA_VISIBLE_DEVICES
-    hides is not held, so Vulkan runs on it."""
+    """Vulkan skips only devices CUDA holds; a card hidden by CUDA_VISIBLE_DEVICES is not held."""
     info = _mixed({**CUDA_INFO, "devices": [CUDA_INFO["devices"][1]]})
 
     assert [d["name"] for d in info["devices"]] == [

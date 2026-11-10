@@ -18,10 +18,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
+import type { MediaGenerationKind } from "./types";
 import { Tick02Icon } from "@/lib/tick-icon";
 
 interface MediaGenerationPresetControlProps {
-  kind: "image" | "video";
+  kind: MediaGenerationKind;
   presets: readonly { name: string }[];
   activePreset: string;
   ready: boolean;
@@ -46,6 +47,7 @@ export function MediaGenerationPresetControl({
   onPasteParameters,
 }: MediaGenerationPresetControlProps) {
   const [open, setOpen] = useState(false);
+  const purpose = kind === "training" ? "image training" : `${kind} generation`;
   const [draftName, setDraftName] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const name = draftName ?? activePreset;
@@ -108,7 +110,7 @@ export function MediaGenerationPresetControl({
           variant="outline"
           size="sm"
           disabled={!ready || saving}
-          aria-label={`Manage ${kind} generation presets`}
+          aria-label={`Manage ${purpose} presets`}
           className={cn(
             "relative size-8 shrink-0 gap-1.5 rounded-full border-border/60 bg-background/70 p-0 text-xs font-medium shadow-none backdrop-blur-sm hover:bg-muted/70 sm:h-8 sm:w-auto sm:max-w-40 sm:px-2.5",
             open && "border-border bg-muted/70",
@@ -144,7 +146,7 @@ export function MediaGenerationPresetControl({
         <div className="shrink-0 border-b border-border/60 px-4 py-3.5">
           <div className="flex items-center justify-between gap-3">
             <p className="font-heading text-sm font-medium">
-              Generation presets
+              {kind === "training" ? "Training presets" : "Generation presets"}
             </p>
             {hasUnsavedChanges ? (
               <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-ui-10 font-medium text-amber-700 dark:text-amber-300">

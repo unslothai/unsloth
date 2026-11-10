@@ -27,7 +27,10 @@ test("the browser's glass frosts the tab strip and panel body, never the section
   const frosted = rules.filter(([, , body]) => /backdrop-filter/.test(body));
   assert.ok(frosted.length > 0);
   for (const [, selector] of frosted) {
-    for (const part of selector.split(",")) assert.match(part.trim(), /\[data-slot="browser-panel"\](:not\(\[data-browser-document\]\))? > \.browser-(chrome|panel-body)( ?\[data-native-hole\] > :not\(\[data-browser-page\]\))?$/);
+    for (const part of selector.split(",")) {
+      if (part.trim().endsWith('[data-windows-browser="web"]::before')) continue;
+      assert.match(part.trim(), /\[data-slot="browser-panel"\](?::not\(\[data-windows-browser\]\))?(:not\(\[data-browser-document\]\))? > \.browser-(chrome|panel-body)( ?\[data-native-hole\] > :not\(\[data-browser-page\]\))?$/);
+    }
   }
 });
 
@@ -38,4 +41,9 @@ test("a native page's hole drops backdrop filters and masks the wallpaper layer"
   const view = readSrc("features/browser/native-view.ts");
   assert.match(view, /node\.hasAttribute\?\.\("data-wallpaper-workspace"\)/);
   assert.match(view, /child\.classList\.contains\("chat-wallpaper"\)/);
+});
+
+test("the docked Windows glass surface never clips the floating browser's rounded border", () => {
+  const panel = readSrc("features/browser/browser-panel.tsx");
+  assert.match(panel, /data-windows-browser=\{!floating && usesWindowsTitlebar\(\)/);
 });
