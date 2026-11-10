@@ -36,12 +36,17 @@ function equal(a: unknown, b: unknown): boolean {
     for (let i = 0; i < a.length; i += 1) {
       const x = plain(a[i]);
       const y = plain(b[i]);
-      if (!equal(x === ABSENT ? null : x, y === ABSENT ? null : y)) return false;
+      if (!equal(x === ABSENT ? null : x, y === ABSENT ? null : y))
+        return false;
     }
     return true;
   }
-  const ka = Object.keys(a).filter((k) => plain((a as Record<string, unknown>)[k]) !== ABSENT);
-  const kb = Object.keys(b).filter((k) => plain((b as Record<string, unknown>)[k]) !== ABSENT);
+  const ka = Object.keys(a).filter(
+    (k) => plain((a as Record<string, unknown>)[k]) !== ABSENT,
+  );
+  const kb = Object.keys(b).filter(
+    (k) => plain((b as Record<string, unknown>)[k]) !== ABSENT,
+  );
   if (ka.length !== kb.length) return false;
   for (let i = 0; i < ka.length; i += 1) {
     if (ka[i] !== kb[i]) return false;
