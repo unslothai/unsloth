@@ -4495,18 +4495,11 @@ function Install-UnslothStudio {
             if ($script:UnslothVerbose) {
                 # Merge stderr into stdout without flipping $? (5.1 treats stderr records as errors).
                 # Redact per record, verbose mode included.
-                if ($NoMirror -or -not $env:_UNSLOTH_MIRROR_SPARE) {
-                    & $Command 2>&1 | ForEach-Object {
-                        Write-UvDownloadMarker "$_"
-                        Redact-InstallOutput "$_"
-                    } | Out-Host
-                } else {
-                    & $Command 2>&1 | ForEach-Object {
-                        [void]$collected.AppendLine("$_")
-                        Write-UvDownloadMarker "$_"
-                        Redact-InstallOutput "$_"
-                    } | Out-Host
-                }
+                & $Command 2>&1 | ForEach-Object {
+                    [void]$collected.AppendLine("$_")
+                    Write-UvDownloadMarker "$_"
+                    Redact-InstallOutput "$_"
+                } | Out-Host
             } else {
                 # Streamed, not collected, so a marker reaches the app mid-download.
                 & $Command 2>&1 | ForEach-Object {

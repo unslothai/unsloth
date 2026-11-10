@@ -54,12 +54,7 @@ Write-Host "=== real uv, damaged cache archive ==="
 $script:UvExe = 'uv'
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { Write-Host "  FAIL  uv is not on PATH (CI installs it)" -ForegroundColor Red; exit 1 }
 $python = if ($env:OS -ne 'Windows_NT' -and (Get-Command python3 -ErrorAction SilentlyContinue)) { 'python3' } else { 'python' }
-$work = Join-Path ([System.IO.Path]::GetTempPath()) ("uvdamaged-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $work | Out-Null
-$savedCache = $env:UV_CACHE_DIR
-try {
-    $wheels = Join-Path $work "wheels"
-    $maker = @'
+$maker = @'
 import os, sys, zipfile
 os.makedirs(sys.argv[1])
 for name in sys.argv[2:]:
@@ -71,41 +66,50 @@ for name in sys.argv[2:]:
         for p, c in files.items():
             z.writestr(p, c)
 '@
-    $makerPath = Join-Path $work "make_wheels.py"
-    [System.IO.File]::WriteAllText($makerPath, $maker)
-    & $python $makerPath $wheels alpha_pkg beta_pkg
-    $env:UV_CACHE_DIR = Join-Path $work "cache"
-    $ErrorActionPreference = "Continue"
-    & uv venv -q (Join-Path $work "v1") 2>&1 | Out-Null
-    & uv venv -q (Join-Path $work "v2") 2>&1 | Out-Null
-    $ErrorActionPreference = "Stop"
-    $bin = if ($env:OS -eq 'Windows_NT') { 'Scripts\python.exe' } else { 'bin/python' }
-    $py1 = Join-Path (Join-Path $work "v1") $bin
-    $py2 = Join-Path (Join-Path $work "v2") $bin
-    $ErrorActionPreference = "Continue"
-    & uv pip install -q --python $py1 --no-index --find-links $wheels alpha_pkg beta_pkg 2>&1 | Out-Null
-    $ErrorActionPreference = "Stop"
-    foreach ($d in @(Get-ChildItem -Path (Join-Path $env:UV_CACHE_DIR "archive-v0") -Directory | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Directory -Filter "*.dist-info" })) {
-        Remove-Item -LiteralPath $d.FullName -Recurse -Force
+foreach ($verbose in $false, $true) {
+    $script:UnslothVerbose = $verbose
+    Write-Host "  -- verbose=$verbose"
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) ("uvdamaged-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $work | Out-Null
+    $savedCache = $env:UV_CACHE_DIR
+    try {
+        $wheels = Join-Path $work "wheels"
+        $makerPath = Join-Path $work "make_wheels.py"
+        [System.IO.File]::WriteAllText($makerPath, $maker)
+        & $python $makerPath $wheels alpha_pkg beta_pkg
+        $env:UV_CACHE_DIR = Join-Path $work "cache"
+        $ErrorActionPreference = "Continue"
+        & uv venv -q (Join-Path $work "v1") 2>&1 | Out-Null
+        & uv venv -q (Join-Path $work "v2") 2>&1 | Out-Null
+        $ErrorActionPreference = "Stop"
+        $bin = if ($env:OS -eq 'Windows_NT') { 'Scripts\python.exe' } else { 'bin/python' }
+        $py1 = Join-Path (Join-Path $work "v1") $bin
+        $py2 = Join-Path (Join-Path $work "v2") $bin
+        $ErrorActionPreference = "Continue"
+        & uv pip install -q --python $py1 --no-index --find-links $wheels alpha_pkg beta_pkg 2>&1 | Out-Null
+        $ErrorActionPreference = "Stop"
+        foreach ($d in @(Get-ChildItem -Path (Join-Path $env:UV_CACHE_DIR "archive-v0") -Directory | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Directory -Filter "*.dist-info" })) {
+            Remove-Item -LiteralPath $d.FullName -Recurse -Force
+        }
+        $ErrorActionPreference = "Continue"
+        $base = (& uv pip install -q --python $py2 --no-index --find-links $wheels alpha_pkg beta_pkg 2>&1 | ForEach-Object { "$_" }) -join "`n"
+        $baseExit = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
+        Check "control: the damaged cache fails a plain install" ($baseExit -ne 0 -and $base -match 'The wheel is invalid')
+        $env:UNSLOTH_INSTALL_RETRIES = '1'
+        $script:Substeps.Clear()
+        $code = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $py2 --no-index --find-links $wheels alpha_pkg beta_pkg }
+        Check "retry loop repairs the cache and installs (exit $code)" ($code -eq 0)
+        Check "one cache clean per damaged package" (@($script:Substeps | Where-Object { $_ -like 'clearing damaged uv cache entries*' }).Count -eq 2)
+        $ErrorActionPreference = "Continue"
+        & $py2 -c "import alpha_pkg, beta_pkg" 2>&1 | Out-Null
+        $importExit = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
+        Check "both packages import" ($importExit -eq 0)
+    } finally {
+        $env:UV_CACHE_DIR = $savedCache
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
-    $ErrorActionPreference = "Continue"
-    $base = (& uv pip install -q --python $py2 --no-index --find-links $wheels alpha_pkg beta_pkg 2>&1 | ForEach-Object { "$_" }) -join "`n"
-    $baseExit = $LASTEXITCODE
-    $ErrorActionPreference = "Stop"
-    Check "control: the damaged cache fails a plain install" ($baseExit -ne 0 -and $base -match 'The wheel is invalid')
-    $env:UNSLOTH_INSTALL_RETRIES = '1'
-    $script:Substeps.Clear()
-    $code = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $py2 --no-index --find-links $wheels alpha_pkg beta_pkg }
-    Check "retry loop repairs the cache and installs (exit $code)" ($code -eq 0)
-    Check "one cache clean per damaged package" (@($script:Substeps | Where-Object { $_ -like 'clearing damaged uv cache entries*' }).Count -eq 2)
-    $ErrorActionPreference = "Continue"
-    & $py2 -c "import alpha_pkg, beta_pkg" 2>&1 | Out-Null
-    $importExit = $LASTEXITCODE
-    $ErrorActionPreference = "Stop"
-    Check "both packages import" ($importExit -eq 0)
-} finally {
-    $env:UV_CACHE_DIR = $savedCache
-    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if ($failures) { Write-Host "$failures failure(s)" -ForegroundColor Red; exit 1 }
