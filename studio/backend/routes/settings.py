@@ -4445,6 +4445,7 @@ class LanAccessAddressesPayload(BaseModel):
 class LanAccessAddress(BaseModel):
     address: str
     public: bool = False
+    host_only: bool = False
 
 
 class LanAccessResponse(BaseModel):
