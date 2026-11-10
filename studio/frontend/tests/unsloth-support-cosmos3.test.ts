@@ -28,3 +28,13 @@ test("only nvidia's Cosmos3 Edge is routed to the Video page; Nano, siblings and
     assert.deepEqual(classifyUnslothSupport({ modelId, ...HUB_CARD }), expected, modelId);
   }
 });
+
+test("a video-to-video pipeline tag is not routed to the Video page (Nano's continuation is gated on status)", () => {
+  const result = classifyUnslothSupport({
+    modelId: "someone/any-video-to-video",
+    pipelineTag: "video-to-video",
+    libraryName: "diffusers",
+    tags: ["diffusers"],
+  }) as { supportedIn?: string };
+  assert.notEqual(result.supportedIn, "video");
+});
