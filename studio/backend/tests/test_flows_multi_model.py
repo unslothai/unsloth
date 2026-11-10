@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """A flow with two chat models under Keep multiple models loaded: the second loads alongside the first and each
-request names the model it means; with the setting off nothing changes."""
+request names the model it means; with the setting off nothing changes. Also how many status reads one
+residency check costs."""
 
 import asyncio
 from types import SimpleNamespace
@@ -14,6 +15,8 @@ from core.flows.engine import GpuLease, NeedsExclusiveGpu
 from core.flows.nodes import _common
 from core.flows.registry import FlowNodeError
 from studio_mcp import loading
+
+from ._flows_helpers import wait_until
 
 BIG = "unsloth/Qwen3-14B-GGUF"
 SMALL = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
@@ -154,6 +157,11 @@ def test_a_shared_step_hands_the_alongside_load_to_an_exclusive_rerun(monkeypatc
     assert not loads
 
 
+def _parked(lease: GpuLease) -> int:
+    """Callers asleep in the lease's admission wait: queued, not admitted."""
+    return len(lease._cond._waiters)
+
+
 def test_each_kept_model_has_its_own_slots_in_the_lease():
     async def go():
         lease = GpuLease()
@@ -169,7 +177,7 @@ def test_each_kept_model_has_its_own_slots_in_the_lease():
             asyncio.create_task(call("small", SMALL.lower())),
             asyncio.create_task(call("big2", None)),
         ]
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: len(inside) == 2 and _parked(lease) == 1, what = "big2 to queue")
         assert sorted(inside) == ["big", "small"]
         done.set()
         await asyncio.gather(*tasks)
@@ -212,13 +220,13 @@ def test_a_call_queued_behind_an_alongside_load_counts_against_the_new_model():
                 await done.wait()
 
         loader = asyncio.create_task(load())
-        await asyncio.sleep(0.01)
+        await wait_until(lease.locked, what = "the load to take the lease")
         first = asyncio.create_task(call("first", key))
-        await asyncio.sleep(0.01)
+        await wait_until(lambda: _parked(lease) == 1, what = "first to queue behind the load")
         loading.set()
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: inside == ["first"], what = "first to be admitted")
         second = asyncio.create_task(call("second", SMALL.lower()))
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: _parked(lease) == 1, what = "second to queue")
         assert inside == ["first"]
         done.set()
         await asyncio.gather(loader, first, second)
@@ -308,3 +316,81 @@ def test_unload_after_run_matches_a_gguf_listed_with_its_variant(monkeypatch):
 
     asyncio.run(engine.FlowEngine._unload_loaded(None, _Rs(), {SMALL.lower(): "n1"}))
     assert unloaded == [f"{SMALL}:Q4_K_M"]
+
+
+# How many status GETs one model step costs: the residency checks of a step share one read.
+
+
+class _ReadCtx:
+    def __init__(self, spec = None):
+        self.resident, self.spec, self.gpu_shared = {}, spec or {}, False
+        self.caller = object()
+        self.params = {}
+
+    def set_status(
+        self,
+        status,
+        message = None,
+    ):
+        pass
+
+
+def _status_fakes(
+    monkeypatch,
+    serving,
+    mode = None,
+):
+    gets = []
+    state = {"serving": list(serving)}
+
+    async def fake_read_json(caller, path):
+        gets.append(path)
+        if path == "/api/inference/status":
+            status = {"serving": state["serving"], "loaded": state["serving"], "is_gguf": True}
+            status["model_identifier"] = state["serving"][0] if state["serving"] else None
+            status["gguf_variant"] = "Q4_K_M"
+            if mode:
+                status["multi_model_mode"] = mode
+            return status
+        return {"loaded": False}
+
+    async def fake_load_llm(caller, ctx, **kwargs):
+        state["serving"] = [kwargs["model"]]
+
+    monkeypatch.setattr(loading, "_read_json", fake_read_json)
+    monkeypatch.setattr(loading, "load_llm", fake_load_llm)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {})
+    monkeypatch.setattr(_common, "_ALONGSIDE_OPTIONS", {})
+    return gets
+
+
+@pytest.mark.parametrize(
+    "serving, requires, mode, expected",
+    [
+        # Resident already, with a backend requirement and a variant to compare.
+        ([SMALL], ["gguf"], None, 3),
+        # Another model resident: one read before the load, one after it.
+        ([BIG], ["gguf"], None, 6),
+        # Keep multiple models loaded is on but the step replaces nothing it can keep.
+        ([SMALL], None, "fit", 3),
+    ],
+)
+def test_one_model_check_reads_status_once_per_residency(
+    monkeypatch, serving, requires, mode, expected
+):
+    gets = _status_fakes(monkeypatch, serving, mode)
+    ctx = _ReadCtx({"requires": requires} if requires else {})
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL, "variant": "Q4_K_M"}))
+    assert len(gets) == expected, gets
+
+
+def test_a_card_on_the_loaded_model_reads_its_name_and_quant_once(monkeypatch):
+    from core.flows.nodes import text
+
+    gets = _status_fakes(monkeypatch, [SMALL])
+    ctx = _ReadCtx()
+    ctx.params = {"model": None, "load": {"max_seq_length": 4096}}
+    choice, _ = asyncio.run(text._model_and_load(ctx, "chat"))
+    assert choice == {"repo": SMALL, "variant": "Q4_K_M"}
+    assert len(gets) == 3, gets

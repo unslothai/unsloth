@@ -8,7 +8,16 @@ from core.flows.nodes import logic
 from core.flows.nodes.inputs import apply_input_values, param
 from storage import flows_db
 
-from ._flows_helpers import BASE_HANDLERS, doc, edge, make_engine, node, run_async, run_doc
+from ._flows_helpers import (
+    BASE_HANDLERS,
+    cancelled_event,
+    doc,
+    edge,
+    make_engine,
+    node,
+    run_async,
+    run_doc,
+)
 
 
 def _child(flow_id: str, **extra) -> dict:
@@ -105,16 +114,17 @@ async def test_run_flow_names_a_missing_flow():
 
 @run_async
 async def test_stopping_the_caller_stops_the_called_flow(monkeypatch):
-    stopped = []
+    stopped, started = [], asyncio.Event()
 
     async def slow(ctx):
         async def hook():
             stopped.append(ctx.node_id)
 
         ctx.on_cancel(hook)
-        for _ in range(200):
-            await asyncio.sleep(0.05)
-            ctx.check_cancelled()
+        stop = await cancelled_event(ctx)
+        started.set()
+        await asyncio.wait_for(stop.wait(), 20)
+        ctx.check_cancelled()
         return {"text": "late"}
 
     from core.flows.specs import SPECS_BY_TYPE, out, spec
@@ -133,11 +143,7 @@ async def test_stopping_the_caller_stops_the_called_flow(monkeypatch):
     eng = make_engine(_handlers(**{"slow.text": slow}))
     parsed, _ = parse_document(_caller_doc("slowchild", {}))
     rs = await eng.start_run(app = None, flow_id = "parent", doc = parsed, options = {})
-    for _ in range(100):
-        await asyncio.sleep(0.05)
-        if stopped or rs.nodes["call"].status == "running":
-            break
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 10)  # the called flow's step is running
     await eng.cancel(rs.id)
     await asyncio.wait_for(rs.task, timeout = 20)
     assert rs.status == "cancelled"
