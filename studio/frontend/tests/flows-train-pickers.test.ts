@@ -6,18 +6,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { flushMicrotasks } from "./helpers/flows.ts";
+import { byTestId, flushMicrotasks } from "./helpers/flows.ts";
 import { fakeReact } from "./helpers/fake-react.ts";
 import { elementsOf, loadWithStubs, type StubElement, stubEveryImport, stubJsxRuntime } from "./helpers/module-stubs.ts";
 import { hfDatasetChoice, pickedSplit, shownSplit } from "../src/features/flows/editor/dataset-choice.ts";
 
 test("the node's params map onto the picker's values, with an unset split running as train", () => {
   assert.deepEqual(hfDatasetChoice({}), { repo: null, subset: null, split: "train" });
-  assert.deepEqual(hfDatasetChoice({ repo: " openai/gsm8k ", subset: "main", split: "test" }), {
-    repo: "openai/gsm8k",
-    subset: "main",
-    split: "test",
-  });
+  assert.deepEqual(
+    hfDatasetChoice({ repo: " openai/gsm8k ", subset: "main", split: "test" }),
+    { repo: "openai/gsm8k", subset: "main", split: "test" },
+  );
   assert.deepEqual(hfDatasetChoice({ repo: "", subset: "", split: "" }), { repo: null, subset: null, split: null });
 });
 
@@ -32,7 +31,6 @@ test("a saved split expression survives the dropdown, which lists only split nam
   // `v` on the way to `validation` is no split name, so auto-select would snap it back to train.
   assert.notEqual(shownSplit("v"), pickedSplit("v", "train"));
 });
-
 
 // ---- The picker components, rendered with deterministic hooks (no DOM). ----
 
@@ -98,9 +96,10 @@ for (const [source, fetches] of [["/api/flows", 2], ["/api/models", 1]] as const
       const hooks = fakeReact();
       active = hooks;
       const field = ParamField({ spec, value: "", onChange: () => undefined });
-      hooks.render(field.type as (p: unknown) => unknown, field.props);
+      const render = () => hooks.render(field.type as (p: unknown) => unknown, field.props);
+      render();
       await flushMicrotasks();
-      const input = named(elementsOf(hooks.render(field.type as (p: unknown) => unknown, field.props)), "Input");
+      const input = named(elementsOf(render()), "Input");
       assert.equal(input.props.placeholder, "2 choices");
       hooks.unmount();
     }
@@ -120,19 +119,17 @@ function datasetFields(params: Record<string, unknown>) {
   );
   const hooks = fakeReact();
   const props = { params, onChange: (p: Record<string, unknown>) => patches.push(p) };
-  const render = () => {
-    active = hooks;
-    return elementsOf(hooks.render(FlowHfDatasetFields, props));
-  };
-  return { patches, render, props };
+  active = hooks;
+  const els = elementsOf(hooks.render(FlowHfDatasetFields, props));
+  const splitInput = byTestId(els, "flows-hf-split-expression") as StubElement;
+  return { patches, els, splitInput, dropdowns: named(els, "HfDatasetSubsetSplitSelectors") };
 }
 
 test("the Hugging Face Dataset node: a new repo clears the subset, and the eval split is hidden", () => {
-  const { patches, render } = datasetFields({ repo: "openai/gsm8k", subset: "main", split: "train[:10%]" });
-  const els = render();
+  const saved = { repo: "openai/gsm8k", subset: "main", split: "train[:10%]" };
+  const { patches, els, dropdowns } = datasetFields(saved);
   call(named(els, "DatasetSelector"), "onValueChange", "org/other");
   assert.deepEqual(patches, [{ repo: "org/other", subset: "" }]);
-  const dropdowns = named(els, "HfDatasetSubsetSplitSelectors");
   assert.equal(dropdowns.props.hideEvalSplit, true);
   assert.equal(dropdowns.props.datasetName, "openai/gsm8k");
   assert.equal(dropdowns.props.datasetSplit, "train", "the dropdown shows the split name of the saved expression");
@@ -141,26 +138,21 @@ test("the Hugging Face Dataset node: a new repo clears the subset, and the eval 
 });
 
 test("a saved split expression survives the dropdown's auto-select, and the full expression stays editable", () => {
-  const { patches, render } = datasetFields({ repo: "openai/gsm8k", split: "train[:10%]" });
-  const els = render();
-  call(named(els, "HfDatasetSubsetSplitSelectors"), "setDatasetSplit", "train");
-  call(named(els, "HfDatasetSubsetSplitSelectors"), "setDatasetSplit", "test");
+  const { patches, dropdowns, splitInput } = datasetFields({ repo: "openai/gsm8k", split: "train[:10%]" });
+  call(dropdowns, "setDatasetSplit", "train");
+  call(dropdowns, "setDatasetSplit", "test");
   assert.deepEqual(patches, [{ split: "train[:10%]" }, { split: "test" }]);
-  const input = els.find((e) => e.props["data-testid"] === "flows-hf-split-expression") as StubElement;
-  assert.equal(input.props.value, "train[:10%]");
-  call(input, "onChange", { target: { value: "train+test" } });
+  assert.equal(splitInput.props.value, "train[:10%]");
+  call(splitInput, "onChange", { target: { value: "train+test" } });
   assert.deepEqual(patches.at(-1), { split: "train+test" });
 });
 
 test("typing a split expression is not replaced by the dropdown's auto-select mid-word", () => {
-  const { patches, render } = datasetFields({ repo: "openai/gsm8k", split: "v" });
-  const els = render();
-  const input = els.find((e) => e.props["data-testid"] === "flows-hf-split-expression") as StubElement;
-  const dropdowns = named(els, "HfDatasetSubsetSplitSelectors");
-  call(input, "onFocus");
+  const { patches, dropdowns, splitInput } = datasetFields({ repo: "openai/gsm8k", split: "v" });
+  call(splitInput, "onFocus");
   call(dropdowns, "setDatasetSplit", "train");
   assert.deepEqual(patches, [], "no snap back to train while typing");
-  call(input, "onBlur");
+  call(splitInput, "onBlur");
   call(dropdowns, "setDatasetSplit", "train");
   assert.deepEqual(patches, [{ split: "train" }], "after leaving the field the dropdown may pick again");
 });

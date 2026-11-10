@@ -5,40 +5,35 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { NextSceneRequest as Req } from "../src/features/flows/player/story/lookahead.ts";
-import { flushMicrotasks } from "./helpers/flows.ts";
+import { flushMicrotasks as tick, storyManifest } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const R = await import("../src/features/flows/player/story/reducer.ts");
 const L = await import("../src/features/flows/player/story/lookahead.ts");
-type Manifest = import("../src/features/flows/types.ts").StoryManifest;
 type Scene = import("../src/features/flows/types.ts").StoryScene;
 type State = import("../src/features/flows/player/story/reducer.ts").StoryState;
 
-const m: Manifest = {
-  title: "Dungeon",
-  start: "door",
-  vars: { hp: 10 },
-  characters: [{ id: "g", name: "Grim" }],
-  mode: "infinite",
-  entry_points: { next_scene: "next" },
-  scenes: [
-    {
-      id: "door",
-      lines: [{ text: "Dark." }, { speaker: "g", text: "Go on." }],
-      choices: [
-        { id: "c1", text: "In", goto: "gen_1", set: { hp: 9 } },
-        { id: "c2", text: "Back", goto: "gen_2" },
-        { id: "c3", text: "Wait", goto: "gen_3" },
-      ],
-    },
-  ],
-} as Manifest;
-
-function readToChoice(from: State): State {
-  return L.readToStop(m, from);
-}
+const m = storyManifest(
+  [{
+    id: "door",
+    lines: [{ text: "Dark." }, { speaker: "g", text: "Go on." }],
+    choices: [
+      { id: "c1", text: "In", goto: "gen_1", set: { hp: 9 } },
+      { id: "c2", text: "Back", goto: "gen_2" },
+      { id: "c3", text: "Wait", goto: "gen_3" },
+    ],
+  }],
+  {
+    title: "Dungeon",
+    start: "door",
+    vars: { hp: 10 },
+    characters: [{ id: "g", name: "Grim" }],
+    mode: "infinite",
+    entry_points: { next_scene: "next" },
+  },
+);
 
 function writtenScene(tag: string, choices = 3): Scene {
   return {
@@ -59,52 +54,53 @@ interface Call {
   reject: (e: unknown) => void;
 }
 
-function fakeWriter() {
+/** A WriteAhead over a fake writer whose calls the test answers; `notify` is its change callback. */
+function writeAhead(notify?: () => void) {
   const calls: Call[] = [];
   const write = (req: Req, signal: AbortSignal) =>
     new Promise<Scene>((resolve, reject) => {
       calls.push({ req, signal, resolve, reject });
-      signal.addEventListener("abort", () =>
-        reject(new DOMException("aborted", "AbortError")),
-      );
+      signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
     });
-  return { calls, write };
+  return { calls, wa: new L.WriteAhead(write, notify) };
 }
 
-const tick = flushMicrotasks;
+const start = () => R.initialState(m);
+/** Depth-1 plan with nothing written yet. */
+const plan1 = (s: State) => L.planWriteAhead(m, s, 1, () => undefined);
+/** Read `from` to its choices and pick `choiceId`: the live state waiting on the next scene. */
+const pick = (from: State, choiceId = "c1") => R.reduce(m, L.readToStop(m, from), { type: "choose", choiceId });
+const reqOf = (live: State) => L.nextSceneRequest(m, live) as Req;
+/** The live call for `live`'s next scene, through the write-ahead cache. */
+const take = (wa: InstanceType<typeof L.WriteAhead>, live: State) => {
+  const req = reqOf(live);
+  return { req, scene: wa.take(req, L.writeKey(live, req)) };
+};
+/** A hold the test releases; `release()` is valid once the hold's task has started. */
+function heldTask() {
+  let release: () => void = () => undefined;
+  return { task: () => new Promise<void>((r) => (release = r)), release: () => release() };
+}
 
 test("the request written ahead is exactly the one the live call sends after the pick", () => {
-  const start = R.initialState(m);
-  const planned = L.planWriteAhead(m, start, 1, () => undefined);
+  const planned = plan1(start());
   assert.equal(planned.length, 3, "one scene per offered choice");
-  const live = R.reduce(m, readToChoice(start), {
-    type: "choose",
-    choiceId: "c1",
-  });
+  const live = pick(start());
   assert.equal(live.status, "generating");
   const req = L.nextSceneRequest(m, live);
   assert.ok(req);
-  const key = L.writeKey(live, req);
-  const hit = planned.find((p) => p.key === key);
+  const hit = planned.find((p) => p.key === L.writeKey(live, req));
   assert.ok(hit, "the picked branch was written ahead under the live key");
   assert.deepEqual(hit.req, req);
   assert.equal(req.state.vars.hp, 9, "the choice's effects are in the request");
-  assert.deepEqual(req.state.history.slice(-3), [
-    "Narrator: Dark.",
-    "Grim: Go on.",
-    "(Player chose: In)",
-  ]);
+  assert.deepEqual(req.state.history.slice(-3), ["Narrator: Dark.", "Grim: Go on.", "(Player chose: In)"]);
 });
 
 test("a different path never reuses a written scene", () => {
-  const start = R.initialState(m);
-  const a = L.planWriteAhead(m, start, 1, () => undefined);
-  const hurt = R.reduce(m, start, { type: "set", vars: { gold: 3 } });
-  const b = L.planWriteAhead(m, hurt, 1, () => undefined);
-  const later = R.reduce(m, R.reduce(m, start, { type: "advance" }), {
-    type: "start",
-  });
-  const c = L.planWriteAhead(m, later, 1, () => undefined);
+  const s = start();
+  const a = plan1(s);
+  const b = plan1(R.reduce(m, s, { type: "set", vars: { gold: 3 } }));
+  const c = plan1(R.reduce(m, R.reduce(m, s, { type: "advance" }), { type: "start" }));
   for (const x of a) {
     assert.ok(!b.some((y) => y.key === x.key), "vars are part of the key");
     assert.ok(!c.some((y) => y.key === x.key), "a new playthrough is too");
@@ -112,38 +108,27 @@ test("a different path never reuses a written scene", () => {
 });
 
 test("planning ahead leaves the real state untouched", () => {
-  const start = R.initialState(m);
-  const before = structuredClone(start);
-  L.planWriteAhead(m, start, 2, () => writtenScene("x"));
-  assert.deepEqual(start, before);
+  const s = start();
+  const before = structuredClone(s);
+  L.planWriteAhead(m, s, 2, () => writtenScene("x"));
+  assert.deepEqual(s, before);
 });
 
 test("a written scene is used at once; an unchosen branch is dropped", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
-  const start = R.initialState(m);
-  const plan = L.planWriteAhead(m, start, 1, () => undefined);
+  const { calls, wa } = writeAhead();
+  const plan = plan1(start());
   wa.plan(plan);
   assert.equal(calls.length, 1, "one background call at a time");
   calls[0].resolve(writtenScene("a"));
   await tick();
   assert.equal(calls.length, 2);
-  const live = R.reduce(m, readToChoice(start), {
-    type: "choose",
-    choiceId: "c1",
-  });
-  const req = L.nextSceneRequest(m, live) as Req;
-  const scene = await wa.take(req, L.writeKey(live, req));
+  const live = pick(start());
+  const scene = await take(wa, live).scene;
   assert.equal(scene.id, "w_a");
   assert.equal(calls.length, 2, "a hit makes no call");
   assert.equal(wa.stats.hits, 1);
-  const next = R.reduce(m, live, {
-    type: "addScene",
-    scene,
-    asId: "gen_1",
-    rev: live.rev,
-  });
-  wa.plan(L.planWriteAhead(m, next, 1, () => undefined));
+  const next = R.reduce(m, live, { type: "addScene", scene, asId: "gen_1", rev: live.rev });
+  wa.plan(plan1(next));
   assert.ok(calls[1].signal.aborted, "the running sibling write is stopped");
   assert.equal(wa.written(plan[1].key), undefined);
   assert.equal(wa.written(plan[2].key), undefined);
@@ -151,104 +136,74 @@ test("a written scene is used at once; an unchosen branch is dropped", async () 
 });
 
 test("a cached scene for another request is a miss", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
-  const start = R.initialState(m);
-  wa.plan(L.planWriteAhead(m, start, 1, () => undefined));
+  const { calls, wa } = writeAhead();
+  wa.plan(plan1(start()));
   calls[0].resolve(writtenScene("a"));
   await tick();
-  const other = R.reduce(m, readToChoice(start), {
-    type: "set",
-    vars: { gold: 1 },
-  });
-  const live = R.reduce(m, other, { type: "choose", choiceId: "c1" });
-  const req = L.nextSceneRequest(m, live) as Req;
-  const p = wa.take(req, L.writeKey(live, req));
+  const other = R.reduce(m, L.readToStop(m, start()), { type: "set", vars: { gold: 1 } });
+  const { req, scene } = take(wa, R.reduce(m, other, { type: "choose", choiceId: "c1" }));
   await tick();
   assert.equal(wa.stats.misses, 1);
   const own = calls.at(-1) as Call;
   assert.equal(own.req, req, "the live call sends its own request");
   own.resolve(writtenScene("live"));
-  assert.equal((await p).id, "w_live");
+  assert.equal((await scene).id, "w_live");
 });
 
 test("background writing waits for the player and yields the GPU to a live call", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
-  const plan = L.planWriteAhead(m, R.initialState(m), 1, () => undefined);
-  let release: () => void = () => undefined;
-  const held = wa.hold(() => new Promise<void>((r) => (release = r)), false);
+  const { calls, wa } = writeAhead();
+  const plan = plan1(start());
+  const player = heldTask();
+  const held = wa.hold(player.task, false);
   wa.plan(plan);
   assert.equal(calls.length, 0, "nothing starts while a player call waits");
-  release();
+  player.release();
   await held;
   assert.equal(calls.length, 1);
   const running = calls[0];
-  const elsewhere = R.reduce(m, readToChoice(R.initialState(m)), {
-    type: "set",
-    vars: { hp: 2 },
-  });
-  const live = R.reduce(m, elsewhere, { type: "choose", choiceId: "c2" });
-  const req = L.nextSceneRequest(m, live) as Req;
-  const p = wa.take(req, L.writeKey(live, req));
+  const elsewhere = R.reduce(m, L.readToStop(m, start()), { type: "set", vars: { hp: 2 } });
+  const { req, scene } = take(wa, R.reduce(m, elsewhere, { type: "choose", choiceId: "c2" }));
   assert.ok(running.signal.aborted);
   await tick();
   const own = calls.at(-1) as Call;
   assert.equal(own.req, req);
   own.resolve(writtenScene("live"));
-  await p;
+  await scene;
   await tick();
   assert.equal(calls.length, 2, "nothing restarts before the next plan");
   wa.plan(plan);
-  assert.equal(
-    calls.at(-1)?.req,
-    running.req,
-    "the stopped write is retried when it is still wanted",
-  );
+  assert.equal(calls.at(-1)?.req, running.req, "the stopped write is retried when it is still wanted");
 });
 
 test("painting the scene on screen stops a write already running, which runs again after", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
-  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
+  const { calls, wa } = writeAhead();
+  wa.plan(plan1(start()));
   const running = calls[0];
-  let release: () => void = () => undefined;
-  const art = wa.hold(() => new Promise<void>((r) => (release = r)));
-  assert.ok(
-    running.signal.aborted,
-    "the art does not wait behind a speculative write",
-  );
+  const paint = heldTask();
+  const art = wa.hold(paint.task);
+  assert.ok(running.signal.aborted, "the art does not wait behind a speculative write");
   await tick();
   assert.equal(calls.length, 1, "nothing starts while the art paints");
-  release();
+  paint.release();
   await art;
   await tick();
   assert.equal(calls.at(-1)?.req, running.req, "the stopped write is retried");
 });
 
 test("a pick while its scene is being written waits on that write", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
-  const start = R.initialState(m);
-  wa.plan(L.planWriteAhead(m, start, 1, () => undefined));
-  const live = R.reduce(m, readToChoice(start), {
-    type: "choose",
-    choiceId: "c1",
-  });
-  const req = L.nextSceneRequest(m, live) as Req;
-  const p = wa.take(req, L.writeKey(live, req));
+  const { calls, wa } = writeAhead();
+  wa.plan(plan1(start()));
+  const { scene } = take(wa, pick(start()));
   assert.equal(calls[0].signal.aborted, false, "the same write is kept");
   calls[0].resolve(writtenScene("a"));
-  assert.equal((await p).id, "w_a");
+  assert.equal((await scene).id, "w_a");
   assert.equal(calls.length, 1);
 });
 
 test("load and restart cancel everything written ahead", async () => {
-  const { calls, write } = fakeWriter();
   let notified = 0;
-  const wa = new L.WriteAhead(write, () => notified++);
-  const start = R.initialState(m);
-  const plan = L.planWriteAhead(m, start, 1, () => undefined);
+  const { calls, wa } = writeAhead(() => notified++);
+  const plan = plan1(start());
   wa.plan(plan);
   calls[0].resolve(writtenScene("a"));
   await tick();
@@ -264,19 +219,17 @@ test("load and restart cancel everything written ahead", async () => {
 });
 
 test("a writer closed by an effect cleanup works again once reopened", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
+  const { calls, wa } = writeAhead();
   wa.close();
   wa.open();
-  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
+  wa.plan(plan1(start()));
   await tick();
   assert.equal(calls.length, 1);
 });
 
 test("an ending drops every branch still queued or being written", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
-  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
+  const { calls, wa } = writeAhead();
+  wa.plan(plan1(start()));
   const running = calls[0];
   wa.plan([]);
   assert.ok(running.signal.aborted);
@@ -286,27 +239,19 @@ test("an ending drops every branch still queued or being written", async () => {
 });
 
 test("depth 2 writes below written scenes, capped", () => {
-  const start = R.initialState(m);
-  const one = L.planWriteAhead(m, start, 1, () => writtenScene("x"));
+  const one = L.planWriteAhead(m, start(), 1, () => writtenScene("x"));
   assert.equal(one.length, 3);
-  const two = L.planWriteAhead(m, start, 2, () => writtenScene("x", 4));
+  const two = L.planWriteAhead(m, start(), 2, () => writtenScene("x", 4));
   assert.equal(two.length, L.MAX_WRITE_AHEAD);
-  assert.deepEqual(
-    two.slice(0, 3).map((p) => p.key),
-    one.map((p) => p.key),
-    "nearest scenes first",
-  );
+  assert.deepEqual(two.slice(0, 3).map((p) => p.key), one.map((p) => p.key), "nearest scenes first");
   assert.match(two[3].req.state.choice, /^x option/);
-  assert.deepEqual(
-    L.planWriteAhead(m, start, 0, () => undefined),
-    [],
-  );
+  assert.deepEqual(L.planWriteAhead(m, start(), 0, () => undefined), []);
 });
 
 test("scene text never waits behind painting", async () => {
   const lanes = new L.Lanes();
-  let paintDone: () => void = () => undefined;
-  const art = lanes.run("art", () => new Promise<void>((r) => (paintDone = r)));
+  const paint = heldTask();
+  const art = lanes.run("art", paint.task);
   let wrote = false;
   await lanes.run("text", async () => {
     wrote = true;
@@ -318,57 +263,37 @@ test("scene text never waits behind painting", async () => {
   });
   await tick();
   assert.equal(second, false, "art stays one call at a time");
-  paintDone();
+  paint.release();
   await art;
   await art2;
   assert.ok(second);
 });
 
 test("restarting during a live miss cancels it and the next playthrough writes ahead at once", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
-  const live = R.reduce(m, readToChoice(R.initialState(m)), {
-    type: "choose",
-    choiceId: "c1",
-  });
-  const req = L.nextSceneRequest(m, live) as Req;
-  const missed = wa.take(req, L.writeKey(live, req)).catch(() => "stopped");
+  const { calls, wa } = writeAhead();
+  const missed = take(wa, pick(start())).scene.catch(() => "stopped");
   assert.equal(calls.length, 1);
   wa.close();
   assert.ok(calls[0].signal.aborted, "the live request is cancelled");
   wa.open();
-  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
-  assert.equal(
-    calls.length,
-    2,
-    "the new playthrough is not held by the old miss",
-  );
+  wa.plan(plan1(start()));
+  assert.equal(calls.length, 2, "the new playthrough is not held by the old miss");
   assert.equal(await missed, "stopped");
   await tick();
   wa.plan([]);
 });
 
 test("a new playthrough cancels a live miss without letting it end a later hold early", async () => {
-  const { calls, write } = fakeWriter();
-  const wa = new L.WriteAhead(write);
-  const live = R.reduce(m, readToChoice(R.initialState(m)), {
-    type: "choose",
-    choiceId: "c1",
-  });
-  const req = L.nextSceneRequest(m, live) as Req;
-  const missed = wa.take(req, L.writeKey(live, req)).catch(() => "stopped");
+  const { calls, wa } = writeAhead();
+  const missed = take(wa, pick(start())).scene.catch(() => "stopped");
   wa.reset();
   assert.ok(calls[0].signal.aborted, "the live request is cancelled");
-  let release: () => void = () => undefined;
-  const held = wa.hold(() => new Promise<void>((r) => (release = r)), false);
+  const player = heldTask();
+  const held = wa.hold(player.task, false);
   assert.equal(await missed, "stopped");
-  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
-  assert.equal(
-    calls.length,
-    1,
-    "the hold still keeps background writing waiting",
-  );
-  release();
+  wa.plan(plan1(start()));
+  assert.equal(calls.length, 1, "the hold still keeps background writing waiting");
+  player.release();
   await held;
   assert.equal(calls.length, 2);
 });

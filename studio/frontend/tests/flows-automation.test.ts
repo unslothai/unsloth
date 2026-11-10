@@ -4,30 +4,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { byTestId, deferred, flushMicrotasks as flush } from "./helpers/flows.ts";
+import { fakeReact, selectorStore } from "./helpers/fake-react.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
-import {
-  elementsOf,
-  loadWithStubs,
-  stubEveryImport,
-  stubJsxRuntime,
-} from "./helpers/module-stubs.ts";
+import { elementsOf, loadWithStubs, stubEveryImport, stubJsxRuntime } from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 
-const { pendingItems, webhookUrl } = await import(
-  "../src/features/flows/capability-items.ts"
-);
-
-const none = {
-  python: [],
-  hosts: [],
-  mcp: false,
-  providers: [],
-  triggers: false,
-};
+const { pendingItems, webhookUrl } = await import("../src/features/flows/capability-items.ts");
 
 test("nothing pending shows no approval banner", () => {
-  assert.deepEqual(pendingItems(none), []);
+  assert.deepEqual(pendingItems({ python: [], hosts: [], mcp: false, providers: [], triggers: false }), []);
   assert.deepEqual(pendingItems(null), []);
 });
 
@@ -59,81 +46,25 @@ test("the webhook URL joins the page origin and the route path", () => {
   );
 });
 
-// The two components below guard races inside React effects. They run here with a tiny hook
-// runtime: state and refs persist across renders by call order, effects run after a render
-// when their deps change (cleanup first), and the test controls every API promise.
+// The two components below guard races inside React effects; the test controls every API promise.
 
-type Deferred<T> = { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void };
-function deferred<T>(): Deferred<T> {
-  let resolve!: (v: T) => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<T>((a, b) => {
-    resolve = a;
-    reject = b;
-  });
-  return { promise, resolve, reject };
-}
-
-const flush = async () => {
-  for (let i = 0; i < 5; i += 1) await Promise.resolve();
+type Pending = { flowId: string; d: ReturnType<typeof deferred<unknown>> };
+/** An API stub that records each call's flow id with a deferred answer. */
+const recorder = (into: Pending[]) => (flowId: string) => {
+  const d = deferred<unknown>();
+  into.push({ flowId, d });
+  return d.promise;
 };
-
-function hookRuntime() {
-  const slots: unknown[] = [];
-  const effects: { deps?: unknown[]; cleanup?: unknown; run?: () => unknown }[] = [];
-  let i = 0;
-  const changed = (a: unknown[] | undefined, b: unknown[] | undefined) =>
-    !a || !b || a.length !== b.length || a.some((v, k) => !Object.is(v, b[k]));
-  const react = {
-    __esModule: true,
-    useState<T>(init: T) {
-      const k = i++;
-      if (!(k in slots)) slots[k] = init;
-      return [slots[k], (v: T) => void (slots[k] = v)];
-    },
-    useRef<T>(init: T) {
-      const k = i++;
-      if (!(k in slots)) slots[k] = { current: init };
-      return slots[k];
-    },
-    useCallback<T>(fn: T, deps: unknown[]) {
-      const k = i++;
-      const prev = slots[k] as { fn: T; deps: unknown[] } | undefined;
-      if (!prev || changed(prev.deps, deps)) slots[k] = { fn, deps };
-      return (slots[k] as { fn: T }).fn;
-    },
-    useEffect(run: () => unknown, deps?: unknown[]) {
-      const k = i++;
-      const prev = effects[k];
-      if (!prev || changed(prev.deps, deps)) effects[k] = { deps, cleanup: prev?.cleanup, run };
-    },
-  };
-  return {
-    react,
-    /** One render plus its effects, as React commits it. */
-    render<P>(component: (props: P) => unknown, props: P) {
-      i = 0;
-      const tree = component(props);
-      for (const e of effects) {
-        if (!e?.run) continue;
-        if (typeof e.cleanup === "function") e.cleanup();
-        e.cleanup = e.run();
-        e.run = undefined;
-      }
-      return tree;
-    },
-  };
-}
-
 const textOf = (tree: unknown) =>
   elementsOf(tree)
     .flatMap((e) => [e.props.children].flat())
     .filter((c) => typeof c === "string")
     .join(" ");
+const savedUi = { useUiStore: selectorStore({ saveState: "saved" }) };
 
 function loadTriggerPanel(apiBase: string) {
-  const hooks = hookRuntime();
-  const lists: { flowId: string; d: Deferred<unknown> }[] = [];
+  const hooks = fakeReact();
+  const lists: Pending[] = [];
   const mod = loadWithStubs<{ TriggerPanel: (p: { nodeId: string; kind: string }) => unknown }>(
     new URL("../src/features/flows/editor/trigger-panel.tsx", import.meta.url),
     stubEveryImport({
@@ -141,19 +72,12 @@ function loadTriggerPanel(apiBase: string) {
       "react/jsx-runtime": stubJsxRuntime(),
       "@/lib/api-base": { getApiBase: () => apiBase },
       "../capability-items": { webhookUrl },
-      "../stores/doc-store": { useDocStore: (sel: (s: unknown) => unknown) => sel({ flowId: "f1" }) },
-      "../stores/ui-store": { useUiStore: (sel: (s: unknown) => unknown) => sel({ saveState: "saved" }) },
-      "../api": {
-        listTriggers: (flowId: string) => {
-          const d = deferred<unknown>();
-          lists.push({ flowId, d });
-          return d.promise;
-        },
-      },
+      "../stores/doc-store": { useDocStore: selectorStore({ flowId: "f1" }) },
+      "../stores/ui-store": savedUi,
+      "../api": { listTriggers: recorder(lists) },
     }),
   );
-  const render = (nodeId: string) =>
-    hooks.render(mod.TriggerPanel, { nodeId, kind: "trigger.webhook" });
+  const render = (nodeId: string) => hooks.render(mod.TriggerPanel, { nodeId, kind: "trigger.webhook" });
   return { render, lists };
 }
 
@@ -193,36 +117,25 @@ test("a trigger list that lands after the block changed is dropped", async () =>
 });
 
 function loadBanner() {
-  const hooks = hookRuntime();
-  const gets: { flowId: string; d: Deferred<unknown> }[] = [];
-  const approvals: { flowId: string; d: Deferred<unknown> }[] = [];
+  const hooks = fakeReact();
+  const gets: Pending[] = [];
+  const approvals: Pending[] = [];
   const mod = loadWithStubs<{ CapabilityBanner: (p: { flowId: string }) => unknown }>(
     new URL("../src/features/flows/editor/capability-banner.tsx", import.meta.url),
     stubEveryImport({
       react: hooks.react,
       "react/jsx-runtime": stubJsxRuntime(),
       "../capability-items": { pendingItems },
-      "../stores/ui-store": { useUiStore: (sel: (s: unknown) => unknown) => sel({ saveState: "saved" }) },
-      "../api": {
-        getCapabilities: (flowId: string) => {
-          const d = deferred<unknown>();
-          gets.push({ flowId, d });
-          return d.promise;
-        },
-        approveCapabilities: (flowId: string) => {
-          const d = deferred<unknown>();
-          approvals.push({ flowId, d });
-          return d.promise;
-        },
-      },
+      "../stores/ui-store": savedUi,
+      "../api": { getCapabilities: recorder(gets), approveCapabilities: recorder(approvals) },
     }),
   );
   return { render: (flowId: string) => hooks.render(mod.CapabilityBanner, { flowId }), gets, approvals };
 }
 
-const report = (host: string, pending = true) => ({
+const report = (host: string) => ({
   can_approve: true,
-  pending: { python: [], hosts: pending ? [host] : [], mcp: false, providers: [], triggers: false },
+  pending: { python: [], hosts: [host], mcp: false, providers: [], triggers: false },
 });
 
 test("the approval banner never shows another flow's report", async () => {
@@ -244,8 +157,7 @@ test("approving never lands on another flow, and a flow switch clears the banner
   banner.render("f1");
   banner.gets[0].d.resolve(report("one.example"));
   await flush();
-  const tree = banner.render("f1");
-  const approve = elementsOf(tree).find((e) => e.props["data-testid"] === "flows-capabilities-approve");
+  const approve = byTestId(elementsOf(banner.render("f1")), "flows-capabilities-approve");
   assert.ok(approve);
   (approve.props.onClick as () => void)();
   assert.equal(banner.approvals[0].flowId, "f1");

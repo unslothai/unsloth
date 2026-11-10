@@ -10,23 +10,23 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const s = await import("../src/features/flows/editor/llm-settings.ts");
-const { defaultParams } = await import(
-  "../src/features/flows/stores/catalog-store.ts"
-);
+const { defaultParams } = await import("../src/features/flows/stores/catalog-store.ts");
 
 const GENERATE = specs["llm.generate"];
 const VISION = specs["llm.vision"];
 const SAVED = {
-  temperature: 0.3,
-  topP: 0.7,
-  topK: 40,
-  minP: 0.05,
-  minPMode: "custom" as const,
-  repetitionPenalty: 1.1,
-  presencePenalty: 0.5,
-  maxTokens: 2048,
-  systemPrompt: "Be brief.",
+  temperature: 0.3, topP: 0.7, topK: 40, minP: 0.05, minPMode: "custom" as const,
+  repetitionPenalty: 1.1, presencePenalty: 0.5, maxTokens: 2048, systemPrompt: "Be brief.",
 };
+/** What Chat reports as loaded: Qwen3-4B-GGUF at an 8k context unless overridden. */
+const loadedModel = (over: Record<string, unknown> = {}) => ({
+  checkpoint: "unsloth/Qwen3-4B-GGUF",
+  contextLength: 8192,
+  kvCacheDtype: null,
+  nParallel: null,
+  speculativeType: null,
+  ...over,
+});
 
 test("on, the saved settings win over the card's own values", () => {
   const card = { temperature: 1.5, system: "card", use_model_settings: true };
@@ -51,18 +51,12 @@ test("on with nothing saved, or only some keys, the card fills the gaps", () => 
 });
 
 test("server Min P, a Max output cap and out-of-range values follow the engine's rules", () => {
-  const out = s.savedAsParams(
-    { minP: 0.3, minPMode: "server-default", maxTokens: 2 ** 31 - 1 },
-    GENERATE,
-  );
+  const out = s.savedAsParams({ minP: 0.3, minPMode: "server-default", maxTokens: 2 ** 31 - 1 }, GENERATE);
   assert.equal(out.min_p, null);
   assert.equal(out.max_tokens, 32768);
   assert.equal(s.savedAsParams({ maxTokens: 2 ** 31 - 1 }, VISION).max_tokens, 8192);
-  const shown = s.effectiveParams(
-    { min_p: 0.3, use_model_settings: true },
-    { minPMode: "server-default" },
-    GENERATE,
-  );
+  const card = { min_p: 0.3, use_model_settings: true };
+  const shown = s.effectiveParams(card, { minPMode: "server-default" }, GENERATE);
   assert.equal(shown.min_p, null);
   assert.equal(s.savedAsParams({ maxTokens: 20000 }, VISION).max_tokens, 8192);
 });
@@ -84,9 +78,7 @@ test("turning the toggle off keeps the values on screen; on drops nothing", () =
   const off = s.togglePatch({}, SAVED, GENERATE, false);
   assert.equal(off.use_model_settings, false);
   assert.equal(off.temperature, 0.3);
-  assert.deepEqual(s.togglePatch({}, SAVED, GENERATE, true), {
-    use_model_settings: true,
-  });
+  assert.deepEqual(s.togglePatch({}, SAVED, GENERATE, true), { use_model_settings: true });
 });
 
 test("Load copies the saved values; Save writes only what the card sets", () => {
@@ -111,10 +103,7 @@ test("the memory key is the card's model, else the loaded one, matched case-inse
 test("new cards start on; a flow saved before the setting stays off and keeps its values", () => {
   assert.equal(defaultParams(GENERATE).use_model_settings, true);
   assert.equal(defaultParams(VISION).use_model_settings, true);
-  assert.equal(
-    s.newCardParams("text.template", { template: "" }).use_model_settings,
-    undefined,
-  );
+  assert.equal(s.newCardParams("text.template", { template: "" }).use_model_settings, undefined);
   // An old llm.generate node: the engine's param names, no toggle, no sampling keys.
   const old = { system: "You extract.", temperature: 0.2, max_tokens: 300 };
   assert.equal(s.isOn(old), false);
@@ -129,14 +118,8 @@ test("new cards start on; a flow saved before the setting stays off and keeps it
 test("the inspector hides panel params from the generic rows, stably", () => {
   const trimmed = s.withoutPanelParams(GENERATE);
   assert.equal(trimmed, s.withoutPanelParams(GENERATE));
-  assert.deepEqual(
-    trimmed.params.map((p) => p.id),
-    ["model", "prompt"],
-  );
-  assert.deepEqual(
-    s.withoutPanelParams(VISION).params.map((p) => p.id),
-    ["model", "question"],
-  );
+  assert.deepEqual(trimmed.params.map((p) => p.id), ["model", "prompt"]);
+  assert.deepEqual(s.withoutPanelParams(VISION).params.map((p) => p.id), ["model", "question"]);
   const template = specs["text.template"];
   assert.equal(s.withoutPanelParams(template), template);
 });
@@ -150,15 +133,9 @@ test("a card with no model keys its settings on the resident model, not Chat's p
 const SAVED_LOAD = { max_seq_length: 65536, kv_cache_dtype: "q8_0" };
 
 test("load settings follow the same precedence: saved over the card's own when on", () => {
-  const card = {
-    use_model_settings: true,
-    load: { max_seq_length: 8192, n_parallel: 2 },
-  };
-  assert.deepEqual(s.effectiveParams(card, undefined, GENERATE, SAVED_LOAD).load, {
-    max_seq_length: 65536,
-    n_parallel: 2,
-    kv_cache_dtype: "q8_0",
-  });
+  const card = { use_model_settings: true, load: { max_seq_length: 8192, n_parallel: 2 } };
+  const merged = { max_seq_length: 65536, n_parallel: 2, kv_cache_dtype: "q8_0" };
+  assert.deepEqual(s.effectiveParams(card, undefined, GENERATE, SAVED_LOAD).load, merged);
   const off = { ...card, use_model_settings: false };
   assert.deepEqual(s.effectiveParams(off, undefined, GENERATE, SAVED_LOAD).load, off.load);
   // Editing one load field while on forks the whole shown load onto the card.
@@ -166,30 +143,20 @@ test("load settings follow the same precedence: saved over the card's own when o
   assert.equal(patch.use_model_settings, false);
   assert.deepEqual(patch.load, { max_seq_length: 4096 });
   assert.deepEqual(s.loadPatch(undefined, GENERATE, SAVED_LOAD).load, SAVED_LOAD);
-  assert.deepEqual(s.togglePatch(card, undefined, GENERATE, false, SAVED_LOAD).load, {
-    max_seq_length: 65536,
-    n_parallel: 2,
-    kv_cache_dtype: "q8_0",
-  });
+  assert.deepEqual(s.togglePatch(card, undefined, GENERATE, false, SAVED_LOAD).load, merged);
 });
 
 test("a blank load field goes back to the model's default", () => {
-  assert.deepEqual(s.withLoadField({ n_parallel: 2 }, "max_seq_length", 4096), {
-    n_parallel: 2,
-    max_seq_length: 4096,
-  });
+  assert.deepEqual(
+    s.withLoadField({ n_parallel: 2 }, "max_seq_length", 4096),
+    { n_parallel: 2, max_seq_length: 4096 },
+  );
   assert.equal(s.withLoadField({ n_parallel: 2 }, "n_parallel", undefined), null);
   assert.deepEqual(s.withLoadField({ a: 1, b: "x" }, "b", ""), { a: 1 });
 });
 
 test("the reload hint names what differs from what is loaded, and stays quiet otherwise", () => {
-  const loaded = {
-    checkpoint: "unsloth/Qwen3-4B-GGUF",
-    contextLength: 8192,
-    kvCacheDtype: null,
-    nParallel: 4,
-    speculativeType: "auto",
-  };
+  const loaded = loadedModel({ nParallel: 4, speculativeType: "auto" });
   assert.equal(
     s.reloadHint({ load: { max_seq_length: 32768 } }, loaded),
     "Reloads the model: context 32k vs 8k loaded",
@@ -204,10 +171,7 @@ test("the reload hint names what differs from what is loaded, and stays quiet ot
   );
   assert.equal(s.reloadHint({ load: { max_seq_length: 8192 } }, loaded), null);
   assert.equal(s.reloadHint({}, loaded), null);
-  assert.equal(
-    s.reloadHint({ model: { repo: "UNSLOTH/qwen3-4b-gguf", variant: null } }, loaded),
-    null,
-  );
+  assert.equal(s.reloadHint({ model: { repo: "UNSLOTH/qwen3-4b-gguf", variant: null } }, loaded), null);
 });
 
 test("load settings, thinking and effort are panel params on both LLM nodes", () => {
@@ -221,20 +185,10 @@ test("load settings, thinking and effort are panel params on both LLM nodes", ()
 });
 
 test("the card's hint uses the saved load when the card follows it", () => {
-  const loaded = {
-    checkpoint: "unsloth/Qwen3-4B-GGUF",
-    contextLength: 8192,
-    kvCacheDtype: null,
-    nParallel: null,
-    speculativeType: null,
-  };
   const card = { use_model_settings: true, load: null };
   const load = s.effectiveLoad(card, { max_seq_length: 32768 });
   assert.deepEqual(load, { max_seq_length: 32768 });
-  assert.equal(
-    s.reloadHint({ ...card, load }, loaded),
-    "Reloads the model: context 32k vs 8k loaded",
-  );
+  assert.equal(s.reloadHint({ ...card, load }, loadedModel()), "Reloads the model: context 32k vs 8k loaded");
   assert.equal(s.effectiveLoad({ ...card, use_model_settings: false }, { max_seq_length: 32768 }), null);
 });
 
@@ -249,14 +203,7 @@ test("Context Length writes Chat's context pin and drops a stale max_seq_length"
 });
 
 test("the reload hint names a different GGUF quant of the loaded repo", () => {
-  const loaded = {
-    checkpoint: "unsloth/Qwen3-4B-GGUF",
-    ggufVariant: "UD-Q4_K_XL",
-    contextLength: 8192,
-    kvCacheDtype: null,
-    nParallel: 4,
-    speculativeType: null,
-  };
+  const loaded = loadedModel({ ggufVariant: "UD-Q4_K_XL", nParallel: 4 });
   const card = (variant: string | null) => ({ model: { repo: "unsloth/Qwen3-4B-GGUF", variant } });
   assert.equal(s.reloadHint(card("Q8_0"), loaded), "Reloads the model: Q8_0 vs UD-Q4_K_XL loaded");
   assert.equal(s.reloadHint(card("ud-q4_k_xl"), loaded), null);

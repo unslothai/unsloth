@@ -25,13 +25,15 @@ const bench: NodeSpec = {
   ],
 };
 
-const round = (n: number, score: number) => ({
-  round: n,
-  test_score: score,
-  probe_score: score,
-  rows_from_failures: 0,
-  probe_failures: 0,
-});
+const round = (n: number, score: number) =>
+  ({ round: n, test_score: score, probe_score: score, rows_from_failures: 0, probe_failures: 0 });
+/** The Loop card's view of a run: idle with no output unless `over` says otherwise. */
+type LoopInput = Parameters<typeof loopView>[0];
+const view = (params: Record<string, unknown>, over: Partial<LoopInput> = {}) =>
+  loopView({ status: "idle", params, outputs: null, partial: null, partialStep: null, ...over } as LoopInput);
+const history = (rounds: unknown[], stopped = "max_rounds") => ({ history: { rounds, stopped } });
+const toSeed = (src: string, srcSpec: NodeSpec, loop?: boolean) =>
+  checkConnection(src, srcSpec, outHandle("failures"), "gen", spec("recipe.generate"), inHandle("seed"), loop);
 
 test("Loop keeps rounds, target and feedback on the card, the rest under Advanced", () => {
   const simple = spec("logic.loop")
@@ -41,24 +43,13 @@ test("Loop keeps rounds, target and feedback on the card, the rest under Advance
 });
 
 test("a score step's failures into a dataset seed is a feedback wire, and never a cycle", () => {
-  const check = checkConnection(
-    "bench",
-    bench,
-    outHandle("failures"),
-    "gen",
-    spec("recipe.generate"),
-    inHandle("seed"),
-    true,
+  assert.deepEqual(
+    toSeed("bench", bench, true),
+    { ok: true, kind: "feedback", sourcePort: "failures", targetPort: "seed" },
   );
-  assert.deepEqual(check, {
-    ok: true,
-    kind: "feedback",
-    sourcePort: "failures",
-    targetPort: "seed",
-  });
   // Outside a Loop the same wire is ordinary data: a pipeline that makes more rows from failures.
   assert.deepEqual(
-    checkConnection("bench", spec("train.benchmark"), outHandle("failures"), "gen", spec("recipe.generate"), inHandle("seed")),
+    toSeed("bench", spec("train.benchmark")),
     { ok: true, kind: "data", sourcePort: "failures", targetPort: "seed" },
   );
   const edges = [
@@ -83,48 +74,27 @@ test("a score step's failures into a dataset seed is a feedback wire, and never 
   assert.equal(inLoopFrame({ ...graph, nodes: { x: { type: "t", group: "l" } } }, "x"), true);
   // Without a score output, failures is just json and cannot go into a dataset.
   const plain = { ...bench, outputs: [bench.outputs[1]] };
-  assert.equal(
-    checkConnection("x", plain, outHandle("failures"), "gen", spec("recipe.generate"), inHandle("seed"), true).ok,
-    false,
-  );
+  assert.equal(toSeed("x", plain, true).ok, false);
 });
 
 test("the Loop card says which round it is on and plots the test score per round", () => {
   const params = { rounds: 3, target: 90, feedback: true };
-  assert.equal(
-    loopView({ status: "idle", params, outputs: null, partial: null, partialStep: null }).headline,
-    "Ready",
-  );
-  const running = loopView({
-    status: "running",
-    params,
-    outputs: null,
-    partial: { history: [round(1, 0)] },
-    partialStep: { step: 1, total: 3 },
-  });
+  assert.equal(view(params).headline, "Ready");
+  const step1 = { partialStep: { step: 1, total: 3 } };
+  const running = view(params, { status: "running", partial: { history: [round(1, 0)] }, ...step1 });
   assert.equal(running.headline, "Round 2 of 3");
   assert.deepEqual(running.scores, [0]);
-  const done = loopView({
-    status: "done",
-    params,
-    outputs: { history: { rounds: [round(1, 0), round(2, 88), round(3, 81)], stopped: "max_rounds" } },
-    partial: null,
-    partialStep: null,
-  });
+  const done = view(params, { status: "done", outputs: history([round(1, 0), round(2, 88), round(3, 81)]) });
   assert.equal(done.headline, "Best 88% in round 2");
   assert.deepEqual(done.scores, [0, 88, 81]);
-  assert.match(
-    loopView({ status: "idle", params: { ...params, feedback: false }, outputs: null, partial: null, partialStep: null }).detail,
-    /feedback off/,
-  );
+  assert.match(view({ ...params, feedback: false }).detail, /feedback off/);
 });
 
 test("a rerun shows only its own rounds, and an errored test round never shows as best", () => {
   const params = { rounds: 3, target: 90 };
-  const old = { history: { rounds: [round(1, 50), round(2, 70), round(3, 95)], stopped: "target" } };
-  const rerun = loopView({
+  const old = history([round(1, 50), round(2, 70), round(3, 95)], "target");
+  const rerun = view(params, {
     status: "running",
-    params,
     outputs: old,
     partial: { history: [round(1, 60)] },
     partialStep: { step: 1, total: 3 },
@@ -132,20 +102,7 @@ test("a rerun shows only its own rounds, and an errored test round never shows a
   assert.equal(rerun.headline, "Round 2 of 3");
   assert.deepEqual(rerun.scores, [60]);
   const errored = { ...round(1, 100), test_errored: 1 };
-  const done = loopView({
-    status: "done",
-    params,
-    outputs: { history: { rounds: [errored, round(2, 50)], stopped: "max_rounds" } },
-    partial: null,
-    partialStep: null,
-  });
-  assert.equal(done.headline, "Best 50% in round 2");
-  const none = loopView({
-    status: "done",
-    params,
-    outputs: { history: { rounds: [errored], stopped: "max_rounds" } },
-    partial: null,
-    partialStep: null,
-  });
-  assert.equal(none.headline, "No round scored all its test rows");
+  const best = (rounds: unknown[]) => view(params, { status: "done", outputs: history(rounds) }).headline;
+  assert.equal(best([errored, round(2, 50)]), "Best 50% in round 2");
+  assert.equal(best([errored]), "No round scored all its test rows");
 });

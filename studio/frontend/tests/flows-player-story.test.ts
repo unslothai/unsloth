@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { storyFixture } from "./helpers/flows.ts";
+import { storyFixture, storyManifest } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -15,13 +15,11 @@ type State = import("../src/features/flows/player/story/reducer.ts").StoryState;
 
 const picnic = storyFixture<Manifest>("lantern-picnic");
 const moon = storyFixture<Manifest>("sloth-moon");
+const live = { mode: "live", entry_points: { next_scene: "next" } } as const;
 
 function readToChoice(m: Manifest, from: State): State {
   let s = from;
-  let guard = 0;
-  while (s.status === "reading" && guard++ < 500) {
-    s = R.reduce(m, s, { type: "advance" });
-  }
+  for (let guard = 0; s.status === "reading" && guard < 500; guard++) s = R.reduce(m, s, { type: "advance" });
   return s;
 }
 
@@ -31,24 +29,18 @@ function must<T>(v: T | null | undefined, what: string): T {
 }
 
 function chooseText(m: Manifest, s: State, text: string): State {
-  const scene = must(R.sceneOf(m, s, s.sceneId), "scene");
-  const c = R.visibleChoices(scene, s.vars).find((x) =>
-    x.text.startsWith(text),
-  );
-  assert.ok(
-    c,
-    `no choice "${text}" in ${s.sceneId}: ${R.visibleChoices(scene, s.vars).map((x) => x.text)}`,
-  );
+  const choices = R.visibleChoices(must(R.sceneOf(m, s, s.sceneId), "scene"), s.vars);
+  const c = choices.find((x) => x.text.startsWith(text));
+  assert.ok(c, `no choice "${text}" in ${s.sceneId}: ${choices.map((x) => x.text)}`);
   return R.reduce(m, s, { type: "choose", choiceId: c.id });
 }
+
+const lineText = (m: Manifest, s: State) => R.currentLine(m, s)?.text;
 
 test("the picnic plays to the cake ending through the creek", () => {
   let s = R.initialState(picnic, 1);
   assert.equal(s.status, "reading");
-  assert.equal(
-    R.currentLine(picnic, s)?.text.startsWith("The sun is melting"),
-    true,
-  );
+  assert.equal(lineText(picnic, s)?.startsWith("The sun is melting"), true);
   s = readToChoice(picnic, s);
   assert.equal(s.status, "choosing");
   s = chooseText(picnic, s, "The creek");
@@ -72,217 +64,129 @@ test("random events are deterministic per seed and both outcomes occur", () => {
   const firstScenes = new Set<string>();
   for (let seed = 0; seed < 24; seed++) {
     const play = () => {
-      let s = readToChoice(picnic, R.initialState(picnic, seed));
-      s = chooseText(picnic, s, "The hill");
+      let s = chooseText(picnic, readToChoice(picnic, R.initialState(picnic, seed)), "The hill");
       s = R.reduce(picnic, s, { type: "advance" });
-      while (s.status === "reading" && s.sceneId === "s_hill")
-        s = R.reduce(picnic, s, { type: "advance" });
+      while (s.status === "reading" && s.sceneId === "s_hill") s = R.reduce(picnic, s, { type: "advance" });
       firstScenes.add(s.sceneId);
       return readToChoice(picnic, s);
     };
     const a = play();
-    const b = play();
-    assert.deepEqual(a, b, "same seed, same playthrough");
+    assert.deepEqual(a, play(), "same seed, same playthrough");
     endings.add(must(a.ending, "ending").title);
   }
   assert.deepEqual([...firstScenes].sort(), ["s_goat", "s_stars"]);
-  assert.ok(
-    endings.has("The Biggest Picnic") && endings.has("Just the Two of Us"),
-  );
+  assert.ok(endings.has("The Biggest Picnic") && endings.has("Just the Two of Us"));
 });
 
 test("conditions gate the moon's secret ending and save/load round-trips", () => {
   let s = readToChoice(moon, R.initialState(moon, 3));
-  s = chooseText(moon, s, "Climb down");
-  s = readToChoice(moon, s);
+  s = readToChoice(moon, chooseText(moon, s, "Climb down"));
   s = chooseText(moon, s, "Drink the tea");
   assert.equal(s.vars.kindness, 1);
   const saved = JSON.parse(JSON.stringify(s)) as State;
-  const kindEnough = readToChoice(
-    moon,
-    R.reduce(moon, s, { type: "set", vars: { kindness: 2 } }),
-  );
+  const kindEnough = readToChoice(moon, R.reduce(moon, s, { type: "set", vars: { kindness: 2 } }));
   assert.equal(kindEnough.ending?.title, "Starlit Friends");
   const plain = readToChoice(moon, s);
   assert.equal(plain.ending?.title, "The Moon Comes Home");
   const loaded = R.reduce(moon, plain, { type: "load", state: saved });
   assert.equal(loaded.rev, plain.rev + 1);
   assert.equal(readToChoice(moon, loaded).ending?.title, "The Moon Comes Home");
-  assert.equal(
-    R.reduce(moon, plain, { type: "load", state: { ...saved, v: 99 } }),
-    plain,
-  );
+  assert.equal(R.reduce(moon, plain, { type: "load", state: { ...saved, v: 99 } }), plain);
 });
 
 test("interpolation and hidden lines", () => {
-  const m: Manifest = {
-    title: "T",
-    start: "a",
-    vars: { hp: 3 },
-    characters: [],
-    mode: "fixed",
-    scenes: [
-      {
-        id: "a",
-        lines: [
-          { text: "HP is {{hp}}." },
-          { text: "secret", if: { op: ">", args: [{ var: "hp" }, 5] } },
-          { text: "bye {{missing}}!" },
-        ],
-        choices: [],
-      },
-    ],
-  };
+  const m = storyManifest(
+    [{
+      id: "a",
+      lines: [
+        { text: "HP is {{hp}}." },
+        { text: "secret", if: { op: ">", args: [{ var: "hp" }, 5] } },
+        { text: "bye {{missing}}!" },
+      ],
+      choices: [],
+    }],
+    { vars: { hp: 3 } },
+  );
   let s = R.initialState(m);
-  assert.equal(
-    R.interpolate(must(R.currentLine(m, s), "line").text, s.vars),
-    "HP is 3.",
-  );
+  assert.equal(R.interpolate(must(R.currentLine(m, s), "line").text, s.vars), "HP is 3.");
   s = R.reduce(m, s, { type: "advance" });
-  assert.equal(
-    R.interpolate(must(R.currentLine(m, s), "line").text, s.vars),
-    "bye !",
-  );
+  assert.equal(R.interpolate(must(R.currentLine(m, s), "line").text, s.vars), "bye !");
   s = R.reduce(m, s, { type: "advance" });
   assert.equal(s.status, "ended");
   assert.equal(s.ending?.title, "The End");
 });
 
 test("infinite mode waits for a written scene and drops stale ones", () => {
-  const m: Manifest = {
-    title: "D",
-    start: "door",
-    vars: { hp: 10 },
-    characters: [],
-    mode: "infinite",
-    entry_points: { next_scene: "next" },
-    scenes: [
-      {
-        id: "door",
-        lines: [{ text: "Dark." }],
-        choices: [{ id: "c1", text: "In", goto: "gen_c_1", set: { hp: 9 } }],
-      },
-    ],
-  };
-  let s = readToChoice(m, R.initialState(m));
-  s = R.reduce(m, s, { type: "choose", choiceId: "c1" });
+  const m = storyManifest(
+    [{
+      id: "door",
+      lines: [{ text: "Dark." }],
+      choices: [{ id: "c1", text: "In", goto: "gen_c_1", set: { hp: 9 } }],
+    }],
+    { start: "door", vars: { hp: 10 }, mode: "infinite", entry_points: { next_scene: "next" } },
+  );
+  let s = R.reduce(m, readToChoice(m, R.initialState(m)), { type: "choose", choiceId: "c1" });
   assert.equal(s.status, "generating");
   assert.deepEqual(s.pending, { sceneId: "gen_c_1", choice: "In" });
   assert.equal(s.vars.hp, 9);
-  const scene = {
-    id: "gen_abc",
-    lines: [{ text: "A goblin!" }],
-    choices: [{ id: "x", text: "Run", goto: "gen_x" }],
-  };
+  const choices = [{ id: "x", text: "Run", goto: "gen_x" }];
+  const scene = { id: "gen_abc", lines: [{ text: "A goblin!" }], choices };
   assert.equal(
-    R.reduce(m, s, {
-      type: "addScene",
-      scene,
-      asId: "gen_c_1",
-      rev: s.rev + 1,
-    }),
+    R.reduce(m, s, { type: "addScene", scene, asId: "gen_c_1", rev: s.rev + 1 }),
     s,
     "stale rev ignored",
   );
   s = R.reduce(m, s, { type: "addScene", scene, asId: "gen_c_1", rev: s.rev });
   assert.equal(s.status, "reading");
-  assert.equal(R.currentLine(m, s)?.text, "A goblin!");
+  assert.equal(lineText(m, s), "A goblin!");
   assert.equal(R.sceneOf(m, s, "gen_c_1")?.id, "gen_c_1");
 });
 
 test("a router loop is reported instead of hanging", () => {
-  const m: Manifest = {
-    title: "L",
-    start: "a",
-    vars: {},
-    characters: [],
-    mode: "fixed",
-    scenes: [
-      { id: "a", lines: [], choices: [], next: "b" },
-      { id: "b", lines: [], choices: [], next: "a" },
-    ],
-  };
-  const s = R.initialState(m);
-  assert.equal(s.status, "error");
+  const m = storyManifest([
+    { id: "a", lines: [], choices: [], next: "b" },
+    { id: "b", lines: [], choices: [], next: "a" },
+  ]);
+  assert.equal(R.initialState(m).status, "error");
 });
 
 test("a scene whose dialogue is still being written waits for it", () => {
-  const m: Manifest = {
-    title: "W",
-    start: "a",
-    vars: {},
-    characters: [],
-    mode: "live",
-    entry_points: { next_scene: "next" },
-    scenes: [
-      {
-        id: "a",
-        lines: [{ text: "Hello." }],
-        choices: [{ id: "go", text: "", goto: "b" }],
-      },
-      {
-        id: "b",
-        lines: [],
-        generate_lines: true,
-        choices: [{ id: "end", text: "", goto: "c" }],
-      },
+  const m = storyManifest(
+    [
+      { id: "a", lines: [{ text: "Hello." }], choices: [{ id: "go", text: "", goto: "b" }] },
+      { id: "b", lines: [], generate_lines: true, choices: [{ id: "end", text: "", goto: "c" }] },
       { id: "c", lines: [{ text: "Bye." }], choices: [] },
     ],
-  };
-  let s = R.initialState(m);
-  s = R.reduce(m, s, { type: "advance" });
+    live,
+  );
+  let s = R.reduce(m, R.initialState(m), { type: "advance" });
   assert.equal(s.sceneId, "b");
   assert.equal(s.status, "reading");
-  assert.equal(R.currentLine(m, s)?.text, "...");
+  assert.equal(lineText(m, s), "...");
   const before = s.backlog.length;
-  s = R.reduce(m, s, {
-    type: "setLines",
-    sceneId: "b",
-    lines: [{ text: "Written." }],
-    rev: s.rev,
-  });
-  assert.equal(R.currentLine(m, s)?.text, "Written.");
-  assert.equal(
-    s.backlog.length,
-    before + 1,
-    "the earlier line stays in the history",
-  );
+  s = R.reduce(m, s, { type: "setLines", sceneId: "b", lines: [{ text: "Written." }], rev: s.rev });
+  assert.equal(lineText(m, s), "Written.");
+  assert.equal(s.backlog.length, before + 1, "the earlier line stays in the history");
 });
 
 test("the placeholder cannot be read past until the lines arrive or fail", () => {
-  const m: Manifest = {
-    title: "W",
-    start: "a",
-    vars: {},
-    characters: [],
-    mode: "live",
-    entry_points: { next_scene: "next" },
-    scenes: [
-      {
-        id: "a",
-        lines: [],
-        generate_lines: true,
-        choices: [{ id: "go", text: "", goto: "b" }],
-      },
+  const m = storyManifest(
+    [
+      { id: "a", lines: [], generate_lines: true, choices: [{ id: "go", text: "", goto: "b" }] },
       { id: "b", lines: [{ text: "Next." }], choices: [] },
     ],
-  };
-  let s = R.initialState(m);
-  assert.equal(R.currentLine(m, s)?.text, "...");
-  assert.equal(
-    R.reduce(m, s, { type: "advance" }),
-    s,
-    "advance waits for the lines",
+    live,
   );
+  let s = R.initialState(m);
+  assert.equal(lineText(m, s), "...");
+  assert.equal(R.reduce(m, s, { type: "advance" }), s, "advance waits for the lines");
   s = R.reduce(m, s, { type: "linesFailed", sceneId: "a", rev: s.rev });
   s = R.reduce(m, s, { type: "advance" });
   assert.equal(s.sceneId, "b");
 });
 
 test("a re-roll rebuilds only the story or world, never a side branch", async () => {
-  const { rerollTargets } = await import(
-    "../src/features/flows/player/player-api.ts"
-  );
+  const { rerollTargets } = await import("../src/features/flows/player/player-api.ts");
   const doc = {
     nodes: [
       { id: "gen", type: "story.generator" },
@@ -304,54 +208,32 @@ test("a save whose scene no longer exists is refused", () => {
 });
 
 test("lines written after the reader moved on do not replace the scene under them", () => {
-  const m: Manifest = {
-    title: "W",
-    start: "a",
-    vars: {},
-    characters: [],
-    mode: "live",
-    entry_points: { next_scene: "next" },
-    scenes: [
-      {
-        id: "a",
-        lines: [{ text: "One." }, { text: "Two." }, { text: "Three." }],
-        generate_lines: true,
-        choices: [],
-      },
-    ],
-  };
-  let s = R.initialState(m);
-  s = R.reduce(m, s, { type: "advance" });
-  assert.equal(R.currentLine(m, s)?.text, "Two.");
-  const after = R.reduce(m, s, {
-    type: "setLines",
-    sceneId: "a",
-    lines: [{ text: "Written." }],
-    rev: s.rev,
-  });
+  const m = storyManifest(
+    [{ id: "a", lines: [{ text: "One." }, { text: "Two." }, { text: "Three." }], generate_lines: true, choices: [] }],
+    live,
+  );
+  const s = R.reduce(m, R.initialState(m), { type: "advance" });
+  assert.equal(lineText(m, s), "Two.");
+  const after = R.reduce(m, s, { type: "setLines", sceneId: "a", lines: [{ text: "Written." }], rev: s.rev });
   assert.equal(after, s);
-  assert.equal(R.currentLine(m, after)?.text, "Two.");
+  assert.equal(lineText(m, after), "Two.");
 });
 
-test("dialogue written while the reader is mid-scene is held for the next visit", async () => {
-  const { initialState, linesWaitForNextVisit, reduce } = await import(
-    "../src/features/flows/player/story/reducer.ts"
-  );
+test("dialogue written while the reader is mid-scene is held for the next visit", () => {
   const manifest = {
     start: "a",
-    scenes: [
-      { id: "a", lines: [{ text: "one" }, { text: "two" }, { text: "three" }], generate_lines: true },
-    ],
+    scenes: [{ id: "a", lines: [{ text: "one" }, { text: "two" }, { text: "three" }], generate_lines: true }],
   } as never;
-  const start = initialState(manifest);
+  const start = R.initialState(manifest);
   const lines = [{ text: "new" }];
-  assert.equal(linesWaitForNextVisit(manifest, start, start.rev, "a"), false, "at the scene start lines land now");
+  const waits = (s: typeof start, rev: number) => R.linesWaitForNextVisit(manifest, s, rev, "a");
+  assert.equal(waits(start, start.rev), false, "at the scene start lines land now");
   const midScene = { ...start, line: 2 };
-  assert.equal(linesWaitForNextVisit(manifest, midScene, start.rev, "a"), true);
+  assert.equal(waits(midScene, start.rev), true);
   assert.equal(
-    reduce(manifest, midScene, { type: "setLines", sceneId: "a", lines, rev: start.rev }),
+    R.reduce(manifest, midScene, { type: "setLines", sceneId: "a", lines, rev: start.rev }),
     midScene,
     "the reducer refuses them mid-scene, so the player must hold them",
   );
-  assert.equal(linesWaitForNextVisit(manifest, midScene, start.rev + 1, "a"), false, "a stale revision is dropped");
+  assert.equal(waits(midScene, start.rev + 1), false, "a stale revision is dropped");
 });

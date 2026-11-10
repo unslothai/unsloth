@@ -140,3 +140,27 @@ export function chainDoc(): FlowDocument {
     ],
   );
 }
+
+/** A promise with its resolve/reject exposed, so a test decides when an API call answers. */
+export function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((a, b) => {
+    resolve = a;
+    reject = b;
+  });
+  return { promise, resolve, reject };
+}
+
+/** The first stub element carrying `data-testid={id}`. */
+export function byTestId<E extends { props: Record<string, unknown> }>(els: E[], id: string): E | undefined {
+  return els.find((e) => e.props["data-testid"] === id);
+}
+
+/** A story manifest: no vars, no characters, fixed mode unless `extra` says otherwise. */
+export function storyManifest(
+  scenes: import("../../src/features/flows/types.ts").StoryScene[],
+  extra: Partial<import("../../src/features/flows/types.ts").StoryManifest> = {},
+): import("../../src/features/flows/types.ts").StoryManifest {
+  return { title: "T", start: "a", vars: {}, characters: [], mode: "fixed", ...extra, scenes };
+}
