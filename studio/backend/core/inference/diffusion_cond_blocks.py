@@ -37,6 +37,9 @@ _FLUX3_SINGLE_SHA = frozenset({"92269bb072da8335"})
 
 _PATCHED: dict[type, Any] = {}
 _PATCHED_SINGLE: dict[type, Any] = {}
+# (attention output, MLP output) of a joint block on its combined input, bit-identical to ``self.attn`` / ``self.ff``,
+# or None for the modules: set by diffusion_flux_convrot_fused (one shared int8 ConvRot quant) while installed.
+JOINT_ATTN_FF: Any = None
 
 
 def _switch(name: str) -> bool:
@@ -427,8 +430,12 @@ def _flux3_span_single_forward(
 
     combined = torch.cat([norm_encoder_hidden_states, norm_hidden_states], dim = 1)
 
-    attn_output = self.attn(hidden_states = combined, image_rotary_emb = image_rotary_emb)
-    ff_output = self.ff(combined)
+    both = JOINT_ATTN_FF(self, combined, image_rotary_emb) if JOINT_ATTN_FF is not None else None
+    if both is None:
+        attn_output = self.attn(hidden_states = combined, image_rotary_emb = image_rotary_emb)
+        ff_output = self.ff(combined)
+    else:
+        attn_output, ff_output = both
     output = attn_output + ff_output
 
     context_output, image_output, cond_output = torch.split(
