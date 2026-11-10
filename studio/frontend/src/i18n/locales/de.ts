@@ -665,6 +665,8 @@ export const de = {
     keepsRunning: "Das Schließen beendet die Einrichtung nicht. Das Ergebnis erscheint unter Einstellungen > Sicherheit.",
   },
   composerSettings: {
+    shareDraft: "Entwürfe zwischen Chats teilen",
+    shareDraftDescription: "Einen Entwurf für Chats und Vergleiche verwenden. Standardmäßig aus; jeder Chat behält seinen eigenen Entwurf.",
     title: "Nachrichteneingabe",
     plainText: "Eingabe als Klartext",
     plainTextDescription: "Code, Markdown und Links als wörtlichen Text anzeigen. Ausschalten, um eine formatierte Vorschau zu sehen.",
@@ -1665,6 +1667,13 @@ export const de = {
         audioUploadCancel: "Transkription abbrechen",
         audioUploadTranscribing: "Audio wird transkribiert…",
         sectionTitle: "Diktat",
+        micTargetLabel: "Mikrofontaste",
+        micTargetAsr: "Mit ASR transkribieren",
+        micTargetModel: "Audio an das Modell senden",
+        micTargetAsrDescription: "Die Mikrofontaste schreibt, was du sagst, in das Nachrichtenfeld.",
+        micTargetModelDescription: "Ist ein Modell mit Audioeingabe geladen, nimmt das Mikrofon einen Clip auf und hängt ihn an deine Nachricht an. Andere Modelle erhalten weiterhin Diktat.",
+        micTargetModelUnavailable: "Lade ein Modell mit Audioeingabe (zum Beispiel LFM3-Omni), um ihm deine Stimme zu senden.",
+        micRecordForModel: "Audio für das Modell aufnehmen",
         engineLabel: "Diktat-Engine",
         engineBrowser: "Browser",
         engineBrowserDescription:

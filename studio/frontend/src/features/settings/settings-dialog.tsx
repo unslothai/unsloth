@@ -869,6 +869,7 @@ export function SettingsDialog() {
                 </button>
                 <div
                   ref={mainScrollRef}
+                  data-settings-main-scroll=""
                   className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6 [scrollbar-gutter:stable]"
                 >
                   <SettingsPanelPane

@@ -746,6 +746,8 @@ export const id = {
       "Menutup ini tidak menghentikan penyiapan. Hasilnya ditampilkan di Pengaturan > Keamanan.",
   },
   composerSettings: {
+    shareDraft: "Bagikan draf antarobrolan",
+    shareDraftDescription: "Gunakan satu draf untuk obrolan dan perbandingan. Nonaktif secara default; setiap obrolan menyimpan drafnya sendiri.",
     title: "Kolom pesan",
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:
@@ -1830,6 +1832,13 @@ export const id = {
         audioUploadCancel: "Batalkan transkripsi",
         audioUploadTranscribing: "Mentranskripsikan audio…",
         sectionTitle: "Dikte",
+        micTargetLabel: "Tombol mikrofon",
+        micTargetAsr: "Transkripsi dengan ASR",
+        micTargetModel: "Kirim audio ke model",
+        micTargetAsrDescription: "Tombol mikrofon mengetik ucapan Anda ke kotak pesan.",
+        micTargetModelDescription: "Saat model dengan input audio dimuat, mikrofon merekam klip dan melampirkannya ke pesan Anda. Model lain tetap menggunakan dikte.",
+        micTargetModelUnavailable: "Muat model yang menerima input audio (misalnya LFM3-Omni) untuk mengirim suara Anda.",
+        micRecordForModel: "Rekam audio untuk model",
         engineLabel: "Engine dikte",
         engineBrowser: "Browser",
         engineBrowserDescription:

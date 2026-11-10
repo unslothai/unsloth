@@ -498,21 +498,38 @@ def _pinned_arena(size: int, fill: Any) -> Any:
     return arena
 
 
+# Arenas sized to their payload (0.61 GB audio VAE pinned 2.15 GB); the host-looked-up vocab table stays mapped. =0 reverts.
+H3_HOST_PIN_TRIM_ENV = "UNSLOTH_H3_HOST_PIN_TRIM"
+_PIN_PAGE = 4096
+
+
+def h3_host_pin_trim_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_HOST_PIN_TRIM_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 def pin_module_in_place(
     module: Any,
     *,
     arena_bytes: int = _PIN_ARENA_BYTES,
     _arena_factory: Any = None,
     repoint: bool = False,
+    skip: tuple = (),
 ) -> int:
     """Replaces tensors in _parameters/_buffers rather than .data, which would keep the mmap alive."""
     import torch
 
+    skipped = {id(t) for t in skip if t is not None}
     slots: dict[int, list] = {}  # id(tensor) -> [tensor, [(owner dict, name, is_param)]]
     for sub in module.modules():
         for table, is_param in ((sub._parameters, True), (sub._buffers, False)):
             for name, tensor in list(table.items()):
-                if tensor is None:
+                if tensor is None or id(tensor) in skipped:
                     continue
                 entry = slots.setdefault(id(tensor), [tensor, []])
                 entry[1].append((table, name, is_param))
@@ -537,6 +554,10 @@ def pin_module_in_place(
         slot[2].append((tensor, owners, slot[1]))
         slot[1] += need
         pinned += nbytes
+    if h3_host_pin_trim_enabled():
+        # placement is final: an arena's unused tail would only be zeroed and locked
+        for arena in arenas:
+            arena[0] = min(arena[0], _round_up(arena[1], _PIN_PAGE))
     placed = []  # (tensor, owners, pinned view)
     for size, _used, entries in arenas:
         fill = functools.partial(_fill_arena, entries = entries)
@@ -636,6 +657,43 @@ def _host_rows_forward(self: Any, input: Any) -> Any:
         self.sparse,
     )
     return rows.to(self.__dict__[_HOST_ROWS_ATTR])
+
+
+def _host_rows_table(target: Any) -> Any:
+    """The table ``keep_h3_embedding_on_host`` will take out of the stream (same static checks), or None."""
+    try:
+        import torch
+
+        if target is None or not h3_host_embed_rows_enabled():
+            return None
+        getter = getattr(target, "get_input_embeddings", None)
+        emb = getter() if callable(getter) else None
+        if type(emb) is not torch.nn.Embedding or _HOST_ROWS_ATTR in emb.__dict__:
+            return None
+        weight = emb.weight
+        if (
+            type(weight.data) is not torch.Tensor
+            or weight.device.type != "cpu"
+            or emb.max_norm is not None
+            or emb.sparse
+            or weight.dtype not in (torch.bfloat16, torch.float16, torch.float32)
+        ):
+            return None
+        return weight
+    except Exception:  # noqa: BLE001 -- pin it with the rest
+        return None
+
+
+def _pin_streamed_table(target: Any, weight: Any) -> None:
+    """The table stayed in the stream after all: pin it as the whole-module pin would have."""
+    from .diffusion_memory import _offload_groups
+
+    owner = next(m for m in target.modules() if m._parameters.get("weight") is weight)
+    pin_module_in_place(owner, repoint = True)
+    for group in _offload_groups(target):
+        cpu = getattr(group, "cpu_param_dict", None)
+        if isinstance(cpu, dict) and weight in cpu:
+            cpu[weight] = weight.data
 
 
 def keep_h3_embedding_on_host(target: Any, logger: Any = None) -> bool:
@@ -754,13 +812,20 @@ def stream_h3_text_encoder(
         pin = False
     elif pin is None:
         pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder), onload)
+    # Looked up on the host, so a pinned copy buys nothing; needs diffusers to take the pinned rest as it is.
+    table = (
+        _host_rows_table(target)
+        if pin and h3_host_pin_trim_enabled() and "low_cpu_mem_usage" in params
+        else None
+    )
     if pin:
         try:
-            pin_module_in_place(text_encoder)
+            pinned_bytes = pin_module_in_place(text_encoder, skip = (table,))
         except Exception as exc:  # noqa: BLE001 -- pinned host RAM refused: stream unpinned
             if logger is not None:
                 logger.warning("video.h3_te_stream: pinning failed, streaming unpinned: %s", exc)
             pin = False
+            table = None
     kwargs: dict[str, Any] = {
         "onload_device": onload,
         "offload_device": torch.device("cpu"),
@@ -774,7 +839,8 @@ def stream_h3_text_encoder(
             kwargs["record_stream"] = True
         if "low_cpu_mem_usage" in params:
             # Already pinned in place, so diffusers' pin_memory() returns the same tensor: no second host copy.
-            kwargs["low_cpu_mem_usage"] = not pin
+            # With the table left mapped, the onload pins only what is not pinned yet: nothing once the table is out.
+            kwargs["low_cpu_mem_usage"] = not pin or table is not None
         elif not pin:
             return None
     try:
@@ -783,7 +849,22 @@ def stream_h3_text_encoder(
         install_group_offload_buffer_restore()
         install_group_offload_hooks_eager()
         apply_group_offloading(target, **kwargs)
-        keep_h3_embedding_on_host(target, logger = logger)
+        on_host = keep_h3_embedding_on_host(target, logger = logger)
+        if table is not None:
+            if on_host:
+                if logger is not None:
+                    logger.info(
+                        "video.h3_host_pin_trim: conditioner pins %.2f GB in arenas sized to their weights, its "
+                        "vocabulary table (%.2f GB) stays on its mapping",
+                        pinned_bytes / 1e9,
+                        table.numel() * table.element_size() / 1e9,
+                    )
+            else:
+                try:
+                    _pin_streamed_table(target, table)
+                except Exception as exc:  # noqa: BLE001 -- streams pageable: correct, slower
+                    if logger is not None:
+                        logger.warning("video.h3_host_pin_trim: table not pinned: %s", exc)
         # Image prompts: Qwen3-VL's position interpolation reads the offloaded embedding's CPU device (transformers 5.5).
         _pin_vision_embedding_device(target)
     except Exception as exc:  # noqa: BLE001 -- keep the rotation
@@ -1013,6 +1094,232 @@ def _copy_host_tensors_(entries: list, undo: Optional[list] = None) -> int:
                 undo.append((group, tensor, host, new))
             copied += new.numel() * new.element_size()
     return copied
+
+
+# Once every denoiser block is resident, leftover budget keeps conditioner leaf groups on device in read order (48 GB:
+# ~0.8 s per render saved); requests needing more take it back first. Vision tower keeps streaming. =0 disables.
+H3_TE_DEVICE_RESIDENT_ENV = "UNSLOTH_H3_TE_DEVICE_RESIDENT"
+_TE_DEVICE_ATTR = "_unsloth_te_device"
+_TE_SAVED_IO_ATTR = "_unsloth_te_saved_io"
+# Planned device bytes per tensor: the allocator's 512-byte rounding plus an unsplit remainder (at most 1 MiB).
+_ALLOC_ROUND = 512
+_ALLOC_SPLIT_SLACK = 1 << 20
+
+
+def h3_te_device_resident_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_TE_DEVICE_RESIDENT_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _planned_device_bytes(group: Any) -> int:
+    from .video_minimax_h3_residency import _group_tensors, _tensor_bytes
+
+    total = 0
+    for t in _group_tensors(group):
+        n = _tensor_bytes(t)
+        total += _round_up(n, _ALLOC_ROUND) + (_ALLOC_SPLIT_SLACK if n > _ALLOC_SPLIT_SLACK else 0)
+    return total
+
+
+def _allocated_bytes(device: Any) -> Optional[int]:
+    try:
+        import torch
+
+        dev = torch.device(device)
+        if dev.type != "cuda" or not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_allocated(dev))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _te_resident_onload(group: Any) -> Any:
+    """Keep the side-stream sync: the next group may still be arriving via the previous group's prefetch."""
+    stream = getattr(group, "stream", None)
+
+    def onload_(*_a: Any, **_k: Any) -> None:
+        if stream is not None:
+            stream.synchronize()
+
+    try:
+        import torch
+        return torch.compiler.disable(onload_)
+    except Exception:  # noqa: BLE001
+        return onload_
+
+
+def _te_noop(*_a: Any, **_k: Any) -> None:
+    return None
+
+
+class H3TeDeviceShare:
+    """The streamed conditioner's leaf groups resident on the device: a prefix in read order (language layers first)."""
+
+    def __init__(
+        self,
+        text_encoder: Any,
+        device: Any,
+        *,
+        logger: Any = None,
+    ) -> None:
+        from .diffusion_memory import _offload_groups
+        from .video_minimax_h3_residency import _group_tensors
+
+        target = getattr(text_encoder, "model", None)
+        self.device = device
+        self.logger = logger
+        self.groups: list = []
+        self.layer_of: list = []
+        names = {id(m): n for n, m in target.named_modules()} if target is not None else {}
+        for group in _offload_groups(target) if target is not None else []:
+            mods = list(getattr(group, "modules", None) or ())
+            leader = mods[0] if mods else getattr(group, "onload_leader", None)
+            parts = names.get(id(leader), "").split(".")
+            if (
+                "visual" in parts
+                or getattr(group, "stream", None) is None
+                or not isinstance(getattr(group, "cpu_param_dict", None), dict)
+                or not _group_tensors(group)
+            ):
+                continue
+            layer = None
+            if "layers" in parts and parts.index("layers") + 1 < len(parts):
+                index = parts[parts.index("layers") + 1]
+                layer = int(index) if index.isdigit() else None
+            self.groups.append(group)
+            self.layer_of.append(layer)
+        self.planned = [_planned_device_bytes(g) for g in self.groups]
+        self.layers = len({x for x in self.layer_of if x is not None})
+        self._logged: Optional[int] = None
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.groups)
+
+    def resident_count(self) -> int:
+        n = 0
+        for group in self.groups:
+            if not group.__dict__.get(_TE_DEVICE_ATTR):
+                break
+            n += 1
+        return n
+
+    def resident_bytes(self) -> int:
+        """Measured at onload; planned bytes off CUDA."""
+        return sum(
+            int(group.__dict__.get(_TE_DEVICE_ATTR) or 0)
+            for group in self.groups
+            if group.__dict__.get(_TE_DEVICE_ATTR)
+        )
+
+    def plan(self, budget_bytes: int) -> int:
+        n = 0
+        left = int(budget_bytes)
+        while n < len(self.groups) and self.planned[n] <= left:
+            left -= self.planned[n]
+            n += 1
+        return n
+
+    def shrink(self, n: int) -> None:
+        import torch
+        demoted = False
+        for group in reversed(self.groups[n:]):
+            if not group.__dict__.get(_TE_DEVICE_ATTR):
+                continue
+            if not demoted and torch.cuda.is_available():
+                torch.cuda.current_stream().synchronize()
+            saved_on, saved_off = group.__dict__.get(_TE_SAVED_IO_ATTR, (None, None))
+            for name, saved in (("onload_", saved_on), ("offload_", saved_off)):
+                if saved is not None:
+                    setattr(group, name, saved)
+                else:
+                    group.__dict__.pop(name, None)
+            group.__dict__.pop(_TE_DEVICE_ATTR, None)
+            group.offload_()  # back to its host copy, which was never dropped
+            demoted = True
+
+    def grow(self, n: int) -> None:
+        import torch
+        for group in self.groups[:n]:
+            if group.__dict__.get(_TE_DEVICE_ATTR):
+                continue
+            before = _allocated_bytes(self.device)
+            stream = getattr(group, "stream", None)
+            try:
+                group.onload_()
+                if stream is not None:
+                    stream.synchronize()
+                if torch.cuda.is_available():
+                    torch.cuda.current_stream().synchronize()
+            except Exception:
+                group.offload_()  # a half-onloaded group back on its host copy
+                raise
+            after = _allocated_bytes(self.device)
+            held = after - before if before is not None and after is not None else None
+            if held is None or held <= 0:
+                held = _planned_device_bytes(group)
+            group.__dict__[_TE_SAVED_IO_ATTR] = (
+                group.__dict__.get("onload_"),
+                group.__dict__.get("offload_"),
+            )
+            group.onload_ = _te_resident_onload(group)
+            group.offload_ = _te_noop
+            group.__dict__[_TE_DEVICE_ATTR] = max(1, int(held))
+
+    def report(
+        self,
+        budget_bytes: int,
+        *,
+        force: bool = False,
+    ) -> None:
+        n = self.resident_count()
+        if self.logger is None or (n == self._logged and not force):
+            return
+        self._logged = n
+        full = sum(
+            1
+            for layer in {x for x in self.layer_of if x is not None}
+            if all(
+                self.groups[i].__dict__.get(_TE_DEVICE_ATTR)
+                for i, x in enumerate(self.layer_of)
+                if x == layer
+            )
+        )
+        self.logger.info(
+            "video.h3_te_resident_device: %d of %d TE layers resident on %s (%.2f GB, %d of %d leaf groups, "
+            "%.2f GB left beside the resident denoiser)",
+            full,
+            self.layers,
+            self.device,
+            self.resident_bytes() / 1e9,
+            n,
+            len(self.groups),
+            max(0, budget_bytes) / 1e9,
+        )
+
+
+def h3_te_device_share(
+    text_encoder: Any,
+    device: Any,
+    mode: Any,
+    *,
+    logger: Any = None,
+) -> Optional[H3TeDeviceShare]:
+    """None unless the conditioner streams with a side stream. Never raises."""
+    try:
+        if mode not in ("stream", "stream_lazy") or not h3_te_device_resident_enabled():
+            return None
+        share = H3TeDeviceShare(text_encoder, device, logger = logger)
+        return share if share.usable else None
+    except Exception as exc:  # noqa: BLE001 -- the conditioner streams as before
+        if logger is not None:
+            logger.warning("video.h3_te_resident_device: staying streamed: %s", exc)
+        return None
 
 
 # "0": the H3 conditioner records every hidden state again.

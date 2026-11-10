@@ -530,8 +530,11 @@ export {
 } from "./utils/export-chat-history";
 export {
   adoptLegacyDraft,
+  flushComposerDraft,
   latestDraft,
   latestPasteDraft,
+  NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
@@ -611,13 +614,16 @@ export {
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {
   dictationFailed,
+  dictationProducedClip,
   dictationProducedTranscript,
 } from "./adapters/dictation-outcome";
 export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
   isStudioDictationAvailable,
+  micRecordsForModel,
   notifyStudioDictationUnavailable,
+  setMicAudioClipTarget,
 } from "./adapters/studio-dictation-adapter";
 export {
   StudioModelDictationAdapter,

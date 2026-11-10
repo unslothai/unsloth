@@ -1084,6 +1084,14 @@ def _case_sampler_resume(rank, world, tmp, dp, strategy):
     return {"full": full, "resumed": resumed}
 
 
+def _case_teardown_abort(rank, world, tmp):
+    """Stands in for a C++ thread that aborts the interpreter's teardown after the work is done."""
+    import atexit
+
+    atexit.register(os.abort)
+    return {"rank": rank}
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -1102,6 +1110,7 @@ CASES = {
     "sharded_random_lora_init": _case_sharded_random_lora_init,
     "sampler": _case_sampler,
     "sampler_resume": _case_sampler_resume,
+    "teardown_abort": _case_teardown_abort,
 }
 
 
@@ -1122,11 +1131,20 @@ def _worker(rank, world, port, case, tmp, kwargs):
     dist.init_process_group(
         "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 120)
     )
+    finished = False
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
+        finished = True
     finally:
         dist.destroy_process_group()
+    if finished:
+        # Result saved, group torn down. Interpreter teardown can still hit std::terminate on a
+        # joinable C++ thread ("terminate called without an active exception", exit -6), which
+        # failed ranks that had finished; skip teardown so only the case itself decides.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 def _spawn(
@@ -1656,3 +1674,8 @@ def test_trainer_length_samplers_resume_like_an_uninterrupted_run(dp, strategy):
         for k, seen in res["resumed"].items():
             assert seen == peer["resumed"][k], (rank, k, seen, peer["resumed"][k])
             assert seen == res["full"][2 * k :], (rank, k, seen, res["full"][2 * k :])
+
+
+def test_a_rank_that_finished_is_not_failed_by_an_abort_in_teardown():
+    # The sampler-resume ranks finished and then died with -6 in interpreter teardown.
+    assert _spawn("teardown_abort", 2) == [{"rank": 0}, {"rank": 1}]

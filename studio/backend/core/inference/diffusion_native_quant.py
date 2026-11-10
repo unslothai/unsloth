@@ -493,6 +493,8 @@ def native_linear_class():
     from torch import nn
     from torch.nn import functional as F
 
+    from . import diffusion_native_w8a8_rdna as rdna
+
     class NativeWeightOnlyLinear(nn.Module):
         """A Linear whose weight is stored as int8 / fp8 with a per-output-row scale."""
 
@@ -594,6 +596,13 @@ def native_linear_class():
             # Registered here, in eager, so a compiled forward only reads the handle (see _row_major_op).
             self._row_major = _row_major_op() if self.act_int8 and not self.rot_group else None
             self._int8pack_scales: dict = {}
+            # ROCm RDNA: fused rotate+quant and int8 GEMM kernels, probed per card here, in eager, before any trace.
+            self._rdna = False
+            if self.act_int8:
+                self._rdna = (
+                    rdna.shape_supported(self.in_features, self.out_features, self.rot_group)
+                    and rdna.prepare()
+                )
 
         def _widen(self, codes: Any) -> Any:
             """Exact float32 values of a row slice of ``weight_q``, as the eager branches below."""
@@ -690,6 +699,27 @@ def native_linear_class():
             else:
                 out = out.mul_(w_scale)
             return out
+
+        def _forward_rdna(self, x: Any) -> Any:
+            x2 = x.reshape(-1, self.in_features)
+            xq, xs = rdna.rotq(x2, self.rot_group)
+            out = rdna.w8a8_mm(
+                xq, xs, self.weight_q, self.weight_scale.view(torch.float32), self.bias, x.dtype
+            )
+            return out.reshape(*x.shape[:-1], self.out_features)
+
+        def _rdna_on(self, x: Any) -> bool:
+            if not (self._rdna and x.is_cuda and x.dtype in (torch.bfloat16, torch.float16)):
+                return False
+            # The custom ops have no backward: a graph that needs input gradients keeps the stock maths.
+            if x.requires_grad and torch.is_grad_enabled():
+                return False
+            index = x.device.index
+            if not torch.compiler.is_compiling() and index not in rdna._STATE["on"]:
+                rdna.prepare(x.device)
+            return rdna.enabled_for(index) and self._int_mm_ok(
+                x.numel() // max(1, self.in_features)
+            )
 
         def _forward_int_mm(self, x: Any) -> Any:
             x2 = x.reshape(-1, self.in_features)
@@ -831,6 +861,8 @@ def native_linear_class():
                 out = self._forward_int8pack(x)
                 if out is not None:
                     return out
+            if self.act_int8 and self._rdna_on(x):
+                return self._forward_rdna(x)
             if self.act_int8 and x.is_cuda and not torch.compiler.is_compiling():
                 out = self._forward_fused(x)
                 if out is not None:

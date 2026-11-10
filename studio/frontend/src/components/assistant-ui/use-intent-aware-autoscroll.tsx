@@ -3,6 +3,7 @@
 
 "use client";
 
+import { ROW_DISTANT_ATTRIBUTE } from "@/components/assistant-ui/distant-rows";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useAui, useAuiEvent } from "@assistant-ui/react";
 import {
@@ -182,6 +183,10 @@ export function useIntentAwareAutoScroll(): {
       let scrollKeyAt = Number.NEGATIVE_INFINITY;
       let pointerHeld = false;
       let insertionRemainder = 0;
+      // distant-rows.ts skipped or released a row since the last scroll event. Chromium can clamp
+      // scrollTop while it swaps the row's size, and the scroll event then reads an unchanged
+      // scrollHeight: without this a long chat opening at its bottom read as a scroll up.
+      let rowsToggledSinceScroll = false;
 
       const distanceFromBottom = (): number => {
         if (el.scrollHeight <= el.clientHeight) {
@@ -515,7 +520,7 @@ export function useIntentAwareAutoScroll(): {
           // behind it, is a clamp (something below shrank as a new row landed), not the user.
           const clamped =
             lastDistanceFromBottom <= AT_BOTTOM_THRESHOLD_PX &&
-            scrollHeight !== lastScrollHeight &&
+            (scrollHeight !== lastScrollHeight || rowsToggledSinceScroll) &&
             !keyed &&
             !pointerHeld;
           if (
@@ -532,6 +537,7 @@ export function useIntentAwareAutoScroll(): {
           }
         }
 
+        rowsToggledSinceScroll = false;
         lastScrollTop = scrollTop;
         lastClientWidth = clientWidth;
         lastClientHeight = clientHeight;
@@ -599,7 +605,10 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
-      const onMutation = (): void => {
+      const onMutation = (records: MutationRecord[]): void => {
+        if (records.some((record) => record.attributeName === ROW_DISTANT_ATTRIBUTE)) {
+          rowsToggledSinceScroll = true;
+        }
         if (el.ownerDocument.hidden) {
           onLayoutChange();
           return;
@@ -644,6 +653,7 @@ export function useIntentAwareAutoScroll(): {
           "aria-hidden",
           "aria-expanded",
           "data-state",
+          ROW_DISTANT_ATTRIBUTE,
         ],
       });
       el.addEventListener("wheel", onWheel, { passive: true });

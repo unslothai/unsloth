@@ -712,6 +712,8 @@ export const th = {
       "การปิดหน้าต่างนี้จะไม่หยุดการตั้งค่า ผลลัพธ์จะแสดงในการตั้งค่า > ความปลอดภัย",
   },
   composerSettings: {
+    shareDraft: "แชร์แบบร่างระหว่างแชต",
+    shareDraftDescription: "ใช้แบบร่างเดียวกันในแชตและการเปรียบเทียบ ปิดไว้ตามค่าเริ่มต้น โดยแต่ละแชตจะเก็บแบบร่างของตนเอง",
     title: "ช่องเขียนข้อความ",
     plainText: "ช่องเขียนข้อความแบบข้อความธรรมดา",
     plainTextDescription:
@@ -1748,6 +1750,13 @@ export const th = {
         audioUploadCancel: "ยกเลิกการถอดเสียง",
         audioUploadTranscribing: "กำลังถอดเสียง…",
         sectionTitle: "การป้อนตามคำบอก",
+        micTargetLabel: "ปุ่มไมโครโฟน",
+        micTargetAsr: "ถอดความด้วย ASR",
+        micTargetModel: "ส่งเสียงไปยังโมเดล",
+        micTargetAsrDescription: "ปุ่มไมโครโฟนจะพิมพ์สิ่งที่คุณพูดลงในช่องข้อความ",
+        micTargetModelDescription: "เมื่อโหลดโมเดลที่รับอินพุตเสียง ไมโครโฟนจะบันทึกคลิปและแนบไปกับข้อความของคุณ โมเดลอื่นยังคงใช้การป้อนตามคำบอก",
+        micTargetModelUnavailable: "โหลดโมเดลที่รับอินพุตเสียงได้ (เช่น LFM3-Omni) เพื่อส่งเสียงของคุณไปให้",
+        micRecordForModel: "บันทึกเสียงสำหรับโมเดล",
         engineLabel: "เอนจินการป้อนตามคำบอก",
         engineBrowser: "เบราว์เซอร์",
         engineBrowserDescription:

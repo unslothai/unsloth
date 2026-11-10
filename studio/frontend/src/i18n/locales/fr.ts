@@ -665,6 +665,8 @@ export const fr = {
     keepsRunning: "Fermer cette fenêtre n'arrête pas la configuration. Le résultat s'affiche dans Paramètres > Sécurité.",
   },
   composerSettings: {
+    shareDraft: "Partager les brouillons entre les discussions",
+    shareDraftDescription: "Utiliser un seul brouillon pour les discussions et les comparaisons. Désactivé par défaut ; chaque discussion conserve son propre brouillon.",
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
     plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
@@ -1665,6 +1667,13 @@ export const fr = {
         audioUploadCancel: "Annuler la transcription",
         audioUploadTranscribing: "Transcription audio en cours…",
         sectionTitle: "Dictée",
+        micTargetLabel: "Bouton du micro",
+        micTargetAsr: "Transcrire avec l'ASR",
+        micTargetModel: "Envoyer l'audio au modèle",
+        micTargetAsrDescription: "Le bouton du micro écrit ce que vous dites dans la zone de message.",
+        micTargetModelDescription: "Avec un modèle à entrée audio chargé, le micro enregistre un extrait et le joint à votre message. Les autres modèles utilisent toujours la dictée.",
+        micTargetModelUnavailable: "Chargez un modèle qui accepte l'entrée audio (par exemple LFM3-Omni) pour lui envoyer votre voix.",
+        micRecordForModel: "Enregistrer l'audio pour le modèle",
         engineLabel: "Moteur de dictée",
         engineBrowser: "Navigateur",
         engineBrowserDescription:

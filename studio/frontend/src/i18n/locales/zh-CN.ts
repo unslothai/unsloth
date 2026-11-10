@@ -665,6 +665,8 @@ export const zhCN = {
     keepsRunning: "关闭不会停止设置。结果会显示在 设置 > 安全 中。",
   },
   composerSettings: {
+    shareDraft: "在聊天之间共享草稿",
+    shareDraftDescription: "在聊天和对比中使用同一份草稿。默认关闭；每个聊天保留各自的草稿。",
     title: "消息输入",
     plainText: "纯文本输入",
     plainTextDescription: "将代码、Markdown 和链接保留为原始文本。关闭后显示格式化预览。",
@@ -1658,6 +1660,13 @@ export const zhCN = {
         audioUploadCancel: "取消转录",
         audioUploadTranscribing: "正在转录音频…",
         sectionTitle: "语音输入",
+        micTargetLabel: "麦克风按钮",
+        micTargetAsr: "使用 ASR 转写",
+        micTargetModel: "将音频发送给模型",
+        micTargetAsrDescription: "麦克风按钮会把你说的话输入到消息框中。",
+        micTargetModelDescription: "加载支持音频输入的模型后，麦克风会录制一段音频并附加到你的消息中。其他模型仍使用语音输入。",
+        micTargetModelUnavailable: "加载支持音频输入的模型（例如 LFM3-Omni）即可向它发送语音。",
+        micRecordForModel: "为模型录制音频",
         engineLabel: "语音输入引擎",
         engineBrowser: "浏览器",
         engineBrowserDescription:

@@ -30,7 +30,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "typer>=0.19.0",
+    # typer 0.29 imports pydantic, so the running `unsloth studio setup` would hold pydantic_core's
+    # .pyd open on Windows while the Studio requirements re-pin pydantic, and the swap fails.
+    "typer>=0.19.0,<0.29",
     "rich",
     "pydantic",
     "pyyaml",
@@ -84,6 +86,8 @@ studio = [
     "backend/assets/docs_ui/*",
     # Gate verdicts the auto ladder reads: if missing from the wheel, nvfp4 silently drops out.
     "backend/core/inference/nvfp4_gate_record.json",
+    # ROCm GEMM tables: if missing from the wheel, gfx1151 silently falls back to the slower pick.
+    "backend/core/inference/rocm_gemm_tables/*.csv",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",

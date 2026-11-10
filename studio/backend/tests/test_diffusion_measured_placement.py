@@ -236,6 +236,19 @@ def test_never_moves_away_from_residency(q21_pipe):
 
 
 @pytest.mark.parametrize("budget", list(range(3000, 30001, 250)))
+def test_a_held_text_encoder_never_streams_the_transformer(q21_pipe, budget):
+    """Encoder residency shrinks first: while any part of the 8.7 GiB encoder stays resident, the whole transformer
+    does too (it runs every step; the encoder once per prompt)."""
+    total = max(8188, budget + 3000)
+    new = _refine(q21_pipe, _flat_plan(budget, total))
+    te_resident = (
+        not new.stream_text_encoders and new.offload_policy != dm.OFFLOAD_STREAMING
+    ) or int(new.resident_text_encoder_mib or 0) > 0
+    dit_whole = not new.stream_transformer or int(new.resident_transformer_mib or 0) >= 6922
+    assert dit_whole or not te_resident, (budget, new.offload_policy, new.resident_transformer_mib)
+
+
+@pytest.mark.parametrize("budget", list(range(3000, 30001, 250)))
 def test_every_tier_fits_measured_need(q21_pipe, budget):
     """Whatever the refinement picks, the bytes it keeps on the device plus the measured peak x margin plus the base
     overhead fit the safe budget (the reserve below it is untouched), and it is never slower than the flat pick."""
