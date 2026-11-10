@@ -30,6 +30,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import (
+    Annotated,
     Any,
     Callable,
     Collection,
@@ -84,7 +85,7 @@ from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
 import re as _re
-from pydantic import BaseModel
+from pydantic import BaseModel, BeforeValidator
 from urllib.parse import quote as _urlquote, unquote as _urlunquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
@@ -3429,6 +3430,7 @@ from models.inference import (
     SearchImagesLookupRequest,
     TranscribeRequest,
     SttLoadRequest,
+    validate_stt_context_length,
     GenerateRequest,
     DiffusionLoadRequest,
     MediaUnloadOutcome,
@@ -26054,6 +26056,7 @@ async def stt_load(
             account_access.require_model_access, _stt_repo_reference(payload.model, payload.engine)
         )
     from core.inference.stt_sidecar import (
+        SttContextSizeError,
         SttLoadCancelledError,
         SttModelBusyError,
         SttModelCompatibilityError,
@@ -26079,7 +26082,14 @@ async def stt_load(
     )
     try:
         await asyncio.to_thread(
-            functools.partial(load_stt, payload.model, engine, cancel_event, device = payload.device)
+            functools.partial(
+                load_stt,
+                payload.model,
+                engine,
+                cancel_event,
+                device = payload.device,
+                **({"context_length": payload.context_length} if engine == "mtmd" else {}),
+            )
         )
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
@@ -26089,6 +26099,8 @@ async def stt_load(
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelBusyError as e:
         raise HTTPException(status_code = 409, detail = str(e))
+    except SttContextSizeError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
@@ -26193,10 +26205,14 @@ async def _transcribe_audio_bytes(
     engine: Optional[str] = None,
     request: Optional[Request] = None,
     device: Optional[str] = None,
+    *,
+    context_length: int = 0,
 ) -> JSONResponse:
     """Run STT for already-decoded request bytes."""
     return JSONResponse(
-        content = await _transcribe_audio_result(raw, model, language, fast, engine, request, device)
+        content = await _transcribe_audio_result(
+            raw, model, language, fast, engine, request, device, context_length = context_length
+        )
     )
 
 
@@ -26214,6 +26230,7 @@ async def _transcribe_audio_result(
     source_path: Optional[Path] = None,
     timestamps: bool = False,
     translate: bool = False,
+    context_length: int = 0,
 ) -> dict:
     """source_path is read in place by audio.cpp; translate is honoured only by the Transformers sidecar."""
     if account_access.managed_account():
@@ -26221,6 +26238,8 @@ async def _transcribe_audio_result(
             account_access.require_model_access, _stt_repo_reference(model, engine)
         )
     from core.inference.stt_sidecar import (
+        SttContextSizeError,
+        SttIncompleteTranscriptionError,
         SttAudioDecodeError,
         SttAudioTooLongError,
         SttLanguageError,
@@ -26256,6 +26275,8 @@ async def _transcribe_audio_result(
     transcribe = (
         functools.partial(sidecar.transcribe, task = "translate") if translate else sidecar.transcribe
     )
+    if serving_engine == "mtmd":
+        transcribe = functools.partial(transcribe, context_length = context_length)
     cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
@@ -26271,6 +26292,8 @@ async def _transcribe_audio_result(
             else None
         )
         load_options = {"on_phase": on_phase} if on_phase is not None else {}
+        if serving_engine == "mtmd":
+            load_options["context_length"] = context_length
         if source_path is not None and timestamps:
             await asyncio.to_thread(
                 holds_inference(sidecar.ensure_aligner), model, on_phase, cancel_event
@@ -26344,6 +26367,8 @@ async def _transcribe_audio_result(
     except SttModelBusyError as e:
         # Another client switching the dictation model is normal concurrency; say retry, not a failure.
         raise HTTPException(status_code = 409, detail = str(e))
+    except (SttContextSizeError, SttIncompleteTranscriptionError) as e:
+        raise HTTPException(status_code = 422, detail = str(e))
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
@@ -26396,7 +26421,15 @@ async def transcribe_audio(
         payload.engine,
         request,
         payload.device,
+        context_length = payload.context_length,
     )
+
+
+def _parse_stt_context_length_query(value: Any) -> int:
+    # Query parameters arrive as strings. Do not let Pydantic coerce "4096.0" or a boolean.
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+        value = int(value)
+    return validate_stt_context_length(value)
 
 
 @studio_router.post("/audio/transcribe/raw")
@@ -26411,6 +26444,7 @@ async def transcribe_audio_raw(
     current_subject: str = Depends(get_current_subject),
     stream: bool = False,
     title: str = Query("Recording", max_length = 255),
+    context_length: Annotated[int, BeforeValidator(_parse_stt_context_length_query)] = 0,
 ):
     """Transcribe a raw audio body without base64 or JSON conversion overhead."""
     chunks: list[bytes] = []
@@ -26426,7 +26460,15 @@ async def transcribe_audio_raw(
         return StreamingResponse(
             stream_transcript(
                 lambda on_progress: _transcribe_audio_result(
-                    raw, model, language, fast, engine, None, device, on_progress
+                    raw,
+                    model,
+                    language,
+                    fast,
+                    engine,
+                    None,
+                    device,
+                    on_progress,
+                    context_length = context_length,
                 ),
                 title,
             ),
@@ -26435,7 +26477,14 @@ async def transcribe_audio_raw(
         )
     return JSONResponse(
         content = await _transcribe_audio_result(
-            b"".join(chunks), model, language, fast, engine, request, device
+            b"".join(chunks),
+            model,
+            language,
+            fast,
+            engine,
+            request,
+            device,
+            context_length = context_length,
         )
     )
 
@@ -26628,6 +26677,7 @@ async def transcribe_audio_source(
             on_progress,
             source_path = path,
             timestamps = body.timestamps,
+            context_length = body.context_length,
         )
         return _source_transcript(result, source, body.speakers)
 
@@ -50831,7 +50881,14 @@ async def transcribe_audio_input(
     except audio_inputs.AudioInputError as exc:
         raise _audio_source_error(exc) from None
     result = await _transcribe_audio_result(
-        raw, body.model, body.language, False, body.engine, request, body.device
+        raw,
+        body.model,
+        body.language,
+        False,
+        body.engine,
+        request,
+        body.device,
+        context_length = body.context_length,
     )
     return AudioInputTranscript(
         text = str(result.get("text") or "").strip(),

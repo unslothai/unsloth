@@ -203,9 +203,8 @@ def _health(mod, bodies):
 
 
 def test_greyed_row_fails_even_though_the_warm_window_already_shut(tmp_path, monkeypatch):
-    """The vacuous-pass case. Health has settled, so the real-warm sampler observes
-    nothing and breaks on its first iteration; the row is blacked out exactly as it was
-    in the field. Before the forced-verdict check this run went green."""
+    """A greyed row fails even when the warm window already shut: health has settled so the sampler
+    observes nothing, and without the forced-verdict check this run went green."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [SETTLED])
     page = FakePage({TRAIN: GREYED})
@@ -244,9 +243,8 @@ def test_absent_row_fails_instead_of_skipping(tmp_path, monkeypatch):
 
 
 def test_spinning_row_passes_and_the_route_is_lifted(tmp_path, monkeypatch):
-    """The green case, and the only one there should be: the row spins on a forced
-    unmeasured verdict, and the interception is taken back off so the tab walk that
-    follows sees the real backend."""
+    """The only green case: a spinning row passes on a forced unmeasured verdict, and the route
+    interception is lifted so the tab walk that follows sees the real backend."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [SETTLED])
     page = FakePage({TRAIN: SPINNING})
@@ -260,9 +258,8 @@ def test_spinning_row_passes_and_the_route_is_lifted(tmp_path, monkeypatch):
 
 
 def test_forced_body_is_a_real_reply_with_the_measurement_removed(tmp_path, monkeypatch):
-    """What the browser is served has to be provisional by env.ts's rules: hardware
-    detecting, no device_type, and not the deferred marker (which env.ts reads as
-    settled and would grey the row out legitimately)."""
+    """The forced body must stay provisional under env.ts rules: hardware detecting, no device_type,
+    and not the deferred marker, which env.ts reads as settled and would grey rows out."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [{**SETTLED, "hardware_detection_deferred": True, "studio_root_id": "abc"}])
     page = FakePage({TRAIN: SPINNING})
@@ -312,9 +309,8 @@ def test_sampler_that_cannot_read_the_page_at_all_fails(tmp_path, monkeypatch):
 
 
 def test_a_navigation_in_flight_on_the_first_read_is_not_a_failure(tmp_path, monkeypatch):
-    """The forced password change navigates the app itself, which can abort the post-login
-    goto and leave a navigation in flight: the first evaluate then loses its context. macOS
-    job 108389456188 failed on exactly that; the next read would have worked."""
+    """A navigation in flight on the first read is not a failure: the forced password change can
+    abort the post-login goto and drop the first evaluate's context."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [UNMEASURED, SETTLED])
     page = FakePage({TRAIN: SPINNING})
@@ -360,9 +356,8 @@ def test_drive_tabs_fails_when_the_pinned_rows_never_render(tmp_path, monkeypatc
 
 
 def test_drive_tabs_waits_out_the_boot_screen_before_judging_the_rows(tmp_path, monkeypatch):
-    """A full navigation boots the app again, and a slow macOS runner can still show the
-    "Loading..." screen after the fixed settle wait (Library, twice on 2026-10-29). The rows
-    are judged once the sidebar has mounted, not while nothing has rendered yet."""
+    """Rows are judged once the sidebar has mounted: a full navigation reboots the app, and a slow
+    macOS runner can still show the Loading screen past the fixed settle wait."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [SETTLED])
     page = FakePage({}, mounts_after_wait = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS})
@@ -388,9 +383,8 @@ def test_a_row_missing_from_a_mounted_sidebar_still_fails(tmp_path, monkeypatch)
 
 
 def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, monkeypatch):
-    """Video and Export render inside the More dropdown, which mounts no data-testid at
-    all. Their absence is the documented shape, not a miss -- asserting on it would be
-    asserting on something that can never be true."""
+    """Video and Export live under the More dropdown, which mounts no data-testid at all, so their
+    absence is the documented shape and not a miss; do not assert on it."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [SETTLED])
     page = FakePage({rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS})
@@ -460,9 +454,8 @@ def test_every_stand_in_names_a_pinned_row_and_a_section_the_sidebar_renders():
 
 
 def test_inline_row_ids_match_the_frontends_default_pinned_set():
-    """If a row is unpinned in the store, it stops rendering a data-testid and every
-    assertion pinned to it silently becomes unobservable. That is how the Video half of
-    this script came to check nothing, and it must not happen again unnoticed."""
+    """INLINE_ROW_IDS must match the frontend default pinned set: an unpinned row stops rendering
+    its data-testid, silently making its assertions unobservable."""
     src = APPEARANCE_STORE.read_text(encoding = "utf-8")
     block = re.search(
         r"SIDEBAR_NAV_DEFAULT_PINNED[^{]*\{(.*?)\n\};",
@@ -623,17 +616,15 @@ def test_a_stall_the_backend_recovers_from_is_not_a_failure(tmp_path, monkeypatc
 
 
 def test_even_a_long_stall_passes_if_the_backend_comes_back(tmp_path, monkeypatch):
-    """No threshold shorter than the launcher's most generous path is decidable in the
-    120s this phase gets, so there is deliberately no threshold at all. A stall far past
-    anything the old replay would have killed on still passes once the backend answers."""
+    """No stall threshold is used: none shorter than the launcher's most generous path is decidable
+    in the 120s this phase gets, so a long stall still passes once the backend answers."""
     mod = _load(tmp_path, monkeypatch)
     assert _verdict(mod, _timeline(220, stalls = [(30, 150)])) == []
 
 
 def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
-    """The terminal stall. This is what the poller exists to catch and it needs no
-    watchdog arithmetic: the backend stopped answering and was still not answering when
-    the run ended, confirmed by the final probe."""
+    """A terminal stall fails: the backend stopped answering and was still silent when the run
+    ended, as confirmed by the final probe; no watchdog arithmetic is needed."""
     mod = _load(tmp_path, monkeypatch)
     failed = _verdict(
         mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0
@@ -643,9 +634,8 @@ def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
 
 
 def test_a_trailing_stall_the_final_probe_clears_is_not_a_failure(tmp_path, monkeypatch):
-    """A stall still in progress when sampling stopped is not a terminal one if the
-    backend answers the final probe. Without that probe this would be indistinguishable
-    from death, which is why report() takes it rather than guessing from the samples."""
+    """A stall still open when sampling stopped is not terminal if the final probe is answered;
+    report() takes that probe because the samples alone cannot tell it from death."""
     mod = _load(tmp_path, monkeypatch)
     samples = _timeline(150, stalls = [(60, 9999)])
     assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
@@ -795,9 +785,8 @@ def test_an_answered_non_200_does_not_get_the_recovery_window(tmp_path, monkeypa
 
 
 def test_the_recovery_window_clears_the_stalls_actually_seen():
-    """Sized from evidence, not from a round number. Run 32862298967 produced stalls of
-    10.03s, 25.1s, 27.75s and 33.2s on one runner, so the window has to clear 33.2s with
-    room to spare or it decides "never ended" about stalls this job has already seen."""
+    """RECOVERY_WINDOW_S must exceed twice the longest stall seen on one runner (33.2s), or a stall
+    this job has already seen would be judged never ended."""
     longest_observed_s = 33.2
     assert _module_constant("RECOVERY_WINDOW_S") > 2 * longest_observed_s
 
@@ -874,9 +863,8 @@ def _serve(
 
 
 def test_a_trickling_response_cannot_outlive_the_probe_budget(tmp_path, monkeypatch):
-    """urllib's timeout is per socket operation, so a peer that dribbles bytes resets it
-    forever and read() never returns. That would outlive the script's wall watchdog and
-    hang the job, which reports nothing at all. The read carries its own deadline."""
+    """urllib's timeout is per socket operation, so a peer that dribbles bytes can hang read() past
+    the wall watchdog; the read carries its own deadline."""
     mod = _load(tmp_path, monkeypatch)
     base, state, shutdown = _serve(b"{}", trickle = True)
     monkeypatch.setattr(mod, "BASE", base)
@@ -908,9 +896,8 @@ def test_an_oversized_body_does_not_get_read_to_the_end(tmp_path, monkeypatch):
 
 
 def test_immediate_failures_are_paced_during_recovery(tmp_path, monkeypatch):
-    """_transport_kind calls a reset a stall on purpose, and a reset returns in about a
-    millisecond, so an unpaced window becomes thousands of connections against a backend
-    that is already in trouble. Pacing is bounded by the window, never past it."""
+    """Recovery probes are paced, bounded by the window: _transport_kind counts a reset as a stall
+    and it returns in about 1 ms, so unpaced retries would flood a sick backend."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout"])
     began = time.monotonic()
@@ -969,9 +956,8 @@ def test_the_wall_watchdog_stays_armed_through_recovery_and_reporting():
 
 
 def test_the_warning_counts_the_post_run_wait(tmp_path, monkeypatch, capsys):
-    """Sampling stops at an arbitrary moment. If it stops mid-stall, the span ends at the
-    last timed-out sample, so the reported length leaves out every second of the watch
-    that actually saw the stall clear. A warning nobody can trust is worse than none."""
+    """The warning counts the post-run wait, since sampling can stop mid-stall and a span ending at
+    the last timeout would hide the watch seconds that saw it clear."""
     mod = _load(tmp_path, monkeypatch)
     samples = _timeline(150, stalls = [(140, 9999)])
     assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
@@ -1128,9 +1114,8 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
 
 
 def test_the_deadline_covers_the_whole_request_not_one_layer():
-    """Stated so the next reader does not swap it back for a per-layer bound. Each layer
-    bounded on its own just moves the hole: the body cap left headers open, and a header
-    cap would leave the redirect chain or the handshake."""
+    """The deadline covers the whole request, not one layer: a per-layer cap just moves the hole, as
+    a body cap leaves headers open and a header cap leaves redirects or the handshake."""
     source = SCRIPT.read_text(encoding = "utf-8")
     assert "WHOLE-REQUEST deadline" in source
     assert "worker.join(timeout)" in source

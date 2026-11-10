@@ -7,6 +7,11 @@ import type {
   ApiMonitorEntry,
   ApiMonitorResponse,
 } from "@/features/chat/types/api";
+import {
+  ANIMATION_HOLD_MS,
+  holdGlassMotion,
+  SETTLE_MS,
+} from "@/features/chat-background/glass-motion";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 import { useMonitorFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { useShortcut } from "@/features/settings/hooks/use-shortcut";
@@ -389,6 +394,9 @@ function ApiMonitorPanel({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
+        // A script-driven fade: without this its glass blur is computed again on every frame of it.
+        onAnimationStart={() => holdGlassMotion(monitorRef.current, ANIMATION_HOLD_MS)}
+        onAnimationComplete={() => holdGlassMotion(monitorRef.current, SETTLE_MS)}
         /* Panel language from the sidebar menu: soft surface, menu corner, heading font. */
         className={cn(
           // transition-none: see floating-monitor.tsx (a drop must not flash at the start spot).

@@ -406,8 +406,7 @@ def test_fingerprint_for_dynamic_true_keys_only_on_unbacked():
     not dt.unbacked_supported(), reason = "torch lacks compiler.config.unbacked_sources"
 )
 def test_dense_h3_first_render_compiles_the_block_once():
-    """dynamic=True still specialises a backed size of 1, so without the unbacked temb the first render compiles
-    twice (temb 1 row, then 2)."""
+    """dynamic=True specialises size 1; without the unbacked temb, first render compiles twice."""
     from torch._dynamo.utils import counters
 
     def graphs(install):

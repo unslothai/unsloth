@@ -640,7 +640,9 @@ def prefer_cached_pickle_twins(
     log: bool = True,
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
-    """Same-stem cached .pt/.pth moves ahead of its uncached safetensors twin; the twin stays behind it as 404 fallback; PREFER_SAFETENSORS_ENV disables."""
+    """Safetensors stays first, except a same-stem cached .pt/.pth whose sha256 matches the Hub's record moves ahead of
+    its uncached safetensors twin (reused, not re-downloaded); the twin stays behind it as 404 fallback. An unverified
+    cached pickle (offline, no LFS record, mismatch) keeps its place behind the twin. PREFER_SAFETENSORS_ENV disables."""
     import os
 
     out = [n for n in names if n]
@@ -659,13 +661,40 @@ def prefer_cached_pickle_twins(
             except Exception:  # noqa: BLE001 - an unanswerable question is a no
                 return False
 
+        def _verified(name: str) -> bool:
+            from .cached_weight_sha import cached_copy_matches_hub
+
+            if _LOCAL_FILES_ONLY.get():
+                return False  # a load that may not reach the Hub cannot ask it for the hash
+            token = _LOAD_HF_TOKEN.get()
+            for root in roots:
+                hit = _hub_name_cached(repo_id, name, root)
+                if hit is not None and cached_copy_matches_hub(repo_id, name, hit, token = token):
+                    return True
+            return False
+
+        prefer_safetensors = (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        def _reusable(name: str) -> bool:
+            if not _ok(name) or not _cached(name):
+                return False
+            # same pickle trust rule as below
+            if name.lower().endswith(_PICKLE_SUFFIXES):
+                return not prefer_safetensors and _verified(name)
+            return True
+
         # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
             stem = _artifact_stem(comfy)
             twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
             if not twins:
                 continue
-            hit = next((t for t in twins if _ok(t) and _cached(t)), None)
+            hit = next((t for t in twins if _reusable(t)), None)
             if _cached(comfy):
                 if hit is None and _ok(comfy) and out.index(comfy) > out.index(twins[0]):
                     out.remove(comfy)
@@ -689,12 +718,7 @@ def prefer_cached_pickle_twins(
                     hit,
                     comfy,
                 )
-        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if prefer_safetensors:
             return out
 
         for st in [
@@ -711,7 +735,8 @@ def prefer_cached_pickle_twins(
                 ),
                 None,
             )
-            if twin is None or _cached(st):
+            # Only a cached pickle the Hub's sha256 vouches for is reused; unverified, safetensors stays first.
+            if twin is None or _cached(st) or not _verified(twin):
                 continue
             out.remove(twin)
             out.insert(out.index(st), twin)
@@ -723,8 +748,8 @@ def prefer_cached_pickle_twins(
                     import logging
                     sink = logging.getLogger(__name__)
                 sink.info(
-                    "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "
-                    "downloaded (set %s=1 to fetch it instead)",
+                    "diffusion.prequant_cached_pickle: %s: using the cached %s (sha256 matches the Hub); the "
+                    "%s twin is not downloaded (set %s=1 to fetch it instead)",
                     repo_id,
                     twin,
                     st,
@@ -1884,15 +1909,8 @@ def hosted_prequant_refusal(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """Why hosted ``source`` would be refused, from its header alone (no weight download).
-
-    Only a ``.safetensors`` checkpoint has a header this reads. The candidate names are walked in the
-    resolver's order (safetensors ahead of the pickle), and when the first one that exists is a
-    ``.pt`` the answer is None: a pickle is never opened here, so it is judged by the loader after its
-    download, as before. A parsed header whose typed fields cannot be validated IS a refusal, since
-    the loader would refuse it too.
-
-    None when usable or unreadable: unknown is never a refusal. Never raises."""
+    """Refusal reason for a hosted safetensors source from its header alone; None when usable or
+    unknown, or when the first existing candidate is a .pt (never opened here); never raises."""
     import os
     import time
 
@@ -2079,12 +2097,7 @@ def usable_prequant_source(
     readable = [n for n in candidates if restricted_prequant_load_supported(scheme, n)]
     if not readable:
         return None
-    # A DERIVED safetensors name is a guess: most repos do not host one yet, and a guess must not be
-    # what planning bets the dense shards on. So when the only readable candidates are safetensors
-    # names, require evidence that one is really there -- the family declared it, or it is already
-    # in the cache. Without that, an install that cannot open a pickle would plan a 6 GB artifact
-    # for a .pt-only repo, get a 404 then a refusal, and fall back to dense under a plan that never
-    # budgeted for it, which is the evict-then-OOM this function exists to prevent.
+    # Guessed safetensors names need a declaration or a cache hit, else a .pt-only repo wastes 6 GB.
     from .prequant_safetensors import is_safetensors_checkpoint
 
     if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):
@@ -2268,10 +2281,7 @@ def _engage_nvfp4_backend(
     base: Optional[str] = None,
     logger: Any = None,
 ) -> int:
-    """Move a loaded NVFP4 transformer onto the backend ``device`` selects; returns the layers moved to flashinfer.
-
-    The flashinfer coverage warning fires here, once layers really run flashinfer's kernels: scheme selection also
-    runs for planning and validation, which load nothing and must not use up the once-only warning."""
+    """Moves the NVFP4 transformer to its backend; the flashinfer warning fires here, not in planning."""
     from .diffusion_nvfp4_linear import convert_nvfp4_backend
     from .diffusion_nvfp4_ops import select_nvfp4_backend
 
@@ -2461,9 +2471,8 @@ def load_prequantized_transformer(
             _repair_legacy_checkpoint(ckpt, scheme, logger)
             _pin_kernel_preference(state_dict, logger)
 
-            # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
-            # may be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
-            # prequant whose checkpoint is cached and already loaded.
+            # Read from the root that supplied the checkpoint; a pinned root may be gone after a
+            # cache change.
             config = (
                 None
                 if into is not None

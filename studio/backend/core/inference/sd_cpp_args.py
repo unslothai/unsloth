@@ -27,9 +27,8 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "qwen-image": ("--qwen2vl",),
     "qwen-image-edit": ("--qwen2vl",),
     "qwen-image-layered": ("--qwen2vl",),
-    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
-    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
-    # reach the same field.
+    # 2.1 conditions on Qwen3-VL via --llm; --qwen2vl also enables Qwen2-VL's vision, the wrong
+    # door.
     "qwen-image-2.1": ("--llm",),
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
@@ -77,8 +76,7 @@ class SdCppGenParams:
 
     prompt: str
     negative_prompt: Optional[str] = None
-    # None = unset: an image-conditioned run lets sd.cpp derive the size from the input; a plain txt2img falls back to
-    # 1024x1024.
+    # None: unset, so image runs let sd.cpp derive size; plain txt2img defaults to 1024x1024.
     width: Optional[int] = None
     height: Optional[int] = None
     steps: Optional[int] = None
@@ -290,10 +288,8 @@ def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
 
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
-    """True when sd.cpp runs the diffusion model on Apple Metal (macOS; an explicit ``--backend`` for it decides,
-    else an Apple Silicon machine whose GPU is not paravirtual).
-
-    Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
+    """True when sd.cpp runs diffusion on Apple Metal (an explicit --backend decides, else Apple
+    Silicon not paravirtual); direct conv stays off since CONV_2D trips the GPU watchdog."""
     import sys
 
     if sys.platform != "darwin":
@@ -714,26 +710,37 @@ def is_device_oom_text(text: Optional[str]) -> bool:
 
 
 def device_backend_flags(
-    device_name: Optional[str], offload: Optional[list[str]] = None
+    device_name: Optional[str],
+    offload: Optional[list[str]] = None,
+    *,
+    te_device: Optional[str] = None,
+    vae_device: Optional[str] = None,
 ) -> list[str]:
     """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu."""
     if not device_name:
         return []
     flags = offload or []
-    te = "cpu" if "--clip-on-cpu" in flags else device_name
-    vae = "cpu" if "--vae-on-cpu" in flags else device_name
+    te = "cpu" if "--clip-on-cpu" in flags else (te_device or device_name)
+    vae = "cpu" if "--vae-on-cpu" in flags else (vae_device or device_name)
     return ["--backend", f"diffusion={device_name},te={te},vae={vae}"]
 
 
 def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
-    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload."""
+    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload.
+    A two-card block split's ``--auto-fit`` / ``--max-vram`` belong to its pin and go with it."""
+    items = list(flags)
+    split = any(
+        f == "--backend" and i + 1 < len(items) and "&" in str(items[i + 1])
+        for i, f in enumerate(items)
+    )
+    paired = ("--backend", "--auto-fit", "--max-vram") if split else ("--backend",)
     out: list[str] = []
     skip = False
-    for flag in flags:
+    for flag in items:
         if skip:
             skip = False
             continue
-        if flag == "--backend":
+        if flag in paired:
             skip = True
             continue
         out.append(flag)
@@ -1163,9 +1170,39 @@ def sd_cli_output_paths(output_path: str, num_results: int) -> list[str]:
     return [f"{stem}_{i}.{ext}" for i in range(num_results)]
 
 
-def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
-    """False for reference videos / audio: path-only sd-cli flags with no ``vid_gen`` JSON field."""
-    return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
+H3_SERVER_REFS_ENV = "UNSLOTH_H3_SERVER_REFS"
+# sd-cli's --ref-video reader (examples/cli/main.cpp load_images_from_dir): these extensions, byte-ordered names.
+_SD_CLI_FRAME_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+def h3_server_refs_enabled() -> bool:
+    value = os.environ.get(H3_SERVER_REFS_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def h3_reference_media_keys(params: "SdCppVideoGenParams") -> tuple[str, ...]:
+    keys = []
+    if params.ref_videos:
+        keys.append("ref_videos")
+    if params.ref_video_audios:
+        keys.append("ref_video_audios")
+    if params.ref_audios:
+        keys.append("ref_audios")
+    return tuple(keys)
+
+
+def h3_server_eligible(params: "SdCppVideoGenParams", *, server_refs: bool = False) -> bool:
+    return server_refs or not h3_reference_media_keys(params)
+
+
+def sd_cli_frame_files(directory: str) -> list[str]:
+    entries = [
+        entry
+        for entry in os.scandir(directory)
+        if entry.is_file() and os.path.splitext(entry.name)[1].lower() in _SD_CLI_FRAME_EXTS
+    ]
+    entries.sort(key = lambda entry: entry.name.encode("utf-8", "surrogateescape"))
+    return [entry.path for entry in entries]
 
 
 def build_vid_gen_request(
@@ -1174,16 +1211,29 @@ def build_vid_gen_request(
     images_b64: Optional[dict[str, str]] = None,
     ref_images_b64: Optional[list[str]] = None,
     output_compression: int = 90,
+    ref_videos_b64: Optional[list[list[str]]] = None,
+    ref_video_audios_b64: Optional[list[str]] = None,
+    ref_audios_b64: Optional[list[str]] = None,
 ) -> dict:
     """POST body equal to build_sd_cpp_video_command (same pixels per seed); writes AVI, which needs no WebM build; --rng cpu is a server flag passed at spawn."""
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
     if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
         raise ValueError("width, height, and num_frames must be positive")
-    if not h3_server_eligible(params):
-        raise ValueError("reference videos and audio are not accepted by the sd-server vid_gen API")
+    inline_refs = {
+        "ref_videos": ref_videos_b64,
+        "ref_video_audios": ref_video_audios_b64,
+        "ref_audios": ref_audios_b64,
+    }
+    for key in h3_reference_media_keys(params):
+        if len(inline_refs[key] or ()) != len(getattr(params, key)):
+            raise ValueError(f"{key} must be sent inline to the sd-server vid_gen API")
+    if len(params.ref_video_audios) > len(params.ref_videos):
+        raise ValueError("each reference video soundtrack needs a reference video to pair with")
     images = dict(images_b64 or {})
-    if (images.get("init_image") or images.get("end_image")) and ref_images_b64:
+    if (images.get("init_image") or images.get("end_image")) and (
+        ref_images_b64 or h3_reference_media_keys(params)
+    ):
         raise ValueError(
             "MiniMax-H3 keyframes and references cannot be combined: they run against "
             "different denoiser partitions."
@@ -1210,6 +1260,8 @@ def build_vid_gen_request(
             req[key] = images[key]
     if ref_images_b64:
         req["ref_images"] = list(ref_images_b64)
+    for key in h3_reference_media_keys(params):
+        req[key] = [list(item) if key == "ref_videos" else item for item in inline_refs[key]]
     return req
 
 
