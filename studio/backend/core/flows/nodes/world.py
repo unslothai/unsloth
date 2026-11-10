@@ -12,13 +12,11 @@ from collections import OrderedDict
 from typing import Any, Callable, Optional
 
 from core.flows import memory as mem
-from core.flows.city import MAYOR_SCHEMA, CityError, mayor_prompt, validate_mayor
 from core.flows.authoring import AuthoringError, constrained_call
 from core.flows.expr import seed_from
 from core.flows.nodes._common import JsonFieldStream
 from core.flows.nodes.memory import _embed, _plan_schema, _retrieve, clean_plan, rate_importance
 from core.flows.registry import FlowNodeError, NodeContext, handler
-from core.flows.rivals import RIVAL_TASKS
 from core.flows.scene_solver import (
     SCENE_SCHEMA,
     SCENE_SYSTEM,
@@ -314,10 +312,6 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         return await _summarise(ctx, state)
     if state.get("task") == "director":
         return await _direct(ctx, state)
-    if state.get("task") == "mayor":
-        return await _mayor(ctx, state)
-    if state.get("task") in RIVAL_TASKS:
-        return await RIVAL_TASKS[state["task"]](ctx, state)
     if state.get("task") == "describe_place":
         return {"reply": {"place": await describe_place(ctx, state)}}
     memories: Optional[list[dict]] = None
@@ -461,29 +455,6 @@ async def world_describe_place(ctx: NodeContext) -> dict:
         req.setdefault("width", w.get("width"))
         req.setdefault("height", w.get("height"))
     return {"place": await describe_place(ctx, req)}
-
-
-async def _mayor(ctx: NodeContext, state: dict) -> dict:
-    """One call a month (or per advisor click); an ungrounded answer falls back to fixed text, never a retry."""
-    try:
-        system, prompt = mayor_prompt(state)
-    except CityError as exc:
-        raise FlowNodeError(str(exc)) from exc
-    try:
-        raw = await ctx.llm_json(
-            model = ctx.params.get("model"),
-            system = system,
-            prompt = prompt,
-            schema = MAYOR_SCHEMA,
-            temperature = 0.7,
-            max_tokens = 600,
-            retry_bad_json = False,
-        )
-    except FlowNodeError as exc:
-        if exc.status is not None:
-            raise
-        raw = None
-    return {"reply": {"mayor": validate_mayor(raw, state)}}
 
 
 def _sim_world(state: Any, who: str) -> dict:

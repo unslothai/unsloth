@@ -521,3 +521,20 @@ def test_zero_items_are_kept():
         pass
     assert "0 items" in ctx.llm_calls[0]["prompt"]
     assert ctx.llm_calls[0]["schema"]["properties"]["items"]["maxItems"] == 0
+
+
+def test_a_saved_world_with_city_and_rivals_sections_still_loads():
+    raw = {
+        **RAW,
+        "city": {"enabled": True, "funds": 5000, "tax": 9},
+        "rivals": {
+            "factions": [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}],
+            "max_turns": 40,
+        },
+    }
+    w = normalize_world(raw, seed = 1)
+    assert [n["name"] for n in w["npcs"]] == [
+        n["name"] for n in normalize_world(RAW, seed = 1)["npcs"]
+    ]
+    spec = WorldSpec.model_validate({**w, "city": raw["city"], "rivals": raw["rivals"]})
+    assert spec.city == raw["city"] and spec.rivals == raw["rivals"]

@@ -18,7 +18,6 @@ import {
   findPath,
   isSolid,
 } from "./procgen";
-import type { Painter } from "./city-draw";
 import { PROP_LABELS, type WorldEditor, blockedCells } from "./props3d";
 import {
   canvas,
@@ -45,7 +44,6 @@ export interface WorldBridge {
   props?: PropStates;
   onEvent?(text: string): void;
   safeAt?(p: Point): boolean;
-  onTile?(p: Point, drag: boolean): boolean;
 }
 
 export interface WorldArt {
@@ -73,7 +71,6 @@ export interface WorldGameHandle {
   say(id: string, text: string, ms?: number): void;
   openEditor?(): Promise<WorldEditor>;
   actionState?(): unknown;
-  paintCity?(paint: (g: Painter, tile: number) => void): void;
   setPropStates?(
     states: PropStates,
     changed: readonly string[],
@@ -189,7 +186,6 @@ export function createWorldGame(
     pendingTalk: string | null = null;
     route: Point[] = [];
     layer!: Phaser.Tilemaps.TilemapLayer;
-    city: Phaser.GameObjects.Graphics | null = null;
 
     constructor() {
       super("world");
@@ -342,7 +338,6 @@ export function createWorldGame(
         if (bridge.locked()) return;
         const tx = Math.floor(p.worldX / T);
         const ty = Math.floor(p.worldY / T);
-        if (bridge.onTile?.({ x: tx, y: ty }, false)) return;
         const npc = this.npcs.find((n) => {
           const at = this.tileOf(n);
           return Math.abs(at.x - tx) <= 0 && Math.abs(at.y - ty) <= 1;
@@ -353,13 +348,6 @@ export function createWorldGame(
           return;
         }
         this.route = findPath(map, this.tileOf(this.player), { x: tx, y: ty });
-      });
-      this.input.on("pointermove", (p: Phaser.Input.Pointer) => {
-        if (p.isDown && !bridge.locked())
-          bridge.onTile?.(
-            { x: Math.floor(p.worldX / T), y: Math.floor(p.worldY / T) },
-            true,
-          );
       });
       for (const [id, m] of pendingMarkers) drawMarker(this, id, ...m);
       pendingMarkers.clear();
@@ -840,11 +828,6 @@ export function createWorldGame(
     addMarker(id: string, at: Point, icon: string, label: string) {
       if (sceneRef) drawMarker(sceneRef, id, at, icon, label);
       else pendingMarkers.set(id, [at, icon, label]);
-    },
-    paintCity(paint: (g: Painter, tile: number) => void) {
-      if (!sceneRef) return;
-      sceneRef.city ??= sceneRef.add.graphics().setDepth(-5);
-      paint(sceneRef.city, T);
     },
     faceNpc(id: string | null) {
       if (sceneRef) {

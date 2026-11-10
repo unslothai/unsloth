@@ -58,8 +58,6 @@ import {
   isNoChatModelError,
   offlineLine,
 } from "./live-reply";
-import { cityQueueRate, mayorOn } from "./city-advisor";
-import { MayorHud } from "./mayor-panel";
 import { heldInChests, interactProp } from "./action-verbs";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
@@ -69,8 +67,6 @@ import {
   type WorldMap,
   generateMap,
 } from "./procgen";
-import { RIVALS_CALLS_PER_MINUTE } from "./rivals";
-import { RivalsPanel } from "./rivals-panel";
 import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
   placeAreas,
@@ -447,12 +443,10 @@ export function WorldPlayer({
     api,
     view === "3d" ? spec.view3d?.ambient : null,
   );
-  const [envoyTalking, setEnvoyTalking] = useState(false);
   const lockedRef = useRef(true);
   lockedRef.current =
     !started ||
     talking !== null ||
-    envoyTalking ||
     panel === "save" ||
     !!ws.auto?.encounter ||
     editor !== null;
@@ -481,16 +475,10 @@ export function WorldPlayer({
   const queue = useMemo(
     () =>
       new BackgroundQueue(
-        sim?.calls_per_minute ??
-          (mayorOn(baseSpec)
-            ? cityQueueRate(baseSpec)
-            : baseSpec.rivals
-              ? RIVALS_CALLS_PER_MINUTE
-              : 0),
+        sim?.calls_per_minute ?? 0,
       ),
     [sim, baseSpec],
   );
-  const cityTile = useRef<(p: Point, drag: boolean) => boolean>(() => false);
   useEffect(() => () => queue.clear(), [queue]);
   const busy = useRef(new Set<string>());
   const steered = useRef(new Set<string>());
@@ -668,7 +656,6 @@ export function WorldPlayer({
             props: wsRef.current.props,
             onEvent: (text) => toast(text),
             safeAt: (p) => safeRef.current(p),
-            onTile: (p, drag) => cityTile.current(p, drag),
           },
         );
         game.current = handle;
@@ -981,7 +968,7 @@ export function WorldPlayer({
   useEffect(() => {
     queue.setPaused(!ready || lockedRef.current);
     queue.pump();
-  }, [queue, ready, started, talking, panel, envoyTalking]);
+  }, [queue, ready, started, talking, panel]);
 
   const planDay = useCallback(
     async (npcId: string, day: number, signal: AbortSignal) => {
@@ -1888,24 +1875,6 @@ export function WorldPlayer({
               </button>
             ) : null}
           </div>
-          {mayorOn(baseSpec) && started ? (
-            <MayorHud
-              spec={spec}
-              map={map}
-              city={ws.city}
-              setWs={setWs}
-              game={game}
-              ready={ready}
-              view={view}
-              locked={lockedRef}
-              queue={queue}
-              api={api}
-              flowId={flowId}
-              replyEntry={replyEntry}
-              tileRef={cityTile}
-              toast={toast}
-            />
-          ) : null}
           {background && !talking ? (
             <div
               className="pointer-events-none absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/45 px-3 py-1 text-white/75 text-xs backdrop-blur-md"
@@ -2012,19 +1981,6 @@ export function WorldPlayer({
             ))}
           </div>
         </Panel>
-      ) : null}
-      {ready && started && !editor && spec.rivals && !mayorOn(spec) ? (
-        <RivalsPanel
-          api={api}
-          flowId={flowId}
-          entry={replyEntry}
-          spec={baseSpec}
-          map={map}
-          state={ws.rivals}
-          onChange={(r) => setWs((st) => ({ ...st, rivals: r }))}
-          queue={queue}
-          onTalking={setEnvoyTalking}
-        />
       ) : null}
       {editor && edState ? (
         <Suspense fallback={null}>
