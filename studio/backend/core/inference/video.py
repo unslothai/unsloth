@@ -188,6 +188,7 @@ from .diffusion_speed import (
     arm_graphs_after_placement,
     engage_pinned_denoisers,
     rocm_probe_load_scoped,
+    release_rocm_tunableop as _release_rocm_tunableop,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -15159,6 +15160,7 @@ class VideoBackend:
                 except Exception:  # noqa: BLE001 -- teardown is best effort
                     pass
             restore_backend_flags(state.backend_flags)
+            _release_rocm_tunableop(getattr(state, "pipe", None))
             # Restore stock GGUF kernels so a later speed=off load is bit-identical.
             from . import diffusion_gguf_compile
             from . import diffusion_cuda_graph
