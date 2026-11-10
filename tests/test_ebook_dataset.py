@@ -438,3 +438,61 @@ def test_whitespace_windows_do_not_abort_books(
 def test_tiny_budget_still_rejects_an_incomplete_unicode_character(ebooks, byte_tokenizer):
     with pytest.raises(ValueError, match = "complete character"):
         list(ebooks._chunk_text("🦥", byte_tokenizer, 1, 0))
+
+
+def test_chunk_token_checks_are_batched(ebooks, tokenizer):
+    class CountingTokenizer:
+        def __init__(self, inner):
+            self.inner = inner
+            self.batch_calls = self.encode_calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def __call__(self, text, *args, **kwargs):
+            if isinstance(text, list):
+                self.batch_calls += 1
+            return self.inner(text, *args, **kwargs)
+
+        def encode(self, *args, **kwargs):
+            self.encode_calls += 1
+            return self.inner.encode(*args, **kwargs)
+
+    counted = CountingTokenizer(tokenizer)
+    text = " ".join(f"word{i % 50}" for i in range(600))
+    chunks = list(ebooks._chunk_text(text, counted, 8, 2))
+    assert len(chunks) > 50
+    assert counted.batch_calls == 1
+    assert counted.encode_calls == 0
+
+
+def test_chunk_token_check_falls_back_when_a_window_expands(ebooks, tokenizer):
+    class ExpandingTokenizer:
+        def __init__(self, inner):
+            self.inner = inner
+            self.batch_calls = self.encode_calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def __call__(self, text, *args, **kwargs):
+            result = self.inner(text, *args, **kwargs)
+            if isinstance(text, list):
+                self.batch_calls += 1
+                result["input_ids"] = [ids + [0] for ids in result["input_ids"]]
+            return result
+
+        def encode(self, *args, **kwargs):
+            self.encode_calls += 1
+            return self.inner.encode(*args, **kwargs) + [0]
+
+    expanding = ExpandingTokenizer(tokenizer)
+    text = " ".join(f"word{i}" for i in range(9))
+    chunks = list(ebooks._chunk_text(text, expanding, 4, 0))
+    assert [chunk.split() for chunk in chunks] == [
+        ["word0", "word1", "word2"],
+        ["word3", "word4", "word5"],
+        ["word6", "word7", "word8"],
+    ]
+    assert expanding.batch_calls == 1
+    assert expanding.encode_calls == 5

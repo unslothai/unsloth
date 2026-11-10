@@ -24,6 +24,7 @@ __all__ = ["load_ebook_dataset"]
 
 _MAX_MEMBER_BYTES = 32 * 1024 * 1024
 _MAX_BOOK_BYTES = 256 * 1024 * 1024
+_TOKEN_CHECK_BATCH_TOKENS = 1 << 18
 _BLOCKS = {
     "p",
     "div",
@@ -294,14 +295,13 @@ def _chunk_text(text, tokenizer, chunk_size, overlap):
     boundaries = [
         m.end() for m in re.finditer(r'(?<=[.!?。！？])["\u201d\u2019\)\]]*\s+|\n\s*\n', text)
     ]
-    start = 0
-    char_start = 0
-    while start < len(offsets):
+
+    def window(start, char_start):
         while char_start < len(text) and text[char_start].isspace():
             char_start += 1
         start = max(start, bisect_right(ends, char_start))
         if start == len(offsets):
-            break
+            return None
         end = min(start + chunk_size, len(offsets))
         char_end = len(text) if end == len(offsets) else ends[end - 1]
         if end < len(offsets):
@@ -314,27 +314,89 @@ def _chunk_text(text, tokenizer, chunk_size, overlap):
                     and text[char_start:boundary].strip()
                 ):
                     end, char_end = boundary_token, boundary
-        # BPE offsets may share a Unicode character; re-encoding also checks the new left boundary.
-        while end > start:
-            chunk = text[char_start:char_end].strip()
-            if chunk and len(tokenizer.encode(chunk, add_special_tokens = False)) <= chunk_size:
-                break
-            end -= 1
-            char_end = ends[end - 1] if end > start else char_start
-        if end == start:
-            raise ValueError(
-                "chunk_size is too small to represent a complete character with this tokenizer"
-            )
-        yield chunk
+        return start, char_start, end, char_end
+
+    def advance(char_start, char_end):
         # Consume every byte token of the final character, even when it spans the token window.
         consumed = bisect_right(ends, char_end)
         if consumed == len(offsets):
-            break
+            return None
         if overlap:
             start = max(consumed - overlap, bisect_right(starts, char_start))
-            char_start = starts[start]
-        else:
-            start, char_start = consumed, char_end
+            return start, starts[start]
+        return consumed, char_end
+
+    def serial(start, char_start):
+        while start < len(offsets):
+            current = window(start, char_start)
+            if current is None:
+                return
+            start, char_start, end, char_end = current
+            # BPE offsets may share a Unicode character; re-encoding also checks the new left boundary.
+            while end > start:
+                chunk = text[char_start:char_end].strip()
+                if chunk and len(tokenizer.encode(chunk, add_special_tokens = False)) <= chunk_size:
+                    break
+                end -= 1
+                char_end = ends[end - 1] if end > start else char_start
+            if end == start:
+                raise ValueError(
+                    "chunk_size is too small to represent a complete character with this tokenizer"
+                )
+            yield chunk
+            next_window = advance(char_start, char_end)
+            if next_window is None:
+                return
+            start, char_start = next_window
+
+    # Bound the temporary token ids while giving fast tokenizers enough texts to parallelize.
+    batch_size = max(1, min(256, _TOKEN_CHECK_BATCH_TOKENS // chunk_size))
+    start = 0
+    char_start = 0
+    while start < len(offsets):
+        checkpoint = (start, char_start)
+        pending = []
+        done = fallback = False
+        for _ in range(batch_size):
+            current = window(start, char_start)
+            if current is None:
+                done = True
+                break
+            start, char_start, end, char_end = current
+            chunk = text[char_start:char_end].strip()
+            if not chunk:
+                fallback = True
+                break
+            pending.append(chunk)
+            next_window = advance(char_start, char_end)
+            if next_window is None:
+                done = True
+                break
+            start, char_start = next_window
+        if fallback:
+            yield from serial(*checkpoint)
+            return
+        if not pending:
+            return
+        try:
+            batch_ids = tokenizer(
+                pending,
+                add_special_tokens = False,
+                return_attention_mask = False,
+                return_token_type_ids = False,
+                truncation = False,
+            )["input_ids"]
+            batch_fits = len(batch_ids) == len(pending) and all(
+                len(ids) <= chunk_size for ids in batch_ids
+            )
+        except Exception:
+            batch_fits = False
+        if not batch_fits:
+            yield from serial(*checkpoint)
+            return
+        yield from pending
+        if done:
+            return
 
 
 def load_ebook_dataset(
