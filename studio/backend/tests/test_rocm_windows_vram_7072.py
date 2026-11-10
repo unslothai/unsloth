@@ -2165,3 +2165,70 @@ def test_a_krackan_point_2_with_no_arch_attrs_or_flag_is_unified_by_name(win_roc
 
     assert hw._rocm_props_unified_status(_P()) is True
     assert hw._rocm_props_are_positively_unified(_P()) is True
+
+
+def test_display_polls_share_one_combined_counter_read(win_rocm_solo, monkeypatch):
+    """2 s Get-Counter spawns: one combined spawn serves every counter for 4x its duration."""
+    import time
+
+    from utils.hardware import gpu_query
+
+    class Clock:
+        now = 500.0
+
+        def monotonic(self):
+            return self.now
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    clock = Clock()
+    monkeypatch.setattr(hw, "time", clock)
+    monkeypatch.setattr(hw, "_rocm_win_counter_cache", {}, raising = False)
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "1")
+    monkeypatch.delenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", raising = False)
+    adapters = _adapter_output(SOLO_ADAPTERS)
+    engines = _engine_output(_DEFAULT_ENGINES)
+    fake = _subprocess_run(adapter_output = adapters, util_output = engines)
+    spawns = []
+
+    def run(cmd, *a, **k):
+        script = cmd[-1] if isinstance(cmd, list) else str(cmd)
+        if "Get-Counter" not in script:
+            return fake(cmd, *a, **k)
+        spawns.append(script)
+        clock.now += 2.0
+        if "Get-Counter -Counter" in script:
+            out = "".join(
+                f"{tag}|{line}\n"
+                for tag, body in (("D", adapters), ("S", adapters), ("U", engines))
+                for line in body.splitlines()
+            )
+            return subprocess.CompletedProcess(args = cmd, returncode = 0, stdout = out, stderr = "")
+        return fake(cmd, *a, **k)
+
+    monkeypatch.setattr(hw.subprocess, "run", run)
+
+    def poll():
+        return hw.get_visible_gpu_utilization(), hw.get_gpu_utilization()
+
+    fresh = poll()
+    per_poll = len(spawns)
+    assert per_poll >= 3
+    assert not any("Get-Counter -Counter" in s for s in spawns)
+    with gpu_query.display_reads(max_stale = 0):
+        for _ in range(10):
+            assert poll() == fresh
+        # Ten back-to-back polls: one spawn, against 10 * per_poll before.
+        assert len(spawns) - per_poll == 1
+        # The reading lives 4 x 2 s from completion: still served at 7.9 s, refreshed at 8 s.
+        clock.now += 7.9
+        assert poll() == fresh
+        assert len(spawns) - per_poll == 1
+        clock.now += 0.1
+        assert poll() == fresh
+        assert len(spawns) - per_poll == 2
+    before = len(spawns)
+    assert poll() == fresh
+    assert len(spawns) - before == per_poll
+    assert not any("Get-Counter -Counter" in s for s in spawns[before:])
