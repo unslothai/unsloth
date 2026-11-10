@@ -498,8 +498,7 @@ def test_auto_reapplies_when_hardware_detection_changes(monkeypatch, tmp_path):
 
 
 def test_pinning_a_detected_install_to_its_own_backend_is_a_real_change(monkeypatch, tmp_path):
-    """auto -> cuda on a CUDA box installs the same bundle, and still matters: it
-    stops the next update from re-detecting the machine onto something else."""
+    """Pinning auto to cuda reinstalls the same bundle but stops later updates re-detecting."""
     install_dir = _install(monkeypatch, tmp_path, backend = "cuda", backend_request = "auto")
     _patch_installer(
         monkeypatch,
@@ -660,8 +659,7 @@ def test_status_reports_the_install_and_the_options(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(
-        # Bound into the update module at import, so the freshness module's copy
-        # is not the one it calls.
+        # The update module binds this at import, so patching the freshness copy misses it.
         upd,
         "latest_release_assets",
         lambda repo, force_refresh = False: {"app-b9596-mix-abc-linux-x64-cuda12.tar.gz": 1234},
@@ -1198,8 +1196,7 @@ def test_an_explicit_auto_in_the_environment_still_gets_the_migration(monkeypatc
 
 
 def test_an_explicit_recheck_re_resolves_the_backend(monkeypatch, tmp_path):
-    # The resolver is memoized for 24h, so force_refresh has to reach it or "check again"
-    # answers from the pre-change resolve for the rest of the TTL.
+    # Resolver is memoized for 24h, so force_refresh must reach it or a recheck stays stale.
     _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
     _drifted(monkeypatch)
     seen: list = []

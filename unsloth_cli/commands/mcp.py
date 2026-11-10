@@ -159,9 +159,8 @@ def codex_check(old_text: str, new_text: str, name: str, expected: dict) -> None
     """Raise ValueError unless the splice changed exactly mcp_servers.NAME."""
     loads = _toml_loads()
     if loads is None:
-        # No TOML parser (Python < 3.11 without tomli): refuse any other mention of NAME, and
-        # anything that makes the line-based splice unsafe: a multi-line string can hold a
-        # line that looks like a table header, and a line opening with "[" can be array data.
+        # With no TOML parser (Python < 3.11 without tomli), refuse other mentions of NAME and any
+        # multi-line string or line opening with [ that could fool the splice.
         block = _codex_block(name, *expected.values())
         if name in new_text.replace(block, ""):
             raise ValueError(f"{name} is also defined in another form")

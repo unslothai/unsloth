@@ -204,6 +204,7 @@ def _install(pipe: Any, backend: Any, target: Any, logger: Any) -> int:
         new = cls()
         new._attention_backend = proc._attention_backend
         new._parallel_config = proc._parallel_config
+        new._unsloth_probe_dtype = dtype
         attn.set_processor(new)
         swapped += 1
     if swapped and logger is not None:
@@ -214,4 +215,62 @@ def _install(pipe: Any, backend: Any, target: Any, logger: Any) -> int:
     return swapped
 
 
-__all__ = ["STRIDED_ATTN_ENV", "enabled", "install", "strided_matches", "strided_processor_class"]
+def verify_cards(
+    pipe: Any,
+    cards: Any,
+    logger: Any = None,
+) -> int:
+    """Probe each split card (install probed the primary only); any failure restores stock processors. Never raises."""
+    try:
+        import torch
+        from diffusers.models.transformers import transformer_flux3 as tf3
+
+        transformer = getattr(pipe, "transformer", None)
+        if transformer is None:
+            return 0
+        cls = strided_processor_class()
+        swapped = [
+            m for m in _attention_modules(transformer) if type(getattr(m, "processor", None)) is cls
+        ]
+        if not swapped:
+            return 0
+        bad = sorted(
+            {
+                int(o)
+                for o in cards
+                for m in swapped
+                if not strided_matches(
+                    torch.device("cuda", int(o)),
+                    getattr(m.processor, "_unsloth_probe_dtype", torch.bfloat16),
+                    int(m.heads),
+                    int(m.head_dim),
+                )
+            }
+        )
+        if not bad:
+            return 0
+        for m in swapped:
+            stock = tf3.Flux3AttnProcessor()
+            stock._attention_backend = m.processor._attention_backend
+            stock._parallel_config = m.processor._parallel_config
+            m.set_processor(stock)
+        if logger is not None:
+            logger.info(
+                "diffusion.flux3_attn: strided cuDNN attention failed its probe on cuda:%s; stock processor kept",
+                ",".join(str(o) for o in bad),
+            )
+        return len(swapped)
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.info("diffusion.flux3_attn: per-card strided attention check skipped (%s)", exc)
+        return 0
+
+
+__all__ = [
+    "STRIDED_ATTN_ENV",
+    "enabled",
+    "install",
+    "strided_matches",
+    "strided_processor_class",
+    "verify_cards",
+]
