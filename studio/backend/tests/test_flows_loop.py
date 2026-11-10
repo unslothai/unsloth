@@ -924,6 +924,37 @@ def test_several_system_columns_tell_rows_apart():
     assert loop_rounds.without_questions(rows, exclude) == rows[1:]
 
 
+@pytest.mark.parametrize(
+    "spec, rows",
+    [
+        (
+            {"kind": "rl", "objective": "dpo", "mapping": {"ticket": "prompt"}},
+            [
+                {"ticket": f"Refund ticket {i}", "chosen": "billing", "rejected": "sales"}
+                for i in range(3)
+            ],
+        ),
+        (
+            {"kind": "rl", "objective": "dpo", "mapping": None},
+            [
+                {
+                    "chosen": f"Human: Capital of country {i}? Assistant: A",
+                    "rejected": f"Human: Capital of country {i}? Assistant: B",
+                }
+                for i in range(3)
+            ],
+        ),
+    ],
+)
+def test_an_rl_row_is_known_by_the_prompt_training_formatted(spec, rows):
+    frozen = loop_rounds.questions(rows[:1], spec)
+    assert frozen
+    exclude = {"column": spec, "questions": frozen}
+    assert loop_rounds.without_questions(rows, exclude) == rows[1:]
+    # Rows the formatter refuses (a later round's own rows) are never taken for it.
+    assert loop_rounds.without_questions([{"x": "y"}], exclude) == [{"x": "y"}]
+
+
 def test_a_prompt_s_assistant_prefill_tells_rows_apart():
     spec = {"kind": "column", "column": "prompt", "whole": False}
     rows = [

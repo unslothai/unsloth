@@ -160,6 +160,88 @@ def test_holdout_reads_hub_datasets_with_the_requests_token(monkeypatch):
     assert seen["token"] == "hf_req"
 
 
+def test_grpo_sends_objective_rewards_and_roles(monkeypatch):
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    started = []
+    ctx = FinetuneCtx(
+        finetune_job_routes(started),
+        objective = "grpo",
+        prompt_column = "q",
+        answer_column = "a",
+        num_generations = 6,
+        rewards = [{"name": "exact-answer", "weight": 2}, {"name": " ", "weight": 1}],
+    )
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    body = started[0]
+    assert body["objective"] == "grpo" and body["grpo_num_generations"] == 6
+    assert body["grpo_rewards"] == [{"name": "exact-answer", "weight": 2.0}]
+    assert body["custom_format_mapping"] == {"q": "prompt", "a": "answer"}
+    assert "<answer>" in body["rl_system_prompt"]
+
+
+def test_dpo_maps_chosen_and_rejected_and_ignores_the_response_column(monkeypatch):
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    started = []
+    ctx = FinetuneCtx(
+        finetune_job_routes(started),
+        objective = "dpo",
+        response_column = "unused",
+        chosen_column = "q",
+        rejected_column = "a",
+        beta = 0.2,
+    )
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    body = started[0]
+    assert body["objective"] == "dpo" and body["rl_beta"] == 0.2
+    assert body["custom_format_mapping"] == {"q": "chosen", "a": "rejected"}
+    assert "grpo_rewards" not in body
+
+
+def test_grpo_without_rewards_is_refused():
+    ctx = FinetuneCtx(finetune_job_routes([]), objective = "grpo", rewards = [])
+    with pytest.raises(FlowNodeError, match = "reward"):
+        asyncio.run(training.finetune(ctx))
+
+
+def test_reward_ceiling_is_the_best_weighted_sum():
+    assert (
+        training.reward_ceiling(
+            [{"name": "exact-answer", "weight": 1.0}, {"name": "soft-xml-format", "weight": 1.0}]
+        )
+        == 2.5
+    )
+    # A negative weight's best is its rule's lowest score.
+    assert training.reward_ceiling([{"name": "numeric-close", "weight": -1.0}]) == 2.0
+    assert training.reward_ceiling([{"name": "no-such-reward", "weight": 1.0}]) is None
+
+
+def test_reward_history_reads_the_status_rl_log():
+    payload = {
+        "metric_history": {
+            "rl": [{"step": 1, "reward": 0.25}, {"step": 2, "kl": 0.1}, {"step": 3, "reward": 1.5}]
+        }
+    }
+    assert training.reward_history(payload) == [0.25, 1.5]
+    assert training.reward_metrics([0.25, 1.5], 2.5) == {
+        "reward": 1.5,
+        "reward_start": 0.25,
+        "reward_history": [0.25, 1.5],
+        "reward_max": 2.5,
+    }
+    assert training.reward_history({}) == [] and training.reward_metrics([], 2.5) == {}
+
+
+def test_a_long_reward_log_is_a_trailing_mean_so_start_and_end_are_not_one_noisy_step():
+    # 0, 2.5, 0, 2.5 ... for 100 steps then a steady 2.5: one step alone says 0 or 2.5.
+    raw = [2.5 * (i % 2) for i in range(100)] + [2.5] * 100
+    payload = {"metric_history": {"rl": [{"step": i + 1, "reward": r} for i, r in enumerate(raw)]}}
+    history = training.reward_history(payload)
+    assert history[0] == 1.25 and history[-1] == 2.5
+    assert len(history) == training.HISTORY_POINTS and max(history) <= 2.5
+
+
 def test_one_column_for_both_roles_is_refused():
     ctx = FinetuneCtx(finetune_job_routes([]), prompt_column = "q", response_column = "q")
     with pytest.raises(FlowNodeError, match = "different columns"):
@@ -323,6 +405,28 @@ def test_hub_holdout_never_downloads_more_than_it_can_use(monkeypatch):
     assert len(training._load_rows({"source": "hf", "ref": "org/big"}, None, 9)) == 10
 
 
+def test_grpo_without_saved_rewards_or_prompt_uses_the_node_defaults():
+    config = {}
+    rewards = training.rl_config({"objective": "grpo"}, "grpo", config)
+    assert [r["name"] for r in rewards] == ["exact-answer", "soft-xml-format"]
+    assert "<answer>" in config["rl_system_prompt"] and config["grpo_num_generations"] == 4
+    config = {}
+    training.rl_config({"system_prompt": ""}, "grpo", config)
+    assert "rl_system_prompt" not in config
+
+
+def test_grpo_steps_take_one_whole_prompt_group_unless_the_batch_is_set():
+    config = {}
+    training.rl_config({"num_generations": 8}, "grpo", config)
+    assert (config["batch_size"], config["gradient_accumulation_steps"]) == (8, 1)
+    config = {}
+    training.rl_config({"batch_size": 2, "gradient_accumulation_steps": 4}, "grpo", config)
+    assert "batch_size" not in config and "gradient_accumulation_steps" not in config
+    config = {}
+    training.rl_config({}, "dpo", config)
+    assert "batch_size" not in config
+
+
 def test_a_coded_route_error_reaches_the_node_as_its_message():
     from core.flows.caller import route_detail
     body = b'{"detail": {"code": "hf_model_verification_failed", "message": "The Hugging Face model could not be verified."}}'
@@ -373,6 +477,7 @@ def test_dataset_group_sends_slices_eval_split_and_format():
     assert (body["dataset_slice_start"], body["dataset_slice_end"]) == (10, 99)
     assert body["eval_split"] == "test" and body["format_type"] == "raw"
     assert body["train_on_completions"] is False
+    assert "dataset_streaming" not in _hub_body(dataset_streaming = True, objective = "grpo")
     assert _hub_body(dataset_streaming = True)["dataset_streaming"] is True
 
 
@@ -416,6 +521,8 @@ def test_optimization_group_sends_optimizer_scheduler_and_batch():
         16,
         0.01,
     )
+    grpo = _hub_body(objective = "grpo", num_generations = 8)
+    assert (grpo["batch_size"], grpo["gradient_accumulation_steps"]) == (8, 1)
 
 
 def test_schedule_group_sends_warmup_checkpoints_eval_and_seed():
@@ -450,7 +557,22 @@ def test_memory_group_sends_packing_checkpointing_and_offload():
         3,
     ) and "offload_vram_gb" not in counted
     assert _hub_body(offload_layers = "auto", gradient_checkpointing = "none")["offload_layers"] == 0
+    assert _hub_body(packing = True, objective = "dpo")["packing"] is False
     assert _hub_body(task = "vision", vision_image_size = 512)["vision_image_size"] == 512
+
+
+def test_rl_group_sends_clip_thinking_masking_and_prompt_length():
+    grpo = _hub_body(
+        objective = "grpo",
+        epsilon_high = 0.28,
+        enable_thinking = True,
+        mask_truncated_completions = True,
+        max_prompt_length = 256,
+    )
+    assert grpo["grpo_epsilon_high"] == 0.28 and grpo["grpo_enable_thinking"] is True
+    assert grpo["grpo_mask_truncated_completions"] is True and grpo["rl_max_prompt_length"] == 256
+    dpo = _hub_body(objective = "dpo", max_prompt_length = 128, epsilon_high = 0.28)
+    assert dpo["rl_max_prompt_length"] == 128 and "grpo_epsilon_high" not in dpo
 
 
 def test_drafter_group_sends_the_drafter_only_for_sft():
@@ -469,12 +591,14 @@ def test_drafter_group_sends_the_drafter_only_for_sft():
         "learning_rate": None,
         "draft_steps": 4,
     }
+    assert "drafter" not in _hub_body(drafter_enabled = True, objective = "grpo")
     assert "drafter" not in _hub_body(drafter_enabled = True, training_type = "cpt")
     assert "drafter" not in _hub_body()
 
 
 def test_every_setting_reaches_a_valid_training_request():
     from models.training import TrainingStartRequest
+
     body = _hub_body(
         training_type = "cpt",
         offload_layers = "auto",
@@ -485,6 +609,9 @@ def test_every_setting_reaches_a_valid_training_request():
         random_seed = 7,
     )
     TrainingStartRequest.model_validate(body)
+    TrainingStartRequest.model_validate(
+        _hub_body(objective = "grpo", epsilon_high = 0.28, max_prompt_length = 64)
+    )
 
 
 def test_hub_eval_split_survives_the_hold_out(monkeypatch):
@@ -588,6 +715,19 @@ def test_a_sliced_hub_split_is_read_without_streaming_the_instruction(monkeypatc
     # A percent resolves against the listed split size and streams just those rows.
     rows = training._load_rows({**hub, "split": "train[:10%]"}, None, None)
     assert len(rows) == 5 and asked[-1] == ("train", True)
+
+
+def test_one_column_for_two_rl_roles_is_refused():
+    with pytest.raises(FlowNodeError, match = "own column"):
+        training.rl_roles({"prompt_column": "q", "answer_column": "q"}, "grpo")
+    with pytest.raises(FlowNodeError, match = "own column"):
+        training.rl_roles(
+            {"prompt_column": "p", "chosen_column": "c", "rejected_column": "c"}, "dpo"
+        )
+    assert training.rl_roles({"prompt_column": "p", "chosen_column": "c"}, "dpo") == {
+        "p": "prompt",
+        "c": "chosen",
+    }
 
 
 def test_hub_hold_out_streams_a_late_slice_and_caps_unknown_sizes(monkeypatch):
@@ -726,7 +866,26 @@ def test_chat_with_checkpoint_asks_with_the_trained_system_prompt(monkeypatch):
 
 
 def test_the_checkpoint_carries_the_one_system_prompt_training_used():
+    grpo = {
+        "objective": "grpo",
+        "rl_system_prompt": "Use <answer> tags.",
+        "custom_format_mapping": {"q": "prompt", "a": "answer"},
+    }
+    # GRPO's prompt fills in for every prompt with no system message, as a new chat prompt is.
+    row = {"q": "What is 2 + 2?", "a": "4"}
+    assert training.trained_system_prompt(grpo, row) == "Use <answer> tags."
+    question = {"question": "What is 2 + 2?", "answer": "4"}
+    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, question) == (
+        "Use <answer> tags."
+    )
+    # Emptied in the node: training added none.
+    assert training.trained_system_prompt({**grpo, "rl_system_prompt": None}, row) == ""
+    # Rows unread (a Hub dataset that could not be read): a system column may have won.
+    assert training.trained_system_prompt(grpo) == ""
     assert training._first_row({"source": "local", "ref": "/no/such/data.jsonl"}, None) is None
+    # A conversation prompt can carry its own system message, which training kept.
+    convo = {"prompt": [{"role": "system", "content": "Respond with JSON only."}], "answer": "4"}
+    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, convo) == ""
     sft = {
         "custom_format_mapping": {
             "q": "user",
@@ -1109,6 +1268,25 @@ def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monke
     assert loads[0]["max_seq_length"] == 0
 
 
+def test_a_grpo_run_with_a_system_column_does_not_claim_the_fallback_prompt():
+    config = {
+        "objective": "grpo",
+        "rl_system_prompt": "Reason, then answer.",
+        "custom_format_mapping": {"question": "user", "rule": "system"},
+    }
+    assert training.trained_system_prompt(config) == ""
+    # A prompt/answer mapping still lets the formatter pick up a `system` column by name.
+    config["custom_format_mapping"] = {"q": "prompt", "gold": "answer"}
+    assert training.trained_system_prompt(config, {"q": "x", "gold": "1", "system": "s"}) == ""
+    # GSM8K: question and answer only, so every prompt got the fallback.
+    assert training.trained_system_prompt(config, {"q": "x", "gold": "1"}) == "Reason, then answer."
+    # A system column set to Ignore is not read.
+    config["custom_format_mapping"] = {"q": "prompt", "system": "ignore"}
+    assert training.trained_system_prompt(config, {"q": "x", "system": "s"}) == (
+        "Reason, then answer."
+    )
+
+
 def test_a_small_whole_split_is_streamed_too(monkeypatch):
     # The world's loader refuses any non-streamed read.
     asked = _compound_world(monkeypatch, {"train": 3, "test": 50})
@@ -1213,6 +1391,16 @@ def test_a_saved_dataset_folder_with_no_parquet_trains_again(tmp_path):
     assert training._content_hash(f"{tmp_path}/*.parquet") is None
 
 
+def test_a_csv_grpo_set_reads_its_first_row_as_training_does(tmp_path, monkeypatch):
+    source = tmp_path / "q.csv"
+    source.write_text("question,answer\n00123,123\n00456,456\n")
+    monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: str(source))
+    row = training._first_row({"source": "local", "ref": "uploads/q.csv"}, None)
+    assert row["question"] == "00123"
+    config = {"objective": "grpo", "rl_system_prompt": "Reason, then answer."}
+    assert training.trained_system_prompt(config, row) == "Reason, then answer."
+
+
 def test_a_template_mapping_names_no_per_row_system_column():
     # A plain role mapping trains each row's own system column.
     assert training.mapping_facts({"rule": "system", "q": "user", "a": "assistant"}) == {
@@ -1255,6 +1443,13 @@ def test_an_sft_input_role_is_recorded_as_the_system_column():
         "input_columns": ["input"],
         **facts,
     }
+    # RL objectives read only the literal role.
+    assert training.mapping_facts(mapping, "auto", "grpo") == {"system_column": ""}
+    assert training.mapping_facts({"q": "prompt", "rule": "system"}, "auto", "grpo") == {
+        "system_column": "rule",
+        "user_columns": ["q"],
+        "user_join": "turns",
+    }
 
 
 def test_the_input_role_is_trained_and_benchmarked_as_the_system_message():
@@ -1290,12 +1485,21 @@ def test_automatic_formatting_s_roles_reach_the_checkpoint():
     assert training.auto_mapping({"instruction": "a", "output": "b"}) == {}
 
 
+def test_grpo_prompt_and_answer_roles_reach_the_checkpoint():
+    assert training.mapping_facts({"ticket": "prompt", "queue": "answer"}, "auto", "grpo") == {
+        "system_column": "",
+        "user_columns": ["ticket"],
+        "user_join": "turns",
+        "answer_columns": ["queue"],
+    }
+
+
 @pytest.mark.parametrize(
-    "format_type, row, facts",
+    "objective, row, facts",
     [
         (
             # An explicit conversation format reads the messages column, not a kept seed column.
-            "chatml",
+            "sft:chatml",
             {
                 "messages": [
                     {"role": "user", "content": "Capital of France?"},
@@ -1306,7 +1510,7 @@ def test_automatic_formatting_s_roles_reach_the_checkpoint():
             {"conversation_column": "messages"},
         ),
         (
-            "sharegpt",
+            "sft:sharegpt",
             {
                 "conversations": [
                     {"from": "human", "value": "Capital of France?"},
@@ -1317,7 +1521,12 @@ def test_automatic_formatting_s_roles_reach_the_checkpoint():
             {"conversation_column": "conversations"},
         ),
         (
-            "",
+            "dpo",
+            {"prompt": "Greet me", "chosen": "Hello!", "rejected": "No."},
+            {"user_columns": ["prompt"], "answer_columns": ["chosen"]},
+        ),
+        (
+            "sft",
             {
                 "context": "The parcel is being held in customs at the border.",
                 "question": "Where is the parcel?",
@@ -1327,7 +1536,7 @@ def test_automatic_formatting_s_roles_reach_the_checkpoint():
         ),
     ],
 )
-def test_the_checkpoint_names_the_columns_training_read(monkeypatch, format_type, row, facts):
+def test_the_checkpoint_names_the_columns_training_read(monkeypatch, objective, row, facts):
     import studio_mcp.job_kinds as jobs
 
     async def run_folder(caller, out):
@@ -1337,7 +1546,10 @@ def test_the_checkpoint_names_the_columns_training_read(monkeypatch, format_type
     monkeypatch.setattr(training, "POLL_S", 0)
     # No column fields set: the roles are the ones training found in the rows.
     monkeypatch.setattr(training, "_first_row", lambda dataset, token: dict(row))
-    ctx = FinetuneCtx(None, **({"format_type": format_type} if format_type else {}))
+    objective, _, format_type = objective.partition(":")
+    ctx = FinetuneCtx(
+        None, objective = objective, **({"format_type": format_type} if format_type else {})
+    )
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
     ctx.on_cancel = lambda fn: None
     ctx.check_cancelled = lambda: None
@@ -1542,3 +1754,54 @@ def test_poll_job_polls_at_once_unless_told_to_settle(monkeypatch, settle, waite
         )
     )
     assert slept == waited
+
+
+@pytest.mark.parametrize("objective", ["grpo", "dpo", "orpo"])
+def test_an_rl_alpaca_row_is_benchmarked_with_its_input(monkeypatch, objective):
+    import studio_mcp.job_kinds as jobs
+
+    from core.flows.nodes.benchmark import mapped_question
+
+    row = {
+        "instruction": "Translate to French",
+        "input": "The weather is lovely today.",
+        "output": "Il fait beau.",
+        "answer": "Il fait beau.",
+        "chosen": "Il fait beau.",
+        "rejected": "Bonjour.",
+    }
+
+    async def run_folder(caller, out):
+        return "run-1", None
+
+    monkeypatch.setattr(jobs, "_run_folder", run_folder)
+    monkeypatch.setattr(training, "POLL_S", 0)
+    monkeypatch.setattr(training, "_first_row", lambda dataset, token: dict(row))
+    ctx = FinetuneCtx(None, objective = objective)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    ctx.on_cancel = lambda fn: None
+    ctx.check_cancelled = lambda: None
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            return {"job_id": "j1"}
+        if path == "/api/train/status":
+            return {
+                "job_id": "j1",
+                "training_phase": "completed",
+                "phase": "completed",
+                "details": {"step": 1, "total_steps": 1, "loss": 1.0, "output_dir": "/x/run-1"},
+            }
+        if path == "/api/train/metrics":
+            return {"loss_history": [1.0]}
+        raise AssertionError(path)
+
+    ctx.routes = routes
+    facts = asyncio.run(training.finetune(ctx))["checkpoint"]
+    spec = {
+        "columns": facts["user_columns"],
+        "join": facts.get("user_join"),
+        "inputs": facts.get("input_columns"),
+    }
+    # format_rl_dataset asks "instruction\n\ninput"; Benchmark and the Loop rebuild the same.
+    assert mapped_question(row, spec) == "Translate to French\n\nThe weather is lovely today."

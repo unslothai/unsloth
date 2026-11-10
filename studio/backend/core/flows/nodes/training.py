@@ -21,7 +21,7 @@ from core.flows.registry import FlowCancelled, FlowNodeError, NodeContext, cache
 POLL_S = 5.0
 BUSY_WAIT_S = 180.0
 TRAINING_TYPES = {"lora": "LoRA/QLoRA", "full": "Full Finetuning", "cpt": "Continued Pretraining"}
-# What the Train page sends when the node leaves batch size and accumulation blank.
+# What the Train page sends when the node leaves batch size and accumulation blank (GRPO sets its own).
 TRAIN_PAGE_BATCH = {"batch_size": 4, "gradient_accumulation_steps": 8}
 CPT_EMBEDDING_MODULES = ("embed_tokens", "lm_head")
 LORA_VARIANTS = ("rslora", "loftq", "dora")
@@ -46,6 +46,16 @@ OPTIONAL_INTS = (
 HOLDOUT_MAX_ROWS = 200_000
 HISTORY_POINTS = 80
 LOADERS = {".parquet": "parquet", ".csv": "csv", ".json": "json", ".jsonl": "json"}
+OBJECTIVES = ("sft", "grpo", "dpo", "orpo")
+GRPO_SETTINGS = {
+    "num_generations": ("grpo_num_generations", int),
+    "max_completion_length": ("grpo_max_completion_length", int),
+    "temperature": ("grpo_temperature", float),
+    "grpo_variant": ("grpo_variant", str),
+    "epsilon_high": ("grpo_epsilon_high", float),
+    "enable_thinking": ("grpo_enable_thinking", bool),
+    "mask_truncated_completions": ("grpo_mask_truncated_completions", bool),
+}
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
 
@@ -84,6 +94,9 @@ async def finetune(ctx: NodeContext) -> dict:
     if not isinstance(dataset, dict) or dataset.get("kind") != "dataset":
         raise FlowNodeError("Fine-tune needs a dataset")
     params = ctx.params
+    objective = str(params.get("objective") or "sft")
+    if objective not in OBJECTIVES:
+        raise FlowNodeError(f"Unknown objective {objective!r}")
     config: dict[str, Any] = {
         "model_name": str(params.get("base_model") or "").strip(),
         "format_type": str(params.get("format_type") or "auto"),
@@ -116,22 +129,33 @@ async def finetune(ctx: NodeContext) -> dict:
     method_fields(params, config, base_model)
     lora_fields(params, config)
     schedule_fields(params, config, ctx.seed)
-    memory_fields(params, config)
-    if params.get("dataset_streaming"):
+    memory_fields(params, config, objective)
+    if params.get("dataset_streaming") and objective == "sft":
         config["dataset_streaming"] = True
-    if params.get("drafter_enabled") and config["training_type"] != TRAINING_TYPES["cpt"]:
+    if (
+        params.get("drafter_enabled")
+        and objective == "sft"
+        and config["training_type"] != TRAINING_TYPES["cpt"]
+    ):
         config["drafter"] = drafter_request(params)
     mapping = ctx.params.get("custom_format_mapping")
     prompt_col = str(ctx.params.get("prompt_column") or "").strip()
     response_col = str(ctx.params.get("response_column") or "").strip()
+    rewards: list[dict] = []
     if isinstance(mapping, dict) and mapping:
         config["custom_format_mapping"] = mapping
+    elif objective != "sft":
+        roles = rl_roles(ctx.params, objective)
+        if roles:
+            config["custom_format_mapping"] = roles
     elif prompt_col and prompt_col == response_col:
         raise FlowNodeError("The prompt and the response need different columns")
     elif prompt_col and response_col:
         config["custom_format_mapping"] = {prompt_col: "user", response_col: "assistant"}
     elif prompt_col or response_col:
         raise FlowNodeError("Set both the prompt and the response column, or leave both blank")
+    if objective != "sft":
+        rewards = rl_config(ctx.params, objective, config)
     for key, value in TRAIN_PAGE_BATCH.items():
         config.setdefault(key, value)
     holdout = None
@@ -202,7 +226,8 @@ async def finetune(ctx: NodeContext) -> dict:
     async def cancel() -> None:
         await ctx.call("POST", "/api/train/stop", json = {"save": True, "expected_job_id": job_id})
 
-    history: dict[str, list] = {"loss": []}
+    history: dict[str, list] = {"loss": [], "reward": []}
+    reward_max = reward_ceiling(rewards) if rewards else None
 
     async def status() -> Any:
         payload = await ctx.call("GET", "/api/train/status")
@@ -211,6 +236,7 @@ async def finetune(ctx: NodeContext) -> dict:
             history["loss"] = (
                 status_losses(payload) or await loss_history(ctx, job_id) or history["loss"]
             )
+            history["reward"] = reward_history(payload) or history["reward"]
             ctx.partial(
                 "metrics",
                 {
@@ -218,6 +244,7 @@ async def finetune(ctx: NodeContext) -> dict:
                     "steps": slot.step,
                     "total": slot.total_steps,
                     "loss_history": history["loss"],
+                    **reward_metrics(history["reward"], reward_max),
                 },
                 step = slot.step,
                 total = slot.total_steps,
@@ -260,17 +287,31 @@ async def finetune(ctx: NodeContext) -> dict:
         "loss_history": status_losses(payload)
         or await loss_history(ctx, job_id)
         or history["loss"],
+        **reward_metrics(reward_history(payload) or history["reward"], reward_max),
     }
+    if objective != "sft":
+        metrics["objective"] = objective
     if holdout:
         metrics["train_rows"] = dataset.get("rows")
         metrics["holdout_rows"] = holdout["rows"]
     checkpoint = {"kind": "checkpoint", "name": run, "base_model": base_model}
     row = None
     mapping = config.get("custom_format_mapping")
-    automatic = not mapping and config.get("format_type") in (None, "auto")
+    automatic = objective == "sft" and not mapping and config.get("format_type") in (None, "auto")
     # A conversation format, chosen or detected, reads a whole-conversation column.
-    chat = not mapping and config.get("format_type") in (None, "auto", "chatml", "sharegpt")
-    if chat:
+    chat = (
+        objective == "sft"
+        and not mapping
+        and config.get("format_type")
+        in (
+            None,
+            "auto",
+            "chatml",
+            "sharegpt",
+        )
+    )
+    rl_mapping = mapping if isinstance(mapping, dict) else None
+    if objective != "sft" or chat:
         from core.training.account_jobs import account_hf_token
 
         # Whether a prompt carried its own system message, and which roles automatic formatting
@@ -278,7 +319,7 @@ async def finetune(ctx: NodeContext) -> dict:
         # column holds one type, so one row tells text from conversation).
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         row = await asyncio.to_thread(_first_row, dataset, token)
-    system = trained_system_prompt(config)
+    system = trained_system_prompt(config, row)
     if system:
         checkpoint["system_prompt"] = system
     conversation = None
@@ -286,10 +327,37 @@ async def finetune(ctx: NodeContext) -> dict:
         mapping = await asyncio.to_thread(auto_mapping, row)
     if chat:
         conversation = await asyncio.to_thread(auto_conversation, row)
-    facts = mapping_facts(mapping, config.get("format_type"))
+    alpaca_input = False
+    if objective != "sft" and isinstance(row, dict):
+        from core.training.rl import _IGNORE_ROLE, resolve_role_columns
+        try:
+            # The columns GRPO, DPO or ORPO read, mapped or found by name.
+            found = resolve_role_columns(
+                list(row), objective, mapping if isinstance(mapping, dict) else None
+            )
+            # As format_rl_dataset asks an Alpaca row: its instruction, then its unmapped input.
+            alpaca_input = (
+                found.get("prompt") == "instruction"
+                and "input" in row
+                and "input" not in found.values()
+                and (mapping or {}).get("input") != _IGNORE_ROLE
+            )
+            mapping = {
+                **{c: r for r, c in found.items()},
+                **{k: v for k, v in (mapping or {}).items() if str(k).startswith("__")},
+            }
+        except (KeyError, ValueError):
+            pass
+    facts = mapping_facts(mapping, config.get("format_type"), objective)
     if conversation:
         # The column of whole conversations training read, whatever other columns the rows keep.
         facts["conversation_column"] = conversation
+    if alpaca_input:
+        facts.update(user_join = "alpaca", input_columns = ["input"])
+    if objective in ("grpo", "dpo", "orpo"):
+        # Benchmark shapes the held-out rows with training's own RL formatter: implicit prompts,
+        # one-message cells and assistant prefills read as they trained.
+        facts.update(rl_objective = objective, rl_mapping = rl_mapping)
     checkpoint.update(facts)
     return {
         "checkpoint": checkpoint,
@@ -358,12 +426,14 @@ def schedule_fields(params: dict, config: dict, flow_seed: int) -> None:
     config["random_seed"] = int(seed) if seed not in (None, "") else flow_seed % (2**31)
 
 
-def memory_fields(params: dict, config: dict) -> None:
+def memory_fields(params: dict, config: dict, objective: str) -> None:
+    sft = objective == "sft"
     task = str(params.get("task") or "text")
     cpt = config["training_type"] == TRAINING_TYPES["cpt"]
-    config["packing"] = bool(params.get("packing")) and task != "embedding"
+    config["packing"] = bool(params.get("packing")) and sft and task != "embedding"
     config["train_on_completions"] = (
         bool(params.get("train_on_completions"))
+        and sft
         and not cpt
         and task != "embedding"
         and config["format_type"] != "raw"
@@ -436,21 +506,35 @@ def auto_mapping(row: Any) -> dict:
         return {}
 
 
-def mapping_facts(mapping: Any, format_type: Any = "auto") -> dict:
+# RL roles as the chat roles Benchmark asks with: the preferred answer is the reference.
+_RL_AS_CHAT = {"prompt": "user", "answer": "assistant", "chosen": "assistant", "system": "system"}
+
+
+def mapping_facts(
+    mapping: Any,
+    format_type: Any = "auto",
+    objective: Any = "sft",
+) -> dict:
     """How training read the rows, so Benchmark asks and scores the hold-out the same way."""
     if not isinstance(mapping, dict) or not mapping:
         return {}
     from utils.datasets.dataset_utils import _TO_CHATML
 
+    if (objective or "sft") != "sft":
+        # RL formats its rows itself: a dataset format setting does not apply.
+        format_type = "auto"
     # Any `__` metadata selects the template mapping, which drops system columns: its one system
     # prompt is `__system_prompt`, the checkpoint's system_prompt. An Alpaca format makes a system
     # column the Alpaca input, part of the question.
     templated = any(str(k).startswith("__") for k in mapping) or format_type == "alpaca"
-    # The formatter reads role aliases: an `input` column is the system message.
-    roles = {c: _TO_CHATML.get(role) for c, role in mapping.items() if isinstance(role, str)}
+    if (objective or "sft") == "sft":
+        # SFT's formatter reads role aliases: an `input` column is the system message.
+        roles = {c: _TO_CHATML.get(role) for c, role in mapping.items() if isinstance(role, str)}
+    else:
+        roles = {c: _RL_AS_CHAT.get(role) for c, role in mapping.items() if isinstance(role, str)}
     per_row = [] if templated else [c for c, role in roles.items() if role == "system"]
     facts = {"system_column": per_row[0] if per_row else ""}
-    if len(per_row) > 1:
+    if len(per_row) > 1 and (objective or "sft") == "sft":
         facts["system_columns"] = per_row
     # The columns that made each row's question and answer: several user columns are one
     # message per column, or one message of their lines under the template mapping. The
@@ -473,9 +557,27 @@ def mapping_facts(mapping: Any, format_type: Any = "auto") -> dict:
     return facts
 
 
-def trained_system_prompt(config: dict) -> str:
-    """The system message a new prompt would have got in training: the mapping's system prompt."""
+def trained_system_prompt(config: dict, row: Optional[dict] = None) -> str:
+    """The system message a new prompt would have got in training: the SFT mapping's system prompt,
+    or GRPO's, which fills in for every prompt with no system message of its own. GRPO claims it
+    only when ``row`` (the dataset's first) shows every prompt got it: plain-text prompts and no
+    system column. A conversation can carry its own system message, and rows it cannot read
+    claim nothing."""
     mapping = config.get("custom_format_mapping")
+    if config.get("objective") == "grpo":
+        from core.training.rl import resolve_role_columns
+
+        if not isinstance(row, dict):
+            return ""
+        try:
+            roles = resolve_role_columns(
+                list(row), "grpo", mapping if isinstance(mapping, dict) else None
+            )
+        except ValueError:
+            return ""
+        if "system" in roles or not isinstance(row.get(roles["prompt"]), str):
+            return ""
+        return str(config.get("rl_system_prompt") or "").strip()
     if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):
         return mapping["__system_prompt"].strip()
     return ""
@@ -721,7 +823,8 @@ def _loader_repos(base: str, load_in_4bit: bool) -> list[str]:
 
 
 async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
-    """What the params can't show: the dataset's content and the base model's weights."""
+    """What the params can't show: the dataset's content, the base model's weights and, for GRPO,
+    the reward rules."""
     dataset = ctx.inputs.get("dataset")
     if str(ctx.params.get("task") or "text") in ("vision", "audio") and not (
         isinstance(dataset, dict) and dataset.get("source") == "hf"
@@ -762,7 +865,24 @@ async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
                 resolve_training_model_load_target, {"model_name": base, **picked}
             )
             found["base_model_snapshot"] = os.path.basename(target) if target != base else None
+    if str(ctx.params.get("objective") or "sft") == "grpo":
+        # A reward can be saved again under the same name, so the key holds what each rule checks.
+        found["rewards"] = reward_rules(ctx.params.get("rewards"))
     return found
+
+
+def reward_rules(rewards: Any) -> list:
+    from core.training.rewards import get_reward
+
+    rules = []
+    for r in rewards or []:
+        name = str((r or {}).get("name") or "").strip() if isinstance(r, dict) else ""
+        try:
+            record = get_reward(name)
+            rules.append([name, record.get("kind"), record.get("rule")])
+        except Exception:
+            rules.append([name, None])
+    return rules
 
 
 async def dataset_material(ctx: NodeContext) -> Optional[dict]:
@@ -810,6 +930,114 @@ cache_hook(
     valid = finetune_cache_valid,
     flow_params = False,
 )
+
+
+def rl_roles(params: dict, objective: str) -> dict:
+    """Column -> RL role for the columns the node names; Studio detects the rest by name."""
+    named = {"prompt": params.get("prompt_column")}
+    if objective == "grpo":
+        named["answer"] = params.get("answer_column")
+    else:
+        named["chosen"] = params.get("chosen_column")
+        named["rejected"] = params.get("rejected_column")
+    roles = {role: str(col).strip() for role, col in named.items() if str(col or "").strip()}
+    if len(set(roles.values())) < len(roles):
+        raise FlowNodeError("Each role needs its own column")
+    return {col: role for role, col in roles.items()}
+
+
+def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
+    """The /api/train/start RL fields; returns the GRPO rewards it picked."""
+    from core.flows.specs import SPECS_BY_TYPE
+
+    # A node saved before these params existed (or built by notebook import or the API) has no
+    # rewards or system prompt; without the format prompt GRPO's rewards never fire.
+    defaults = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.finetune"]["params"]}
+    params = {**defaults, **params}
+    config["objective"] = objective
+    if params.get("beta") not in (None, ""):
+        config["rl_beta"] = float(params["beta"])
+    if params.get("max_prompt_length") not in (None, ""):
+        config["rl_max_prompt_length"] = int(params["max_prompt_length"])
+    if objective != "grpo":
+        return []
+    rewards = [
+        {"name": str(r.get("name") or "").strip(), "weight": float(r.get("weight", 1.0))}
+        for r in params.get("rewards") or []
+        if isinstance(r, dict) and str(r.get("name") or "").strip()
+    ]
+    if not rewards:
+        raise FlowNodeError("GRPO needs at least one reward")
+    config["grpo_rewards"] = rewards
+    for param, (field, cast) in GRPO_SETTINGS.items():
+        if params.get(param) not in (None, ""):
+            config[field] = cast(params[param])
+    if str(params.get("system_prompt") or "").strip():
+        config["rl_system_prompt"] = str(params["system_prompt"])
+    if params.get("batch_size") in (None, ""):
+        # One prompt and all its completions per step, as Unsloth's GRPO notebooks run. The start
+        # route's batch of 1 has TRL spread each prompt over num_generations steps instead.
+        config["batch_size"] = int(params.get("num_generations") or 4)
+        if params.get("gradient_accumulation_steps") in (None, ""):
+            config["gradient_accumulation_steps"] = 1
+    return rewards
+
+
+def _rule_best(rule: dict) -> tuple[float, float]:
+    scores = [v for v in (rule.get("score") or {}).values()]
+    scores += [b["score"] for b in rule.get("bands") or []]
+    scores += [rule[k] for k in ("missing", "else") if k in rule]
+    return min(scores), max(scores)
+
+
+def reward_ceiling(rewards: list[dict]) -> Optional[float]:
+    """Best summed reward a completion can earn with these weights; None if a reward is unknown."""
+    from core.training.rewards import RewardError, get_reward
+
+    total = 0.0
+    for r in rewards:
+        try:
+            lo, hi = _rule_best(get_reward(r["name"])["rule"])
+        except (RewardError, KeyError, ValueError):
+            return None
+        total += r["weight"] * (hi if r["weight"] >= 0 else lo)
+    return round(total, 4)
+
+
+def reward_history(payload: Any) -> list:
+    rl = (
+        ((payload or {}).get("metric_history") or {}).get("rl")
+        if isinstance(payload, dict)
+        else None
+    )
+    if not isinstance(rl, list):
+        return []
+    raw = [
+        float(e["reward"])
+        for e in rl
+        if isinstance(e, dict) and isinstance(e.get("reward"), (int, float))
+    ]
+    if not raw:
+        return []
+    # One step is one prompt's group, so the per-step reward swings between 0 and the max; a trailing
+    # mean over about a twentieth of the run is what shows whether it is learning.
+    window = max(1, min(25, len(raw) // 20))
+    head = sum(raw[:window]) / window
+    smooth = [
+        head if i < window else sum(raw[i - window + 1 : i + 1]) / window for i in range(len(raw))
+    ]
+    return downsample([round(v, 4) for v in smooth])
+
+
+def reward_metrics(history: list, ceiling: Optional[float]) -> dict:
+    if not history:
+        return {}
+    return {
+        "reward": history[-1],
+        "reward_start": history[0],
+        "reward_history": history,
+        "reward_max": ceiling,
+    }
 
 
 def downsample(values: list, points: int = HISTORY_POINTS) -> list:
