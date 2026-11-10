@@ -883,3 +883,44 @@ def test_length_growth_that_survives_rechecks_fails(monkeypatch, length_blocking
 def test_an_area_under_the_limit_costs_no_recheck(monkeypatch, length_blocking):
     calls, failures = _length_run(monkeypatch, first_long_main = 250, again_long_main = 250)
     assert calls == [] and failures == []
+
+
+def _appearance_rows(mode, area, elements, cpu_ms, known):
+    pages = {
+        (am.SHORT, "default"): _page({area: {"elements": 110, "cpu_ms": 100}}),
+        (am.SHORT, mode): _page({area: {"elements": elements, "cpu_ms": cpu_ms}}),
+    }
+    result = {**_result(pages), "areas": [area]}
+    return {
+        v["metric"]: v
+        for v in am.judge(result, known = known)
+        if v["kind"] == "appearance" and v["mode"] == mode
+    }
+
+
+@pytest.mark.parametrize("mode", ["frosted", "blurred", "liquid", am.GLASS])
+def test_the_glass_api_monitor_restyle_is_held_where_runners_read_it(mode, monkeypatch):
+    # Runners read 30-45x with Reduce motion on (the default); a worse reading still fails.
+    monkeypatch.setattr(am, "COUNT_FLOOR", 3000)
+    assert not _appearance_rows(mode, "api_monitor", 110 * 45, 100, am.KNOWN_DEFAULT)["elements"][
+        "fail"
+    ]
+    assert _appearance_rows(mode, "api_monitor", 110 * 60, 100, am.KNOWN_DEFAULT)["elements"][
+        "fail"
+    ]
+    # Held to the plain limit without the shipped ceilings.
+    assert _appearance_rows(mode, "api_monitor", 110 * 45, 100, "")["elements"]["fail"]
+
+
+def test_an_elements_ceiling_leaves_that_cells_cpu_on_the_mode_limit(monkeypatch):
+    monkeypatch.setattr(am, "CPU_FLOOR_MS", 150)
+    rows = _appearance_rows("liquid", "api_monitor", 110, 100 * 12, am.KNOWN_DEFAULT)
+    assert rows["cpu_ms"]["limit"] == 10 and rows["cpu_ms"]["fail"]
+    assert rows["elements"]["limit"] == 55
+    # Another area in the same mode keeps the mode-wide ceiling for its elements.
+    assert (
+        _appearance_rows("liquid", "composer_menu", 110 * 45, 100, am.KNOWN_DEFAULT)["elements"][
+            "limit"
+        ]
+        == 10
+    )
