@@ -412,7 +412,6 @@ def test_server_without_reference_fields_hands_off_to_the_cli(tmp_path, monkeypa
     params = _staged_refs(tmp_path)
     assert _render(slot, tmp_path, params) is None
     assert server.payloads == [] and slot.released and slot.refs_unsupported
-    # Remembered: no new server just to re-probe.
     slot.got.clear()
     assert _render(slot, tmp_path, params) is None
     assert slot.got == []
