@@ -12481,7 +12481,7 @@ _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
 # Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds; its
-# ranked tools hold until a message's best match is listable and not among them, and a listed tool keeps its place.
+# ranked tools hold until a message's best match is listable and not among them.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -12493,7 +12493,7 @@ _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
-# (account, thread) -> (ranked tools held, every tool the last listing sent, in its order).
+# (account, thread) -> (held ranked tools, the last listing's order).
 _MCP_HELD_THREADS: "OrderedDict[tuple, tuple[list[str], list[str]]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
@@ -12512,8 +12512,8 @@ def set_mcp_listing_context_tokens(
     """The local window the next MCP listing in this context is sized against; unset lists every tool in full.
     ``thread_id`` keeps the tools a chat ran listed; ``messages`` ranks the deferred ones listed up front; a
     ``tool_choice`` forcing a tool keeps that one listed, and an attached image (in the message or, sent to MCP tools
-    only, as ``mcp_image``) keeps the tools mapped to take it listed. ``remember = False`` reads the thread's held
-    listing without replacing it, for a token count: only a listing sent to the model may move a later one."""
+    only, as ``mcp_image``) keeps the tools mapped to take it listed. ``remember = False`` (token counts) reads the
+    held listing without replacing it."""
     from core.inference.chat_template_helpers import forced_tool_name, last_user_text  # noqa: PLC0415
 
     valid = isinstance(context_tokens, int) and context_tokens > 0
