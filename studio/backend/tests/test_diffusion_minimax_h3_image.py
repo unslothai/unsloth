@@ -601,3 +601,21 @@ def test_backend_loads_and_generates(h3i, release, tmp_path):
         assert status
     finally:
         backend.unload()
+
+
+@pytest.mark.parametrize("layers", [51, 53])
+def test_read_layer_hook_equals_hidden_states_50(h3i, release, layers):
+    import torch
+
+    import _minimax_h3_image_tiny as tiny
+
+    _root, ref, te = release
+    encoder = te if layers == 51 else tiny.make_text_encoder(ref["tokenizer"], layers = layers)
+    ids = ref["tokenizer"]("a cat", add_special_tokens = False)["input_ids"]
+    with torch.no_grad():
+        got = h3i.qwen3vl_hidden_state(encoder, None, ids, {}, layer = 50, device = torch.device("cpu"))
+        x = torch.tensor([ids])
+        want = encoder.model(
+            input_ids = x, attention_mask = torch.ones_like(x), output_hidden_states = True
+        ).hidden_states[50]
+    assert torch.equal(got, want)

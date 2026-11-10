@@ -1484,7 +1484,7 @@ def qwen3vl_hidden_state(
         "input_ids": input_ids,
         "attention_mask": torch.ones_like(input_ids),
         "use_cache": False,
-        "output_hidden_states": True,
+        "output_hidden_states": False,
     }
     params = inspect.signature(model.forward).parameters
     if (
@@ -1498,8 +1498,34 @@ def qwen3vl_hidden_state(
     te_dtype = _module_dtype(text_encoder)
     for name, value in (vision_inputs or {}).items():
         kwargs[name] = value.to(device, te_dtype) if name.startswith("pixel_") else value.to(device)
-    outputs = model(**kwargs)
-    return outputs.hidden_states[layer]
+    # hidden_states[layer] is the output of decoder layer ``layer - 1``: captured by a hook instead of keeping every
+    # layer's states (16 references x 1024 vision tokens would hold ~10 GB of them), and the layers past it are cut
+    # for the call (the bf16 encoder has 64; nothing after the read layer reaches the DiT).
+    language_model = getattr(model, "language_model", None)
+    layers = getattr(language_model, "layers", None)
+    if layers is None or len(layers) < layer:
+        kwargs["output_hidden_states"] = True
+        return model(**kwargs).hidden_states[layer]
+    captured: dict = {}
+
+    def _capture(_module: Any, _args: Any, output: Any) -> None:
+        captured["h"] = output[0] if isinstance(output, (tuple, list)) else output
+        raise _ReadLayerReached()
+
+    handle = layers[layer - 1].register_forward_hook(_capture)
+    try:
+        model(**kwargs)
+    except _ReadLayerReached:
+        pass
+    finally:
+        handle.remove()
+    if "h" not in captured:
+        raise RuntimeError(f"the conditioner never ran decoder layer {layer - 1}")
+    return captured["h"]
+
+
+class _ReadLayerReached(Exception):
+    """Stops the conditioner once the read layer has run: nothing after it is used."""
 
 
 # ---------------------------------------------------------------------------------------------------------------------
