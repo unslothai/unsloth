@@ -5309,6 +5309,8 @@ def _resident_tensors(group: Any) -> list:
 
 
 def _release_group(group: Any) -> None:
+    # a resident encoder group the load kept no host copy of gets one from its device weights first
+    rebuild_dropped_host_copy(group)
     onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
     for name, fn in (("onload_", onload_), ("offload_", offload_)):
         if fn is not None:
@@ -7162,6 +7164,125 @@ def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
     return waited
 
 
+# "0": an image load pins (and keeps) the host copy of every text-encoder offload group, resident ones too.
+RESIDENT_HOST_DROP_ENV = "UNSLOTH_DIFFUSION_DROP_RESIDENT_HOST_COPY"
+_HOST_DROPPED_ATTR = "_unsloth_host_dropped"
+
+
+def _resident_host_drop_enabled() -> bool:
+    return not _env_off(RESIDENT_HOST_DROP_ENV)
+
+
+def drop_resident_host_copies(
+    groups: list,
+    logger: Any = None,
+    label: str = "",
+) -> tuple[list, int]:
+    """Free the pageable host copy of each resident group (its weights live on the card); returns ``(kept, bytes)``:
+    the groups that still need a pin, and the bytes freed. A group whose eviction ever streams it again gets an exact
+    copy back from the card first (``rebuild_dropped_host_copy``). Tied partners drop together or not at all."""
+    import torch
+
+    def droppable(group: Any) -> bool:
+        if not getattr(group, "_unsloth_resident", False) or getattr(
+            group, "offload_to_disk_path", None
+        ):
+            return False
+        cpu = getattr(group, "cpu_param_dict", None)
+        if not isinstance(cpu, dict) or not cpu:
+            return False
+        for t, src in cpu.items():
+            if (
+                type(src) is not torch.Tensor
+                or src.device.type != "cpu"
+                or src.is_pinned()
+                # the weight itself must be on the card, not reading this host copy
+                or getattr(t, "device", None) is None
+                or t.device.type == "cpu"
+            ):
+                return False
+        return True
+
+    kept: list = []
+    dropped: set = set()
+    freed = 0
+    for group in groups:
+        if id(group) in dropped:
+            continue
+        closure = [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]
+        if not all(droppable(g) for g in closure):
+            kept.append(group)
+            continue
+        seen: set = set()
+        for member in closure:
+            cpu = member.cpu_param_dict
+            for src in cpu.values():
+                key = (src.data_ptr(), src.nbytes)
+                if key not in seen:
+                    seen.add(key)
+                    freed += int(src.nbytes)
+            setattr(member, _HOST_DROPPED_ATTR, list(cpu.keys()))
+            cpu.clear()
+            dropped.add(id(member))
+    if freed and logger is not None:
+        try:
+            logger.info(
+                "diffusion.memory: %s keeps no host copy of its %d resident offload groups (%.1f GiB not pinned); "
+                "an eviction copies them back from the card",
+                label,
+                len(dropped),
+                freed / 2**30,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return kept, freed
+
+
+def rebuild_dropped_host_copy(group: Any) -> int:
+    """Give ``group`` (and its tied partners) host copies of their device weights again; returns bytes copied."""
+    if not getattr(group, _HOST_DROPPED_ATTR, None):
+        return 0
+    import torch
+
+    closure = [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]
+    device = None
+    for member in closure:
+        for t in getattr(member, _HOST_DROPPED_ATTR, None) or ():
+            device = t.device
+            break
+        if device is not None:
+            break
+    if device is not None and device.type == "cuda":
+        torch.cuda.current_stream(device).synchronize()
+    memo: dict = {}
+    copied = 0
+    with torch.no_grad():
+        for member in closure:
+            keys = getattr(member, _HOST_DROPPED_ATTR, None)
+            if not keys:
+                continue
+            cpu = member.cpu_param_dict
+            for t in keys:
+                host = memo.get(id(t))
+                if host is None:
+                    live = t.data if hasattr(t, "data") else t
+                    try:
+                        host = (
+                            registered_host_copy(live)
+                            if host_pinning_allowed(live.device)
+                            else None
+                        )
+                    except Exception:  # noqa: BLE001 - registration refused: a pageable copy streams too
+                        host = None
+                    if host is None:
+                        host = live.detach().to("cpu", copy = True)
+                    memo[id(t)] = host
+                    copied += int(host.nbytes)
+                cpu[t] = host
+            setattr(member, _HOST_DROPPED_ATTR, None)
+    return copied
+
+
 def _encoder_background_pin_wanted(pipe: Any, device: Any = None) -> bool:
     # Needs the registered pin: per-tensor pin_memory() rounds to a power of two, past the weight-byte budget.
     return (
@@ -7540,6 +7661,8 @@ class _GroupPinner:
         self._lock = threading.Lock()
         self.after: list = []
         self.late = False
+        # image-load text encoders: groups resident when the pin starts drop their host copy instead of pinning it
+        self.lazy_resident = False
         self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
         self._started = False
         for group in groups:
@@ -7675,6 +7798,14 @@ class _GroupPinner:
         failed = None
         pool = None
         try:
+            if self.lazy_resident and _resident_host_drop_enabled():
+                # Resident groups are read from the card; pinning their host copy only cost RAM and load time.
+                kept, _freed = drop_resident_host_copies(self.groups, self.logger, self.label)
+                kept_ids = {id(g) for g in kept}
+                for group in self.groups:
+                    if id(group) not in kept_ids:
+                        self._done[id(group)].set()
+                self.groups = kept
             if callable(self.byte_cap):
                 self.byte_cap = max(0, int(self.byte_cap()))
                 if self.logger is not None:
@@ -7884,6 +8015,7 @@ def _defer_pinning(
     *,
     fast: Optional[bool] = None,
     byte_cap: Optional[int] = None,
+    lazy_resident: bool = False,
 ) -> bool:
     groups = _offload_groups(module)
     if not groups:
@@ -7892,6 +8024,7 @@ def _defer_pinning(
         fast = bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False))
     fast = bool(fast) and _fast_pin_supported(device)
     pinner = _GroupPinner(module, groups, device, logger, fast = fast, byte_cap = byte_cap)
+    pinner.lazy_resident = bool(lazy_resident)
     pending = getattr(pipe, _PENDING_PINS_ATTR, None)
     if pending is None:
         pending = []
@@ -8443,7 +8576,9 @@ def _apply_group_offload(
                 elif _encoder_defers(module) and (whole or encoder_left_mib > 0):
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
                     cap = None if whole else int(encoder_left_mib) << 20
-                    _defer_pinning(pipe, module, onload, logger, fast = True, byte_cap = cap)
+                    _defer_pinning(
+                        pipe, module, onload, logger, fast = True, byte_cap = cap, lazy_resident = True
+                    )
                     if not whole:
                         encoder_left_mib = max(0, encoder_left_mib - _module_registered_mib(module))
                 else:
