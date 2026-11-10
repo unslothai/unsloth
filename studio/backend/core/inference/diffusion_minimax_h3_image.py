@@ -921,7 +921,8 @@ def plan_placement(
         plan.te_resident_layers = max(0, min(te_layers, int(spare / layer_gb)))
         reasons.append(f"{plan.te_resident_layers}/{te_layers} encoder layers stay on the device")
     elif choice == PLACE_STREAM:
-        spare = vram_gb - act - margin - vae_gb - DIT_TOP_GB - block_gb
+        # The encoder's embedding + vision tower stay on the card in this tier too.
+        spare = vram_gb - act - margin - vae_gb - DIT_TOP_GB - TE_TOP_GB - block_gb
         plan.dit_resident_blocks = max(0, min(num_blocks, int(spare / block_gb)))
         # The resident blocks hold their room through the encode, so every encoder layer streams.
         plan.te_resident_layers = 0
