@@ -424,7 +424,7 @@ def wanted(model):
         return False
     if os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS", "1") == "0" or not G.enabled():
         return False
-    if torch.version.hip is not None or not _BACKEND.available():
+    if not _BACKEND.available():  # NVIDIA CUDA only (the backend refuses HIP)
         return False
     if not _FULL_LAYERS:
         return False
