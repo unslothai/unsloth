@@ -42,8 +42,7 @@ from utils.account_context import (
 
 
 def __getattr__(name):
-    # huggingface_hub.hf_api costs ~0.2 s at boot. The submodule, not the package attribute, so a patched
-    # huggingface_hub.HfApi live at first use is never cached here.
+    # Lazy (~0.2 s at boot); from the submodule so a patched huggingface_hub.HfApi is never cached.
     if name == "HfApi":
         from huggingface_hub.hf_api import HfApi
         globals()["HfApi"] = HfApi
