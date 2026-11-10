@@ -3,8 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Hugeicons "Shield Cog" (stroke-rounded, MIT). Not in the pinned free-icons package.
-// https://hugeicons.com/icon/shield-cog
+// Hugeicons Shield Cog (stroke-rounded, MIT); it is not in the pinned free-icons package.
 export const ShieldCogIcon: IconSvgElement = [
   [
     "path",

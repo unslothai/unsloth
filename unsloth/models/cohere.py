@@ -31,6 +31,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 
 try:
@@ -84,6 +85,7 @@ def fast_layernorm_inference(
 
 
 # QK norm in Cohere.
+@applies_prefix_seg_info
 @context_parallel_attention
 def CohereAttention_fast_forward(
     self,
@@ -419,8 +421,7 @@ def CohereAttention_fast_forward_inference(
 
     if bsz == 1:
         Qn *= self.scalar
-        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
-        # (comment 2153349963).
+        # Scale Q before Q @ K to avoid overflow; see ggerganov/llama.cpp 7805.
         A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = _gqa_decode_values(A, Vnn, Qn)

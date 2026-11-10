@@ -874,7 +874,7 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         c
         for c in caps.CELLS
         if c.name.startswith("MoE ")
-        and not c.name.endswith((", block compile", ", Unsloth checkpoint"))
+        and not c.name.endswith((", block compile", ", Unsloth checkpoint", ", multimodal"))
     ]
     assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
     proven = sorted(c.name for c in moe if not c.missing())
