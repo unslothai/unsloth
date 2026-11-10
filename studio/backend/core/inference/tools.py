@@ -12819,13 +12819,9 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         # A best match too big to list is not worth dropping the held tools for.
         if not held or by_name[ranked[0]] in fresh:
             chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
-    # Recency picks what fits, not the order: the tool block precedes the whole chat, so moving a tool that just ran
-    # to the front made llama-server reprocess all of it. Tools already listed keep their places; new ones go after.
+    # Listed tools keep their places, new ones go last: a reorder in the tool block reprocesses the whole chat.
     names = [spec["function"]["name"] for spec in chosen[1:]]
-    kept = set(names)
-    order = [name for name in listed_before if name in kept]
-    seen = set(order)
-    order += [name for name in names if name not in seen]
+    order = list(dict.fromkeys([name for name in listed_before if name in names] + names))
     _mcp_hold(held, order)
     return chosen[:1] + [by_name[name] for name in order]
 
