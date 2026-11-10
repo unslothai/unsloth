@@ -431,7 +431,6 @@ def test_native_int8_fusion_is_exact_and_shares_the_codes(monkeypatch):
             qkv.bias.float(),
             torch.cat([m.attn.to_q.bias, m.attn.to_k.bias, m.attn.to_v.bias]).float(),
         )
-    # the parts' codes are views of the fused buffers: no second copy
     assert sum(t.numel() for t in m.buffers() if t.dtype == torch.int8) == codes_before
     dfu.uninstall(m)
     assert q21f._qkv_intact(m.attn) is None and dfu._intact(m.blocks[0]) is None

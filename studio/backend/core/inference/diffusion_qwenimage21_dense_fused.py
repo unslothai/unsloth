@@ -86,8 +86,7 @@ def _native_compatible(parts: list) -> bool:
 
 
 def _fuse_native(parts: list) -> Any:
-    """One native int8 Linear over the row-concatenated parts, whose buffers become row views of it (no extra
-    memory); None when they do not match."""
+    """Fused native int8 Linear; parts' buffers become row views of it. None on mismatch."""
     import torch
     from torch import nn
 

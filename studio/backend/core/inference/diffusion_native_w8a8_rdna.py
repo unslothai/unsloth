@@ -209,7 +209,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
 
 def _rotq_tile(k: int, group: int) -> Optional[tuple]:
-    """(group width, groups per row, BLOCK_M, rows per program) or None when this K does not fit the kernel."""
+    """(group width, groups per row, BLOCK_M, rows per program), or None if K does not fit."""
     g = int(group) if group else _QUANT_CHUNK
     if k <= 0 or k % g:
         return None
@@ -285,7 +285,6 @@ def _launch_rotq(kern, x2, h, q, s, m, ng, g, bm, bk, rows, group, warps, stages
 
 
 def _mark_broken(what: str, exc: BaseException) -> None:
-    """A launch failed after the probe passed (an unprobed shape): every later call takes the stock maths."""
     if _STATE.get("broken"):
         return
     _STATE["broken"] = f"{what}: {type(exc).__name__}: {str(exc)[:200]}"
@@ -398,7 +397,6 @@ def reference_mm(xq: Any, xs: Any, wq: Any, ws: Any, bias: Any, out_dtype: Any) 
 
 @lru_cache(maxsize = 1)
 def _ops() -> Optional[types.SimpleNamespace]:
-    """The two custom ops (opaque to Inductor, allocation only in their fakes), or None."""
     try:
         import torch
     except Exception:  # noqa: BLE001
@@ -500,7 +498,6 @@ def _probe(device: Any) -> Optional[str]:
 
 
 def prepare(device: Any = None) -> bool:
-    """Decide (once per card, in eager) whether ``device`` runs the kernels; True when it does."""
     if rdna_triton_disabled():
         return False
     try:
