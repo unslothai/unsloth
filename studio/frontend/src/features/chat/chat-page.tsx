@@ -345,21 +345,17 @@ import {
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
+import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
 
-const BrowserPanel = lazy(() =>
-  import("@/features/browser/browser-panel").then((module) => ({
-    default: module.BrowserPanel,
-  })),
+// Not lazy(): a Suspense reveal is held up to 300 ms, which was most of the pane's first open.
+const BrowserPanel = lazyWithoutSuspense(() =>
+  import("@/features/browser/browser-panel").then((module) => module.BrowserPanel),
 );
-const FullViewChatBar = lazy(() =>
-  import("@/features/browser/full-view-chat").then((module) => ({
-    default: module.FullViewChatBar,
-  })),
+const FullViewChatBar = lazyWithoutSuspense(() =>
+  import("@/features/browser/full-view-chat").then((module) => module.FullViewChatBar),
 );
-const FullViewChatButton = lazy(() =>
-  import("@/features/browser/full-view-chat").then((module) => ({
-    default: module.FullViewChatButton,
-  })),
+const FullViewChatButton = lazyWithoutSuspense(() =>
+  import("@/features/browser/full-view-chat").then((module) => module.FullViewChatButton),
 );
 
 // Sandboxed page frames stay outside the trap: same-origin access would weaken their isolation.
@@ -681,6 +677,8 @@ const SingleContent = memo(function SingleContent({
   const browserOpen = useBrowserStore((state) => state.open);
   const browserOpenSequence = useBrowserStore((state) => state.openSequence);
   const closeBrowser = useBrowserStore((state) => state.closePanel);
+  // Load the pane's module at idle (about 25 ms once) so its first open mounts with the click.
+  useEffect(() => preloadWhenIdle(BrowserPanel.preload), []);
   useBrowserChatHost(chatActive);
   useStagedFixPrompt(pendingFixPrompt, chatActive);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
