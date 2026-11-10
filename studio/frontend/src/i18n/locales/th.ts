@@ -979,7 +979,7 @@ export const th = {
       showMore: "แสดงเพิ่มเติม",
       showLess: "แสดงน้อยลง",
       settings: "การตั้งค่า",
-      api: "API",
+      api: "ตัวตรวจสอบ API",
       lightMode: "โหมดสว่าง",
       darkMode: "โหมดมืด",
       guidedTour: "ทัวร์แนะนำ",

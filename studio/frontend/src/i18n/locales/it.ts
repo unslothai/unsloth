@@ -829,7 +829,7 @@ export const it = {
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
-      api: "API",
+      api: "Monitor API",
       lightMode: "Tema chiaro",
       darkMode: "Tema scuro",
       guidedTour: "Tour guidato",

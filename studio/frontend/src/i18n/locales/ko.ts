@@ -928,7 +928,7 @@ export const ko = {
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
-      api: "API",
+      api: "API 모니터",
       lightMode: "라이트 모드",
       darkMode: "다크 모드",
       guidedTour: "가이드 투어",

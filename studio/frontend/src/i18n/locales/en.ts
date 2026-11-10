@@ -936,7 +936,7 @@ export const en = {
       showMore: "Show more",
       showLess: "Show less",
       settings: "Settings",
-      api: "API",
+      api: "API Monitor",
       lightMode: "Light Mode",
       darkMode: "Dark Mode",
       guidedTour: "Guided Tour",

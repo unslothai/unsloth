@@ -1030,7 +1030,7 @@ export const id = {
       showMore: "Tampilkan lebih banyak",
       showLess: "Tampilkan lebih sedikit",
       settings: "Pengaturan",
-      api: "API",
+      api: "Monitor API",
       lightMode: "Mode Terang",
       darkMode: "Mode Gelap",
       guidedTour: "Tur Terpandu",

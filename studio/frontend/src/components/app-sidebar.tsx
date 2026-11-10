@@ -6758,7 +6758,7 @@ export function AppSidebar() {
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
                         <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
-                        <span>{t("shell.navigation.api")}</span>
+                        <span>{t("settings.tabs.apiKeys")}</span>
                       </DropdownMenuItem>
                     );
                   }

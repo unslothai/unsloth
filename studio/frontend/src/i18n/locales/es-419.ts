@@ -1036,7 +1036,7 @@ export const es419 = {
       showMore: "Mostrar más",
       showLess: "Mostrar menos",
       settings: "Configuración",
-      api: "API",
+      api: "Monitor de API",
       lightMode: "Modo claro",
       darkMode: "Modo oscuro",
       guidedTour: "Recorrido guiado",
