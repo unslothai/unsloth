@@ -273,6 +273,8 @@ from .diffusion_memory import (
     take_deferred_restore,
     resident_group_mib,
     hook_resident_denoiser,
+    live_reference_shortfall_mib,
+    load_covered_reference_need_mib,
     measured_request_extra_mib,
     DECODE_LEND_ATTR,
     decode_lend_from_plan,
@@ -11232,7 +11234,10 @@ class DiffusionBackend:
                             "measured_runtime_headroom_mib"
                         )
                         if headroom and (
-                            plan.resident_transformer_mib or plan.resident_text_encoder_mib
+                            plan.resident_transformer_mib
+                            or plan.resident_text_encoder_mib
+                            # every encoder layer gave way to the edit: the guard still reads what it covered
+                            or plan.estimates.get("measured_reference_te_cut_mib")
                         ):
                             pipe._unsloth_measured_reserve = (
                                 int(headroom),
@@ -11250,6 +11255,13 @@ class DiffusionBackend:
                                 bool(streamed_headroom),
                                 # MEASURED_RESERVE_DENOISE_PHASE_INDEX: the blocks sized from the denoise phase
                                 plan.estimates.get("measured_denoise_phase_headroom_mib"),
+                                # MEASURED_RESERVE_REFERENCE_INDEX: the edit the placement priced, if any
+                                (
+                                    int(plan.estimates["measured_reference_phase_mib"]),
+                                    int(plan.estimates["measured_reference_reserve_mib"]),
+                                )
+                                if plan.estimates.get("measured_reference_reserve_mib")
+                                else None,
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
@@ -15112,6 +15124,23 @@ class DiffusionBackend:
                         guard_capture_gen = cuda_graph.capture_generation(_peak_device_index(state))
                     # groups an earlier oversized request streamed out stay out when this one streams them all too
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
+                    if extra_mib > 0 and guard_reference_pixels > 0:
+                        # a load that priced an edit: release only what free memory lacks right now
+                        reference_need = load_covered_reference_need_mib(
+                            state.pipe,
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            reference_pixels = guard_reference_pixels,
+                            cfg = guard_cfg,
+                            quadratic_attention = guard_quadratic,
+                        )
+                        if reference_need is not None:
+                            short = live_reference_shortfall_mib(
+                                state.pipe, reference_need, guard_target.torch_device
+                            )
+                            if short is not None:
+                                extra_mib = min(extra_mib, short)
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (
