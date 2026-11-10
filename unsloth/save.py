@@ -5905,7 +5905,9 @@ def unsloth_push_to_hub_gguf(
         card_tags = ["gguf", "llama.cpp", "llama-cpp", "unsloth"]
         if is_vlm:
             card_tags.append("vision-language-model")
-        tags_yaml = "".join(f"- {json.dumps(t)}\n" for t in dict.fromkeys(card_tags + list(tags or [])))
+        tags_yaml = "".join(
+            f"- {json.dumps(t)}\n" for t in dict.fromkeys(card_tags + list(tags or []))
+        )
         readme_content = f"""---
 tags:
 {tags_yaml}{datasets_yaml}---
