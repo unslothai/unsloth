@@ -192,6 +192,17 @@ def snapshot_backend_flags() -> Optional[dict]:
     return state
 
 
+def release_rocm_tunableop(pipe: Any) -> None:
+    """Unload: drop this pipe's TunableOp claim (process-global, so not in snapshot_backend_flags)."""
+    mod = sys.modules.get(f"{__package__}.diffusion_rocm_tunableop")
+    if mod is None or pipe is None:
+        return
+    try:
+        mod.release(pipe)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def restore_backend_flags(state: Optional[dict]) -> None:
     """Restore the flags captured by ``snapshot_backend_flags``. No-op on None. Each flag is
     restored independently so one failure can't leak the others."""

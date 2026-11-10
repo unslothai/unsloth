@@ -21,6 +21,7 @@ TUNED_ARCHES = frozenset({"gfx1151"})
 MAX_TUNING_MS = 30
 MAX_TUNING_ITERS = 20
 _HOOK_ATTR = "_unsloth_tunableop_hooks"
+_OWNER_ATTR = "_unsloth_tunableop_owner"
 
 _LOCK = threading.Lock()
 _STATE: dict = {
@@ -30,6 +31,9 @@ _STATE: dict = {
     "file": None,
     "last_key": None,
     "tune": False,
+    # Pipes (by tag) relying on the enabled state; the last release() restores it.
+    "owners": set(),
+    "prev_enabled": False,
 }
 
 
@@ -208,6 +212,10 @@ def _activate(arch: str, logger: Any = None) -> bool:
         except OSError:
             if tune:
                 return False
+        try:
+            prev_enabled = bool(tunable.is_enabled())
+        except Exception:  # noqa: BLE001
+            prev_enabled = False
         tunable.tuning_enable(False)
         tunable.enable(True)
         _prime(torch)
@@ -220,7 +228,7 @@ def _activate(arch: str, logger: Any = None) -> bool:
             str(k): str(v) for k, v in validators.items()
         }
         if not tune and not tables and not cached:
-            tunable.enable(False)
+            tunable.enable(prev_enabled)
             return False
         tunable.set_filename(str(path), insert_device_ordinal = False)
         tunable.set_max_tuning_duration(MAX_TUNING_MS)
@@ -234,7 +242,14 @@ def _activate(arch: str, logger: Any = None) -> bool:
             _STATE["written"] = len(tunable.get_results() or ())
         except Exception:  # noqa: BLE001
             _STATE["written"] = 0
-        _STATE.update(active = True, depth = 0, file = str(path), last_key = None, tune = tune)
+        _STATE.update(
+            active = True,
+            depth = 0,
+            file = str(path),
+            last_key = None,
+            tune = tune,
+            prev_enabled = prev_enabled,
+        )
     if logger is not None:
         logger.info(
             "diffusion.rocm_tunableop: %s GEMMs use the measured fastest solution for %d shapes (%s)%s",
@@ -284,6 +299,7 @@ def install_for_pipe(
     dits = _denoisers(pipe)
     if not dits or not _activate(why, logger):
         return False
+    _claim(pipe)
     if not _STATE.get("tune"):
         return True
     for dit in dits:
@@ -307,9 +323,10 @@ def uninstall(pipe: Any = None) -> None:
             _write(tunable)
             try:
                 tunable.tuning_enable(False)
-                tunable.enable(False)
+                tunable.enable(bool(_STATE.get("prev_enabled")))
             except Exception:  # noqa: BLE001
                 pass
+        _STATE["owners"].clear()
         _STATE.update(active = False, depth = 0)
     for dit in _denoisers(pipe) if pipe is not None else ():
         for h in dit.__dict__.pop(_HOOK_ATTR, None) or ():
@@ -317,6 +334,44 @@ def uninstall(pipe: Any = None) -> None:
                 h.remove()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _claim(pipe: Any) -> None:
+    # The tag lives on the pipe so a view over it (second-expert / named-DiT) claims the same owner.
+    token = getattr(pipe, _OWNER_ATTR, None)
+    if token is None:
+        token = object()
+        try:
+            setattr(pipe, _OWNER_ATTR, token)
+        except Exception:  # noqa: BLE001 - untaggable: never released, stays on as before
+            return
+    with _LOCK:
+        _STATE["owners"].add(token)
+
+
+def release(pipe: Any) -> None:
+    """Pipeline teardown: drop its claim; the last owner out restores the pre-activation TunableOp state."""
+    if pipe is None:
+        return
+    token = getattr(pipe, _OWNER_ATTR, None)
+    if token is None:
+        return
+    try:
+        delattr(pipe, _OWNER_ATTR)
+    except Exception:  # noqa: BLE001
+        pass
+    with _LOCK:
+        _STATE["owners"].discard(token)
+        last = _STATE["active"] and not _STATE["owners"]
+    if last:
+        uninstall(pipe)
+    else:
+        for dit in _denoisers(pipe):
+            for h in dit.__dict__.pop(_HOOK_ATTR, None) or ():
+                try:
+                    h.remove()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def is_active() -> bool:
