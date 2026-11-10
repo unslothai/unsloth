@@ -164,7 +164,7 @@ _DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
 _DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
 _DDGS_PENDING = threading.local()
 
-# Tier 2 runs only if tier 1 found nothing; engines in neither tier are never contacted.
+# Tier 2 runs unless tier 1 found more than Wikipedia; engines in neither tier are never contacted.
 _SEARCH_ENGINE_TIERS = (
     ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
     ("grokipedia", "google", "yahoo"),
@@ -17087,6 +17087,11 @@ def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, websi
     ]
 
 
+def _is_wikipedia_result(result) -> bool:
+    host = urllib.parse.urlsplit(str(result.get("href") or "").strip()).hostname or ""
+    return host == "wikipedia.org" or host.endswith(".wikipedia.org")
+
+
 def _usable_search_results(results, website_policy):
     from .web_access_policy import check_url_access
     return [
@@ -17189,12 +17194,14 @@ def _web_search(
                     client = DDGS(timeout = remaining)
                 try:
                     candidates = _ddgs_text(client, effective_query, wanted, backend)
-                    results = _usable_search_results(candidates, website_policy)
-                    rejected_results = rejected_results or bool(candidates and not results)
+                    found = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not found)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
                     last_error = exc
                     continue
-                if results:
+                seen = {r.get("href") for r in results}
+                results += [r for r in found if r.get("href") not in seen]
+                if not all(_is_wikipedia_result(r) for r in results):
                     break
         except Exception as exc:
             last_error = exc
