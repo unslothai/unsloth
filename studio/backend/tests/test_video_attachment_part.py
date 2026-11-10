@@ -98,7 +98,7 @@ def test_the_cap_admits_a_clip_of_exactly_the_composer_limit():
 
     from routes.inference import _MAX_VIDEO_B64_CHARS
 
-    limit_bytes = 64 * 1024 * 1024
+    limit_bytes = 256 * 1024 * 1024
     # Padded base64 is 4 characters per 3 bytes, rounded up.
     assert len(base64.b64encode(b"x" * 3001)) == 4 * math.ceil(3001 / 3)
     assert 4 * math.ceil(limit_bytes / 3) <= _MAX_VIDEO_B64_CHARS
