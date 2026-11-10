@@ -211,6 +211,16 @@ def test_there_are_nine_learning_recipes():
     assert len(RECIPES) == 9
 
 
+def test_the_shipped_learning_recipes_match_recipe_studios():
+    # The wheel leaves out frontend/src, so Flows ships its own copy; it must not drift.
+    from core.flows.examples.build_examples import LEARNING_RECIPES
+
+    shipped = sorted(LEARNING_RECIPES.glob("*.json"))
+    assert [p.name for p in shipped] == [p.name for p in RECIPES]
+    for copy, source in zip(shipped, RECIPES):
+        assert copy.read_bytes() == source.read_bytes(), copy.name
+
+
 def test_reference_edges_follow_the_prompts():
     payload = {
         "recipe": {
