@@ -11,7 +11,7 @@ from core.flows.compiler import CompileError, compile_flow, parse_document
 from core.flows.engine import FlowEngine
 from core.flows.specs import SPECS_BY_TYPE, inp, out, spec
 
-from ._flows_helpers import doc, edge, node, run_async
+from ._flows_helpers import doc, edge, make_engine, node, run_async, run_doc
 
 COLUMN = {"name": "ticket", "column_type": "sampler", "sampler_type": "uuid", "params": {}}
 # Distinct tickets: near-copies seed as one failure, so templated rows would collapse.
@@ -266,20 +266,15 @@ def _engine(leak = False, test_pass = None):
             "failures": [{**r, "output": "wrong"} for r in failed],
         }
 
-    eng = LoopEngine()
-    eng.handlers = {"recipe.generate": gen, "train.finetune": train, "test.bench": bench}
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
+    eng = make_engine(
+        {"recipe.generate": gen, "train.finetune": train, "test.bench": bench}, cls = LoopEngine
+    )
     eng.starts = starts
     return eng, seen, scored
 
 
 async def _run(eng, d):
-    parsed, errors = parse_document(d)
-    assert not errors, errors
-    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = {})
-    await asyncio.wait_for(rs.task, timeout = 20)
-    return rs
+    return await run_doc(eng, d)
 
 
 @run_async

@@ -14,7 +14,7 @@ from core.flows.story import (
 )
 
 from .flows_player_fakes import FakeCtx, run
-from .test_flows_story import D, F, N, _raw_story, authored_doc
+from .test_flows_story import D, N, _raw_story, authored_doc
 
 CHARS = [{"id": "mo", "name": "Mo"}, {"id": "captain_lu", "name": "Captain Lu"}]
 

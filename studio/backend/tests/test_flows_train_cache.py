@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import asyncio
 
 import pytest
 
-from core.flows.compiler import parse_document
 from core.flows.engine import FlowEngine
 from core.flows.nodes import training
 
-from ._flows_helpers import doc, edge, node, run_async
+from ._flows_helpers import doc, edge, make_engine, node, run_async, run_doc
 
 
 @pytest.fixture
@@ -55,10 +53,9 @@ def _engine(state) -> FlowEngine:
         state["asked"].append(ctx.params.get("prompt"))
         return {"text": ctx.inputs["checkpoint"]["name"]}
 
-    eng = FlowEngine()
-    eng.handlers = {"data.hf_dataset": hub, "train.finetune": tune, "train.chat_checkpoint": chat}
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
+    eng = make_engine(
+        {"data.hf_dataset": hub, "train.finetune": tune, "train.chat_checkpoint": chat}
+    )
     return eng
 
 
@@ -77,10 +74,7 @@ def _flow(prompt = "q1", **tune):
 
 
 async def _run(eng, d, **options):
-    parsed, errors = parse_document(d)
-    assert not errors, errors
-    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = options)
-    await asyncio.wait_for(rs.task, timeout = 20)
+    rs = await run_doc(eng, d, **options)
     assert rs.status == "completed", rs.error
     return rs
 

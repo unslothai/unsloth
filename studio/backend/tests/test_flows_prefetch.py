@@ -10,11 +10,10 @@ import pytest
 
 from core.flows import engine as engine_mod
 from core.flows.compiler import parse_document
-from core.flows.engine import FlowEngine
 from core.flows.nodes import _common
 from studio_mcp import loading
 
-from ._flows_helpers import doc, edge, node, run_async
+from ._flows_helpers import doc, edge, make_engine, node, run_async, run_doc, text_handler
 
 
 @pytest.fixture
@@ -57,26 +56,6 @@ def studio(monkeypatch):
     return state
 
 
-def _engine(handlers: dict) -> FlowEngine:
-    eng = FlowEngine()
-    eng.handlers = handlers
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
-    return eng
-
-
-async def _run(eng: FlowEngine, d: dict, **options):
-    parsed, errors = parse_document(d)
-    assert not errors, errors
-    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = options)
-    await asyncio.wait_for(rs.task, timeout = 30)
-    return rs
-
-
-async def _text(ctx):
-    return {"text": str(ctx.params.get("value") or "")}
-
-
 async def _gen(ctx):
     await ctx.ensure_model("chat", ctx.params.get("model"))
     return {"text": f"{ctx.params['model']['repo']}:{ctx.inputs.get('prompt')}"}
@@ -113,10 +92,10 @@ def _chain(tag: str, **meta) -> dict:
 @run_async
 async def test_the_next_model_loads_while_cpu_steps_run(studio):
     spans: list = []
-    eng = _engine(
-        {"input.text": _text, "llm.generate": _gen, "text.template": _slow_template(spans)}
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template(spans)}
     )
-    rs = await _run(eng, _chain("prefetch-on"))
+    rs = await run_doc(eng, _chain("prefetch-on"))
     assert rs.status == "completed"
     assert [repo for repo, _ in studio["loads"]] == ["m1", "m2"]
     (start, end) = spans[0]
@@ -133,10 +112,10 @@ async def test_the_next_model_loads_while_cpu_steps_run(studio):
 async def test_the_kill_switch_keeps_loads_where_the_step_runs(studio, monkeypatch):
     monkeypatch.setenv("UNSLOTH_FLOWS_PREFETCH", "0")
     spans: list = []
-    eng = _engine(
-        {"input.text": _text, "llm.generate": _gen, "text.template": _slow_template(spans)}
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template(spans)}
     )
-    rs = await _run(eng, _chain("prefetch-off"))
+    rs = await run_doc(eng, _chain("prefetch-off"))
     assert rs.status == "completed" and rs.prefetched == 0
     assert dict(studio["loads"])["m2"] > spans[0][1]
 
@@ -144,13 +123,13 @@ async def test_the_kill_switch_keeps_loads_where_the_step_runs(studio, monkeypat
 @run_async
 async def test_a_rerun_served_from_the_cache_loads_nothing_ahead(studio):
     spans: list = []
-    eng = _engine(
-        {"input.text": _text, "llm.generate": _gen, "text.template": _slow_template(spans)}
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template(spans)}
     )
-    await _run(eng, _chain("rerun"))
+    await run_doc(eng, _chain("rerun"))
     studio["loads"].clear()
     studio["slots"]["llm"] = ["something-else"]
-    rs = await _run(eng, _chain("rerun"))
+    rs = await run_doc(eng, _chain("rerun"))
     assert rs.nodes["g2"].status == "cached"
     ahead = [
         e for e in rs.events if e["type"] == "node.log" and "ahead while" in e["data"]["message"]
@@ -164,7 +143,7 @@ async def test_nothing_loads_ahead_of_a_branch(studio):
         await asyncio.sleep(0.4)
         return {"then": ctx.inputs.get("value")}
 
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "logic.if": gate})
+    eng = make_engine({"input.text": text_handler, "llm.generate": _gen, "logic.if": gate})
     d = doc(
         [
             node("a", "input.text", value = "branch"),
@@ -178,7 +157,7 @@ async def test_nothing_loads_ahead_of_a_branch(studio):
             edge("if", "then", "g2", "prompt"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed" and rs.prefetched == 0
 
 
@@ -191,14 +170,14 @@ async def test_the_first_gpu_step_keeps_what_studio_already_has_loaded(studio):
         order.append(ctx.params["model"]["repo"])
         return await _gen(ctx)
 
-    eng = _engine({"input.text": _text, "llm.generate": gen})
+    eng = make_engine({"input.text": text_handler, "llm.generate": gen})
     d = doc(
         [
             node("g1", "llm.generate", prompt = "seeded one", model = {"repo": "m1"}),
             node("g2", "llm.generate", prompt = "seeded two", model = {"repo": "m2"}),
         ]
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed"
     assert order == ["m2", "m1"]
     assert [repo for repo, _ in studio["loads"]] == ["m1"]
@@ -208,8 +187,10 @@ async def test_the_first_gpu_step_keeps_what_studio_already_has_loaded(studio):
 async def test_unload_after_the_run_frees_only_what_the_run_loaded(studio):
     studio["keep"] = True
     studio["slots"]["llm"] = ["m0", "m1"]
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
-    rs = await _run(eng, _chain("unload", unload_after_run = True))
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template([])}
+    )
+    rs = await run_doc(eng, _chain("unload", unload_after_run = True))
     assert rs.status == "completed"
     assert studio["unloads"] == ["m2"]
     logs = [e["data"]["message"] for e in rs.events if e["type"] == "node.log"]
@@ -218,8 +199,10 @@ async def test_unload_after_the_run_frees_only_what_the_run_loaded(studio):
 
 @run_async
 async def test_models_stay_loaded_by_default(studio):
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
-    rs = await _run(eng, _chain("keep"))
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template([])}
+    )
+    rs = await run_doc(eng, _chain("keep"))
     assert rs.status == "completed" and studio["unloads"] == []
 
 
@@ -263,7 +246,7 @@ async def test_no_early_load_swaps_the_model_a_use_loaded_model_step_runs_on(stu
         await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
         return {"text": "t"}
 
-    eng = _engine({"input.text": _text, "llm.generate": gen, "text.template": template})
+    eng = make_engine({"input.text": text_handler, "llm.generate": gen, "text.template": template})
     d = doc(
         [
             node("a", "input.text", value = "loaded-model"),
@@ -281,7 +264,7 @@ async def test_no_early_load_swaps_the_model_a_use_loaded_model_step_runs_on(stu
             edge("t2", "text", "g2", "prompt"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed"
     assert seen["loaded"] == ["m1"]
 
@@ -302,7 +285,9 @@ async def test_stopping_a_run_mid_early_load_stops_that_load(studio, monkeypatch
         return {"repo": repo}
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template([])}
+    )
     parsed, errors = parse_document(_chain("stop-early-load"))
     assert not errors, errors
     rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
@@ -331,15 +316,19 @@ async def test_unload_after_the_run_leaves_a_slot_it_could_not_read(studio, monk
         return {k: list(v) for k, v in studio["slots"].items()}
 
     monkeypatch.setattr(loading, "resident_slots", resident_slots)
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
-    rs = await _run(eng, _chain("unknown-slot", unload_after_run = True))
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template([])}
+    )
+    rs = await run_doc(eng, _chain("unknown-slot", unload_after_run = True))
     assert rs.status == "completed" and studio["unloads"] == []
 
 
 @run_async
 async def test_unload_after_the_run_waits_for_the_gpu(studio, monkeypatch):
     studio["slots"]["llm"] = []
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template([])}
+    )
     d = _chain("unload-waits", unload_after_run = True)
     d["nodes"].append(node("tail", "text.template", template = "{}"))
     d["edges"].append(edge("g2", "text", "tail", "values"))
@@ -367,7 +356,7 @@ async def test_unload_after_the_run_frees_an_agents_vision_model(studio):
         await ctx.ensure_model("vision", ctx.params.get("vision_model"))
         return {"text": "seen"}
 
-    eng = _engine({"input.text": _text, "llm.generate": agent})
+    eng = make_engine({"input.text": text_handler, "llm.generate": agent})
     d = doc(
         [
             node(
@@ -380,7 +369,7 @@ async def test_unload_after_the_run_frees_an_agents_vision_model(studio):
         ],
         meta = {"unload_after_run": True},
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed" and studio["unloads"] == ["vis-m"]
 
 
@@ -411,7 +400,9 @@ async def test_stopping_an_early_load_never_unloads_inside_another_flows_gpu_ste
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
     monkeypatch.setattr(loading, "unload_llm", unload_llm)
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template([])}
+    )
     parsed, errors = parse_document(_chain("stop-early-load-locked"))
     assert not errors, errors
     rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
@@ -444,12 +435,12 @@ async def test_unload_after_the_run_leaves_a_model_another_run_loaded(studio, mo
 
     monkeypatch.setattr(loading, "resident_slots", resident_slots)
     studio["slots"]["llm"] = ["m1"]
-    eng = _engine({"input.text": _text, "llm.generate": _gen})
+    eng = make_engine({"input.text": text_handler, "llm.generate": _gen})
     d = doc(
         [node("g", "llm.generate", prompt = "hi", model = {"repo": "m1"})],
         meta = {"unload_after_run": True},
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed" and studio["loads"] == [] and studio["unloads"] == []
 
 
@@ -472,7 +463,9 @@ async def test_a_failed_early_load_leaves_the_steps_own_load_in_place(studio, mo
         return {"repo": repo}
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template([])}
+    )
     parsed, errors = parse_document(_chain("failed-early-load"))
     assert not errors, errors
     rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
@@ -522,9 +515,9 @@ async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_mod
         return {"text": "t"}
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
-    eng = _engine(
+    eng = make_engine(
         {
-            "input.text": _text,
+            "input.text": text_handler,
             "llm.generate": gen,
             "text.template": template,
             "image.generate": image,
@@ -547,7 +540,7 @@ async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_mod
             edge("t2", "text", "img", "prompt"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert seen["loaded"] == ["m1"]
 
@@ -567,9 +560,9 @@ async def test_an_agent_seeing_an_image_on_the_loaded_vision_model_blocks_early_
         await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
         return {"text": "t"}
 
-    eng = _engine(
+    eng = make_engine(
         {
-            "input.text": _text,
+            "input.text": text_handler,
             "llm.generate": _gen,
             "text.template": template,
             "llm.agent": agent,
@@ -595,7 +588,7 @@ async def test_an_agent_seeing_an_image_on_the_loaded_vision_model_blocks_early_
             edge("t2", "text", "g2", "prompt"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert seen["ag"] == ["m1"]
 
@@ -615,7 +608,7 @@ async def test_no_early_load_while_a_for_each_body_runs_on_the_loaded_model(stud
             return {"text": "loaded"}
         return await _gen(ctx)
 
-    eng = _engine({"input.list": items, "llm.generate": gen})
+    eng = make_engine({"input.list": items, "llm.generate": gen})
     d = doc(
         [
             node("l", "input.list"),
@@ -630,7 +623,7 @@ async def test_no_early_load_while_a_for_each_body_runs_on_the_loaded_model(stud
             edge("fe", "results", "g2", "context"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert seen == [["m1"]] * 3
 
@@ -644,9 +637,9 @@ async def test_a_controlnet_image_step_is_not_loaded_early(studio):
     async def pic(ctx):
         return {"image": {"kind": "image", "url": "/edges.png"}}
 
-    eng = _engine(
+    eng = make_engine(
         {
-            "input.text": _text,
+            "input.text": text_handler,
             "input.image": pic,
             "text.template": _slow_template([]),
             "image.generate": image,
@@ -665,7 +658,7 @@ async def test_a_controlnet_image_step_is_not_loaded_early(studio):
             edge("edges", "image", "img", "control_image"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert rs.prefetched == 0
 
@@ -690,8 +683,13 @@ async def test_a_player_invoke_that_ends_early_stops_its_early_load(studio, monk
         return {"reply": ctx.inputs.get("reply")}
 
     monkeypatch.setattr(_common, "ensure_model", ensure_model)
-    eng = _engine(
-        {"input.text": _text, "llm.generate": _gen, "text.template": failing, "chat.output": reply}
+    eng = make_engine(
+        {
+            "input.text": text_handler,
+            "llm.generate": _gen,
+            "text.template": failing,
+            "chat.output": reply,
+        }
     )
     d = doc(
         [
@@ -739,8 +737,10 @@ async def test_a_load_ahead_asks_for_the_cards_own_and_saved_load_settings(studi
     g2 = next(n for n in d["nodes"] if n["id"] == "g2")
     g2["params"]["load"] = {"max_seq_length": 8192}
     g2["params"]["use_model_settings"] = True
-    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
-    rs = await _run(eng, d)
+    eng = make_engine(
+        {"input.text": text_handler, "llm.generate": _gen, "text.template": _slow_template([])}
+    )
+    rs = await run_doc(eng, d)
     assert rs.status == "completed" and rs.prefetched == 1
     assert seen["m2"] == model_settings.card_load_kwargs(g2["params"])
     assert seen["m2"]["max_seq_length"] == 8192

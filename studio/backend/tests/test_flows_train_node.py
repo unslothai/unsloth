@@ -8,42 +8,13 @@ import pytest
 
 from core.flows.nodes import training
 from core.flows.registry import FlowCancelled, FlowNodeError
-from core.flows.specs import SPECS_BY_TYPE
+
+from ._flows_helpers import RouteCtx
 
 
-class _Ctx:
-    def __init__(self, routes, **params):
-        self.routes, self.calls, self.partials = routes, [], []
-        self.inputs = {"dataset": {"kind": "dataset", "source": "recipe", "ref": "job1"}}
-        self.params = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.finetune"]["params"]}
-        self.params.update(params)
-        self.seed, self.caller = 1, object()
-        self.cancelled = False
-
-    def check_cancelled(self):
-        if self.cancelled:
-            raise FlowCancelled()
-
-    async def call(
-        self,
-        method,
-        path,
-        json = None,
-        params = None,
-        files = None,
-        **_,
-    ):
-        self.calls.append((method, path, params, json, files))
-        return self.routes(method, path, params, json)
-
-    def progress(self, *a, **k):
-        pass
-
-    def log(self, *a, **k):
-        pass
-
-    def partial(self, port, value, **k):
-        self.partials.append((port, value))
+class _Ctx(RouteCtx):
+    node_type = "train.finetune"
+    default_inputs = {"dataset": {"kind": "dataset", "source": "recipe", "ref": "job1"}}
 
 
 ROWS = [{"q": f"q{i}", "a": f"a{i}"} for i in range(20)]
@@ -636,8 +607,6 @@ def test_a_sliced_hub_split_is_read_without_streaming_the_instruction(monkeypatc
 
 
 def test_hub_hold_out_streams_a_late_slice_and_caps_unknown_sizes(monkeypatch):
-    from types import SimpleNamespace
-
     import datasets
 
     class Stream:

@@ -11,10 +11,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.flows import compiler, package
 from core.flows.compiler import RECIPE_PARAM, CompileError, compile_flow, parse_document
 from core.flows.nodes import data
@@ -24,6 +21,8 @@ from routes import flows as flows_routes
 from storage import data_recipes_db
 
 from .test_flows_recipes import _Ctx
+
+from ._flows_helpers import flows_test_client, make_engine
 
 BACKEND = Path(__file__).resolve().parents[1]
 LEARNING = BACKEND.parent / "frontend" / "src" / "features" / "data-recipes" / "learning-recipes"
@@ -597,12 +596,8 @@ def test_a_run_whose_rows_cannot_be_read_is_kept_as_failed(monkeypatch):
 
 
 @pytest.fixture
-def client():
-    app = FastAPI()
-    app.include_router(flows_routes.router, prefix = "/api/flows")
-    app.dependency_overrides[get_current_subject] = lambda: "tester"
-    app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    with TestClient(app) as test_client:
+def client(monkeypatch):
+    with flows_test_client(monkeypatch, api_key = False) as test_client:
         yield test_client
 
 
@@ -899,7 +894,6 @@ def test_recipe_dataset_takes_every_row_count_the_run_dialog_accepts():
 
 
 def test_a_recipe_on_chats_model_is_cached_under_the_model_it_ran_on(monkeypatch):
-    from core.flows.engine import FlowEngine
     from studio_mcp import loading
 
     loaded = {"name": "org/model-a"}
@@ -924,12 +918,9 @@ def test_a_recipe_on_chats_model_is_cached_under_the_model_it_ran_on(monkeypatch
             "preview": [],
         }
 
-    eng = FlowEngine()
     from core.flows.registry import load_handlers
 
-    eng.handlers = {**load_handlers(), GENERATE_TYPE: generate}
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
+    eng = make_engine({**load_handlers(), GENERATE_TYPE: generate})
 
     async def run():
         rs = await eng.start_run(app = None, flow_id = doc["id"], doc = doc, options = {})

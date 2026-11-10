@@ -9,8 +9,7 @@ from types import SimpleNamespace
 from core.flows.compiler import parse_document
 from storage import flows_db
 
-from ._flows_helpers import doc, edge, node, run_async
-from .test_flows_engine import BASE, _engine, _run
+from ._flows_helpers import BASE_HANDLERS, doc, edge, make_engine, node, run_async, run_doc
 
 
 def test_gallery_summaries_match_the_parsed_documents():
@@ -71,7 +70,7 @@ async def test_a_run_writes_its_events_and_results_in_few_transactions(monkeypat
     nodes = [node(f"a{i}", "input.text", value = str(i)) for i in range(40)]
     d = doc(nodes, id = "many")
     flows_db.save_flow(parse_document(d)[0])
-    rs = await _run(_engine(dict(BASE)), d)
+    rs = await run_doc(make_engine(dict(BASE_HANDLERS)), d)
     assert sum(e for e, _ in calls) == rs.seq
     assert sum(r for _, r in calls) == 40 and len(calls) < 10
     stored = flows_db.events_after(rs.id, 0)
@@ -82,14 +81,14 @@ async def test_a_run_writes_its_events_and_results_in_few_transactions(monkeypat
 @run_async
 async def test_each_run_takes_a_fresh_key_and_the_next_is_minted_ahead():
     minted, revoked = [], []
-    eng = _engine(dict(BASE))
+    eng = make_engine(dict(BASE_HANDLERS))
     eng.mint_key = lambda account: (minted.append(len(minted)) or (f"k{len(minted)}", len(minted)))
     eng.revoke_key = lambda key_id: revoked.append(key_id)
     eng.key_alive = lambda key_id: True
     d = doc([node("a", "input.text")], id = "keys")
     flows_db.save_flow(parse_document(d)[0])
-    first = await _run(eng, d)
-    second = await _run(eng, d)
+    first = await run_doc(eng, d)
+    second = await run_doc(eng, d)
     await asyncio.sleep(0.05)
     assert first.key_id != second.key_id
     assert {first.key_id, second.key_id} <= set(revoked)
@@ -106,7 +105,7 @@ async def test_an_invoke_key_is_still_revoked_after_the_answer():
     async def next_scene(ctx):
         return {"scene": {"ok": True}}
 
-    eng = _engine({**BASE, "story.next_scene": next_scene})
+    eng = make_engine({**BASE_HANDLERS, "story.next_scene": next_scene})
     eng.mint_key = lambda account: ("k", 7)
     eng.revoke_key = lambda key_id: revoked.append(key_id)
     eng.key_alive = lambda key_id: True
@@ -120,7 +119,7 @@ async def test_an_invoke_key_is_still_revoked_after_the_answer():
 @run_async
 async def test_a_spare_key_deleted_by_a_credential_reset_is_not_used():
     minted, revoked, deleted = [], [], set()
-    eng = _engine(dict(BASE))
+    eng = make_engine(dict(BASE_HANDLERS))
 
     def mint(account):
         minted.append(len(minted) + 1)
@@ -131,10 +130,10 @@ async def test_a_spare_key_deleted_by_a_credential_reset_is_not_used():
     eng.key_alive = lambda key_id: key_id not in deleted
     d = doc([node("a", "input.text")], id = "resetkeys")
     flows_db.save_flow(parse_document(d)[0])
-    await _run(eng, d)
+    await run_doc(eng, d)
     await asyncio.sleep(0.05)
     deleted.update(minted)
-    second = await _run(eng, d)
+    second = await run_doc(eng, d)
     assert second.key_id not in deleted
     await eng.release_spare_keys()
 
@@ -146,7 +145,7 @@ async def test_a_cancelled_key_acquisition_still_revokes_its_key():
     from utils.account_context import OWNER
 
     gate, minted, revoked = threading.Event(), [], []
-    eng = _engine(dict(BASE))
+    eng = make_engine(dict(BASE_HANDLERS))
 
     def mint(account):
         gate.wait(2)
@@ -226,8 +225,8 @@ async def test_a_reconnect_waits_for_a_batch_already_being_written(monkeypatch):
     monkeypatch.setattr(flows_db, "write_batch", slow)
     d = doc([node("a", "input.text")], id = "slowwrite")
     flows_db.save_flow(parse_document(d)[0])
-    eng = _engine(dict(BASE))
-    rs = await _run(eng, d)
+    eng = make_engine(dict(BASE_HANDLERS))
+    rs = await run_doc(eng, d)
     rs.emit("node.log", "a", {"message": "late"})
     first = asyncio.create_task(eng.persist(rs))
     await asyncio.sleep(0.05)
@@ -252,8 +251,8 @@ async def test_a_cache_entry_stays_a_hit_while_its_batch_is_being_written(monkey
 
     d = doc([node("a", "input.text")], id = "cachewrite")
     flows_db.save_flow(parse_document(d)[0])
-    eng = _engine(dict(BASE))
-    rs = await _run(eng, d)
+    eng = make_engine(dict(BASE_HANDLERS))
+    rs = await run_doc(eng, d)
     monkeypatch.setattr(flows_db, "write_batch", slow)
     rs._unsaved_cache["k1"] = ("text.template", {"text": "v"})
     writing = asyncio.create_task(eng.persist(rs))
@@ -271,7 +270,7 @@ async def test_overlapping_calls_keep_one_spare_key_per_account():
     async def next_scene(ctx):
         return {"scene": {}}
 
-    eng = _engine({**BASE, "story.next_scene": next_scene})
+    eng = make_engine({**BASE_HANDLERS, "story.next_scene": next_scene})
 
     def mint(account):
         minted.append(len(minted) + 1)
@@ -302,8 +301,8 @@ async def test_a_cancelled_flusher_still_finishes_its_batch_before_the_next_pers
 
     d = doc([node("a", "input.text")], id = "cancelwrite")
     flows_db.save_flow(parse_document(d)[0])
-    eng = _engine(dict(BASE))
-    rs = await _run(eng, d)
+    eng = make_engine(dict(BASE_HANDLERS))
+    rs = await run_doc(eng, d)
     monkeypatch.setattr(flows_db, "write_batch", slow)
     rs.emit("node.log", "a", {"message": "mid-write"})
     flusher = asyncio.create_task(eng.persist(rs))
@@ -338,7 +337,7 @@ async def test_repeated_invokes_of_one_revision_compile_the_flow_once(monkeypatc
     async def next_scene(ctx):
         return {"scene": {"ok": True}}
 
-    eng = _engine({**BASE, "story.next_scene": next_scene})
+    eng = make_engine({**BASE_HANDLERS, "story.next_scene": next_scene})
     parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
     for _ in range(5):
         await eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n", revision = 1)
@@ -368,8 +367,8 @@ async def test_runs_and_invokes_keep_storage_off_the_event_loop(monkeypatch):
     d = doc([node("a", "input.text", value = "x"), node("n", "story.next_scene")], id = "offloop")
     flows_db.save_flow(parse_document(d)[0])
     monkeypatch.setattr(flows_db, "get_connection", watched)
-    eng = _engine({**BASE, "story.next_scene": next_scene})
-    await _run(eng, d)
+    eng = make_engine({**BASE_HANDLERS, "story.next_scene": next_scene})
+    await run_doc(eng, d)
     parsed, _ = parse_document(d)
     await eng.invoke(app = None, flow_id = "offloop", doc = parsed, entry = "n")
     await eng.release_spare_keys()

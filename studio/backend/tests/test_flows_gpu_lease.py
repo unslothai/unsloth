@@ -8,17 +8,9 @@ import asyncio
 import pytest
 
 from core.flows.compiler import parse_document
-from core.flows.engine import FlowEngine, GpuLease
+from core.flows.engine import GpuLease
 
-from ._flows_helpers import chat_entry_spec, doc, node, run_async
-
-
-def _engine(handlers: dict) -> FlowEngine:
-    eng = FlowEngine()
-    eng.handlers = handlers
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
-    return eng
+from ._flows_helpers import chat_entry_spec, doc, make_engine, node, run_async
 
 
 def _doc(*types: str):
@@ -54,7 +46,7 @@ async def test_an_invoke_reports_its_gpu_wait_first_text_and_stop_time():
         await gate.wait()
         return {"scene": {}}
 
-    eng = _engine({"story.next_scene": scene})
+    eng = make_engine({"story.next_scene": scene})
     d = _doc("story.next_scene")
     timing: dict = {}
     task = asyncio.create_task(_invoke(eng, d, "story_next_scene", timing = timing))
@@ -154,7 +146,7 @@ def _live_chat(monkeypatch, slots: int):
     monkeypatch.setitem(SPECS_BY_TYPE, "test.reply", chat_entry_spec("test.reply"))
     monkeypatch.setitem(SPECS_BY_TYPE, "test.plan", chat_entry_spec("test.plan", background = True))
     probe = _Probe()
-    eng = _engine(
+    eng = make_engine(
         {
             "test.reply": probe.handler("reply"),
             "test.plan": probe.handler("plan"),

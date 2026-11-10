@@ -12,6 +12,8 @@ from core.flows.recipe_compile import RecipeCompileError, compile_recipe, normal
 from core.flows.recipe_import import COLUMN_TYPE, import_recipe, column_references
 from core.flows.registry import FlowNodeError
 
+from ._flows_helpers import RouteCtx
+
 LEARNING = (
     Path(__file__).resolve().parents[2]
     / "frontend"
@@ -23,19 +25,17 @@ LEARNING = (
 RECIPES = sorted(LEARNING.glob("*.json"))
 
 
-class _Ctx:
+class _Ctx(RouteCtx):
+    seed = 7
+
     def __init__(
         self,
         routes,
         params = None,
         inputs = None,
     ):
-        self.routes = routes
-        self.params = {"recipe_id": "r1", "mode": "full", "rows": 10, **(params or {})}
-        self.inputs = inputs or {}
-        self.calls = []
-        self.hooks = []
-        self.seed = 7
+        super().__init__(routes, inputs = inputs or {}, recipe_id = "r1", mode = "full", rows = 10)
+        self.params.update(params or {})
         self.caller = None
         self.refuse: dict[str, str] = {}
 
@@ -46,18 +46,6 @@ class _Ctx:
     ):
         return self.refuse.get(cap)
 
-    async def call(
-        self,
-        method,
-        path,
-        json = None,
-        params = None,
-        files = None,
-        **_,
-    ):
-        self.calls.append((method, path, params, json, files))
-        return self.routes(method, path, params, json)
-
     async def ensure_model(
         self,
         kind,
@@ -67,18 +55,6 @@ class _Ctx:
     ):
         self.loaded = choice
         self.primary = primary
-
-    def on_cancel(self, fn):
-        self.hooks.append(fn)
-
-    def progress(self, *a, **k):
-        pass
-
-    def log(self, *a, **k):
-        pass
-
-    def check_cancelled(self):
-        pass
 
 
 def _recipe_routes(job_ids, artifacts):

@@ -7,10 +7,7 @@ import time
 from datetime import datetime
 
 import pytest
-from fastapi import FastAPI, Request
-from fastapi.testclient import TestClient
 
-from auth.authentication import get_current_subject
 from core.flows import capabilities, triggers
 from core.flows import engine as engine_mod
 from core.flows.nodes import automation
@@ -19,7 +16,7 @@ from routes import flows as flows_routes
 from storage import flows_db
 from utils.account_context import OWNER, AccountContext, bind_account, reset_account
 
-from ._flows_helpers import doc, edge, node
+from ._flows_helpers import doc, edge, flows_test_client, node, wait_run
 
 OWNER_API = AccountContext(OWNER.account_id, OWNER.username, OWNER.role, via_api_key = True)
 ALICE = AccountContext("alice-auto", "alice")
@@ -29,32 +26,14 @@ CODE = "result = 1"
 
 @pytest.fixture
 def client(monkeypatch):
-    eng = engine_mod.FlowEngine()
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
-
     async def ran(ctx):
         return {"result": "ran", "log": ""}
 
     async def fired(ctx):
         return await automation.webhook(ctx)
 
-    eng.handlers = {"code.python": ran, "trigger.webhook": fired, "trigger.schedule": ran}
-    monkeypatch.setattr(engine_mod, "ENGINE", eng)
-    app = FastAPI()
-
-    @app.middleware("http")
-    async def as_account(request: Request, call_next):
-        token = bind_account(ACCOUNTS[request.headers.get("x-test-account", "owner")])
-        try:
-            return await call_next(request)
-        finally:
-            reset_account(token)
-
-    app.include_router(flows_routes.hooks_router, prefix = "/api/flows/hooks")
-    app.include_router(flows_routes.router, prefix = "/api/flows")
-    app.dependency_overrides[get_current_subject] = lambda: "tester"
-    with TestClient(app) as test_client:
+    handlers = {"code.python": ran, "trigger.webhook": fired, "trigger.schedule": ran}
+    with flows_test_client(monkeypatch, handlers, hooks = True, accounts = ACCOUNTS) as test_client:
         yield test_client
 
 
@@ -63,12 +42,7 @@ def _wait(
     run_id: str,
     account = "owner",
 ) -> dict:
-    for _ in range(100):
-        snap = client.get(f"/api/flows/runs/{run_id}", headers = {"x-test-account": account}).json()
-        if snap["run"]["status"] in ("completed", "failed", "cancelled"):
-            return snap
-        time.sleep(0.05)
-    raise AssertionError("run did not finish")
+    return wait_run(client, run_id, headers = {"x-test-account": account})
 
 
 def _run(

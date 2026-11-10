@@ -9,7 +9,6 @@ from typing import Any, Callable
 import pytest
 from core.flows import compiler
 from core.flows.compiler import parse_document
-from core.flows.engine import FlowEngine
 from core.flows.examples.build_examples import REVIEW_TOPICS, build
 from core.flows.nodes import text as text_nodes
 from core.flows.nodes import transform
@@ -19,6 +18,8 @@ from core.flows.specs import SPECS_BY_TYPE
 from core.flows.story import compile_story_report, walk_check
 
 from .flows_player_fakes import FakeCtx, run
+
+from ._flows_helpers import make_engine
 
 BUILT = {d["id"]: d for d in build()}
 IDS = sorted(BUILT)
@@ -148,13 +149,9 @@ def _run_example(name: str, stubs: dict):
     import asyncio
 
     from core.flows.compiler import parse_document
-    from core.flows.engine import FlowEngine
     from core.flows.registry import load_handlers
 
-    eng = FlowEngine()
-    eng.handlers = {**load_handlers(), **stubs}
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
+    eng = make_engine({**load_handlers(), **stubs})
     parsed, errors = parse_document(_example(name))
     assert not errors, errors
 
@@ -310,10 +307,7 @@ def test_background_swap_places_the_cutout_on_the_new_scene():
 
 
 def _run_example_b(name: str, stubs: dict) -> tuple[Any, dict]:
-    eng = FlowEngine()
-    eng.handlers = {**load_handlers(), **stubs}
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
+    eng = make_engine({**load_handlers(), **stubs})
     doc = _example(name)
 
     async def go():
@@ -438,13 +432,9 @@ async def _run_example_c(
     import asyncio
 
     from core.flows.compiler import parse_document
-    from core.flows.engine import FlowEngine
     from core.flows.registry import load_handlers
 
-    eng = FlowEngine()
-    eng.handlers = {**load_handlers(), **stubs}
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
+    eng = make_engine({**load_handlers(), **stubs})
     parsed, errors = parse_document(_example(name))
     assert not errors, errors
     rs = await eng.start_run(app = None, flow_id = name, doc = parsed, options = {"params": params or {}})

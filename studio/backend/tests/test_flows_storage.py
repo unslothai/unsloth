@@ -6,8 +6,7 @@
 from core.flows.compiler import parse_document
 from storage import flows_db
 
-from ._flows_helpers import doc, node, run_async
-from .test_flows_engine import BASE, _engine, _run
+from ._flows_helpers import BASE_HANDLERS, doc, make_engine, node, run_async, run_doc
 
 
 def _last_used(key: str) -> int:
@@ -89,8 +88,8 @@ async def test_a_finished_run_prunes_older_runs_and_the_cache(monkeypatch):
     flows_db.cache_put("stale", "text.template", {"text": "v"})
     d = doc([node("a", "input.text", value = "x")], id = "prune-engine")
     flows_db.save_flow(parse_document(d)[0])
-    eng = _engine(dict(BASE))
-    first = await _run(eng, d)
-    second = await _run(eng, d)
+    eng = make_engine(dict(BASE_HANDLERS))
+    first = await run_doc(eng, d)
+    second = await run_doc(eng, d)
     assert flows_db.events_after(first.id, 0) == [] and flows_db.events_after(second.id, 0)
     assert flows_db.cache_get("stale") is None

@@ -10,8 +10,7 @@ import pytest
 from core.flows.specs import SPECS_BY_TYPE
 from utils.account_context import OWNER, bind_account, reset_account
 
-from ._flows_helpers import chat_entry_spec, doc, node
-from .test_flows_routes import client  # noqa: F401 - the routes fixture
+from ._flows_helpers import chat_entry_spec, doc, make_engine, node
 
 STATE = {"history": [], "player_message": "hi"}
 
@@ -39,11 +38,11 @@ def _sse(text: str) -> list[dict]:
     return [json.loads(line[5:]) for line in text.splitlines() if line.startswith("data:")]
 
 
-def test_streamed_invoke_sends_text_then_the_result(client):  # noqa: F811
+def test_streamed_invoke_sends_text_then_the_result(flows_client):
     engine_mod.ENGINE.handlers["test.reply"] = _streaming_reply(["Hel", "lo ", "there"])
-    client.post("/api/flows", json = {"doc": _reply_flow()})
+    flows_client.post("/api/flows", json = {"doc": _reply_flow()})
     body = {"entry": "r", "inputs": {"state": STATE}, "stream": True, "rev": 3}
-    res = client.post("/api/flows/village/invoke", json = body)
+    res = flows_client.post("/api/flows/village/invoke", json = body)
     assert res.status_code == 200 and res.headers["content-type"].startswith("text/event-stream")
     events = _sse(res.text)
     deltas = [e for e in events if e["type"] == "delta"]
@@ -53,15 +52,17 @@ def test_streamed_invoke_sends_text_then_the_result(client):  # noqa: F811
     assert events[-1]["outputs"]["reply"]["text"] == "Hello there"
 
 
-def test_plain_invoke_still_answers_in_one_json(client):  # noqa: F811
+def test_plain_invoke_still_answers_in_one_json(flows_client):
     engine_mod.ENGINE.handlers["test.reply"] = _streaming_reply(["Hi"])
-    client.post("/api/flows", json = {"doc": _reply_flow()})
-    res = client.post("/api/flows/village/invoke", json = {"entry": "r", "inputs": {"state": STATE}})
+    flows_client.post("/api/flows", json = {"doc": _reply_flow()})
+    res = flows_client.post(
+        "/api/flows/village/invoke", json = {"entry": "r", "inputs": {"state": STATE}}
+    )
     assert res.status_code == 200
     assert res.json()["outputs"]["reply"]["text"] == "Hi"
 
 
-def test_a_failed_streamed_answer_ends_with_an_error_event(client):  # noqa: F811
+def test_a_failed_streamed_answer_ends_with_an_error_event(flows_client):
     from core.flows.registry import FlowNodeError
 
     async def broken(ctx):
@@ -69,8 +70,8 @@ def test_a_failed_streamed_answer_ends_with_an_error_event(client):  # noqa: F81
         raise FlowNodeError("The model is busy", status = 409)
 
     engine_mod.ENGINE.handlers["test.reply"] = broken
-    client.post("/api/flows", json = {"doc": _reply_flow()})
-    res = client.post(
+    flows_client.post("/api/flows", json = {"doc": _reply_flow()})
+    res = flows_client.post(
         "/api/flows/village/invoke", json = {"entry": "r", "inputs": {"state": STATE}, "stream": True}
     )
     last = _sse(res.text)[-1]
@@ -78,9 +79,7 @@ def test_a_failed_streamed_answer_ends_with_an_error_event(client):  # noqa: F81
 
 
 def test_warm_loads_the_entry_model_once_for_concurrent_callers(monkeypatch):
-    eng = engine_mod.FlowEngine()
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
+    eng = make_engine()
     loads = []
 
     async def fake_ensure(self, model_kind, choice):
@@ -107,11 +106,11 @@ def test_warm_loads_the_entry_model_once_for_concurrent_callers(monkeypatch):
     assert loads == [("chat", model), ("chat", model)]
 
 
-def test_warm_refuses_a_node_that_is_not_an_entry_point(client):  # noqa: F811
-    client.post(
+def test_warm_refuses_a_node_that_is_not_an_entry_point(flows_client):
+    flows_client.post(
         "/api/flows", json = {"doc": doc([node("a", "input.text", value = "x")], [], id = "plain")}
     )
-    res = client.post("/api/flows/plain/invoke", json = {"entry": "a", "warm": True})
+    res = flows_client.post("/api/flows/plain/invoke", json = {"entry": "a", "warm": True})
     assert res.status_code == 422 and "entry point" in res.json()["detail"]
 
 

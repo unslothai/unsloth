@@ -17,27 +17,7 @@ from core.flows.registry import FlowCancelled, FlowNodeError
 from core.flows.specs import P, inp, out, spec
 from studio_mcp import loading
 
-from ._flows_helpers import doc, edge, node, run_async
-
-
-def _engine(handlers: dict) -> FlowEngine:
-    eng = FlowEngine()
-    eng.handlers = handlers
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
-    return eng
-
-
-async def _run(eng: FlowEngine, d: dict, **options):
-    parsed, errors = parse_document(d)
-    assert not errors, errors
-    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = options)
-    await asyncio.wait_for(rs.task, timeout = 20)
-    return rs
-
-
-async def _result(ctx):
-    return {"value": ctx.inputs.get("value")}
+from ._flows_helpers import doc, edge, make_engine, node, result_handler, run_async, run_doc
 
 
 def _add_spec(monkeypatch, found: dict) -> None:
@@ -173,12 +153,12 @@ async def test_partial_rows_stream_but_never_feed_the_next_step(monkeypatch):
         seen["value"] = ctx.inputs.get("value")
         return {"value": ctx.inputs.get("value")}
 
-    eng = _engine({"test.rows": rows, "output.result": result})
+    eng = make_engine({"test.rows": rows, "output.result": result})
     d = doc(
         [node("r", "test.rows"), node("o", "output.result", name = "r")],
         [edge("r", "rows", "o", "value")],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed"
     assert seen["value"] == [1, 2, 3]
     partials = [e for e in rs.events if e["type"] == "node.partial"]
@@ -211,7 +191,7 @@ async def test_stored_partials_keep_their_position_but_not_the_value(monkeypatch
         await asyncio.sleep(0.3)
         return {"rows": [1]}
 
-    rs = await _run(_engine({"test.rows": rows}), doc([node("r", "test.rows")]))
+    rs = await run_doc(make_engine({"test.rows": rows}), doc([node("r", "test.rows")]))
     live = [e for e in rs.events if e["type"] == "node.partial"]
     kept = [e for e in stored if e["type"] == "node.partial"]
     assert live and live[-1]["data"]["value"] == list(range(500))
@@ -227,8 +207,8 @@ async def test_a_failed_step_keeps_its_last_partial(monkeypatch):
         ctx.partial("rows", ["a", "b"], step = 2, total = 5)
         raise FlowNodeError("the third row ran out of memory")
 
-    eng = _engine({"test.rows": rows})
-    rs = await _run(eng, doc([node("r", "test.rows")]))
+    eng = make_engine({"test.rows": rows})
+    rs = await run_doc(eng, doc([node("r", "test.rows")]))
     snap = rs.nodes["r"].snapshot()
     assert snap["status"] == "failed"
     assert snap["partial"]["rows"]["value"] == ["a", "b"]
@@ -421,7 +401,9 @@ async def test_a_connected_value_replaces_the_param_and_is_clamped(monkeypatch):
         assert "param:factor" not in ctx.inputs
         return {"value": ctx.inputs["value"] * ctx.params["factor"]}
 
-    eng = _engine({"input.number": number, "test.scale": scale, "output.result": _result})
+    eng = make_engine(
+        {"input.number": number, "test.scale": scale, "output.result": result_handler}
+    )
     d = doc(
         [
             node("n", "input.number", value = 3),
@@ -435,11 +417,11 @@ async def test_a_connected_value_replaces_the_param_and_is_clamped(monkeypatch):
             edge("s", "value", "o", "value"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.outputs == {"r": 30} and seen == [10]
     d["edges"] = [e for e in d["edges"] if e["target_port"] != "param:factor"]
     d["id"] = "f2"
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.outputs == {"r": 6}
 
 
@@ -590,7 +572,7 @@ async def test_an_exclusive_node_holds_the_lease_and_its_cancel_hook_still_acts_
         await asyncio.sleep(5)
         return {"value": "never"}
 
-    eng = _engine({"test.measure": measure})
+    eng = make_engine({"test.measure": measure})
     parsed, _ = parse_document(doc([node("m", "test.measure")]))
     rs = await eng.start_run(app = None, flow_id = "f1", doc = parsed)
     await asyncio.wait_for(started.wait(), 5)
@@ -613,7 +595,7 @@ async def test_an_exclusive_node_waits_for_another_lease(no_lease, monkeypatch):
     other = arb.operation_lease("eval", "someone", 60, label = "Evaluate Model")
     other.__enter__()
     arb._lease_holder.set(None)
-    eng = _engine({"test.measure": measure})
+    eng = make_engine({"test.measure": measure})
     parsed, _ = parse_document(doc([node("m", "test.measure")]))
     rs = await eng.start_run(app = None, flow_id = "f1", doc = parsed)
     await asyncio.sleep(0.3)

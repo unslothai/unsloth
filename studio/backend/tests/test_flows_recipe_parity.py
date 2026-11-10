@@ -11,20 +11,19 @@ import json
 import zipfile
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import authenticated_via_api_key
 from core.flows import package
 from core.flows.compiler import RECIPE_PARAM
 from core.flows.nodes import data
 from core.flows.recipe_compile import compile_recipe, recipe_graph
 from core.flows.recipe_import import flow_from_recipe
 from core.flows.registry import FlowNodeError
-from routes import flows as flows_routes
 
 from .test_flows_recipe_groups import LEARNING, SQL, _column, _compiled, _flow
 from .test_flows_recipes import _Ctx
+
+from ._flows_helpers import flows_test_client
 
 HTTP = {
     "name": "docs",
@@ -254,12 +253,8 @@ def test_a_flow_package_from_elsewhere_cannot_bring_a_stdio_server():
 
 
 @pytest.fixture
-def client():
-    app = FastAPI()
-    app.include_router(flows_routes.router, prefix = "/api/flows")
-    app.dependency_overrides[get_current_subject] = lambda: "tester"
-    app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    with TestClient(app) as test_client:
+def client(monkeypatch):
+    with flows_test_client(monkeypatch, api_key = False) as test_client:
         yield test_client
 
 

@@ -7,56 +7,25 @@ import pytest
 
 from core.flows import engine as engine_mod
 from core.flows.compiler import parse_document
-from core.flows.engine import FlowEngine
 from core.flows.registry import FlowNodeError
 from storage import flows_db
 
-from ._flows_helpers import doc, edge, node, run_async
-
-
-def _engine(handlers: dict) -> FlowEngine:
-    eng = FlowEngine()
-    eng.handlers = handlers
-    eng.mint_key = lambda account: ("sk-unsloth-test", None)
-    eng.revoke_key = lambda key_id: None
-    return eng
-
-
-async def _text(ctx):
-    return {"text": str(ctx.params.get("value") or "")}
-
-
-async def _template(ctx):
-    values = ctx.inputs.get("values") or []
-    return {"text": (ctx.params.get("template") or "{}").replace("{}", "+".join(map(str, values)))}
-
-
-async def _result(ctx):
-    return {"value": ctx.inputs.get("value")}
-
-
-BASE = {
-    "input.text": _text,
-    "text.template": _template,
-    "output.result": _result,
-}
-
-
-async def _run(eng: FlowEngine, d: dict, **options):
-    parsed, errors = parse_document(d)
-    assert not errors, errors
-    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = options)
-    await asyncio.wait_for(rs.task, timeout = 20)
-    return rs
-
-
-def _status(rs, nid):
-    return rs.nodes[nid].status
+from ._flows_helpers import (
+    BASE_HANDLERS,
+    doc,
+    edge,
+    make_engine,
+    node,
+    node_status,
+    ret,
+    run_async,
+    run_doc,
+)
 
 
 @run_async
 async def test_linear_run_produces_outputs_and_ordered_events():
-    eng = _engine(dict(BASE))
+    eng = make_engine(dict(BASE_HANDLERS))
     d = doc(
         [
             node("a", "input.text", value = "hi"),
@@ -65,7 +34,7 @@ async def test_linear_run_produces_outputs_and_ordered_events():
         ],
         [edge("a", "text", "t", "values"), edge("t", "text", "o", "value")],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed"
     assert rs.outputs == {"answer": "<hi>"}
     seqs = [e["seq"] for e in rs.events]
@@ -99,7 +68,9 @@ async def test_if_skips_the_branch_not_taken_and_merge_joins():
                 return {"value": ctx.inputs[port]}
         return {}
 
-    eng = _engine({**BASE, "logic.if": branch, "text.template": tagged, "logic.merge": merge})
+    eng = make_engine(
+        {**BASE_HANDLERS, "logic.if": branch, "text.template": tagged, "logic.merge": merge}
+    )
     d = doc(
         [
             node("a", "input.text", value = "no"),
@@ -118,9 +89,9 @@ async def test_if_skips_the_branch_not_taken_and_merge_joins():
             edge("m", "value", "o", "value"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed"
-    assert _status(rs, "yes") == "skipped"
+    assert node_status(rs, "yes") == "skipped"
     assert calls == ["no"]
     assert rs.outputs == {"r": "no:no"}
 
@@ -130,7 +101,7 @@ async def test_failure_is_isolated_and_downstream_skipped():
     async def boom(ctx):
         raise FlowNodeError("nope")
 
-    eng = _engine({**BASE, "text.split": boom})
+    eng = make_engine({**BASE_HANDLERS, "text.split": boom})
     d = doc(
         [
             node("a", "input.text", value = "x"),
@@ -146,21 +117,21 @@ async def test_failure_is_isolated_and_downstream_skipped():
             edge("ok", "text", "o", "value"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "failed"
     assert rs.nodes["bad"].error == "nope"
-    assert _status(rs, "after") == "skipped"
+    assert node_status(rs, "after") == "skipped"
     assert rs.nodes["after"].message == "An upstream step failed"
     assert rs.outputs == {"ok": "[x]"}
 
 
 @run_async
 async def test_for_each_runs_body_per_item_and_collects():
-    eng = _engine(
+    eng = make_engine(
         {
-            **BASE,
-            "input.list": lambda ctx: _ret({"items": ["a", "b", "c"]}),
-            "text.template": lambda ctx: _ret({"text": str(ctx.inputs["values"][0]).upper()}),
+            **BASE_HANDLERS,
+            "input.list": lambda ctx: ret({"items": ["a", "b", "c"]}),
+            "text.template": lambda ctx: ret({"text": str(ctx.inputs["values"][0]).upper()}),
         }
     )
     d = doc(
@@ -177,7 +148,7 @@ async def test_for_each_runs_body_per_item_and_collects():
             edge("fe", "results", "o", "value"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", rs.error
     assert rs.outputs == {"all": ["A", "B", "C"]}
     iterations = [
@@ -200,11 +171,11 @@ async def test_for_each_waits_for_outside_inputs_of_its_body():
         seen.append(ctx.inputs.get("values"))
         return {"text": "x"}
 
-    eng = _engine(
+    eng = make_engine(
         {
-            **BASE,
+            **BASE_HANDLERS,
             "llm.generate": slow_ref,
-            "input.list": lambda ctx: _ret({"items": ["a", "b"]}),
+            "input.list": lambda ctx: ret({"items": ["a", "b"]}),
             "text.template": body,
         }
     )
@@ -222,13 +193,9 @@ async def test_for_each_waits_for_outside_inputs_of_its_body():
             edge("t", "text", "fe", "collect"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", rs.error
-    assert _status(rs, "t") != "skipped" and len(seen) == 2 and all("ref" in v for v in seen)
-
-
-async def _ret(value):
-    return value
+    assert node_status(rs, "t") != "skipped" and len(seen) == 2 and all("ref" in v for v in seen)
 
 
 @run_async
@@ -239,21 +206,21 @@ async def test_cache_hits_on_second_run_and_force_bypasses():
         calls.append(ctx.node_id)
         return {"text": "v"}
 
-    eng = _engine({**BASE, "text.template": counted})
+    eng = make_engine({**BASE_HANDLERS, "text.template": counted})
     d = doc(
         [node("a", "input.text", value = "k"), node("t", "text.template")],
         [edge("a", "text", "t", "values")],
     )
-    first = await _run(eng, d)
-    second = await _run(eng, d)
+    first = await run_doc(eng, d)
+    second = await run_doc(eng, d)
     assert calls == ["t"]
-    assert _status(first, "t") == "done" and _status(second, "t") == "cached"
+    assert node_status(first, "t") == "done" and node_status(second, "t") == "cached"
     moved = {**d, "nodes": [{**n, "pos": [500, 500]} for n in d["nodes"]]}
-    assert _status(await _run(eng, moved), "t") == "cached"
-    await _run(eng, d, force_nodes = ["t"])
+    assert node_status(await run_doc(eng, moved), "t") == "cached"
+    await run_doc(eng, d, force_nodes = ["t"])
     assert calls == ["t", "t"]
     changed = {**d, "nodes": [d["nodes"][0], {**d["nodes"][1], "params": {"template": "other"}}]}
-    await _run(eng, changed)
+    await run_doc(eng, changed)
     assert calls == ["t", "t", "t"]
 
 
@@ -265,13 +232,13 @@ async def test_side_effect_nodes_never_cache():
         calls.append(1)
         return {"saved": []}
 
-    eng = _engine({**BASE, "output.library": save})
+    eng = make_engine({**BASE_HANDLERS, "output.library": save})
     d = doc(
         [node("a", "input.text", value = "k"), node("s", "output.library")],
         [edge("a", "text", "s", "value")],
     )
-    await _run(eng, d)
-    await _run(eng, d)
+    await run_doc(eng, d)
+    await run_doc(eng, d)
     assert calls == [1, 1]
 
 
@@ -291,7 +258,7 @@ async def test_cancel_mid_run_keeps_finished_outputs_and_fires_hooks():
             ctx.check_cancelled()
         return {"text": "late"}
 
-    eng = _engine({**BASE, "llm.generate": slow})
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": slow})
     d = doc(
         [node("a", "input.text", value = "p"), node("g", "llm.generate"), node("t", "text.template")],
         [edge("a", "text", "g", "prompt"), edge("g", "text", "t", "values")],
@@ -303,9 +270,9 @@ async def test_cancel_mid_run_keeps_finished_outputs_and_fires_hooks():
     await asyncio.wait_for(rs.task, 60)
     assert rs.status == "cancelled"
     assert hooked == ["g"]
-    assert _status(rs, "a") == "done"
-    assert _status(rs, "g") == "cancelled"
-    assert _status(rs, "t") in ("cancelled", "skipped")
+    assert node_status(rs, "a") == "done"
+    assert node_status(rs, "g") == "cancelled"
+    assert node_status(rs, "t") in ("cancelled", "skipped")
     assert flows_db.get_run(rs.id)["status"] == "cancelled"
     assert rs.events[-1]["type"] == "run.cancelled"
 
@@ -320,12 +287,12 @@ async def test_gpu_nodes_prefer_the_resident_model():
         ctx.resident["llm"] = repo
         return {"text": repo}
 
-    eng = _engine({**BASE, "llm.generate": gen})
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": gen})
     models = ["m1", "m2", "m1", "m2", "m1"]
     nodes = [
         node(f"g{i}", "llm.generate", prompt = "x", model = {"repo": m}) for i, m in enumerate(models)
     ]
-    rs = await _run(eng, doc(nodes))
+    rs = await run_doc(eng, doc(nodes))
     assert rs.status == "completed"
     assert order == ["m1", "m1", "m1", "m2", "m2"]
 
@@ -338,12 +305,12 @@ async def test_target_nodes_run_only_their_ancestors():
         calls.append(ctx.node_id)
         return {"text": ctx.node_id}
 
-    eng = _engine({"input.text": counted, "text.template": counted})
+    eng = make_engine({"input.text": counted, "text.template": counted})
     d = doc(
         [node("a", "input.text"), node("b", "input.text"), node("t", "text.template")],
         [edge("a", "text", "t", "values")],
     )
-    await _run(eng, d, target_nodes = ["t"])
+    await run_doc(eng, d, target_nodes = ["t"])
     assert sorted(calls) == ["a", "t"]
 
 
@@ -352,13 +319,13 @@ async def test_baked_outputs_are_used_without_running():
     async def never(ctx):
         raise AssertionError("baked node ran")
 
-    eng = _engine({**BASE, "llm.generate": never})
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": never})
     d = doc(
         [node("g", "llm.generate", prompt = "x"), node("o", "output.result", name = "r")],
         [edge("g", "text", "o", "value")],
         baked = {"g": {"text": "from the package"}},
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.outputs == {"r": "from the package"}
     assert rs.nodes["g"].message == "Baked"
 
@@ -368,7 +335,7 @@ async def test_invoke_runs_entrypoint_with_supplied_inputs():
     async def next_scene(ctx):
         return {"scene": {"state": ctx.inputs.get("state"), "seed": ctx.seed}}
 
-    eng = _engine({**BASE, "story.next_scene": next_scene})
+    eng = make_engine({**BASE_HANDLERS, "story.next_scene": next_scene})
     d = doc([node("n", "story.next_scene")])
     parsed, _ = parse_document(d)
     out = await eng.invoke(
@@ -397,7 +364,7 @@ async def test_cancelled_invoke_fires_the_entrypoints_stop_hooks():
         await asyncio.sleep(30)
         return {"scene": {}}
 
-    eng = _engine({**BASE, "story.next_scene": scene_art})
+    eng = make_engine({**BASE_HANDLERS, "story.next_scene": scene_art})
     parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
     task = asyncio.create_task(eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n"))
     await asyncio.wait_for(started.wait(), 20)
@@ -411,8 +378,8 @@ async def test_cancelled_invoke_fires_the_entrypoints_stop_hooks():
 async def test_run_is_invisible_to_another_account():
     from utils.account_context import AccountContext, arun_as
 
-    eng = _engine(dict(BASE))
-    rs = await _run(eng, doc([node("a", "input.text", value = "x")]))
+    eng = make_engine(dict(BASE_HANDLERS))
+    rs = await run_doc(eng, doc([node("a", "input.text", value = "x")]))
     bob = AccountContext("bob-flows", "bob")
     assert await arun_as(bob, _live(eng, rs.id)) is None
 
@@ -460,16 +427,16 @@ async def test_a_timed_out_run_stops_its_node_tasks_and_fires_hooks(monkeypatch)
         return {"text": "late"}
 
     monkeypatch.setattr(engine_mod, "MAX_RUN_SECONDS", 0.5)
-    eng = _engine({**BASE, "llm.generate": stuck})
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": stuck})
     d = doc(
         [node("a", "input.text", value = "p"), node("g", "llm.generate")],
         [edge("a", "text", "g", "prompt")],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "failed" and "time limit" in rs.error
     assert hooked == ["g"]
     assert stopped.is_set()
-    assert _status(rs, "g") == "cancelled"
+    assert node_status(rs, "g") == "cancelled"
 
 
 @run_async
@@ -492,8 +459,12 @@ async def test_stop_reaches_every_parallel_iteration_still_running():
             await asyncio.sleep(0.02)
         ctx.check_cancelled()
 
-    eng = _engine(
-        {**BASE, "input.list": lambda ctx: _ret({"items": ["a", "b"]}), "text.template": job}
+    eng = make_engine(
+        {
+            **BASE_HANDLERS,
+            "input.list": lambda ctx: ret({"items": ["a", "b"]}),
+            "text.template": job,
+        }
     )
     d = doc(
         [
@@ -534,8 +505,12 @@ async def test_forcing_a_for_each_reruns_its_body():
         calls.append(ctx.inputs["values"][0])
         return {"text": str(ctx.inputs["values"][0]).upper()}
 
-    eng = _engine(
-        {**BASE, "input.list": lambda ctx: _ret({"items": ["a", "b"]}), "text.template": counted}
+    eng = make_engine(
+        {
+            **BASE_HANDLERS,
+            "input.list": lambda ctx: ret({"items": ["a", "b"]}),
+            "text.template": counted,
+        }
     )
     d = doc(
         [
@@ -551,17 +526,17 @@ async def test_forcing_a_for_each_reruns_its_body():
             edge("fe", "results", "o", "value"),
         ],
     )
-    await _run(eng, d)
-    await _run(eng, d)
+    await run_doc(eng, d)
+    await run_doc(eng, d)
     assert calls == ["a", "b"]
-    rs = await _run(eng, d, force_nodes = ["fe"])
+    rs = await run_doc(eng, d, force_nodes = ["fe"])
     assert rs.status == "completed", rs.error
     assert calls == ["a", "b", "a", "b"]
 
 
 @run_async
 async def test_an_error_outside_a_handler_fails_the_run():
-    eng = _engine({**BASE, "input.list": lambda ctx: _ret({"items": ["a"]})})
+    eng = make_engine({**BASE_HANDLERS, "input.list": lambda ctx: ret({"items": ["a"]})})
     d = doc(
         [
             node("l", "input.list"),
@@ -576,9 +551,9 @@ async def test_an_error_outside_a_handler_fails_the_run():
             edge("fe", "results", "o", "value"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "failed", rs.status
-    assert _status(rs, "fe") == "failed"
+    assert node_status(rs, "fe") == "failed"
 
 
 @run_async
@@ -595,7 +570,7 @@ async def test_a_cancelled_invoke_stops_its_model_call_through_the_cancel_hooks(
         await asyncio.sleep(60)
         return {"scene": {}}
 
-    eng = _engine({**BASE, "story.next_scene": next_scene})
+    eng = make_engine({**BASE_HANDLERS, "story.next_scene": next_scene})
     parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
     task = asyncio.create_task(eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n", inputs = {}))
     await asyncio.wait_for(started.wait(), 10)
@@ -627,19 +602,19 @@ async def test_an_unchanged_recipe_group_hands_back_its_last_dataset():
             "preview": [],
         }
 
-    eng = _engine({**BASE, GENERATE_TYPE: generate})
+    eng = make_engine({**BASE_HANDLERS, GENERATE_TYPE: generate})
     d, _ = flow_from_recipe(sql, name = "Text to SQL")
     step = next(n for n in d["nodes"] if n["type"] == GENERATE_TYPE)
-    first = await _run(eng, d)
-    second = await _run(eng, d)
+    first = await run_doc(eng, d)
+    second = await run_doc(eng, d)
     assert jobs == [step["id"]], "the second run reuses the dataset"
-    assert _status(first, step["id"]) == "done" and _status(second, step["id"]) == "cached"
-    await _run(eng, d, force_nodes = [step["id"]])
+    assert node_status(first, step["id"]) == "done" and node_status(second, step["id"]) == "cached"
+    await run_doc(eng, d, force_nodes = [step["id"]])
     assert len(jobs) == 2, "Re-roll runs a fresh job"
     edited = _json.loads(_json.dumps(d))
     column = next(n for n in edited["nodes"] if n["type"] == "recipe.column")
     column["params"]["column"]["params"]["values"] = ["Retail", "Health"]
-    await _run(eng, edited)
+    await run_doc(eng, edited)
     assert len(jobs) == 3, "an edited column runs the recipe again"
 
 
@@ -665,16 +640,18 @@ async def test_a_run_that_may_not_use_mcp_gets_no_cached_mcp_recipe_output(monke
         jobs.append(ctx.node_id)
         return {"dataset": {"kind": "dataset", "ref": "recipes/r1/parquet-files"}, "preview": []}
 
-    eng = _engine({**BASE, GENERATE_TYPE: generate})
+    eng = make_engine({**BASE_HANDLERS, GENERATE_TYPE: generate})
     d, _ = flow_from_recipe(sql, name = "Text to SQL")
     step = next(n for n in d["nodes"] if n["type"] == GENERATE_TYPE)
     monkeypatch.setattr(flows_db, "get_capabilities", lambda flow_id: {"mcp": True})
     monkeypatch.setattr(engine_mod, "_origin", lambda account, kind: {"kind": "ui", "owner": True})
-    owner = await _run(eng, d)
-    assert _status(owner, step["id"]) == "done" and jobs == [step["id"]]
+    owner = await run_doc(eng, d)
+    assert node_status(owner, step["id"]) == "done" and jobs == [step["id"]]
     monkeypatch.setattr(
         engine_mod, "_origin", lambda account, kind: {"kind": "api_key", "owner": False}
     )
-    api = await _run(eng, d)
-    assert _status(api, step["id"]) == "failed", "the owner's cached MCP rows are not handed out"
+    api = await run_doc(eng, d)
+    assert (
+        node_status(api, step["id"]) == "failed"
+    ), "the owner's cached MCP rows are not handed out"
     assert "Studio owner" in api.nodes[step["id"]].error and jobs == [step["id"]]

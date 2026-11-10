@@ -14,8 +14,18 @@ from core.flows.nodes import training
 from core.flows.specs import SPECS_BY_TYPE
 from core.flows.story import node_value
 
-from ._flows_helpers import doc, edge, node, run_async
-from .test_flows_engine import BASE, _engine, _run, _ret, _status
+from ._flows_helpers import (
+    BASE_HANDLERS,
+    doc,
+    edge,
+    make_engine,
+    node,
+    node_status,
+    ret,
+    RouteCtx,
+    run_async,
+    run_doc,
+)
 
 
 def test_numeric_params_are_clamped_to_the_catalog():
@@ -56,8 +66,12 @@ async def test_a_for_each_failure_in_an_early_iteration_fails_the_run():
             raise RuntimeError("boom")
         return {"text": "ok"}
 
-    eng = _engine(
-        {**BASE, "input.list": lambda ctx: _ret({"items": ["a", "b"]}), "text.template": flaky}
+    eng = make_engine(
+        {
+            **BASE_HANDLERS,
+            "input.list": lambda ctx: ret({"items": ["a", "b"]}),
+            "text.template": flaky,
+        }
     )
     d = doc(
         [
@@ -71,7 +85,7 @@ async def test_a_for_each_failure_in_an_early_iteration_fails_the_run():
             edge("t", "text", "fe", "collect"),
         ],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert len(calls) == 2
     assert rs.status == "failed"
 
@@ -84,35 +98,17 @@ async def test_ignore_baked_recomputes_shipped_outputs():
         ran.append(ctx.node_id)
         return {"text": "fresh"}
 
-    eng = _engine({**BASE, "input.text": text})
+    eng = make_engine({**BASE_HANDLERS, "input.text": text})
     d = doc([node("a", "input.text", value = "x")], baked = {"a": {"text": "shipped"}})
-    rs = await _run(eng, d)
-    assert ran == [] and _status(rs, "a") == "cached"
-    rs = await _run(eng, d, ignore_baked = True)
+    rs = await run_doc(eng, d)
+    assert ran == [] and node_status(rs, "a") == "cached"
+    rs = await run_doc(eng, d, ignore_baked = True)
     assert ran == ["a"] and rs.nodes["a"].outputs == {"text": "fresh"}
 
 
-class _Ctx:
-    def __init__(self, routes):
-        self.routes, self.calls, self.hooks = routes, [], []
-        self.inputs = {"dataset": {"kind": "dataset", "source": "recipe", "ref": "job1"}}
-        self.params = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.finetune"]["params"]}
-        self.seed, self.caller = 1, object()
-
-    async def call(
-        self,
-        method,
-        path,
-        json = None,
-        params = None,
-        files = None,
-        **_,
-    ):
-        self.calls.append((method, path, params, json, files))
-        return self.routes(method, path, params, json)
-
-    def on_cancel(self, fn):
-        self.hooks.append(fn)
+class _Ctx(RouteCtx):
+    node_type = "train.finetune"
+    default_inputs = {"dataset": {"kind": "dataset", "source": "recipe", "ref": "job1"}}
 
 
 def test_finetune_trains_on_a_data_recipe_dataset(monkeypatch):
@@ -209,11 +205,11 @@ async def test_a_full_run_leaves_player_entrypoints_idle():
     async def reply(ctx):
         raise AssertionError("an entrypoint ran in a full run")
 
-    eng = _engine({**BASE, "story.next_scene": reply})
+    eng = make_engine({**BASE_HANDLERS, "story.next_scene": reply})
     d = doc([node("a", "input.text", value = "x"), node("r", "story.next_scene")])
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", rs.error
-    assert _status(rs, "r") == "idle"
+    assert node_status(rs, "r") == "idle"
 
 
 def test_generate_image_with_only_references_uses_the_reference_workflow():
@@ -261,7 +257,7 @@ async def test_cancel_hooks_can_still_reach_studio():
     original = engine_mod.flow_caller.forward
     engine_mod.flow_caller.forward = fake_forward
     try:
-        eng = _engine({**BASE, "llm.generate": slow})
+        eng = make_engine({**BASE_HANDLERS, "llm.generate": slow})
         d = doc(
             [node("a", "input.text", value = "p"), node("g", "llm.generate")],
             [edge("a", "text", "g", "prompt")],
@@ -371,7 +367,7 @@ async def test_use_the_loaded_model_is_never_cached():
         calls.append(ctx.params.get("model"))
         return {"text": "hi"}
 
-    eng = _engine({**BASE, "llm.generate": gen})
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": gen})
 
     def flow(model):
         return doc(
@@ -379,12 +375,12 @@ async def test_use_the_loaded_model_is_never_cached():
             [edge("a", "text", "g", "prompt")],
         )
 
-    await _run(eng, flow(None))
-    second = await _run(eng, flow(None))
-    assert len(calls) == 2 and _status(second, "g") == "done"
+    await run_doc(eng, flow(None))
+    second = await run_doc(eng, flow(None))
+    assert len(calls) == 2 and node_status(second, "g") == "done"
     named = {"repo": "unsloth/x-GGUF", "variant": "Q4_K_M"}
-    await _run(eng, flow(named))
-    assert _status(await _run(eng, flow(named)), "g") == "cached"
+    await run_doc(eng, flow(named))
+    assert node_status(await run_doc(eng, flow(named)), "g") == "cached"
 
 
 @run_async
@@ -405,7 +401,7 @@ async def test_a_hook_registered_after_cancel_still_fires():
         ctx.check_cancelled()
         return {"text": "x"}
 
-    eng = _engine({**BASE, "llm.generate": starts_a_job})
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": starts_a_job})
     d = doc(
         [node("a", "input.text", value = "p"), node("g", "llm.generate")],
         [edge("a", "text", "g", "prompt")],
@@ -433,8 +429,12 @@ async def test_parallel_for_each_keeps_the_cpu_limit():
         live -= 1
         return {"text": "ok"}
 
-    eng = _engine(
-        {**BASE, "input.list": lambda ctx: _ret({"items": list(range(12))}), "text.template": slow}
+    eng = make_engine(
+        {
+            **BASE_HANDLERS,
+            "input.list": lambda ctx: ret({"items": list(range(12))}),
+            "text.template": slow,
+        }
     )
     d = doc(
         [
@@ -444,7 +444,7 @@ async def test_parallel_for_each_keeps_the_cpu_limit():
         ],
         [edge("l", "items", "fe", "items"), edge("fe", "item", "t", "values")],
     )
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", rs.error
     assert 1 < peak <= engine_mod.CPU_CONCURRENCY
 
@@ -461,7 +461,7 @@ async def test_a_request_aborted_by_stop_reads_as_cancelled():
             "Client disconnected before an upstream llama-server generation slot was available"
         )
 
-    eng = _engine({**BASE, "llm.generate": aborted})
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": aborted})
     d = doc(
         [node("a", "input.text", value = "p"), node("g", "llm.generate")],
         [edge("a", "text", "g", "prompt")],
@@ -472,7 +472,7 @@ async def test_a_request_aborted_by_stop_reads_as_cancelled():
     await eng.cancel(rs.id)
     await asyncio.wait_for(rs.task, 60)
     assert rs.status == "cancelled"
-    assert _status(rs, "g") == "cancelled" and rs.nodes["g"].error is None
+    assert node_status(rs, "g") == "cancelled" and rs.nodes["g"].error is None
 
 
 @run_async
@@ -483,14 +483,14 @@ async def test_a_run_value_change_is_not_served_from_the_cache():
         calls.append(ctx.flow_params.get("name"))
         return {"text": f"hi {ctx.flow_params.get('name')}"}
 
-    eng = _engine({**BASE, "text.template": template})
+    eng = make_engine({**BASE_HANDLERS, "text.template": template})
     d = doc([node("t", "text.template", template = "hi {{name}}")])
-    first = await _run(eng, d, params = {"name": "Alice"})
-    second = await _run(eng, d, params = {"name": "Bob"})
-    again = await _run(eng, d, params = {"name": "Bob"})
+    first = await run_doc(eng, d, params = {"name": "Alice"})
+    second = await run_doc(eng, d, params = {"name": "Bob"})
+    again = await run_doc(eng, d, params = {"name": "Bob"})
     assert calls == ["Alice", "Bob"]
-    assert _status(first, "t") == "done" and _status(second, "t") == "done"
-    assert _status(again, "t") == "cached"
+    assert node_status(first, "t") == "done" and node_status(second, "t") == "done"
+    assert node_status(again, "t") == "cached"
 
 
 def test_zero_temperature_is_kept():
@@ -634,10 +634,10 @@ async def test_for_each_keeps_null_results_in_place():
     async def passthrough(ctx):
         return {"value": ctx.inputs.get("value")}
 
-    eng = _engine(
+    eng = make_engine(
         {
-            **BASE,
-            "input.list": lambda ctx: _ret({"items": ["a", None, "c"]}),
+            **BASE_HANDLERS,
+            "input.list": lambda ctx: ret({"items": ["a", None, "c"]}),
             "json.passthrough": passthrough,
         }
     )
@@ -659,7 +659,7 @@ async def test_for_each_keeps_null_results_in_place():
         return {"text": None if values == [None] else "x"}
 
     eng.handlers["text.template"] = maybe_null
-    rs = await _run(eng, d)
+    rs = await run_doc(eng, d)
     assert rs.status == "completed", rs.error
     assert len(rs.nodes["fe"].outputs["results"]) == 3
 
@@ -812,7 +812,9 @@ def test_first_json_returns_a_list_of_objects_whole():
 async def test_a_baked_chat_answers_the_new_message_not_the_exported_one():
     from core.flows.nodes import chat
 
-    eng = _engine({**BASE, "chat.input": chat.chat_input, "chat.output": chat.chat_output})
+    eng = make_engine(
+        {**BASE_HANDLERS, "chat.input": chat.chat_input, "chat.output": chat.chat_output}
+    )
     d = doc(
         [node("i", "chat.input"), node("o", "chat.output")],
         [edge("i", "message", "o", "reply")],
