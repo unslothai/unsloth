@@ -59,3 +59,18 @@ def test_markup_still_stripped(text, expected):
         _strip_tool_xml_for_display(text, auto_heal_tool_calls = True, enabled_tool_names = _NAMES)
         == expected
     )
+
+
+def test_gemma_call_re_matches_the_word_boundary_form():
+    from itertools import product
+
+    from routes.inference import _DISPLAY_GEMMA_CALL_RE
+
+    reference = __import__("re").compile(r"(?<!\w)call\s*:")
+    for parts in product(
+        ("", "x", "_", "é", " ", "(", "re"), ("call", "Call"), ("", " ", "\t\n"), (":", "x")
+    ):
+        text = "".join(parts) + " call:"
+        for pos in range(len(text) + 1):
+            got, want = _DISPLAY_GEMMA_CALL_RE.search(text, pos), reference.search(text, pos)
+            assert (got and got.span()) == (want and want.span()), (text, pos)
