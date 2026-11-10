@@ -1380,8 +1380,7 @@ def test_a_plan_priced_with_the_offload_only_backend_keeps_it_when_resident(monk
 
 @pytest.mark.parametrize("budget, store", [(2000, True), (4000, False)])
 def test_mps_stores_fp8_only_past_the_resident_margin(monkeypatch, tmp_path, budget, store):
-    """MPS never offloads: the widened DiT (2000) keeps its fp8 codes (1000) only when it overruns 0.85 of
-    the budget, else it widens, which runs faster."""
+    """MPS never offloads; fp8 codes are kept only if the widened DiT overruns 0.85 of budget."""
 
     def comfy_mib(
         path,
@@ -1539,12 +1538,18 @@ def _nvidia(monkeypatch):
         ("xpu", torch.bfloat16, False, None, None),
         ("xpu", torch.bfloat16, False, "1", "native"),
         ("xpu", torch.bfloat16, True, "0", None),
-        # untouched: Ampere+ keeps its W8A8 offload route, CPU and an fp32 XPU expand
+        # untouched: Ampere+ keeps its W8A8 offload route, an fp32 XPU and MPS outside bf16 expand
         ("cuda", torch.bfloat16, True, None, "native"),
         ("cuda", torch.bfloat16, True, "0", "native"),
         ("cuda", torch.bfloat16, False, "1", None),
-        ("cpu", torch.float32, True, "1", None),
         ("xpu", torch.float32, True, None, None),
+        ("mps", torch.float16, False, None, None),
+        ("mps", torch.float32, False, "1", None),
+        # CPU (never offloaded): stored by default, expanded only under the kill switch
+        ("cpu", torch.float32, False, None, "native"),
+        ("cpu", torch.float32, False, "1", "native"),
+        ("cpu", torch.float32, False, "0", None),
+        ("cpu", torch.bfloat16, False, None, None),
     ],
 )
 def test_int8_storage_backend_choice(monkeypatch, device, dtype, offload, env, want):
@@ -1577,6 +1582,7 @@ def test_int8_storage_hosts_never_take_the_int8_gemm(monkeypatch):
     assert tq.native_int8_act(_target("cuda", torch.float16)) is False
     assert tq.native_int8_act(_target("xpu", torch.bfloat16)) is False
     assert tq.native_int8_act(_target("cuda", torch.bfloat16)) is (not tq.int8_act_disabled())
+    assert tq.native_int8_act(_target("cpu", torch.float32)) is False
     monkeypatch.setenv(_STORAGE_ENV, "0")
     assert tq.native_int8_act(_target("cuda", torch.float16)) is (not tq.int8_act_disabled())
 
@@ -1662,6 +1668,113 @@ def test_int8_storage_keeps_codes_and_matches_the_expanded_dit_bitwise(
     x = torch.randn(3, DIM).to(dtype)
     for got, want in zip(_run(stored, x), _run(expanded, x)):
         assert torch.equal(got, want)
+
+
+def test_cpu_keeps_int8_codes_resident_and_matches_the_expanded_dit_bitwise(
+    monkeypatch, plain_int8_file
+):
+    from core.inference.diffusion_native_quant import is_native_linear
+
+    _nvidia(monkeypatch)
+    monkeypatch.delenv(_STORAGE_ENV, raising = False)
+    dtype = torch.float32
+    target = _target("cpu", dtype)
+    backend = cq.comfy_int8_backend(target, "z-image")
+    assert backend == "native"
+    stored = _load_as(plain_int8_file, target, backend)
+    monkeypatch.setenv(_STORAGE_ENV, "0")
+    assert cq.comfy_int8_backend(target, "z-image") is None
+    expanded = _load_as(plain_int8_file, target, None)
+    assert stored._unsloth_comfy_quant["int8"] == 8
+    assert expanded._unsloth_comfy_quant["int8"] == 0
+    for block in stored.blocks:
+        for name in ("to_q", "to_k", "to_v", "to_out"):
+            layer = getattr(block, name)
+            assert is_native_linear(layer) and not layer.act_int8 and not layer.rot_group
+            assert layer.weight_q.dtype == torch.int8
+    for block in expanded.blocks:
+        assert not any(is_native_linear(m) for m in block.modules())
+    assert _held(expanded) - _held(stored) == 8 * (DIM * DIM * (dtype.itemsize - 1) - 4 * DIM)
+    for rows in (1, 3, 17):
+        x = torch.randn(rows, DIM).to(dtype)
+        for got, want in zip(_run(stored, x), _run(expanded, x)):
+            assert torch.equal(got, want)
+
+
+def _cpu_native(
+    out_f,
+    in_f,
+    seed,
+    bias = True,
+):
+    from core.inference.diffusion_native_quant import native_linear_class
+
+    torch.manual_seed(seed)
+    linear = torch.nn.Linear(in_f, out_f, bias = bias)
+    codes, scale = _int8(linear.weight.detach())
+    return native_linear_class()(linear, "int8", codes = codes, scale = scale)
+
+
+def test_cpu_forward_widens_into_a_reused_scratch_bitwise():
+    import core.inference.diffusion_native_quant as nq
+
+    nq._CPU_WIDEN.buf = None
+    small, big = _cpu_native(48, 64, 0), _cpu_native(96, 128, 1, bias = False)
+    x_small, x_big = torch.randn(5, 64), torch.randn(7, 128)
+    with torch.no_grad():
+        want_small = torch.nn.functional.linear(
+            x_small, small._stored_weight(torch.float32), small.bias
+        )
+        want_big = torch.nn.functional.linear(x_big, big._stored_weight(torch.float32), None)
+        got_small = small(x_small)
+        buf = nq._CPU_WIDEN.buf
+        got_big = big(x_big)
+        grown = nq._CPU_WIDEN.buf
+        again = small(x_small)
+    assert torch.equal(got_small, want_small) and torch.equal(got_big, want_big)
+    assert torch.equal(again, want_small)
+    assert buf.numel() == 48 * 64 and grown.numel() == 96 * 128
+    assert nq._CPU_WIDEN.buf is grown
+    assert small.weight.data_ptr() != grown.data_ptr()
+
+
+def test_cpu_scratch_made_under_inference_mode_still_serves_no_grad():
+    import core.inference.diffusion_native_quant as nq
+
+    nq._CPU_WIDEN.buf = None
+    layer = _cpu_native(40, 64, 5)
+    x = torch.randn(3, 64)
+    with torch.inference_mode():
+        first = layer(x)
+    with torch.no_grad():
+        second = layer(x)
+    second_grad_on = layer(x)
+    assert not nq._CPU_WIDEN.buf.is_inference()
+    assert torch.equal(first, second) and torch.equal(second, second_grad_on)
+
+
+def test_cpu_forward_under_autograd_keeps_its_own_weight():
+    layer = _cpu_native(32, 64, 2)
+    other = _cpu_native(32, 64, 3)
+    x = torch.randn(4, 64, requires_grad = True)
+    out = layer(x)
+    other(torch.randn(4, 64))  # would overwrite a shared scratch before backward
+    out.sum().backward()
+    ref = x.detach().clone().requires_grad_()
+    torch.nn.functional.linear(
+        ref, layer._stored_weight(torch.float32), layer.bias
+    ).sum().backward()
+    assert torch.equal(x.grad, ref.grad)
+
+
+def test_cpu_native_linear_compiles_without_a_graph_break():
+    torch._dynamo.reset()
+    layer = _cpu_native(64, 64, 4)
+    x = torch.randn(9, 64)
+    with torch.no_grad():
+        want = layer(x)
+        got = torch.compile(layer, backend = "eager", fullgraph = True, dynamic = True)(x)
+    assert torch.equal(got, want)
 
 
 def test_int8_storage_convrot_rotates_activations_like_the_native_route(monkeypatch, comfy_file):

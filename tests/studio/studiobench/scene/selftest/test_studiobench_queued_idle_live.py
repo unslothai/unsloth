@@ -462,9 +462,8 @@ def test_a_composer_regression_between_two_settled_arms_is_reported(page):
 
 
 def test_a_finished_against_a_running_arm_is_still_refused_after_that(page):
-    """And the suppression this must not cost: `streaming` disagrees, so the run state itself says
-    the two arms were at different points in one turn and the composer is not evidence of a
-    change."""
+    """The suppression must not cost this case: streaming disagrees, so the arms were at different
+    points of one turn and the composer is not evidence of a change."""
     base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
     treat = _capture_html(page, _page(tail = "arr", **_writing()))
     assert base["streaming"] is False and treat["streaming"] is True
@@ -493,9 +492,8 @@ def test_a_dispatched_queue_wait_is_a_run_state_not_a_rendering_difference(page)
 
 
 def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
-    """The other legitimate suppression: `isRunning()` cannot separate queued-idle from settled, so
-    `queued_idle` is what carries this pair. Without it the Queue button would read as a
-    regression."""
+    """`isRunning()` cannot tell queued-idle from settled, so the `queued_idle` flag carries this
+    pair; without it the Queue button would read as a regression."""
     base = _capture_html(page, _page(tail = "same", **QUEUED_IDLE))
     treat = _capture_html(
         page,
@@ -561,9 +559,8 @@ def test_a_queue_control_missing_from_the_selector_list_is_not_a_css_regression(
 
 
 def test_a_real_style_regression_between_two_arms_in_one_run_state_is_still_reported(page):
-    """THE COVERAGE THIS MUST NOT COST. Same control on both arms, and the treatment hides the
-    viewport from CSS alone -- no structural trace whatever, which is the only thing this probe
-    exists to see."""
+    """Coverage must not cost: same control on both arms; treatment hides the viewport via CSS alone
+    with no structural trace, which is what this probe exists to see."""
     base = _capture_html_raw(page, _page(tail = "same", **_finished()))
     treat = _capture_html_raw(
         page,
@@ -577,9 +574,8 @@ def test_a_real_style_regression_between_two_arms_in_one_run_state_is_still_repo
 
 
 def test_a_composer_that_lost_its_control_is_still_a_style_finding(page):
-    """AND THE SUPPRESSION IS NOT KEYED ON THE COMPOSER TOKEN ALONE. The treatment simply has no
-    Send button: the token differs, the probe matches one element fewer, and the run state agrees
-    on both independent readings -- so this is a rendering regression and it is reported."""
+    """Suppression is not keyed on the composer token alone: a missing Send button changes the token
+    and probe count, but agreeing run states still report it as a regression."""
     base = _capture_html_raw(page, _page(tail = "same", **_finished()))
     treat = _capture_html_raw(
         page,

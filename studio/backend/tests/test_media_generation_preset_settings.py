@@ -509,6 +509,26 @@ def test_a_store_holding_load_options_is_read_without_them_and_keeps_them(monkey
     assert kept["customPresets"][0]["loadConfig"] == {"memoryMode": "low_vram"}
 
 
+def test_a_video_preset_keeps_its_frame_rate(monkeypatch):
+    # A Cosmos3 preset saved at 10 fps must render at 10 fps when loaded, not at whatever rate is picked.
+    client = _client(monkeypatch)
+    preset = {"name": "Nano slow", "params": {"durationSeconds": 7.875, "fps": 10}}
+    assert (
+        client.put("/api/settings/generation-presets/video/custom", json = preset).status_code == 200
+    )
+    video = client.get("/api/settings/generation-presets/video").json()
+    assert video["customPresets"][0]["params"]["fps"] == 10
+    assert video["currentParams"]["fps"] is None
+    for fps in (0, 121):
+        assert (
+            client.put(
+                "/api/settings/generation-presets/video/custom",
+                json = {"name": "Bad rate", "params": {"fps": fps}},
+            ).status_code
+            == 422
+        ), fps
+
+
 _TRAINING_RECIPE = {
     "familyName": "z-image",
     "baseChoice": "__custom__",

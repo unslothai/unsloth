@@ -192,6 +192,28 @@ test("a scroll inside a dialog pauses it with the standing glass; typing in a fi
   ctl.stop();
 });
 
+test("keys, presses and edits pause the standing glass and the surface they land in through the burst", () => {
+  const { doc, ctl, sidebar, frame, composer, float } = page();
+  const field = new FakeElement(["field"]);
+  composer.append(field);
+  for (const type of motion.INTERACTION_EVENTS) {
+    doc.fire(type, field);
+    assert.deepEqual(moving(sidebar, frame, composer), [true, true, true], type);
+    assert.ok(!float.hasAttribute(ATTR), "glass the event did not land in and that does not stand stays blurred");
+    tick(motion.SETTLE_MS - 1);
+  }
+  assert.ok(sidebar.hasAttribute(ATTR), "each key extends the hold, so a burst of typing stays on the fill");
+  tick(1);
+  assert.deepEqual(moving(sidebar, frame, composer), [false, false, false], "the blur returns once the keys stop");
+  const button = new FakeElement();
+  const dialog = new FakeElement(["surface"]).append(button);
+  doc.body.append(dialog);
+  doc.fire("pointerdown", button);
+  assert.deepEqual(moving(dialog, sidebar, composer), [true, true, true], "a press in a dialog pauses the dialog too");
+  doc.fire("keydown", doc);
+  ctl.stop();
+});
+
 test("a menu mounting is paused from its first frame with the standing glass; a tooltip only pauses itself", () => {
   const { ctl, sidebar, composer } = page();
   const [mo] = observed;
@@ -253,7 +275,7 @@ test("the standing glass is found again once it leaves the page", () => {
 
 test("stop() removes every listener, the observer and every flag, and is safe to call twice", () => {
   const { doc, ctl, sidebar } = page();
-  assert.equal(doc.count(), 4);
+  assert.equal(doc.count(), 4 + motion.INTERACTION_EVENTS.length);
   const a = new FakeElement(["surface"]);
   const c = new FakeElement(["surface"]);
   ctl.hold(a as unknown as Element, 10_000);
@@ -272,13 +294,30 @@ test("stop() removes every listener, the observer and every flag, and is safe to
   assert.equal(a.writes, 2, "the cancelled timer never fires a late write");
 });
 
+test("a script-driven animation holds its surface through the running controller, and nothing without one", () => {
+  const panel = new FakeElement(["surface"]);
+  motion.holdGlassMotion(panel as unknown as Element, 1000);
+  assert.ok(!panel.hasAttribute(ATTR), "no controller: glass motion is off, nothing changes");
+  const { ctl } = page();
+  motion.holdGlassMotion(panel as unknown as Element, motion.ANIMATION_HOLD_MS);
+  assert.ok(panel.hasAttribute(ATTR));
+  motion.holdGlassMotion(panel as unknown as Element, motion.SETTLE_MS);
+  tick(motion.SETTLE_MS);
+  assert.ok(!panel.hasAttribute(ATTR), "the end of the animation releases it SETTLE_MS later");
+  ctl.stop();
+  const other = new FakeElement(["surface"]);
+  motion.holdGlassMotion(other as unknown as Element, 1000);
+  assert.ok(!other.hasAttribute(ATTR), "a stopped controller is no longer reachable");
+  motion.holdGlassMotion(null, 1000);
+});
+
 // --- wiring and CSS contract -----------------------------------------------------------------------
 
-test("glass motion runs only with software compositing, where glass blurs: never solid, Transparent, out of scope or WebKitGTK", () => {
+test("glass motion runs only with software compositing, where glass blurs: never solid, out of scope or WebKitGTK, and Transparent only on Windows Desktop", () => {
   assert.match(MATERIAL, /import \{ startGlassMotion \} from "\.\/glass-motion";/);
   assert.match(
     MATERIAL,
-    /const on =\s*!WEBKIT_GTK &&\s*material !== "solid" &&\s*material !== "transparent" &&\s*here &&\s*softwareCompositing\(\);\s*document\.documentElement\.toggleAttribute\("data-glass-motion", on\);\s*return on \? startGlassMotion\(\)\.stop : undefined;\s*\}, \[material, here\]\);/,
+    /const clearBlur =\s*material === "transparent" &&\s*root\.classList\.contains\("tauri"\) &&\s*root\.classList\.contains\("client-windows"\);\s*const on =\s*!WEBKIT_GTK &&\s*material !== "solid" &&\s*\(material !== "transparent" \|\| clearBlur\) &&\s*here &&\s*softwareCompositing\(\);\s*document\.documentElement\.toggleAttribute\("data-glass-motion", on\);\s*return on \? startGlassMotion\(\)\.stop : undefined;\s*\}, \[material, here\]\);/,
   );
 });
 
@@ -294,7 +333,7 @@ test("the motion flag is keyed on the surface, never on html or body, and never 
     for (const sel of rule.selectors) {
       assert.doesNotMatch(sel, /html\[[^\]]*data-glass-moving|body\[[^\]]*data-glass-moving/, sel);
       assert.doesNotMatch(sel, /:has\(/, `${sel}: a :has() here would re-match on every DOM change`);
-      assert.match(sel, /^html(\.dark)?\[data-glass/, `${sel}: only with Glass on`);
+      assert.match(sel, /^html(\.dark)?(\[data-glass|:is\(\[data-glass\],\[data-glass-clear\]\)|\.tauri\.client-windows\[data-glass-clear\])/, `${sel}: only with Glass on (or Windows Transparent, which blurs)`);
       assert.match(sel, /^html[^ ]*\[data-glass-motion\]/, `${sel}: only with software compositing; with a GPU nothing changes`);
     }
     assert.equal(rule.parent?.type, "root", `${rule.selector}: unlayered, outside @layer and @media`);
@@ -311,20 +350,20 @@ test("the motion flag is keyed on the surface, never on html or body, and never 
 });
 
 test("a moving or closing surface loses its blur at once and takes a near-opaque fill", () => {
-  const pause = movingRules.find((r) => r.selectors.includes("html[data-glass][data-glass-motion] [data-glass-moving]"));
+  const pause = movingRules.find((r) => r.selectors.includes("html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving]"));
   assert.ok(pause);
   for (const sel of [
-    "html[data-glass][data-glass-motion] [data-glass-moving]::before",
-    "html[data-glass][data-glass-motion] [data-glass-moving] .sticky",
-    'html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"]',
-    'html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"]::before',
+    "html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving]::before",
+    "html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving] .sticky",
+    'html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"]',
+    'html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"]::before',
   ]) assert.ok(pause.selectors.includes(sel), sel);
   const decl = (prop: string) => pause.nodes.find((n) => n.type === "decl" && n.prop === prop) as postcss.Declaration;
   assert.equal(decl("backdrop-filter").value, "none");
   assert.ok(decl("backdrop-filter").important);
   assert.ok(decl("-webkit-backdrop-filter").important);
   const still = movingRules.find(
-    (r) => r.selector === 'html[data-glass][data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"])',
+    (r) => r.selector === 'html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"])',
   );
   assert.ok(still, "Radix content pauses, settles and closes with its transitions off");
   assert.ok(
@@ -344,7 +383,7 @@ test("a moving or closing surface loses its blur at once and takes a near-opaque
 });
 
 test("no later important blur can win the cascade back from a moving surface", () => {
-  const at = CSS.indexOf("html[data-glass][data-glass-motion] [data-glass-moving],");
+  const at = CSS.indexOf("html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving],");
   assert.ok(at > 0);
   const tail = CSS.slice(at);
   assert.doesNotMatch(tail, /backdrop-filter:\s*blur[^;]*!important/);
@@ -364,4 +403,20 @@ test("in motion, Liquid 3D drops its wide blurred inner glows on dialogs and men
   }
   const dialog = rims.find((r) => r.selector.includes("dialog-content") && !r.selector.includes(".dark"));
   assert.ok(dialog?.nodes.some((n) => n.type === "decl" && n.prop === "box-shadow" && n.important), "set on the dialog itself, not inherited by its subtree");
+});
+
+test("the API monitor's script fade and the Settings pane's scrolling skip per-frame blur and raster work", () => {
+  const overlay = readSrc("features/api-monitor/api-monitor-overlay.tsx");
+  assert.match(overlay, /onAnimationStart=\{\(\) => holdGlassMotion\(monitorRef\.current, ANIMATION_HOLD_MS\)\}/);
+  assert.match(overlay, /onAnimationComplete=\{\(\) => holdGlassMotion\(monitorRef\.current, SETTLE_MS\)\}/);
+  assert.match(overlay, /"menu-soft-surface /, "the panel is a glass surface the pause rules cover");
+  assert.match(readSrc("features/settings/settings-dialog.tsx"), /ref=\{mainScrollRef\}\s+data-settings-main-scroll=""/);
+  const rule = postcss.parse(CSS).nodes.find(
+    (n): n is postcss.Rule => n.type === "rule" && n.selector === "html[data-glass][data-glass-motion] [data-settings-main-scroll]",
+  );
+  assert.ok(rule, "only with Glass under software compositing: GPU and the default look are unchanged");
+  assert.deepEqual(
+    rule.nodes.filter((n) => n.type === "decl").map((n) => `${(n as postcss.Declaration).prop}: ${(n as postcss.Declaration).value}`),
+    ["will-change: scroll-position"],
+  );
 });

@@ -141,6 +141,44 @@ def test_install_declines(monkeypatch):
     assert fa.install(_pipe(), "_native_cudnn", target) == 0
 
 
+def _split(cards):
+    from core.inference.diffusion_layer_split_plan import BlockRange, LayerSplit
+    return LayerSplit(
+        primary = 0,
+        cards = tuple(cards),
+        ranges = tuple(BlockRange("transformer", i, i + 1, c, 1) for i, c in enumerate(cards)),
+        text_encoders_card = 0,
+        card_required_mib = (),
+        card_limit_mib = (),
+    )
+
+
+@pytest.mark.parametrize("secondary_ok", [True, False])
+def test_layer_split_probes_every_secondary_card(monkeypatch, secondary_ok):
+    from core.inference import diffusion_layer_split_plan as lsp
+
+    pipe = _pipe()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    seen = []
+
+    def probe(device, *a, **k):
+        seen.append(device.index)
+        return device.index == 0 or secondary_ok
+
+    monkeypatch.setattr(fa, "strided_matches", probe)
+    target = SimpleNamespace(device = "cuda", torch_device = "cuda:0", dtype = torch.bfloat16)
+    n = fa.install(pipe, "_native_cudnn", target)
+    assert n > 0
+    monkeypatch.setattr(lsp, "place_layer_split", lambda *a, **k: {})
+    plan = SimpleNamespace(layer_split = _split((0, 1)))
+    assert lsp.apply_layer_split_plan(pipe, plan, placement = "cuda:0")
+    assert 1 in seen
+    want = fa.strided_processor_class() if secondary_ok else tf3.Flux3AttnProcessor
+    for attn in fa._attention_modules(pipe.transformer):
+        assert type(attn.processor) is want
+        assert fa._backend_value(attn.processor._attention_backend) == "_native_cudnn"
+
+
 def test_processor_digest_is_the_pinned_diffusers_source():
     from core.inference.diffusion_autoopt.patches import source_digest
     assert source_digest(tf3.Flux3AttnProcessor.__call__) in fa._PROCESSOR_DIGESTS

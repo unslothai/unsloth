@@ -17,7 +17,7 @@ test("a fence body becomes skippable only once it carries its measured height", 
   const measure = defer.slice(defer.indexOf("measure.current = () => {"), defer.indexOf("setState({ measured: true, window: next, pins });"));
   assert.ok(measure.indexOf("region.style.setProperty(FENCE_HEIGHT_PROPERTY, declared);") >= 0, "the measure that first marks a fence measured writes its height before it does");
   const autoscroll = readSrc("components/assistant-ui/use-intent-aware-autoscroll.tsx");
-  assert.match(autoscroll, /const onMutation = \(\): void => \{\s*if \(el\.ownerDocument\.hidden\) \{\s*onLayoutChange\(\);\s*return;\s*\}\s*layoutChanged = true;\s*if \(!parkIfHeld\(\)\) \{\s*extendFollow\(\);\s*\}\s*requestTick\(\);\s*\};/, "a mutation on a shown page never forces layout, following stays the frame loop's job; a hidden page runs no frames, so it pins at once and a reply that ends there is at the bottom when the tab comes back");
+  assert.match(autoscroll, /const onMutation = \(records: MutationRecord\[\]\): void => \{\s*if \(records\.some\(\(record\) => record\.attributeName === ROW_DISTANT_ATTRIBUTE\)\) \{\s*rowsToggledSinceScroll = true;\s*\}\s*if \(el\.ownerDocument\.hidden\) \{\s*onLayoutChange\(\);\s*return;\s*\}\s*layoutChanged = true;\s*if \(!parkIfHeld\(\)\) \{\s*extendFollow\(\);\s*\}\s*requestTick\(\);\s*\};/, "a mutation on a shown page never forces layout, following stays the frame loop's job; a hidden page runs no frames, so it pins at once and a reply that ends there is at the bottom when the tab comes back");
   assert.match(autoscroll, /const adjustForContentInsertedAbove = useCallback\(\(deltaPx: number\) => \{\s*adjustImplRef\.current\(deltaPx\);\s*return userDetachedRef\.current;\s*\}, \[\]\);/, "the hold learns whether its correction was written, even when the engine rounded it to nothing");
 });
 
@@ -66,11 +66,12 @@ test("grammar work waits for a held pointer and the reader, and without requestI
   assert.ok(defer.indexOf("if (warmMustWait()) {") < defer.indexOf("grammarsWarmed.add(language);"), "a warm that has to wait does not mark its grammar warmed");
 });
 
-test("settled fences go to the worker where the main thread's regex engine is slow", () => {
+test("settled fences go to the worker on every engine, and on WebKit even a short one", () => {
   const markdown = readSrc("components/assistant-ui/markdown-text.tsx");
   assert.match(markdown, /const slowMainThreadRegex =\s*typeof window !== "undefined"\s*&& typeof window\.requestIdleCallback !== "function";/);
-  assert.match(markdown, /if \(!tokenizesOffThread\(body, streaming\)\) \{\s*if \(streaming \|\| !slowMainThreadRegex\) return false;\s*const state = highlightWorkerState\(\);\s*if \(state === "unavailable" \|\| state === "stalled"\) return false;\s*\}\s*return code\.cover\(options\)\.uncovered > MAIN_THREAD_TAIL_CHARS;/, "JavaScriptCore interprets every lookbehind pattern, so WebKit tokenizes settled fences off the main thread, and a fence too long for the main thread goes to the worker, unless the main thread's own cache leaves only a short tail, as it does for the fence that just streamed");
-  assert.match(markdown, /const MAIN_THREAD_TAIL_CHARS = 512;/);
+  assert.match(markdown, /if \(!tokenizesOffThread\(body, streaming\)\) \{\s*if \(streaming\) return false;\s*const state = highlightWorkerState\(\);\s*if \(state === "unavailable" \|\| state === "stalled"\) return false;\s*\}\s*return code\.cover\(options\)\.uncovered > MAIN_THREAD_TAIL_CHARS;/, "a settled fence is tokenized by the worker while it answers, so scrolling and opening a chat keep the tokenizer off the main thread, unless the main thread's own cache leaves only a short tail, as it does for the fence that just streamed");
+  assert.match(markdown, /const MAIN_THREAD_TAIL_CHARS = slowMainThreadRegex \? 0 : 512;/, "JavaScriptCore interprets every lookbehind pattern, so WebKit sends even a short fence to the worker");
+  assert.match(markdown, /\(inView && !slowMainThreadRegex && !tokenizesOffThread\(body, Boolean\(isIncomplete\)\)\)/, "only a fence on screen with no tokens yet is tokenized on the main thread at the latch, and never on WebKit");
   const warm = markdown.slice(markdown.indexOf("const warm = useCallback("), markdown.indexOf("const speculate = useCallback("));
   assert.match(warm, /!settlesOffThread\(body, Boolean\(isIncomplete\), options\)/, "the reach latch's warm routes a settled fence the same way the render does, or a scroll tokenizes on the main thread a fence WebKit sends to the worker");
   assert.equal(markdown.includes("fenceJustStreamed"), false, "routing reads the cache itself, not a guess about which fence streamed last");
@@ -113,11 +114,10 @@ test("settled WebKitGTK fences only line-window themselves while code wrapping i
   assert.match(defer, /attributeFilter: \["data-code-wrap", "data-wrap"\]/);
 });
 
-test("without requestIdleCallback fence work waits for the reader to stop scrolling", () => {
+test("fence work runs mid-scroll on every engine once the worker colours it", () => {
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
-  assert.match(defer, /const MID_SCROLL_WORK = typeof window !== "undefined"\s*&& typeof \(window as \{ requestIdleCallback\?: unknown \}\)\.requestIdleCallback === "function";/,
-    "WebKit has no requestIdleCallback: a mid-scroll step there is a timer inside the scroll, and the reach it makes swaps markup the worker has not coloured yet");
-  assert.match(defer, /const remove = highlightQueue\.add\(\(\) => \{\s*finish\(\);\s*return true;\s*\}, finish, MID_SCROLL_WORK\);/,
-    "a reach, a start and a worker answer run mid-scroll only where idle callbacks exist");
-  assert.match(defer, /capped !== null && MID_SCROLL_WORK\);/, "so do the lines in view inside a capped block");
+  assert.doesNotMatch(defer, /MID_SCROLL_WORK/,
+    "the worker supplies coloured tokens mid-scroll, so WebKit no longer has to wait for the reader to stop");
+  assert.match(defer, /const remove = highlightQueue\.add\(\(\) => \{\s*finish\(\);\s*return true;\s*\}, finish, true\);/);
+  assert.match(defer, /budgetMs: HIGHLIGHT_RUN_MS,/, "each mid-scroll run stays inside a slice of a frame");
 });
