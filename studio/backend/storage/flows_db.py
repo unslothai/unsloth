@@ -353,6 +353,11 @@ def write_batch(
                     for key, node_type, outputs in cache_rows
                 ],
             )
+        if touched:
+            conn.executemany(
+                "UPDATE flow_cache SET last_used_at = ? WHERE key = ?",
+                [(now, key) for key in touched],
+            )
         conn.commit()
     finally:
         conn.close()
@@ -586,6 +591,69 @@ def cache_put(key: str, node_type: str, outputs: dict) -> None:
             (key, node_type, json.dumps(outputs), now, now),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+RUNS_KEPT_PER_FLOW = 50
+CACHE_MAX_ROWS = 5000
+CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+_OLD_RUNS_SQL = """
+    SELECT id FROM flow_runs WHERE flow_id = ?1 AND status NOT IN ('queued', 'running', 'cancelling')
+    AND id NOT IN (SELECT id FROM flow_runs WHERE flow_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2)
+"""
+
+
+def prune_runs(flow_id: str, keep: Optional[int] = None) -> None:
+    """Drop the events and node results of the flow's runs older than the newest ``keep``.
+
+    A node's newest successful output stays wherever it is: the editor restores it from any run."""
+    conn = get_connection()
+    try:
+        keep = RUNS_KEPT_PER_FLOW if keep is None else keep
+        conn.execute(
+            f"DELETE FROM flow_run_events WHERE run_id IN ({_OLD_RUNS_SQL})", (flow_id, keep)
+        )
+        conn.execute(
+            f"""
+            DELETE FROM flow_node_results WHERE run_id IN ({_OLD_RUNS_SQL}) AND (run_id, node_id) NOT IN (
+                SELECT run_id, node_id FROM (
+                    SELECT r.run_id, r.node_id, ROW_NUMBER() OVER (
+                        PARTITION BY r.node_id ORDER BY f.created_at DESC, r.updated_at DESC
+                    ) AS newest
+                    FROM flow_node_results r JOIN flow_runs f ON f.id = r.run_id
+                    WHERE f.flow_id = ?1 AND r.status IN ('done', 'cached') AND r.outputs_json IS NOT NULL
+                ) WHERE newest = 1
+            )
+            """,
+            (flow_id, keep),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def prune_cache(max_rows: Optional[int] = None, max_bytes: Optional[int] = None) -> int:
+    """Evict the least recently used cache entries past ``max_rows`` rows or ``max_bytes`` of outputs."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """
+            DELETE FROM flow_cache WHERE key IN (
+                SELECT key FROM (
+                    SELECT key, ROW_NUMBER() OVER w AS n, SUM(length(outputs_json)) OVER w AS total
+                    FROM flow_cache WINDOW w AS (ORDER BY last_used_at DESC, key ROWS UNBOUNDED PRECEDING)
+                ) WHERE n > ? OR total > ?
+            )
+            """,
+            (
+                CACHE_MAX_ROWS if max_rows is None else max_rows,
+                CACHE_MAX_BYTES if max_bytes is None else max_bytes,
+            ),
+        )
+        conn.commit()
+        return cur.rowcount
     finally:
         conn.close()
 

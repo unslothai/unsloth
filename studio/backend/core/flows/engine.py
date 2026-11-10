@@ -51,6 +51,7 @@ LEASE_RETRY_S = 2.0
 MAX_CALL_DEPTH = 3
 MEMORY_EVENTS = 4000
 FINISHED_RUNS_KEPT = 64
+CACHE_PRUNE_EVERY = 64
 
 MODEL_SLOT = {
     "chat": "llm",
@@ -817,6 +818,7 @@ class FlowEngine:
         # One key minted ahead per account (PBKDF2, ~40 ms): each run or call still uses a key once and revokes it.
         self._spare_keys: dict[tuple, asyncio.Task] = {}
         self._revoking: set[asyncio.Task] = set()
+        self._cache_puts = 0
 
     async def take_key(self, account: AccountContext) -> tuple[str, Optional[int]]:
         slot = (account.account_id, account.username)
@@ -1294,6 +1296,8 @@ class FlowEngine:
             )
             rs.emit(f"run.{rs.status}", data = {"outputs": rs.outputs, "error": rs.error})
             await self.persist(rs)
+            if rs.persist:
+                await asyncio.to_thread(_prune_storage, rs.flow_id)
 
     async def _flusher(
         self,
@@ -2029,6 +2033,9 @@ class FlowEngine:
                     await asyncio.to_thread(flows_db.cache_put, key, spec["type"], outputs)
                 except Exception:
                     logger.debug("flows: cache write failed", exc_info = True)
+                self._cache_puts += 1
+                if self._cache_puts % CACHE_PRUNE_EVERY == 0:
+                    await asyncio.to_thread(_prune_storage, None)
         rs.flush(nid)
         self._finish(rs, nid, env, outputs, "done", iteration)
 
@@ -2798,6 +2805,15 @@ def _stored_options(options: dict) -> dict:
 
 
 ENGINE = FlowEngine()
+
+
+def _prune_storage(flow_id: Optional[str]) -> None:
+    try:
+        if flow_id is not None:
+            flows_db.prune_runs(flow_id)
+        flows_db.prune_cache()
+    except Exception:
+        logger.warning("flows: could not prune stored runs", exc_info = True)
 
 
 def get_engine() -> FlowEngine:
