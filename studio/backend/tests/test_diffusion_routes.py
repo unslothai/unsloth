@@ -3497,6 +3497,54 @@ def test_external_connection_edit_refuses_an_unreadable_or_oversized_source(clie
     assert sent == []
 
 
+def test_stop_during_source_normalization_cancels_a_connection_edit(client, monkeypatch):
+    import asyncio
+    import threading
+
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    entered, release = threading.Event(), threading.Event()
+    real = inference_routes._external_edit_uploads
+
+    def slow_uploads(sources):
+        entered.set()
+        release.wait(5)
+        return real(sources)
+
+    monkeypatch.setattr(inference_routes, "_external_edit_uploads", slow_uploads)
+
+    async def run():
+        transport = httpx.ASGITransport(app = client.app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as ac:
+            gen = asyncio.create_task(
+                ac.post(
+                    "/api/inference/images/generate",
+                    json = {
+                        "prompt": "make it night",
+                        "workflow": "edit",
+                        "init_image": _png_data_url((64, 64)),
+                        "provider_id": "conn-1",
+                        "model": "flux2-klein",
+                    },
+                )
+            )
+            assert await asyncio.to_thread(entered.wait, 5)
+            progress = (await ac.get("/api/inference/images/generate-progress")).json()
+            stop = (await ac.post("/api/inference/images/generate/cancel?target=connection")).json()
+            release.set()
+            resp = await asyncio.wait_for(gen, 5)
+            return progress, stop, resp
+
+    progress, stop, resp = asyncio.run(run())
+    assert progress["target"] == "connection"
+    assert stop == {"cancelled": True}
+    assert resp.status_code == 409
+    assert sent == []
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
 def test_external_connection_without_an_edit_endpoint_is_a_502_naming_it(client, monkeypatch):
     import httpx
 

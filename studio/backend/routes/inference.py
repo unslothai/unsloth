@@ -49874,19 +49874,11 @@ async def _external_image_generation(
             status_code = 400,
             detail = "An external image connection only supports text to image and image edits.",
         )
-    uploads: list[bytes] = []
-    if editing:
-        if not body.init_image:
-            raise HTTPException(
-                status_code = 400,
-                detail = "init_image is required to edit an image through an external connection.",
-            )
-        try:
-            uploads = await asyncio.to_thread(
-                _external_edit_uploads, [body.init_image, *(body.reference_images or [])]
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if editing and not body.init_image:
+        raise HTTPException(
+            status_code = 400,
+            detail = "init_image is required to edit an image through an external connection.",
+        )
 
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
@@ -49941,15 +49933,23 @@ async def _external_image_generation(
         **_saved_extra_headers_kwarg(current, request),
         timeout = 600.0,
     )
+
+    async def _edit() -> list[str]:
+        try:
+            uploads = await asyncio.to_thread(
+                _external_edit_uploads, [body.init_image, *(body.reference_images or [])]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+        return await client.create_image_edits(
+            prompt = body.prompt, model = external_model, n = body.batch_size, images = uploads
+        )
+
     owner = current_account_id()
     generation_started = time.perf_counter()
+    # Source normalization runs inside the tracked task, so a Stop during it cancels the edit.
     task = asyncio.create_task(
-        client.create_image_edits(
-            prompt = body.prompt,
-            model = external_model,
-            n = body.batch_size,
-            images = uploads,
-        )
+        _edit()
         if editing
         else client.create_images(
             prompt = body.prompt,
