@@ -273,7 +273,7 @@ fn route_history(app: &tauri::AppHandle, action: &str) {
     let handle = app.clone();
     let owned = action.to_string();
     let sent = main.with_webview(move |platform| {
-        if !undo_in_other_view(&window, platform.inner(), owned == "edit-redo") {
+        if !native_history(&window, platform.inner(), owned == "edit-redo", true) {
             emit_action(&handle, &owned);
         }
     });
@@ -282,12 +282,14 @@ fn route_history(app: &tauri::AppHandle, action: &str) {
     }
 }
 
-/// Main thread: if key focus is outside the main webview, send `undo:`/`redo:` and return true.
+/// Main thread: send `undo:`/`redo:` to the key view and return whether it took it; with
+/// `outside_main_only`, only when key focus is outside the main webview.
 #[cfg(target_os = "macos")]
-fn undo_in_other_view(
+fn native_history(
     window: &tauri::Window,
     main_view: *mut std::ffi::c_void,
     redo: bool,
+    outside_main_only: bool,
 ) -> bool {
     use objc2::sel;
     use objc2_app_kit::{NSView, NSWindow};
@@ -308,14 +310,31 @@ fn undo_in_other_view(
     let Some(responder) = ns_window.firstResponder() else {
         return false;
     };
-    if let Some(view) = responder.downcast_ref::<NSView>() {
-        if view.isDescendantOf(main_view) {
-            return false;
+    if outside_main_only {
+        if let Some(view) = responder.downcast_ref::<NSView>() {
+            if view.isDescendantOf(main_view) {
+                return false;
+            }
         }
     }
     let action = if redo { sel!(redo:) } else { sel!(undo:) };
     // SAFETY: a standard responder action with no sender, as a menu item would send it.
     unsafe { responder.tryToPerform_with(action, None) }
+}
+
+/// The renderer cannot reach a field inside a sandboxed iframe, so the main webview's key view
+/// gets AppKit `undo:`/`redo:`, which WebKit sends to that frame. No-op off macOS.
+#[tauri::command]
+pub fn native_edit_history(app: tauri::AppHandle, redo: bool) {
+    #[cfg(target_os = "macos")]
+    if let Some(main) = app.get_webview("main") {
+        let window = main.window();
+        let _ = main.with_webview(move |platform| {
+            native_history(&window, platform.inner(), redo, false);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, redo);
 }
 
 /// Enable exactly the listed actions and show each one's current chord. No-op without app menus.

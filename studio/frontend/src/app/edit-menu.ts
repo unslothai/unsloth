@@ -50,13 +50,32 @@ export function runEditMenuAction(
   doc: Document,
   makeKey: (init: KeyboardEventInit) => Event = (init) =>
     new KeyboardEvent("keydown", init),
+  native: (redo: boolean) => void = () => undefined,
 ): void {
   const focused = doc.activeElement as HTMLElement | null;
+  if ((focused?.tagName ?? "").toUpperCase() === "IFRAME") {
+    let inner: Document | null = null;
+    try {
+      inner = (focused as HTMLIFrameElement).contentDocument;
+    } catch {
+      inner = null;
+    }
+    // A sandboxed frame (artifacts, MCP apps) hides its document: AppKit's undo: reaches its field.
+    if (inner) runEditMenuAction(action, inner, makeKey, native);
+    else native(action === "edit-redo");
+    return;
+  }
   if (editsText(focused)) {
     doc.execCommand(action === "edit-redo" ? "redo" : "undo");
     return;
   }
   (focused ?? doc.body).dispatchEvent(makeKey(editMenuKey(action)));
+}
+
+function nativeEditHistory(redo: boolean): void {
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("native_edit_history", { redo }))
+    .catch(() => undefined);
 }
 
 export function listenEditMenu(): () => void {
@@ -66,7 +85,7 @@ export function listenEditMenu(): () => void {
     .then(({ listen }) =>
       listen<string>("app-menu-action", ({ payload }) => {
         if (payload === "edit-undo" || payload === "edit-redo")
-          runEditMenuAction(payload, document);
+          runEditMenuAction(payload, document, undefined, nativeEditHistory);
       }),
     )
     .then((cleanup) => {

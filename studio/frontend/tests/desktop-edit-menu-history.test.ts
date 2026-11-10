@@ -73,3 +73,23 @@ test("text fields keep the native undo; anything else gets the key", () => {
     ],
   );
 });
+
+test("a field inside an iframe keeps its undo: same-origin frames are entered, sandboxed ones go native", () => {
+  const commands: string[] = [];
+  const native: boolean[] = [];
+  const makeKey = (init: KeyboardEventInit) => ({ init }) as unknown as Event;
+  const inner = {
+    activeElement: { tagName: "TEXTAREA" },
+    execCommand: (name: string) => commands.push(name),
+  } as unknown as Document;
+  const parent = (contentDocument: Document | null) =>
+    ({
+      activeElement: { tagName: "IFRAME", contentDocument },
+      execCommand: () => assert.fail("the parent document has no field"),
+    }) as unknown as Document;
+
+  runEditMenuAction("edit-undo", parent(inner), makeKey, (r) => native.push(r));
+  assert.deepEqual(commands, ["undo"]);
+  runEditMenuAction("edit-redo", parent(null), makeKey, (r) => native.push(r));
+  assert.deepEqual(native, [true]);
+});

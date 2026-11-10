@@ -2500,6 +2500,7 @@ fn main() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            app_menu::native_edit_history,
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
             browser_webview::browser_view_open_background,
