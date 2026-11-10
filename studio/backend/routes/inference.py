@@ -35306,12 +35306,6 @@ async def produce_openai_chat_completions(
                 )
         gen_kwargs["system_prompt"] = ""
         gen_kwargs["tools"] = _sf_client_catalog
-        if _sf_call_prefix:
-            gen_kwargs["messages"] = [
-                *gen_kwargs["messages"],
-                {"role": "assistant", "content": _sf_call_prefix},
-            ]
-            gen_kwargs["continue_final_message"] = True
     elif _sf_renders_image and not sf_mcp_images:
         # Only when nothing was replayed: a marker added here is counted as replayed history and binds the pixels to the wrong turns
         _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
@@ -35417,6 +35411,16 @@ async def produce_openai_chat_completions(
                 "system_prompt": fitted["system_prompt"],
             }
             events = fitted.get("events") or ()
+        if _sf_call_prefix:
+            # After fitting: compaction leaves a prompt ending in a continuation untouched.
+            fitted_kwargs = {
+                **fitted_kwargs,
+                "messages": [
+                    *(fitted_kwargs.get("messages") or []),
+                    {"role": "assistant", "content": _sf_call_prefix},
+                ],
+                "continue_final_message": True,
+            }
         _sf_fit_cache["kwargs"] = fitted_kwargs
         return fitted_kwargs, events
 

@@ -631,6 +631,20 @@ def test_auto_tool_choice_leaves_the_reply_to_the_model(monkeypatch):
     assert backend.calls[0]["messages"][-1]["role"] == "user"
 
 
+def test_forced_call_prefix_is_added_after_the_context_fit(monkeypatch):
+    backend = _TrimmingBackend(_model_that_answers_in_prose)
+    backend.models["sf-model"]["is_mlx"] = True
+    backend.models["sf-model"]["chat_template_info"] = {"template": _HERMES_TEMPLATE}
+    payload = _overflowing(tools = [LOOKUP_TOOL], tool_choice = "required")
+    choice = _json_body(_call(payload, monkeypatch, backend))["choices"][0]
+    assert [fit["continue_final_message"] for fit in backend.fits] == [False]
+    assert _texts(backend.calls[0]["messages"]) == [
+        "new",
+        '<tool_call>\n{"name": "lookup", "arguments":',
+    ]
+    assert choice["finish_reason"] == "tool_calls"
+
+
 @pytest.mark.parametrize(
     "names, templates, expected",
     [
