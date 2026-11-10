@@ -2,13 +2,14 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 / fp16
-VAE's math SDPA keeps its own dtype (``allow_fp16_bf16_reduction_math_sdp``, scoped to the call) instead of upcasting
-q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the fp32 upcast)."""
+VAE's math SDPA keeps its own dtype (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that
+process-wide flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the
+fp32 upcast)."""
 
 from __future__ import annotations
 
+import math
 import os
-from contextlib import contextmanager, nullcontext
 from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
@@ -30,23 +31,34 @@ def half_math_enabled() -> bool:
     return os.environ.get(VAE_ATTN_HALF_MATH_ENV, "").strip().lower() not in _FALSE
 
 
-@contextmanager
-def half_reduction_math():
-    """Math SDPA in the inputs' half dtype for this block (fp32 GEMM accumulation either way), then restore."""
+def half_math_sdpa(
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float] = None,
+) -> Any:
+    """Math SDPA as with ``allow_fp16_bf16_reduction_math_sdp(True)``, without touching that process-global flag."""
     import torch
 
-    cb = torch.backends.cuda
-    get = getattr(cb, "fp16_bf16_reduction_math_sdp_allowed", None)
-    put = getattr(cb, "allow_fp16_bf16_reduction_math_sdp", None)
-    if get is None or put is None:  # torch < 2.5 never upcast
-        yield False
-        return
-    prev = bool(get())
-    put(True)
+    s = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
+    root = math.sqrt(abs(s))
+    attn = torch.matmul(q * (-root if s < 0 else root), k.transpose(-2, -1) * root)
+    # torch < 2.5 has no _safe_softmax; its math SDPA used plain softmax
+    softmax = getattr(torch.ops.aten, "_safe_softmax", None)
+    attn = softmax(attn, -1) if softmax is not None else attn.softmax(-1)
+    return torch.matmul(attn, v)
+
+
+def _autocast_dtype(device_type: str) -> Any:
+    import torch
     try:
-        yield True
-    finally:
-        put(prev)
+        return (
+            torch.get_autocast_dtype(device_type)
+            if torch.is_autocast_enabled(device_type)
+            else None
+        )
+    except (AttributeError, TypeError):  # torch without per-device autocast queries
+        return None
 
 
 def _half_math_call(q: Any) -> bool:
@@ -156,6 +168,7 @@ def _plain_call(args: tuple, kwargs: dict) -> Optional[tuple]:
 
 
 def _mode_class() -> Any:
+    import torch
     import torch.nn.functional as F
     from torch.overrides import TorchFunctionMode
 
@@ -179,13 +192,19 @@ def _mode_class() -> Any:
                 if call is not None:
                     q, k, v, scale = call
                     if not fused_sdpa_available(q, k, v):
-                        half = _half_math_call(q)
-                        self.half += int(half)
-                        with half_reduction_math() if half else nullcontext():
-                            if _score_bytes(q, k) > self.budget:
-                                self.chunked += 1
-                                return chunked_sdpa(func, q, k, v, self.budget, scale)
-                            return func(*args, **kwargs)
+                        if _half_math_call(q):
+                            self.half += 1
+                            cast = _autocast_dtype(q.device.type)
+                            if cast is not None:
+                                q, k, v = (t.to(cast) for t in (q, k, v))
+                            with torch.autocast(q.device.type, enabled = False):
+                                if _score_bytes(q, k) > self.budget:
+                                    self.chunked += 1
+                                    return chunked_sdpa(half_math_sdpa, q, k, v, self.budget, scale)
+                                return half_math_sdpa(q, k, v, scale)
+                        if _score_bytes(q, k) > self.budget:
+                            self.chunked += 1
+                            return chunked_sdpa(func, q, k, v, self.budget, scale)
             return func(*args, **kwargs)
 
     return ChunkedVaeAttentionMode

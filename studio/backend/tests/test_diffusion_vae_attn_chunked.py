@@ -3,6 +3,7 @@
 
 """Query-chunked VAE attention where no fused SDPA takes the head dim; the score tile is bounded."""
 
+import threading
 import types
 
 import pytest
@@ -327,13 +328,95 @@ def test_half_math_keeps_dtype_scoped_and_close(rocm, monkeypatch, chunk):
 
 
 @pytest.mark.skipif(_HALF_FLAG is None, reason = "torch < 2.5")
-def test_half_math_restores_the_flag_on_error():
+@pytest.mark.parametrize("scale", [None, 0.3, -0.3])
+def test_half_math_sdpa_matches_the_flag(scale):
+    g = torch.Generator().manual_seed(1)
+    q, k, v = (torch.randn(2, 3, 200, 64, generator = g).to(torch.bfloat16) for _ in range(3))
     before = _HALF_FLAG()
-    with pytest.raises(RuntimeError):
-        with C.half_reduction_math():
-            assert _HALF_FLAG() is True
-            raise RuntimeError("boom")
+    with _math():
+        torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(True)
+        try:
+            want = F.scaled_dot_product_attention(q, k, v, scale = scale)
+        finally:
+            torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(before)
+    assert torch.equal(C.half_math_sdpa(q, k, v, scale), want)
+
+
+class _BlockFirstOp(TorchDispatchMode):
+    """Parks this thread at its first aten op until released (dispatch modes are per thread)."""
+
+    def __init__(self):
+        super().__init__()
+        self.inside = threading.Event()
+        self.release = threading.Event()
+
+    def __torch_dispatch__(
+        self,
+        func,
+        types_,
+        args = (),
+        kwargs = None,
+    ):
+        if not self.inside.is_set():
+            self.inside.set()
+            assert self.release.wait(10)
+        return func(*args, **(kwargs or {}))
+
+
+@pytest.mark.skipif(_HALF_FLAG is None, reason = "torch < 2.5")
+def test_half_math_leaves_other_threads_and_the_flag_alone(rocm, monkeypatch):
+    monkeypatch.setattr(C, "_half_math_call", lambda q: q.dtype == torch.bfloat16)
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 64, 64, generator = g).to(torch.bfloat16) for _ in range(3))
+    other = torch.randn(1, 1, 32, 64, generator = g).to(torch.bfloat16)
+
+    def unrelated():
+        with _math():
+            return F.scaled_dot_product_attention(other, other, other)
+
+    before = _HALF_FLAG()
+    reference = unrelated()
+    modes, blocks, errors = [], [], []
+
+    def vae_call(mode, block):
+        try:
+            with mode, block:
+                F.scaled_dot_product_attention(q, k, v)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            block.inside.set()
+
+    threads = []
+    try:
+        for _ in range(2):  # two overlapping VAE calls, as image and video decodes can be
+            modes.append(C.chunked_attention_mode(1 << 40))
+            blocks.append(_BlockFirstOp())
+            threads.append(threading.Thread(target = vae_call, args = (modes[-1], blocks[-1])))
+            threads[-1].start()
+            assert blocks[-1].inside.wait(10)
+        assert _HALF_FLAG() == before
+        assert torch.equal(unrelated(), reference)
+    finally:
+        for block, thread in zip(blocks, threads):
+            block.release.set()
+            thread.join(10)
+    assert not errors and not any(t.is_alive() for t in threads)
+    assert [m.half for m in modes] == [1, 1]
     assert _HALF_FLAG() == before
+    assert torch.equal(unrelated(), reference)
+
+
+def test_half_math_runs_in_the_autocast_dtype(rocm, monkeypatch):
+    monkeypatch.setattr(C, "_half_math_call", lambda q: q.dtype in (torch.bfloat16, torch.float16))
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 128, 64, generator = g).to(torch.bfloat16) for _ in range(3))
+    want = C.half_math_sdpa(q, k, v)
+    mode = C.chunked_attention_mode(1 << 40)
+    with torch.autocast("cpu", dtype = torch.bfloat16), mode:
+        out = F.scaled_dot_product_attention(q, k.float(), v.float())
+    assert mode.half == 1 and out.dtype == torch.bfloat16
+    assert torch.equal(out, want)
 
 
 def test_half_math_gates(monkeypatch):
