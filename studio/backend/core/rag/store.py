@@ -75,7 +75,6 @@ _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([
 
 
 def _terms(token: str) -> list[str]:
-    # CJK runs become overlapping two-character phrases over the one-character tokens chunks_fts holds.
     terms = []
     for i, part in enumerate(_CJK_RUN.split(token)):
         if i % 2:
@@ -86,7 +85,7 @@ def _terms(token: str) -> list[str]:
 
 
 def _or_terms(tokens) -> str:
-    # Only CJK phrases (the spaced terms) are deduplicated: a repeated plain word keeps its bm25 weight.
+    # Dedupe CJK phrases only: a repeated plain word keeps its bm25 weight.
     seen = set()
     return " OR ".join(
         f'"{t}"'
