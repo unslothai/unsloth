@@ -933,7 +933,8 @@ def test_chroma_key_matches_on_noisy_borders():
 
 def test_the_scipy_free_flood_finds_the_same_region():
     import numpy as np
-    from scipy import ndimage
+
+    ndimage = pytest.importorskip("scipy.ndimage")
 
     rng = np.random.default_rng(0)
     for _ in range(20):
