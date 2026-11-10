@@ -6787,7 +6787,17 @@ exit 0
                 throw 'The signed Python package failed runtime validation.'
             }
             # Both paths are beneath the same private parent; no overwrite of a live runtime.
-            [System.IO.Directory]::Move($staged, $destination)
+            # Allow transient Windows access/sharing errors after staged validation.
+            for ($attempt = 0; ; $attempt++) {
+                try {
+                    [System.IO.Directory]::Move($staged, $destination)
+                    break
+                } catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+                    $code = $_.Exception.GetBaseException().HResult -band 0xffff
+                    if ($attempt -ge 3 -or $code -notin @(5, 32, 33)) { throw }
+                    Start-Sleep -Milliseconds (500 * [math]::Pow(2, $attempt))
+                }
+            }
             return (Test-SignedPythonRuntime -Root $destination -Package $package)
         } catch {
             substep "Could not prepare signed Python: $(Redact-InstallOutput $_.Exception.Message)" "Yellow"

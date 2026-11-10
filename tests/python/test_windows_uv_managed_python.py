@@ -82,16 +82,32 @@ def _fake_python(tmp_path: Path) -> Path:
     return exe
 
 
-def _pwsh(shell: str, script: str, env: dict[str, str | None]) -> str:
-    return run_pwsh(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", script],
-        check = True,
+def _pwsh(
+    shell: str,
+    script: str,
+    env: dict[str, str | None],
+    *,
+    timeout: int = 60,
+) -> str:
+    module_setup = _between(
+        "    if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {",
+        "    # Same UTF-8 invariant",
+    )
+    result = run_pwsh(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", module_setup + script],
+        check = False,
         capture_output = True,
         text = True,
         encoding = "utf-8",
         env = {key: value for key, value in dict(os.environ, **env).items() if value is not None},
-        timeout = 60,
-    ).stdout.strip()
+        timeout = timeout,
+    )
+    if result.stderr:
+        print(result.stderr)
+    if result.returncode:
+        print(result.stdout)
+    result.check_returncode()
+    return result.stdout.strip()
 
 
 def _resolve(
@@ -771,7 +787,7 @@ function Test-SignedPythonDownloadAllowed {{ return (-not (Test-UvEnvFlag 'UV_OF
 {_function('Test-UvEnvFlag')}
 {_function('Resolve-SignedManagedPython')}
 $r = Resolve-SignedManagedPython -Minor '3.13'
-@{{ Accepted=[bool]$r; Downloads=$script:Downloads; Extracts=$script:Extracts; Stages=@(Get-ChildItem (Join-Path $StudioHome 'python-signed') -Filter '.stage-*' -ErrorAction SilentlyContinue).Count }} | ConvertTo-Json -Compress
+@{{ Accepted=[bool]$r; Downloads=$script:Downloads; Extracts=$script:Extracts; Stages=@(Get-ChildItem (Join-Path $StudioHome 'python-signed') -Filter '.stage-*' -Force -ErrorAction SilentlyContinue).Count }} | ConvertTo-Json -Compress
 """
     # Switch parameters need their native declaration in the network double.
     script = script.replace("param($UseBasicParsing,", "param([switch]$UseBasicParsing,")
@@ -793,14 +809,18 @@ $r = Resolve-SignedManagedPython -Minor '3.13'
 
 
 @needs_pwsh
-@pytest.mark.skipif(
-    os.name != "nt" or not os.environ.get("UNSLOTH_TEST_PSF_PACKAGE"),
-    reason = "requires verified official Python package",
-)
+@pytest.mark.skipif(os.name != "nt", reason = "requires Windows runtime")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_policy_block_installs_private_signed_runtime_and_reuses_it_offline(shell, tmp_path):
+@pytest.mark.parametrize("arch", ["x86_64", "arm64"])
+def test_policy_block_installs_private_signed_runtime_and_reuses_it_offline(shell, tmp_path, arch):
     # Only transport and the original policy refusal are simulated. The archive hash,
-    # signatures, native imports, install, cache reuse, and venv creation are real.
+    # signatures, imports, repair, cache reuse, and venv creation are real.
+    package_env = (
+        "UNSLOTH_TEST_PSF_ARM64_PACKAGE" if arch == "arm64" else "UNSLOTH_TEST_PSF_PACKAGE"
+    )
+    if not os.environ.get(package_env):
+        pytest.skip(f"requires {arch} official Python package")
+    package_name = "pythonarm64" if arch == "arm64" else "python"
     uv = tmp_path / "blocked-uv.cmd"
     uv.write_text(
         '@if "%~3"=="--show-settings" goto settings\n'
@@ -825,6 +845,7 @@ def test_policy_block_installs_private_signed_runtime_and_reuses_it_offline(shel
             "Test-SignedPythonDownloadAllowed",
             "Resolve-SignedManagedPython",
             "Test-UvEnvFlag",
+            "Test-Arm64PythonOptOut",
             "Test-LegacyVenvReusable",
         )
     )
@@ -833,7 +854,7 @@ $ErrorActionPreference = 'Stop'
 $PythonSkip = @('3.13.8'); $StudioHome = $env:TEST_HOME
 $script:UvExe = $env:BLOCKED_UV; $script:Downloads=0
 function Write-StudioLine {{ param($Message,$ForegroundColor) }}
-function substep {{ param($Name,$Message) }}
+function substep {{ param($Name,$Message) [Console]::Error.WriteLine("$Name $Message") }}
 function step {{ param($Name,$Message) }}
 function Exit-InstallFailure {{ param($Message) throw $Message }}
 function Invoke-InstallCommand {{
@@ -845,15 +866,15 @@ function Invoke-InstallCommand {{
 function Invoke-WebRequest {{
     param([switch]$UseBasicParsing,$Uri,$OutFile,$TimeoutSec,$ErrorAction)
     $script:Downloads++
-    if ($Uri -ne 'https://api.nuget.org/v3-flatcontainer/python/3.13.17/python.3.13.17.nupkg') {{ throw 'Wrong package URL' }}
-    Copy-Item -LiteralPath $env:UNSLOTH_TEST_PSF_PACKAGE -Destination $OutFile
+    if ($Uri -ne 'https://api.nuget.org/v3-flatcontainer/{package_name}/3.13.17/{package_name}.3.13.17.nupkg') {{ throw 'Wrong package URL' }}
+    Copy-Item -LiteralPath $env:TEST_PACKAGE -Destination $OutFile
 }}
 {helpers}
-$PythonVersion='3.13'; $PythonPatchRequest=''; $PythonRequestLabel='3.13'; $PythonArch='x86_64'
+$PythonVersion='3.13'; $PythonPatchRequest=''; $PythonRequestLabel='3.13'; $PythonArch='{arch}'
 {RESOLVE_SITE}
 if ($DetectedPython.Source -ne 'signed-managed') {{ throw 'Signed managed runtime was not selected' }}
 $env:UV_OFFLINE='1'
-$again = Resolve-SignedManagedPython -Minor '3.13'
+$again = Resolve-SignedManagedPython -Minor '3.13' -Arch '{arch}'
 if ($again.Path -ne $DetectedPython.Path) {{ throw 'Cached runtime not reused offline' }}
 $VenvDir=Join-Path $StudioHome 'unsloth_studio'
 $VenvPython=Join-Path $VenvDir 'Scripts\\python.exe'
@@ -861,7 +882,36 @@ $VenvPython=Join-Path $VenvDir 'Scripts\\python.exe'
 $signature=Get-AuthenticodeSignature -LiteralPath $VenvPython
 $facts=& $VenvPython -I -c "import sys,ssl,sqlite3,ctypes; print(sys.version.split()[0], int(sys.prefix != sys.base_prefix))"
 if ($LASTEXITCODE -ne 0) {{ throw 'venv launch failed' }}
-@{{ Status="$($signature.Status)"; Facts="$facts"; Path=$DetectedPython.Path; Downloads=$script:Downloads; Stages=@(Get-ChildItem (Join-Path $StudioHome 'python-signed') -Filter '.stage-*').Count; Legacy=(Test-LegacyVenvReusable -VenvDir $VenvDir -Python $DetectedPython) }} | ConvertTo-Json -Compress
+$initial = $DetectedPython
+$oldVenv = $VenvPython
+$cfg = Join-Path $VenvDir 'pyvenv.cfg'
+$cfgHash = (Get-FileHash -LiteralPath $cfg).Hash
+$exeHash = (Get-FileHash -LiteralPath $initial.Path).Hash
+$missing = Join-Path (Split-Path $initial.Path -Parent) 'pythonw.exe'
+Move-Item -LiteralPath $missing -Destination ($missing + '.saved')
+$env:UV_OFFLINE=$null
+{RESOLVE_SITE}
+if ($DetectedPython.Path -eq $initial.Path) {{ throw 'Damaged runtime was not replaced' }}
+if ((Get-FileHash -LiteralPath $cfg).Hash -ne $cfgHash -or
+    (Get-FileHash -LiteralPath $initial.Path).Hash -ne $exeHash -or
+    (Test-Path -LiteralPath $missing) -or -not (Test-Path -LiteralPath ($missing + '.saved'))) {{ throw 'Repair changed the old environment or base' }}
+$VenvDir=Join-Path $StudioHome 'repaired environment'
+$VenvPython=Join-Path $VenvDir 'Scripts\\python.exe'
+{create_venv}
+$tag = if ('{arch}' -eq 'arm64') {{ 'win-arm64' }} else {{ 'win-amd64' }}
+foreach ($pair in @(@{{ Python=$oldVenv; Base=$initial.Path }}, @{{ Python=$VenvPython; Base=$DetectedPython.Path }})) {{
+    if ((Get-AuthenticodeSignature -LiteralPath $pair.Python).Status -ne 'Valid') {{ throw 'Venv launcher signature invalid' }}
+    $probe = Invoke-PythonSelectionProbe -Executable $pair.Python -Arguments @('-I', '-c',
+        'import json,sys,sysconfig,ssl,sqlite3,ctypes; print(json.dumps(dict(version=sys.version.split()[0],tag=sysconfig.get_platform(),base=sys.base_prefix,venv=sys.prefix!=sys.base_prefix)))')
+    if (-not $probe.Success) {{ throw $probe.Diagnostic }}
+    $v = ($probe.Output -join "`n") | ConvertFrom-Json
+    if ($v.version -ne '3.13.17' -or $v.tag -ne $tag -or -not $v.venv -or
+        [IO.Path]::GetFullPath($v.base) -ne (Split-Path $pair.Base -Parent)) {{ throw 'Venv does not use its original signed base' }}
+}}
+$env:UV_OFFLINE='1'
+$cached = Resolve-SignedManagedPython -Minor '3.13' -Arch '{arch}' -CacheOnly
+if ($cached.Path -ne $DetectedPython.Path) {{ throw 'Repaired runtime was not reused offline' }}
+@{{ Status="$($signature.Status)"; Facts="$facts"; Path=$DetectedPython.Path; Downloads=$script:Downloads; Stages=@(Get-ChildItem (Join-Path $StudioHome 'python-signed') -Filter '.stage-*' -Force).Count; Legacy=(Test-LegacyVenvReusable -VenvDir $VenvDir -Python $DetectedPython) }} | ConvertTo-Json -Compress
 """
     home = tmp_path / "Unsloth home with spaces"
     r = json.loads(
@@ -870,15 +920,17 @@ if ($LASTEXITCODE -ne 0) {{ throw 'venv launch failed' }}
             script,
             {
                 "TEST_HOME": str(home),
+                "TEST_PACKAGE": os.environ[package_env],
                 "BLOCKED_UV": str(uv),
                 "UV_OFFLINE": "",
                 "UV_PYTHON_DOWNLOADS": "",
             },
+            timeout = 180,
         )
     )
     assert r["Status"] == "Valid" and r["Facts"] == "3.13.17 1"
     assert Path(r["Path"]).is_relative_to(home / "python-signed")
-    assert r["Downloads"] == 1 and r["Stages"] == 0 and not r["Legacy"]
+    assert r["Downloads"] == 2 and r["Stages"] == 0 and not r["Legacy"]
 
 
 @needs_pwsh
@@ -1096,6 +1148,16 @@ Test-SignedPythonDownloadAllowed | ConvertTo-Json -Compress
         ("damaged", True, False, "download", 1, False),
         ("damaged", True, False, "checksum", 1, False),
         ("damaged", True, False, "signature", 1, False),
+        ("missing", True, False, "move-access", 1, True),
+        ("damaged", True, False, "move-access", 1, True),
+        ("damaged", True, False, "move-sharing", 1, True),
+        ("damaged", True, False, "move-lock", 1, True),
+        ("damaged", True, False, "move-unauthorized", 1, True),
+        ("missing", True, False, "move-persistent", 1, False),
+        ("damaged", True, False, "move-persistent", 1, False),
+        ("damaged", True, False, "move-other", 1, False),
+        ("damaged", True, False, "move-collision", 1, False),
+        ("damaged", True, False, "final-signature", 1, False),
     ],
 )
 def test_signed_runtime_repair_preserves_old_bases_and_reuses_replacements(
@@ -1123,12 +1185,36 @@ def test_signed_runtime_repair_preserves_old_bases_and_reuses_replacements(
             (root / "valid.txt").touch()
         if initial == "unreadable":
             (root / "unreadable.txt").touch()
+    resolver = _function("Resolve-SignedManagedPython").replace(
+        "[System.IO.Directory]::Move($staged, $destination)",
+        "Move-TestRuntime -From $staged -To $destination",
+    )
     script = f"""
 $ErrorActionPreference = 'Stop'
 $StudioHome = $env:TEST_HOME
 $script:Downloads = 0
+$script:Moves = 0
+$script:Waits = @()
+function Start-Sleep {{ param($Milliseconds) $script:Waits += $Milliseconds }}
+function Move-TestRuntime {{
+    param($From, $To)
+    $script:Moves++
+    if ('{failure}' -eq 'move-collision') {{
+        [IO.Directory]::CreateDirectory($To) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $To 'foreign.txt'), 'another publisher')
+    }}
+    if ('{failure}' -eq 'move-persistent' -or $script:Moves -le 2) {{
+        if ('{failure}' -eq 'move-unauthorized') {{ throw [UnauthorizedAccessException]::new('test refusal') }}
+        $code = switch ('{failure}') {{
+            'move-access' {{ 5 }} 'move-sharing' {{ 32 }} 'move-lock' {{ 33 }}
+            'move-persistent' {{ 5 }} 'move-other' {{ 80 }} default {{ 0 }}
+        }}
+        if ($code) {{ throw [IO.IOException]::new('test publication failure', (-2147024896 + $code)) }}
+    }}
+    [IO.Directory]::Move($From, $To)
+}}
 $script:Blocked = ${str(blocked).lower()}
-function substep {{ param($Message, $Color) }}
+function substep {{ param($Message, $Color) [Console]::Error.WriteLine($Message) }}
 function step {{ param($Name, $Message) }}
 function Write-StudioLine {{ param($Message, $ForegroundColor) }}
 function Redact-InstallOutput {{ param($Text) return $Text }}
@@ -1147,11 +1233,12 @@ function Test-SignedPythonRuntime {{
     param($Root, $Package)
     if (Test-Path -LiteralPath (Join-Path $Root 'unreadable.txt')) {{ throw 'unreadable runtime' }}
     if ('{failure}' -eq 'signature' -or -not (Test-Path -LiteralPath (Join-Path $Root 'valid.txt'))) {{ return $null }}
+    if ('{failure}' -eq 'final-signature' -and $Root -notmatch '\\.stage-') {{ return $null }}
     return @{{ Version='3.13'; Full='3.13.17'; Arch='x86_64'; Source='signed-managed'; Path=(Join-Path $Root 'python.exe') }}
 }}
 {_function('Test-UvEnvFlag')}
 {_function('Test-Arm64PythonOptOut')}
-{_function('Resolve-SignedManagedPython')}
+{resolver}
 function Run {{
     $PythonVersion='3.13'; $PythonPatchRequest=''; $PythonArch='x86_64'; $PythonRequestLabel='3.13'
 {RESOLVE_SITE}
@@ -1164,7 +1251,7 @@ if ($result) {{
     $script:Blocked=$false
     $again = Run
 }}
-@{{ Accepted=[bool]$result; Path=$result.Path; Reused=([bool]$again -and $again.Path -eq $result.Path); Downloads=$script:Downloads; Stages=@(Get-ChildItem -LiteralPath (Join-Path $StudioHome 'python-signed') -Filter '.stage-*' -ErrorAction SilentlyContinue).Count }} | ConvertTo-Json -Compress
+@{{ Accepted=[bool]$result; Path=$result.Path; Reused=([bool]$again -and $again.Path -eq $result.Path); Downloads=$script:Downloads; Moves=$script:Moves; Waits=@($script:Waits); Stages=@(Get-ChildItem -LiteralPath (Join-Path $StudioHome 'python-signed') -Filter '.stage-*' -Force -ErrorAction SilentlyContinue).Count }} | ConvertTo-Json -Compress
 """
     r = json.loads(
         _pwsh(
@@ -1182,6 +1269,17 @@ if ($result) {{
     assert r["Downloads"] == downloads
     assert r["Stages"] == 0
     assert r["Reused"] is accepted
+    if failure == "move-persistent":
+        assert r["Moves"] == 4 and r["Waits"] == [500, 1000, 2000]
+    elif failure in ("move-other", "move-collision"):
+        assert r["Moves"] == 1 and r["Waits"] == []
+    elif failure.startswith("move-"):
+        assert r["Moves"] == 3 and r["Waits"] == [500, 1000]
+    else:
+        assert r["Waits"] == []
+    if failure == "move-collision":
+        foreign = list((home / "python-signed").glob("*/foreign.txt"))
+        assert len(foreign) == 1 and foreign[0].read_text() == "another publisher"
     assert old.read_bytes() == before
     if initial == "file":
         assert root.read_text() == "occupied path"
