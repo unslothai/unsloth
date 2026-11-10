@@ -10,7 +10,7 @@ import {
   ResizeControlVariant,
   useStore,
 } from "@xyflow/react";
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import {
@@ -334,6 +334,19 @@ function FlowNodeViewImpl({ id, width }: NodeProps<RfNode>) {
     const next = cardContentMinHeight(card);
     if (next !== contentMin) setContentMin(next);
   }, [node, spec, category, runtime, lowDetail, resizing, width, contentMin]);
+  // A child can grow on its own (a disclosure opened, a store-fed hint): re-measure when one resizes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-observe when the card's children can change
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() =>
+      setContentMin(cardContentMinHeight(card)),
+    );
+    const body = card.querySelector("[data-card-body]");
+    for (const el of body ? Array.from(body.children) : Array.from(card.children))
+      observer.observe(el);
+    return () => observer.disconnect();
+  }, [node, spec, lowDetail]);
   if (!node) return null;
   if (!spec) {
     return (

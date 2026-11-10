@@ -56,7 +56,8 @@ def test_the_cache_evicts_least_recently_used_entries_past_its_caps():
     assert flows_db.cache_get("lru-0") is not None and flows_db.cache_get("lru-1") is None
 
 
-def test_only_the_newest_runs_keep_their_events_and_results():
+def test_only_the_newest_runs_keep_their_events_and_results(monkeypatch):
+    monkeypatch.setattr(flows_db, "HISTORY_KEPT", 2)
     flow = "prune-flow"
     ids = [f"prune-{i:02d}" for i in range(6)]
     for i, run_id in enumerate(ids):
@@ -82,6 +83,7 @@ def test_only_the_newest_runs_keep_their_events_and_results():
     latest = flows_db.latest_node_outputs(flow)
     assert latest["once"]["outputs"] == {"v": "first"} and latest["every"]["outputs"] == {"v": 5}
     assert flows_db.get_run(ids[0]) is not None
+    assert [h["outputs"]["v"] for h in flows_db.node_output_history(flow, "every")] == [5, 4]
 
 
 @run_async
@@ -268,3 +270,29 @@ async def test_runs_and_invokes_keep_storage_off_the_event_loop(monkeypatch):
     await eng.invoke(app = None, flow_id = "offloop", doc = parsed, entry = "n")
     await eng.release_spare_keys()
     assert on_loop == []
+
+
+def test_pruning_keeps_the_runs_behind_a_nodes_history():
+    flow = "prune-history"
+    for i in range(8):
+        run_id = f"hist-{i}"
+        flows_db.create_run(run_id, flow, {})
+        conn = flows_db.get_connection()
+        try:
+            conn.execute(
+                "UPDATE flow_runs SET created_at = ?, status = 'completed' WHERE id = ?",
+                (i, run_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        # Five takes of "x", then side-branch runs that never touch it.
+        node = (
+            ("x", "done", {"text": f"take {i}"}, None)
+            if i < 5
+            else ("other", "done", {"v": i}, None)
+        )
+        flows_db.write_batch(run_id, [], [node], [])
+    flows_db.prune_runs(flow, keep = 2)
+    history = [h["outputs"]["text"] for h in flows_db.node_output_history(flow, "x")]
+    assert history == [f"take {i}" for i in range(4, -1, -1)]
