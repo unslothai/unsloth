@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { isWireObstacle, routingKey } from "../src/features/flows/editor/wire-obstacles.ts";
+import { isWireObstacle, routingVersion } from "../src/features/flows/editor/wire-obstacles.ts";
 import { routeWires } from "../src/features/flows/editor/wire-router.ts";
 
 const card = (id: string, x: number, y = 0) => ({
@@ -23,11 +23,12 @@ const note = (x: number, y: number, width = 240, height = 140) => ({
   measured: { width, height },
 });
 
-test("moving or resizing a note leaves the routing key alone; moving a card changes it", () => {
-  const base = routingKey([card("a", 0), card("b", 600), note(300, 0)]);
-  assert.equal(routingKey([card("a", 0), card("b", 600), note(320, 40)]), base);
-  assert.equal(routingKey([card("a", 0), card("b", 600), note(300, 0, 400, 300)]), base);
-  assert.notEqual(routingKey([card("a", 10), card("b", 600), note(300, 0)]), base);
+test("moving or resizing a note leaves the routing version alone; moving a card changes it", () => {
+  const version = routingVersion();
+  const base = version([card("a", 0), card("b", 600), note(300, 0)]);
+  assert.equal(version([card("a", 0), card("b", 600), note(320, 40)]), base);
+  assert.equal(version([card("a", 0), card("b", 600), note(300, 0, 400, 300)]), base);
+  assert.notEqual(version([card("a", 10), card("b", 600), note(300, 0)]), base);
   assert.equal(isWireObstacle("flowNote"), false);
   assert.equal(isWireObstacle("flowNode"), true);
 });
@@ -41,10 +42,11 @@ test("the router never sees a note, so a note on the straight path does not bend
   const straight = routeWires(rects, edges).routes.get("e");
   assert.ok(straight);
   assert.equal(new Set(straight.points.map((p) => Math.round(p.y))).size, 1, "a straight run between level ports");
-  const src = readFileSync(new URL("../src/features/flows/editor/wire-routing.tsx", import.meta.url), "utf8");
-  assert.match(src, /node\.hidden \|\| !isWireObstacle\(node\.type\)/);
-  assert.match(src, /useStore\(\(s\) => routingKey\(\[\.\.\.s\.nodeLookup\.values\(\)\]\)\)/);
-  assert.match(src, /\[nodesKey, edges, scope, store(, moving)?(, global)?\]/);
+  const read = (file: string) => readFileSync(new URL(`../src/features/flows/editor/${file}`, import.meta.url), "utf8");
+  assert.match(read("wire-schedule.ts"), /node\.hidden \|\| !isWireObstacle\(node\.type\)/);
+  const src = read("wire-routing.tsx");
+  assert.match(src, /useStore\(\(s\) => versionOf\(s\.nodeLookup\.values\(\)\)\)/);
+  assert.match(src, /\[nodesVersion, edges, scope, store(, moving)?(, global)?\]/);
 });
 
 test("turning a reroute around reroutes its wires though its box is unchanged", () => {
@@ -55,7 +57,8 @@ test("turning a reroute around reroutes its wires though its box is unchanged", 
     measured: { width: 16, height: 28 },
     data: { rerouteId: "rr1", dir },
   });
-  assert.notEqual(routingKey([card("a", 0), rr("down")]), routingKey([card("a", 0), rr("up")]));
+  const version = routingVersion();
+  assert.notEqual(version([card("a", 0), rr("down")]), version([card("a", 0), rr("up")]));
 });
 
 test("an R typed in a field while the reroute tool is armed stays in the field", () => {

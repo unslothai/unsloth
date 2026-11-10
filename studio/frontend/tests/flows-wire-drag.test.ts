@@ -36,9 +36,10 @@ test("a dragged card re-routes its own wires and the ones sharing their lane, ne
 
 test("the controller sends partial requests at most once per frame and a full pass on release", () => {
   const routing = src("wire-routing.tsx");
-  assert.match(routing, /if \(!live\.length\) return;/);
-  assert.match(routing, /partial: true,[\s\S]*pumpNextFrame\(\);/);
-  assert.match(routing, /frame = requestAnimationFrame\(/);
+  const schedule = src("wire-schedule.ts");
+  assert.match(schedule, /moving\)\.length\)\s*return;/);
+  assert.match(schedule, /partial: true,[\s\S]*\}, true\);/);
+  assert.match(routing, /requestAnimationFrame\(run\)/);
   assert.match(routing, /const next = partial\s*\? new Map<string, WireRoute>\(previous\)/);
   assert.match(src("canvas.tsx"), /<WireRouterController[^>]*moving=\{moving\}/);
   assert.match(routing, /show=\{deletable !== false && \(hover \|\| !!selected\)\}/);

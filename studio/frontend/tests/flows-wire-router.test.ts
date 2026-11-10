@@ -8,9 +8,10 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { routeWires, buildWirePath, wirePortPoint } = await import(
+const { routeWires, wirePortPoint } = await import(
   "../src/features/flows/editor/wire-router.ts"
 );
+const { buildWirePath } = await import("../src/features/flows/editor/wire-path.ts");
 
 type Rect = Parameters<typeof routeWires>[0][number];
 type EdgeIn = Parameters<typeof routeWires>[1][number];
