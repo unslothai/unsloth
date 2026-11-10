@@ -17827,14 +17827,16 @@ def _check_signal_escape_patterns(code: str):
             return frozenset(modules)
 
         def _shell_func_of(self, node):
+            loop_method = None
             for owner, attr in self._lookups(node):
                 # Event loop methods behind create_subprocess_*; any receiver, since a loop comes from a call.
                 if attr in ("subprocess_shell", "subprocess_exec"):
-                    return f"loop.{attr}"
+                    loop_method = f"loop.{attr}"
                 for module in self._modules_of(owner):
                     if f"{module}.{attr}" in _SHELL_EXEC_FUNCS:
                         return f"{module}.{attr}"
-            return None
+            # Only when no other binding matches: a loop target skips argument zero, which may be the command.
+            return loop_method
 
         def visit_Assign(self, node):
             for tgt in node.targets:

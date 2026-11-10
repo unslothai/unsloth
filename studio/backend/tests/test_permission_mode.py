@@ -1353,6 +1353,11 @@ def test_shell_command_through_any_os_module_handle_is_high_risk(name, arguments
             "loop.subprocess_exec(asyncio.SubprocessProtocol, 'ls', '-la')",
             False,
         ),
+        (
+            "import asyncio, subprocess\nspawn = asyncio.new_event_loop().subprocess_exec\n"
+            "spawn = subprocess.run\nspawn(['rm', '-rf', 'x'])",
+            True,
+        ),
         ("import asyncio\nasyncio.subprocess.create_subprocess_exec('ls')", False),
         ("from asyncio import *\nrun(sleep(1))", False),
         ("import asyncio\nasyncio.run(asyncio.create_subprocess_shell('ls'))", False),
