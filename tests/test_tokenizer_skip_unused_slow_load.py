@@ -7,8 +7,14 @@ import types
 from unittest.mock import patch
 
 import pytest
+import transformers
 
 import unsloth.tokenizer_utils as tu
+
+_needs_v5 = pytest.mark.skipif(
+    int(transformers.__version__.split(".")[0]) < 5,
+    reason = "transformers 4 loads a real slow tokenizer before the fast one",
+)
 
 
 class _Tok:
@@ -140,7 +146,14 @@ def _run_v5(
 
 @pytest.mark.parametrize(
     "name",
-    ["Qwen2Tokenizer", "GemmaTokenizer", "GPT2Tokenizer", "CohereTokenizer", "TokenizersBackend"],
+    [
+        "Qwen2Tokenizer",
+        "Qwen3_5Tokenizer",
+        "GemmaTokenizer",
+        "GPT2Tokenizer",
+        "CohereTokenizer",
+        "TokenizersBackend",
+    ],
 )
 def test_v5_skips_slow_load_that_copies_the_fast_tokenizer(name, monkeypatch):
     result, calls = _run_v5(_v5_class(name), monkeypatch)
@@ -179,10 +192,8 @@ def test_slow_load_kept_when_it_may_differ(cls, v5, monkeypatch):
     assert result.kind == "fast"
 
 
+@_needs_v5
 def test_v5_real_qwen2_tokenizer_constructed_once(tmp_path):
-    transformers = pytest.importorskip("transformers")
-    if int(transformers.__version__.split(".")[0]) < 5:
-        pytest.skip("transformers 4 loads a real slow tokenizer")
     vocab = {c: i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz\u0120!")}
     transformers.Qwen2Tokenizer(
         vocab = vocab, merges = [], eos_token = "<|endoftext|>", unk_token = None, bos_token = None
@@ -214,11 +225,9 @@ def test_v5_real_qwen2_tokenizer_constructed_once(tmp_path):
     ]
 
 
+@_needs_v5
 def test_v5_failed_slow_load_keeps_the_tokenizer_as_loaded(tmp_path):
     # Replayed setters drop BOS, so the slow load runs; when it fails the fast tokenizer returns as loaded.
-    transformers = pytest.importorskip("transformers")
-    if int(transformers.__version__.split(".")[0]) < 5:
-        pytest.skip("transformers 4 loads a real slow tokenizer first")
     from tokenizers import processors
 
     vocab = {c: i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz\u0120!")}

@@ -1042,7 +1042,14 @@ def _sync_add_special_tokens(fast_tokenizer, slow_tokenizer):
 # v5 ignores use_fast/from_slow: the "slow" load is the fast one plus legacy = False, unread by these classes.
 _TRANSFORMERS_V5 = int(transformers_version.split(".")[0]) >= 5
 _V5_LEGACY_FREE_TOKENIZERS = frozenset(
-    ("TokenizersBackend", "Qwen2Tokenizer", "GemmaTokenizer", "GPT2Tokenizer", "CohereTokenizer")
+    (
+        "TokenizersBackend",
+        "Qwen2Tokenizer",
+        "Qwen3_5Tokenizer",
+        "GemmaTokenizer",
+        "GPT2Tokenizer",
+        "CohereTokenizer",
+    )
 )
 
 
