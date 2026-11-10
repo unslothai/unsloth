@@ -513,6 +513,8 @@ class H3Residency:
         # bytes of slabs the last ``apply`` compacted; a compaction that could not fit every slab retries next re-fit
         self.compacted_bytes = 0
         self.compact_pending = False
+        # video_minimax_h3_te.H3TeDeviceShare: the conditioner's share of what the budget leaves past every block
+        self.te_share: Any = None
 
     @property
     def usable(self) -> bool:
@@ -529,6 +531,19 @@ class H3Residency:
     def resident_bytes(self) -> int:
         total = self.top_bytes if (self.top is not None and is_resident(self.top)) else 0
         return total + sum(b for g, b in zip(self.blocks, self.block_bytes) if is_resident(g))
+
+    def device_bytes(self) -> int:
+        """Device bytes the budget may re-spend: the resident denoiser groups and the conditioner's device share."""
+        te = getattr(self, "te_share", None)
+        return self.resident_bytes() + (te.resident_bytes() if te is not None else 0)
+
+    def te_budget(self, budget_bytes: int, top: bool, n: int) -> int:
+        """What ``budget_bytes`` leaves the conditioner beside the planned denoiser set: nothing unless every block
+        (and the top-level group) is resident, as the denoiser is read every step and the conditioner once."""
+        if n < len(self.blocks) or (self.top is not None and not top):
+            return 0
+        planned = (self.top_bytes if top else 0) + sum(self.block_bytes[:n])
+        return max(0, int(budget_bytes) - planned)
 
     def plan(
         self,
@@ -590,7 +605,21 @@ class H3Residency:
     ) -> tuple[bool, int]:
         """Re-fit the resident set to ``budget_bytes`` (the device bytes the resident set may occupy)."""
         top, n = self.plan(budget_bytes)
+        te = getattr(self, "te_share", None)
+        te_left = self.te_budget(budget_bytes, top, n) if te is not None else 0
+        te_n = te.plan(te_left) if te is not None else 0
+        if te is not None:
+            # the conditioner gives its share back before any denoiser block is promoted
+            te.shrink(te_n)
         self.apply(top, n)
+        if te is not None:
+            try:
+                te.grow(te_n)
+            except Exception as exc:  # noqa: BLE001 -- the conditioner streams as before
+                te.shrink(0)
+                if self.logger is not None:
+                    self.logger.warning("video.h3_te_resident_device: staying streamed: %s", exc)
+            te.report(te_left, force = initial)
         if initial:
             self.max_blocks = n
         released = getattr(self, "released_bytes", 0)
@@ -624,6 +653,13 @@ def release_all(residency: "H3Residency", *, logger: Any = None) -> None:
     """Return every group of ``residency`` to streaming, including one whose onload failed partway. Never raises."""
     import torch
 
+    te = getattr(residency, "te_share", None)
+    if te is not None:
+        try:
+            te.shrink(0)
+        except Exception as exc:  # noqa: BLE001
+            if logger is not None:
+                logger.warning("video.h3_te_resident_device: could not release the share: %s", exc)
     groups = list(reversed(residency.blocks))
     if residency.top is not None:
         groups.append(residency.top)
