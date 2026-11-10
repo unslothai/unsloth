@@ -28,6 +28,11 @@ export interface VideoGenerationDefaults {
   guidance: number;
   num_frames: number;
   fps: number;
+  fps_range?: [number, number] | null;
+  fps_choices?: number[];
+  // Absent on older backends.
+  min_num_frames?: number | null;
+  max_num_frames?: number | null;
   // Valid frame counts are k * frame_step + frame_offset.
   frame_step: number;
   frame_offset: number;

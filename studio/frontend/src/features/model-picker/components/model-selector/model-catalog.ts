@@ -708,7 +708,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "nvidia/Cosmos3-Edge",
     displayName: "Cosmos3 Edge",
-    description: "Text and image to video 480p, small",
+    description: "Text and image to video up to 480p, small",
     scope: "video",
     artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
   },
