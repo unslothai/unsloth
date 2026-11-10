@@ -158,8 +158,18 @@ def counters():
     assert k.K32GetProcessMemoryInfo(k.GetCurrentProcess(), ctypes.byref(c), c.cb), ctypes.get_last_error()
     return c
 
+import transformers.modeling_utils as mu
+
 base = counters().PagefileUsage
 with sp.pread_safetensors(convert_to = torch.bfloat16, every_shard = sys.argv[3] == "pread"):
+    scoped = mu.safe_open
+
+    # Studio pins transformers 5.5, which passes no backend; 5.17+ asks for pread on Windows itself
+    def as_studio_pin(*args, **kwargs):
+        kwargs.pop("backend", None)
+        return scoped(*args, **kwargs)
+
+    mu.safe_open = as_studio_pin
     model = LlamaForCausalLM.from_pretrained(sys.argv[2], dtype = torch.bfloat16)
 # what .to("xpu") does on an iGPU: each weight gets a fresh allocation in the same RAM, one at a time
 with torch.no_grad():
