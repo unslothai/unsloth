@@ -159,13 +159,13 @@ def test_small_context_keeps_passages_when_both_catalogs_fill(research_home, mon
             }
             for index in range(step * 5, step * 5 + 5)
         ]
-        return "\n\n".join(source["text"] for source in sources) + RAG_SOURCES_SENTINEL + json.dumps(
-            sources
+        return (
+            "\n\n".join(source["text"] for source in sources)
+            + RAG_SOURCES_SENTINEL
+            + json.dumps(sources)
         )
 
-    prompt = _synthesis_prompt(
-        monkeypatch, distinct_chunks, context_length = 8_192, max_sources = 40
-    )
+    prompt = _synthesis_prompt(monkeypatch, distinct_chunks, context_length = 8_192, max_sources = 40)
 
     assert all(f"web-{step}-0" in prompt for step in range(STEPS))
     assert "https://example.test/0/0" in prompt

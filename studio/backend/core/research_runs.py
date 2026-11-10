@@ -716,9 +716,7 @@ def _fit_source_catalog(catalog: str, max_chars: int) -> str:
 def _fit_synthesis_catalogs(
     web_entries: list[str], document_entries: list[str], max_chars: int
 ) -> tuple[str, str]:
-    limits = _water_fill(
-        [len("\n".join(web_entries)), len("\n".join(document_entries))], max_chars
-    )
+    limits = _water_fill([len("\n".join(web_entries)), len("\n".join(document_entries))], max_chars)
     fitted = []
     for entries, limit in zip((web_entries, document_entries), limits):
         kept, used = [], -1
