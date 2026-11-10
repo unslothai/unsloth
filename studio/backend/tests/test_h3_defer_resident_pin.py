@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 streamed denoiser on a card whose initial residency fit holds every block: the load skips the up-front
-block pin, each block is promoted from its pageable host copy, and blocks a smaller fit leaves streamed are pinned
-afterwards. ``UNSLOTH_H3_DEFER_RESIDENT_PIN=0`` restores the up-front pin."""
+"""MiniMax-H3: a fully resident initial fit defers the up-front block pin (UNSLOTH_H3_DEFER_RESIDENT_PIN)."""
 
 from __future__ import annotations
 
@@ -98,7 +96,6 @@ def _env(monkeypatch):
     from contextlib import nullcontext
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    # the copy-stream context and the compute stream of a CUDA host
     monkeypatch.setattr(torch.cuda, "stream", lambda s: nullcontext())
     monkeypatch.setattr(torch.cuda, "current_stream", lambda *a: _CURRENT)
     for name in (
@@ -260,7 +257,6 @@ def test_deferral_engages_when_the_fit_holds_every_block(caplog):
         for rec in caplog.records
     )
     for g in r.blocks:
-        # the prefetch engages for a later demote
         assert g.low_cpu_mem_usage is False
         # host copy is its own object over the same storage: the onload's swap cannot carry it to the device
         for p, host in g.cpu_param_dict.items():
@@ -340,7 +336,6 @@ def test_a_smaller_fit_than_predicted_pins_the_leftover_blocks(monkeypatch):
     monkeypatch.setattr(res, "h3_offload_groups", lambda t: (None, list(r.blocks)))
     monkeypatch.setattr(res, "pin_streamed_block_groups", fake_pin)
     assert res.pin_deferred_block_groups(object()) == (2, 4)
-    # exactly the streamed leftovers go back to the lazy path's pinner
     assert seen["lazy"] == r.blocks[2:]
     assert not any(getattr(g, "_unsloth_pin_deferred", False) for g in r.blocks)
 

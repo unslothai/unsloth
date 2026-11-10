@@ -428,9 +428,7 @@ def _host_empty_cache() -> None:
         pass
 
 
-# A load whose initial fit holds the top-level group and every block skips the up-front block pin (an 18 s, 20 GB
-# pinned transient on a 48 GB card): each block is promoted straight from its pageable host copy, which the fit then
-# releases. Blocks the fit leaves streamed are pinned afterwards. ``UNSLOTH_H3_DEFER_RESIDENT_PIN=0`` pins up front.
+# A fully resident initial fit skips the up-front block pin (18 s, 20 GB pinned transient on 48 GB); leftovers pin after.
 H3_DEFER_RESIDENT_PIN_ENV = "UNSLOTH_H3_DEFER_RESIDENT_PIN"
 _PIN_DEFERRED_ATTR = "_unsloth_pin_deferred"
 
@@ -445,8 +443,7 @@ def h3_defer_resident_pin_enabled() -> bool:
 
 
 def _onload_pageable(group: Any) -> bool:
-    """diffusers' stream onload of a pin-deferred group, read from its pageable host copy (it would pin each tensor
-    first): same copy stream, same record_stream, so the device weights land where a pinned onload puts them."""
+    """diffusers' stream onload of a pin-deferred group, read from the pageable host copy without pinning."""
     from contextlib import nullcontext
 
     cpu = getattr(group, "cpu_param_dict", None)
@@ -479,8 +476,7 @@ def defer_resident_block_pins(
     budget_bytes: int,
     logger: Any = None,
 ) -> bool:
-    """Engage the deferral when ``budget_bytes`` holds the top-level group and every (lazily streamed) block group.
-    Run before the stream prefetch is installed and the initial fit; returns whether it engaged."""
+    """Engage the deferral if ``budget_bytes`` holds top + every block; call before the prefetch and initial fit."""
     if not h3_defer_resident_pin_enabled() or not h3_resident_unpin_enabled():
         return False
     if not residency.usable:
@@ -508,7 +504,6 @@ def defer_resident_block_pins(
         return False
     for group, alias in zip(residency.blocks, aliases):
         group.cpu_param_dict.update(alias)
-        # The prefetch then engages for a later demote; its host copy is rebuilt pinned.
         group.low_cpu_mem_usage = False
         setattr(group, _PIN_DEFERRED_ATTR, True)
     if logger is not None:
@@ -521,8 +516,7 @@ def defer_resident_block_pins(
 
 
 def pin_deferred_block_groups(transformer: Any, logger: Any = None) -> tuple[int, int]:
-    """Pin the pin-deferred blocks the initial fit left streamed (a failed or smaller fit), as the lazy path does.
-    Returns (groups pinned, block groups); (0, n) when every deferred block went resident."""
+    """Pin the deferred blocks the initial fit left streamed; returns (groups pinned, block groups)."""
     _top, blocks = h3_offload_groups(transformer)
     left = [g for g in blocks if getattr(g, _PIN_DEFERRED_ATTR, False) and not is_resident(g)]
     if not left:

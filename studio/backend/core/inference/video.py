@@ -3276,8 +3276,7 @@ def _h3_residency_budget_bytes(
 def _h3_resident_pin_deferral(
     fam: Any, denoiser: Any, device: str, *, te_streamed: bool, te_scheme: Optional[str]
 ) -> Optional[int]:
-    """Bytes of a streamed denoiser the initial residency fit is predicted to hold whole (largest preset, default
-    frame count, nothing resident yet), so its block pins can wait for the fit; None keeps the up-front pin."""
+    """Denoiser bytes if the initial fit is predicted to hold it whole (so pins can be deferred), else None."""
     try:
         from .video_minimax_h3_residency import (
             h3_defer_resident_pin_enabled,
@@ -3297,7 +3296,6 @@ def _h3_resident_pin_deferral(
 
         from .diffusion_prequant import tensor_payload_bytes
 
-        # The top-level group and the block groups partition the denoiser's tensors.
         total = sum(
             tensor_payload_bytes(t) for t in chain(denoiser.parameters(), denoiser.buffers())
         )
@@ -12295,7 +12293,6 @@ class VideoBackend:
                             ),
                             logger = logger,
                         )
-                    # A whole-resident fit pins nothing up front: blocks promote from their pageable copies.
                     pin_deferred_bytes = (
                         _h3_resident_pin_deferral(
                             fam,
@@ -12482,7 +12479,6 @@ class VideoBackend:
                         if pin_deferred:
                             from .video_minimax_h3_residency import pin_deferred_block_groups
                             try:
-                                # no-op when the fit holds every block
                                 pin_deferred_block_groups(denoiser, logger = logger)
                             except Exception as exc:  # noqa: BLE001 -- they pin on each onload
                                 logger.warning("video.h3_block_pin: %s", exc)
