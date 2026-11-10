@@ -1180,6 +1180,7 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("python.exe - <<'PY'\nprint(1)\nPY", False),
         ("if cat <<'EOF'; then :; fi\npython3 completed successfully\nEOF", False),
         ("grep exec <<'EOF'\nINFO python3 exec completed successfully\nEOF", False),
+        ("rg python3 <<'EOF'\nINFO python3 finished successfully\nEOF", False),
         ("python3 - &>>run.log <<'PY'\nprint(1)\nPY", False),
         ('result="$(python3 -c "print(1 << 2)")"', False),
         ('result="`python3 -c "print(1 << 2)"`"', False),

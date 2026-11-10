@@ -6723,29 +6723,15 @@ def _heredoc_name(word: str) -> str:
 
 
 # Commands that only read a heredoc as data; any other owner may forward stdin to an interpreter.
-_HEREDOC_DATA_COMMANDS = frozenset(
-    {
-        "cat",
-        "tee",
-        "git",
-        "gh",
-        "grep",
-        "head",
-        "tail",
-        "wc",
-        "sort",
-        "uniq",
-        "tr",
-        "cut",
-        "jq",
-        "read",
-        ":",
-        "true",
-        "base64",
-        "diff",
-        "patch",
-    }
-)
+_HEREDOC_DATA_COMMANDS = _AUTO_SAFE_TERMINAL_COMMANDS | {
+    "tee",
+    "git",
+    "gh",
+    "read",
+    ":",
+    "base64",
+    "patch",
+}
 _SOURCE_ENCODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
 _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
