@@ -31,7 +31,7 @@ _STATE: dict = {
     "file": None,
     "last_key": None,
     "tune": False,
-    # Pipes (by tag) relying on the enabled state; the last release() restores it.
+    # Pipe tags using the table; the last release() restores prev_enabled.
     "owners": set(),
     "prev_enabled": False,
 }
@@ -337,7 +337,7 @@ def uninstall(pipe: Any = None) -> None:
 
 
 def _claim(pipe: Any) -> None:
-    # The tag lives on the pipe so a view over it (second-expert / named-DiT) claims the same owner.
+    # Tag on the pipe so views over it (second expert, named DiT) share one owner.
     token = getattr(pipe, _OWNER_ATTR, None)
     if token is None:
         token = object()

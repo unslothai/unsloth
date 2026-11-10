@@ -75,7 +75,7 @@ def fake(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_arch", lambda device = None: "gfx1151")
     monkeypatch.setattr(rt, "_prime", lambda _torch: None)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
-    monkeypatch.delenv(rt.TUNABLEOP_ENV, raising = False)  # default: lookup only
+    monkeypatch.delenv(rt.TUNABLEOP_ENV, raising = False)
     for k in [k for k in __import__("os").environ if k.startswith("PYTORCH_TUNABLEOP_")]:
         monkeypatch.delenv(k)
     tables = tmp_path / "tables"
