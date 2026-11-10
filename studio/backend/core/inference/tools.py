@@ -6751,8 +6751,8 @@ _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
 
 def _quote_end(line: str, i: int) -> int:
-    """Index of the quote closing the one at ``i``; a `$(` inside double quotes opens a fresh
-    quoting context, as in bash. -1 when unterminated."""
+    """Index of the quote closing the one at ``i``; a `$(` or backtick inside double quotes opens a
+    fresh quoting context, as in bash. -1 when unterminated."""
     quote, j, n = line[i], i + 1, len(line)
     while j < n and line[j] != quote:
         if quote == '"' and line[j] == "\\":
@@ -6760,6 +6760,10 @@ def _quote_end(line: str, i: int) -> int:
         elif quote == '"' and line.startswith("$(", j):
             j = _substitution_end(line, j + 2)
             if j < 0:
+                return -1
+        elif quote == '"' and line[j] == "`":
+            j = line.find("`", j + 1) + 1
+            if not j:
                 return -1
         else:
             j += 1
