@@ -971,17 +971,42 @@ def test_image_vram_refusal_text_covers_every_segment_stage():
 
 
 def test_image_vram_retry_budget_is_half_the_planned_free_vram():
-    assert args_mod.image_vram_retry_budget_gib(6666) == 3.25
-    assert args_mod.image_vram_retry_budget_gib(24176) == 11.8
+    assert args_mod.image_vram_retry_budget({"CUDA0": 6666}) == "3.25"
+    assert args_mod.image_vram_retry_budget({"Vulkan0": 24176}) == "11.80"
     # 1 GiB floor: below it sd.cpp has no room for a segment plus its margin.
-    assert args_mod.image_vram_retry_budget_gib(2048) == 1.0
-    assert args_mod.image_vram_retry_budget_gib(2047) is None
-    assert args_mod.image_vram_retry_budget_gib(None) is None
-    assert args_mod.image_vram_retry_budget_gib(0) is None
+    assert args_mod.image_vram_retry_budget({"CUDA0": 2048}) == "1.00"
+    assert args_mod.image_vram_retry_budget({"CUDA0": 2047}) is None
+    assert args_mod.image_vram_retry_budget({"CUDA0": 0}) is None
+    assert args_mod.image_vram_retry_budget({}) is None
+    assert args_mod.image_vram_retry_budget(None) is None
+
+
+def test_image_vram_retry_budget_is_per_card_and_needs_the_render_cards():
+    plan = {"CUDA0": 45979, "CUDA1": 5771}
+    assert args_mod.image_vram_retry_budget(plan) == "CUDA0=22.45,CUDA1=2.81"
+    # ``--backend`` pins are compared case-insensitively.
+    assert args_mod.image_vram_retry_budget(plan, {"cuda1"}) == "CUDA0=22.45,CUDA1=2.81"
+    # A card under the floor is left out, unless the render is pinned to it or it is missing from the plan.
+    assert (
+        args_mod.image_vram_retry_budget({"CUDA0": 45979, "CUDA1": 1800}, {"cuda0"})
+        == "CUDA0=22.45"
+    )
+    assert args_mod.image_vram_retry_budget({"CUDA0": 45979, "CUDA1": 1800}, {"cuda1"}) is None
+    assert args_mod.image_vram_retry_budget({"CUDA0": 45979}, {"cuda1"}) is None
 
 
 def test_planned_free_vram_is_read_from_the_auto_fit_device_lines():
-    cuda = "[I]     CUDA0        NVIDIA GeForce RTX 3090          free   6387 MiB, budget   5875 MiB --- backend_fit.cpp:326"
-    ram = "[I]     RAM          free  60697 MiB, params budget  54627 MiB --- backend_fit.cpp:333"
-    assert srv._AUTO_FIT_DEVICE_FREE_RE.search(cuda).group(1) == "6387"
-    assert srv._AUTO_FIT_DEVICE_FREE_RE.search(ram) is None
+    plan = (
+        "[I] auto-fit plan: --- backend_fit.cpp:334",
+        "[I]   devices: --- backend_fit.cpp:335",
+        "[I]     CUDA0        NVIDIA RTX 6000 Ada Generation   free  45979 MiB, budget  45467 MiB --- backend_fit.cpp:337",
+        "[I]     CUDA1        NVIDIA GeForce RTX 3090          free   5771 MiB, budget   5259 MiB --- backend_fit.cpp:337",
+        "[I]     RAM          free  69220 MiB, params budget  62298 MiB --- backend_fit.cpp:344",
+        "[I]     DiT          params   5228 MiB, compute reserve  2048 MiB -> compute CUDA0, params CUDA0 --- backend_fit.cpp:357",
+    )
+    found = {}
+    for line in plan:
+        match = srv._AUTO_FIT_DEVICE_FREE_RE.search(line)
+        if match is not None:
+            found[match.group(1)] = int(match.group(2))
+    assert found == {"CUDA0": 45979, "CUDA1": 5771}

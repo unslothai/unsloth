@@ -3149,22 +3149,25 @@ def _vram_refusal_backend(
     monkeypatch,
     *,
     refusals,
-    planned_free_mib = 6666,
+    planned_free_mib = None,
     error = _VRAM_REFUSAL,
     max_vram_supported = True,
+    per_device_supported = True,
     policy_flags = (),
     device = "cuda",
 ):
-    """A CUDA server load whose first ``refusals`` jobs fail with ``error``, on whichever server runs them."""
+    """A CUDA server load pinned to CUDA1 whose first ``refusals`` jobs fail with ``error``, on whichever
+    server runs them. ``planned_free_mib`` is the free VRAM per card in the server's auto-fit plan."""
     events: list = []
     remaining = {"refusals": refusals}
+    planned = {"CUDA1": 6666} if planned_free_mib is None else planned_free_mib
 
     class _FakeServer:
         lora_dir = None
 
         def __init__(self, binary):
             self.binary = binary
-            self.planned_free_vram_mib = planned_free_mib
+            self.planned_free_vram_mib = dict(planned)
 
         def start(self, files, **kwargs):
             events.append(
@@ -3193,6 +3196,7 @@ def _vram_refusal_backend(
         "sd_cpp_graph_cut_options",
         lambda binary: frozenset({"--max-vram"}) if max_vram_supported else frozenset(),
     )
+    monkeypatch.setattr(bk, "_layer_split_supported", lambda binary: per_device_supported)
     return b, events
 
 
@@ -3203,12 +3207,33 @@ def test_a_vram_refusal_restarts_once_under_half_the_planned_free_vram(monkeypat
     assert len(images) == 1
     # Same placement flags, plus the explicit budget: 6666 MiB planned, half of it rounded down to 0.01 GiB.
     assert [e for e in events if e[0] == "start"] == [("start", ("--max-vram", "3.25"), flags)]
-    assert b._state.vram_budget_gib == 3.25
+    assert b._state.vram_budget == "3.25"
     assert b._state.device == "cuda" and b._state.offload_flags == flags
     # Later requests on this load keep the restarted server.
     images, _seeds = b._generate_server(b._state, **_gen_kwargs())
     assert len(images) == 1
     assert len([e for e in events if e[0] == "start"]) == 1
+
+
+def test_a_vram_refusal_budgets_each_visible_card_from_its_own_free_vram(monkeypatch):
+    # sd.cpp's plan lists every visible card. The render is pinned to CUDA1; the idle 48 GB card next to it must
+    # neither shrink that card's budget nor be capped by it.
+    b, events = _vram_refusal_backend(
+        monkeypatch, refusals = 1, planned_free_mib = {"CUDA0": 45979, "CUDA1": 5771}
+    )
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "CUDA0=22.45,CUDA1=2.81")]
+
+
+def test_a_vram_refusal_leaves_a_full_bystander_card_to_sd_cpp(monkeypatch):
+    # Half of CUDA0's free VRAM is under the 1 GiB floor, and the render does not use it.
+    b, events = _vram_refusal_backend(
+        monkeypatch, refusals = 1, planned_free_mib = {"CUDA0": 1800, "CUDA1": 6666}
+    )
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "CUDA1=3.25")]
 
 
 def test_a_second_vram_refusal_is_surfaced(monkeypatch):
@@ -3222,29 +3247,42 @@ def test_a_second_vram_refusal_is_surfaced(monkeypatch):
     "kwargs",
     [
         # sd-server printed no auto-fit plan, so there is no free VRAM to halve.
-        {"planned_free_mib": None},
-        # Half of it is below the 1 GiB floor.
-        {"planned_free_mib": 1800},
-        # A build without --max-vram rejects the flag.
+        {"planned_free_mib": {}},
+        # Half of the render card's free VRAM is below the 1 GiB floor.
+        {"planned_free_mib": {"CUDA1": 1800}},
+        {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 1800}},
+        # The card the render is pinned to is not in the plan.
+        {"planned_free_mib": {"CUDA0": 6666}},
+        # A build without --max-vram rejects the flag, and one without per-device budgets its assignments.
         {"max_vram_supported": False},
+        {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 5771}, "per_device_supported": False},
         # A CPU render is not short of VRAM.
         {"device": "cpu"},
         # Not a memory refusal.
         {"error": "sd-server generation failed: generation_failed: invalid sampler"},
     ],
-    ids = ["no_plan", "below_floor", "old_build", "cpu", "other_error"],
+    ids = [
+        "no_plan",
+        "below_floor",
+        "render_card_below_floor",
+        "render_card_not_planned",
+        "no_max_vram",
+        "no_per_device_budgets",
+        "cpu",
+        "other_error",
+    ],
 )
 def test_a_vram_refusal_without_a_usable_budget_is_surfaced_unchanged(monkeypatch, kwargs):
     b, events = _vram_refusal_backend(monkeypatch, refusals = 1, **kwargs)
     with pytest.raises(RuntimeError):
         b._generate_server(b._state, **_gen_kwargs())
     assert not [e for e in events if e[0] in ("start", "stop")]
-    assert b._state.vram_budget_gib is None
+    assert b._state.vram_budget is None
 
 
 def test_a_device_loss_respawn_keeps_the_reduced_vram_budget(monkeypatch):
     b, events = _vram_refusal_backend(monkeypatch, refusals = 0, device = "vulkan")
-    object.__setattr__(b._state, "vram_budget_gib", 3.25)
+    object.__setattr__(b._state, "vram_budget", "3.25")
     server = b._respawn_server_after_device_loss(
         b._state, "sd-server job failed: vk::Queue::submit: ErrorDeviceLost", threading.Event()
     )

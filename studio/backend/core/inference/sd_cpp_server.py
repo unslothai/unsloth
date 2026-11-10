@@ -64,8 +64,11 @@ _TOTAL_PARAMS_VRAM_RE = re.compile(
     re.IGNORECASE,
 )
 
-# One line per compute device in sd.cpp's auto-fit plan; the RAM line reads "params budget" and does not match.
-_AUTO_FIT_DEVICE_FREE_RE = re.compile(r"\bfree\s+([0-9]+)\s*MiB,\s*budget\s+[0-9]+\s*MiB\b")
+# One line per visible device in sd.cpp's auto-fit plan: "[I]  CUDA0  <card name>  free N MiB, budget M MiB".
+# The RAM line reads "params budget" and does not match.
+_AUTO_FIT_DEVICE_FREE_RE = re.compile(
+    r"^\[I\]\s+(\S+)\s.*\bfree\s+([0-9]+)\s*MiB,\s*budget\s+[0-9]+\s*MiB\b"
+)
 
 _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
@@ -167,7 +170,7 @@ class SdCppServer:
         self.port: Optional[int] = None
         self._process: Optional[subprocess.Popen] = None
         self._resident_params_vram_gb: Optional[float] = None
-        self._planned_free_vram_mib: Optional[int] = None
+        self._planned_free_vram_mib: dict[str, int] = {}
         # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
         self._tail: deque[str] = deque(maxlen = 200)
         self._lines_seen = 0
@@ -252,7 +255,7 @@ class SdCppServer:
             # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
             self._tail.clear()
             self._resident_params_vram_gb = None
-            self._planned_free_vram_mib = None
+            self._planned_free_vram_mib = {}
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
@@ -456,11 +459,7 @@ class SdCppServer:
                         self._resident_params_vram_gb = value
                 match = _AUTO_FIT_DEVICE_FREE_RE.search(line)
                 if match is not None:
-                    free_mib = int(match.group(1))
-                    known = self._planned_free_vram_mib
-                    self._planned_free_vram_mib = (
-                        free_mib if known is None else min(known, free_mib)
-                    )
+                    self._planned_free_vram_mib[match.group(1)] = int(match.group(2))
                 logger.debug("[sd-server] %s", line)
                 cb = self._step_listener
                 if cb is not None:
@@ -480,10 +479,10 @@ class SdCppServer:
             wake.set()
 
     @property
-    def planned_free_vram_mib(self) -> Optional[int]:
-        """Free VRAM sd.cpp's auto-fit read at startup, the smallest across its compute devices; None when this
+    def planned_free_vram_mib(self) -> dict[str, int]:
+        """Free VRAM per device (``{"CUDA0": 6666}``) that sd.cpp's auto-fit read at startup; empty when this
         build printed no plan."""
-        return self._planned_free_vram_mib
+        return dict(self._planned_free_vram_mib)
 
     def reclaimable_params_vram_gb(
         self, physical_gpu_id: Optional[int]
