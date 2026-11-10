@@ -6709,6 +6709,7 @@ _HEREDOC_INTERPRETER_MENTION_RE = re.compile(
     r"(?<![\w.-])(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)(?![\w-])"
 )
 _COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
+_HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
 _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
 
@@ -6872,6 +6873,14 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 ),
                 None,
             )
+            if _HEREDOC_SHELL_RE.fullmatch(os.path.basename(command_word)):
+                if (
+                    depth >= 3
+                    or _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names))
+                    or _terminal_is_high_risk("\n".join(body), depth + 1)
+                ):
+                    return True
+                continue
             if at is None:
                 if _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names)):
                     return True
@@ -6888,7 +6897,7 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
             if not reads:
                 continue
             program = "\n".join(body)
-            if not quoted and re.search(r"[$`]|\\[\\$`\n]", program):
+            if not quoted and re.search(r"[$`]|\\[\\$`\n]", program + "\n"):
                 return True
             if _inline_python_is_high_risk(program):
                 return True
