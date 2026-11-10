@@ -251,6 +251,17 @@ def test_ensure_reports_disabled_downloads(missing_pdf, monkeypatch):
         pdf.ensure_pdf_support()
 
 
+def test_an_unwritable_environment_imports_without_waiting_on_a_lock(
+    missing_pdf, monkeypatch, tmp_path
+):
+    missing_pdf.installed = True
+    monkeypatch.setattr(pdf, "_lock_path", lambda: tmp_path / "missing-dir" / "install.lock")
+    monkeypatch.setattr(
+        pdf, "FileLock", lambda *a, **kw: pytest.fail("no lock file can exist here")
+    )
+    assert pdf.load_pdf_module("pymupdf").__name__ == "pymupdf"
+
+
 def test_install_lock_is_scoped_to_this_environment():
     assert pdf._lock_path().parent == pdf.Path(sys.prefix)
 

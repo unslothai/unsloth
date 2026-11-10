@@ -204,8 +204,14 @@ def _settled(deadline: float) -> Iterator[None]:
     try:
         lock = _lock_path()
         # Another process (a recipe worker, a chat export) may be installing into the same environment.
-        # Without write access there is no lock file and nothing can install into it.
-        if not os.access(lock.parent, os.W_OK):
+        # Unwritable means nothing installs here; filelock would wait out its timeout (it reads Windows
+        # EACCES as held), and os.access ignores Windows ACLs.
+        try:
+            with open(lock, "a", encoding = "utf-8"):
+                writable = True
+        except OSError:
+            writable = False
+        if not writable:
             yield
             return
         with FileLock(str(lock), timeout = _remaining(deadline)):
