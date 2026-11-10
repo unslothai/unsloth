@@ -11,12 +11,6 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  MATERIAL_LABELS,
-  MATERIALS,
-  nativeMaterialAvailable,
-  useMaterialStore,
-} from "@/features/chat-background";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -52,62 +46,6 @@ function ThemeChip({
     >
       Aa
     </span>
-  );
-}
-
-// Light keeps the original frost but on a cool grey base with a firmer rim, so it reads on a white menu.
-function GlassChip() {
-  return (
-    <span
-      aria-hidden="true"
-      className="size-6 shrink-0 rounded-full border border-black/20 bg-[#d9dfe8] bg-[linear-gradient(135deg,rgb(255_255_255_/_0.95),rgb(255_255_255_/_0.2)_55%,rgb(255_255_255_/_0.7))] shadow-[inset_0_1px_0_rgb(255_255_255_/_0.9)] dark:border-white/20 dark:bg-transparent dark:bg-[linear-gradient(135deg,rgb(255_255_255_/_0.35),rgb(255_255_255_/_0.05)_55%,rgb(255_255_255_/_0.18))]"
-    />
-  );
-}
-
-function GlassThemeSub() {
-  const t = useT();
-  const material = useMaterialStore((s) => s.material);
-  const setMaterial = useMaterialStore((s) => s.setMaterial);
-  const options = MATERIALS.filter(
-    (m) => m !== "macos" || nativeMaterialAvailable(),
-  );
-  const shown = options.includes(material) ? material : "solid";
-  return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger className="gap-2.5">
-        <GlassChip />
-        <span className="flex-1 whitespace-nowrap">
-          {t("chatBackground.material")}
-        </span>
-        {shown !== "solid" && (
-          <span className="text-xs text-muted-foreground">
-            {t(MATERIAL_LABELS[shown])}
-          </span>
-        )}
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="w-60">
-        {options.map((m) => (
-          <DropdownMenuItem
-            key={m}
-            onSelect={() => setMaterial(m)}
-            data-material-value={m}
-            aria-checked={shown === m}
-            role="menuitemradio"
-          >
-            <span className="min-w-0 flex-1 truncate">
-              {t(MATERIAL_LABELS[m])}
-            </span>
-            {shown === m ? (
-              <HugeiconsIcon
-                icon={Tick02Icon}
-                className="size-4 text-foreground"
-              />
-            ) : null}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
   );
 }
 
@@ -159,7 +97,6 @@ export function ColorThemeSelect() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={6} className="w-60">
         {UNSLOTH_THEME_IDS.map(renderItem)}
-        <GlassThemeSub />
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger className="gap-2.5">
