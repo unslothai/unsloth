@@ -31,8 +31,7 @@ def _gate_statement(path):
 
 
 def _open_gate(path, modules, environ):
-    """Exec the statement against a synthetic `sys.modules` / environ; running it rather than
-    grepping the source keeps a re-added guard visible."""
+    """Runs the statement against fake sys.modules and environ, so a re-added guard is caught."""
     scope = {
         "os": types.SimpleNamespace(environ = environ),
         "sys": types.SimpleNamespace(modules = modules),

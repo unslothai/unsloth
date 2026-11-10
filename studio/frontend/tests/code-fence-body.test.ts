@@ -351,6 +351,8 @@ test("paint containment is limited to large completed full-token bodies", () => 
     sameFenceBodyProps,
     updateFenceChunks,
     useLineWindow: () => ({ window: null, pins: null, measured: false }),
+    usePinnedWhileStreaming: () => {},
+    CodeBlockLanguage: () => null,
     lineRendered,
     WINDOW_CAP_LINES,
     joinClasses: (...parts: (string | null)[]) => parts.filter(Boolean).join(" "),
@@ -391,4 +393,73 @@ test("paint containment is limited to large completed full-token bodies", () => 
       assert.match(html, /<pre>fallback<\/pre>/);
     }
   }
+});
+
+test("chat code blocks cap their height and scroll inside, except on paper", () => {
+  const css = readSrc("index.css");
+  const at = css.indexOf('.aui-thread-root [data-streamdown="code-block-body"] {');
+  const rule = css.slice(at, css.indexOf("}", at));
+  assert.match(rule, /max-height: var\(--unsloth-code-block-max-height, min\(30rem, 55vh\)\);/);
+  assert.match(rule, /overflow-y: auto;/);
+  assert.match(css, /@media print \{\s+\.aui-thread-root \[data-streamdown="code-block-body"\] \{\s+max-height: none;/);
+});
+
+test("a capped block colours only what is in view and a streaming one follows its last line", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /const capped = innerLineWindow\(code\.current, body\);/);
+  assert.match(hook, /lineWindowColoured\(tokens, progress, capped\)/);
+  assert.match(hook, /\}, \(\) => setPrevious\(\{ tokens, parked, progress: null \}\), capped !== null\);/);
+  const pin = DEFER.slice(DEFER.indexOf("function usePinnedWhileStreaming("), DEFER.indexOf("export const FenceBody = memo("));
+  assert.match(pin, /if \(atBottom \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
+  assert.match(pin, /body\.scrollTop = body\.scrollHeight;/);
+  assert.match(pin, /body\.scrollTop = saved\.atBottom \? body\.scrollHeight : saved\.top;/);
+  assert.match(DEFER, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown", "pointerdown"\] as const;/);
+});
+
+test("Expand code resumes colouring a capped block that had stopped at its view", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /if \(next === null \|\| !lineWindowColoured\(tokens, progress, next\)\) setScrolled/);
+  assert.match(hook, /new ResizeObserver\(recheck\)/);
+  assert.match(hook, /resized\?\.observe\(body\);/);
+});
+
+test("printing colours capped blocks that paused at their view", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /const finish = \(\): void => setPrevious\(\{ tokens, parked, progress: null \}\);\s*pausedFences\.add\(finish\);/);
+  assert.match(hook, /pausedFences\.delete\(finish\);/);
+  const print = DEFER.slice(DEFER.indexOf("const setPrinting = "), DEFER.indexOf("const scheduleRemeasure"));
+  assert.match(print, /if \(value && pausedFences\.size > 0\) flushSync\(\(\) => \{\s*for \(const finish of \[\.\.\.pausedFences\]\) finish\(\);/);
+});
+
+test("only a finished body mounting right after a stream takes its scroll place, once", () => {
+  const pin = DEFER.slice(DEFER.indexOf("type BodyScroll"), DEFER.indexOf("export const FenceBody = memo("));
+  assert.match(pin, /if \(streamedRef\.current\) rememberBodyScroll\(keyRef\.current, body\);/);
+  assert.match(pin, /const saved = streamedRef\.current \? undefined : takeBodyScroll\(keyRef\.current\);/);
+  assert.match(pin, /bodyScrolls\.delete\(key\);\s*return saved !== undefined && performance\.now\(\) - saved\.at < JUST_STREAMED_MS/);
+  assert.equal(pin.match(/rememberBodyScroll\(/g)?.length, 1);
+});
+
+test("a block's own word wrap turns off line windowing for that block only", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { runInNewContext } = await import("node:vm");
+  const ts = (await import("@typescript/typescript6")).default;
+  const src = readFileSync(new URL("../src/components/assistant-ui/code-fence-defer.tsx", import.meta.url), "utf8");
+  const start = src.indexOf("const codeWrapOn = ");
+  const end = src.indexOf("const useCodeWrap = ", start);
+  const js = ts.transpileModule(src.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const html = { attrs: new Set<string>(), hasAttribute(name: string) { return this.attrs.has(name); } };
+  const block = (wrap: string | null) => ({
+    closest: (selector: string) => selector === "[data-wrap]" && wrap !== null
+      ? { getAttribute: () => wrap } : null,
+  });
+  const context: Record<string, unknown> = { document: { documentElement: html } };
+  runInNewContext(`${js}\nthis.codeWrapOn = codeWrapOn;`, context);
+  const codeWrapOn = context.codeWrapOn as (node: unknown) => boolean;
+  assert.equal(codeWrapOn(block(null)), false, "setting off, no override");
+  assert.equal(codeWrapOn(block("on")), true, "the block's wrap button wins over the setting");
+  html.attrs.add("data-code-wrap");
+  assert.equal(codeWrapOn(block(null)), true, "setting on");
+  assert.equal(codeWrapOn(block("off")), false, "the block's unwrap wins too");
+  assert.equal(codeWrapOn(null), true, "before mount: the setting");
+  assert.match(src, /attributeFilter: \["data-code-wrap", "data-wrap"\]/, "a toggle re-reads the guard");
 });

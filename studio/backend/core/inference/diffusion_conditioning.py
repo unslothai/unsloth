@@ -129,6 +129,17 @@ def effective_reference_resolution(fam: Any, requested: Optional[int]) -> Option
     return int(requested)
 
 
+def reference_request_pixels(ref_resolution: Optional[int], extra_images: int = 0) -> int:
+    """Shared by the load's edit placement and the render-time guard, so both price the same pixels."""
+    if not ref_resolution:
+        return 0
+    return int((1 + max(0, int(extra_images))) * int(ref_resolution) * int(ref_resolution))
+
+
+def default_reference_pixels(fam: Any) -> int:
+    return reference_request_pixels(effective_reference_resolution(fam, None))
+
+
 def _decode_bounded(data: str, mode: str, budget: list[int], what: str) -> Any:
     from core.inference.diffusion import decode_b64_image
 

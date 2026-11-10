@@ -23,8 +23,7 @@ def _version_tuple(text: str) -> tuple[int, ...]:
 
 
 def _activate_sidecar(venv_dir: str) -> None:
-    # A transformers already imported here (a parent __main__ re-imported by spawn) shadows the sidecar; the version
-    # check in _load then names the problem.
+    # Already-imported transformers shadow the sidecar; the version check names the problem.
     if not venv_dir or not os.path.isdir(venv_dir):
         raise RuntimeError(f"the transformers 5.10 sidecar is missing at '{venv_dir}'")
     if venv_dir not in sys.path:
@@ -206,9 +205,8 @@ def _dense_scale_vs_bf16(dtype: Any) -> float:
 
 
 def _require_room_for_dense(config: dict, exc: Exception) -> None:
-    """The load was planned at the hosted file's size: refuse the dense fallback when free memory cannot hold the
-    dense encoder, rather than let the OS kill the process mid-read (on Apple Silicon the same pool as the DiT).
-    ``dense_te_gb`` is bf16; a float32 load (fp16 promoted without bf16) needs twice that."""
+    """Refuses the dense fallback if free memory cannot hold it, rather than an OS kill mid-read;
+    dense_te_gb is bf16, so a float32 load needs twice that"""
     need = (
         float(config.get("dense_te_gb") or 0.0)
         * 1000**3
@@ -438,9 +436,7 @@ def quantize_int8_convrot_(
     device: Any = "cpu",
     resident: bool = False,
 ) -> int:
-    """Swap every decoder-layer projection for the ConvRot INT8 linear in place; the number swapped. ``resident``
-    quantizes layer by layer on the card. Otherwise mapped bf16 pages are released per projection; if any cannot be,
-    host tensors are copied out of the map so it can close."""
+    """Swaps decoder projections for ConvRot INT8 in place; mapped pages are released or copied out."""
     import torch
     from torch import nn
 
@@ -676,14 +672,146 @@ def _stream_need_mib_or_none(config: dict, model: Any) -> Optional[int]:
 STREAM_ENCODE_ENV = "UNSLOTH_LTX25_TE_STREAM"
 
 
+def _to_device(tensor: Any, device: Any) -> Any:
+    """Device copy; non-blocking from pinned memory (same-stream reader, host copy never written)."""
+    try:
+        pinned = tensor.device.type == "cpu" and tensor.is_pinned()
+    except Exception:  # noqa: BLE001 -- unknown: the blocking copy
+        pinned = False
+    return tensor.to(device, copy = True, non_blocking = pinned)
+
+
+def _onloads_whole(model: Any) -> bool:
+    """Whether ``_Onload`` reaches every tensor ``model.to`` would move: no module overrides ``_apply``."""
+    import torch
+    try:
+        return all(type(m)._apply is torch.nn.Module._apply for m in model.modules())
+    except Exception:  # noqa: BLE001 -- unknown: keep ``model.to``
+        return False
+
+
+def _discrete_card(device: Any) -> bool:
+    """A CUDA card with its own memory. On unified memory (Apple, Jetson / GB10, Strix Halo) a kept host copy would
+    hold the encoder twice in the same RAM during the encode, so those keep ``model.to``."""
+    if str(device).split(":", 1)[0] != "cuda":
+        return False
+    try:
+        from core.inference.host_pinning import host_pinning_allowed
+        return bool(host_pinning_allowed(device))
+    except Exception:  # noqa: BLE001 -- unclassifiable: keep ``model.to``
+        return False
+
+
+# "0" keeps the non-resident encoder's host copy pageable.
+PIN_HOST_ENV = "UNSLOTH_LTX25_TE_PIN"
+
+
+def _pin_host_copy(model: Any, config: dict) -> int:
+    """Copy a non-resident encoder's host weights into registered (pinned) chunks once, Linux CUDA only and only with
+    room for the transient second copy, so uploads run at DMA speed; returns bytes pinned, 0 when skipped."""
+    if config.get("resident") or (os.environ.get(PIN_HOST_ENV) or "").strip() == "0":
+        return 0
+    device = str(config.get("device") or "")
+    if not device.startswith("cuda"):
+        return 0
+    try:
+        from core.inference.diffusion_memory import (
+            _exact_pin_supported,
+            _named_buffers,
+            _pin_host_weights,
+        )
+
+        if not _exact_pin_supported(device):
+            return 0
+        host = {name: p.data for name, p in model.named_parameters() if p.device.type == "cpu"}
+        buffers = {name: b for name, b in _named_buffers(model) if b.device.type == "cpu"}
+        if not _pin_fits_twice(list(host.values()) + list(buffers.values())):
+            return 0
+        return int(
+            _pin_host_weights(model, host, None, buffer_host = buffers, exact = True, device = device)
+            or 0
+        )
+    except Exception as exc:  # noqa: BLE001 -- an optimisation: the encode reads the pageable copy
+        print(f"video.ltx25_te: host copy left pageable ({exc})", file = sys.stderr, flush = True)
+        return 0
+
+
+def _own_host_copy(model: Any) -> bool:
+    """Copy the host weights out of the checkpoint's file mapping into process memory, once, before the first card
+    encode. Base did this implicitly (``model.to("cpu")`` after each encode); kept mapped, the pages are page cache the
+    server's pins evict, and each onload then re-reads 23 GB from disk (70-80 s per encode on an A100 host)."""
+    import torch
+
+    if not _host_fits(list(model.parameters()) + list(model.buffers()), copies = 1):
+        # Base's streamed and CPU encodes kept the mapping too; a short host keeps it rather than risk the OOM killer.
+        return False
+    try:
+        # Keyed by identity: a tied tensor is copied once and stays shared.
+        done: dict = {}
+        with torch.no_grad():
+            for module in model.modules():
+                for table in (module._parameters, module._buffers):
+                    for key, tensor in list(table.items()):
+                        if tensor is None or tensor.device.type != "cpu":
+                            continue
+                        if isinstance(tensor, torch.nn.Parameter):
+                            if id(tensor) not in done:
+                                done[id(tensor)] = tensor
+                                tensor.data = tensor.data.clone()
+                            continue
+                        if id(tensor) not in done:
+                            done[id(tensor)] = tensor.clone()
+                        table[key] = done[id(tensor)]
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the mapped copy still encodes, only slower when evicted
+        print(f"video.ltx25_te: host copy left mapped ({exc})", file = sys.stderr, flush = True)
+        return False
+
+
+def _pin_fits_twice(tensors: list) -> bool:
+    """Whether host RAM holds a second copy of ``tensors`` above the pin reserve. The loaded encoder's tensors share
+    storages, so the pinned chunks fill before the pageable copy is freed (24.9 -> 42.7 GB on an A100 host); on a host
+    without that room the pin pushed the box into reclaim and encodes took 70-80 s instead of 22 s."""
+    return _host_fits(tensors, copies = 2)
+
+
+def _host_fits(tensors: list, copies: int) -> bool:
+    """Whether host RAM holds ``copies`` more copies of ``tensors`` above the pin reserve."""
+    from core.inference.diffusion_memory import (
+        _PIN_RESERVE_FRACTION,
+        _PIN_RESERVE_MIN_BYTES,
+        _available_system_memory_mib,
+        _host_ram_capacity_mib,
+    )
+
+    available, total = _available_system_memory_mib(), _host_ram_capacity_mib()
+    if available is None or total is None:
+        return False
+    need = sum(int(t.numel()) * int(t.element_size()) for t in tensors)
+    reserve = max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
+    return (int(available) << 20) - int(copies) * need >= reserve
+
+
 class _Onload:
     """Moves the tensors of some modules to a device and back. Parameters keep their identity (``.data`` swaps, so a
     tied weight moves once); the host tensors are kept and restored, so returning costs no copy."""
 
-    def __init__(self, device: Any) -> None:
+    def __init__(
+        self,
+        device: Any,
+        ready: Optional[dict] = None,
+    ) -> None:
         self.device = device
         self.saved: list = []
         self.moved: dict = {}
+        # id(tensor) -> (host data_ptr, device copy); a moved host storage falls back to a plain copy.
+        self.ready = ready or {}
+
+    def _copy(self, key: int, tensor: Any) -> Any:
+        hit = self.ready.get(key)
+        if hit is not None and hit[0] == tensor.data_ptr():
+            return hit[1]
+        return _to_device(tensor, self.device)
 
     def add(
         self,
@@ -701,11 +829,11 @@ class _Onload:
                             if id(tensor) not in self.moved:
                                 self.moved[id(tensor)] = tensor
                                 self.saved.append((tensor, None, None, tensor.data))
-                                tensor.data = tensor.data.to(self.device, copy = True)
+                                tensor.data = self._copy(id(tensor), tensor.data)
                             continue
                         moved = self.moved.get(id(tensor))
                         if moved is None:
-                            moved = tensor.to(self.device, copy = True)
+                            moved = self._copy(id(tensor), tensor)
                             self.moved[id(tensor)] = moved
                         self.saved.append((None, table, key, tensor))
                         table[key] = moved
@@ -720,7 +848,139 @@ class _Onload:
         self.moved.clear()
 
 
-def _streamed(parts: tuple[list, list, list], device: str) -> Any:
+# "0" uploads each streamed layer on the compute stream when it starts, as before the one-layer lookahead.
+PREFETCH_ENV = "UNSLOTH_LTX25_TE_PREFETCH"
+
+
+def _host_sources(module: Any) -> Optional[list]:
+    """``(id, host data)`` per tensor ``_Onload`` moves, or None unless all are pinned (only pinned copies async)."""
+    import torch
+
+    seen: set = set()
+    sources: list = []
+    for sub in module.modules():
+        for table in _tensor_tables(sub):
+            for tensor in table.values():
+                if tensor is None or id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                data = tensor.data if isinstance(tensor, torch.nn.Parameter) else tensor
+                if data.device.type != "cpu" or not data.is_pinned():
+                    return None
+                sources.append((id(tensor), data))
+    return sources or None
+
+
+class _CudaUploads:
+    def __init__(self, device: Any) -> None:
+        import torch
+
+        self.torch = torch
+        self.device = torch.device(device)
+        self._stream: Any = None
+
+    @property
+    def stream(self) -> Any:
+        # Lazy: the stream pool's first use costs ~20 MiB of card memory.
+        if self._stream is None:
+            self._stream = self.torch.cuda.Stream(device = self.device)
+        return self._stream
+
+    def _compute(self) -> Any:
+        return self.torch.cuda.current_stream(self.device)
+
+    def fence(self, events: list) -> None:
+        for event in events:
+            self.stream.wait_event(event)
+
+    def upload(self, sources: list) -> tuple[dict, Any]:
+        torch = self.torch
+        with torch.cuda.stream(self.stream):
+            copies = {
+                key: (data.data_ptr(), data.to(self.device, non_blocking = True))
+                for key, data in sources
+            }
+            ready = torch.cuda.Event()
+            ready.record(self.stream)
+        return copies, ready
+
+    def wait_ready(self, ready: Any) -> None:
+        self._compute().wait_event(ready)
+
+    def done(self) -> Any:
+        event = self.torch.cuda.Event()
+        event.record(self._compute())
+        return event
+
+    def drain(self) -> None:
+        if self._stream is None:
+            return
+        self._stream.wait_stream(self._compute())
+        self._stream.synchronize()
+
+
+def _lookahead_ops(device: str) -> Any:
+    if (os.environ.get(PREFETCH_ENV) or "").strip() == "0":
+        return None
+    if str(device).split(":", 1)[0] != "cuda":
+        return None
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch) or not torch.cuda.is_available():
+            return None
+        return _CudaUploads(device)
+    except Exception:  # noqa: BLE001 -- the synchronous upload still works
+        return None
+
+
+class _Lookahead:
+    """Layer i+1 uploads while layer i computes. Layer i's buffers are freed only after the copy stream waits on its
+    compute, so the allocator cannot reuse them early. At most two layers resident (priced by ``_stream_need_mib``)."""
+
+    def __init__(self, layers: list, ops: Any) -> None:
+        self.ops = ops
+        self.order = {id(layer): i for i, layer in enumerate(layers)}
+        self.sources = [_host_sources(layer) for layer in layers]
+        self.pending: dict = {}
+        self.retired: list = []
+        self.layers = 0
+
+    def issue(self, index: int) -> None:
+        if index >= len(self.sources) or self.pending or self.sources[index] is None:
+            return
+        self.ops.fence([done for done, _copies in self.retired])
+        self.retired.clear()
+        self.pending[index] = self.ops.upload(self.sources[index])
+        self.layers += 1
+
+    def take(self, module: Any) -> Optional[dict]:
+        index = self.order.get(id(module))
+        entry = self.pending.pop(index, None) if index is not None else None
+        # An out-of-order layer's upload is dropped, never read.
+        self.pending.clear()
+        if entry is not None:
+            self.ops.wait_ready(entry[1])
+        if index is not None:
+            self.issue(index + 1)
+        return entry[0] if entry is not None else None
+
+    def retire(self, copies: dict) -> None:
+        self.retired.append((self.ops.done(), copies))
+
+    def close(self) -> None:
+        self.ops.drain()
+        self.pending.clear()
+        self.retired.clear()
+
+
+def _streamed(
+    parts: tuple[list, list, list],
+    device: str,
+    stats: Optional[dict] = None,
+) -> Any:
     """Context: the resident modules on ``device`` for the encode, each decoder layer only while it runs."""
     import contextlib
 
@@ -731,12 +991,21 @@ def _streamed(parts: tuple[list, list, list], device: str) -> Any:
         base = _Onload(device)
         handles: list = []
         live: dict = {}
+        ahead: Optional[_Lookahead] = None
         try:
             base.add(resident)
             base.add(containers, recurse = False)
+            ops = _lookahead_ops(device) if stats is None or not stats.get("no_prefetch") else None
+            if ops is not None:
+                ahead = _Lookahead(layers, ops)
+                if all(s is None for s in ahead.sources):
+                    ahead = None
+                else:
+                    ahead.issue(0)
 
             def before(module: Any, _args: Any) -> None:
-                onload = _Onload(device)
+                copies = ahead.take(module) if ahead is not None else None
+                onload = _Onload(device, copies)
                 live[id(module)] = onload
                 onload.add([module])
 
@@ -744,6 +1013,8 @@ def _streamed(parts: tuple[list, list, list], device: str) -> Any:
                 onload = live.pop(id(module), None)
                 if onload is not None:
                     onload.restore()
+                    if ahead is not None and onload.ready:
+                        ahead.retire(onload.ready)
 
             for layer in layers:
                 handles.append(layer.register_forward_pre_hook(before))
@@ -754,7 +1025,13 @@ def _streamed(parts: tuple[list, list, list], device: str) -> Any:
                 handle.remove()
             for onload in live.values():
                 onload.restore()
-            base.restore()
+            try:
+                if ahead is not None:
+                    ahead.close()
+                    if stats is not None:
+                        stats["prefetched_layers"] = ahead.layers
+            finally:
+                base.restore()
 
     return _ctx()
 
@@ -773,11 +1050,26 @@ def _memory_stats(device: str) -> dict:
     except Exception:  # noqa: BLE001 -- stats are best-effort
         pass
     try:
+        import psutil
+
+        info = psutil.Process().memory_info()
+        stats["host_rss_mib"] = info.rss >> 20
+        if getattr(info, "peak_wset", None):  # Windows has no getrusage
+            stats["host_peak_rss_mib"] = info.peak_wset >> 20
+    except Exception:  # noqa: BLE001 -- stats are best-effort
+        pass
+    try:
         import resource
-        stats["host_peak_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
-        with open("/proc/self/statm", encoding = "ascii") as fh:
-            stats["host_rss_mib"] = (int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")) >> 20
-    except Exception:  # noqa: BLE001 -- not Linux
+
+        # ru_maxrss is KiB on Linux but bytes on macOS.
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        stats["host_peak_rss_mib"] = peak >> (20 if sys.platform == "darwin" else 10)
+        if "host_rss_mib" not in stats:
+            with open("/proc/self/statm", encoding = "ascii") as fh:
+                stats["host_rss_mib"] = (
+                    int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+                ) >> 20
+    except Exception:  # noqa: BLE001 -- Windows, or no /proc
         pass
     return stats
 
@@ -789,6 +1081,11 @@ def _pack_hidden_states(model: Any, ids: Any, mask: Any) -> Any:
 
     out = model(input_ids = ids, attention_mask = mask, output_hidden_states = True, use_cache = False)
     return torch.stack(out.hidden_states, dim = -1).flatten(2, 3).to(dtype = model.dtype)
+
+
+def compact_valid_rows(embeds: Any, mask: Any) -> Any:
+    """``[B, L, D]`` -> ``[valid rows, D]``, row-major over ``(B, L)`` as ``masked_scatter_`` refills it."""
+    return embeds[mask.to(device = embeds.device).bool()]
 
 
 def _truncate_dead_tail(tokenizer: Any, model: Any) -> dict:
@@ -833,8 +1130,6 @@ def _encode_on(
     max_len: int,
     server_reserved_mib: Optional[int] = None,
 ) -> tuple[Any, Any, str]:
-    import torch
-
     resident = bool(config.get("resident"))
     device, stream = _encode_plan(config, model, server_reserved_mib)
     tokenizer.padding_side = "left"
@@ -849,30 +1144,109 @@ def _encode_on(
         return_tensors = "pt",
     )
     config["_streamed"] = stream is not None
+    config["_stream_stats"] = {}
+    oom: Optional[str] = None
+    try:
+        embeds_host, mask_host = _run_encode(model, config, inputs, device, stream)
+    except Exception as exc:
+        if resident or device == "cpu" or not _is_out_of_memory(exc):
+            raise
+        oom = str(exc)
+    if oom is not None and config["_stream_stats"].get("prefetched_layers"):
+        # Retry without the lookahead's second layer before falling back to CPU.
+        _empty_accelerator_cache(device)
+        print(
+            f"video.ltx25_te: out of memory with the layer lookahead on {device} ({oom}); retrying without it",
+            file = sys.stderr,
+            flush = True,
+        )
+        config["_stream_stats"] = {"no_prefetch": True}
+        oom = None
+        try:
+            embeds_host, mask_host = _run_encode(model, config, inputs, device, stream)
+        except Exception as exc:
+            if not _is_out_of_memory(exc):
+                raise
+            oom = str(exc)
+    if oom is not None:
+        # Outside the handler, so the failed attempt's card tensors are gone before the CPU encode; then hand the
+        # card back, since the server plans the denoise against it.
+        _empty_accelerator_cache(device)
+        print(
+            f"video.ltx25_te: out of memory encoding on {device} ({oom}); encoding on the CPU",
+            file = sys.stderr,
+            flush = True,
+        )
+        device, config["_streamed"] = "cpu", False
+        embeds_host, mask_host = _run_encode(model, config, inputs, device, None)
+    return embeds_host, mask_host, device
+
+
+def _empty_accelerator_cache(device: Any) -> None:
+    import torch
+
+    kind = str(device).split(":", 1)[0]
+    accel = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
+    if accel is not None and accel.is_available():
+        accel.empty_cache()
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    import torch
+    kinds = tuple(
+        k
+        for k in (
+            getattr(torch, "OutOfMemoryError", None),
+            getattr(torch.cuda, "OutOfMemoryError", None),
+        )
+        if isinstance(k, type)
+    )
+    return (bool(kinds) and isinstance(exc, kinds)) or "out of memory" in str(exc).lower()
+
+
+def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any) -> tuple[Any, Any]:
+    import torch
+
+    resident = bool(config.get("resident"))
     onloaded = not resident and device != "cpu" and stream is None
-    if onloaded:
+    if not resident and device != "cpu" and _discrete_card(device):
+        if config.get("_pin_host") and "_pinned_bytes" not in config:
+            config["_pinned_bytes"] = _pin_host_copy(model, config)
+        if not config.get("_pinned_bytes") and not config.get("_owned_host"):
+            config["_owned_host"] = _own_host_copy(model)
+    # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
+    whole = (
+        _Onload(device) if onloaded and _discrete_card(device) and _onloads_whole(model) else None
+    )
+    if whole is None and onloaded:
         model.to(device)
     try:
+        if whole is not None:
+            whole.add([model])
         with (
-            _streamed(stream, device) if stream is not None else _no_context(),
+            _streamed(stream, device, config.setdefault("_stream_stats", {}))
+            if stream is not None
+            else _no_context(),
             torch.inference_mode(),
         ):
             ids = inputs.input_ids.to(device)
             mask = inputs.attention_mask.to(device)
             embeds = _pack_hidden_states(model, ids, mask)
+            if config.get("_compact"):
+                # Valid rows only: the connectors zero padded rows before mixing tokens.
+                embeds = compact_valid_rows(embeds, mask)
             embeds_host = embeds.to("cpu")
             mask_host = mask.to("cpu")
             del embeds
     finally:
-        if onloaded:
+        if whole is not None:
+            whole.restore()
+        elif onloaded:
             model.to("cpu")
         # Return the encode's activations (and, onloaded, the weights) to the card: a resident worker otherwise keeps
         # ~1.7 GB cached through the denoise, an onloaded one the whole encoder.
-        kind = str(device).split(":", 1)[0]
-        accel = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
-        if accel is not None and accel.is_available():
-            accel.empty_cache()
-    return embeds_host, mask_host, device
+        _empty_accelerator_cache(device)
+    return embeds_host, mask_host
 
 
 def _no_context() -> Any:
@@ -880,11 +1254,30 @@ def _no_context() -> Any:
     return contextlib.nullcontext()
 
 
+def _bind_device(config: dict) -> None:
+    """Make the configured card current (not cuda:0), re-resolving the ordinal by the server's card UUID."""
+    device = str(config.get("device") or "")
+    if not config.get("bind_device") or not device.startswith("cuda"):
+        return
+    import torch
+
+    index = torch.device(device).index or 0
+    uuid = config.get("device_uuid")
+    if uuid:
+        for i in range(torch.cuda.device_count()):
+            if str(torch.cuda.get_device_properties(i).uuid) == uuid:
+                index = i
+                break
+    config["device"] = f"cuda:{index}"
+    torch.cuda.set_device(index)
+
+
 def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
     if _BACKEND_PATH not in sys.path:
         sys.path.insert(0, _BACKEND_PATH)
     try:
         _activate_sidecar(config.get("venv_dir") or "")
+        _bind_device(config)
         tokenizer, model = _load(config)
         import transformers
 
@@ -924,6 +1317,8 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
         if kind != "encode":
             continue
         try:
+            config["_pin_host"] = bool(msg.get("pin_host"))
+            config["_compact"] = bool(msg.get("compact"))
             embeds, mask, device = _encode_on(
                 tokenizer,
                 model,
@@ -938,8 +1333,13 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     "id": msg.get("id"),
                     "embeds": embeds,
                     "mask": mask,
+                    "compact": bool(config.get("_compact")),
                     "device": device,
                     "streamed": bool(config.get("_streamed")),
+                    "prefetched_layers": int(
+                        (config.get("_stream_stats") or {}).get("prefetched_layers") or 0
+                    ),
+                    "pinned_mib": int(config.get("_pinned_bytes") or 0) >> 20,
                     **_memory_stats(config.get("device") or ""),
                 }
             )

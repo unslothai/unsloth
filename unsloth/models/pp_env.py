@@ -933,9 +933,14 @@ def _pp_training_step(
 
 
 def _eval_items(trainer, inputs, labels):
-    """The loss normaliser of one eval batch, counted as this Trainer counts it on one GPU (Unsloth's
-    prediction step passes _get_num_items_in_batch: unshifted labels on transformers 4.x), for this dp
-    replica's batch only; else the shifted label count (the model's own mean)."""
+    """This trainer's one-process evaluation token count, local to the data parallel replica."""
+    if getattr(getattr(type(trainer), "compute_loss", None), "_unsloth_cpu", False):
+        import trl
+        from packaging.version import Version
+
+        # TRL 1.15 evaluates its fused head without num_items_in_batch, even with CPU chunked CE installed.
+        if Version(trl.__version__) >= Version("1.15.0"):
+            return int((labels[:, 1:] != -100).sum())
     getter = getattr(trainer, "_get_num_items_in_batch", None)
     if callable(getter):
         args = trainer.args

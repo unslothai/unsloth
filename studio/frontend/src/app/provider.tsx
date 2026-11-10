@@ -25,7 +25,7 @@ import {
 } from "@/config/env";
 import { routeNeedsHardware } from "@/config/hardware-verdict";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/use-chat-model-runtime";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
 import { DeepLinkHandler } from "@/features/deep-links";
 import { receiveSharedRunConfigUrls } from "@/features/model-picker/sharing/receive-link";
 import {
@@ -86,6 +86,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import {
   type LogicalWindowSize,
   PREFERRED_SETUP_WINDOW_SIZE,
@@ -122,11 +123,9 @@ type TauriMonitor = NonNullable<
 // Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 
-// Room the corner rail keeps around its cards so its overflow clip does not cut their shadows off (#9246).
-// Sized off the deepest card shadow, the dark-mode one: 0 8px 28px -6px reaches 22px to a card's left
-// and 14px above it, and a shorter gutter ends the halo on a hard line. Only those two edges show it:
-// the rail is flush with the bottom-right corner, so the clip there lands on the screen edge. Both
-// gutters come out of the cap, never out of the cards: 100dvh less 16 and 16 is the band they had.
+// Gutters keep the rail's overflow clip from cutting card shadows (#9246), sized to the dark-mode
+// shadow (22px left, 14px above); only the left and top edges show, and both come out of the cap,
+// never the cards.
 const STACK_SHADOW_GUTTER_BOTTOM = 16;
 const STACK_SHADOW_GUTTER_TOP = 16;
 const STACK_SHADOW_GUTTER_LEFT = 28;
@@ -695,6 +694,7 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const blockingScreenRef = useSurfaceRef<HTMLDivElement>(MODAL_SURFACE);
   const {
     status,
     logs,
@@ -1007,6 +1007,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       )}
       {!showApp && (
         <div
+          ref={blockingScreenRef}
           data-blocking-screen=""
           className="fixed inset-0 z-40 bg-background"
         >
@@ -1071,7 +1072,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             <div
               data-tauri-drag-region={true}
               aria-hidden="true"
-              className="pointer-events-auto fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+              className="pointer-events-auto modal-pe-live fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
             />
           ) : null}
           {chromeVars}

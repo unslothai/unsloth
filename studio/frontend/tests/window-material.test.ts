@@ -32,7 +32,7 @@ test("the glass Show on setting keeps old records on every page and maps routes 
 	assert.match(material, /scope: sanitizeScope\(stored\?\.scope, "all"\)/);
 	// Out of scope the page draws solid: no glass attribute, no glass menus, no lens or plain backdrop.
 	assert.match(material, /const applied = shown === "solid" \|\| !here \? null : shown;/);
-	assert.match(material, /menus && material !== "solid" && material !== "transparent" && here,/);
+	assert.match(material, /menus && material !== "solid" && here,/);
 	for (const file of ["lens.tsx", "mount.tsx", "background.tsx"]) {
 		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
 		assert.match(source, /useAppliedMaterial\(\)/, file);
@@ -64,16 +64,16 @@ test("glass keeps the unprefixed backdrop-filter that Chromium reads", () => {
 
 test("glass menus only apply on top of an applied material", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const rules = [...css.matchAll(/^([^\n{]*\[data-glass-menus\][^\n{]*)\{/gm)].map((m) => m[1]);
+	const rules = [...css.matchAll(/^([^\n{]*\[data-glass-menus\][^\n{]*)\{/gm)].map((m) => m[1].trim());
 	assert.ok(rules.length > 0);
-	for (const rule of rules) assert.match(rule, /^html\[data-glass(\^?="[a-z0-9-]+")?\]\[data-glass-menus\]/);
+	for (const rule of rules) assert.match(rule, /^html(?:\[data-glass(?:\^?="[a-z0-9-]+")?\]|\.tauri\.client-windows\[data-glass-clear\])\[data-glass-menus\]/);
 });
 
 test("turning the wallpaper fade off drops the band behind the composer", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(
 		css,
-		/\.chat-wallpaper-image\[data-fade="false"\]\) \.thread-bottom-fade \{\n  display: none;/,
+		/\[data-wallpaper-frame-flat\] \.thread-bottom-fade \{\n  display: none;/,
 	);
 });
 
@@ -89,8 +89,8 @@ test("glass strength repairs malformed persisted data", () => {
 
 test("composer outline off also drops the glass ring and bevel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] [^{]*\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\),[^{]*\{\n  --composer-shadow: none;/);
-	assert.match(css, /\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\)::before,[^{]*\{\n  content: none;/);
+	assert.match(css, /html\[data-glass\] [^{]*\[data-wallpaper-outline-off\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel\),[^{]*\{\n  --composer-shadow: none;/);
+	assert.match(css, /\[data-wallpaper-outline-off\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel\)::before,[^{]*\{\n  content: none;/);
 });
 
 test("glass adds no outer shadows, only inset light", () => {
@@ -119,6 +119,20 @@ test("glass adds no outer shadows, only inset light", () => {
 	}
 });
 
+test("the pinned Windows glass frame rounds the corner with either an image or a plain backdrop", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const titlebarRules = css.split("\n").filter((line) =>
+		line.startsWith("html[data-chat-wallpaper-ready]") && line.includes('[data-slot="window-titlebar'),
+	);
+	assert.ok(titlebarRules.length > 0);
+	for (const selector of titlebarRules) {
+		assert.ok(selector.includes("[data-glass-clear]"), selector);
+	}
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]';
+	assert.ok(css.includes(glassFrame + ' [data-slot="sidebar-container"][data-windows-glass-frame]::before'));
+	assert.ok(css.includes(glassFrame + ' [data-windows-glass-frame] > [data-slot="sidebar-inner"] {\n  position: relative;\n  z-index: 1;\n  background: transparent;'));
+});
+
 test("other pages under glass read over one tinted pane with the sidebar's floor", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  --glass-page-wash: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \+ 6%\)/);
@@ -137,7 +151,7 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	assert.ok(LENS_SCALE.magnify > 1 && LENS_SCALE.shrink < 1);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
-	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
+	assert.match(css, /\[data-wallpaper-outline-off\] \.glass-lens \.glass-lens-rim,/);
 });
 
 test("a glass lens set to off draws no wallpaper copies", () => {
@@ -201,8 +215,8 @@ test("the glass preference survives an account switch, and sign-in waits for the
 
 test("glass over an open conversation dims the image and thickens the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	// Welcome comes from a root flag (welcome.ts), not a :has() walk over the whole thread.
-	const conversation = String.raw`html\[data-glass\]:not\(\[data-chat-welcome\]\) :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\)`;
+	// Welcome comes from a root flag (welcome.ts) and the image from a host flag (host-flags.ts), not a :has().
+	const conversation = String.raw`html\[data-glass\]:not\(\[data-chat-welcome\]\) :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]:not\(\[data-wallpaper-route="page"\]\)`;
 	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
 	assert.match(css, new RegExp(`${conversation} :is\\(\\.unsloth-composer-surface, \\.unsloth-files-panel\\),[^{]*\\{\\n  --glass-composer-boost: 9%;`));
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
@@ -248,7 +262,7 @@ test("glass dims the wallpaper on other pages like an open chat, and blurs it no
 
 test("glass leaves the unstuck library header clear", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
+	assert.match(css, /:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\][^)]*\)\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
 	assert.match(css, /\[data-page-model-header\] \[data-slot="api-toolbar-fade"\] \{\n  display: none;/);
 	const api = readFileSync(new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url), "utf8");
 	assert.match(api, /data-page-model-header=""\n\s*className=\{cn\(\n\s*"pointer-events-none sticky top-0/);
@@ -286,8 +300,8 @@ test("menus, popovers and dialogs point every hover token at the glass hover", (
 
 test("glass sheen runs at 90% except on the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.059\)/);
-	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
+	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: linear-gradient\(170deg, rgb\(255 255 255 \/ \.047\)/);
+	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-sheen: linear-gradient\(170deg, rgb\(255 255 255 \/ \.053\)/);
 	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
 });
 
@@ -340,7 +354,7 @@ test("light glass API cards use a thinner fill with the outlined glass edge", ()
 
 test("light glass outlines model buttons and the status chip, but not the sidebar", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /  --glass-light-inner: inset 0 1px 1px rgb\(255 255 255 \/ \.7\), inset 0 16px 30px -20px rgb\(255 255 255 \/ \.55\), inset 0 -18px 34px -20px rgb\(255 255 255 \/ \.4\);/);
+	assert.match(css, /  --glass-light-inner: inset 0 1px 0 rgb\(255 255 255 \/ \.7\);/);
 	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-slot="sidebar-inner"\] \{\n  border-color: transparent;\n  box-shadow: none;/);
 	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\) \{\n  box-shadow: var\(--glass-light-edge\);/);
 	assert.match(css, /\.glass-inset \{\n  box-shadow: var\(--glass-light-edge\);/);
@@ -360,6 +374,14 @@ test("light glass draws no grey outlines outside the composer", () => {
 	assert.match(css, /html\[data-glass\] \{\n  --glass-hover: [^;]*;\n  --glass-hover-rim: inset 0 0 0 0 transparent;/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n[^}]*--glass-hover-rim: inset 0 0 0 1px rgb\(255 255 255 \/ \.06\);/);
 	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
+});
+
+test("glass decoration has no blurred inset shadows or radial sheens", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const glass = css.slice(css.indexOf('html[data-glass="frosted"]'), css.indexOf(".glass-lens {"));
+	assert.ok(glass.length > 10000);
+	assert.deepEqual(glass.match(/inset 0 -?[\d.]+px [1-9][\d.]*px/g), null);
+	assert.deepEqual(glass.match(/--glass-sheen: radial-gradient/g), null);
 });
 
 test("light glass pages keep the borders of boxed panels and select triggers", () => {
@@ -389,15 +411,55 @@ test("transparent glass keeps each surface's colour at the strength's opacity, w
 	assert.match(material, /root\.style\.setProperty\("--glass-fill-alpha", `\$\{strength\}%`\);/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const block = css.slice(css.indexOf("/* Transparent glass: the plain theme"));
-	// On #root from the html copies: a token cannot mix itself, and portalled overlays stay solid.
+	// Shared surface tokens resolve from the opaque html palette.
 	for (const [token, copy] of [["background", "bg"], ["card", "card"], ["popover", "popover"], ["muted", "muted"], ["secondary", "secondary"], ["sidebar", "sidebar"]]) {
-		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root,\\nhtml\\[data-glass-clear\\] #root \\[data-sonner-toaster\\] \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
+		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root,\\nhtml\\[data-glass-clear\\] #root :is\\(\\[data-sonner-toaster\\], \\.toast-surface\\) \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
 	}
 	// Sonner renders inside #root (no portal), so toasts re-resolve the tokens at full opacity.
-	assert.match(block, /html\[data-glass-clear\] #root \[data-sonner-toaster\] \{\n  --clear-alpha: 100%;\n\}/);
 	assert.match(block, /html\[data-glass-clear\] #root \[class\*="text-background"\] \{\n  --background: var\(--glass-page-bg\);\n  --color-background: var\(--glass-page-bg\);\n\}/);
 	assert.match(css, /--glass-page-sidebar: var\(--sidebar\);/);
-	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n\s*background-color: transparent;/);
+	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\][^)]*\)\) \{\n\s*background-color: transparent;/);
 	assert.match(block, /@layer base \{\n\s*html\[data-glass-clear\] body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
 	assert.match(block, /html\[data-glass-clear\] #root \* \{\n\s*-webkit-backdrop-filter: none !important;\n\s*backdrop-filter: none !important;/);
+});
+
+test("Windows Transparent glass shares its palette with opted-in popups and paints panel headers once", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const clear = css.slice(css.indexOf("/* Transparent glass: the plain theme"));
+	const palette = clear.slice(0, clear.indexOf("--clear-alpha:"));
+	assert.ok(palette.includes("html.tauri.client-windows[data-glass-clear][data-glass-menus]"));
+	for (const slot of ['[data-slot$="menu-content"]', '[data-slot="dialog-content"]']) {
+		assert.ok(palette.includes(slot), slot);
+	}
+	for (const target of ['[data-slot="chat-settings-panel"] .bg-panel-surface', '[data-settings-dialog]']) {
+		const rule = clear.split(target + " {")[1]?.split("}")[0];
+		assert.ok(rule?.includes("background-color: transparent;"), target);
+	}
+});
+
+test("the model page's Back to Hub bar paints no strip over a background image until content scrolls under it", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const resting = String.raw`\.hub-detail-bar:not\(\[data-scrolled\]\)`;
+	assert.match(css, new RegExp(String.raw`\[data-wallpaper-workspace\]\[data-wallpaper-ready\]\[data-wallpaper-ready\] :is\([^)]*\.hub-page \.hub-canvas[^{]*${resting}\) \{ background: transparent; \}`));
+	assert.match(css, new RegExp(String.raw`:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], ${resting}\) \{\n\s*-webkit-backdrop-filter: none;`));
+	assert.match(css, new RegExp(String.raw`html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], ${resting}\) \{\n\s*background-color: transparent;`));
+});
+
+test("macOS glass and a plain background image leave the resting page headers clear", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const block = css.slice(css.indexOf("/* macOS glass sees the window through every page"));
+	assert.match(block, /^\/\*[^]*?\*\/\nhtml\[data-glass="macos"\] \[data-slot="sidebar-inset"\] :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], \.hub-page \.hub-detail-bar:not\(\[data-scrolled\]\)\),\nhtml:not\(\[data-glass\]\) \[data-wallpaper-workspace\]\[data-wallpaper-ready\]\[data-wallpaper-ready\] > \[data-slot="sidebar-inset"\] :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  background-color: transparent;/);
+	assert.match(block, /html\[data-glass="macos"\] \[data-page-model-header\] \[data-slot="api-toolbar-fade"\],\nhtml:not\(\[data-glass\]\) [^{]*\[data-page-model-header\] \[data-slot="api-toolbar-fade"\] \{\n  display: none;/);
+});
+
+test("the update cards that float like toasts take the glass toast surface", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{[^}]*backdrop-filter: blur\(max\(var\(--glass-blur\), 18px\)\)/);
+	assert.match(css, /html\[data-glass\^="liquid"\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{/);
+	// Transparent keeps toasts opaque; the cards re-resolve the palette at full alpha like the toaster.
+	assert.match(css, /html\[data-glass-clear\] #root :is\(\[data-sonner-toaster\], \.toast-surface\) \{\n\s*--clear-alpha: 100%;/);
+	for (const file of ["components/llama-update-banner.tsx", "components/tauri/update-banner.tsx", "components/web/update-banner.tsx"]) {
+		const source = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+		assert.match(source, /className="toast-surface /, file);
+	}
 });

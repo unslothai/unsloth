@@ -196,6 +196,7 @@ from hub.utils.host_paths import (
     resolve_host_path_reference,
     scrub_paths,
 )
+from hub.utils.mlx_variants import looks_like_mlx_repo
 from utils.utils import anonymous_and_offline
 
 
@@ -318,7 +319,7 @@ from models.responses import (
     VisionCheckResponse,
     EmbeddingCheckResponse,
 )
-from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.path_utils import is_appledouble_metadata, is_network_or_device_path
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -1825,6 +1826,16 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
         seen_roots.add(key)
         resolved_roots.append(resolved)
 
+    if not any(_browse_relative_parts(requested_path, root) is not None for root in resolved_roots):
+        # Spelled through a symlinked root (moved install, linked $HOME): matches only once resolved.
+        if not is_network_or_device_path(requested_path):
+            try:
+                real = os.path.realpath(requested_path)
+            except (OSError, ValueError):
+                real = requested_path
+            if not is_network_or_device_path(real):
+                requested_path = real
+
     for root in resolved_roots:
         parts = _browse_relative_parts(requested_path, root)
         if parts is None:
@@ -2097,15 +2108,6 @@ def browse_folders(
     )
 
 
-def _looks_like_mlx_repo(model_id: str) -> bool:
-    """Name heuristic for unloaded models (mirrors the -GGUF suffix check);
-    tokenized so MLX only matches as a whole name segment."""
-    if model_id.lower().startswith("mlx-community/"):
-        return True
-    tail = model_id.split("/")[-1]
-    return "MLX" in _re.split(r"[-_.]", tail.upper())
-
-
 @router.get("/list")
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
@@ -2161,6 +2163,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     is_vision = llama_backend.is_vision,
                     is_audio = getattr(llama_backend, "_is_audio", False),
                     audio_type = getattr(llama_backend, "_audio_type", None),
+                    has_audio_input = bool(getattr(llama_backend, "_has_audio_input", False)),
                 )
             ]
 
@@ -2192,7 +2195,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     id = model_id,
                     name = display_model_name(model_id),
                     is_gguf = model_id.upper().endswith("-GGUF"),
-                    is_mlx = _looks_like_mlx_repo(model_id),
+                    is_mlx = looks_like_mlx_repo(model_id),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)

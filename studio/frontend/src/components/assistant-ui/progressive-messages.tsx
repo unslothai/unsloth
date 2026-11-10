@@ -29,6 +29,7 @@ import {
   anchorCorrection,
   alignAnchorCorrection,
   initialWindow,
+  nextMountChunk,
   watchProgressiveScroll,
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
@@ -37,6 +38,7 @@ import {
   rendersAsRow,
 } from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
+import { REACH as WINDOW_REACH } from "@/components/assistant-ui/message-window-controller";
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 
@@ -121,15 +123,9 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
   ) {
     return anchor;
   }
-  // Then descend to the fold. A row can be taller than the viewport (a long answer with images and code usually
-  // is), so a reader partway through one has the row's top ABOVE them: a block earlier in that message growing
-  // moves everything they see while the row's top stays put, and a whole-row anchor reports zero. The first
-  // descendant reaching the fold does not. Bounded because that block is a few levels down, and this runs once
-  // per re-pick, not per frame.
-  // Known residual: if the fold lands inside a tall LEAF block (a paragraph with no element children) the descent
-  // stops with its top above the reader, so lines reflowing inside it move what they see without moving the
-  // block. Closing that needs a caret point at the fold, spelled differently on all three engines, costing a
-  // Range and a rect every frame, and not itself stable across the reflow it would measure.
+  // Descends to the first descendant reaching the fold, since a whole-row anchor reports zero for a
+  // row taller than the viewport; capped at 8 levels, run once per re-pick. Residual: a tall leaf
+  // block can still reflow above the reader; a caret fix would cost a Range per frame.
   for (let depth = 0; depth < 8; depth += 1) {
     if (anchor.getBoundingClientRect().top >= fold) break;
     let next: Element | null = null;
@@ -179,6 +175,13 @@ type HeldAnchor = {
   row: Element | null;
   rowSample: AnchorSample | null;
 };
+
+/** Px from the viewport top up to the first mounted row's top; prepends land above it. */
+function frontierAbove(viewport: HTMLElement | null): number | null {
+  const first = viewport?.querySelector("[data-role][data-message-id]");
+  if (!viewport || !first) return null;
+  return viewport.getBoundingClientRect().top - first.getBoundingClientRect().top;
+}
 
 function isAnchorVisible(viewport: HTMLElement, element: Element): boolean {
   const box = element.getBoundingClientRect();
@@ -269,6 +272,7 @@ function useProgressiveMountWindow(
     | null
   >(null);
   const idleRef = useRef<HeldAnchor | null>(null);
+  const chunkRef = useRef(0);
   const scrollActivity = useRef<ReturnType<typeof watchProgressiveScroll> | null>(null);
 
   useEffect(() => {
@@ -327,8 +331,13 @@ function useProgressiveMountWindow(
         return;
       }
       captureAnchor();
+      // Read after the capture's layout reads, so this forces no extra layout.
+      const chunk = WEBKIT_GTK
+        ? (chunkRef.current = nextMountChunk(
+            chunkRef.current, frontierAbove(viewportRef.current), MOUNT_CHUNK, WINDOW_REACH))
+        : MOUNT_CHUNK;
       const commit = () => {
-        setMountWindow((current) => widen(current, count, MOUNT_CHUNK));
+        setMountWindow((current) => widen(current, count, chunk));
       };
       // Keep the prepend and its scroll correction inside the same WebKit rendering frame.
       if (WEBKIT_GTK) flushSync(commit);
@@ -336,7 +345,7 @@ function useProgressiveMountWindow(
     };
     frame = requestAnimationFrame(advance);
     return () => cancelAnimationFrame(frame);
-  }, [mountWindow, count, captureAnchor, isRunningNow]);
+  }, [mountWindow, count, captureAnchor, isRunningNow, viewportRef]);
 
   // mountWindow is a trigger: this must run in the commit that widened the window, before paint.
   // biome-ignore lint/correctness/useExhaustiveDependencies: mountWindow is a trigger, see above
@@ -368,6 +377,8 @@ function useProgressiveMountWindow(
   useEffect(() => {
     if (mountWindow == null) {
       idleRef.current = null;
+      // The next thread's first steps start small again.
+      chunkRef.current = 0;
       return;
     }
     let frame = 0;

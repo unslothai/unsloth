@@ -141,9 +141,7 @@ def assert_ltx_pick_supported(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """Name guard for a pick already resolved to ``family``: an LTX family never loads another release's weights
-    (LTX-2.5 never reaches the 2.3 assembly, and the reverse), and a release after 2.5 is refused. A non-LTX family
-    never trips on an LTX token."""
+    """An LTX family never loads another release's weights, and releases after 2.5 are refused."""
     if family not in LTX_FAMILIES:
         return
     found = ltx_pick_version(repo_id, filename, display_repo_id)
@@ -236,6 +234,9 @@ class VideoFamily:
     default_guidance: float = 4.0
     default_num_frames: int = 121
     default_fps: int = 24
+    # Neither set = the rate is fixed.
+    fps_range: Optional[tuple[int, int]] = None
+    fps_choices: tuple[int, ...] = ()
     frame_step: int = 8
     # Offset in the temporal lattice. Existing pipelines use k*step+1; MiniMax-H3 uses 17k+5.
     frame_offset: int = 1
@@ -305,8 +306,9 @@ class VideoFamily:
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
     prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
     # An offloaded int8 load reads the hosted int8 file's ConvRot codes as native Linears (diffusion_native_hosted)
-    # instead of staging and quantising the dense shards. Only for a family whose hosted int8 file is ConvRot safetensors.
+    # instead of staging and quantising the dense shards. Hosted file: ConvRot safetensors, or (pickle flag) unrotated W8A8.
     native_offload_from_hosted_int8: bool = False
+    native_offload_hosted_int8_pickle: bool = False
     # Modular workflow loaded instead of a DiffusionPipeline; its routing blocks are not pruned.
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
@@ -335,6 +337,7 @@ class VideoFamily:
     unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
+    supports_video_continuation: bool = False
     # Guidance-distilled families expose neither CFG nor a negative prompt.
     supports_cfg: bool = True
     # True when Unsloth can TRAIN a LoRA on this family (every such name must resolve through get_trainer).
@@ -430,6 +433,8 @@ _COSMOS3_PROFILE = FamilyProfile(
 # Model-card sampling; the shipped scheduler_config.json's flow_shift 1.0 is used by neither card.
 _COSMOS3_NANO_SCHEDULER = (("flow_shift", 10.0),)
 _COSMOS3_EDGE_SCHEDULER = (("flow_shift", 12.0), ("use_karras_sigmas", False))
+# The pipeline's 256 tier: 16:9, 9:16, 1:1, 4:3, 3:4 (NVIDIA runs 448x256 too, which the custom bounds take).
+_COSMOS3_256P = ((320, 192), (192, 320), (256, 256), (320, 256), (256, 320))
 
 
 def local_cosmos3_pipeline_family(path: Optional[str]) -> Optional[str]:
@@ -549,9 +554,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             # qwen-image-edit and hunyuanvideo-1.5 have the same small-M shape but each has a PUBLISHED int8
             # checkpoint whose metadata bakes its exclusion set, so they move only with a rebuild and republish.
             int8_pad_tokens = ("context_embedder", "token_refiner"),
-            # The packed sequence runs three modalities through one set of linears, so its activation range is not the
-            # per-family range the fp8 filter was measured against. The trainer refuses both outright; declaring it
-            # here keeps /diffusion/info from advertising a start that is guaranteed to 400.
+            # fp8 and mxfp8 denied for packed sequences (activation range differs from the
+            # per-family range measured); declared so /diffusion/info never advertises a sure 400
             train_scheme_deny = frozenset({"fp8", "mxfp8"}),
             auto_static_skip = (("minimaxai/minimax-h3", (("max", 2), ("steps", 30))),),
         ),
@@ -689,9 +693,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         filter_reduction_configs = True,
     ),
-    # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio + video in one pass. The
-    # Gemma3-12B encoder is stored fp32 on the hub (~49 GB download, ~24 GB resident bf16). The base repo carries the
-    # dev config (40 steps, CFG 4).
+    # LTX-2 (diffusers >= 0.39): Gemma3-12B encoder is stored fp32 on the hub, ~49 GB download, ~24
+    # GB resident as bf16
     VideoFamily(
         name = "ltx-2",
         trainable = True,
@@ -803,10 +806,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         profile = FamilyProfile(
-            # gated: auto leads with nvfp4 only once a passing accuracy-gate record exists for this base and
-            # backend, the rule the image families follow. None exists yet (no bf16 reference was measured; the
-            # hosted NVFP4 experts were only compared with the FP8 build), so auto takes the ladder (int8) here and
-            # nvfp4 stays an explicit pick.
+            # Auto leads with nvfp4 only after a passing accuracy-gate record; none exists yet, so
+            # int8.
             auto_prefer = AutoPrefer(
                 floor = (10, 0),
                 schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
@@ -833,6 +834,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         # BOTH experts: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2), ("fp8", 29.2), ("int8", 28.8)),
+        # Hosted int8 pair is an unrotated W8A8 pickle: offload reads 29 GB instead of 115 GB of dense experts.
+        native_offload_from_hosted_int8 = True,
+        native_offload_hosted_int8_pickle = True,
         # "wan2.2_t2v": ComfyUI's expert files (wan2.2_t2v_high_noise_14B_*.safetensors), paired at load.
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan2.2_t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
@@ -860,8 +864,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto = "fp8",
         # same VAE as TI2V-5B
         cudnn_benchmark = False,
-        # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
-        # (video_moe_pair)
+        # No gguf_repo: GGUFs split experts; any gguf or single_file pick loads the pair.
     ),
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
@@ -1022,10 +1025,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_guidance = 6.0,
         default_num_frames = 189,
         default_fps = 24,
+        # NVIDIA/cosmos docs/reference/models.md, "Generation settings": 10, 16, 24, 30 FPS.
+        fps_choices = (10, 16, 24, 30),
         frame_step = 4,
         min_num_frames = 5,
         max_num_frames = 397,
         resolution_multiple = 16,
+        # The pipeline's 720 / 480 / 256 tiers (_ACTION_RESOLUTION_BINS, same as cosmos-framework's VIDEO_RES_SIZE_INFO).
         resolution_presets = (
             (1280, 720),
             (720, 1280),
@@ -1034,12 +1040,18 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             (832, 1104),
             (832, 480),  # faster
             (480, 832),  # faster
+            (640, 640),  # faster
+            (736, 544),  # faster
+            (544, 736),  # faster
+            *_COSMOS3_256P,
         ),
         duration_presets = (2.0, 5.0, 7.875),
         bf16_components_gb = (30.4, 0.0, 1.4),
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
         i2v_fits_first_frame = False,
+        # Nano only: Edge's card lists text, image and action input, no video.
+        supports_video_continuation = True,
         scheduler_overrides = _COSMOS3_NANO_SCHEDULER,
         cudnn_benchmark = False,
         vae_fused_encoder = False,
@@ -1055,11 +1067,20 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_guidance = 6.0,
         default_num_frames = 121,
         default_fps = 24,
+        # Card: "12-30 fps, and 50-150 frames"; 53 and 149 are the 4k+1 counts inside 50-150.
+        fps_range = (12, 30),
         frame_step = 4,
         min_num_frames = 53,
         max_num_frames = 149,
         resolution_multiple = 16,
-        resolution_presets = ((832, 480), (480, 832), (640, 640), (736, 544), (544, 736)),
+        resolution_presets = (
+            (832, 480),
+            (480, 832),
+            (640, 640),
+            (736, 544),
+            (544, 736),
+            *_COSMOS3_256P,
+        ),
         duration_presets = (3.0, 5.0, 6.0),
         bf16_components_gb = (6.7, 0.0, 1.4),
         supports_torch_compile = False,
@@ -1133,8 +1154,7 @@ def unsupported_video_checkpoint_reason(
         needle = normalize_family_name(str(wan21_checkpoint))
         needles.append(needle)
         name = re.split(r"[/\\]", needle.rstrip("/\\"))[-1]
-        # A leading "fun" is too generic to mark a Fun release unless it names one (version, size, InP, Control); the
-        # other markers are still judged.
+        # A leading fun marks a Fun release only if it names a version, size, InP or Control.
         generic_fun = re.match(r"fun(?![a-z0-9])", name) and not re.match(
             r"fun-(?:v\d|1-3b|14b|inp|control)", name
         )
@@ -1423,6 +1443,31 @@ class VideoShapeError(ValueError):
     widening the 400 it gives every other bad-input ValueError."""
 
 
+def video_family_fps_options(fam: VideoFamily) -> Optional[tuple[int, ...]]:
+    choices = tuple(sorted({int(f) for f in getattr(fam, "fps_choices", ()) or ()}))
+    if choices:
+        return choices
+    bounds = getattr(fam, "fps_range", None)
+    if bounds:
+        return tuple(range(int(bounds[0]), int(bounds[1]) + 1))
+    return None
+
+
+def validate_video_fps(fam: VideoFamily, fps: Optional[int]) -> None:
+    """Refuse a frame rate outside the family's declared ones; a family that declares none is not judged."""
+    options = video_family_fps_options(fam)
+    if fps is None or options is None or int(fps) in options:
+        return
+    if getattr(fam, "fps_choices", ()):
+        supported = ", ".join(str(f) for f in options)
+    else:
+        supported = f"{options[0]} to {options[-1]}"
+    raise VideoShapeError(
+        f"{fps} fps is not a supported frame rate for {fam.name}. Supported: {supported} fps "
+        f"(the default is {fam.default_fps})."
+    )
+
+
 def _validate_custom_video_size(fam: VideoFamily, width: int, height: int) -> None:
     bounds = video_custom_size_bounds(fam)
     if bounds is None:
@@ -1454,6 +1499,7 @@ def validate_video_request_shape(
     width: Optional[int] = None,
     height: Optional[int] = None,
     num_frames: Optional[int] = None,
+    fps: Optional[int] = None,
 ) -> None:
     """Raise ``ValueError`` when a request asks for a shape ``fam`` does not support.
 
@@ -1462,8 +1508,10 @@ def validate_video_request_shape(
     old silent floor snap let 256x256 through to a size no checkpoint was trained for, so sizes far
     from the presets are refused rather than snapped. A family that declares no presets keeps the
     old SIZE snapping, and ``None`` means "use the family default". The frame lattice has no escape
-    hatch: every family declares a ``frame_step``, so an off-lattice count is always refused.
+    hatch: every family declares a ``frame_step``, so an off-lattice count is always refused. ``fps`` is
+    judged only for a family that declares ``fps_range`` / ``fps_choices``.
     """
+    validate_video_fps(fam, fps)
     presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
     if presets and (width is not None or height is not None):
         # A half-specified request resolves against the default preset, as generate() does. Keyed on None, not
@@ -1615,13 +1663,7 @@ def validate_video_keyframe_conditioning(
     has_keyframes: bool,
     has_last_frame: bool = False,
 ) -> None:
-    """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
-
-    Pure in the family and the MiniMax-H3 partition, which is what lets the generate route judge
-    the checkpoint it is about to SWITCH TO by the same rules the backend applies to the loaded
-    one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
-    target for a request that was already known to be unservable.
-    """
+    """Raises ValueError if a checkpoint cannot take the keyframes; pure, so auto-switch is pre-checked."""
     if not (has_keyframes or has_last_frame):
         return
     from .video_minimax_h3 import H3_TASK_REFERENCES
@@ -1637,6 +1679,41 @@ def validate_video_keyframe_conditioning(
             "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "
             "rather than keyframes. Load a minimax_h3_fl2va checkpoint to generate from a first "
             "or last frame."
+        )
+
+
+VIDEO_CONTINUATION_KEEP = ("last", "first")
+DEFAULT_VIDEO_CONTINUATION_KEEP = "last"
+# Pixel frames the pipeline keeps clean: latent indexes (0, 1) under the Wan2.2 VAE's 4x temporal compression.
+COSMOS3_CONTINUATION_FRAMES = 5
+
+
+def validate_video_continuation(
+    fam: VideoFamily,
+    *,
+    has_video: bool,
+    keep: Optional[str] = None,
+    has_keyframes: bool = False,
+    has_references: bool = False,
+    num_frames: Optional[int] = None,
+) -> None:
+    """Pure, so the route can judge an auto-switch target before evicting anything."""
+    if not has_video:
+        if keep is not None:
+            raise ValueError("continuation_keep needs a continuation_video.")
+        return
+    if not fam.supports_video_continuation:
+        raise ValueError(f"{fam.name} takes no input video, so it cannot continue a clip.")
+    if keep is not None and keep not in VIDEO_CONTINUATION_KEEP:
+        raise ValueError("continuation_keep must be 'last' or 'first'.")
+    if has_keyframes or has_references:
+        raise ValueError(
+            "A clip to continue cannot be combined with a start frame, end frame or references."
+        )
+    if num_frames is not None and num_frames <= COSMOS3_CONTINUATION_FRAMES:
+        raise VideoShapeError(
+            f"Continuing a clip keeps its {COSMOS3_CONTINUATION_FRAMES} frames, so the length must be more than "
+            f"{COSMOS3_CONTINUATION_FRAMES} frames to generate anything; got {num_frames}."
         )
 
 
@@ -1728,8 +1805,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
 )
-# The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
-# checkpoint itself names.
+# Wan and FusionX keys count only in the model or file name, not in owner or folder names.
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
     k
     for k, _s, _g in _VIDEO_GENERATION_DEFAULTS
@@ -1793,8 +1869,7 @@ def video_generation_variant(
             if scope is not None and family != scope:
                 continue
             needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
-            # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
-            # "wan".
+            # A key must not follow an ASCII letter, so swan-video does not match wan.
             if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(
                 r"(?<![a-z])" + re.escape(normalize_family_name(key)), normalize_family_name(needle)
             ):

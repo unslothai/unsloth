@@ -41,6 +41,7 @@ import sys
 import tempfile
 import contextlib
 import threading
+import unicodedata
 import zlib
 from contextvars import ContextVar
 
@@ -88,7 +89,9 @@ from core.inference.mcp_client import (
     get_cached_resources,
     get_cached_tools,
     in_failure_cooloff,
+    invalidate_tool_cache,
     is_studio_decisions,
+    is_studio_tools,
     is_stdio,
     list_tools_async,
     oauth_client_kwargs,
@@ -102,9 +105,17 @@ from core.inference.mcp_client import (
     tool_visible_to,
 )
 from storage import mcp_servers_db
-from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.account_context import (
+    account_thread,
+    current_account,
+    current_account_id,
+    is_owner_context,
+)
 from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils.host_policy import _literal_ip_address
+from core.inference.providers import _metadata_host as _provider_metadata_host
 from utils import sandbox_memory_limit, tool_result_limit
+from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -153,7 +164,7 @@ _DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
 _DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
 _DDGS_PENDING = threading.local()
 
-# Tier 2 runs only if tier 1 found nothing; engines in neither tier are never contacted.
+# Tier 2 runs unless tier 1 found more than Wikipedia; engines in neither tier are never contacted.
 _SEARCH_ENGINE_TIERS = (
     ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
     ("grokipedia", "google", "yahoo"),
@@ -8367,19 +8378,22 @@ def _windows_program_roots() -> list[str]:
 def _resolve_trusted_windows_git() -> tuple[str, str]:
     """Finds git in a trusted Program Files dir; the first PATH match may be an untrusted shim, so the other entries are scanned."""
     exts = [e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)]
-    candidates: list[str] = []
-    primary = shutil.which("git")
-    if primary:
-        candidates.append(primary)
-    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
-        entry = entry.strip().strip('"')
-        if not entry or not os.path.isabs(entry):
-            continue
-        for ext in exts:
-            cand = os.path.join(entry, "git" + ext)
-            if os.path.isfile(cand):
-                candidates.append(cand)
-    for git_exe in candidates:
+
+    def _candidates():
+        # Lazy, in the original order: a trusted hit stops the PATH x PATHEXT stat scan.
+        primary = shutil.which("git")
+        if primary:
+            yield primary
+        for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if not entry or not os.path.isabs(entry):
+                continue
+            for ext in exts:
+                cand = os.path.join(entry, "git" + ext)
+                if os.path.isfile(cand):
+                    yield cand
+
+    for git_exe in _candidates():
         git_dir = os.path.dirname(git_exe)
         if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
             return os.path.realpath(git_dir), os.path.splitext(git_exe)[1].upper()
@@ -8498,6 +8512,8 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         "MPLBACKEND": "Agg",
         # Remaps ChatGPT code-interpreter paths (/mnt/data) onto the sandbox cwd.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
+        # Read by sandbox_site: refuses connects to cloud-metadata addresses at runtime.
+        "_UNSLOTH_SANDBOX_BLOCK_METADATA": "1",
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
@@ -9455,6 +9471,111 @@ def _windows_bash_userland_dirs() -> list[str]:
 def _shell_is_posix() -> bool:
     """True when the shell that will run a command parses POSIX syntax."""
     return sys.platform != "win32" or _windows_bash() is not None
+
+
+# cmd's `>nul` idiom; `<<` is matched first by the heredoc pattern, and `x->nul` / `a=>nul` are not redirects.
+_NUL_REDIRECT_RE = re.compile(
+    r"(?<![-=<>])((?:[0-9]+|&)?(?:>>?|>\||>&)|<)([ \t]*)nul(?=[\s;&|()<>]|$)", re.IGNORECASE
+)
+_HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(['\"]?)([^\s'\"<>;&|()]+)\2")
+
+
+def _substitution_end(command: str, i: int) -> int:
+    depth, n = 1, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c in "'\"":
+            j = command.find(c, i + 1)
+            i = n if j < 0 else j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return n
+
+
+def _bash_nul_to_dev_null(command: str) -> str:
+    """Git Bash turns `2>nul` into a real file named nul that Explorer cannot delete (#16991).
+    Quoted text and heredoc bodies (a .bat written through cat) keep their spelling."""
+    if "nul" not in command.lower():
+        return command
+    out: list[str] = []
+    heredocs: list[tuple[bool, str]] = []
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        if c == "'":
+            j = command.find("'", i + 1)
+            j = n if j < 0 else j + 1
+            out.append(command[i:j])
+            i = j
+            continue
+        if c == '"':
+            # A $( ) inside double quotes still runs: `x="$(cmd 2>nul)"`.
+            out.append(c)
+            i += 1
+            while i < n and command[i] != '"':
+                if command.startswith("$(", i):
+                    end = _substitution_end(command, i + 2)
+                    out.append("$(" + _bash_nul_to_dev_null(command[i + 2 : end]))
+                    i = end
+                    continue
+                step = 2 if command[i] == "\\" else 1
+                out.append(command[i : i + step])
+                i += step
+            out.append(command[i : i + 1])
+            i += 1
+            continue
+        if c == "#" and (i == 0 or command[i - 1] in " \t\n;&|()"):
+            j = command.find("\n", i)
+            j = n if j < 0 else j
+            out.append(command[i:j])
+            i = j
+            continue
+        if c == "\n" and heredocs:
+            i += 1
+            out.append("\n")
+            for strip_tabs, delim in heredocs:
+                while i < n:
+                    j = command.find("\n", i)
+                    j = n if j < 0 else j + 1
+                    line = command[i:j].rstrip("\n")
+                    out.append(command[i:j])
+                    i = j
+                    if (line.lstrip("\t") if strip_tabs else line) == delim:
+                        break
+            heredocs = []
+            continue
+        if command.startswith("<<<", i):
+            out.append("<<<")
+            i += 3
+            continue
+        if command.startswith("<<", i):
+            m = _HEREDOC_RE.match(command, i)
+            if m:
+                heredocs.append((m.group(1) == "-", m.group(3)))
+                out.append(m.group(0))
+                i = m.end()
+                continue
+        m = _NUL_REDIRECT_RE.match(command, i)
+        if m:
+            out.append(f"{m.group(1)}{m.group(2)}/dev/null")
+            i = m.end()
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _get_shell_cmd(command: str) -> list[str]:
@@ -11252,18 +11373,23 @@ def _edit_file_write(
 ) -> str:
     """Atomic rename from a temp file; will not revert a file another chat rewrote since expect; containment rechecked before the rename catches a symlink swap."""
     payload = (bom + text.replace("\n", newline)).encode("utf-8")
-    directory = os.path.dirname(path) or "."
     try:
-        os.makedirs(directory, exist_ok = True)
+        dir_fd, leaf = _edit_file_parent(path, workdir, create_dirs = True)
     except OSError as exc:
         return f"Error: cannot create directory for '{os.path.basename(path)}': {exc}"
     tmp = ""
     try:
-        fd, tmp = tempfile.mkstemp(dir = directory, prefix = ".unsloth_edit_")
+        if dir_fd is None:
+            fd, tmp = tempfile.mkstemp(dir = os.path.dirname(path) or ".", prefix = ".unsloth_edit_")
+        else:
+            tmp = f".unsloth_edit_{uuid.uuid4().hex}"
+            fd = os.open(
+                tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600, dir_fd = dir_fd
+            )
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
         try:
-            shutil.copymode(path, tmp)
+            os.chmod(tmp, stat.S_IMODE(os.stat(leaf, dir_fd = dir_fd).st_mode), dir_fd = dir_fd)
         except OSError:
             pass  # new file, or a mode we cannot read; the default is fine
         if workdir is not None and _is_outside_workdir(path, workdir):
@@ -11273,7 +11399,9 @@ def _edit_file_write(
             )
         if expect is not None:
             try:
-                with open(path, "rb") as fh:
+                with os.fdopen(
+                    os.open(leaf, os.O_RDONLY | getattr(os, "O_BINARY", 0), dir_fd = dir_fd), "rb"
+                ) as fh:
                     current = fh.read(len(expect) + 1)
             except OSError:
                 current = None
@@ -11285,14 +11413,16 @@ def _edit_file_write(
                 )
         from core import library
 
-        library.replace_file(tmp, path)
+        library.replace_file(tmp, path, dir_fd = dir_fd)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
     finally:
         if tmp:
             with contextlib.suppress(OSError):
-                os.remove(tmp)
+                os.remove(tmp, dir_fd = dir_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
     return ""
 
 
@@ -11431,6 +11561,23 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
     return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
 
 
+def _edit_file_parent(
+    target: str, workdir: "str | None", create_dirs: bool
+) -> "tuple[int | None, str]":
+    """(folder fd or None, name to use with it). Confined POSIX writes open every parent below the
+    workdir without following links, so a folder swapped for a link mid-call fails instead of
+    carrying the write outside; unconfined calls and Windows keep the path."""
+    if workdir is None or not file_history.DIR_FD_WALK:
+        if create_dirs:
+            os.makedirs(os.path.dirname(target) or ".", exist_ok = True)
+        return None, target
+    root = os.path.realpath(workdir)
+    parts = os.path.relpath(target, root).split(os.sep)
+    if parts[0] == os.pardir:
+        raise OSError("not inside the working directory")
+    return file_history.open_dir_below(root, parts[:-1], create_dirs), parts[-1]
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -11441,37 +11588,40 @@ def _edit_file_create(
     """Creates with O_EXCL, not a lexists check, so two chats cannot drop each other's file; never clobbers, and a zero-byte target stays writable on purpose."""
     payload = (new.replace("\n", newline)).encode("utf-8")
     if not os.path.lexists(target):
-        directory = os.path.dirname(target) or "."
         try:
-            os.makedirs(directory, exist_ok = True)
+            dir_fd, leaf = _edit_file_parent(target, workdir, create_dirs = True)
         except OSError as exc:
             return f"Error: cannot create directory for '{name}': {exc}"
-        if workdir is not None and _is_outside_workdir(target, workdir):
-            return (
-                f"Error: '{name}' moved outside the working directory while the "
-                "edit was being prepared; nothing was written."
-            )
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        # Never follow a symlink planted at the final component in the meantime.
-        flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(target, flags, 0o666)
-        except FileExistsError:
-            return (
-                f"Error: '{name}' was created by something else while this call "
-                "was preparing it; nothing was written."
-            )
-        except OSError as exc:
-            return f"Error: cannot write '{name}': {exc}"
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(payload)
-        except OSError as exc:
-            # A partial write after ENOSPC cannot be retried (empty old_string refuses non-empty), so
-            # remove the inode.
-            with contextlib.suppress(OSError):
-                os.remove(target)
-            return f"Error: cannot write '{name}': {exc}"
+            if workdir is not None and _is_outside_workdir(target, workdir):
+                return (
+                    f"Error: '{name}' moved outside the working directory while the "
+                    "edit was being prepared; nothing was written."
+                )
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            # Never follow a symlink planted at the final component in the meantime.
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(leaf, flags, 0o666, dir_fd = dir_fd)
+            except FileExistsError:
+                return (
+                    f"Error: '{name}' was created by something else while this call "
+                    "was preparing it; nothing was written."
+                )
+            except OSError as exc:
+                return f"Error: cannot write '{name}': {exc}"
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(payload)
+            except OSError as exc:
+                # A partial write after ENOSPC cannot be retried (empty old_string refuses non-empty), so
+                # remove the inode.
+                with contextlib.suppress(OSError):
+                    os.remove(leaf, dir_fd = dir_fd)
+                return f"Error: cannot write '{name}': {exc}"
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
         return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
     try:
         st = os.stat(target)
@@ -12758,12 +12908,15 @@ def _mcp_search_index(specs: list[dict]) -> sqlite3.Connection:
     conn.execute(
         "CREATE VIRTUAL TABLE tool_text USING fts5(description, params, tokenize='porter unicode61')"
     )
+    from storage.rag_db import fts_text  # noqa: PLC0415
+
     conn.executemany(
-        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)", [(i, r[0]) for i, r in enumerate(rows)]
+        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)",
+        [(i, fts_text(r[0])) for i, r in enumerate(rows)],
     )
     conn.executemany(
         "INSERT INTO tool_text(rowid, description, params) VALUES (?, ?, ?)",
-        [(i, r[1], r[2]) for i, r in enumerate(rows)],
+        [(i, fts_text(r[1]), fts_text(r[2])) for i, r in enumerate(rows)],
     )
     _MCP_SEARCH_INDEXES[digest] = conn
     while len(_MCP_SEARCH_INDEXES) > 4:
@@ -13097,6 +13250,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
+        tool_facts.note_mcp_tool(name, tool, studio = is_studio_tools(server.get("url") or ""))
         description = tool.get("description") or ""
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name
@@ -13125,7 +13279,14 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
-    enabled = [server for server in servers if server.get("is_enabled")]
+    from core.inference.studio_tools_mcp import keyless_caller
+
+    keyless = keyless_caller(current_account())
+    enabled = [
+        server
+        for server in servers
+        if server.get("is_enabled") and not (keyless and is_studio_tools(server["url"]))
+    ]
     if not any(is_studio_decisions(server["url"]) for server in enabled):
         return enabled
     from utils import systemone_settings
@@ -13168,9 +13329,13 @@ async def get_enabled_mcp_tools(
     if not servers:
         return []
 
-    # cool-off avoids blocking every send for the full probe timeout when a server is down.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down. The in-process
+    # Unsloth Studio row is re-listed every send, so tool toggles apply at once.
     uncached = [
-        s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
+        s
+        for s in servers
+        if is_studio_tools(s["url"])
+        or (get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"]))
     ]
     if uncached:
         results = await asyncio.gather(
@@ -13203,6 +13368,9 @@ async def get_enabled_mcp_tools(
                 )
                 # Not cached, but a failure is recorded so a down server isn't re-probed during the cool-off.
                 record_probe_failure(server["id"], bool(fresh.get("use_oauth")))
+                if is_studio_tools(server["url"]):
+                    # Never fall back to an older listing that may name a tool since turned off.
+                    invalidate_tool_cache(server["id"])
                 continue
             cache_tools(server["id"], payload)
 
@@ -16951,6 +17119,11 @@ def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, websi
     ]
 
 
+def _is_wikipedia_result(result) -> bool:
+    host = urllib.parse.urlsplit(str(result.get("href") or "").strip()).hostname or ""
+    return host == "wikipedia.org" or host.endswith(".wikipedia.org")
+
+
 def _usable_search_results(results, website_policy):
     from .web_access_policy import check_url_access
     return [
@@ -17053,12 +17226,14 @@ def _web_search(
                     client = DDGS(timeout = remaining)
                 try:
                     candidates = _ddgs_text(client, effective_query, wanted, backend)
-                    results = _usable_search_results(candidates, website_policy)
-                    rejected_results = rejected_results or bool(candidates and not results)
+                    found = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not found)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
                     last_error = exc
                     continue
-                if results:
+                seen = {r.get("href") for r in results}
+                results += [r for r in found if r.get("href") not in seen]
+                if not all(_is_wikipedia_result(r) for r in results):
                     break
         except Exception as exc:
             last_error = exc
@@ -17435,6 +17610,11 @@ def _check_signal_escape_patterns(code: str):
             "subprocess.Popen",
             "subprocess.getoutput",
             "subprocess.getstatusoutput",
+            "asyncio.create_subprocess_shell",
+            "asyncio.create_subprocess_exec",
+            "pty.spawn",
+            "loop.subprocess_shell",
+            "loop.subprocess_exec",
         }
     )
 
@@ -17456,7 +17636,9 @@ def _check_signal_escape_patterns(code: str):
         return []
 
     # Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
-    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+    _CMD_KWARGS = frozenset(
+        {"args", "command", "executable", "path", "file", "cmd", "program", "argv"}
+    )
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -17470,7 +17652,9 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
-    _STAR_EXPORTS = frozenset(fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS) | {"modules"}
+    _STAR_EXPORTS = frozenset(
+        fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS if not fq.startswith("loop.")
+    ) | {"modules"}
 
     def _module_expr(dotted):
         # posix and nt are the os module under its platform name.
@@ -17526,7 +17710,16 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name != "*":
                         names = (alias.name,)
-                    elif node.module in ("os", "posix", "nt", "subprocess", "sys"):
+                    elif node.module in (
+                        "os",
+                        "posix",
+                        "nt",
+                        "subprocess",
+                        "sys",
+                        "asyncio",
+                        "asyncio.subprocess",
+                        "pty",
+                    ):
                         names = _STAR_EXPORTS
                     else:
                         continue
@@ -17658,20 +17851,31 @@ def _check_signal_escape_patterns(code: str):
                         name = _folded_str_literal(value.args[0])
                 elif isinstance(value, ast.Subscript) and self._is_registry(value.value):
                     name = _folded_str_literal(value.slice)
+                elif (
+                    isinstance(value, ast.Attribute)
+                    and value.attr == "subprocess"
+                    and "asyncio" in self._modules_of(value.value)
+                ):
+                    name = "asyncio"
                 # __import__("os.path") returns the top-level os package.
                 top = (name or "").split(".")[0]
-                if top in ("os", "subprocess"):
+                if top in ("os", "subprocess", "asyncio", "pty"):
                     modules.add(top)
                 elif top in ("posix", "nt") and not isinstance(value, ast.Name):
                     modules.add("os")
             return frozenset(modules)
 
         def _shell_func_of(self, node):
+            loop_method = None
             for owner, attr in self._lookups(node):
+                # Event loop methods behind create_subprocess_*; any receiver, since a loop comes from a call.
+                if attr in ("subprocess_shell", "subprocess_exec"):
+                    loop_method = f"loop.{attr}"
                 for module in self._modules_of(owner):
                     if f"{module}.{attr}" in _SHELL_EXEC_FUNCS:
                         return f"{module}.{attr}"
-            return None
+            # Only when no other binding matches: a loop target skips argument zero, which may be the command.
+            return loop_method
 
         def visit_Assign(self, node):
             for tgt in node.targets:
@@ -17770,7 +17974,9 @@ def _check_signal_escape_patterns(code: str):
                         has_opaque_kwargs = True
 
                 cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
-                all_call_args = list(node.args) + cmd_kw_values
+                # A loop method's first positional is the protocol factory, not the command.
+                positional = node.args[1:] if shell_func.startswith("loop.") else node.args
+                all_call_args = list(positional) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
 
                 if has_opaque_kwargs:
@@ -18327,9 +18533,17 @@ def _check_signal_escape_patterns(code: str):
         return h
 
     def _is_metadata_host(host: str) -> bool:
-        h = _normalize_host(host)
+        h = _normalize_host(unicodedata.normalize("NFKC", host or ""))
         if not h:
             return False
+        if _provider_metadata_host(h):
+            return True
+        try:
+            ip = _literal_ip_address(h)
+        except ValueError:
+            return True
+        if ip is not None:
+            h = str(ip)
         if h in _METADATA_HOST_LITERALS:
             return True
         if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):
@@ -22379,6 +22593,8 @@ def _bash_exec(
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
     # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
     profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
+    if profile == "bash" and sys.platform == "win32":
+        command = _bash_nul_to_dev_null(command)
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()

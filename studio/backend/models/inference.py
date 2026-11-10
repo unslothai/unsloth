@@ -17,6 +17,8 @@ from pydantic import (
     Discriminator,
     Field,
     PrivateAttr,
+    StrictFloat,
+    StrictInt,
     Tag,
     field_validator,
     model_serializer,
@@ -585,7 +587,32 @@ class SearchImagesLookupRequest(BaseModel):
     )
 
 
-class TranscribeRequest(BaseModel):
+def validate_stt_context_length(value: Any) -> int:
+    """A zero selects Auto; fixed lengths are multiples of 256, since llama-server pads n_ctx to that."""
+    if type(value) is not int or (value != 0 and not (1024 <= value <= 65536 and value % 256 == 0)):
+        raise ValueError(
+            "Voice context length must be 0 (Auto) or a multiple of 256 from 1024 to 65536."
+        )
+    return value
+
+
+class SttContextSettings(BaseModel):
+    context_length: int = Field(
+        0,
+        ge = 0,
+        le = 65536,
+        description = (
+            "Qwen3-ASR on llama.cpp only: 0 (Auto) sizes context for the recording; "
+            "a multiple of 256 from 1024 to 65536 fixes the context limit. Ignored by other STT engines."
+        ),
+    )
+
+    _validate_context_length = field_validator("context_length", mode = "before")(
+        validate_stt_context_length
+    )
+
+
+class TranscribeRequest(SttContextSettings):
     """Speech-to-text request for the dictation STT sidecar."""
 
     audio: str = Field(..., description = "Base64-encoded audio (any common format)")
@@ -610,7 +637,7 @@ class TranscribeRequest(BaseModel):
     )
 
 
-class SttLoadRequest(BaseModel):
+class SttLoadRequest(SttContextSettings):
     """Warm the STT sidecar with a model without transcribing."""
 
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
@@ -2361,6 +2388,10 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
     )
+    resident_on_gpu: Optional[bool] = Field(
+        None,
+        description = "True when resident_mib is model buffers on the GPUs /api/system reports, false for a CPU-only llama.cpp build, null when unknown (Vulkan or SYCL buffers are not parsed).",
+    )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
     )
@@ -2543,7 +2574,7 @@ class VideoUrl(BaseModel):
 
 
 class VideoContentPart(BaseModel):
-    """Video content part; served only through llama-server's ``input_video``."""
+    """Video content part for llama-server or a custom OpenAI-compatible connection."""
 
     type: Literal["video_url"]
     video_url: VideoUrl
@@ -4016,9 +4047,7 @@ class ResponsesUnknownInputItem(BaseModel):
 
 
 def _responses_input_item_discriminator(v: Any) -> str:
-    """Route a Responses input item to the correct tagged variant. Pydantic's smart-union matching
-    misreports errors when a strict-``Literal`` variant doesn't match; an explicit discriminator
-    makes routing deterministic and falls through to the catch-all."""
+    """Explicit discriminator, since pydantic smart-union misreports errors when a strict Literal misses."""
     if isinstance(v, dict):
         t = v.get("type")
         r = v.get("role")
@@ -5134,6 +5163,78 @@ class LocalizedEditSpec(BaseModel):
 # All images of one request, base64: ten maximal uploads would otherwise buffer ~320 MiB.
 _MAX_CONDITION_PAYLOAD = 128 * 1024 * 1024
 
+MAX_XY_CELLS = 64
+
+XYAxisField = Literal[
+    "seed",
+    "steps",
+    "guidance",
+    "sampler",
+    "schedule_type",
+    "shift",
+    "base_shift",
+    "max_shift",
+    "strength",
+    "clip_skip",
+    "cfg_rescale",
+    "variation_seed",
+    "variation_strength",
+    "lora_weight",
+    "prompt_sr",
+]
+
+
+class XYAxisSpec(BaseModel):
+    """One axis of an X/Y grid: a request field and the values its cells take."""
+
+    field: XYAxisField = Field(
+        ...,
+        description = "Request field the axis varies. lora_weight sets the weight of loras[index]; "
+        "prompt_sr (AUTOMATIC1111 Prompt S/R) replaces the first value in the prompt and negative "
+        "prompt with each value in turn, so the first cell keeps the prompt as typed.",
+    )
+    values: list[Union[StrictInt, StrictFloat, str]] = Field(
+        ...,
+        min_length = 1,
+        max_length = MAX_XY_CELLS,
+        description = "Values, one column (X) or row (Y) each",
+    )
+    index: Optional[int] = Field(
+        None, ge = 0, le = 7, description = "lora_weight only: which `loras` entry the axis weights"
+    )
+
+    @model_validator(mode = "after")
+    def _index_only_for_lora(self) -> "XYAxisSpec":
+        if (self.field == "lora_weight") != (self.index is not None):
+            raise ValueError("`index` is required for a lora_weight axis and only allowed there")
+        if self.field == "prompt_sr" and not all(isinstance(v, str) for v in self.values):
+            raise ValueError("prompt_sr values must be strings")
+        if self.field == "prompt_sr" and not self.values[0]:
+            raise ValueError(
+                "prompt_sr: the first value is the text searched for and cannot be empty"
+            )
+        return self
+
+
+class XYGridSpec(BaseModel):
+    """X/Y grid: every combination of the axes' values renders as its own gallery image, plus one
+    labelled grid image (X values across the top, Y values down the left)."""
+
+    x: XYAxisSpec = Field(..., description = "Column axis")
+    y: Optional[XYAxisSpec] = Field(None, description = "Row axis; omitted = a single row")
+
+    @model_validator(mode = "after")
+    def _bounded(self) -> "XYGridSpec":
+        cells = len(self.x.values) * (len(self.y.values) if self.y else 1)
+        if cells > MAX_XY_CELLS:
+            raise ValueError(
+                f"{cells} grid cells is over the limit of {MAX_XY_CELLS}; use fewer values"
+            )
+        y = self.y
+        if y and y.field == self.x.field and y.field != "prompt_sr" and y.index == self.x.index:
+            raise ValueError(f"x and y both vary {y.field}")
+        return self
+
 
 class DiffusionDetailerSpec(BaseModel):
     """Detailer (face fix) post-pass, after ADetailer and ComfyUI-Impact-Pack's FaceDetailer: SAM 3 finds the targets,
@@ -5486,6 +5587,12 @@ class DiffusionGenerateRequest(BaseModel):
     model: Optional[str] = Field(
         None, description = "Model name on the connection named by `provider_id`."
     )
+    xy: Optional[XYGridSpec] = Field(
+        None,
+        description = "X/Y grid: render one image per combination of the axes' values, each saved to "
+        "the gallery with its own recipe, plus one labelled grid image (returned as `grid`). Every "
+        "cell runs at batch size 1 on the same seed unless seed is an axis. Local models only.",
+    )
 
     @field_validator("loras")
     @classmethod
@@ -5529,6 +5636,21 @@ class DiffusionGenerateRequest(BaseModel):
         if value % 16 != 0:
             raise ValueError("must be a multiple of 16")
         return value
+
+    @model_validator(mode = "after")
+    def _xy_single_image_cells(self) -> "DiffusionGenerateRequest":
+        if self.xy is None:
+            return self
+        if self.batch_size != 1 or self.prompts is not None or self.seeds is not None:
+            raise ValueError(
+                "xy runs every cell at batch size 1: drop batch_size, prompts and seeds"
+            )
+        if self.provider_id:
+            raise ValueError("xy runs on the loaded local model, not a connection")
+        for axis in (self.xy.x, self.xy.y):
+            if axis and axis.field == "lora_weight" and axis.index >= len(self.loras or []):
+                raise ValueError(f"lora_weight axis index {axis.index} has no entry in loras")
+        return self
 
     @model_validator(mode = "after")
     def _batch_seeds_json_safe(self) -> "DiffusionGenerateRequest":
@@ -5739,6 +5861,11 @@ class GalleryImage(BaseModel):
     inpaint_padding: Optional[int] = Field(
         None, description = "Padding (px) around the mask for an only-masked inpaint"
     )
+    xy_grid: Optional[dict[str, Any]] = Field(
+        None,
+        description = "Set on an X/Y grid image: its axes ({field, index, values, labels}) and the "
+        "cell image ids row by row. Its other recipe fields are the first cell's, as in AUTOMATIC1111.",
+    )
     detailer: Optional[Dict[str, Any]] = Field(
         None,
         description = "The Detailer pass this image ran: its settings, each detection (target, score, box, crop, "
@@ -5786,6 +5913,11 @@ class DiffusionGenerateResponse(BaseModel):
     """The persisted gallery records for one generation call (a batch)."""
 
     images: list[GalleryImage] = Field(..., description = "Saved records, one per image in the batch")
+    grid: Optional[GalleryImage] = Field(
+        None,
+        description = "xy only: the labelled grid image, also saved to the gallery; `images` holds "
+        "the cells row by row",
+    )
 
 
 class GalleryListResponse(BaseModel):
@@ -5793,6 +5925,50 @@ class GalleryListResponse(BaseModel):
 
     images: list[GalleryImage] = Field(default_factory = list)
     has_more: bool = Field(False, description = "Whether older images remain past this page")
+
+
+class ImageQueueJob(BaseModel):
+    """One job in the image generation queue: the settings that tell it apart, its state and, once done, its images."""
+
+    id: str
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
+    position: Optional[int] = Field(
+        None, description = "0-based place among your queued jobs; null once started"
+    )
+    prompt: str
+    width: int
+    height: int
+    steps: Optional[int] = Field(
+        None, description = "Requested steps; null follows the loaded model's default"
+    )
+    seed: Optional[int] = Field(
+        None, description = "Requested seed; null draws one when the job runs"
+    )
+    batch_size: int
+    workflow: Optional[str] = None
+    loras: list[str] = Field(default_factory = list, description = "Applied adapters as id:weight")
+    created_at: float
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    error: Optional[str] = None
+    image_ids: list[str] = Field(
+        default_factory = list, description = "Gallery ids of the finished images"
+    )
+    seed_used: Optional[int] = Field(
+        None, description = "The run's base seed once done, for Reuse last seed"
+    )
+
+
+class ImageQueueResponse(BaseModel):
+    """Your image jobs in run order: running first, then queued, then the most recent finished ones."""
+
+    jobs: list[ImageQueueJob] = Field(default_factory = list)
+
+
+class ImageQueueMoveRequest(BaseModel):
+    """Body of POST /images/queue/{job_id}/move."""
+
+    index: int = Field(..., ge = 0, description = "New 0-based place among your queued jobs (clamped)")
 
 
 class PromptUpsamplerDownloadRequest(BaseModel):
@@ -6858,7 +7034,7 @@ class AudioInputRecord(BaseModel):
     expires_at: str
 
 
-class AudioInputTranscribeRequest(BaseModel):
+class AudioInputTranscribeRequest(SttContextSettings):
     model_config = ConfigDict(extra = "forbid")
 
     model: str = Field(..., min_length = 1, max_length = 512)
@@ -6891,7 +7067,7 @@ class TranscribeSourceRef(BaseModel):
         return self
 
 
-class TranscribeSourceRequest(BaseModel):
+class TranscribeSourceRequest(SttContextSettings):
     """``POST /audio/transcribe/source``: Audio page audio named by id, transcribed and saved."""
 
     model_config = ConfigDict(extra = "forbid")
@@ -7465,6 +7641,21 @@ class VideoGenerateRequest(BaseModel):
         "cover-cropped onto the canvas.",
     )
 
+    continuation_video: Optional[str] = Field(
+        None,
+        max_length = 96 * 1024 * 1024,
+        description = "Base64/data-URL video to continue (Cosmos3-Nano only, status "
+        "supports_video_continuation): the clip keeps 5 frames from one end of it and generates "
+        "what follows. At most 15 seconds; frames are resampled onto fps and centre-cropped to "
+        "the canvas aspect. With width and height omitted the canvas is the preset nearest the "
+        "clip's aspect. Cannot be combined with keyframes or references.",
+    )
+    continuation_keep: Optional[Literal["last", "first"]] = Field(
+        None,
+        description = "Which end of continuation_video to keep: last (default) continues the "
+        "clip from its final frames; first keeps its opening frames and generates on from there.",
+    )
+
     # Separate lists preserve the model's image, video, then audio packing order.
     reference_images: Optional[list[str]] = Field(
         None,
@@ -7532,6 +7723,14 @@ class VideoGenerateRequest(BaseModel):
             raise ValueError(
                 "reference audio needs at least one reference image or video to go with"
             )
+        if self.continuation_video and (
+            images or videos or audios or self.first_frame or self.last_frame
+        ):
+            raise ValueError(
+                "A clip to continue cannot be combined with a start frame, end frame or references."
+            )
+        if self.continuation_keep is not None and not self.continuation_video:
+            raise ValueError("continuation_keep needs a continuation_video.")
         if (images or videos or audios) and (self.first_frame or self.last_frame):
             raise ValueError(
                 "keyframes and references cannot be combined: MiniMax-H3 runs them against "
@@ -7693,6 +7892,18 @@ class VideoGenerationDefaults(BaseModel):
     guidance: float = Field(..., description = "Default guidance scale")
     num_frames: int = Field(..., description = "Default frame count")
     fps: int = Field(..., description = "Default playback frame rate")
+    fps_range: Optional[list[int]] = Field(
+        None,
+        description = "Inclusive [min, max] frame rate a request may pick, or null (see fps_choices)",
+    )
+    fps_choices: list[int] = Field(
+        default_factory = list,
+        description = "Frame rates a request may pick; with neither this nor fps_range the rate is fixed",
+    )
+    min_num_frames: Optional[int] = Field(None, description = "Smallest frame count the family takes")
+    max_num_frames: Optional[int] = Field(
+        None, description = "Largest frame count the family takes, or null for no family cap"
+    )
     frame_step: int = Field(..., description = "Temporal lattice stride")
     frame_offset: int = Field(
         1, description = "Temporal lattice offset: valid counts are k * frame_step + frame_offset"
@@ -7880,6 +8091,11 @@ class VideoStatusResponse(BaseModel):
         description = "Whether the LOADED checkpoint takes reference images / videos / audio "
         "(gates the reference-to-video controls). Never true at the same time as "
         "supports_keyframes: MiniMax-H3 serves the two from different denoiser partitions.",
+    )
+    supports_video_continuation: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes continuation_video (Cosmos3-Nano "
+        "only): it keeps frames from one end of a clip and generates what happens next",
     )
     h3_task: Optional[str] = Field(
         None,
