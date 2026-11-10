@@ -4,7 +4,6 @@
 export type LanAccessState = "off" | "online" | "error";
 export type LanAccessOwner = "launch" | "settings" | null;
 export type LanKeylessScope = "off" | "inference" | "full";
-// hostOnly: a virtual switch (virbr0, docker0) only this machine's VMs or containers reach
 export type LanAccessAddress = {
   address: string;
   public: boolean;
