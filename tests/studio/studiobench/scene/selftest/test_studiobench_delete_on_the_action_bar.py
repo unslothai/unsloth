@@ -190,8 +190,7 @@ def _assistant_bar_source(tsx: str) -> str:
 
 
 def test_every_control_the_scene_asks_for_is_still_rendered():
-    """Bar buttons by their tooltip, menu items by their text, read out of what the assistant
-    message's action bar renders in thread.tsx."""
+    """Buttons by tooltip, menu items by text, from the assistant action bar in thread.tsx."""
     tsx = _assistant_bar_source(THREAD_TSX.read_text(encoding = "utf-8"))
     buttons, items = _names_the_scene_asks_for()
     assert {

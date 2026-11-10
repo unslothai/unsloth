@@ -582,11 +582,66 @@ def _is_eager_only(model_type):
 _FLEX_ATTENTION_MIN_CAPABILITY = (8, 0)
 
 
-def _flex_attention_gpu_is_supported():
-    """False only for NVIDIA cards below Ampere. ROCm, XPU, MPS, CPU and an unreadable device are left alone, so this can only ever remove a path that was already broken."""
-    try:
-        if getattr(torch.version, "hip", None):
+_TRITON_RUNS_ON_DEVICE = {}
+
+
+def _is_hip_build():
+    return bool(
+        getattr(torch.version, "hip", None)
+        or "rocm" in str(getattr(torch, "__version__", "")).lower()
+    )
+
+
+def _triton_probe(index):
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _add_one(X, N, BLOCK: tl.constexpr):
+        offsets = tl.arange(0, BLOCK)
+        tl.store(X + offsets, tl.load(X + offsets, offsets < N) + 1, offsets < N)
+
+    x = torch.zeros(16, device = f"cuda:{index}", dtype = torch.float32)
+    with torch.cuda.device(index):
+        _add_one[(1,)](x, 16, BLOCK = 16)
+    torch.cuda.synchronize(index)
+    return bool((x == 1).all().item())
+
+
+def triton_runs_on_device(index = 0):
+    """False when this Triton build cannot build or run a kernel on ROCm card ``index``.
+
+    Triton 3.9 rejects every gfx10xx target (``unsupported target`` -> ``PassManager::run failed``),
+    while ROCm Triton 3.5 builds them, so the answer is the toolchain's, not an arch list.
+    NVIDIA, CPU and a missing Triton keep True: nothing to take away there.
+    """
+    if not _is_hip_build():
+        return True
+    if index not in _TRITON_RUNS_ON_DEVICE:
+        try:
+            import triton  # noqa: F401
+        except Exception:
             return True
+        try:
+            ok = _triton_probe(index)
+        except Exception as error:
+            ok = False
+            logger.info(
+                f"Unsloth: Triton cannot run on ROCm device {index} ({type(error).__name__}: "
+                f"{(str(error).strip().splitlines() or [''])[-1]}); its Triton kernels are skipped."
+            )
+        _TRITON_RUNS_ON_DEVICE[index] = ok
+    return _TRITON_RUNS_ON_DEVICE[index]
+
+
+def _flex_attention_gpu_is_supported():
+    """False for NVIDIA cards below Ampere and ROCm cards this Triton cannot build for. XPU, MPS, CPU and an unreadable device are left alone, so this can only ever remove a path that was already broken."""
+    try:
+        if _is_hip_build():
+            # Current card only: probing the others would open a HIP context on every visible GPU.
+            return not torch.cuda.device_count() or triton_runs_on_device(
+                torch.cuda.current_device()
+            )
         if not torch.cuda.is_available():
             return True
         return all(
@@ -4763,7 +4818,15 @@ elif DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-    if _package_available("flash_attn"):
+    if os.environ.get("UNSLOTH_ROCM_FLASH_ATTN_DIFFUSION_ONLY") == "1":
+        # Studio's diffusion-only Triton flash-attn: keep LLM attention on SDPA.
+        import transformers.utils.import_utils
+
+        transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+        import transformers.utils
+
+        transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+    elif _package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl" and for softcapping; see #1437.
         try:
             try:
@@ -6412,7 +6475,7 @@ def patch_gradient_accumulation_fix(Trainer):
             # before anything below splits or shards the model.
             _parallel_capabilities_pre(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_PP_SIZE: trainers / arguments the pipeline step cannot run, refused before the split.
-            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs)
+            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
@@ -6746,7 +6809,13 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     check_layout(layout, type(trainer), model, training_args, cp_backend = backend)
 
 
-def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
+def _pipeline_parallel_env_refusals(
+    trainer,
+    init,
+    args,
+    kwargs,
+    model = None,
+):
     if not os.environ.get("UNSLOTH_PP_SIZE"):
         return
     from .tp_env import env_layout
@@ -6756,13 +6825,17 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         return
     training_args = kwargs.get("args")
     compute_loss_func = kwargs.get("compute_loss_func")
-    if training_args is None or (compute_loss_func is None and args):
+    train_dataset = kwargs.get("train_dataset")
+    eval_dataset = kwargs.get("eval_dataset")
+    if training_args is None or args:
         try:
             import inspect
 
             bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
             training_args = bound.arguments.get("args", training_args)
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
+            train_dataset = bound.arguments.get("train_dataset", train_dataset)
+            eval_dataset = bound.arguments.get("eval_dataset", eval_dataset)
         except (TypeError, ValueError):
             pass
     if layout.tp > 1 and (
@@ -6779,7 +6852,15 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         )
     from .pp_env import pp_trainer_refusals
 
-    pp_trainer_refusals(type(trainer), training_args, layout, compute_loss_func = compute_loss_func)
+    pp_trainer_refusals(
+        type(trainer),
+        training_args,
+        layout,
+        compute_loss_func = compute_loss_func,
+        model = model,
+        train_dataset = train_dataset,
+        eval_dataset = eval_dataset,
+    )
 
 
 def _tensor_parallel_env_trainer_pre(model):

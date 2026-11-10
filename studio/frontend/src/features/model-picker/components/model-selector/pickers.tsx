@@ -91,8 +91,10 @@ import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { pickNativeModelFolder } from "@/features/native-intents";
 import {
+  type NpuCatalog,
   type NpuModel,
   type NpuPickerSource,
+  NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
   npuResumeLabel,
@@ -251,6 +253,7 @@ import {
   curatedBudgetText,
   estimateQuantBytes,
   formatFilterValues,
+  hasMlxCardTag,
   hfModelFitsDevice,
   isMlxId,
   isCapableCheckpointQuant,
@@ -549,6 +552,17 @@ function useRovingModelList({
       "aria-label": label,
     },
   };
+}
+
+function npuFooterHint(
+  catalog: NpuCatalog,
+  searching: boolean,
+  matches: number,
+): string {
+  if (!catalog.ready) return "Set up the AMD NPU";
+  if (searching) return matches === 1 ? "1 match" : `${matches} matches`;
+  const count = catalog.models?.length;
+  return count ? `${count} available` : "";
 }
 
 function ListLabel({
@@ -1831,7 +1845,7 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
         <ModelRow
           label={c.repo_id}
           hubUrl={hubRepoUrl(c.repo_id)}
-          meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
+          meta={`${isMlxId(c.repo_id, cachedRepoHasMlxTag(c)) ? "MLX" : "Safetensors"} · ${formatBytes(
             c.size_bytes,
           )}`}
           selected={isSelected}
@@ -3772,6 +3786,10 @@ function hubRepoUrl(id: string | null | undefined): string | undefined {
     : undefined;
 }
 
+function cachedRepoHasMlxTag(c: CachedModelRepo): boolean {
+  return hasMlxCardTag({ tags: c.tags, libraryName: c.library_name });
+}
+
 /** MLX runs on Mac only, so callers gate visibility on the host. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
   return isMlxId(m.id) || isMlxId(m.display_name) || isMlxId(m.model_id ?? "");
@@ -4075,7 +4093,7 @@ export function HubModelPicker({
     [modelGgufIds, resultGgufIds],
   );
 
-  const resultMlxIds = useMemo(() => {
+  const taggedMlxIds = useMemo(() => {
     const ids = new Set<string>();
     for (const result of [
       ...results,
@@ -4083,12 +4101,7 @@ export function HubModelPicker({
       ...communityQuerySearch.results,
       ...communityBrowse.results,
     ]) {
-      if (
-        result.libraryName?.toLowerCase() === "mlx" ||
-        result.tags?.some((tag) => tag.toLowerCase() === "mlx")
-      ) {
-        ids.add(result.id.toLowerCase());
-      }
+      if (hasMlxCardTag(result)) ids.add(result.id.toLowerCase());
     }
     return ids;
   }, [
@@ -4632,7 +4645,6 @@ export function HubModelPicker({
     offeredFormatFilters,
   );
   const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
-  const [npuBrowseCollapsed, setNpuBrowseCollapsed] = useState(true);
   // Chat passes no task filter and keeps the full set.
   const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
     const tasks: readonly string[] = task
@@ -4745,7 +4757,12 @@ export function HubModelPicker({
           isCatalogSeed,
           isHidden: isHiddenModelId(r.id),
           format: formatFilter,
-          matchesFormat: matchesFormatFilter(r.id, r.isGguf, formatFilter),
+          matchesFormat: matchesFormatFilter(
+            r.id,
+            r.isGguf,
+            formatFilter,
+            hasMlxCardTag(r),
+          ),
           matchesTask: chatSupportedCheckpointQuant(r),
           isRecommendable:
             isRecommendableFormat(r.id, r.isGguf, isMac) ||
@@ -4982,7 +4999,7 @@ export function HubModelPicker({
             r.totalParams
               ? formatCompact(r.totalParams)
               : extractParamLabel(r.id),
-            isMlxId(r.id) ? "MLX" : "Safetensors",
+            isMlxId(r.id, hasMlxCardTag(r)) ? "MLX" : "Safetensors",
             r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
           ]
             .filter(Boolean)
@@ -5621,14 +5638,18 @@ export function HubModelPicker({
     );
   }, [sortedCachedGguf, showHfSection, debouncedQuery, formatFilter]);
   const visibleCachedModels = useMemo(() => {
-    if (!showHfSection)
-      return sortedCachedModels.filter((c) =>
-        matchesFormatFilter(c.repo_id, false, formatFilter),
+    const matches = (c: CachedModelRepo) =>
+      matchesFormatFilter(
+        c.repo_id,
+        false,
+        formatFilter,
+        cachedRepoHasMlxTag(c),
       );
+    if (!showHfSection) return sortedCachedModels.filter(matches);
     const q = normalizeForSearch(debouncedQuery.trim());
     return sortedCachedModels.filter(
       (c) =>
-        matchesFormatFilter(c.repo_id, false, formatFilter) &&
+        matches(c) &&
         normalizeForSearch(c.repo_id).includes(q),
     );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
@@ -6146,7 +6167,12 @@ export function HubModelPicker({
           ),
         )
         .filter((id) =>
-          matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
+          matchesFormatFilter(
+            id,
+            isKnownGgufRepo(id),
+            formatFilter,
+            taggedMlxIds.has(id.toLowerCase()),
+          ),
         )
         // Curated defaults obey the fit toggle too.
         .filter(
@@ -6174,6 +6200,7 @@ export function HubModelPicker({
     curatedRow,
     formatFilter,
     isKnownGgufRepo,
+    taggedMlxIds,
     fitOnDeviceOnly,
     cachedIdFor,
     searchRowFits,
@@ -6219,7 +6246,12 @@ export function HubModelPicker({
             runsCheckpointQuant({ id }) || !/-FP8[-.]|FP8-Dynamic/i.test(id),
         )
         .filter((id) =>
-          matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
+          matchesFormatFilter(
+            id,
+            isKnownGgufRepo(id),
+            formatFilter,
+            taggedMlxIds.has(id.toLowerCase()),
+          ),
         ),
     [
       recommendedSet,
@@ -6228,6 +6260,7 @@ export function HubModelPicker({
       chatSupportedCheckpointQuant,
       isTaskRuntimeSupported,
       formatFilter,
+      taggedMlxIds,
       fitOnDeviceOnly,
       cachedIdFor,
       searchRowFits,
@@ -6765,7 +6798,7 @@ export function HubModelPicker({
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
       };
-      if (!resultMlxIds.has(key) || isHuggingFaceOffline()) {
+      if (!isMlxId(id, taggedMlxIds.has(key)) || isHuggingFaceOffline()) {
         select();
         return;
       }
@@ -6784,7 +6817,7 @@ export function HubModelPicker({
       onSelect,
       isKnownGgufRepo,
       mlxVariantRepoIds,
-      resultMlxIds,
+      taggedMlxIds,
       hfToken,
       cachedIdFor,
       pipelineTagById,
@@ -7773,13 +7806,26 @@ export function HubModelPicker({
     );
   };
 
-  const npuBrowseForcedOpen = formatFilter === "npu" || showHfSection;
-  const npuBrowseFolded = !npuBrowseForcedOpen && npuBrowseCollapsed;
+  // GPU models own the list; the NPU group shows only under the NPU filter, reached from the footer.
   const showNpuBrowse =
     npuCatalog !== null &&
-    npuListed &&
+    formatFilter === "npu" &&
     section === "recommended" &&
-    (!showHfSection || npuBrowseRows.length > 0);
+    (!showHfSection || !npuCatalog.ready || npuBrowseRows.length > 0);
+  const showNpuFooter =
+    npuCatalog !== null && formatFilter === "all" && section === "recommended";
+  const ejectButton = onEject ? (
+    <button
+      type="button"
+      data-glass-float=""
+      onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
+      className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-full bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
+      title={ejectsAll ? "Eject all models" : "Eject model"}
+    >
+      <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+      {ejectsAll ? "Eject all" : "Eject model"}
+    </button>
+  ) : null;
 
   return (
     <PickerScopes
@@ -8538,34 +8584,20 @@ export function HubModelPicker({
 
                 {showNpuBrowse && npuCatalog ? (
                   <>
-                    <ListLabel
-                      collapsed={npuBrowseFolded}
-                      onToggle={
-                        npuBrowseForcedOpen
-                          ? undefined
-                          : () => setNpuBrowseCollapsed((v) => !v)
-                      }
-                    >
-                      NPU
-                    </ListLabel>
-                    {npuBrowseFolded ? null : (
-                      <>
-                        {showHfSection ? null : (
-                          <NpuSetupNotice catalog={npuCatalog} />
-                        )}
-                        {npuBrowseRows.map((model) =>
-                          renderNpuRow(model, false),
-                        )}
-                      </>
+                    <ListLabel>NPU</ListLabel>
+                    {showHfSection && npuCatalog.ready ? null : (
+                      <NpuSetupNotice catalog={npuCatalog} />
                     )}
+                    {npuBrowseRows.map((model) => renderNpuRow(model, false))}
+                    <NpuRuntimeVersions
+                      catalog={npuCatalog}
+                      className="px-2.5 pb-1 pt-1.5"
+                    />
                   </>
                 ) : null}
 
                 {showRecommendedSection && formatFilter !== "npu" ? (
                   <>
-                    {showNpuBrowse ? (
-                      <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
-                    ) : null}
                     {/* Catalog rows already listed below stand in for a pending or failed Hub list. */}
                     {recommendedRows.length + moreRows.length === 0 &&
                     recommendedEmpty === "loading" ? (
@@ -8892,7 +8924,12 @@ export function HubModelPicker({
                                     : [
                                         metricsById.get(id) ??
                                           extractParamLabel(id),
-                                        isMlxId(id) ? "MLX" : "Safetensors",
+                                        isMlxId(
+                                          id,
+                                          taggedMlxIds.has(id.toLowerCase()),
+                                        )
+                                          ? "MLX"
+                                          : "Safetensors",
                                       ]
                                         .filter(Boolean)
                                         .join(" · ")
@@ -8990,18 +9027,37 @@ export function HubModelPicker({
             )}
           </div>
         </div>
-        {onEject ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
+        {showNpuFooter && npuCatalog ? (
+          <div className="relative">
+            {/* Over the list's bottom as without a footer: 19px less this footer's 8px spacing. */}
+            {ejectButton ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-full flex justify-end pr-3.5 pb-[calc(11px*var(--ui-space-scale,1))]">
+                {ejectButton}
+              </div>
+            ) : null}
             <button
               type="button"
-              data-glass-float=""
-              onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-full bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
-              title={ejectsAll ? "Eject all models" : "Eject model"}
+              data-testid="picker-npu-footer"
+              onClick={() => setFormatFilter("npu")}
+              className="flex w-full items-center gap-2 border-t border-border/60 px-3 pt-2 pb-1.5 text-left text-ui-12 text-muted-foreground transition-colors hover:text-foreground"
             >
-              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-              {ejectsAll ? "Eject all" : "Eject model"}
+              <span
+                aria-hidden={true}
+                className="size-1.5 shrink-0 rounded-full bg-format-npu"
+              />
+              <span className="font-medium text-foreground">NPU models</span>
+              <span className="min-w-0 truncate">
+                {npuFooterHint(npuCatalog, showHfSection, npuBrowseRows.length)}
+              </span>
+              <HugeiconsIcon
+                icon={ChevronRightStandardIcon}
+                className="ml-auto size-3 shrink-0"
+              />
             </button>
+          </div>
+        ) : ejectButton ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
+            {ejectButton}
           </div>
         ) : null}
       </div>

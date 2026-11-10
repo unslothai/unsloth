@@ -219,6 +219,9 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_stitch_mtp_head",
         "_mtp_head_tensor_names",
         "_unmerge_flags_on_error",
+        # LFM3-Audio config rewrite: no LFM3-Audio checkpoint in these fixtures.
+        "_release_layout_for_merged_save",
+        "_push_lfm3_audio_release_config",
         # Decorator factory; _load strips decorators.
         "_model_parallel_refuses_save",
     }
@@ -259,6 +262,8 @@ def _routing_environment(monkeypatch, model):
         _internal_mtp_save = contextlib.nullcontext,
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
+        _release_layout_for_merged_save = lambda model, directory, method: False,
+        _push_lfm3_audio_release_config = lambda model, save_directory, token = None: False,
         lora_relative_to_original_base = lambda model: (
             calls["convert"].append(model) or contextlib.nullcontext()
         ),

@@ -36,6 +36,7 @@ from core.inference.tool_loop_controller import (
     tool_call_limit_nudge,
     tool_event_provenance,
 )
+from core.inference import tool_facts
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
 from core.inference.tools import (
     ALL_TOOLS,
@@ -182,7 +183,7 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     )
     assert "previous tool request" not in duplicate_nudge.lower()
     assert "already completed successfully" in duplicate_nudge
-    assert "different enabled tool" in duplicate_nudge
+    assert "call a different tool only if" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
     _shared_setup_1(controller)
 
@@ -320,8 +321,7 @@ def test_command_can_run_again_after_a_file_edit():
 
     controller.record_noop(controller.prepare_call(run))
     assert not controller.force_final_answer
-    # Replaying the identical edit is a block repeating itself; a non-idempotent call
-    # would land twice.
+    # Identical replays are duplicates: a non-idempotent edit would otherwise land twice.
     assert controller.prepare_call(edit).action == "duplicate"
     assert controller.prepare_call(search).action == "duplicate"
 
@@ -542,9 +542,7 @@ def test_a_large_source_map_is_still_taken_off_the_result():
 
 
 def test_a_large_plot_is_still_taken_off_the_result():
-    """The image payload has no length bound on purpose: a figure Gemini renders at high
-    DPI is a data URI of whatever size it chose, and leaving it in for being large is the
-    base64 leak this stripper exists to prevent."""
+    """No length bound on images on purpose: keeping a large data URI would leak base64 to the model."""
     big = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * (12 << 20) + '"]'
     assert len(big) > 8 << 20
     assert strip_result_for_model(big, "code_execution") == "output"
@@ -756,8 +754,7 @@ def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
 
 
 def test_a_declared_type_nested_in_a_container_is_read_too():
-    """`edit_file` declares replace_all inside `edits.items`, so the top level is not enough
-    and text that spells a boolean must survive as text."""
+    """Nested replace_all inside edits.items is read; boolean-spelled text stays text."""
     edits = (
         '[{"old_string":"a","new_string":"b","replace_all":"false"},'
         '{"old_string":"false","new_string":"null","replace_all":"true"}]'
@@ -1007,6 +1004,52 @@ def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(
     assert completion.tool_message()["content"] == already
 
 
+def test_a_read_only_mcp_result_is_not_new_work_until_its_hint_is_dropped():
+    status, models, generate = (f"mcp__unsloth__{n}" for n in ("status", "models", "generate"))
+    for name in (status, models, generate):
+        tool_facts.note_mcp_tool(name, {"annotations": {"readOnlyHint": name != generate}})
+    controller = ToolLoopController(tools = [_tool(status), _tool(models), _tool(generate)])
+    controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
+    controller.record_result(controller.prepare_call(_call(models, {})), '{"models":[]}')
+    duplicate = controller.prepare_call(_call(status, {}))
+    assert duplicate.action == "duplicate" and "Answer from the results" in duplicate.noop_result
+    controller.record_result(controller.prepare_call(_call(generate, {"text": "x"})), "Error: x")
+    assert controller.prepare_call(_call(status, {})).action == "execute"
+    tool_facts.note_mcp_tool(models, {"name": "models"})
+    assert not tool_facts.reads_only(models)
+
+
+def test_only_a_result_the_user_must_unblock_marks_the_turn_as_awaiting_them():
+    name = "mcp__unsloth__generate_audio"
+    controller = ToolLoopController(tools = [_tool(name)])
+    for model, result, awaiting in (
+        ("m", "Error: [needs_user_load kind=audio page=Audio] The music model is off.", True),
+        ("n", "Error: [not_loaded kind=audio] Load one with load_model(kind='tts') first.", False),
+        ("o", "Error: [not_loaded kind=audio] Ask the user to load one on the Audio page.", True),
+        (
+            "p",
+            "Error: [multi_model_always kind=chat] (HTTP 409) Call unload_model(kind='llm').",
+            False,
+        ),
+        ("q", "Error: [multi_model_always kind=chat] (HTTP 409) Ask the user to unload it.", True),
+    ):
+        controller.begin_batch()
+        controller.record_result(controller.prepare_call(_call(name, {"model": model})), result)
+        assert controller.awaiting_user is awaiting, result
+
+
+def test_a_refusal_the_user_must_unblock_survives_a_later_success_in_the_same_batch():
+    load, status = "mcp__unsloth__generate_audio", "mcp__unsloth__status"
+    controller = ToolLoopController(tools = [_tool(load), _tool(status)])
+    refusal = "Error: [needs_user_load kind=audio page=Audio] The music model is off."
+    controller.record_result(controller.prepare_call(_call(load, {"model": "m"})), refusal)
+    controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
+    assert controller.awaiting_user
+    controller.begin_batch()
+    controller.record_result(controller.prepare_call(_call(load, {"model": "n"})), "ok")
+    assert not controller.awaiting_user
+
+
 def test_active_tools_are_private_copies_of_every_nested_schema_node():
     """Each call hands out its own copy: a caller rewriting one cannot reach the ledger or a later call."""
     from collections import OrderedDict
@@ -1046,3 +1089,73 @@ def test_has_active_tools_matches_active_tools_without_copying():
     controller._completed_one_shot_tools.clear()
     controller._force_final_answer = True
     assert controller.has_active_tools() is bool(controller.active_tools()) is False
+
+
+def test_polling_unsloths_own_get_job_is_never_a_duplicate():
+    video, job, status = (
+        f"mcp__unsloth__{n}" for n in ("generate_video", "get_job", "studio_status")
+    )
+    for name in (video, job, status):
+        tool_facts.note_mcp_tool(
+            name,
+            {"name": name.split("__")[2], "annotations": {"readOnlyHint": name != video}},
+            studio = True,
+        )
+    controller = ToolLoopController(tools = [_tool(video), _tool(job), _tool(status)])
+    poll = {"kind": "video", "id": "j1"}
+    controller.record_result(
+        controller.prepare_call(_call(video, {"prompt": "a whale"})), '{"id":"j1"}'
+    )
+    for name, args in ((job, poll), (status, {}), (job, poll), (job, poll)):
+        decision = controller.prepare_call(_call(name, args))
+        assert decision.action == "execute", name
+        controller.record_result(decision, '{"state":"running"}')
+    assert not controller.force_final_answer
+    # Another server's get_job is still deduplicated.
+    tool_facts.note_mcp_tool("mcp__other__get_job", {"name": "get_job"})
+    other = ToolLoopController(tools = [_tool("mcp__other__get_job")])
+    other.record_result(other.prepare_call(_call("mcp__other__get_job", poll)), "{}")
+    assert other.prepare_call(_call("mcp__other__get_job", poll)).action == "duplicate"
+
+
+def test_a_second_identical_generation_lets_the_gallery_be_read_again():
+    image, media = "mcp__unsloth__generate_image", "mcp__unsloth__list_media"
+    tool_facts.note_mcp_tool(image, {"name": "generate_image"}, studio = True)
+    tool_facts.note_mcp_tool(
+        media, {"name": "list_media", "annotations": {"readOnlyHint": True}}, studio = True
+    )
+    controller = ToolLoopController(tools = [_tool(image), _tool(media)])
+    for name, args in (
+        (image, {"prompt": "a cat"}),
+        (media, {}),
+        (image, {"prompt": "a cat"}),
+        (media, {}),
+    ):
+        decision = controller.prepare_call(_call(name, args))
+        assert decision.action == "execute", name
+        controller.record_result(decision, '{"ok":true}')
+    # Nothing new since that read: a third identical list is still a duplicate.
+    assert controller.prepare_call(_call(media, {})).action == "duplicate"
+
+
+def test_unsloths_own_generators_run_again_on_identical_arguments():
+    # No seed: each call draws one, so "two images of a cat" is two calls with the same arguments.
+    names = [f"mcp__unsloth__{n}" for n in ("generate_image", "generate_audio", "generate_video")]
+    for name in names:
+        tool_facts.note_mcp_tool(name, {"name": name.split("__")[2]}, studio = True)
+    controller = ToolLoopController(tools = [_tool(name) for name in names])
+    for name in names:
+        for _ in range(2):
+            decision = controller.prepare_call(_call(name, {"prompt": "a cat"}))
+            assert decision.action == "execute", name
+            controller.record_result(decision, '{"ok":true}')
+    # The same tool name on another server is still deduplicated.
+    tool_facts.note_mcp_tool("mcp__other__generate_image", {"name": "generate_image"})
+    other = ToolLoopController(tools = [_tool("mcp__other__generate_image")])
+    other.record_result(
+        other.prepare_call(_call("mcp__other__generate_image", {"prompt": "a cat"})), "{}"
+    )
+    assert (
+        other.prepare_call(_call("mcp__other__generate_image", {"prompt": "a cat"})).action
+        == "duplicate"
+    )

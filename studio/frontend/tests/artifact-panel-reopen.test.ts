@@ -101,7 +101,7 @@ test("a project hosts the browser like a chat, so Browser use and the header tog
   const toggle = read("../src/features/browser/browser-toggle.tsx");
   assert.match(toggle, /hideWhenOpen = true,/);
   assert.match(toggle, /if \(hideWhenOpen && open\) return null;/);
-  assert.match(toggle, /\{ enabled: active && !\(hideWhenOpen && open\) \}/);
+  assert.match(toggle, /\{ enabled: active && !\(hideWhenOpen && panelOpen\) \}/);
 });
 
 test("a project's modal overlay closes before Request edits or Attach hand off to its composer", () => {

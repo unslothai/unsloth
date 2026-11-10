@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usesWindowsTitlebar } from "@/components/tauri/window-titlebar";
+import { shouldUseCustomWindowTitlebar } from "@/components/tauri/window-titlebar";
 import {
   ChatBackground,
   WindowMaterialMount,
@@ -17,7 +17,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { routeNeedsHardware, videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
-import { DownloadApprovalDialog } from "@/features/browser";
+import { DownloadApprovalDialog } from "@/features/browser/download-approval";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
@@ -99,6 +99,7 @@ import {
 
   useState,
 } from "react";
+import { FIND_SCOPE_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
@@ -405,6 +406,7 @@ const DEFAULT_DOCUMENT_TITLE = "Unsloth";
 
 function RootLayout() {
   const t = useT();
+  const findScopeRef = useSurfaceRef<HTMLDivElement>(FIND_SCOPE_SURFACE);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const routeOwnsReloadReadiness =
@@ -432,7 +434,9 @@ function RootLayout() {
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   const isChatRoute = pathname === "/chat";
-  const windowsWallpaperPage = !isChatRoute && usesWindowsTitlebar();
+  // The in-page titlebar, shared by Windows and Linux; the data-windows-* names predate Linux using it.
+  const windowsTitlebar = shouldUseCustomWindowTitlebar();
+  const windowsWallpaperPage = !isChatRoute && windowsTitlebar;
   const { pinned, setPinned, togglePinned } = useSidebarPin();
   const navigate = useNavigate();
 
@@ -489,7 +493,8 @@ function RootLayout() {
   }
   const shouldMountAudio = isAudioRoute || audioMounted;
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
-  const nonChatTopInset = useIsMobileShell()
+  const mobileShell = useIsMobileShell();
+  const nonChatTopInset = mobileShell
     ? "pt-14"
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
@@ -692,7 +697,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <SttDeviceSyncMount />
       <InterfaceZoom />
-      <WindowMaterialMount />
+      <WindowMaterialMount route={hideNavbar ? undefined : isChatRoute ? "chat" : "page"} />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -707,7 +712,7 @@ function RootLayout() {
       <ImageViewer />
       {!hideNavbar && <CommandPalette />}
       {hideNavbar ? (
-        <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
+        <main className="h-dvh flex-1 overflow-y-auto pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
             <Outlet />
           </RouteBoundary>
@@ -726,7 +731,14 @@ function RootLayout() {
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
-          {windowsWallpaperPage && <div data-slot="page-wallpaper-blur" aria-hidden="true" />}
+          {windowsWallpaperPage && (
+            <div
+              data-slot="page-wallpaper-blur"
+              // AppSidebar's data-windows-glass-frame, which sits under this page only off the mobile sheet.
+              data-sidebar-frame={(pinned && !mobileShell) || undefined}
+              aria-hidden="true"
+            />
+          )}
           <SidebarInset
             className={
               isChatLike
@@ -739,6 +751,7 @@ function RootLayout() {
           >
             <Navbar />
             <div
+              ref={findScopeRef}
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
             >

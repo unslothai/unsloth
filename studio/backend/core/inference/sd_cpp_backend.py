@@ -41,15 +41,24 @@ from core.inference.diffusion_device import (
     auto_cuda_ordinal_for_load,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
+    resolve_selected_cuda_ordinals,
 )
+from core.inference.diffusion_multigpu import (
+    AUTOMATIC_ORDINALS,
+    multigpu_all_enabled,
+    with_load_selection,
+)
+from core.inference.sd_cpp_multigpu import split_for_load
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    sd_cpp_flow_shift_for,
     MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
     DiffusionModelReplacedError,
+    require_pinned_checkpoint,
     family_for_checkpoint,
     LoadIdentity,
     detect_family_for_pick,
@@ -364,10 +373,86 @@ def _linux_physical_cores(sysfs: str = "/sys/devices/system/cpu") -> Optional[in
     return len(cores) or None
 
 
-def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else (Linux) the physical cores in the affinity mask, else
-    ``os.cpu_count() // 2``; capped by the cgroup quota on Linux. Half the logical CPUs is one thread per core only on
-    a 2-way SMT host that may use all of them: it halves a host without SMT and oversubscribes a cpuset."""
+# 0 keeps one sd.cpp thread per physical core on an SMT host (the default runs one per logical CPU there).
+SD_CPP_CPU_SMT_ENV = "UNSLOTH_DIFFUSION_CPU_SMT"
+# Many-core servers keep one thread per core: ggml's per-op barrier across many threads outweighs SMT gains.
+SD_CPP_CPU_SMT_MAX_CORES = 16
+
+
+def _linux_hybrid_cpu(sysfs: str = "/sys/devices") -> bool:
+    """Intel hybrid (P + E) hosts register a ``cpu_atom`` PMU."""
+    try:
+        with open(f"{sysfs}/cpu_atom/cpus", encoding = "utf-8") as f:
+            return bool(f.read().strip())
+    except OSError:
+        return False
+
+
+def _smt_threads_enabled() -> bool:
+    return os.environ.get(SD_CPP_CPU_SMT_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+# GetLogicalProcessorInformationEx: RelationProcessorCore records (one per physical core).
+_RELATION_PROCESSOR_CORE = 0
+
+
+def _parse_windows_cores(buf: bytes) -> Optional[tuple[int, bool]]:
+    """(cores, hybrid); byte 9 of each record is EfficiencyClass, more than one class = P + E cores."""
+    import struct
+
+    offset, cores, classes = 0, 0, set()
+    while offset + 10 <= len(buf):
+        relationship, size = struct.unpack_from("<II", buf, offset)
+        if size <= 0:
+            return None
+        if relationship == _RELATION_PROCESSOR_CORE:
+            cores += 1
+            classes.add(buf[offset + 9])
+        offset += size
+    return (cores, len(classes) > 1) if cores else None
+
+
+def _windows_cores() -> Optional[tuple[int, bool]]:
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        size = wintypes.DWORD(0)
+        kernel32.GetLogicalProcessorInformationEx(
+            _RELATION_PROCESSOR_CORE, None, ctypes.byref(size)
+        )
+        if not size.value:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        if not kernel32.GetLogicalProcessorInformationEx(
+            _RELATION_PROCESSOR_CORE, buf, ctypes.byref(size)
+        ):
+            return None
+        return _parse_windows_cores(buf.raw[: size.value])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _smt_threads(physical: int, allowed: Optional[int], hybrid: bool, smt: bool) -> int:
+    if (
+        smt
+        and allowed
+        and physical < allowed
+        and physical <= SD_CPP_CPU_SMT_MAX_CORES
+        and _smt_threads_enabled()
+        and not hybrid
+    ):
+        return allowed
+    return physical
+
+
+def _default_threads(smt: bool = True) -> int:
+    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else logical CPUs on a small non-hybrid SMT host, else physical
+    cores, else ``os.cpu_count() // 2``; capped by the cgroup quota. SMT measured 1.06-1.26x faster, pixel-identical,
+    on 2-4 core VMs; hybrid hosts keep the core count (ggml's even split would wait on E cores)."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -379,8 +464,12 @@ def _default_threads() -> int:
         return performance_cores
     linux = sys.platform.startswith("linux")
     physical = _linux_physical_cores() if linux else None
+    windows = None if linux else _windows_cores()
     if physical:
-        threads = physical
+        threads = _smt_threads(physical, _allowed_cpus(), _linux_hybrid_cpu(), smt)
+    elif windows is not None:
+        cores, hybrid = windows
+        threads = _smt_threads(cores, os.cpu_count(), hybrid, smt)
     else:
         cpu = os.cpu_count()
         threads = cpu // 2 if cpu else 8
@@ -413,9 +502,9 @@ def _cpus_restricted(cpu: Optional[int]) -> bool:
 
 
 def _explicit_threads() -> Optional[int]:
-    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux) the thread count above whenever it differs from what
-    sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp builds before the fork's topology fix count half
-    the logical CPUs and ignore the affinity mask, so a host without SMT or a cpuset needs the count passed."""
+    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux, Windows) the thread count above whenever it differs
+    from what sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp halves the logical CPUs on Windows (and
+    on Linux before the fork's topology fix) and ignores the affinity mask: hosts without SMT need the count passed."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -425,9 +514,9 @@ def _explicit_threads() -> Optional[int]:
     performance_cores = _apple_performance_cores()
     if performance_cores:
         return performance_cores
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux") or sys.platform == "win32":
         cpu = os.cpu_count()
-        threads = _default_threads()
+        threads = _default_threads(smt = False)
         sd_default = _sd_cpp_default_threads(cpu)
         if threads == sd_default:
             return None
@@ -540,6 +629,18 @@ def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
     if text is None or "--max-vram" not in text:
         return frozenset()
     return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
+
+
+# Older builds register --auto-fit as a bare boolean, so "--auto-fit off" fails as "unknown argument: off".
+_AUTO_FIT_ON_OFF = re.compile(r"--auto-fit\s+on\|off")
+
+
+def _layer_split_supported(binary: Optional[str]) -> bool:
+    """Whether ``binary`` takes a per-device ``--max-vram`` and ``--auto-fit off`` (a two-card block split)."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and "--max-vram" in text and _AUTO_FIT_ON_OFF.search(text) is not None
 
 
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
@@ -1252,7 +1353,8 @@ def _note_failed_upgrade(accelerator: str) -> None:
 # fails it. Linux: exits 0 listing CPU only (caught by the device probe). Windows: exits 0xC0000135
 # with no output (caught by exit status). One-way and one-deep; CUDA needs no rung. Vulkan falls
 # to CPU: a CPU-torch host is routed to it, and one that cannot start it must not lose sd.cpp.
-_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu"}
+# "cuda" -> "cpu" is the CPU-torch route's rung only (_cuda_cpu_rung_applies): a CUDA torch has diffusers.
+_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu", "cuda": "cpu"}
 
 
 def _vulkan_cpu_rung_applies() -> bool:
@@ -1263,6 +1365,15 @@ def _vulkan_cpu_rung_applies() -> bool:
         return get_device() == DeviceType.CPU
     except Exception:  # noqa: BLE001
         return True
+
+
+def _cuda_cpu_rung_applies() -> bool:
+    """Only a CPU torch (routed to CUDA beside llama.cpp's) may step a CUDA build down to CPU."""
+    try:
+        from utils.hardware.hardware import DeviceType, get_device
+        return get_device() == DeviceType.CPU
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # The sonames the upstream ROCm archive imports and does not ship.
@@ -1412,6 +1523,9 @@ def sd_cpp_listed_device(
 def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:
     """A CPU-only probe is decisive only if the ROCm runtime is proven absent; else two strikes apply."""
     klass = _accelerator_class_of(accelerator)
+    if klass == "cuda":
+        # llama.cpp's CUDA build already proved the driver, so the sd.cpp build is at fault.
+        return fallback_accelerator_for(klass) == "cpu"
     if klass != "rocm" or not fallback_accelerator_for(klass):
         return False
     return rocm_runtime_resolvable() is False
@@ -1429,6 +1543,8 @@ def fallback_accelerator_for(accelerator: Optional[str]) -> Optional[str]:
         want = _installer_module().accelerator_class(accelerator)
     except Exception:  # noqa: BLE001
         want = (accelerator or "").strip().lower()
+    if want == "cuda" and not _cuda_cpu_rung_applies():
+        return None
     nxt = _ACCELERATOR_FALLBACK.get(want)
     return nxt if nxt and nxt != want else None
 
@@ -1765,6 +1881,8 @@ def note_accelerator_runtime_failure(
     klass = _accelerator_class_of(accelerator)
     if not klass or klass not in _ACCELERATOR_FALLBACK:
         return
+    if klass == "cuda" and not _cuda_cpu_rung_applies():
+        return
     fingerprint = dict(fingerprint) if isinstance(fingerprint, dict) else _accelerator_fingerprint()
     records = _stored_accelerator_runtime_failures()
     records.update({k: v for k, v in _accelerator_runtime_failures.items() if k not in records})
@@ -1885,6 +2003,8 @@ def _applicable_record(klass: str, record: Optional[dict]) -> Optional[dict]:
     record = _record_under_current_rule(klass, record)
     if klass == "vulkan" and not _vulkan_cpu_rung_applies():
         return _decisive_evidence_only(record)
+    if klass == "cuda" and not _cuda_cpu_rung_applies():
+        return None
     return record
 
 
@@ -2787,6 +2907,7 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    scheduler: Optional[str] = None
     # The base's shipped ``sample_sigmas`` grid, sent as custom sigmas; None keeps sd.cpp's own schedule.
     sample_sigmas: Optional[tuple[float, ...]] = None
     server: Optional[SdCppServer] = None
@@ -2809,25 +2930,37 @@ class _SdState:
     child_env: tuple[tuple[str, str], ...] = ()
     # The user picked the GPU (a gpu_ids pool or UNSLOTH_DIFFUSION_SD_CPP_DEVICE): never moved to CPU behind their back.
     gpu_explicit: bool = False
+    multi_gpu: Optional[dict[str, Any]] = None
+    split_physical_gpu_id: Optional[int] = None
+    vram_budget: Optional[str] = None
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
 
+    def vram_budget_args(self) -> list[str]:
+        return ["--max-vram", self.vram_budget] if self.vram_budget else []
+
     @property
     def placed_ordinal(self) -> Optional[int]:
-        """Torch ordinal of ``physical_gpu_id``; without it card-sharing helpers (upsampler) split over all GPUs."""
-        if self.physical_gpu_id is None or self.off_torch_device is not None:
+        """Torch ordinal of ``physical_gpu_id`` (a split's diffusion card); without it card-sharing helpers (upsampler) split over all GPUs."""
+        physical = (
+            self.physical_gpu_id if self.physical_gpu_id is not None else self.split_physical_gpu_id
+        )
+        if physical is None or self.off_torch_device is not None:
             return None
         try:
             from utils.hardware import get_parent_visible_gpu_ids
             visible = [int(i) for i in get_parent_visible_gpu_ids()]
-            return visible.index(int(self.physical_gpu_id))
+            return visible.index(int(physical))
         except Exception:  # noqa: BLE001
             return None
 
 
 def _offload_with_device_pin_impl(
-    offload: tuple[str, ...] | list[str], binary: Optional[str], ordinal: Optional[int]
+    offload: tuple[str, ...] | list[str],
+    binary: Optional[str],
+    ordinal: Optional[int],
+    split: Any = None,
 ) -> list[str]:
     """``offload`` plus the ``--backend`` pin for whichever build is about to run it."""
     flags = list(offload)
@@ -2838,7 +2971,57 @@ def _offload_with_device_pin_impl(
         # `Vulkan0` is not a physical index; pin by card name instead.
         selected_name, selected_position = physical_card_name(ordinal)
         device_name = sd_cpp_device_named(binary, selected_name, position = selected_position)
+    if split is not None and device_name is not None and int(split.primary) == int(ordinal):
+        second = sd_cpp_device_name_for_ordinal(binary, int(split.secondary))
+        if second is not None and second != device_name:
+            layer = bool(split.layer) and _layer_split_supported(binary)
+            pinned = device_backend_flags(
+                f"{device_name}&{second}" if layer else device_name,
+                flags,
+                te_device = second,
+                vae_device = second if split.vae_on_secondary else None,
+            )
+            if layer:
+                # auto-fit would demand the whole model on each listed card; the budgets size sd.cpp's block cut
+                budgets = ",".join(
+                    f"{name}={int(mib) / 1024:.2f}"
+                    for name, mib in zip((device_name, second), split.budgets_mib)
+                )
+                pinned += ["--auto-fit", "off", "--max-vram", budgets]
+            return [*flags, *pinned]
+        logger.info(
+            "sd_cpp.multigpu: one card (cuda:%s %s)",
+            split.secondary,
+            "has no device name in this build"
+            if second is None
+            else f"resolves to {second} as well",
+        )
     return [*flags, *device_backend_flags(device_name, flags)]
+
+
+def _split_physical_gpu_id(ordinal: int) -> Optional[int]:
+    """Physical id of torch ordinal ``ordinal`` (a split's diffusion card), or None."""
+    try:
+        from utils.hardware import get_parent_visible_gpu_ids
+        visible = [int(i) for i in get_parent_visible_gpu_ids()]
+        return visible[int(ordinal)] if 0 <= int(ordinal) < len(visible) else None
+    except Exception:  # noqa: BLE001 -- unknown keeps the helpers on every card, as before
+        return None
+
+
+def _backend_devices(committed_flags: tuple[str, ...]) -> set[str]:
+    """Every device a committed ``--backend`` assignment names (``diffusion=CUDA0,te=CUDA1`` -> CUDA0, CUDA1)."""
+    out: set[str] = set()
+    for index, flag in enumerate(committed_flags[:-1]):
+        if flag != "--backend":
+            continue
+        for part in str(committed_flags[index + 1]).split(","):
+            _key, sep, value = part.partition("=")
+            for name in (value if sep else part).split("&"):
+                name = name.strip()
+                if name and name.lower() != "cpu":
+                    out.add(name.lower())
+    return out
 
 
 def _resolved_server_physical_gpu_id(
@@ -2846,6 +3029,8 @@ def _resolved_server_physical_gpu_id(
 ) -> Optional[int]:
     """Physical id for a provably single-device resident sd-server."""
     if device != "cuda" or "--offload-to-cpu" in committed_flags:
+        return None
+    if len(_backend_devices(committed_flags)) > 1:
         return None
     try:
         from utils.hardware import get_parent_visible_gpu_ids
@@ -2940,8 +3125,15 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
     )
 
 
+def _request_scheduler(state: Any) -> Optional[str]:
+    """The family's ``--scheduler``; None under custom sigmas (they replace the schedule) or the kill switch."""
+    if getattr(state, "sample_sigmas", None) or not sd_cpp_args_mod.family_scheduler_enabled():
+        return None
+    return getattr(state, "scheduler", None)
+
+
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
-    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
+    """The family's ``--flow-shift``; Krea 2 Raw follows output size, variants apply under the family scheduler."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
         state.gguf_filename,
         getattr(state, "display_repo_id", None),
@@ -2949,6 +3141,14 @@ def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
         state.base_repo,
     ):
         return krea2_sd_cpp_flow_shift(width, height)
+    if _request_scheduler(state) and getattr(state.family, "sd_cpp_flow_shift_variants", ()):
+        # Not base_repo: an unnamed dev GGUF can fall back to the family's schnell base.
+        return sd_cpp_flow_shift_for(
+            state.family,
+            getattr(state, "gguf_filename", None),
+            getattr(state, "repo_id", None),
+            getattr(state, "display_repo_id", None),
+        )
     return state.flow_shift
 
 
@@ -3418,6 +3618,16 @@ class SdCppDiffusionBackend:
         if auto_ordinal:
             # Automatic ranks the torch cards too, after validation, unless sd.cpp runs on one torch cannot see.
             gpu_ordinal = auto_cuda_ordinal_for_load()
+        gpu_ordinals: Any = None
+        if (
+            off_torch is None
+            and multigpu_all_enabled()
+            and resolve_diffusion_device_target().device == "cuda"
+        ):
+            if gpu_ids and len(set(gpu_ids)) > 1:
+                gpu_ordinals = resolve_selected_cuda_ordinals(gpu_ids)
+            elif not gpu_ids:
+                gpu_ordinals = AUTOMATIC_ORDINALS
         self._loading_family = fam
 
         base = resolve_base_repo(fam, base_repo)
@@ -3485,12 +3695,14 @@ class SdCppDiffusionBackend:
                 off_torch = off_torch,
                 _load_token = token,
                 _cancel_event = cancel_event,
+                **({"_gpu_ordinals": gpu_ordinals} if gpu_ordinals else {}),
             ),
             daemon = True,
         ).start()
         return self.status()
 
     @_invalidates_gpu_memory("sd.cpp load")
+    @with_load_selection
     def _run_load(
         self,
         *,
@@ -3658,10 +3870,12 @@ class SdCppDiffusionBackend:
                 if run_accelerator is None and binary:
                     run_accelerator = sd_cpp_listed_device(binary)[0]
                 klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
-                # A CPU torch running the Vulkan build renders on a card torch never measured, so
+                # A CPU torch running a GPU build renders on a card torch never measured, so
                 # auto offloads.
-                vulkan = torch_device == "cpu" and off_torch is None and klass == "vulkan"
-                placed = "vulkan" if vulkan else torch_device
+                unmeasured = (
+                    torch_device == "cpu" and off_torch is None and klass in ("vulkan", "cuda")
+                )
+                placed = klass if unmeasured else torch_device
                 # The fallback ladder can leave a CUDA / XPU torch running the CPU build. Not
                 # MPS: the macOS bundle is recorded as cpu and still renders on Metal.
                 if klass == "cpu" and off_torch is None and torch_device in ("cuda", "xpu"):
@@ -3670,7 +3884,7 @@ class SdCppDiffusionBackend:
                 if placed == "cpu":
                     return placed, ()
                 return placed, tuple(
-                    offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan))
+                    offload_flags(_memory_policy(memory_mode, cpu_offload or unmeasured))
                 )
 
             device, offload = _placement(*_running())
@@ -3678,7 +3892,7 @@ class SdCppDiffusionBackend:
 
             @functools.lru_cache(maxsize = 1)
             def _diffusion_weight_types() -> Optional[frozenset[str]]:
-                return sd_cpp_args_mod.model_files_quantized_weight_types(files)
+                return sd_cpp_args_mod.gguf_quantized_weight_types(files.diffusion_model)
 
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
@@ -3690,6 +3904,32 @@ class SdCppDiffusionBackend:
 
             def _ordinal() -> Optional[int]:
                 return selected_ordinal if device == "cuda" else None
+
+            split_memo: dict[tuple, Any] = {}
+
+            def _split() -> Any:
+                key = (device, _ordinal(), tuple(offload), _running()[1])
+                if key not in split_memo:
+                    split_memo[key] = (
+                        split_for_load(
+                            files,
+                            primary = _ordinal(),
+                            offload = offload,
+                            layer_ok = _layer_split_supported(_running()[1]),
+                            logger = logger,
+                        )
+                        if device == "cuda" and off_torch is None
+                        else None
+                    )
+                return split_memo[key]
+
+            def _split_arg() -> tuple:
+                split = _split()
+                return () if split is None else (split,)
+
+            def _pin_ordinal() -> Optional[int]:
+                split = _split()
+                return int(split.primary) if split is not None else _ordinal()
 
             native_speed = _native_speed_for(speed_mode)
 
@@ -3775,12 +4015,12 @@ class SdCppDiffusionBackend:
                     started_ok = False
                     try:
                         server_offload = _offload_with_device_pin_impl(
-                            offload, server_binary, _ordinal()
+                            offload, server_binary, _pin_ordinal(), *_split_arg()
                         )
                         spawn_env = _sd_cpp_spawn_env(
                             off_torch,
                             device,
-                            _ordinal(),
+                            _pin_ordinal(),
                             offload,
                             server_offload,
                             _diffusion_weight_types,
@@ -3857,14 +4097,15 @@ class SdCppDiffusionBackend:
                     _offload_with_device_pin_impl(
                         offload,
                         server_binary if mode == "server" else getattr(engine, "binary", None),
-                        _ordinal(),
+                        _pin_ordinal(),
+                        *_split_arg(),
                     )
                 )
                 # Recomputed for what is committed: a deferred install or the one-shot fallback can move placement.
                 spawn_env = _sd_cpp_spawn_env(
                     off_torch,
                     device,
-                    _ordinal(),
+                    _pin_ordinal(),
                     offload,
                     committed_offload_flags,
                     _diffusion_weight_types,
@@ -3886,6 +4127,7 @@ class SdCppDiffusionBackend:
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
                     flow_shift = fam.sd_cpp_flow_shift,
+                    scheduler = fam.sd_cpp_scheduler,
                     sample_sigmas = sample_sigmas,
                     server = server,
                     mode = mode,
@@ -3909,6 +4151,18 @@ class SdCppDiffusionBackend:
                         else None
                     ),
                     selected_card = self._loading_card,
+                    multi_gpu = (
+                        _split().describe()
+                        if _split() is not None
+                        and len(_backend_devices(committed_offload_flags)) > 1
+                        else None
+                    ),
+                    split_physical_gpu_id = (
+                        _split_physical_gpu_id(_split().primary)
+                        if _split() is not None
+                        and len(_backend_devices(committed_offload_flags)) > 1
+                        else None
+                    ),
                     off_torch_device = off_torch.label if off_torch is not None else None,
                     child_env = tuple(sorted((spawn_env or {}).items())),
                     gpu_explicit = gpu_explicit,
@@ -4518,6 +4772,7 @@ class SdCppDiffusionBackend:
                 loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                 if expected_load is not None and expected_load != loaded_id:
                     raise DiffusionModelReplacedError(expected_load, loaded_id)
+                require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                 self._active_generate_cancel = cancel
                 self._active_generate_account = current_account_id()
                 # Publish step 0 before slow setup so a reload probe does not read idle.
@@ -4794,6 +5049,7 @@ class SdCppDiffusionBackend:
         # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False
         device_losses = 0
+        vram_restarted = False
         hires_payload: Optional[dict] = None
         hires_staged: list[Path] = []
 
@@ -4839,6 +5095,7 @@ class SdCppDiffusionBackend:
                     seed = chunk_seed,
                     batch_count = count,
                     sample_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
@@ -4866,10 +5123,12 @@ class SdCppDiffusionBackend:
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
-                    # fresh device: respawn the same build once. Any other death propagates.
+                    # fresh device: respawn the same build once. A VRAM refusal restarts once under a smaller
+                    # budget. Any other death propagates.
                     exc = first_exc
                     while True:
                         moved_to_cpu = False
+                        vram_budget: Optional[str] = None
                         server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
                         if server is None and output_shows_vulkan_device_lost(str(exc)):
                             device_losses += 1
@@ -4887,10 +5146,17 @@ class SdCppDiffusionBackend:
                                     state, str(exc), cancel
                                 )
                                 device_respawned = server is not None
+                        if server is None and not vram_restarted:
+                            server, vram_budget = self._restart_server_with_vram_headroom(
+                                state, str(exc), cancel
+                            )
+                            vram_restarted = server is not None
                         if server is None:
                             raise exc
                         old_server = state.server
                         state = replace(state, server = server)
+                        if vram_budget is not None:
+                            state = replace(state, vram_budget = vram_budget)
                         if moved_to_cpu:
                             # Placement follows the server: the flags the CPU server got, no Vulkan pin.
                             state = replace(
@@ -4900,6 +5166,8 @@ class SdCppDiffusionBackend:
                                     without_device_backend_flags(state.offload_flags)
                                 ),
                                 physical_gpu_id = None,
+                                multi_gpu = None,
+                                split_physical_gpu_id = None,
                             )
                         self._hand_over_replacement(state, server, old_server)
                         # The old server's stop removed its scratch dir, and the staged adapters with it.
@@ -5052,7 +5320,59 @@ class SdCppDiffusionBackend:
             native_speed = state.native_speed,
             threads = state.threads,
             env = state.spawn_env(),
+            extra_args = state.vram_budget_args(),
         )
+
+    def _restart_server_with_vram_headroom(
+        self, state: _SdState, error_text: str, cancel: threading.Event
+    ) -> tuple[Optional[SdCppServer], Optional[str]]:
+        """Restart sd-server under ``--max-vram`` after sd.cpp refused a render for VRAM; returns the server and its
+        budget, or ``(None, None)``. The budget comes from the first refusing server's plan and is reused: a server
+        restarted while another application held the card planned too little to halve, and keeps refusing."""
+        if not sd_cpp_args_mod.is_vram_refusal_text(error_text):
+            return None, None
+        if state.device == "cpu" or self._cpu_backend_forced:
+            return None, None
+        if state.server is None or cancel.is_set():
+            return None, None
+        binary = state.server.binary
+        # A two-card split already carries per-device budgets, and an older build rejects the flag.
+        if "--max-vram" in state.offload_flags or "--max-vram" not in sd_cpp_graph_cut_options(
+            binary
+        ):
+            return None, None
+        planned = dict(getattr(state.server, "planned_free_vram_mib", None) or {})
+        budget = state.vram_budget or sd_cpp_args_mod.image_vram_retry_budget(
+            planned, _backend_devices(state.offload_flags)
+        )
+        if budget is None or ("=" in budget and not _layer_split_supported(binary)):
+            return None, None
+        if not self._begin_replacement(state):
+            return None, None
+        logger.warning(
+            "sd-server refused the render for VRAM; restarting it with --max-vram %s (half the free VRAM this "
+            "load first planned with; the refusing server planned with, in MiB: %s) and retrying once. "
+            "Details: %s",
+            budget,
+            planned,
+            error_text[:300],
+        )
+        state.server.stop()
+        server = SdCppServer(binary)
+        with self._lock:
+            self._pending_server = server
+        started = self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            offload = state.offload_flags,
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+            extra_args = ["--max-vram", budget],
+        )
+        return started, (budget if started is not None else None)
 
     def _restart_server_on_cpu_backend(
         self,
@@ -5202,6 +5522,7 @@ class SdCppDiffusionBackend:
                     guidance = flux_guidance,
                     seed = seed_i,
                     sampling_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     batch_count = 1,
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,
@@ -5489,6 +5810,12 @@ class SdCppDiffusionBackend:
             "workflows": workflows,
             "conditioning": conditioning,
             **_native_hires_status(state),
+            # not after a restart onto the CPU backend, whose argv has no device pin
+            **(
+                {"multi_gpu": state.multi_gpu}
+                if state.multi_gpu is not None and not self._cpu_backend_forced
+                else {}
+            ),
         }
 
 
