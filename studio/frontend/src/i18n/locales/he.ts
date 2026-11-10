@@ -698,6 +698,8 @@ export const he = {
       "סגירת חלון זה לא עוצרת את ההגדרה. התוצאה תוצג בהגדרות > אבטחה.",
   },
   composerSettings: {
+    shareDraft: "שיתוף טיוטות בין שיחות",
+    shareDraftDescription: "שימוש בטיוטה אחת בשיחות ובהשוואה. כבוי כברירת מחדל; כל שיחה שומרת טיוטה משלה.",
     title: "עורך ההודעות",
     plainText: "עורך טקסט פשוט",
     plainTextDescription:

@@ -708,6 +708,8 @@ export const zhTW = {
     keepsRunning: "關閉此視窗不會停止設定。結果會顯示在「設定 > 安全性」中。",
   },
   composerSettings: {
+    shareDraft: "跨聊天共用草稿",
+    shareDraftDescription: "在聊天和比較中使用同一份草稿。預設關閉；每個聊天保留各自的草稿。",
     title: "輸入框",
     plainText: "純文字輸入框",
     plainTextDescription:

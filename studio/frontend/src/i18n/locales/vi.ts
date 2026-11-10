@@ -749,6 +749,8 @@ export const vi = {
       "Đóng cửa sổ này không dừng quá trình thiết lập. Kết quả sẽ hiển thị trong Cài đặt > Bảo mật.",
   },
   composerSettings: {
+    shareDraft: "Chia sẻ bản nháp giữa các cuộc trò chuyện",
+    shareDraftDescription: "Dùng một bản nháp cho các cuộc trò chuyện và chế độ so sánh. Mặc định tắt; mỗi cuộc trò chuyện giữ bản nháp riêng.",
     title: "Khung soạn thảo",
     plainText: "Khung soạn thảo văn bản thuần",
     plainTextDescription:

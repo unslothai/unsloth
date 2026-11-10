@@ -25,6 +25,7 @@ import {
 } from "../src/features/chat/utils/mic-target.ts";
 import { AUDIO_ATTACHMENT_ACCEPT, MAX_AUDIO_SIZE } from "../src/lib/audio-utils.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
+import * as sttContext from "../src/features/settings/stores/stt-context.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -41,6 +42,7 @@ const { useVoiceSettingsStore } = loadWithStubs<
     zustand,
     "zustand/middleware": zustandMiddleware,
     "./stt-model-catalog": sttModelCatalog,
+    "./stt-context": sttContext,
     "../api/stt-device": { syncSttDevicePreference: () => undefined },
   },
 );

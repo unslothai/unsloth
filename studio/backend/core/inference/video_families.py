@@ -306,8 +306,9 @@ class VideoFamily:
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
     prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
     # An offloaded int8 load reads the hosted int8 file's ConvRot codes as native Linears (diffusion_native_hosted)
-    # instead of staging and quantising the dense shards. Only for a family whose hosted int8 file is ConvRot safetensors.
+    # instead of staging and quantising the dense shards. Hosted file: ConvRot safetensors, or (pickle flag) unrotated W8A8.
     native_offload_from_hosted_int8: bool = False
+    native_offload_hosted_int8_pickle: bool = False
     # Modular workflow loaded instead of a DiffusionPipeline; its routing blocks are not pruned.
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
@@ -833,6 +834,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         # BOTH experts: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2), ("fp8", 29.2), ("int8", 28.8)),
+        # Hosted int8 pair is an unrotated W8A8 pickle: offload reads 29 GB instead of 115 GB of dense experts.
+        native_offload_from_hosted_int8 = True,
+        native_offload_hosted_int8_pickle = True,
         # "wan2.2_t2v": ComfyUI's expert files (wan2.2_t2v_high_noise_14B_*.safetensors), paired at load.
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan2.2_t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,

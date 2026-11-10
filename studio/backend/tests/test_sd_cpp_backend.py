@@ -3133,6 +3133,192 @@ def test_a_single_vulkan_device_loss_stays_on_vulkan(monkeypatch):
     assert not persisted
 
 
+_VRAM_REFUSAL = (
+    "sd-server generation failed: generation_failed: generate_image returned no results\n"
+    "Last output:\n"
+    "[E] MOSS-Image segment 1/43 (moss_image.layers.0) failed during weight preparation --- ggml_runner.cpp:934\n"
+    "[E] diffusion model compute failed --- diffusion_engine.cpp:2729\n"
+    "[E] Diffusion model sampling failed --- diffusion_engine.cpp:2976\n"
+    "[E] sampling for image 1/1 failed after 0.09s --- image.cpp:1007"
+)
+
+
+_ALLOCATION_FAILURE = (
+    "sd-server generation failed: generation_failed: generate_image returned no results\n"
+    "Last output:\n"
+    "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 210.08 MiB on device 0: "
+    "cudaMalloc failed: out of memory\n"
+    "[E] ggml: alloc_tensor_range: failed to allocate CUDA0 buffer of size 220288512\n"
+    "[E] MOSS-Image segment 12/43 (moss_image.layers.11) failed during {stage} --- ggml_runner.cpp:934\n"
+    "[E] diffusion model compute failed --- diffusion_engine.cpp:2729"
+)
+
+
+def _vram_refusal_backend(
+    monkeypatch,
+    *,
+    refusals,
+    planned_free_mib = None,
+    restarted_plans = (),
+    error = _VRAM_REFUSAL,
+    max_vram_supported = True,
+    per_device_supported = True,
+    policy_flags = (),
+    device = "cuda",
+):
+    """CUDA load pinned to CUDA1 whose first ``refusals`` jobs fail with ``error``; ``restarted_plans`` are the
+    free-VRAM plans each replacement server reads in turn."""
+    events: list = []
+    remaining = {"refusals": refusals}
+    planned = {"CUDA1": 6666} if planned_free_mib is None else planned_free_mib
+    plans = [planned, *restarted_plans]
+
+    class _FakeServer:
+        lora_dir = None
+
+        def __init__(self, binary):
+            self.binary = binary
+            self.planned_free_vram_mib = dict(plans.pop(0) if len(plans) > 1 else plans[0])
+
+        def start(self, files, **kwargs):
+            events.append(
+                ("start", tuple(kwargs.get("extra_args") or ()), tuple(kwargs.get("offload") or ()))
+            )
+
+        def stop(self):
+            events.append(("stop",))
+
+        def is_alive(self):
+            return True
+
+        def img_gen(self, payload, **_kw):
+            if remaining["refusals"]:
+                remaining["refusals"] -= 1
+                raise RuntimeError(error)
+            return [_png_bytes()]
+
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = policy_flags, device = device)
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server"))
+    object.__setattr__(b._state, "mode", "server")
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+    monkeypatch.setattr(
+        bk,
+        "sd_cpp_graph_cut_options",
+        lambda binary: frozenset({"--max-vram"}) if max_vram_supported else frozenset(),
+    )
+    monkeypatch.setattr(bk, "_layer_split_supported", lambda binary: per_device_supported)
+    return b, events
+
+
+def test_a_vram_refusal_restarts_once_under_half_the_planned_free_vram(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 1)
+    flags = b._state.offload_flags
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    # Half of 6666 MiB, rounded down to 0.01 GiB.
+    assert [e for e in events if e[0] == "start"] == [("start", ("--max-vram", "3.25"), flags)]
+    assert b._state.vram_budget == "3.25"
+    assert b._state.device == "cuda" and b._state.offload_flags == flags
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert len([e for e in events if e[0] == "start"]) == 1
+
+
+def test_a_vram_refusal_budgets_each_visible_card_from_its_own_free_vram(monkeypatch):
+    b, events = _vram_refusal_backend(
+        monkeypatch, refusals = 1, planned_free_mib = {"CUDA0": 45979, "CUDA1": 5771}
+    )
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "CUDA0=22.45,CUDA1=2.81")]
+
+
+def test_a_vram_refusal_leaves_a_full_bystander_card_to_sd_cpp(monkeypatch):
+    b, events = _vram_refusal_backend(
+        monkeypatch, refusals = 1, planned_free_mib = {"CUDA0": 1800, "CUDA1": 6666}
+    )
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "CUDA1=3.25")]
+
+
+def test_a_second_vram_refusal_in_the_same_request_is_surfaced(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 2)
+    with pytest.raises(RuntimeError, match = "failed during weight preparation"):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert len([e for e in events if e[0] == "start"]) == 1
+
+
+def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
+    # The restart planned while the card was busy (466 MiB); the next request restarts under the first plan's budget.
+    b, events = _vram_refusal_backend(
+        monkeypatch,
+        refusals = 3,
+        restarted_plans = ({"CUDA1": 466}, {"CUDA1": 6666}),
+    )
+    with pytest.raises(RuntimeError, match = "failed during weight preparation"):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert b._state.vram_budget == "3.25"
+    assert b._state.server.planned_free_vram_mib == {"CUDA1": 466}
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "3.25")] * 2
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"planned_free_mib": {}},
+        {"planned_free_mib": {"CUDA1": 1800}},
+        {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 1800}},
+        {"planned_free_mib": {"CUDA0": 6666}},
+        {"max_vram_supported": False},
+        {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 5771}, "per_device_supported": False},
+        {"device": "cpu"},
+        {"error": "sd-server generation failed: generation_failed: invalid sampler"},
+        {"error": _ALLOCATION_FAILURE.format(stage = "workspace allocation")},
+        {"error": _ALLOCATION_FAILURE.format(stage = "weight preparation")},
+        {
+            "error": _VRAM_REFUSAL.replace(
+                "Last output:\n",
+                "Last output:\n[E] ggml: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of "
+                "size 220288512\n",
+            )
+        },
+    ],
+    ids = [
+        "no_plan",
+        "below_floor",
+        "render_card_below_floor",
+        "render_card_not_planned",
+        "no_max_vram",
+        "no_per_device_budgets",
+        "cpu",
+        "other_error",
+        "workspace_allocation_failure",
+        "weight_staging_allocation_failure",
+        "host_allocation_failure",
+    ],
+)
+def test_a_vram_refusal_without_a_usable_budget_is_surfaced_unchanged(monkeypatch, kwargs):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 1, **kwargs)
+    with pytest.raises(RuntimeError):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert not [e for e in events if e[0] in ("start", "stop")]
+    assert b._state.vram_budget is None
+
+
+def test_a_device_loss_respawn_keeps_the_reduced_vram_budget(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 0, device = "vulkan")
+    object.__setattr__(b._state, "vram_budget", "3.25")
+    server = b._respawn_server_after_device_loss(
+        b._state, "sd-server job failed: vk::Queue::submit: ErrorDeviceLost", threading.Event()
+    )
+    assert server is not None
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "3.25")]
+
+
 @pytest.mark.parametrize("why", ["explicit_gpu", "no_cpu_rung", "fallback_disabled"])
 def test_a_repeated_vulkan_device_loss_without_a_cpu_rung_errors_with_a_hint(monkeypatch, why):
     # A user-picked GPU is never moved to CPU behind their back, and an Arc / ROCm host (no CPU rung) or a disabled

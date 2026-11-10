@@ -8,6 +8,8 @@ lazy."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import os
 import re
@@ -115,6 +117,20 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _ROCM_PROBE_RETRY_S = 120.0
 _ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
 
+# Candidate-card probes must not flip the process-wide SDPA switches the running card also uses.
+_SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_sdpa_probe_read_only", default = False
+)
+
+
+@contextlib.contextmanager
+def read_only_sdpa_probe():
+    token = _SDPA_PROBE_READ_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _SDPA_PROBE_READ_ONLY.reset(token)
+
 
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     import time
@@ -126,8 +142,11 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
-        # Whichever check completes the probe applies its answer; fp32 never runs fused kernels.
-        if _rocm_guard_allowed() and str(dtype) in ("torch.float16", "torch.bfloat16"):
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and _rocm_guard_allowed()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+        ):
             try:
                 _apply_rocm_guard(available)
             except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
@@ -425,6 +444,33 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
     return _apply_rocm_guard(available, logger)
 
 
+def guard_rocm_fused_sdpa_cards(
+    devices: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Switches are process-wide, so only kernels that ran on ALL cards stay on."""
+    from types import SimpleNamespace
+
+    if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
+        return ()
+    if dtype is None:
+        import torch
+        dtype = torch.float16  # _sdpa_capability's default
+    if str(dtype) not in ("torch.float16", "torch.bfloat16"):
+        return ()
+    answers = []
+    with read_only_sdpa_probe():
+        for device in devices:
+            available = _sdpa_capability(SimpleNamespace(device = str(device), dtype = dtype))
+            if available:
+                answers.append(available)
+    if not answers:
+        return ()
+    common = tuple(k for k in answers[0] if all(k in a for a in answers[1:]))
+    return _apply_rocm_guard(common, logger)
+
+
 def _rocm_guard_allowed() -> bool:
     return os.environ.get(ROCM_FUSED_SDPA_ALLOW_ENV, "").strip().lower() not in (
         "1",
@@ -643,6 +689,19 @@ BLACKWELL_NATIVE_ATTN_ENV = (
     "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
 )
 _NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int], bool] = {}
+# Native flash measured faster than the cuDNN pin at every DiT/U-Net shape, bf16+fp16 (torch 2.14.1+cu130); others keep the pin.
+FLASH_FASTER_CAPABILITIES: dict[tuple[int, int], str] = {
+    (
+        8,
+        0,
+    ): "A100: cuDNN 1-44% slower than native flash (FLUX 0.92x, Lumina-2 0.74x, SD3.5 0.97x per call)",
+    (
+        8,
+        9,
+    ): "L4: cuDNN never faster than native flash (Lumina-2 0.70x per call, the rest 0.93-1.00x)",
+}
+NATIVE_FLASH_ATTN_ENV = "UNSLOTH_DIFFUSION_NATIVE_FLASH_ATTN"  # auto (default) | 0 keeps the cuDNN pin on FLASH_FASTER_CAPABILITIES cards
+_NATIVE_FLASH_CACHE: dict[tuple[str, str, int], bool] = {}
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
 ROCM_FLASH_MIN_GAIN = 0.03
 # Accuracy is judged on the raw attention output (flash vs native SDPA, same inputs), not the block: the residual and
@@ -3386,6 +3445,41 @@ def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
         return False
 
 
+def _native_flash_measured_faster(pipe: Any, target: Any) -> bool:
+    """True on a ``FLASH_FASTER_CAPABILITIES`` card whose native SDPA picks FLASH for every DiT head dim; else keep the pin."""
+    if (os.environ.get(NATIVE_FLASH_ATTN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    if not _is_cuda_nvidia(target):
+        return False
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return False
+    dims = _dit_head_dims(pipe)
+    if not dims:
+        return False
+    try:
+        import torch
+        from torch.nn.attention import SDPBackend
+
+        device = _indexed_cuda_device(device)
+        if tuple(_device_capability(device)) not in FLASH_FASTER_CAPABILITIES:
+            return False
+        dtype = getattr(target, "dtype", None)
+        if dtype not in (torch.bfloat16, torch.float16):
+            return False
+        for dim in sorted(dims):
+            key = (device, str(dtype), int(dim))
+            hit = _NATIVE_FLASH_CACHE.get(key)
+            if hit is None:
+                hit = _native_sdp_choice(device, dtype, dim) == int(SDPBackend.FLASH_ATTENTION)
+                _NATIVE_FLASH_CACHE[key] = hit
+            if not hit:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - unaskable: keep the pin
+        return False
+
+
 def _cudnn_serves_pipe(
     pipe: Any,
     target: Any,
@@ -3528,6 +3622,18 @@ def apply_attention_backend(
                     "diffusion.attention: auto keeps native SDPA (it already dispatches cuDNN on this Blackwell card; "
                     "%s=0 pins cuDNN)",
                     BLACKWELL_NATIVE_ATTN_ENV,
+                )
+            backend = None
+        if (
+            isinstance(backend, _AutoCudnn)
+            and target is not None
+            and _native_flash_measured_faster(pipe, target)
+        ):
+            if logger is not None:
+                logger.info(
+                    "diffusion.attention: auto keeps native SDPA (flash attention measured faster than the cuDNN "
+                    "pin on this card; %s=0 pins cuDNN)",
+                    NATIVE_FLASH_ATTN_ENV,
                 )
             backend = None
         if backend is not None:

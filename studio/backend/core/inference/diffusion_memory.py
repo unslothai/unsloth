@@ -4097,6 +4097,33 @@ def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: 
 STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
 
 
+@functools.lru_cache(maxsize = 1)
+def _diffusers_takes_block_modules() -> bool:
+    """Whether the installed diffusers' ``apply_group_offloading`` accepts ``block_modules``."""
+    try:
+        import inspect
+
+        from diffusers.hooks import apply_group_offloading
+        return "block_modules" in inspect.signature(apply_group_offloading).parameters
+    except Exception:  # noqa: BLE001 - no diffusers / unreadable: the stock grouping
+        return False
+
+
+def _block_stacks(module: Any) -> list:
+    """The block stacks block-level group offload streams: ``ModuleList`` / ``Sequential`` children, plus the stacks of
+    the ModuleDicts ``_dict_block_modules`` hands to diffusers as ``block_modules``."""
+    import torch
+
+    stacks = []
+    dicts = set(_dict_block_modules(module)) if _diffusers_takes_block_modules() else set()
+    for name, child in module.named_children():
+        if isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
+            stacks.append(child)
+        elif name in dicts:
+            stacks.extend(child.values())
+    return stacks
+
+
 def _stream_window_mib(pipe: Any) -> int:
     """Device MiB the block prefetcher holds in flight: ``depth + 1`` of the largest denoiser block, or -1."""
     try:
@@ -4110,9 +4137,7 @@ def _stream_window_mib(pipe: Any) -> int:
                 continue
             if not isinstance(module, torch.nn.Module):
                 continue
-            for child in module.children():
-                if not isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
-                    continue
+            for child in _block_stacks(module):
                 for block in child:
                     seen: set[int] = set()
                     nbytes = 0
@@ -4168,9 +4193,8 @@ def _top_level_group_mib(pipe: Any) -> Optional[int]:
             if not isinstance(module, torch.nn.Module):
                 continue
             blocks: set[int] = set()
-            for child in module.children():
-                if isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
-                    blocks.update(id(t) for t in (*child.parameters(), *child.buffers()))
+            for child in _block_stacks(module):
+                blocks.update(id(t) for t in (*child.parameters(), *child.buffers()))
             seen: set[int] = set()
             nbytes = 0
             for t in (*module.parameters(), *module.buffers()):
@@ -5285,6 +5309,8 @@ def _resident_tensors(group: Any) -> list:
 
 
 def _release_group(group: Any) -> None:
+    # resident encoder groups with a dropped host copy get it back first
+    rebuild_dropped_host_copy(group)
     onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
     for name, fn in (("onload_", onload_), ("offload_", offload_)):
         if fn is not None:
@@ -5362,12 +5388,37 @@ def release_resident_groups(
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
         left = int(need_mib) * 1024 * 1024
+        # Groups the load kept no host copy of get theirs back in one batch (one slab, one sync) before any streams.
+        pending: list = []
+        budget = left
+        for module in modules:
+            for group in reversed(_offload_groups(module) or []):
+                if budget <= 0:
+                    break
+                if not getattr(group, "_unsloth_resident", False):
+                    continue
+                for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
+                    if getattr(member, "_unsloth_resident", False) and member not in pending:
+                        pending.append(member)
+                        budget -= int(getattr(member, "_unsloth_resident_bytes", 0))
+        try:
+            rebuild_dropped_host_copies(pending)
+        except Exception as exc:  # noqa: BLE001 - a group still without a host copy stays resident below
+            if logger is not None:
+                logger.warning(
+                    "diffusion.memory: copying resident groups back to the host failed (%s)", exc
+                )
         for module in modules:
             for group in reversed(_offload_groups(module) or []):
                 if left <= 0:
                     break
                 if not getattr(group, "_unsloth_resident", False):
                     continue
+                if any(
+                    getattr(m, _HOST_DROPPED_ATTR, None)
+                    for m in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]
+                ):
+                    continue  # no host copy to stream from: it stays resident, later groups may still free room
                 # Before demoting: a release that fails part way must still wait on the copy stream.
                 state = getattr(module, "_unsloth_stream_state", None)
                 if isinstance(state, dict):
@@ -6854,6 +6905,51 @@ def _module_pin_mib(module: Any) -> int:
         return _module_host_mib(module)
 
 
+# Block-level offload groups only direct ModuleList children; split FLUX.3's ModuleDict of block stacks too ("0": off).
+GROUP_OFFLOAD_DICT_BLOCKS_ENV = "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_DICT_BLOCKS"
+_DICT_BLOCK_CLASSES = frozenset({"Flux3Transformer2DModel"})
+
+
+def _dict_block_modules(module: Any) -> list[str]:
+    """Direct children of ``module`` that are ModuleDicts of block stacks."""
+    if _env_off(GROUP_OFFLOAD_DICT_BLOCKS_ENV) or type(module).__name__ not in _DICT_BLOCK_CLASSES:
+        return []
+    try:
+        import torch
+
+        names = []
+        for name, child in module.named_children():
+            if (
+                isinstance(child, torch.nn.ModuleDict)
+                and len(child) > 0
+                and all(
+                    isinstance(v, (torch.nn.ModuleList, torch.nn.Sequential))
+                    for v in child.values()
+                )
+            ):
+                names.append(name)
+        return names
+    except Exception:  # noqa: BLE001 - unreadable: the stock grouping
+        return []
+
+
+def _with_dict_block_modules(
+    apply: Callable[..., Any], module: Any, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    if kwargs.get("offload_type", "block_level") != "block_level" or "block_modules" in kwargs:
+        return kwargs
+    names = _dict_block_modules(module)
+    if not names:
+        return kwargs
+    try:
+        import inspect
+        if "block_modules" not in inspect.signature(apply).parameters:
+            return kwargs
+    except (TypeError, ValueError):
+        return kwargs
+    return {**kwargs, "block_modules": names}
+
+
 def _apply_group_offloading_packed(
     apply: Callable[..., Any],
     module: Any,
@@ -6867,6 +6963,7 @@ def _apply_group_offloading_packed(
     pages, so overlap is unchanged. Lazy (``low_cpu_mem_usage``) and unstreamed applies run as before."""
     from .diffusion_pinned_arena import packable_bytes, pinned_arena_for_group_offload
 
+    kwargs = _with_dict_block_modules(apply, module, kwargs)
     pack = (
         bool(kwargs.get("use_stream"))
         and not kwargs.get("low_cpu_mem_usage", False)
@@ -7090,6 +7187,150 @@ def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
     if waited >= 0.5 and logger is not None:
         logger.info("diffusion.memory: the load waited %.1f s for the encoder pins", waited)
     return waited
+
+
+# "0": an image load pins (and keeps) the host copy of every text-encoder offload group, resident ones too.
+RESIDENT_HOST_DROP_ENV = "UNSLOTH_DIFFUSION_DROP_RESIDENT_HOST_COPY"
+_HOST_DROPPED_ATTR = "_unsloth_host_dropped"
+
+
+def _resident_host_drop_enabled() -> bool:
+    return not _env_off(RESIDENT_HOST_DROP_ENV)
+
+
+def drop_resident_host_copies(
+    groups: list,
+    logger: Any = None,
+    label: str = "",
+) -> tuple[list, int]:
+    """Free the pageable host copy of each resident group (its weights live on the card); returns ``(kept, bytes)``:
+    the groups that still need a pin, and the bytes freed. A group whose eviction ever streams it again gets an exact
+    copy back from the card first (``rebuild_dropped_host_copy``). Tied partners drop together or not at all."""
+    import torch
+
+    def droppable(group: Any) -> bool:
+        if not getattr(group, "_unsloth_resident", False) or getattr(
+            group, "offload_to_disk_path", None
+        ):
+            return False
+        cpu = getattr(group, "cpu_param_dict", None)
+        if not isinstance(cpu, dict) or not cpu:
+            return False
+        for t, src in cpu.items():
+            if (
+                type(src) is not torch.Tensor
+                or src.device.type != "cpu"
+                or src.is_pinned()
+                # the weight itself must be on the card, not reading this host copy
+                or getattr(t, "device", None) is None
+                or t.device.type == "cpu"
+            ):
+                return False
+        return True
+
+    kept: list = []
+    dropped: set = set()
+    freed = 0
+    for group in groups:
+        if id(group) in dropped:
+            continue
+        closure = [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]
+        if not all(droppable(g) for g in closure):
+            kept.append(group)
+            continue
+        seen: set = set()
+        for member in closure:
+            cpu = member.cpu_param_dict
+            for src in cpu.values():
+                key = (src.data_ptr(), src.nbytes)
+                if key not in seen:
+                    seen.add(key)
+                    freed += int(src.nbytes)
+            setattr(member, _HOST_DROPPED_ATTR, list(cpu.keys()))
+            cpu.clear()
+            dropped.add(id(member))
+    if freed and logger is not None:
+        try:
+            logger.info(
+                "diffusion.memory: %s keeps no host copy of its %d resident offload groups (%.1f GiB not pinned); "
+                "an eviction copies them back from the card",
+                label,
+                len(dropped),
+                freed / 2**30,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return kept, freed
+
+
+def rebuild_dropped_host_copy(group: Any) -> int:
+    """Give ``group`` (and its tied partners) host copies of their device weights again; returns bytes copied."""
+    return rebuild_dropped_host_copies([group])
+
+
+_REBUILD_ALIGN = 512
+
+
+def rebuild_dropped_host_copies(groups: Iterable[Any]) -> int:
+    """Host copies of the device weights of every dropped group in ``groups`` (tied partners included), in one
+    registered slab filled by device-to-host copies; returns bytes copied. Each tensor shared by tied partners is
+    copied once. Without a registered slab (refused, or no CUDA) each tensor gets its own pageable copy."""
+    import torch
+
+    members: list = []
+    seen_groups: set = set()
+    for group in groups:
+        for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
+            if id(member) not in seen_groups and getattr(member, _HOST_DROPPED_ATTR, None):
+                seen_groups.add(id(member))
+                members.append(member)
+    if not members:
+        return 0
+    tensors: dict = {}
+    for member in members:
+        for t in getattr(member, _HOST_DROPPED_ATTR, None) or ():
+            tensors.setdefault(id(t), t)
+    lives = {key: (t.data if hasattr(t, "data") else t) for key, t in tensors.items()}
+    offsets: dict = {}
+    total = 0
+    for key, live in lives.items():
+        offsets[key] = total
+        total += -(-int(live.nbytes) // _REBUILD_ALIGN) * _REBUILD_ALIGN
+    device = next((live.device for live in lives.values() if live.device.type == "cuda"), None)
+    slab = None
+    # Pinned only where pinning is allowed now and the copy fits what host RAM can pin now; else pageable copies
+    # (the group streams slower, the release itself never waits on a pin).
+    budget = None if device is None or _pinned_memory_capped() else _pin_budget_mib()
+    if (
+        device is not None
+        and host_pinning_allowed(device)
+        and budget is not None
+        and (total >> 20) <= budget
+    ):
+        try:
+            slab = registered_pinned_empty(total)
+        except Exception:  # noqa: BLE001 - per-tensor pageable copies below
+            slab = None
+    hosts: dict = {}
+    with torch.no_grad():
+        if device is not None:
+            torch.cuda.current_stream(device).synchronize()
+        for key, live in lives.items():
+            if slab is not None:
+                off = offsets[key]
+                host = slab[off : off + int(live.nbytes)].view(live.dtype).view(live.shape)
+                host.copy_(live, non_blocking = True)
+            else:
+                host = live.detach().to("cpu", copy = True)
+            hosts[key] = host
+        if slab is not None:
+            torch.cuda.current_stream(device).synchronize()
+    for member in members:
+        cpu = member.cpu_param_dict
+        for t in getattr(member, _HOST_DROPPED_ATTR, None) or ():
+            cpu[t] = hosts[id(t)]
+        setattr(member, _HOST_DROPPED_ATTR, None)
+    return sum(int(live.nbytes) for live in lives.values())
 
 
 def _encoder_background_pin_wanted(pipe: Any, device: Any = None) -> bool:
@@ -7470,6 +7711,8 @@ class _GroupPinner:
         self._lock = threading.Lock()
         self.after: list = []
         self.late = False
+        # image-load text encoders: groups resident when the pin starts drop their host copy instead of pinning it
+        self.lazy_resident = False
         self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
         self._started = False
         for group in groups:
@@ -7605,6 +7848,14 @@ class _GroupPinner:
         failed = None
         pool = None
         try:
+            if self.lazy_resident and _resident_host_drop_enabled():
+                # Resident groups are read from the card; pinning their host copy only cost RAM and load time.
+                kept, _freed = drop_resident_host_copies(self.groups, self.logger, self.label)
+                kept_ids = {id(g) for g in kept}
+                for group in self.groups:
+                    if id(group) not in kept_ids:
+                        self._done[id(group)].set()
+                self.groups = kept
             if callable(self.byte_cap):
                 self.byte_cap = max(0, int(self.byte_cap()))
                 if self.logger is not None:
@@ -7814,6 +8065,7 @@ def _defer_pinning(
     *,
     fast: Optional[bool] = None,
     byte_cap: Optional[int] = None,
+    lazy_resident: bool = False,
 ) -> bool:
     groups = _offload_groups(module)
     if not groups:
@@ -7822,6 +8074,7 @@ def _defer_pinning(
         fast = bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False))
     fast = bool(fast) and _fast_pin_supported(device)
     pinner = _GroupPinner(module, groups, device, logger, fast = fast, byte_cap = byte_cap)
+    pinner.lazy_resident = bool(lazy_resident)
     pending = getattr(pipe, _PENDING_PINS_ATTR, None)
     if pending is None:
         pending = []
@@ -8322,7 +8575,12 @@ def _apply_group_offload(
                 and not gkwargs.get("low_cpu_mem_usage", False)
                 and not _torchao_weight_classes(module)
             ):
-                apply_group_offloading(module, **{**gkwargs, "low_cpu_mem_usage": True})
+                apply_group_offloading(
+                    module,
+                    **_with_dict_block_modules(
+                        apply_group_offloading, module, {**gkwargs, "low_cpu_mem_usage": True}
+                    ),
+                )
                 _defer_pinning(pipe, module, onload, logger)
             else:
                 _apply_group_offloading_packed(
@@ -8368,7 +8626,9 @@ def _apply_group_offload(
                 elif _encoder_defers(module) and (whole or encoder_left_mib > 0):
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
                     cap = None if whole else int(encoder_left_mib) << 20
-                    _defer_pinning(pipe, module, onload, logger, fast = True, byte_cap = cap)
+                    _defer_pinning(
+                        pipe, module, onload, logger, fast = True, byte_cap = cap, lazy_resident = True
+                    )
                     if not whole:
                         encoder_left_mib = max(0, encoder_left_mib - _module_registered_mib(module))
                 else:
@@ -8396,7 +8656,12 @@ def _apply_group_offload(
                             if "low_cpu_mem_usage" in _params and use_stream:
                                 dkwargs["low_cpu_mem_usage"] = True
                             apply_group_offloading(
-                                dit, **_torchao_group_offload_kwargs(dit, dkwargs, pinned_mib)
+                                dit,
+                                **_with_dict_block_modules(
+                                    apply_group_offloading,
+                                    dit,
+                                    _torchao_group_offload_kwargs(dit, dkwargs, pinned_mib),
+                                ),
                             )
                             installed += 1
                     transformer_demoted = True
