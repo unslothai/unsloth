@@ -66,7 +66,7 @@
     "emoji-regex": "11.0.0",
     "fflate": "0.8.3",
     "js-yaml": "^4.3.2",
-    "katex": "^0.18.2",
+    "katex": "^0.16.28",
     "lucide-react": "^1.7.0",
     "mammoth": "^1.11.0",
     "marked": "17.0.6",
