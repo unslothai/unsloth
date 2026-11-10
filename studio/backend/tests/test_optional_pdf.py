@@ -34,6 +34,8 @@ def missing_pdf(monkeypatch, tmp_path):
         "PIP_NO_INDEX",
     ):
         monkeypatch.delenv(name, raising = False)
+    for name in pdf._MODULES:
+        monkeypatch.delitem(sys.modules, name, raising = False)
     monkeypatch.setattr(pdf, "_lock_path", lambda: tmp_path / "install.lock")
     monkeypatch.setattr(pdf, "_missing_requirements", lambda: ["pymupdf==1.27.2.3"])
     monkeypatch.setattr(pdf, "_find_uv", lambda: None)
@@ -178,6 +180,39 @@ def test_success_that_leaves_the_module_missing_is_actionable(missing_pdf, monke
         pdf.load_pdf_module("pymupdf")
 
 
+def test_a_load_during_an_install_waits_for_the_complete_package(missing_pdf, monkeypatch):
+    import threading
+
+    partial, complete = ModuleType("pymupdf"), ModuleType("pymupdf")
+    complete.open = object()
+    state = {"files": "absent"}
+    readers, threads = [], []
+
+    def import_module(name):
+        if state["files"] == "absent":
+            raise ModuleNotFoundError("PDF dependency absent", name = name)
+        # Like sys.modules, the first import is kept, even of a half-written package.
+        return missing_pdf.modules.setdefault(
+            name, partial if state["files"] == "partial" else complete
+        )
+
+    def install(command, **kwargs):
+        missing_pdf.calls.append(command)
+        state["files"] = "partial"
+        reader = threading.Thread(target = lambda: readers.append(pdf.load_pdf_module("pymupdf")))
+        threads.append(reader)
+        reader.start()
+        reader.join(timeout = 0.5)
+        state["files"] = "installed"
+
+    monkeypatch.setattr(pdf.importlib, "import_module", import_module)
+    monkeypatch.setattr(pdf.subprocess, "run", install)
+    assert pdf.load_pdf_module("pymupdf") is complete
+    threads[0].join(timeout = 5)
+    assert readers == [complete]
+    assert len(missing_pdf.calls) == 1
+
+
 def test_a_concurrent_install_by_another_process_is_reused(missing_pdf, monkeypatch):
     class OtherProcessInstalled:
         def __init__(self, path, timeout):
@@ -243,10 +278,12 @@ def test_an_incompatible_native_engine_is_not_replaced(monkeypatch):
 @pytest.mark.parametrize(
     "failure", [ImportError("broken native library"), OSError("dlopen failed")]
 )
-def test_broken_installed_native_packages_get_repair_guidance(monkeypatch, failure):
+def test_broken_installed_native_packages_get_repair_guidance(monkeypatch, tmp_path, failure):
     def fail(name):
         raise failure
 
+    monkeypatch.delitem(sys.modules, "pymupdf", raising = False)
+    monkeypatch.setattr(pdf, "_lock_path", lambda: tmp_path / "install.lock")
     monkeypatch.setattr(pdf.importlib, "import_module", fail)
     monkeypatch.setattr(
         pdf, "_install", lambda *a: pytest.fail("must not replace native libraries")

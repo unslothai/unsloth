@@ -10,6 +10,7 @@ They land in this interpreter's site-packages, like the S3 SDK, so every interpr
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import importlib
 import importlib.util
 from importlib.metadata import PackageNotFoundError, version
@@ -22,7 +23,7 @@ import sys
 import threading
 import time
 from types import ModuleType
-from typing import Callable
+from typing import Callable, Iterator
 
 from filelock import FileLock
 from packaging.requirements import Requirement
@@ -195,32 +196,41 @@ def _lock_path() -> Path:
     return Path(sys.prefix) / ".unsloth-pdf-install.lock"
 
 
-def _install_unless(present: Callable[[], bool]) -> None:
-    """Install missing PDF wheels once per environment; ``present`` is re-checked after each lock wait."""
-    deadline = time.monotonic() + _INSTALL_TIMEOUT
-    acquired = False
+@contextmanager
+def _settled(deadline: float) -> Iterator[None]:
+    """Hold the install locks: an import or check made mid-install could cache a half-written package."""
+    if not _LOCK.acquire(timeout = _remaining(deadline)):
+        raise TimeoutError("Waiting for PDF dependency installation timed out")
     try:
-        acquired = _LOCK.acquire(timeout = _remaining(deadline))
-        if not acquired:
-            raise TimeoutError("Waiting for PDF dependency installation timed out")
-        if present():
-            return
-        blocked = _downloads_blocked()
-        if blocked:
-            raise _unavailable(blocked)
+        lock = _lock_path()
         # Another process (a recipe worker, a chat export) may be installing into the same environment.
-        with FileLock(str(_lock_path()), timeout = _remaining(deadline)):
+        # Without write access there is no lock file and nothing can install into it.
+        if not os.access(lock.parent, os.W_OK):
+            yield
+            return
+        with FileLock(str(lock), timeout = _remaining(deadline)):
             importlib.invalidate_caches()
-            if not present():
-                _install(deadline)
+            yield
+    finally:
+        _LOCK.release()
+
+
+def _install_unless(present: Callable[[], bool]) -> None:
+    """Install missing PDF wheels once per environment; ``present`` is only checked under the locks."""
+    deadline = time.monotonic() + _INSTALL_TIMEOUT
+    try:
+        with _settled(deadline):
+            if present():
+                return
+            blocked = _downloads_blocked()
+            if blocked:
+                raise _unavailable(blocked)
+            _install(deadline)
     except PDFDependencyUnavailable:
         raise
     except Exception as exc:
         # Package-manager output can contain proxy credentials; only expose our own guidance.
         raise _unavailable("Automatic PDF installation failed or timed out") from exc
-    finally:
-        if acquired:
-            _LOCK.release()
 
 
 def _import(name: str) -> ModuleType | None:
@@ -249,10 +259,8 @@ def load_pdf_module(name: str) -> ModuleType:
     """Import a PDF parser, installing the missing wheels once within a bounded wait."""
     if name not in _MODULES:
         raise ValueError(f"Not an optional PDF module: {name}")
-    module = _import(name)
-    if module is not None:
-        return module
-    _install_unless(lambda: _import(name) is not None)
+    if name not in sys.modules:
+        _install_unless(lambda: _import(name) is not None)
     module = _import(name)
     if module is None:
         raise _unavailable("Installed PDF support could not be imported; repair the installation")
@@ -268,8 +276,6 @@ def _all_present() -> bool:
 
 def ensure_pdf_support() -> None:
     """Install PDF support for a child interpreter without importing it into this process."""
-    if _all_present():
-        return
     _install_unless(_all_present)
     if not _all_present():
         raise _unavailable("Installed PDF support could not be found; repair the installation")
