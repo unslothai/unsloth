@@ -7361,7 +7361,7 @@ class ExternalProviderClient:
     ) -> list[str]:
         """Post PNG source images to an OpenAI-compatible /images/edits endpoint.
 
-        No ``size``: the endpoint sizes the result from the source image."""
+        No ``size`` is sent, so the server picks the output size (sd-server returns the source's)."""
         # One image goes under `image` and several under `image[]`, the two names the spec takes.
         field = "image" if len(images) == 1 else "image[]"
         headers = self._auth_headers()

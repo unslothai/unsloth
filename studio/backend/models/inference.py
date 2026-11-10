@@ -5584,8 +5584,8 @@ class DiffusionGenerateRequest(BaseModel):
         description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
         "connection's /images/generations as `model` and the results are saved to the gallery. "
         "With `workflow` edit, init_image (then reference_images) and the prompt go to its "
-        "/images/edits instead, and the endpoint sizes the result from the source image. No other "
-        "image-input workflow runs on a connection.",
+        "/images/edits instead. No size is sent with an edit, so width and height are not used and "
+        "the server picks the output size. No other image-input workflow runs on a connection.",
     )
     model: Optional[str] = Field(
         None, description = "Model name on the connection named by `provider_id`."

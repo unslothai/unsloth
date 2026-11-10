@@ -3389,7 +3389,7 @@ def test_external_connection_edits_an_image_through_images_edits(client, monkeyp
         model = "flux2-klein",
     )
     assert resp.status_code == 200, resp.text
-    # No `size`: the endpoint sizes the result from the source. `model` is a form field for routers.
+    # No `size`: the server picks the output size. `model` is a form field for routers.
     assert sent == [
         (
             "http://127.0.0.1:8000/v1/images/edits",
