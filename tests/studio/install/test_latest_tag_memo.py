@@ -152,6 +152,19 @@ def test_none_answer_is_not_memoised(monkeypatch, opener):
     assert len(opener.heads) == 2, opener.heads
 
 
+def test_memo_expires_so_a_new_release_is_seen(monkeypatch, opener):
+    core = sys.modules["prebuilt_core"]
+    now = [1000.0]
+    monkeypatch.setattr(core.time, "monotonic", lambda: now[0])
+    assert ILP._download_host_latest_release_tag(LLAMA_REPO) == LLAMA_TAG
+    opener.tags[LLAMA_REPO] = "b10000-mix-new0000"
+    now[0] += core._DOWNLOAD_HOST_LATEST_TAG_TTL_S - 1
+    assert ILP._download_host_latest_release_tag(LLAMA_REPO) == LLAMA_TAG
+    now[0] += 2
+    assert ILP._download_host_latest_release_tag(LLAMA_REPO) == "b10000-mix-new0000"
+    assert len(opener.heads) == 2, opener.heads
+
+
 def test_pinned_tag_skips_the_head(monkeypatch, opener):
     monkeypatch.setattr(ILP, "_fetch_download_host_json", _no_checksum_asset)
     assert ILP._expected_release_tag_without_plan({}, "latest", LLAMA_REPO, "pin-1") == "pin-1"

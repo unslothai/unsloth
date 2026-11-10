@@ -1027,9 +1027,10 @@ def release_asset_download_url(repo: str, release_tag: str, asset_name: str) -> 
     )
 
 
-# Per process: the currency check and the resolve after it ask the same HEAD. Only a resolved tag is
-# kept, so a failure is asked again; keyed on the opener so a swapped opener never reads another's answer.
-_DOWNLOAD_HOST_LATEST_TAG_MEMO: dict[tuple[str, Any], str] = {}
+# The currency check and the resolve after it ask the same HEAD seconds apart. Only a resolved tag is kept,
+# and only briefly, so a failure or a later run (or any long-lived importer) asks again.
+_DOWNLOAD_HOST_LATEST_TAG_TTL_S = 300.0
+_DOWNLOAD_HOST_LATEST_TAG_MEMO: dict[tuple[str, Any], tuple[str, float]] = {}
 
 
 def download_host_latest_release_tag(ops: ModuleOps, repo: str) -> str | None:
@@ -1039,11 +1040,11 @@ def download_host_latest_release_tag(ops: ModuleOps, repo: str) -> str | None:
     published_at newest the freshness check uses -- acceptable for install."""
     key = (repo, ops._URL_OPENER)
     cached = _DOWNLOAD_HOST_LATEST_TAG_MEMO.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and time.monotonic() - cached[1] < _DOWNLOAD_HOST_LATEST_TAG_TTL_S:
+        return cached[0]
     tag = _download_host_latest_release_tag_uncached(ops, repo)
     if tag:
-        _DOWNLOAD_HOST_LATEST_TAG_MEMO[key] = tag
+        _DOWNLOAD_HOST_LATEST_TAG_MEMO[key] = (tag, time.monotonic())
     return tag
 
 
