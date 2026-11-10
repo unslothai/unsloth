@@ -6806,6 +6806,12 @@ def _shell_line_tokens(line: str) -> "list | None":
     return tokens
 
 
+def _expansion_has_heredoc(expansion: str) -> bool:
+    inner = expansion[2:] if expansion.startswith("$(") else expansion.strip("`")
+    tokens = _shell_line_tokens(inner[:-1] if inner.endswith(")") else inner)
+    return tokens is None or any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens)
+
+
 def _python_reads_stdin_program(words: list) -> "bool | None":
     """CPython's option grammar: True when stdin is executed (program `-`, or -i), False when it is
     only data (-c, -m, a script operand), None when the words cannot be resolved."""
@@ -6875,7 +6881,7 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 return True
             continue
         if not any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens):
-            if mentioned and any(re.search(r"<<(?!<)", x) for x in _shell_expansions(line)):
+            if mentioned and any(map(_expansion_has_heredoc, _shell_expansions(line))):
                 return True
             continue
         commands, current = [], []
