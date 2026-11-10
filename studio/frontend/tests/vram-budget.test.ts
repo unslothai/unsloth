@@ -79,11 +79,7 @@ const pageSource = readSrc(
 );
 
 function vramBudgetRowSource(): string {
-  const start = pageSource.indexOf("function VramBudgetRow()");
-  assert.ok(start >= 0, "VramBudgetRow is no longer defined");
-  const end = pageSource.indexOf("\n}\n", start);
-  assert.ok(end > start, "could not delimit VramBudgetRow");
-  return pageSource.slice(start, end);
+  return readSrc("features/settings/components/vram-budget-control.tsx");
 }
 
 test("unmount flushes the pending budget save instead of dropping it", () => {
@@ -221,9 +217,7 @@ test("the budget reads as a percentage and steps in tenths", () => {
   // and reads as neither.
   assert.match(row, /format=\{\(v\) => `\$\{v\}%`\}/);
   assert.match(row, /step=\{VRAM_BUDGET_PERCENT_STEP\}/);
-  const slider = pageSource.slice(
-    pageSource.indexOf("function AdvancedGpuSlider"),
-  );
+  const slider = readSrc("features/model-picker/components/advanced-gpu-slider.tsx");
   assert.match(slider.slice(0, slider.indexOf("</div>")), /step = 1,/);
 });
 
@@ -248,7 +242,7 @@ test("the reload notice is refreshed once a load finishes", () => {
   const row = vramBudgetRowSource().replace(/\s+/g, " ");
   // Nothing remounts this row on a reload in the sidebar editor, so it must refetch.
   assert.match(
-    row,
+    pageSource,
     /const modelLoading = useChatRuntimeStore\(\(s\) => s\.modelLoading\)/,
   );
   // Falling edge only: a read during the load describes the child being replaced.
@@ -303,7 +297,7 @@ test("a post-load read is not answered by one taken before the load finished", (
     flat,
     /if \(inFlightVramBudget === read\) \{ inFlightVramBudget = null;/,
   );
-  const row = readSrc("features/model-picker/components/model-config-page.tsx");
+  const row = vramBudgetRowSource();
   assert.match(row, /loadVramBudgetSettings\(\{ force: true \}\)/);
 });
 
@@ -325,7 +319,7 @@ test("the budget closes while Run settles it, instead of racing the load", () =>
     row,
     /useEffect\(\(\) => subscribeVramBudgetLock\(setLocked\), \[\]\)/,
   );
-  assert.match(row, /disabled=\{locked\}/);
+  assert.match(row, /disabled=\{locked \|\| modelLoading\}/);
 });
 
 test("a stored budget can be cleared back to the inherited one", () => {

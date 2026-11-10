@@ -87,7 +87,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
-import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
+// Import the shared leaf directly to avoid cycling through the settings/model-picker UI barrels.
+// eslint-disable-next-line no-restricted-imports
+import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
+import { useDiffusionGpuChoices, useGpuDevices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -2054,6 +2057,7 @@ export function ImagesPage({
     "auto",
   );
   const gpuChoices = useDiffusionGpuChoices();
+  const imageGpuDevices = useGpuDevices(true);
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
@@ -6046,6 +6050,9 @@ export function ImagesPage({
           ["sage", "SageAttention (INT8)"],
         ]}
       />
+      {!external && imageGpuDevices.length > 0 && (
+        <VramBudgetControl image modelLoading={busy === "loading"} />
+      )}
       <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."

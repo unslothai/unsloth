@@ -2,6 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
+// Import the shared leaf directly to avoid cycling through the settings/model-picker UI barrels.
+// eslint-disable-next-line no-restricted-imports
+import { settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -446,20 +449,28 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
-  // This POST only starts the load, so the notice settles from load-progress, not the response.
-  return withBackgroundLoadNotice(
-    "image",
-    body.model_path,
-    async () =>
-      parseLoadJson<DiffusionStatus>(
-        await authFetch("/api/inference/images/load", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(withAllowOversizedLoad(body)),
-        }),
-      ),
-    async (signal) => (await getDiffusionLoadProgress(signal)).phase,
-  );
+  // Flush a slider edit before the backend snapshots the budget for this load.
+  const budgetSave = settleVramBudgetSave();
+  if (budgetSave) setVramBudgetLocked(true);
+  try {
+    if (budgetSave) await budgetSave;
+    // This POST only starts the load, so the notice settles from load-progress, not the response.
+    return await withBackgroundLoadNotice(
+      "image",
+      body.model_path,
+      async () =>
+        parseLoadJson<DiffusionStatus>(
+          await authFetch("/api/inference/images/load", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(withAllowOversizedLoad(body)),
+          }),
+        ),
+      async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+    );
+  } finally {
+    if (budgetSave) setVramBudgetLocked(false);
+  }
 }
 
 export interface DiffusionDownloadPlan {

@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+function setup() {
+  Object.assign(globalThis, { window: new EventTarget() });
+  const sent: string[] = [];
+  let release!: (response: Response) => void;
+  const reply = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  const authFetch = async (path: string, init?: RequestInit) => {
+    sent.push(`${init?.method} ${path}`);
+    if (path === "/api/settings/vram-budget") return reply;
+    return Response.json({ loaded: false });
+  };
+  const budget = loadWithStubs<
+    typeof import("../src/features/settings/api/vram-budget")
+  >(new URL("../src/features/settings/api/vram-budget.ts", import.meta.url), {
+    "@/features/auth": { authFetch },
+    "@/lib/format-fastapi-error": {
+      readFastApiError: async () => "Budget save failed",
+    },
+    "./settings-route-absent": {
+      SettingsRouteAbsentError: class extends Error {},
+    },
+  });
+  const images = loadWithStubs<typeof import("../src/features/images/api")>(
+    new URL("../src/features/images/api.ts", import.meta.url),
+    {
+      "@/features/settings/api/vram-budget": budget,
+      "@/features/auth": { authFetch },
+      "@/lib/model-lifecycle-events": {
+        withBackgroundLoadNotice: (
+          _kind: string,
+          _model: string,
+          run: () => unknown,
+        ) => run(),
+      },
+      "@/lib/format-fastapi-error": {},
+      "@/lib/multi-model-refusal": {
+        parseLoadJson: (response: Response) => response.json(),
+      },
+      "@/lib/unified-memory-load-refusal": {
+        withAllowOversizedLoad: (body: unknown) => body,
+      },
+      "./lib/memory-refusal": {},
+    },
+  );
+  const ok = () =>
+    release(
+      Response.json({
+        fraction: 0.9,
+        is_stored: true,
+        default_fraction: 0.97,
+        min_fraction: 0.1,
+        max_fraction: 1,
+        reload_required: true,
+      }),
+    );
+  return { budget, images, sent, release, ok };
+}
+
+test("an immediate image load waits for the staged budget save", async () => {
+  const { budget, images, sent, ok } = setup();
+  budget.stageVramBudgetSave(0.9);
+  const loading = images.loadDiffusionModel({ model_path: "example/image" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+  assert.equal(budget.isVramBudgetLocked(), true);
+  ok();
+  await loading;
+  assert.deepEqual(sent, [
+    "PUT /api/settings/vram-budget",
+    "POST /api/inference/images/load",
+  ]);
+  assert.equal(budget.isVramBudgetLocked(), false);
+});
+
+test("a rejected budget save prevents image loading and unlocks the slider", async () => {
+  const { budget, images, sent, release } = setup();
+  budget.stageVramBudgetSave(0.9);
+  const loading = images.loadDiffusionModel({ model_path: "example/image" });
+  release(Response.json({ detail: "Budget save failed" }, { status: 500 }));
+  await assert.rejects(loading, /Budget save failed/);
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+  assert.equal(budget.isVramBudgetLocked(), false);
+});
+
+test("image loading also waits for an in-flight reset", async () => {
+  const { budget, images, sent, ok } = setup();
+  const resetting = budget.updateVramBudgetSettings(null);
+  const loading = images.loadDiffusionModel({ model_path: "example/image" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+  ok();
+  await Promise.all([resetting, loading]);
+  assert.deepEqual(sent, [
+    "PUT /api/settings/vram-budget",
+    "POST /api/inference/images/load",
+  ]);
+});
