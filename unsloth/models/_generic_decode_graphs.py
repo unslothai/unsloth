@@ -485,7 +485,7 @@ def plan(model, args, kwargs, input_ids):
             need = max(need, previous)
         if KV.is_growable(state.kept):
             length = KV.capacity(state.kept)
-            kept = length is not None and length <= _KEEP_MAX_RATIO * max(max_len - 1, 1)
+            kept = length is not None and length <= _bucket_budget(max_len - 1, need)
         else:
             kept = length is not None and need <= length <= _KEEP_MAX_RATIO * max(need, 1)
     if state is not None and state.kept is not None and not kept:
@@ -855,6 +855,12 @@ def release(model):
             state.invalidate()
 
 
+def _bucket_budget(need, limit):
+    # 2x the call's need, but never below the smallest bucket a fresh cache would get: else repeated short calls
+    # after a long one would drop and re-capture an equal bucket every call.
+    return max(_KEEP_MAX_RATIO * max(need, 1), KV.bucket(max(need, 1), max(limit, need, 1)))
+
+
 def _kept_compatible(
     state,
     batch_size,
@@ -871,7 +877,7 @@ def _kept_compatible(
         need = max_cache_len if need is None else need
         fits = (
             length is not None
-            and length <= _KEEP_MAX_RATIO * max(int(need), 1)
+            and length <= _bucket_budget(int(need), int(max_cache_len))
             and not KV.short_layers(kept, max_cache_len)
         )
     else:

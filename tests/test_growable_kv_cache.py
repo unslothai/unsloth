@@ -475,3 +475,21 @@ def test_released_cache_frees_its_kv_without_a_gc_pass(monkeypatch):
         assert alive() is None
     finally:
         gc.enable()
+
+
+def test_repeated_short_calls_after_a_long_one_keep_their_minimum_bucket(host, llama, monkeypatch):
+    # The smallest bucket (64) is over 2x a short call's need (15): judging reuse by 2x alone dropped and re-captured
+    # an equal bucket on every short call after a long one.
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "1")
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV_MIN", "64")
+    _gen(llama, new = 80)
+    monkeypatch.setattr(
+        llama, "_previous_max_cache_length", GG._kept_len(llama.__dict__[GG._ATTR]), raising = False
+    )
+    _gen(llama, new = 10)
+    kept = GG.kept_cache(llama)
+    before = _stats(llama)["captures"]
+    for _ in range(2):
+        _gen(llama, new = 10)
+    assert GG.kept_cache(llama) is kept and KV.capacity(kept) <= 64
+    assert _stats(llama)["captures"] == before
