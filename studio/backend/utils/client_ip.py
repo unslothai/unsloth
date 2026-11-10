@@ -171,6 +171,6 @@ def is_direct_local_request(request) -> bool:
     client = request.client
     if client is None or not _is_loopback_ip(client.host):
         return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+    if names_a_forwarded_client(request):
         return False
     return _host_header_is_loopback(request.headers.get("host"))
