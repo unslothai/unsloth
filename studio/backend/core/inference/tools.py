@@ -17466,6 +17466,8 @@ def _check_signal_escape_patterns(code: str):
             "asyncio.create_subprocess_shell",
             "asyncio.create_subprocess_exec",
             "pty.spawn",
+            "loop.subprocess_shell",
+            "loop.subprocess_exec",
         }
     )
 
@@ -17503,7 +17505,9 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
-    _STAR_EXPORTS = frozenset(fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS) | {"modules"}
+    _STAR_EXPORTS = frozenset(
+        fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS if not fq.startswith("loop.")
+    ) | {"modules"}
 
     def _module_expr(dotted):
         # posix and nt are the os module under its platform name.
@@ -17716,6 +17720,9 @@ def _check_signal_escape_patterns(code: str):
 
         def _shell_func_of(self, node):
             for owner, attr in self._lookups(node):
+                # Event loop methods behind create_subprocess_*; any receiver, since a loop comes from a call.
+                if attr in ("subprocess_shell", "subprocess_exec"):
+                    return f"loop.{attr}"
                 for module in self._modules_of(owner):
                     if f"{module}.{attr}" in _SHELL_EXEC_FUNCS:
                         return f"{module}.{attr}"
@@ -17818,7 +17825,9 @@ def _check_signal_escape_patterns(code: str):
                         has_opaque_kwargs = True
 
                 cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
-                all_call_args = list(node.args) + cmd_kw_values
+                # A loop method's first positional is the protocol factory, not the command.
+                positional = node.args[1:] if shell_func.startswith("loop.") else node.args
+                all_call_args = list(positional) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
 
                 if has_opaque_kwargs:
