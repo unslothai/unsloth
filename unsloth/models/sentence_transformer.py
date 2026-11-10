@@ -3681,6 +3681,12 @@ class _PatchAfterImportLoader(importlib.abc.Loader):
 
 
 class _SentenceTransformersFinder(importlib.abc.MetaPathFinder):
+    # Found by marker, not isinstance: a re-executed module defines a new class.
+    _unsloth_st_finder = True
+
+    def __init__(self):
+        self._busy = threading.local()
+
     def find_spec(
         self,
         fullname,
@@ -3689,23 +3695,30 @@ class _SentenceTransformersFinder(importlib.abc.MetaPathFinder):
     ):
         if fullname != "sentence_transformers" or fullname in sys.modules:
             return None
-        for finder in sys.meta_path:
-            if finder is self or not hasattr(finder, "find_spec"):
-                continue
-            try:
-                spec = finder.find_spec(fullname, path, target)
-            except Exception:
-                continue
-            if spec is None:
-                continue
-            if spec.loader is not None and hasattr(spec.loader, "exec_module"):
-                spec.loader = _PatchAfterImportLoader(spec.loader)
-            return spec
-        return None
+        # Another finder that also walks sys.meta_path would otherwise call back into this one forever.
+        if getattr(self._busy, "active", False):
+            return None
+        self._busy.active = True
+        try:
+            for finder in sys.meta_path:
+                if finder is self or not hasattr(finder, "find_spec"):
+                    continue
+                try:
+                    spec = finder.find_spec(fullname, path, target)
+                except Exception:
+                    continue
+                if spec is None:
+                    continue
+                if spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                    spec.loader = _PatchAfterImportLoader(spec.loader)
+                return spec
+            return None
+        finally:
+            self._busy.active = False
 
 
 # sentence_transformers is heavy and only embedding fine-tuning needs it: patch on first import.
 if "sentence_transformers" in sys.modules:
     _apply_sentence_transformers_patches()
-elif not any(isinstance(f, _SentenceTransformersFinder) for f in sys.meta_path):
+elif not any(getattr(f, "_unsloth_st_finder", False) for f in sys.meta_path):
     sys.meta_path.insert(0, _SentenceTransformersFinder())

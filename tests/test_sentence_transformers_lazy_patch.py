@@ -69,3 +69,43 @@ def test_unsloth_does_not_import_sentence_transformers_and_patches_it_on_import(
     assert late["loader"] != "_PatchAfterImportLoader"
     early = _run(st_first = True)
     assert early["flags"] == [True, True, True, True]
+
+
+_RELOAD_CHILD = textwrap.dedent(
+    """
+    import importlib, json, sys
+    sys.path.insert(0, {root!r})
+    try:
+        import unsloth.models.sentence_transformer as module
+    except Exception as error:
+        print("UNSLOTH_IMPORT_FAILED", repr(error))
+        raise SystemExit(0)
+    importlib.reload(module)
+    import sentence_transformers
+    from sentence_transformers.models import Pooling
+    print(json.dumps({{
+        "flags": [getattr(Pooling, "_unsloth_float16_pooling", False)],
+        "loader": type(sentence_transformers.__spec__.loader).__name__,
+    }}))
+    """
+)
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("sentence_transformers") is None, reason = "no sentence_transformers"
+)
+def test_reloading_the_module_does_not_recurse_on_import():
+    env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_DISABLE_CPU_FALLBACK"}
+    out = subprocess.run(
+        [sys.executable, "-c", _RELOAD_CHILD.format(root = str(_ROOT))],
+        capture_output = True,
+        text = True,
+        timeout = 900,
+        env = env,
+    )
+    assert out.returncode == 0, out.stderr[-4000:]
+    if "UNSLOTH_IMPORT_FAILED" in out.stdout:
+        pytest.skip(out.stdout.strip().splitlines()[-1])
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["flags"] == [True]
+    assert result["loader"] != "_PatchAfterImportLoader"
