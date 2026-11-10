@@ -35,7 +35,8 @@ __all__ = [
 
 
 def enabled():
-    return _StaticLayer is not None and os.environ.get("UNSLOTH_GROWABLE_KV", "0") == "1"
+    # On by default; UNSLOTH_GROWABLE_KV=0 keeps transformers' full-length StaticCache.
+    return _StaticLayer is not None and os.environ.get("UNSLOTH_GROWABLE_KV", "1") != "0"
 
 
 def _min_slots():

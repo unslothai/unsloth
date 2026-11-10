@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Growable KV cache (UNSLOTH_GROWABLE_KV=1), checked on the host via test_generic_decode_graphs' stand-in graphs."""
+"""Growable KV cache (on by default, UNSLOTH_GROWABLE_KV=0 turns it off), checked on the host via test_generic_decode_graphs' stand-in graphs."""
 
 import contextlib
 import functools
