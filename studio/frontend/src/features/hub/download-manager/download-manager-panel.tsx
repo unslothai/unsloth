@@ -34,7 +34,8 @@ import {
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
-import { isRetryableDownload, retryRequestFor } from "./retry-download";
+import { isRetryableDownload } from "./retry-download";
+import { retryDownload } from "./retry-start";
 import {
   type PendingStart,
   usePendingStarts,
@@ -238,10 +239,7 @@ function DownloadRow({
               <button
                 type="button"
                 aria-label="Retry download"
-                // No dismiss first: a refused start must leave the failed row in place.
-                onClick={() =>
-                  void downloadManager.requestStart(retryRequestFor(job))
-                }
+                onClick={() => void retryDownload(job)}
                 className={cn(
                   "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
                   "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
