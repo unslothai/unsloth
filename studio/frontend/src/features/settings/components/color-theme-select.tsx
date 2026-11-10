@@ -125,7 +125,12 @@ export function ColorThemeSelect() {
   const renderItem = (id: ColorThemeId) => (
     <DropdownMenuItem
       key={id}
-      onSelect={() => setPalette(id)}
+      // Keep the menu open: a palette is chosen by comparison, so a pick should not dismiss the
+      // list the user is still looking through.
+      onSelect={(event) => {
+        event.preventDefault();
+        setPalette(id);
+      }}
       data-palette-value={id}
       aria-checked={palette === id}
       role="menuitemradio"
