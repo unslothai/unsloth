@@ -395,13 +395,15 @@ def test_an_appearance_failure_that_appears_after_a_recheck_is_measured_again(mo
     # thread burst in every look (default 1,266 ms CPU, Liquid 3D 1,005). Another mode's failure got
     # the default page measured again (154 ms); Liquid 3D was then judged 1,005 / 154 = 6.5x against
     # 6x on its never-rechecked first reading. Its own recheck reads 1.6x.
-    cell = lambda cpu: {
-        "elements": 70,
-        "layout_objects": 200,
-        "cpu_ms": cpu,
-        "main_ms": cpu / 2,
-        "paint_ms": 15,
-    }
+    cell = (
+        lambda cpu: {
+            "elements": 70,
+            "layout_objects": 200,
+            "cpu_ms": cpu,
+            "main_ms": 60,  # flat, so the paint / CPU length rule (rechecked even report-only) stays out of it
+            "paint_ms": 15,
+        }
+    )
     pages = {
         (am.SHORT, "default"): _page({"type": cell(150)}),
         (am.SHORT, "frosted"): _page({"type": cell(160)}),
@@ -652,9 +654,16 @@ def test_length_ratio_divides_by_the_median_short_reading(metric, length_blockin
     assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(160, 34, True)]
 
 
-def test_length_time_checks_report_but_do_not_fail_by_default():
-    # Report-only until message-level actions stop growing with the chat (LENGTH_TIME_BLOCKING).
-    assert am.LENGTH_TIME_BLOCKING is False
+def test_length_time_checks_block_by_default():
+    # Blocking since the length cells are judged on fresh-page rechecks (no spilled-over first reading).
+    assert am.LENGTH_TIME_BLOCKING is True
+    assert not [
+        k for k in am.known_limits(am.KNOWN_DEFAULT) if k[0].split("@")[0] in ("cpu", "paint")
+    ], "paint / CPU length ceilings were for single first readings; rechecks replace them"
+
+
+def test_length_time_checks_can_report_only(monkeypatch):
+    monkeypatch.setattr(am, "LENGTH_TIME_BLOCKING", False)
     pages = {
         (am.SHORT, "default"): _page(
             {
@@ -686,7 +695,9 @@ def test_length_time_checks_report_but_do_not_fail_by_default():
         ("paint_ms", True, False),
         ("main_ms", True, False),
     ]
-    assert not am.recheck_keys(verdicts), "a report-only reading costs no recheck time"
+    # Even report-only, the reading is measured again at both lengths: a single first reading at LONG
+    # turns carries work spilled over from the areas before it.
+    assert am.recheck_keys(verdicts) == [(am.SHORT, "default", "a"), (am.LONG, "default", "a")]
     text = "\n".join(am.table(result, verdicts))
     assert "would fail (report-only, not failing the gate): default/a paint 15->104 ms" in text
 
@@ -787,3 +798,60 @@ def test_stream_wait_is_cheap_while_the_reply_streams():
     body = am.STREAMED.split("if (!window.__gateStreamDone) return false;")
     assert len(body) == 2 and "querySelector" not in body[0]
     assert "__gateStreamDone = true" in am.STREAM_SHIM
+
+
+def _length_run(monkeypatch, first_long_main, again_long_main):
+    """am.run on one area whose main-thread time is 130 ms at SHORT turns; the LONG reading is
+    first_long_main, then again_long_main on each fresh-page recheck."""
+    cell = lambda main: {
+        "elements": 10,
+        "layout_objects": 0,
+        "cpu_ms": 200,
+        "main_ms": main,
+        "paint_ms": 5,
+    }
+    pages = {
+        (am.SHORT, "default"): _page({"chat_row_menu": cell(130)}),
+        (am.LONG, "default"): _page({"chat_row_menu": cell(first_long_main)}),
+    }
+    fake = {
+        "pages": pages,
+        "modes": {m["name"]: m for m in am.app_modes()},
+        "areas": ["chat_row_menu"],
+        "seconds": 0.0,
+    }
+    monkeypatch.setattr(am, "measure", lambda *a, **k: fake)
+    calls = []
+
+    def remeasure(result, items, log):
+        calls.append(sorted(items))
+        for turns, mode, area in items:
+            reading = {"status": "OK", **cell(130 if turns == am.SHORT else again_long_main)}
+            result["pages"][(turns, mode)]["cells"][area].setdefault("again", []).extend(
+                [reading] * am.RECHECKS
+            )
+
+    monkeypatch.setattr(am, "remeasure", remeasure)
+    _, failures, _, _ = am.run(Path("unused"), [], log = lambda *a, **k: None)
+    return calls, [f for f in failures if "costs more as the chat grows" in f]
+
+
+def test_a_spilled_over_first_long_reading_clears_on_recheck(monkeypatch, length_blocking):
+    # Gate order, 200 turns: chat_row_menu read 404-518 ms on its first reading and 178-268 ms on a
+    # fresh page (130 ms at 40 turns); the work belonged to the areas run before it.
+    calls, failures = _length_run(monkeypatch, first_long_main = 470, again_long_main = 220)
+    assert calls == [
+        [(am.SHORT, "default", "chat_row_menu"), (am.LONG, "default", "chat_row_menu")]
+    ]
+    assert failures == []
+
+
+def test_length_growth_that_survives_rechecks_fails(monkeypatch, length_blocking):
+    calls, failures = _length_run(monkeypatch, first_long_main = 470, again_long_main = 450)
+    assert len(calls) == 1
+    assert len(failures) == 1 and "area chat_row_menu (default)" in failures[0]
+
+
+def test_an_area_under_the_limit_costs_no_recheck(monkeypatch, length_blocking):
+    calls, failures = _length_run(monkeypatch, first_long_main = 250, again_long_main = 250)
+    assert calls == [] and failures == []
