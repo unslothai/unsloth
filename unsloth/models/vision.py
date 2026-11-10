@@ -1535,7 +1535,6 @@ class _EagerDecodeSteps:
         def forward(*args, **kwargs):
             return step(*args, **kwargs)
 
-        # An instance forward (accelerate's mixed-precision wrapper, GRPO's hidden-states wrapper) is put back on exit.
         self._previous = self.model.__dict__.get("forward", _NO_FORWARD)
         self.model.forward = forward
         return self
@@ -1576,7 +1575,7 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
         self.eager_regions = self.eager_decodes or (
             os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_EAGER_REGIONS", "0") == "1"
         )
-        # Set by generate() once the call returned: keep the graphs and their cache for the next call.
+        # Set by generate() after the call: keep the graphs and their cache for the next call.
         self.keep = False
         self.caches = _generic_decode_graphs.reuse_kept_cache(model)
 
@@ -1590,9 +1589,8 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
 
     def _graph_forward(self, *args, **kwargs):
         if not args and not torch.compiler.is_compiling():
-            # The graph records exactly the step the eager path runs: compiled regions stay
-            # compiled unless this model's eager decode leaves them (a different kernel mix
-            # rounds differently, and greedy tokens drift after a few dozen steps).
+            # Compiled regions stay compiled unless this model's eager decode leaves them: a
+            # different kernel mix rounds differently and greedy tokens drift after a few dozen steps.
             out = _generic_decode_graphs.decode_step(
                 self.model,
                 self.forward,
@@ -2502,8 +2500,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
             return out
 
-    # Plain generate() decodes through CUDA graphs by default (as the llama path and Studio):
-    # UNSLOTH_DECODE_CUDA_GRAPHS=0 / UNSLOTH_DECODE_GENERIC_GRAPHS=0 keep it eager.
     try:
         with _decode_graphs.generate_scope():
             if cache_implementation == "static" and not force_dynamic_cache and not compile_decode:
@@ -2524,7 +2520,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 if out_of_memory:
                     # Outside the handler: its traceback holds the failed call's frames (cache, graph
                     # buffers), which would stay allocated through the redo.
-                    # Redo once without the graph wrapper, from the call's starting RNG and a fresh cache.
                     _generic_decode_graphs.redo_eagerly(self)
                     _clear_generation_caches(self)
                     _generic_decode_graphs.set_rng_state(rng)
@@ -6208,7 +6203,6 @@ class FastBaseModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
-        # Kept decode graphs and their StaticCache (generate() keeps them between inference calls).
         _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)

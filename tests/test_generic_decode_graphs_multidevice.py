@@ -2,9 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """FastModel decode CUDA graphs for a model split over cards (device_map / Unsloth's layer split):
-one graph holds every card's kernels, so a split model is graphed instead of refused. On the host
-through the stand-in backend of test_generic_decode_graphs, with the parameter devices faked as two
-cards; the real two-card capture is the gpu-marked test at the end (two GPUs)."""
+one graph holds every card's kernels. On the host through the stand-in backend of
+test_generic_decode_graphs with the parameter devices faked as two cards; the real two-card capture
+is the gpu-marked test."""
 
 import contextlib
 import os
@@ -37,18 +37,12 @@ class _TwoCards(T._Host):
     others_recorded = []
     supported = True
     log = []
-
-    @staticmethod
-    def current_device():
-        return 0
+    current_device = staticmethod(lambda: 0)
+    mempool = staticmethod(lambda: object())
 
     @classmethod
     def multidevice_supported(cls):
         return cls.supported
-
-    @staticmethod
-    def mempool():
-        return object()
 
     @classmethod
     def current_stream(cls):
@@ -69,15 +63,9 @@ class _TwoCards(T._Host):
         yield
 
     @classmethod
-    def record(
-        cls,
-        pool,
-        fn,
-        cache,
-        others = None,
-        mempools = None,
-    ):
-        cls.others_recorded.append((tuple(sorted(others or {})), sorted(mempools or {})))
+    def record(cls, pool, fn, cache, *side):
+        others, mempools = side or ({}, {})
+        cls.others_recorded.append((tuple(sorted(others)), sorted(mempools)))
         return super().record(pool, fn, cache)
 
 
@@ -103,33 +91,19 @@ def llama():
     return AutoModelForCausalLM.from_pretrained(T.LLAMA, dtype = torch.float32).eval()
 
 
-def _align_hooks(model):
-    """accelerate AlignDevicesHook on every decoder layer, as dispatch_model puts on a split model."""
-    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-    for layer in model.model.layers:
-        add_hook_to_module(layer, AlignDevicesHook(execution_device = "cpu"))
-
-
 def test_split_model_is_graphed_as_one_multi_card_graph(two_cards, llama):
-    pytest.importorskip("accelerate")
-    _align_hooks(llama)
-    T._fresh(llama)
-    ids, mask = T._ids(llama, 2, pad = 1)
-    eager = T._generate(llama, ids, mask, False)
-    graphed = T._generate(llama, ids, mask, True)
-    assert torch.equal(eager, graphed)
-    s = GG.stats(llama)
+    hooks = pytest.importorskip("accelerate.hooks")
+    # As dispatch_model leaves a split model: an AlignDevicesHook on every decoder layer.
+    for layer in llama.model.layers:
+        hooks.add_hook_to_module(layer, hooks.AlignDevicesHook(execution_device = "cpu"))
+    s = T._both(llama, *T._ids(llama, 2, pad = 1))
     assert s["captures"] == 1 and s["replays"] == 8 and s["refusals"] == {}, s
-    # Captured with card 1 joined and its allocations in its own MemPool; card 1 on its side
-    # stream for the warm-up too.
+    # Card 1 joined with its own MemPool, and on its side stream for the warm-up.
     assert two_cards.others_recorded == [((1,), [1])]
     assert ("on_streams", (1,)) in two_cards.log
     # Every replay waits on card 1's stream first, and card 1 waits on the replay after.
-    assert ("card0", "waits", "card1") in two_cards.log and (
-        "card1",
-        "waits",
-        "card0",
-    ) in two_cards.log
+    assert ("card0", "waits", "card1") in two_cards.log
+    assert ("card1", "waits", "card0") in two_cards.log
 
 
 @pytest.mark.parametrize(
@@ -153,12 +127,7 @@ def test_split_model_refusals_decode_eagerly(two_cards, llama, monkeypatch, setu
         llama.model.layers[0].__dict__["_hf_hook"] = hook
     else:
         llama.model.layers[0].__dict__["_hf_hook"] = accelerate_hooks.ModelHook()
-    T._fresh(llama)
-    ids, mask = T._ids(llama, 1)
-    eager = T._generate(llama, ids, mask, False)
-    graphed = T._generate(llama, ids, mask, True)
-    assert torch.equal(eager, graphed)
-    s = GG.stats(llama)
+    s = T._both(llama, *T._ids(llama, 1))
     assert s["captures"] == 0 and s["replays"] == 0, s
     assert set(s["refusals"]) == {reason}, s
     assert two_cards.others_recorded == []
@@ -166,14 +135,10 @@ def test_split_model_refusals_decode_eagerly(two_cards, llama, monkeypatch, setu
 
 def test_single_card_model_records_without_other_cards(two_cards, llama, monkeypatch):
     monkeypatch.setattr(GG, "_param_devices", lambda model: {torch.device("cpu", 0)})
-    T._fresh(llama)
-    ids, mask = T._ids(llama, 1)
-    assert torch.equal(T._generate(llama, ids, mask, False), T._generate(llama, ids, mask, True))
-    s = GG.stats(llama)
+    s = T._both(llama, *T._ids(llama, 1))
     assert s["captures"] == 1 and s["refusals"] == {}, s
     # The single-card record call is unchanged (no other cards, no MemPools).
     assert two_cards.others_recorded == [((), [])]
-    # No other card's stream is touched.
     assert not any("card1" in entry for entry in two_cards.log), two_cards.log
 
 
@@ -233,13 +198,8 @@ class _HostCards:
     def card_device(index):
         return torch.device(("cpu", "meta")[index])
 
-    @staticmethod
-    def current_device():
-        return 0
-
-    @staticmethod
-    def device(index):
-        return contextlib.nullcontext()
+    current_device = staticmethod(lambda: 0)
+    device = staticmethod(lambda index: contextlib.nullcontext())
 
     def new_graph(self):
         self.n += 1
@@ -252,16 +212,16 @@ class _HostCards:
         self.log.append(("end", graph.n))
 
 
+def _send_to_device(value, device, *args, **kwargs):
+    return value.to(device)
+
+
 class _Block(torch.nn.Module):
     def __init__(self, device):
         super().__init__()
         self.lin = torch.nn.Linear(4, 4, device = device)
 
-    def forward(
-        self,
-        x,
-        extra = None,
-    ):
+    def forward(self, x, extra):
         return self.lin(x) + extra
 
 
@@ -307,7 +267,6 @@ def test_segment_recorder_cuts_at_the_card_boundary_and_moves_shared_inputs_once
         ("begin", 2, 1, "pool1"),
         ("end", 2),
     ], cards.log
-    # Hooks are put back after recording.
     assert (
         hooks.send_to_device,
         hooks.AlignDevicesHook.pre_forward,
@@ -343,26 +302,14 @@ def test_segment_recorder_leaves_movable_objects_to_accelerate(monkeypatch):
     seen = []
 
     class Movable:
-        def to(
-            self,
-            device,
-            non_blocking = False,
-        ):
+        def to(self, device, *args, **kwargs):
             seen.append(device)
             return self
 
-    def original(
-        value,
-        device,
-        non_blocking = False,
-        skip_keys = None,
-    ):
-        return value.to(device)
-
     recorder = GG._SegmentRecorder(cards, {0: "pool0", 1: "pool1"}, 0)
-    recorder.original = original
+    recorder.original = _send_to_device
     item = Movable()
-    assert recorder.send(original, {"a": item}, "meta")["a"] is item
+    assert recorder.send(_send_to_device, {"a": item}, "meta")["a"] is item
     assert (
         seen == [torch.device("meta")]
         and recorder.segments.parts == []
@@ -456,12 +403,11 @@ def test_graph_block_mask_moves_its_closure_tensors_to_the_layer_card(monkeypatc
     assert here is built
     later = here.__dict__["_unsloth_on_device"]("meta")
     assert all(t.device.type == "meta" for t in later.mask_mod.reads)
-    # A moved mask moves on again.
     assert moved.__dict__["_unsloth_on_device"]("meta") is moved
 
     # Recording: the fields and closure tensors cross as hand-offs (refilled every replay), once per card.
     recorder = GG._SegmentRecorder(cards, {0: "pool0", 1: "pool1"}, 0)
-    recorder.original = lambda v, device, non_blocking = False, skip_keys = None: v.to(device)
+    recorder.original = _send_to_device
     out = recorder.send(recorder.original, {"attention_mask": built}, "meta")["attention_mask"]
     again = recorder.send(recorder.original, {"attention_mask": built}, "meta")["attention_mask"]
     assert again is out
@@ -472,3 +418,43 @@ def test_graph_block_mask_moves_its_closure_tensors_to_the_layer_card(monkeypatc
     assert all(any(t is s for s in sources) for t in closure), "closure tensors not handed off"
     assert any(s is built.kv_num_blocks for s in sources)
     assert recorder.pending == 1
+
+
+def test_overlapping_recordings_from_two_threads_restore_accelerates_hooks():
+    # accelerate's hooks are process-global: overlapping recordings used to restore each other's replacements and
+    # leave a finished recorder's send_to_device installed.
+    import threading
+    import time
+
+    import accelerate.hooks as hooks
+
+    originals = (
+        hooks.send_to_device,
+        hooks.AlignDevicesHook.pre_forward,
+        hooks.AlignDevicesHook.post_forward,
+    )
+    active, peak, errors = [0], [0], []
+
+    def body():
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        time.sleep(0.05)
+        active[0] -= 1
+
+    def record():
+        try:
+            GG._SegmentRecorder(_HostCards(), {0: "pool0"}, 0).run(body)
+        except BaseException as error:
+            errors.append(repr(error))
+
+    threads = [threading.Thread(target = record) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert not errors and peak[0] == 1, (errors, peak)
+    assert (
+        hooks.send_to_device,
+        hooks.AlignDevicesHook.pre_forward,
+        hooks.AlignDevicesHook.post_forward,
+    ) == originals

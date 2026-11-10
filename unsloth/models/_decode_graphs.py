@@ -182,10 +182,9 @@ class plan_scope:
 
 
 def call_plan():
-    """ "graph" when the generate() call running on this thread decodes through CUDA graphs, "eager" when
-    it decodes eagerly, None outside Unsloth's generate(). Decided once per call before decoding starts
-    (llama.py / vision.py), so per-call policies (the 16-bit LoRA fold threshold) follow the call's real
-    plan rather than enabled(), which only says graphs are allowed."""
+    """ "graph" / "eager" for the generate() call running on this thread, None outside Unsloth's
+    generate(). Per-call policies (the 16-bit LoRA fold threshold) read this, not enabled(), which only
+    says graphs are allowed."""
     if torch.compiler.is_compiling():
         return None
     if getattr(_TLS, "eager", 0):
@@ -755,7 +754,6 @@ def release(model):
             state.statics.clear()
         generic = d.get("_unsloth_generic_decode_graphs")
         if generic is not None:
-            # FastModel generate's graphs (_generic_decode_graphs).
             generic.invalidate()
         if "_unsloth_graph_buffers" in d:
             found = True
