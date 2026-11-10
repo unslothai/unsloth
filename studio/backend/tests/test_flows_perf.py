@@ -4,11 +4,12 @@
 """The faster paths return what the slow ones did: gallery summaries, batched run writes, the pre-minted key."""
 
 import asyncio
+from types import SimpleNamespace
 
 from core.flows.compiler import parse_document
 from storage import flows_db
 
-from ._flows_helpers import doc, node, run_async
+from ._flows_helpers import doc, edge, node, run_async
 from .test_flows_engine import BASE, _engine, _run
 
 
@@ -324,3 +325,126 @@ def test_the_token_cache_keeps_only_short_texts():
     memory.tokens("lantern " * 1000)
     assert memory._cached_tokens.cache_info().currsize == 1
     assert memory.tokens("lantern " * 1000) == frozenset({"lantern"})
+
+
+@run_async
+async def test_repeated_invokes_of_one_revision_compile_the_flow_once(monkeypatch):
+    from core.flows import engine as engine_mod
+
+    compiled = []
+    real = engine_mod.compile_flow
+    monkeypatch.setattr(engine_mod, "compile_flow", lambda d: compiled.append(1) or real(d))
+
+    async def next_scene(ctx):
+        return {"scene": {"ok": True}}
+
+    eng = _engine({**BASE, "story.next_scene": next_scene})
+    parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
+    for _ in range(5):
+        await eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n", revision = 1)
+    assert len(compiled) == 1
+    await eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n", revision = 2)
+    await eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n")
+    assert len(compiled) == 3
+    await eng.release_spare_keys()
+
+
+@run_async
+async def test_runs_and_invokes_keep_storage_off_the_event_loop(monkeypatch):
+    import threading
+
+    on_loop = []
+    loop_thread = threading.get_ident()
+    real = flows_db.get_connection
+
+    def watched():
+        if threading.get_ident() == loop_thread:
+            on_loop.append(1)
+        return real()
+
+    async def next_scene(ctx):
+        return {"scene": {"ok": True}}
+
+    d = doc([node("a", "input.text", value = "x"), node("n", "story.next_scene")], id = "offloop")
+    flows_db.save_flow(parse_document(d)[0])
+    monkeypatch.setattr(flows_db, "get_connection", watched)
+    eng = _engine({**BASE, "story.next_scene": next_scene})
+    await _run(eng, d)
+    parsed, _ = parse_document(d)
+    await eng.invoke(app = None, flow_id = "offloop", doc = parsed, entry = "n")
+    await eng.release_spare_keys()
+    assert on_loop == []
+
+
+def test_upstream_sets_are_worked_out_once_per_node(monkeypatch):
+    from core.flows import compiler
+
+    calls = []
+    real = compiler.Plan.ancestors
+    monkeypatch.setattr(
+        compiler.Plan, "ancestors", lambda self, t: calls.append(1) or real(self, t)
+    )
+    nodes = [node(f"t{i}", "text.template") for i in range(30)]
+    edges = [edge(f"t{i}", "text", f"t{i + 1}", "values") for i in range(29)]
+    plan = compiler.compile_flow(parse_document(doc(nodes, edges))[0])
+    calls.clear()
+    for _ in range(20):
+        for i in range(30):
+            plan.upstream(f"t{i}")
+    assert len(calls) == 30
+    assert plan.upstream("t3") == {"t0", "t1", "t2"}
+
+
+def test_the_heap_topological_order_matches_the_sorted_list_one():
+    import random
+
+    from core.flows.compiler import _topo
+
+    def reference(nodes, inputs):
+        position = {nid: i for i, nid in enumerate(nodes)}
+        remaining = {n: {s for ss in inputs.get(n, {}).values() for s, _ in ss} for n in nodes}
+        dependents = {n: set() for n in nodes}
+        for n, d in remaining.items():
+            for s in d:
+                dependents[s].add(n)
+        ready = sorted((n for n, d in remaining.items() if not d), key = position.__getitem__)
+        order = []
+        while ready:
+            n = ready.pop(0)
+            order.append(n)
+            for nxt in dependents[n]:
+                remaining[nxt].discard(n)
+                if not remaining[nxt] and nxt not in order and nxt not in ready:
+                    ready.append(nxt)
+            ready.sort(key = position.__getitem__)
+        return order if len(order) == len(nodes) else None
+
+    rng = random.Random(0)
+    for _ in range(200):
+        names = [f"n{i}" for i in range(rng.randint(1, 25))]
+        rng.shuffle(names)
+        nodes = {n: {} for n in names}
+        inputs = {}
+        for i, n in enumerate(names):
+            pool = names if rng.random() < 0.05 else names[:i] + names[i + 1 :]
+            picks = rng.sample(pool, min(len(pool), rng.randint(0, 3)))
+            if picks:
+                inputs[n] = {"a": [(p, "o") for p in picks]}
+        assert _topo(nodes, inputs, {n: None for n in names}, {}) == reference(nodes, inputs)
+
+
+def test_a_cards_load_settings_are_read_once_per_run(monkeypatch):
+    from core.flows import model_settings
+    from core.flows.engine import FlowEngine, RunState
+
+    reads = []
+    real = model_settings.card_load_kwargs
+    monkeypatch.setattr(model_settings, "card_load_kwargs", lambda *a: reads.append(1) or real(*a))
+    load = {"max_seq_length": 8192}
+    nodes = {f"g{i}": {"params": {"model": {"repo": "x/y-GGUF"}, "load": load}} for i in range(5)}
+    plan = SimpleNamespace(specs = {n: {"model_kind": "chat"} for n in nodes}, nodes = nodes)
+    rs = RunState(id = "r", flow_id = "f", account = None, doc = {}, plan = plan, options = {}, persist = False)
+    eng = FlowEngine()
+    for _ in range(10):
+        eng._pick_gpu(rs, list(nodes))
+    assert len(reads) == 5

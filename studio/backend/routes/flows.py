@@ -32,7 +32,7 @@ from core.flows import caller as flow_caller
 from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
 from core.flows.recipe_compile import RecipeCompileError, compile_recipe, recipe_graph
 from core.flows.recipe_import import GENERATE_TYPE, flow_from_recipe
-from core.flows.recipe_share import share_recipe, stdio_names
+from core.flows.recipe_share import is_stdio, share_recipe
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -363,6 +363,20 @@ def _made_from_unchanged(flow: Optional[dict], record: dict) -> bool:
     return made_from.get("updatedAt") == record.get("updatedAt")
 
 
+def _names_stdio_server(payload: Any) -> bool:
+    # Anywhere in the payload: a tool profile or column can carry its own server list.
+    stack: list[Any] = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if is_stdio(node):
+                return True
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return False
+
+
 @router.post("/import/recipe")
 def import_recipe(
     body: RecipeImportBody, via_api_key: Annotated[bool, Depends(authenticated_via_api_key)] = False
@@ -382,12 +396,7 @@ def import_recipe(
             return {"flow": existing, "report": {"notices": [], "reused": True}}
         payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
     elif body.payload is not None:
-        recipe = (
-            body.payload.get("recipe")
-            if isinstance(body.payload.get("recipe"), dict)
-            else body.payload
-        )
-        if stdio_names(recipe):
+        if _names_stdio_server(body.payload):
             # Same rule as saving a recipe: only the Unsloth UI may hand this host a command to run.
             require_ui_session_for_local_commands(via_api_key)
         payload, name, source = body.payload, None, None
@@ -562,15 +571,19 @@ def get_asset(ref: str) -> Response:
     )
 
 
+_RUN_FIELDS = ("id", "flow_id", "status", "error", "outputs", "started_at", "finished_at")
+
+
+def _run_view(run: dict, *extra: str) -> dict:
+    return {k: run[k] for k in (*_RUN_FIELDS, *extra)}
+
+
 def _stored_snapshot(run_id: str) -> Optional[dict]:
     run = flows_db.get_run(run_id)
     if run is None:
         return None
     return {
-        "run": {
-            k: run[k]
-            for k in ("id", "flow_id", "status", "error", "outputs", "started_at", "finished_at")
-        },
+        "run": _run_view(run),
         "nodes": flows_db.node_results(run_id),
         "last_seq": run["last_seq"],
     }
@@ -620,7 +633,7 @@ REPLAY_PAGE = 5000
 async def run_events(request: Request, run_id: str) -> StreamingResponse:
     engine = get_engine()
     rs = engine.live(run_id)
-    stored = None if rs is not None else _stored_snapshot(run_id)
+    stored = None if rs is not None else await asyncio.to_thread(_stored_snapshot, run_id)
     if rs is None and stored is None:
         raise HTTPException(status_code = 404, detail = "Run not found")
     after = _after(request)
@@ -740,7 +753,7 @@ async def delete_flow(flow_id: str) -> Response:
                 stopping.append(rs.task)
     if stopping:
         await asyncio.wait(stopping, timeout = 30)
-    flows_db.delete_flow(flow_id)
+    await asyncio.to_thread(flows_db.delete_flow, flow_id)
     try:
         from core.inference.tools import remove_session_sandbox
         await asyncio.to_thread(remove_session_sandbox, automation.python_session(flow_id), True)
@@ -846,7 +859,7 @@ async def _missing_models(request: Request, doc: dict) -> list[dict]:
 
 @router.post("/{flow_id}/plan")
 async def plan_flow(request: Request, flow_id: str, body: PlanBody) -> dict:
-    record = _flow_or_404(flow_id)
+    record = await asyncio.to_thread(_flow_or_404, flow_id)
     doc = _doc_or_400(body.doc) if body.doc is not None else record["doc"]
     try:
         plan = compiler.compile_flow(doc)
@@ -898,7 +911,7 @@ def _hf_token(request: Request) -> Optional[str]:
 
 @router.post("/{flow_id}/runs")
 async def start_run(request: Request, flow_id: str, body: RunBody) -> dict:
-    record = _flow_or_404(flow_id)
+    record = await asyncio.to_thread(_flow_or_404, flow_id)
     doc = _doc_or_400(body.doc) if body.doc is not None else record["doc"]
     options = body.model_dump(exclude = {"doc"})
     try:
@@ -913,24 +926,7 @@ async def start_run(request: Request, flow_id: str, body: RunBody) -> dict:
 @router.get("/{flow_id}/runs")
 def list_runs(flow_id: str) -> dict:
     runs = flows_db.list_runs(flow_id)
-    return {
-        "runs": [
-            {
-                k: r[k]
-                for k in (
-                    "id",
-                    "flow_id",
-                    "status",
-                    "error",
-                    "outputs",
-                    "started_at",
-                    "finished_at",
-                    "created_at",
-                )
-            }
-            for r in runs
-        ]
-    }
+    return {"runs": [_run_view(r, "created_at") for r in runs]}
 
 
 def _latest_outputs(flow_id: str) -> dict[str, dict]:
@@ -1067,7 +1063,7 @@ def _invoke_error(exc: Exception) -> HTTPException:
 
 @router.post("/{flow_id}/invoke", response_model = None)
 async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
-    record = _flow_or_404(flow_id)
+    record = await asyncio.to_thread(_flow_or_404, flow_id)
     engine = get_engine()
     if body.warm:
         try:
@@ -1077,6 +1073,7 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
                 doc = record["doc"],
                 entry = body.entry,
                 hf_token = _hf_token(request),
+                revision = record.get("updatedAt"),
             )
         except (CompileError, FlowNodeError) as exc:
             raise _invoke_error(exc)
@@ -1091,6 +1088,7 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
         hf_token = _hf_token(request),
         timing = {},
         background = body.background,
+        revision = record.get("updatedAt"),
     )
     if body.stream:
         return _invoke_stream(request, engine, call, body)
@@ -1245,7 +1243,7 @@ async def export_flow(
 ) -> Response:
     if mode not in ("json", "package", "baked"):
         raise HTTPException(status_code = 400, detail = "mode is json, package or baked")
-    record = _flow_or_404(flow_id)
+    record = await asyncio.to_thread(_flow_or_404, flow_id)
     account = current_account()
     key_id: Optional[int] = None
     caller = None

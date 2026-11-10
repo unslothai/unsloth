@@ -5,15 +5,25 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import time
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from storage.studio_db import get_connection
 
 ACTIVE_RUN_STATUSES = ("queued", "running", "cancelling")
 TERMINAL_RUN_STATUSES = ("cancelled", "completed", "failed", "interrupted")
+
+
+@contextlib.contextmanager
+def _db() -> Iterator[sqlite3.Connection]:
+    conn = get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def now_ms() -> int:
@@ -67,8 +77,7 @@ _SUMMARY_SQL = """
 
 
 def list_flows() -> list[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         try:
             # The gallery needs four fields: read them in SQLite instead of parsing every document (baked outputs included).
             rows = conn.execute(_SUMMARY_SQL).fetchall()
@@ -76,8 +85,6 @@ def list_flows() -> list[dict]:
             rows = conn.execute("SELECT * FROM flows ORDER BY updated_at DESC").fetchall()
             return [_summary_from_row(r) for r in rows]
         return [_summary_from_columns(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def _summary_from_columns(row: sqlite3.Row) -> dict:
@@ -101,8 +108,7 @@ def _summary_from_columns(row: sqlite3.Row) -> dict:
 
 def recipe_flows() -> dict[str, str]:
     """Saved Data Recipe id -> the newest flow it was brought into (`meta.from_recipe.id`)."""
-    conn = get_connection()
-    try:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT id, json_extract(doc_json, '$.meta.from_recipe.id') AS recipe FROM flows"
             " WHERE json_extract(doc_json, '$.meta.from_recipe.id') IS NOT NULL"
@@ -112,35 +118,26 @@ def recipe_flows() -> dict[str, str]:
         for row in rows:
             found.setdefault(str(row["recipe"]), row["id"])
         return found
-    finally:
-        conn.close()
 
 
 def get_flow(flow_id: str) -> Optional[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         row = conn.execute("SELECT * FROM flows WHERE id = ?", (flow_id,)).fetchone()
         return _flow_from_row(row) if row else None
-    finally:
-        conn.close()
 
 
 def flow_deleted(flow_id: str) -> bool:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         return (
             conn.execute("SELECT 1 FROM flow_tombstones WHERE id = ?", (flow_id,)).fetchone()
             is not None
         )
-    finally:
-        conn.close()
 
 
 def save_flow(doc: dict, base_updated_at: Optional[int] = None) -> dict:
     """Insert or update ``doc``. ``base_updated_at`` is the version the caller edited: a newer stored row is a conflict."""
     now = now_ms()
-    conn = get_connection()
-    try:
+    with _db() as conn:
         prior = conn.execute("SELECT updated_at FROM flows WHERE id = ?", (doc["id"],)).fetchone()
         updated_at = max(now, prior["updated_at"] + 1) if prior else now
         cur = conn.execute(
@@ -172,13 +169,10 @@ def save_flow(doc: dict, base_updated_at: Optional[int] = None) -> dict:
         if row is None:
             raise FlowDeleted(doc["id"])
         raise FlowConflict(doc["id"])
-    finally:
-        conn.close()
 
 
 def delete_flow(flow_id: str) -> None:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         conn.execute("DELETE FROM flows WHERE id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_sessions WHERE flow_id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_capabilities WHERE flow_id = ?", (flow_id,))
@@ -190,8 +184,6 @@ def delete_flow(flow_id: str) -> None:
             (flow_id, now_ms()),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _run_from_row(row: sqlite3.Row) -> dict:
@@ -211,8 +203,7 @@ def _run_from_row(row: sqlite3.Row) -> dict:
 
 
 def create_run(run_id: str, flow_id: str, options: dict) -> dict:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         conn.execute(
             "INSERT INTO flow_runs (id, flow_id, status, options_json, created_at) VALUES (?, ?, 'queued', ?, ?)",
             (run_id, flow_id, json.dumps(options), now_ms()),
@@ -220,34 +211,21 @@ def create_run(run_id: str, flow_id: str, options: dict) -> dict:
         conn.commit()
         row = conn.execute("SELECT * FROM flow_runs WHERE id = ?", (run_id,)).fetchone()
         return _run_from_row(row)
-    finally:
-        conn.close()
 
 
 def get_run(run_id: str) -> Optional[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         row = conn.execute("SELECT * FROM flow_runs WHERE id = ?", (run_id,)).fetchone()
         return _run_from_row(row) if row else None
-    finally:
-        conn.close()
 
 
 def list_runs(flow_id: str, limit: int = 50) -> list[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT * FROM flow_runs WHERE flow_id = ? ORDER BY created_at DESC LIMIT ?",
             (flow_id, limit),
         ).fetchall()
         return [_run_from_row(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def latest_run(flow_id: str) -> Optional[dict]:
-    runs = list_runs(flow_id, limit = 1)
-    return runs[0] if runs else None
 
 
 def update_run(run_id: str, **fields: Any) -> None:
@@ -270,32 +248,17 @@ def update_run(run_id: str, **fields: Any) -> None:
         values.append(value)
     if not sets:
         return
-    conn = get_connection()
-    try:
+    with _db() as conn:
         # A terminal status is final: a late writer never reopens it.
         conn.execute(
             f"UPDATE flow_runs SET {', '.join(sets)} WHERE id = ? AND status NOT IN (?, ?, ?, ?)",
             (*values, run_id, *TERMINAL_RUN_STATUSES),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def append_event(run_id: str, seq: int, event: dict) -> None:
-    conn = get_connection()
-    try:
-        conn.execute(
-            "INSERT OR IGNORE INTO flow_run_events (run_id, seq, event_json) VALUES (?, ?, ?)",
-            (run_id, seq, json.dumps(event)),
-        )
-        conn.execute(
-            "UPDATE flow_runs SET last_event_seq = MAX(last_event_seq, ?) WHERE id = ?",
-            (seq, run_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    write_batch(run_id, [(seq, event)], [], [])
 
 
 def write_batch(
@@ -309,8 +272,7 @@ def write_batch(
     if not (events or results or cache_rows or touched):
         return
     now = now_ms()
-    conn = get_connection()
-    try:
+    with _db() as conn:
         if events:
             conn.executemany(
                 "INSERT OR IGNORE INTO flow_run_events (run_id, seq, event_json) VALUES (?, ?, ?)",
@@ -353,9 +315,12 @@ def write_batch(
                     for key, node_type, outputs in cache_rows
                 ],
             )
+        if touched:
+            conn.executemany(
+                "UPDATE flow_cache SET last_used_at = ? WHERE key = ?",
+                [(now, key) for key in touched],
+            )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def events_after(
@@ -363,47 +328,22 @@ def events_after(
     after_seq: int,
     limit: int = 5000,
 ) -> list[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT event_json FROM flow_run_events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?",
             (run_id, after_seq, limit),
         ).fetchall()
         return [json.loads(r["event_json"]) for r in rows]
-    finally:
-        conn.close()
 
 
 def save_node_result(
     run_id: str, node_id: str, status: str, outputs: Optional[dict], error: Optional[str]
 ) -> None:
-    conn = get_connection()
-    try:
-        conn.execute(
-            """
-            INSERT INTO flow_node_results (run_id, node_id, status, outputs_json, error, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_id, node_id) DO UPDATE SET
-                status = excluded.status, outputs_json = excluded.outputs_json,
-                error = excluded.error, updated_at = excluded.updated_at
-            """,
-            (
-                run_id,
-                node_id,
-                status,
-                json.dumps(outputs) if outputs is not None else None,
-                error,
-                now_ms(),
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    write_batch(run_id, [], [(node_id, status, outputs, error)], [])
 
 
 def node_results(run_id: str) -> dict[str, dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT node_id, status, outputs_json, error FROM flow_node_results WHERE run_id = ?",
             (run_id,),
@@ -416,14 +356,11 @@ def node_results(run_id: str) -> dict[str, dict]:
             }
             for r in rows
         }
-    finally:
-        conn.close()
 
 
 def latest_node_outputs(flow_id: str) -> dict[str, dict]:
     """For each node, its newest successful output in any of the flow's runs (a side branch run keeps the rest)."""
-    conn = get_connection()
-    try:
+    with _db() as conn:
         rows = conn.execute(
             """
             SELECT node_id, status, outputs_json FROM (
@@ -440,8 +377,6 @@ def latest_node_outputs(flow_id: str) -> dict[str, dict]:
             r["node_id"]: {"status": r["status"], "outputs": json.loads(r["outputs_json"])}
             for r in rows
         }
-    finally:
-        conn.close()
 
 
 def node_output_history(
@@ -452,10 +387,9 @@ def node_output_history(
     """A node's last ``limit`` distinct successful outputs across the flow's runs, newest first.
 
     Outputs hold media refs, never bytes, so the history costs no storage of its own."""
-    conn = get_connection()
     seen: set[str] = set()
     entries: list[dict] = []
-    try:
+    with _db() as conn:
         # Rows stream newest first until ``limit`` distinct outputs are found: cached reruns repeat one output many times.
         rows = conn.execute(
             """
@@ -480,14 +414,11 @@ def node_output_history(
             )
             if len(entries) >= limit:
                 break
-    finally:
-        conn.close()
     return entries
 
 
 def save_recipe_run(flow_id: str, node_id: str, record: dict) -> None:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         conn.execute(
             """
             INSERT INTO flow_recipe_runs (id, flow_id, node_id, created_at, record_json)
@@ -498,8 +429,6 @@ def save_recipe_run(flow_id: str, node_id: str, record: dict) -> None:
             (record["id"], flow_id, node_id, int(record["createdAt"]), json.dumps(record)),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def recipe_runs(
@@ -507,8 +436,7 @@ def recipe_runs(
     node_id: str,
     limit: int = 50,
 ) -> list[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         # A preview keeps every row; the list leaves them out and one run is read whole.
         rows = conn.execute(
             "SELECT json_remove(record_json, '$.dataset') AS record_json FROM flow_recipe_runs"
@@ -516,28 +444,22 @@ def recipe_runs(
             (flow_id, node_id, limit),
         ).fetchall()
         return [json.loads(r["record_json"]) for r in rows]
-    finally:
-        conn.close()
 
 
 def recipe_run(flow_id: str, node_id: str, run_id: str) -> Optional[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         row = conn.execute(
             "SELECT record_json FROM flow_recipe_runs WHERE id = ? AND flow_id = ? AND node_id = ?",
             (run_id, flow_id, node_id),
         ).fetchone()
         return json.loads(row["record_json"]) if row else None
-    finally:
-        conn.close()
 
 
 def reconcile_orphaned_runs(
     error: str = "Unsloth Studio restarted while this flow was running",
 ) -> int:
     """Runs a previous process left active can never finish: mark them interrupted (never re-run them)."""
-    conn = get_connection()
-    try:
+    with _db() as conn:
         cur = conn.execute(
             f"UPDATE flow_runs SET status = 'interrupted', error = ?, finished_at = ?"
             f" WHERE status IN ({', '.join('?' * len(ACTIVE_RUN_STATUSES))})",
@@ -555,13 +477,10 @@ def reconcile_orphaned_runs(
         )
         conn.commit()
         return cur.rowcount
-    finally:
-        conn.close()
 
 
 def cache_get(key: str, touch: bool = True) -> Optional[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         row = conn.execute("SELECT outputs_json FROM flow_cache WHERE key = ?", (key,)).fetchone()
         if row is None:
             return None
@@ -569,40 +488,78 @@ def cache_get(key: str, touch: bool = True) -> Optional[dict]:
             conn.execute("UPDATE flow_cache SET last_used_at = ? WHERE key = ?", (now_ms(), key))
             conn.commit()
         return json.loads(row["outputs_json"])
-    finally:
-        conn.close()
 
 
 def cache_put(key: str, node_type: str, outputs: dict) -> None:
-    now = now_ms()
-    conn = get_connection()
-    try:
+    write_batch("", [], [], [(key, node_type, outputs)])
+
+
+RUNS_KEPT_PER_FLOW = 50
+CACHE_MAX_ROWS = 5000
+CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+_OLD_RUNS_SQL = """
+    SELECT id FROM flow_runs WHERE flow_id = ?1 AND status NOT IN ('queued', 'running', 'cancelling')
+    AND id NOT IN (SELECT id FROM flow_runs WHERE flow_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2)
+"""
+
+
+def prune_runs(flow_id: str, keep: Optional[int] = None) -> None:
+    """Drop the events and node results of the flow's runs older than the newest ``keep``.
+
+    A node's newest successful output stays wherever it is: the editor restores it from any run."""
+    with _db() as conn:
+        keep = RUNS_KEPT_PER_FLOW if keep is None else keep
         conn.execute(
-            """
-            INSERT INTO flow_cache (key, node_type, outputs_json, created_at, last_used_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET outputs_json = excluded.outputs_json, last_used_at = excluded.last_used_at
+            f"DELETE FROM flow_run_events WHERE run_id IN ({_OLD_RUNS_SQL})", (flow_id, keep)
+        )
+        conn.execute(
+            f"""
+            DELETE FROM flow_node_results WHERE run_id IN ({_OLD_RUNS_SQL}) AND (run_id, node_id) NOT IN (
+                SELECT run_id, node_id FROM (
+                    SELECT r.run_id, r.node_id, ROW_NUMBER() OVER (
+                        PARTITION BY r.node_id ORDER BY f.created_at DESC, r.updated_at DESC
+                    ) AS newest
+                    FROM flow_node_results r JOIN flow_runs f ON f.id = r.run_id
+                    WHERE f.flow_id = ?1 AND r.status IN ('done', 'cached') AND r.outputs_json IS NOT NULL
+                ) WHERE newest = 1
+            )
             """,
-            (key, node_type, json.dumps(outputs), now, now),
+            (flow_id, keep),
         )
         conn.commit()
-    finally:
-        conn.close()
+
+
+def prune_cache(max_rows: Optional[int] = None, max_bytes: Optional[int] = None) -> int:
+    """Evict the least recently used cache entries past ``max_rows`` rows or ``max_bytes`` of outputs."""
+    with _db() as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM flow_cache WHERE key IN (
+                SELECT key FROM (
+                    SELECT key, ROW_NUMBER() OVER w AS n, SUM(length(outputs_json)) OVER w AS total
+                    FROM flow_cache WINDOW w AS (ORDER BY last_used_at DESC, key ROWS UNBOUNDED PRECEDING)
+                ) WHERE n > ? OR total > ?
+            )
+            """,
+            (
+                CACHE_MAX_ROWS if max_rows is None else max_rows,
+                CACHE_MAX_BYTES if max_bytes is None else max_bytes,
+            ),
+        )
+        conn.commit()
+        return cur.rowcount
 
 
 def cache_clear() -> int:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         cur = conn.execute("DELETE FROM flow_cache")
         conn.commit()
         return cur.rowcount
-    finally:
-        conn.close()
 
 
 def list_sessions(flow_id: str) -> list[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT slot, label, updated_at FROM flow_sessions WHERE flow_id = ? ORDER BY updated_at DESC",
             (flow_id,),
@@ -610,13 +567,10 @@ def list_sessions(flow_id: str) -> list[dict]:
         return [
             {"slot": r["slot"], "label": r["label"], "updatedAt": r["updated_at"]} for r in rows
         ]
-    finally:
-        conn.close()
 
 
 def get_session(flow_id: str, slot: str) -> Optional[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         row = conn.execute(
             "SELECT * FROM flow_sessions WHERE flow_id = ? AND slot = ?", (flow_id, slot)
         ).fetchone()
@@ -628,14 +582,11 @@ def get_session(flow_id: str, slot: str) -> Optional[dict]:
             "state": json.loads(row["state_json"]),
             "updatedAt": row["updated_at"],
         }
-    finally:
-        conn.close()
 
 
 def put_session(flow_id: str, slot: str, state: Any, label: Optional[str]) -> dict:
     now = now_ms()
-    conn = get_connection()
-    try:
+    with _db() as conn:
         conn.execute(
             """
             INSERT INTO flow_sessions (flow_id, slot, label, state_json, updated_at) VALUES (?, ?, ?, ?, ?)
@@ -646,33 +597,24 @@ def put_session(flow_id: str, slot: str, state: Any, label: Optional[str]) -> di
         )
         conn.commit()
         return {"slot": slot, "label": label, "state": state, "updatedAt": now}
-    finally:
-        conn.close()
 
 
 def delete_session(flow_id: str, slot: str) -> None:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         conn.execute("DELETE FROM flow_sessions WHERE flow_id = ? AND slot = ?", (flow_id, slot))
         conn.commit()
-    finally:
-        conn.close()
 
 
 def get_capabilities(flow_id: str) -> dict:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         row = conn.execute(
             "SELECT approved_json FROM flow_capabilities WHERE flow_id = ?", (flow_id,)
         ).fetchone()
         return json.loads(row["approved_json"]) if row else {}
-    finally:
-        conn.close()
 
 
 def set_capabilities(flow_id: str, approved: dict) -> None:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         conn.execute(
             "INSERT INTO flow_capabilities (flow_id, approved_json, updated_at) VALUES (?, ?, ?) "
             "ON CONFLICT(flow_id) DO UPDATE SET approved_json = excluded.approved_json, "
@@ -680,8 +622,6 @@ def set_capabilities(flow_id: str, approved: dict) -> None:
             (flow_id, json.dumps(approved), now_ms()),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _trigger_from_row(row: sqlite3.Row) -> dict:
@@ -696,8 +636,7 @@ def _trigger_from_row(row: sqlite3.Row) -> dict:
 
 
 def list_triggers(flow_id: Optional[str] = None) -> list[dict]:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         if flow_id is None:
             rows = conn.execute("SELECT * FROM flow_triggers").fetchall()
         else:
@@ -705,15 +644,12 @@ def list_triggers(flow_id: Optional[str] = None) -> list[dict]:
                 "SELECT * FROM flow_triggers WHERE flow_id = ?", (flow_id,)
             ).fetchall()
         return [_trigger_from_row(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def replace_triggers(flow_id: str, wanted: list[dict], new_token: Any) -> None:
     """Make the flow's trigger rows match ``wanted`` ({node_id, kind, config}); kept rows keep their secret and last
     fire time, new webhook rows get ``new_token()``."""
-    conn = get_connection()
-    try:
+    with _db() as conn:
         old = {
             r["node_id"]: r
             for r in conn.execute("SELECT * FROM flow_triggers WHERE flow_id = ?", (flow_id,))
@@ -745,8 +681,6 @@ def replace_triggers(flow_id: str, wanted: list[dict], new_token: Any) -> None:
                 ),
             )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _token_hash(token: str) -> str:
@@ -756,8 +690,7 @@ def _token_hash(token: str) -> str:
 
 def trigger_by_token(token: str) -> Optional[dict]:
     import hmac
-    conn = get_connection()
-    try:
+    with _db() as conn:
         row = conn.execute(
             "SELECT * FROM flow_triggers WHERE token_hash = ? AND kind = 'webhook'",
             (_token_hash(token),),
@@ -765,13 +698,10 @@ def trigger_by_token(token: str) -> Optional[dict]:
         if row is None or not hmac.compare_digest(str(row["token"] or ""), token):
             return None
         return _trigger_from_row(row)
-    finally:
-        conn.close()
 
 
 def rotate_trigger_token(flow_id: str, node_id: str, token: str) -> bool:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         cur = conn.execute(
             "UPDATE flow_triggers SET token = ?, token_hash = ? WHERE flow_id = ? AND node_id = ? "
             "AND kind = 'webhook'",
@@ -779,17 +709,12 @@ def rotate_trigger_token(flow_id: str, node_id: str, token: str) -> bool:
         )
         conn.commit()
         return cur.rowcount > 0
-    finally:
-        conn.close()
 
 
 def mark_trigger_fired(flow_id: str, node_id: str, at_ms: int) -> None:
-    conn = get_connection()
-    try:
+    with _db() as conn:
         conn.execute(
             "UPDATE flow_triggers SET last_fired_at = ? WHERE flow_id = ? AND node_id = ?",
             (at_ms, flow_id, node_id),
         )
         conn.commit()
-    finally:
-        conn.close()

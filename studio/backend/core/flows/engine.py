@@ -15,8 +15,7 @@ already finished. Each run reaches Studio as its own internal API key, revoked w
 from __future__ import annotations
 
 import asyncio
-from collections import deque
-import contextlib
+from collections import OrderedDict
 import contextvars
 import base64
 import hashlib
@@ -25,8 +24,7 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Awaitable, Callable, Optional
 
 from core.flows import assets as asset_store
 from core.flows import capabilities
@@ -35,7 +33,9 @@ from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
 from core.flows import loop as loop_rounds
 from core.flows.compiler import FOR_EACH, LOOP, RECIPE_PARAM, CompileError, Plan, compile_flow
+from core.flows.gpu_lease import GpuLease, NeedsExclusiveGpu, chat_model_key, chat_slots
 from core.flows.registry import CACHE_HOOKS, FlowCancelled, FlowNodeError, load_handlers
+from core.flows.run_state import PROGRESS_MIN_INTERVAL_S, Env, RunState
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
 from utils.account_context import AccountContext, arun_as, current_account
@@ -43,14 +43,14 @@ from utils.account_context import AccountContext, arun_as, current_account
 logger = logging.getLogger(__name__)
 
 CPU_CONCURRENCY = 4
-PROGRESS_MIN_INTERVAL_S = 0.2
 SPARE_KEY_IDLE_S = 600.0
 INVOKE_FLUSH_S = 0.05
 CANCEL_GRACE_S = 10.0
 LEASE_RETRY_S = 2.0
 MAX_CALL_DEPTH = 3
-MEMORY_EVENTS = 4000
 FINISHED_RUNS_KEPT = 64
+CACHE_PRUNE_EVERY = 64
+PLANS_KEPT = 32
 
 MODEL_SLOT = {
     "chat": "llm",
@@ -85,10 +85,6 @@ class _Skip:
 
 SKIPPED = _Skip()
 TRIGGER_TYPES = ("trigger.schedule", "trigger.webhook")
-
-
-def _now() -> float:
-    return time.time()
 
 
 def _derive_seed(
@@ -139,241 +135,6 @@ def param_values(spec: dict, node: dict) -> dict:
     for key, value in (node.get("params") or {}).items():
         params[key] = _clamp(by_id[key], value) if key in by_id else value
     return params
-
-
-@dataclass(slots = True)
-class NodeState:
-    status: str = "idle"
-    outputs: Optional[dict] = None
-    error: Optional[str] = None
-    progress: Optional[dict] = None
-    message: Optional[str] = None
-    partial: Optional[dict] = None
-
-    def snapshot(self) -> dict:
-        found: dict[str, Any] = {"status": self.status}
-        if self.outputs is not None:
-            found["outputs"] = self.outputs
-        if self.error:
-            found["error"] = self.error
-        if self.progress:
-            found["progress"] = self.progress
-        if self.message:
-            found["message"] = self.message
-        if self.partial:
-            found["partial"] = self.partial
-        return found
-
-
-class Env:
-    """Node outputs visible to a scope; a For Each iteration layers its own over the run's."""
-
-    __slots__ = ("parent", "values")
-
-    def __init__(self, parent: Optional["Env"] = None):
-        self.parent = parent
-        self.values: dict[str, Any] = {}
-
-    def has(self, node_id: str) -> bool:
-        return node_id in self.values or (self.parent is not None and self.parent.has(node_id))
-
-    def get(self, node_id: str) -> Any:
-        if node_id in self.values:
-            return self.values[node_id]
-        if self.parent is not None:
-            return self.parent.get(node_id)
-        return None
-
-
-@dataclass
-class RunState:
-    id: str
-    flow_id: str
-    account: AccountContext
-    doc: dict
-    plan: Plan
-    options: dict
-    persist: bool = True
-    status: str = "queued"
-    seq: int = 0
-    events: deque = field(default_factory = lambda: deque(maxlen = MEMORY_EVENTS))
-    _unsaved_events: list[tuple[int, dict]] = field(default_factory = list, repr = False)
-    _unsaved_results: dict[str, tuple] = field(default_factory = dict, repr = False)
-    _unsaved_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
-    # The batch being written: still a cache hit until it commits.
-    _writing_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
-    _unsaved_touch: set[str] = field(default_factory = set, repr = False)
-    _persist_lock: asyncio.Lock = field(default_factory = asyncio.Lock, repr = False)
-    subscribers: set[asyncio.Queue] = field(default_factory = set)
-    cancel_event: asyncio.Event = field(default_factory = asyncio.Event)
-    nodes: dict[str, NodeState] = field(default_factory = dict)
-    outputs: dict[str, Any] = field(default_factory = dict)
-    error: Optional[str] = None
-    task: Optional[asyncio.Task] = None
-    caller: Any = None
-    key_id: Optional[int] = None
-    app: Any = None
-    resident: dict[str, Optional[str]] = field(default_factory = dict)
-    initial_resident: dict[str, list[str]] = field(default_factory = dict)
-    resident_variant: dict[str, Optional[str]] = field(default_factory = dict)
-    fresh: set[str] = field(default_factory = set)
-    prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
-    prefetched: int = 0
-    prefetch_load: Optional[tuple[str, str]] = None
-    loaded: dict[tuple[str, str], str] = field(default_factory = dict)
-    gpu_ops: int = 0
-    gpu_parent: Optional["RunState"] = field(default = None, repr = False)
-    cancel_hooks: dict[tuple, list[Callable[[], Awaitable[None]]]] = field(default_factory = dict)
-    node_tasks: dict[str, asyncio.Task] = field(default_factory = dict)
-    _last_progress: dict[str, float] = field(default_factory = dict)
-    _pending_progress: dict[str, dict] = field(default_factory = dict)
-    _pending_text: dict[tuple[str, str], list[str]] = field(default_factory = dict)
-    _pending_partial: dict[tuple, dict] = field(default_factory = dict)
-    executed: set[str] = field(default_factory = set)
-    ever_failed: set[str] = field(default_factory = set)
-    input_overrides: dict[str, dict] = field(default_factory = dict)
-    finished_at: Optional[float] = None
-    hf_token: Optional[str] = field(default = None, repr = False)
-    origin: dict = field(default_factory = dict)
-    approvals: dict = field(default_factory = dict)
-    marks: dict[str, float] = field(default_factory = dict)
-    background: bool = False
-
-    def node(self, node_id: str) -> NodeState:
-        state = self.nodes.get(node_id)
-        if state is None:
-            state = self.nodes[node_id] = NodeState()
-        return state
-
-    def emit(
-        self,
-        type_: str,
-        node_id: Optional[str] = None,
-        data: Optional[dict] = None,
-    ) -> dict:
-        self.seq += 1
-        event = {
-            "seq": self.seq,
-            "run_id": self.id,
-            "type": type_,
-            "node_id": node_id,
-            "ts": _now(),
-            "data": data or {},
-        }
-        self.events.append(event)
-        for queue in list(self.subscribers):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
-        if self.persist:
-            stored = event
-            if "preview" in event["data"]:
-                stored = {
-                    **event,
-                    "data": {k: v for k, v in event["data"].items() if k != "preview"},
-                }
-            elif type_ == "node.partial":
-                # Partials often repeat everything so far: store the position only, or the table grows quadratically.
-                stored = {**event, "data": {k: v for k, v in event["data"].items() if k != "value"}}
-            self._unsaved_events.append((self.seq, stored))
-        return event
-
-    def pending_cache(self, key: str) -> Optional[tuple[str, dict]]:
-        return self._unsaved_cache.get(key) or self._writing_cache.get(key)
-
-    def take_unsaved(self) -> Optional[tuple[list, list, list, tuple]]:
-        if not (
-            self._unsaved_events
-            or self._unsaved_results
-            or self._unsaved_cache
-            or self._unsaved_touch
-        ):
-            return None
-        batch = (
-            self._unsaved_events,
-            [(nid, *row) for nid, row in self._unsaved_results.items()],
-            [(key, *row) for key, row in self._unsaved_cache.items()],
-            tuple(self._unsaved_touch),
-        )
-        self._writing_cache = self._unsaved_cache
-        self._unsaved_events, self._unsaved_results, self._unsaved_cache = [], {}, {}
-        self._unsaved_touch = set()
-        return batch
-
-    def set_status(
-        self,
-        node_id: str,
-        status: str,
-        message: Optional[str] = None,
-    ) -> None:
-        state = self.node(node_id)
-        state.status = status
-        state.message = message
-        if status == "failed":
-            self.ever_failed.add(node_id)
-        data: dict[str, Any] = {"status": status}
-        if message:
-            data["message"] = message
-        if state.error and status == "failed":
-            data["error"] = state.error
-        self.emit("node.status", node_id, data)
-
-    def progress(self, node_id: str, data: dict) -> None:
-        now = time.monotonic()
-        last = self._last_progress.get(node_id)
-        self.node(node_id).progress = {k: v for k, v in data.items() if k != "preview"}
-        if last is not None and now - last < PROGRESS_MIN_INTERVAL_S:
-            self._pending_progress[node_id] = data
-            return
-        self._last_progress[node_id] = now
-        self._pending_progress.pop(node_id, None)
-        self.emit("node.progress", node_id, data)
-
-    def text_delta(self, node_id: str, port: str, delta: str) -> None:
-        self.marks.setdefault("first_text", time.monotonic())
-        self._pending_text.setdefault((node_id, port), []).append(delta)
-
-    def partial(self, node_id: str, data: dict) -> None:
-        """Keep the newest value per (node, port, iteration); the flusher stores one event per interval."""
-        state = self.node(node_id)
-        state.partial = {**(state.partial or {}), data["port"]: data}
-        key = (node_id, data["port"], tuple(data.get("iteration") or ()))
-        self._pending_partial[key] = data
-
-    def flush(self, node_id: Optional[str] = None) -> None:
-        for nid in list(self._pending_progress):
-            if node_id is None or nid == node_id:
-                self._last_progress[nid] = time.monotonic()
-                self.emit("node.progress", nid, self._pending_progress.pop(nid))
-        for key in list(self._pending_text):
-            if node_id is None or key[0] == node_id:
-                parts = self._pending_text.pop(key)
-                if parts:
-                    self.emit("node.text_delta", key[0], {"port": key[1], "delta": "".join(parts)})
-        for key in list(self._pending_partial):
-            if node_id is None or key[0] == node_id:
-                self.emit("node.partial", key[0], self._pending_partial.pop(key))
-
-    def snapshot(self) -> dict:
-        return {
-            "run": self.summary(),
-            "nodes": {nid: state.snapshot() for nid, state in self.nodes.items()},
-            "last_seq": self.seq,
-        }
-
-    def summary(self) -> dict:
-        return {
-            "id": self.id,
-            "flow_id": self.flow_id,
-            "status": self.status,
-            "error": self.error,
-            "outputs": self.outputs,
-        }
-
-    @property
-    def cancelled(self) -> bool:
-        return self.cancel_event.is_set()
 
 
 class NodeContextImpl:
@@ -639,137 +400,6 @@ class NodeContextImpl:
 BACKGROUND_TASKS = frozenset({"summarise", "director"})
 
 
-class NeedsExclusiveGpu(Exception):
-    """The loaded model is not this shared step's: rerun it exclusively."""
-
-
-def _llama_slots(backend: Any) -> int:
-    return max(1, int(backend.effective_parallel_slots)) if backend.is_loaded else 1
-
-
-def chat_slots(model: Optional[str] = None) -> int:
-    """How many requests a loaded chat model serves at once: its llama-server's slots, else 1 (a Transformers model
-    generates one request at a time). ``model`` names a model kept alongside the primary one; any other is the
-    primary's."""
-    try:
-        slot = _kept_slot(model)
-        if slot is not None:
-            return _llama_slots(slot.llama)
-        from routes.inference import get_llama_cpp_backend
-
-        return _llama_slots(get_llama_cpp_backend())
-    except Exception:
-        return 1
-
-
-def _kept_slot(model: Optional[str]) -> Any:
-    """The slot keeping ``model`` loaded alongside the primary chat model, or None."""
-    if not model:
-        return None
-    try:
-        from core.inference import model_slots
-        wanted = model.split(":", 1)[0].lower()
-        for slot in model_slots.visible():
-            names = (
-                getattr(slot.llama, "model_identifier", None),
-                getattr(slot.llama, "_openai_advertised_id", None),
-            )
-            if any(isinstance(n, str) and n.lower() == wanted for n in names):
-                return slot
-    except Exception:
-        return None
-    return None
-
-
-def chat_model_key(params: dict) -> Optional[str]:
-    """The lease key of a chat step: the repo it names when that model is kept alongside the primary one (it has
-    its own slots), else None, the primary."""
-    choice = params.get("model") if isinstance(params, dict) else None
-    repo = choice.get("repo") if isinstance(choice, dict) else None
-    if not (isinstance(repo, str) and repo) or _kept_slot(repo) is None:
-        return None
-    return repo.lower()
-
-
-class GpuLease:
-    """Exclusive holders run alone; ``shared()`` holders run up to the slot count, never while an exclusive
-    holder runs or waits, so a model is never swapped under a generation."""
-
-    def __init__(self) -> None:
-        self._cond = asyncio.Condition()
-        self._exclusive = False
-        self._waiting = 0
-        self._shared = 0
-        self._background = 0
-        self._by_model: dict[Optional[str], list[int]] = {}
-
-    def locked(self) -> bool:
-        return self._exclusive or self._shared > 0 or self._waiting > 0
-
-    async def __aenter__(self) -> "GpuLease":
-        async with self._cond:
-            self._waiting += 1
-            try:
-                await self._cond.wait_for(lambda: not self._exclusive and self._shared == 0)
-            finally:
-                self._waiting -= 1
-                # A cancelled exclusive waiter must not leave shared callers asleep behind it.
-                self._cond.notify_all()
-            self._exclusive = True
-        return self
-
-    async def __aexit__(self, *_exc: Any) -> None:
-        async with self._cond:
-            self._exclusive = False
-            self._cond.notify_all()
-
-    def exclusive(self) -> "GpuLease":
-        return self
-
-    @contextlib.asynccontextmanager
-    async def shared(
-        self,
-        *,
-        background: bool = False,
-        slots: Union[int, Callable[[], int]] = 1,
-        model: Union[Optional[str], Callable[[], Optional[str]]] = None,
-    ):
-        """``model`` keys the slot count: calls on different models kept loaded do not count against each other."""
-        key: Optional[str] = None
-
-        def admit() -> bool:
-            nonlocal key
-            key = model() if callable(model) else model
-            n = max(1, int(slots() if callable(slots) else slots))
-            cap = max(1, n - 1) if background else n
-            held, held_bg = self._by_model.get(key, (0, 0))
-            return (
-                not self._exclusive
-                and self._waiting == 0
-                and held < n
-                and (not background or held_bg < cap)
-            )
-
-        async with self._cond:
-            await self._cond.wait_for(admit)
-            self._shared += 1
-            self._background += background
-            held, held_bg = self._by_model.get(key, (0, 0))
-            self._by_model[key] = [held + 1, held_bg + background]
-        try:
-            yield
-        finally:
-            async with self._cond:
-                self._shared -= 1
-                self._background -= background
-                counts = self._by_model[key]
-                counts[0] -= 1
-                counts[1] -= background
-                if not counts[0]:
-                    del self._by_model[key]
-                self._cond.notify_all()
-
-
 def timing_of(marks: dict[str, float]) -> dict:
     start = marks.get("start")
     if start is None:
@@ -817,6 +447,8 @@ class FlowEngine:
         # One key minted ahead per account (PBKDF2, ~40 ms): each run or call still uses a key once and revokes it.
         self._spare_keys: dict[tuple, asyncio.Task] = {}
         self._revoking: set[asyncio.Task] = set()
+        self._cache_puts = 0
+        self._plans: OrderedDict[tuple, Plan] = OrderedDict()
 
     async def take_key(self, account: AccountContext) -> tuple[str, Optional[int]]:
         slot = (account.account_id, account.username)
@@ -912,7 +544,8 @@ class FlowEngine:
         run_origin = _origin(account, origin)
         options["origin"] = run_origin["kind"]
         run_id = uuid.uuid4().hex
-        flows_db.create_run(run_id, flow_id, _stored_options(options))
+        await asyncio.to_thread(flows_db.create_run, run_id, flow_id, _stored_options(options))
+        approvals = await asyncio.to_thread(flows_db.get_capabilities, flow_id)
         rs = RunState(
             id = run_id,
             flow_id = flow_id,
@@ -922,7 +555,7 @@ class FlowEngine:
             options = options,
             app = app,
             origin = run_origin,
-            approvals = flows_db.get_capabilities(flow_id),
+            approvals = approvals,
         )
         rs.hf_token = hf_token
         for nid in plan.order:
@@ -942,16 +575,22 @@ class FlowEngine:
     async def cancel(self, run_id: str) -> Optional[str]:
         rs = self.live(run_id)
         if rs is None:
-            stored = flows_db.get_run(run_id)
+            stored = await asyncio.to_thread(flows_db.get_run, run_id)
             return stored["status"] if stored else None
         if rs.status in ("completed", "failed", "cancelled", "interrupted"):
             return rs.status
         if not rs.cancel_event.is_set():
             rs.cancel_event.set()
-            flows_db.update_run(run_id, cancel_requested = True, status = "cancelling")
             rs.status = "cancelling"
             rs.emit("run.cancelling")
+            # The hooks are taken before anything yields: a node that sees the cancel drops its own.
+            stored = asyncio.ensure_future(
+                asyncio.to_thread(
+                    flows_db.update_run, run_id, cancel_requested = True, status = "cancelling"
+                )
+            )
             await self._fire_cancel_hooks(rs)
+            await stored
         return rs.status
 
     def subscribe(self, rs: RunState) -> asyncio.Queue:
@@ -976,12 +615,14 @@ class FlowEngine:
         events: Optional[asyncio.Queue] = None,
         timing: Optional[dict] = None,
         background: bool = False,
+        revision: Optional[int] = None,
     ) -> dict:
         """Run one entrypoint node (and what it needs, cache first) now and return its outputs.
         ``events`` receives the run's events as they happen, text deltas included, for a streamed answer.
-        ``timing`` is filled with where the time went (milliseconds): see timing_of()."""
+        ``timing`` is filled with where the time went (milliseconds): see timing_of().
+        ``revision`` (the stored flow's updatedAt) lets repeated calls reuse one compiled plan."""
         started = time.monotonic()
-        plan, spec = self._entry(doc, entry)
+        plan, spec = self._entry(doc, entry, flow_id, revision)
         account = current_account()
         rs = RunState(
             id = "invoke-" + uuid.uuid4().hex,
@@ -993,7 +634,7 @@ class FlowEngine:
             persist = False,
             app = app,
             origin = _origin(account, origin),
-            approvals = flows_db.get_capabilities(flow_id),
+            approvals = await asyncio.to_thread(flows_db.get_capabilities, flow_id),
         )
         rs.hf_token = hf_token
         rs.marks["start"] = started
@@ -1061,8 +702,27 @@ class FlowEngine:
         self._revoking.add(task)
         task.add_done_callback(self._revoking.discard)
 
-    def _entry(self, doc: dict, entry: str) -> tuple[Any, dict]:
-        plan = compile_flow(doc)
+    def _plan(self, doc: dict, flow_id: str, revision: Optional[int]) -> Plan:
+        if revision is None:
+            return compile_flow(doc)
+        key = (current_account().account_id, flow_id, revision)
+        plan = self._plans.get(key)
+        if plan is None:
+            plan = self._plans[key] = compile_flow(doc)
+            while len(self._plans) > PLANS_KEPT:
+                self._plans.popitem(last = False)
+        else:
+            self._plans.move_to_end(key)
+        return plan
+
+    def _entry(
+        self,
+        doc: dict,
+        entry: str,
+        flow_id: str = "",
+        revision: Optional[int] = None,
+    ) -> tuple[Any, dict]:
+        plan = self._plan(doc, flow_id, revision)
         spec = plan.specs.get(entry)
         if spec is None or entry not in plan.executable:
             raise FlowNodeError(f"No runnable node {entry!r} in this flow")
@@ -1080,10 +740,11 @@ class FlowEngine:
         doc: dict,
         entry: str,
         hf_token: Optional[str] = None,
+        revision: Optional[int] = None,
     ) -> bool:
         """Load the model an entry point answers with, so a player's first call does not wait for it.
         Calls for the same entry share one load; True once the model is resident (or the entry needs none)."""
-        plan, spec = self._entry(doc, entry)
+        plan, spec = self._entry(doc, entry, flow_id, revision)
         model_kind = spec.get("model_kind")
         if not model_kind:
             return True
@@ -1222,7 +883,9 @@ class FlowEngine:
             rs.caller = flow_caller.make_caller(token, rs.account, rs.app, rs.hf_token)
             rs.key_id = key_id
             rs.status = "running"
-            flows_db.update_run(rs.id, status = "running", started_at = flows_db.now_ms())
+            await asyncio.to_thread(
+                flows_db.update_run, rs.id, status = "running", started_at = flows_db.now_ms()
+            )
             await self._seed_resident(rs)
             rs.emit("run.started", data = {"order": rs.plan.order})
             targets = rs.options.get("target_nodes") or []
@@ -1285,7 +948,8 @@ class FlowEngine:
             await self._unload_after_run(rs)
             await asyncio.to_thread(self.revoke_key, rs.key_id)
             rs.finished_at = time.monotonic()
-            flows_db.update_run(
+            await asyncio.to_thread(
+                flows_db.update_run,
                 rs.id,
                 status = rs.status,
                 outputs = rs.outputs,
@@ -1294,6 +958,8 @@ class FlowEngine:
             )
             rs.emit(f"run.{rs.status}", data = {"outputs": rs.outputs, "error": rs.error})
             await self.persist(rs)
+            if rs.persist:
+                await asyncio.to_thread(_prune_storage, rs.flow_id)
 
     async def _flusher(
         self,
@@ -1474,7 +1140,7 @@ class FlowEngine:
             return False
         if not rs.plan.specs[nid]["cacheable"]:
             return True
-        return bool((rs.plan.ancestors([nid]) - {nid}) & rs.fresh)
+        return not rs.fresh.isdisjoint(rs.plan.upstream(nid))
 
     def _prefetchable(self, rs: RunState, nid: str) -> bool:
         """Loads the node would make anyway, with the default settings: not adapters, ControlNet or a vision swap."""
@@ -1502,7 +1168,7 @@ class FlowEngine:
             return
         plan = rs.plan
         running_ids = set(running.values())
-        owners = {o for o in plan.owner.values() if o is not None}
+        owners = plan.owners
         pending_set = set(pending)
         if any(plan.specs[n]["lane"] == "gpu" and self._uses_loaded(plan, n) for n in pending):
             return
@@ -1701,22 +1367,23 @@ class FlowEngine:
         variants = getattr(rs, "resident_variant", None) or {}
 
         # Cards with their own load settings group by them too, so same-settings cards run back to back.
-        loads: dict[str, Optional[str]] = {}
+        # Kept for the run: saved settings are read from storage, and only the resident model changes the answer.
+        loads = getattr(rs, "load_keys", None)
+        if loads is None:
+            loads = {}
 
         def load_of(nid: str) -> Optional[str]:
-            if nid not in loads:
-                params = plan.nodes[nid].get("params") or {}
-                slot, repo = model_of(nid)
-                loads[nid] = (
-                    options_hash(
-                        model_settings.card_load_kwargs(
-                            params, None if repo else rs.resident.get(slot), variants.get(slot)
-                        )
-                    )
-                    if model_settings.LOAD in params or params.get(model_settings.USE_SAVED)
-                    else None
+            params = plan.nodes[nid].get("params") or {}
+            if not (model_settings.LOAD in params or params.get(model_settings.USE_SAVED)):
+                return None
+            slot, repo = model_of(nid)
+            resident = None if repo else rs.resident.get(slot)
+            key = (nid, resident, variants.get(slot))
+            if key not in loads:
+                loads[key] = options_hash(
+                    model_settings.card_load_kwargs(params, resident, variants.get(slot))
                 )
-            return loads[nid]
+            return loads[key]
 
         def loaded_with(slot: str, repo: str) -> Optional[str]:
             found = loaded_options(slot)
@@ -1792,9 +1459,7 @@ class FlowEngine:
         state.error = None
         inputs, skip = self._gather_inputs(rs, nid, env)
         if skip:
-            env.values[nid] = SKIPPED
-            rs.set_status(nid, "skipped", skip)
-            self._record(rs, nid, "skipped", None, None, iteration)
+            self._stop(rs, nid, env, iteration, "skipped", skip)
             return
         fired = (rs.options.get("params") or {}).get("__trigger")
         if (
@@ -1803,9 +1468,7 @@ class FlowEngine:
             and spec["type"] in TRIGGER_TYPES
             and nid not in fired
         ):
-            env.values[nid] = SKIPPED
-            rs.set_status(nid, "skipped", "Another trigger started this run")
-            self._record(rs, nid, "skipped", None, None, iteration)
+            self._stop(rs, nid, env, iteration, "skipped", "Another trigger started this run")
             return
         bound = {p["param"] for p in spec["inputs"] if p.get("param") and p["id"] in inputs}
         params = param_values(spec, node)
@@ -1843,33 +1506,19 @@ class FlowEngine:
             try:
                 await self._rounds(rs, nid, env, ctx, iteration)
             except (FlowCancelled, asyncio.CancelledError):
-                env.values[nid] = SKIPPED
-                rs.set_status(nid, "cancelled")
-                self._record(rs, nid, "cancelled", None, None, iteration)
+                self._stop(rs, nid, env, iteration, "cancelled")
             except Exception as exc:
-                env.values[nid] = SKIPPED
                 if rs.cancelled:
-                    rs.set_status(nid, "cancelled")
+                    self._stop(rs, nid, env, iteration, "cancelled")
                 else:
-                    if not isinstance(exc, FlowNodeError):
-                        logger.exception("flows: %s (%s) failed", nid, spec["type"])
-                    rs.node(nid).error = (
-                        str(exc)
-                        if isinstance(exc, FlowNodeError)
-                        else f"{spec['title']} failed: {exc}"
-                    )
-                    rs.set_status(nid, "failed")
-                self._record(rs, nid, rs.node(nid).status, None, rs.node(nid).error, iteration)
+                    self._stop(rs, nid, env, iteration, "failed", error = _failure(nid, spec, exc))
             return
 
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
         # Before the cache: a run that may not use a capability does not get another run's output of it.
         for cap, detail in capabilities.node_needs(spec, params):
             if refused := capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"]):
-                state.error = refused
-                env.values[nid] = SKIPPED
-                rs.set_status(nid, "failed")
-                self._record(rs, nid, "failed", None, refused, iteration)
+                self._stop(rs, nid, env, iteration, "failed", error = refused)
                 return
         if params.get(model_settings.USE_SAVED) and spec.get("model_kind"):
             await _apply_saved_settings(ctx, spec, params, bound)
@@ -1903,7 +1552,7 @@ class FlowEngine:
                 hit = (
                     pending[1]
                     if pending is not None
-                    else flows_db.cache_get(key, touch = not rs.persist)
+                    else await asyncio.to_thread(flows_db.cache_get, key, not rs.persist)
                 )
                 if hit is not None and pending is None and rs.persist:
                     rs._unsaved_touch.add(key)
@@ -1931,10 +1580,8 @@ class FlowEngine:
 
         handler = self._handlers().get(spec["type"])
         if handler is None:
-            state.error = f"{spec['title']} cannot run in this version of Unsloth Studio"
-            env.values[nid] = SKIPPED
-            rs.set_status(nid, "failed")
-            self._record(rs, nid, "failed", None, state.error, iteration)
+            missing = f"{spec['title']} cannot run in this version of Unsloth Studio"
+            self._stop(rs, nid, env, iteration, "failed", error = missing)
             return
         # A recipe on Chat's loaded model is keyed on the model it ran on, read while the GPU is still
         # held: the one read above, before the wait, may have been swapped by another GPU step since.
@@ -1998,25 +1645,15 @@ class FlowEngine:
                 rs.set_status(nid, "running")
                 outputs = await handler(ctx)
         except (FlowCancelled, asyncio.CancelledError):
-            env.values[nid] = SKIPPED
             rs.flush(nid)
-            rs.set_status(nid, "cancelled")
-            self._record(rs, nid, "cancelled", None, None, iteration)
+            self._stop(rs, nid, env, iteration, "cancelled")
             return
         except Exception as exc:
-            env.values[nid] = SKIPPED
             rs.flush(nid)
             if rs.cancelled:
-                rs.set_status(nid, "cancelled")
-                self._record(rs, nid, "cancelled", None, None, iteration)
-                return
-            if isinstance(exc, FlowNodeError):
-                state.error = str(exc)
+                self._stop(rs, nid, env, iteration, "cancelled")
             else:
-                logger.exception("flows: %s (%s) failed", nid, spec["type"])
-                state.error = f"{spec['title']} failed: {exc}"
-            rs.set_status(nid, "failed")
-            self._record(rs, nid, "failed", None, state.error, iteration)
+                self._stop(rs, nid, env, iteration, "failed", error = _failure(nid, spec, exc))
             return
         finally:
             rs.cancel_hooks.pop((nid, iteration), None)
@@ -2029,6 +1666,9 @@ class FlowEngine:
                     await asyncio.to_thread(flows_db.cache_put, key, spec["type"], outputs)
                 except Exception:
                     logger.debug("flows: cache write failed", exc_info = True)
+                self._cache_puts += 1
+                if self._cache_puts % CACHE_PRUNE_EVERY == 0:
+                    await asyncio.to_thread(_prune_storage, None)
         rs.flush(nid)
         self._finish(rs, nid, env, outputs, "done", iteration)
 
@@ -2081,6 +1721,23 @@ class FlowEngine:
             rs.fresh.add(nid)
         rs.set_status(nid, status, message)
         self._record(rs, nid, status, outputs, None, iteration)
+
+    def _stop(
+        self,
+        rs: RunState,
+        nid: str,
+        env: Env,
+        iteration: Optional[tuple],
+        status: str,
+        message: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """The node ends without outputs: skipped, cancelled, or failed with ``error``."""
+        env.values[nid] = SKIPPED
+        if error is not None:
+            rs.node(nid).error = error
+        rs.set_status(nid, status, message)
+        self._record(rs, nid, status, None, error, iteration)
 
     def _record(
         self,
@@ -2610,7 +2267,7 @@ class FlowEngine:
             except Exception as exc:
                 rs.emit("node.log", nid, {"level": "warning", "message": f"Could not bake: {exc}"})
         for _ in range(3):
-            stored = flows_db.get_flow(rs.flow_id)
+            stored = await asyncio.to_thread(flows_db.get_flow, rs.flow_id)
             if stored is None:
                 return
             doc = stored["doc"]
@@ -2621,7 +2278,7 @@ class FlowEngine:
                 *(a for a in refs.values() if a["id"] not in known),
             ]
             try:
-                flows_db.save_flow(doc, stored["updatedAt"])
+                await asyncio.to_thread(flows_db.save_flow, doc, stored["updatedAt"])
                 rs.emit(
                     "node.log",
                     None,
@@ -2648,35 +2305,24 @@ class FlowEngine:
                 data, mime = await _common.media_bytes(ctx, value)
                 digest, mime = await asyncio.to_thread(asset_store.store, data, mime)
             else:
-                got = asset_store.read(digest)
+                got = await asyncio.to_thread(asset_store.read, digest)
                 if got is None:
                     return value
                 data, mime = got
-            refs[digest] = {
-                "id": f"sha256:{digest}",
-                "mime": mime,
-                "bytes": len(data),
-                "name": None,
-            }
-            embedded = {
+            refs[digest] = _asset_entry(digest, mime, data)
+            return {
                 **value,
                 "ref": f"sha256:{digest}",
                 "url": asset_store.url_for(digest),
                 "mime": mime,
             }
-            return embedded
         if value.get("kind") in ("table", "heatmap", "tensor") and isinstance(
             value.get("ref"), str
         ):
             digest = asset_store.parse_ref(value["ref"])
-            got = asset_store.read(digest) if digest else None
+            got = await asyncio.to_thread(asset_store.read, digest) if digest else None
             if got is not None:
-                refs[digest] = {
-                    "id": f"sha256:{digest}",
-                    "mime": got[1],
-                    "bytes": len(got[0]),
-                    "name": None,
-                }
+                refs[digest] = _asset_entry(digest, got[1], got[0])
             return value
         return {k: await self._embed(rs, v, refs) for k, v in value.items()}
 
@@ -2689,6 +2335,17 @@ class FlowEngine:
         finished.sort(key = lambda r: r.finished_at or 0)
         for rs in finished[: len(finished) - FINISHED_RUNS_KEPT]:
             self.runs.pop(rs.id, None)
+
+
+def _asset_entry(digest: str, mime: str, data: bytes) -> dict:
+    return {"id": f"sha256:{digest}", "mime": mime, "bytes": len(data), "name": None}
+
+
+def _failure(nid: str, spec: dict, exc: Exception) -> str:
+    if isinstance(exc, FlowNodeError):
+        return str(exc)
+    logger.exception("flows: %s (%s) failed", nid, spec["type"])
+    return f"{spec['title']} failed: {exc}"
 
 
 async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[str]) -> None:
@@ -2798,6 +2455,15 @@ def _stored_options(options: dict) -> dict:
 
 
 ENGINE = FlowEngine()
+
+
+def _prune_storage(flow_id: Optional[str]) -> None:
+    try:
+        if flow_id is not None:
+            flows_db.prune_runs(flow_id)
+        flows_db.prune_cache()
+    except Exception:
+        logger.warning("flows: could not prune stored runs", exc_info = True)
 
 
 def get_engine() -> FlowEngine:
