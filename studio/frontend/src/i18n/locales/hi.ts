@@ -3017,6 +3017,7 @@ export const hi = {
         mcp: "MCP",
         skills: "कौशल",
         savedPrompts: "सहेजे गए प्रॉम्प्ट",
+        batchNewChats: "हर फ़ाइल को नई चैट में भेजें",
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
         reset: "डिफ़ॉल्ट पर रीसेट करें",

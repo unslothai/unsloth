@@ -13,6 +13,7 @@ export type PlusMenuItemId =
   | "mcp"
   | "skills"
   | "savedPrompts"
+  | "batchNewChats"
   | "compareChat"
   | "exportChat"
   | "projects";
@@ -25,6 +26,7 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "mcp",
   "skills",
   "savedPrompts",
+  "batchNewChats",
   "compareChat",
   "exportChat",
   "projects",
@@ -40,6 +42,7 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   skills: true,
   projects: false,
   savedPrompts: false,
+  batchNewChats: false,
   compareChat: false,
   exportChat: false,
 };

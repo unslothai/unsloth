@@ -389,6 +389,9 @@ import {
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   useBookmarkedTurnsStore,
+  pickFilesForNewChats,
+  useBatchNewChatsComposer,
+  useBatchNewChatsStore,
   writeComposerDraft,
   normalizeChatImage,
 } from "@/features/chat";
@@ -473,6 +476,7 @@ import {
   ImageIcon,
   LayoutTwoColumnIcon,
   McpServerIcon,
+  MessageMultiple01Icon,
   Refresh01Icon,
   Scroll01Icon,
   Telescope02Icon,
@@ -5483,6 +5487,8 @@ const Composer: FC<{
     formRef.current = node;
     setComposerEl(node);
   }, []);
+  // Sends the step of a "Send each file in a new chat" batch meant for this new chat.
+  useBatchNewChatsComposer(aui, nativeAttachmentTargetKey, formRef);
   // Published so the API monitor panel opens clear of Send.
   usePublishedFrame(composerEl);
   const dictationBaseTextRef = useRef("");
@@ -7133,6 +7139,7 @@ const ComposerToolsMenu: FC<{
     ({ composer }) => composer.isEditing,
   );
   const pickAttachment = usePickComposerAttachment();
+  const batchRunning = useBatchNewChatsStore((s) => s.run !== null);
   // Straight to the picker, skipping the "+" menu the item lives in. Off-route
   // the chat pane is hidden rather than unmounted, so the chords gate on it
   // being the visible tab; a window listener does not care about `inert`.
@@ -7349,6 +7356,24 @@ const ComposerToolsMenu: FC<{
       <DropdownMenuItem onSelect={() => startCompare()}>
         <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
+      </DropdownMenuItem>
+    ),
+    batchNewChats: (
+      <DropdownMenuItem
+        disabled={batchRunning || !composerCanAddAttachments}
+        onSelect={() =>
+          pickFilesForNewChats(
+            aui,
+            navigate,
+            attachmentAcceptForPicker(
+              aui.composer().getState().attachmentAccept,
+              true,
+            ),
+          )
+        }
+      >
+        <HugeiconsIcon icon={MessageMultiple01Icon} strokeWidth={2} />
+        Send each file in a new chat…
       </DropdownMenuItem>
     ),
     exportChat: (

@@ -3282,6 +3282,7 @@ export const uk = {
         mcp: "MCP",
         skills: "Навички",
         savedPrompts: "Збережені запити",
+        batchNewChats: "Надіслати кожен файл у новому чаті",
         compareChat: "Порівняльний чат",
         exportChat: "Експортувати чат",
         reset: "Скинути до стандартних",

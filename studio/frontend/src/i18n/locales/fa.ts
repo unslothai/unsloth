@@ -3242,6 +3242,7 @@ export const fa = {
         mcp: "MCP",
         skills: "مهارت‌ها",
         savedPrompts: "پرامپت‌های ذخیره‌شده",
+        batchNewChats: "ارسال هر فایل در یک گفتگوی جدید",
         compareChat: "مقایسهٔ گفتگو",
         exportChat: "خروجی گرفتن از گفتگو",
         reset: "بازنشانی به پیش‌فرض",

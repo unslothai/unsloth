@@ -3045,6 +3045,7 @@ export const fr = {
         mcp: "MCP",
         skills: "Compétences",
         savedPrompts: "Invites enregistrées",
+        batchNewChats: "Envoyer chaque fichier dans un nouveau chat",
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
         reset: "Rétablir par défaut",

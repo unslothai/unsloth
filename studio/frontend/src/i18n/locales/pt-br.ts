@@ -3022,6 +3022,7 @@ export const ptBR = {
         mcp: "MCP",
         skills: "Habilidades",
         savedPrompts: "Prompts salvos",
+        batchNewChats: "Enviar cada arquivo em um novo chat",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
         reset: "Restaurar padrão",

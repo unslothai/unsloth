@@ -3272,6 +3272,7 @@ export const cs = {
         mcp: "MCP",
         skills: "Dovednosti",
         savedPrompts: "Uložené prompty",
+        batchNewChats: "Odeslat každý soubor v novém chatu",
         compareChat: "Porovnat chat",
         exportChat: "Exportovat chat",
         reset: "Obnovit výchozí",

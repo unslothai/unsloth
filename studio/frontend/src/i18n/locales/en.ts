@@ -3028,6 +3028,7 @@ export const en = {
         mcp: "MCP",
         skills: "Skills",
         savedPrompts: "Saved prompts",
+        batchNewChats: "Send each file in a new chat",
         compareChat: "Compare chat",
         exportChat: "Export chat",
         reset: "Reset to default",

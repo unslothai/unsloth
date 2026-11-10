@@ -3008,6 +3008,7 @@ export const ar = {
         mcp: "MCP",
         skills: "المهارات",
         savedPrompts: "الموجّهات المحفوظة",
+        batchNewChats: "إرسال كل ملف في محادثة جديدة",
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
         reset: "إعادة التعيين إلى الافتراضي",

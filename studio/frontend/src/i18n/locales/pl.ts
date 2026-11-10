@@ -3292,6 +3292,7 @@ export const pl = {
         mcp: "MCP",
         skills: "Umiejętności",
         savedPrompts: "Zapisane prompty",
+        batchNewChats: "Wyślij każdy plik w nowym czacie",
         compareChat: "Porównaj czat",
         exportChat: "Eksportuj czat",
         reset: "Przywróć domyślne",

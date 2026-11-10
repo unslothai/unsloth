@@ -3040,6 +3040,7 @@ export const es = {
         mcp: "MCP",
         skills: "Habilidades",
         savedPrompts: "Prompts guardados",
+        batchNewChats: "Enviar cada archivo en un chat nuevo",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
         reset: "Restablecer valores predeterminados",

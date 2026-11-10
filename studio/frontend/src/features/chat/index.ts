@@ -335,6 +335,11 @@ export {
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
 export {
+  pickFilesForNewChats,
+  useBatchNewChatsComposer,
+} from "./batch/use-batch-new-chats";
+export { useBatchNewChatsStore } from "./batch/batch-new-chats";
+export {
   useChatModelRuntime,
   resyncInferenceStatusAfterKeptModelsUnload,
   resyncInferenceStatusAfterServerModelChange,

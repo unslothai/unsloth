@@ -3104,6 +3104,7 @@ export const zhTW = {
         mcp: "MCP",
         skills: "技能",
         savedPrompts: "已儲存的提示詞",
+        batchNewChats: "將每個檔案傳送到新聊天",
         compareChat: "比較聊天",
         exportChat: "匯出聊天",
         reset: "重設為預設值",

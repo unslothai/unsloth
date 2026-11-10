@@ -2994,6 +2994,7 @@ export const ja = {
         mcp: "MCP",
         skills: "スキル",
         savedPrompts: "保存済みプロンプト",
+        batchNewChats: "各ファイルを新しいチャットで送信",
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
         reset: "デフォルトに戻す",

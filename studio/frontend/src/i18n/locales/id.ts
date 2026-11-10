@@ -3256,6 +3256,7 @@ export const id = {
         mcp: "MCP",
         skills: "Skill",
         savedPrompts: "Prompt tersimpan",
+        batchNewChats: "Kirim setiap file di chat baru",
         compareChat: "Bandingkan chat",
         exportChat: "Ekspor chat",
         reset: "Atur ulang ke default",

@@ -3297,6 +3297,7 @@ export const nl = {
         mcp: "MCP",
         skills: "Skills",
         savedPrompts: "Opgeslagen prompts",
+        batchNewChats: "Elk bestand in een nieuwe chat versturen",
         compareChat: "Chat vergelijken",
         exportChat: "Chat exporteren",
         reset: "Standaardwaarden herstellen",
