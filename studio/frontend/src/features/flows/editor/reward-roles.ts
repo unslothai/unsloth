@@ -40,8 +40,7 @@ export const ANSWER_NAMES = [
   "label",
 ];
 
-/** The row's value for a role: the named column, else the first alias the row has, in the order
- * training's resolve_role_columns tries them (`answer` before `solution`). */
+/** The row's value for a role: the named column, else the first alias in resolve_role_columns order. */
 export function pick(
   row: Record<string, unknown>,
   named: unknown,

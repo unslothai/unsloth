@@ -131,8 +131,6 @@ def _normalized_reward_name(name: str) -> str:
 
 
 class RewardSelection(BaseModel):
-    """One library reward enabled for a GRPO run, with its weight in the summed reward."""
-
     model_config = ConfigDict(extra = "forbid")
 
     name: str = Field(..., min_length = 1, max_length = 64)
@@ -291,8 +289,7 @@ class TrainingStartRequest(BaseModel):
     @model_validator(mode = "before")
     @classmethod
     def _compat_stored_rl_config(cls, values: Any) -> Any:
-        """A resume posts the stored run config back, which nests the RL fields under rl_settings
-        and reward_specs; lift them into the request fields an explicit value has not set."""
+        """Lift a resumed run's nested rl_settings / reward_specs into fields not set explicitly."""
         if not isinstance(values, dict):
             return values
         settings = values.get("rl_settings")
@@ -877,8 +874,7 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _check_preference_beta(self) -> "TrainingStartRequest":
-        # Zero turns DPO's loss constant (no gradient) and drops ORPO's preference term; only
-        # GRPO's KL coefficient may be zero.
+        # Zero makes DPO's loss constant and drops ORPO's preference term; only GRPO's KL may be zero.
         if self.objective in ("dpo", "orpo") and self.rl_beta == 0:
             raise ValueError(f"{self.objective.upper()} needs a beta above 0.")
         return self

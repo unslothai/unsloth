@@ -125,8 +125,7 @@ export function RlDatasetRoles({
       setPreviewRow: s.setPreviewRow,
     })),
   );
-  // Columns are kept with the dataset they came from: a switch must not map the new
-  // dataset's roles from the previous one's columns while its own are loading.
+  // Columns stay tied to their dataset so a switch never maps roles from the previous one.
   const [loaded, setLoaded] = useState<{ key: string; columns: string[] } | null>(
     null,
   );
@@ -203,7 +202,6 @@ export function RlDatasetRoles({
 
   // Reload on remount and on dataset changes, so roles survive leaving the page.
   useEffect(() => {
-    // Deferred so loadColumns' state resets run in a callback, not the effect body.
     let live = true;
     void Promise.resolve().then(() => {
       if (live) void loadColumns();
@@ -217,14 +215,12 @@ export function RlDatasetRoles({
 
   const starting = useTrainingRuntimeStore((s) => s.isStarting);
   useEffect(() => {
-    // A Start in flight compares its whole request: filling roles now would cancel it. The
-    // backend resolves unmapped roles the same way, so the write can wait until it settles.
+    // A Start in flight compares its whole request, so filling roles now would cancel it.
     if (!columns || starting) {
       return;
     }
     const next = syncRlMapping(objective, columns, mapping);
     if (JSON.stringify(next) !== JSON.stringify(mapping)) {
-      // Derived, not a user edit.
       useTrainingConfigStore.setState({ rlRoleMapping: next });
     }
   }, [columns, objective, mapping, starting]);

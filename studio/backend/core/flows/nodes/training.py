@@ -21,7 +21,7 @@ from core.flows.registry import FlowCancelled, FlowNodeError, NodeContext, cache
 POLL_S = 5.0
 BUSY_WAIT_S = 180.0
 TRAINING_TYPES = {"lora": "LoRA/QLoRA", "full": "Full Finetuning", "cpt": "Continued Pretraining"}
-# What the Train page sends when the node leaves batch size and accumulation blank (GRPO sets its own).
+# Train page batch defaults when the node leaves them blank (GRPO sets its own).
 TRAIN_PAGE_BATCH = {"batch_size": 4, "gradient_accumulation_steps": 8}
 CPT_EMBEDDING_MODULES = ("embed_tokens", "lm_head")
 LORA_VARIANTS = ("rslora", "loftq", "dora")
@@ -331,7 +331,6 @@ async def finetune(ctx: NodeContext) -> dict:
     if objective != "sft" and isinstance(row, dict):
         from core.training.rl import _IGNORE_ROLE, resolve_role_columns
         try:
-            # The columns GRPO, DPO or ORPO read, mapped or found by name.
             found = resolve_role_columns(
                 list(row), objective, mapping if isinstance(mapping, dict) else None
             )
@@ -355,8 +354,7 @@ async def finetune(ctx: NodeContext) -> dict:
     if alpaca_input:
         facts.update(user_join = "alpaca", input_columns = ["input"])
     if objective in ("grpo", "dpo", "orpo"):
-        # Benchmark shapes the held-out rows with training's own RL formatter: implicit prompts,
-        # one-message cells and assistant prefills read as they trained.
+        # Same RL formatter as training, so held-out rows read as they trained.
         facts.update(rl_objective = objective, rl_mapping = rl_mapping)
     checkpoint.update(facts)
     return {
@@ -521,7 +519,6 @@ def mapping_facts(
     from utils.datasets.dataset_utils import _TO_CHATML
 
     if (objective or "sft") != "sft":
-        # RL formats its rows itself: a dataset format setting does not apply.
         format_type = "auto"
     # Any `__` metadata selects the template mapping, which drops system columns: its one system
     # prompt is `__system_prompt`, the checkpoint's system_prompt. An Alpaca format makes a system
@@ -558,11 +555,9 @@ def mapping_facts(
 
 
 def trained_system_prompt(config: dict, row: Optional[dict] = None) -> str:
-    """The system message a new prompt would have got in training: the SFT mapping's system prompt,
-    or GRPO's, which fills in for every prompt with no system message of its own. GRPO claims it
-    only when ``row`` (the dataset's first) shows every prompt got it: plain-text prompts and no
-    system column. A conversation can carry its own system message, and rows it cannot read
-    claim nothing."""
+    """The system message a new prompt would have got in training (SFT mapping's, or GRPO's).
+
+    GRPO's counts only when ``row`` has plain-text prompts and no system column."""
     mapping = config.get("custom_format_mapping")
     if config.get("objective") == "grpo":
         from core.training.rl import resolve_role_columns
@@ -823,8 +818,7 @@ def _loader_repos(base: str, load_in_4bit: bool) -> list[str]:
 
 
 async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
-    """What the params can't show: the dataset's content, the base model's weights and, for GRPO,
-    the reward rules."""
+    """What the params can't show: dataset content, base weights and, for GRPO, the reward rules."""
     dataset = ctx.inputs.get("dataset")
     if str(ctx.params.get("task") or "text") in ("vision", "audio") and not (
         isinstance(dataset, dict) and dataset.get("source") == "hf"
@@ -933,7 +927,6 @@ cache_hook(
 
 
 def rl_roles(params: dict, objective: str) -> dict:
-    """Column -> RL role for the columns the node names; Studio detects the rest by name."""
     named = {"prompt": params.get("prompt_column")}
     if objective == "grpo":
         named["answer"] = params.get("answer_column")
@@ -950,8 +943,7 @@ def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
     """The /api/train/start RL fields; returns the GRPO rewards it picked."""
     from core.flows.specs import SPECS_BY_TYPE
 
-    # A node saved before these params existed (or built by notebook import or the API) has no
-    # rewards or system prompt; without the format prompt GRPO's rewards never fire.
+    # Nodes predating these params have no rewards or system prompt; without it GRPO rewards never fire.
     defaults = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.finetune"]["params"]}
     params = {**defaults, **params}
     config["objective"] = objective
@@ -975,8 +967,7 @@ def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
     if str(params.get("system_prompt") or "").strip():
         config["rl_system_prompt"] = str(params["system_prompt"])
     if params.get("batch_size") in (None, ""):
-        # One prompt and all its completions per step, as Unsloth's GRPO notebooks run. The start
-        # route's batch of 1 has TRL spread each prompt over num_generations steps instead.
+        # One prompt and all its completions per step, as Unsloth's GRPO notebooks run.
         config["batch_size"] = int(params.get("num_generations") or 4)
         if params.get("gradient_accumulation_steps") in (None, ""):
             config["gradient_accumulation_steps"] = 1
@@ -1019,8 +1010,7 @@ def reward_history(payload: Any) -> list:
     ]
     if not raw:
         return []
-    # One step is one prompt's group, so the per-step reward swings between 0 and the max; a trailing
-    # mean over about a twentieth of the run is what shows whether it is learning.
+    # Per-step reward is one group, so it swings; a trailing mean over ~1/20 of the run shows learning.
     window = max(1, min(25, len(raw) // 20))
     head = sum(raw[:window]) / window
     smooth = [

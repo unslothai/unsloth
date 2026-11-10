@@ -57,7 +57,6 @@ def test_preference_rows_strip_the_user_turn_from_full_conversations():
 
 @pytest.mark.parametrize("objective", ["dpo", "orpo"])
 def test_preference_rows_without_a_prompt_column_use_the_shared_turns(objective):
-    # trl-lib/ultrafeedback_binarized: only chosen and rejected, each the whole conversation.
     convo = lambda reply: [
         {"role": "user", "content": "What is 2 + 2?"},
         {"role": "assistant", "content": reply},
@@ -79,7 +78,7 @@ def test_preference_rows_without_a_prompt_column_use_the_shared_turns(objective)
     )
     assert [m["content"] for m in out[0]["prompt"]] == ["Welcome!", "What is 2 + 2?"]
     assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
-    # Text pairs (hh-rlhf's transcripts): the shared start is the prompt, as TRL's extract_prompt.
+    # hh-rlhf text pairs: the shared start is the prompt.
     out, _ = format_rl_dataset(
         Dataset.from_list([{"chosen": "The sky is blue.", "rejected": "The sky is green."}]),
         objective,
@@ -87,7 +86,6 @@ def test_preference_rows_without_a_prompt_column_use_the_shared_turns(objective)
     assert out[0]["prompt"] == [{"role": "user", "content": "The sky is"}]
     assert out[0]["chosen"] == [{"role": "assistant", "content": " blue."}]
     assert out[0]["rejected"] == [{"role": "assistant", "content": " green."}]
-    # Plain answers with no prompt anywhere are still refused.
     with pytest.raises(ValueError, match = "needs a prompt"):
         format_rl_dataset(Dataset.from_list([{"chosen": "4", "rejected": "5"}]), objective)
 
@@ -330,7 +328,7 @@ def test_request_refuses_unknown_grpo_variant():
 
 
 def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
-    # The stub stands in for torch.distributed.fsdp; it needs torch itself (the no-torch legs lack it).
+    # The stub needs torch itself (the no-torch legs lack it).
     pytest.importorskip("torch")
     import builtins
 
@@ -341,7 +339,7 @@ def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
             raise ModuleNotFoundError("No module named 'torch._C._distributed_c10d'")
         return real_import(name, *args, **kwargs)
 
-    # Restored by hand: the stub adds modules that monkeypatch would leave for later tests.
+    # Restored by hand: monkeypatch would leave the stub's modules for later tests.
     before = {n: m for n, m in sys.modules.items() if n.startswith("torch.distributed.fsdp")}
     for name in before:
         del sys.modules[name]
@@ -400,7 +398,6 @@ def test_thinking_switch_renders_prompts_only_for_templates_that_have_one():
 
 
 def test_resume_payload_from_stored_config_keeps_rl_settings():
-    # A resume posts the stored worker config back: RL fields sit under rl_settings / reward_specs.
     stored = {
         **BASE,
         "objective": "grpo",
@@ -444,7 +441,6 @@ def test_grpo_reward_column_missing_from_dataset_is_refused():
 
 
 def test_trl_config_without_max_prompt_length_still_builds(monkeypatch):
-    # TRL 1.x dropped max_prompt_length from DPOConfig / GRPOConfig.
     @dataclasses.dataclass
     class _NoPromptLenDPOConfig:
         output_dir: str = None
@@ -588,7 +584,6 @@ def test_grpo_generation_batch_counts_every_process(monkeypatch):
         settings = {"num_generations": 3},
         reward_specs = [spec],
     )
-    # Global batch 2, three generations: the generation batch rounds up to 6.
     assert kw["args"].generation_batch_size == 6
 
 
@@ -612,7 +607,6 @@ def test_resume_refuses_a_changed_reward_set():
     assert _resume_reward_mismatch(
         stored, [S(name = "a", weight = 1.0), S(name = "b", weight = 0.5), S(name = "c", weight = 1.0)]
     )
-    # Runs stored before reward specs were recorded keep resuming.
     assert not _resume_reward_mismatch({}, [S(name = "c", weight = 1.0)])
 
 
@@ -647,7 +641,7 @@ def test_grpo_epoch_rows_drop_the_partial_prompt_group():
     from core.training.trainer import grpo_completion_rows
 
     args = types.SimpleNamespace(num_generations = 4, generation_batch_size = 8)
-    # Five prompts in groups of two: TRL trains four, so 16 completion rows.
+    # Five prompts in groups of two: TRL trains four, so 16 rows.
     assert grpo_completion_rows(5, args) == 16
     assert grpo_completion_rows(6, args) == 24
     assert grpo_completion_rows(5, types.SimpleNamespace(num_generations = 4)) == 20
@@ -1532,7 +1526,6 @@ def test_preference_rows_slice_both_branches_from_one_prompt():
     from core.training.rl import render_preference_rows
 
     class _Tok:
-        # Qwen3 with thinking off: an empty think block in the header, a filled one on reasoning.
         def apply_chat_template(
             self,
             messages,
@@ -1894,8 +1887,6 @@ def test_grpo_keeps_a_zero_kl_coefficient():
 
 
 class _SingleCallTemplate:
-    """gpt-oss-like: shows only a message's first call and fails on a None content."""
-
     def apply_chat_template(
         self,
         messages,

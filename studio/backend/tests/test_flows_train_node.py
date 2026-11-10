@@ -212,7 +212,6 @@ def test_reward_ceiling_is_the_best_weighted_sum():
         )
         == 2.5
     )
-    # A negative weight's best is its rule's lowest score.
     assert training.reward_ceiling([{"name": "numeric-close", "weight": -1.0}]) == 2.0
     assert training.reward_ceiling([{"name": "no-such-reward", "weight": 1.0}]) is None
 
@@ -878,7 +877,6 @@ def test_the_checkpoint_carries_the_one_system_prompt_training_used():
     assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, question) == (
         "Use <answer> tags."
     )
-    # Emptied in the node: training added none.
     assert training.trained_system_prompt({**grpo, "rl_system_prompt": None}, row) == ""
     # Rows unread (a Hub dataset that could not be read): a system column may have won.
     assert training.trained_system_prompt(grpo) == ""
@@ -1275,12 +1273,10 @@ def test_a_grpo_run_with_a_system_column_does_not_claim_the_fallback_prompt():
         "custom_format_mapping": {"question": "user", "rule": "system"},
     }
     assert training.trained_system_prompt(config) == ""
-    # A prompt/answer mapping still lets the formatter pick up a `system` column by name.
     config["custom_format_mapping"] = {"q": "prompt", "gold": "answer"}
     assert training.trained_system_prompt(config, {"q": "x", "gold": "1", "system": "s"}) == ""
     # GSM8K: question and answer only, so every prompt got the fallback.
     assert training.trained_system_prompt(config, {"q": "x", "gold": "1"}) == "Reason, then answer."
-    # A system column set to Ignore is not read.
     config["custom_format_mapping"] = {"q": "prompt", "system": "ignore"}
     assert training.trained_system_prompt(config, {"q": "x", "system": "s"}) == (
         "Reason, then answer."
@@ -1443,7 +1439,6 @@ def test_an_sft_input_role_is_recorded_as_the_system_column():
         "input_columns": ["input"],
         **facts,
     }
-    # RL objectives read only the literal role.
     assert training.mapping_facts(mapping, "auto", "grpo") == {"system_column": ""}
     assert training.mapping_facts({"q": "prompt", "rule": "system"}, "auto", "grpo") == {
         "system_column": "rule",

@@ -173,15 +173,13 @@ const isNum = (v: unknown): v is number =>
 const numOrNull = (v: unknown): number | null | undefined =>
   v === null ? null : isNum(v) ? v : undefined;
 
-/** The objective and RL settings from a saved YAML. A file with no rl section is SFT;
- * fields with the wrong type are dropped so the current value stays. */
+/** Objective and RL settings from a saved YAML (no rl section = SFT; mistyped fields dropped). */
 export function parseYamlRlSettings(text: string): YamlRlSettings {
   const parsed = yaml.load(text) as Record<string, unknown> | null;
   return parseRlSection(parsed?.rl);
 }
 
-/** A saved run's objective and RL settings. The stored config keeps them as `objective`,
- * `rl_settings` (the same keys as the YAML rl section) and `reward_specs`. */
+/** A saved run's objective, `rl_settings` and `reward_specs`. */
 export function parseRunConfigRlSettings(
   config: Record<string, unknown>,
 ): YamlRlSettings {
