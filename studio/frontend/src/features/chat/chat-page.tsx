@@ -187,7 +187,6 @@ import {
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
 import { ChatModelNotice } from "./components/chat-model-notice";
-import { ChatPlacementNotice } from "./components/chat-placement-notice";
 import {
   chatModelSwitchMeta,
   type ChatModelSwitchTarget,
@@ -4858,18 +4857,6 @@ export function ChatPage({
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
                 className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!ml-0 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
-              />
-            )}
-            {view.mode !== "compare" && (
-              <ChatPlacementNotice
-                loaded={
-                  !isExternalModel &&
-                  chatModelLoaded({
-                    checkpoint: inferenceCheckpoint,
-                    isExternalModel: false,
-                    residentCheckpoint,
-                  })
-                }
               />
             )}
             {view.mode === "single" && (

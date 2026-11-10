@@ -5772,9 +5772,6 @@ export const zhTW = {
       inSharedMemory: "{amount} 位於共用記憶體",
       inVram: "{amount} 位於 VRAM",
       inRam: "{amount} 位於 RAM",
-      partlyOnCpu: "部分位於 CPU",
-      onCpu: "位於 CPU",
-      shortfallHint: "生成速度比整個模型都在 GPU 上時慢。",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

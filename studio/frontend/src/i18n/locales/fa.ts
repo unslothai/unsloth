@@ -6067,9 +6067,6 @@ export const fa = {
       inSharedMemory: "{amount} در حافظهٔ مشترک",
       inVram: "{amount} در VRAM",
       inRam: "{amount} در RAM",
-      partlyOnCpu: "بخشی روی CPU",
-      onCpu: "روی CPU",
-      shortfallHint: "تولید کندتر از حالتی است که کل مدل روی GPU باشد.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

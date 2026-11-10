@@ -7,7 +7,6 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
-import { cn } from "@/lib/utils";
 
 /** Where the resident GGUF's weights landed. Under Auto, --fit decides, and the layer count alone hides a
  *  MoE spill, so the experts and the RAM side are shown too. `pool` is the panel's single memory pool, if any.
@@ -21,22 +20,13 @@ export function LoadedPlacementRow({ pool }: { pool: PlacementPool | null }) {
   return (
     <div
       data-slot="loaded-placement"
-      data-shortfall={placement.shortfall ?? undefined}
       className="flex flex-col gap-1 border-b border-border pb-5"
     >
       <span className="flex min-h-8 items-center text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
         {t("generationStats.placement.title")}
       </span>
       {layers !== null && (
-        <span
-          className={cn(
-            "text-ui-12 leading-snug",
-            // The estimate's advisory colour: layers the load did not mean to leave on the CPU.
-            placement.shortfall
-              ? "text-amber-700 dark:text-amber-400"
-              : "text-muted-foreground",
-          )}
-        >
+        <span className="text-ui-12 leading-snug text-muted-foreground">
           {layers}
         </span>
       )}

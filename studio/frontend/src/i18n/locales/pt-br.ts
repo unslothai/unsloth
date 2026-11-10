@@ -5720,9 +5720,6 @@ export const ptBR = {
       inSharedMemory: "{amount} na memória compartilhada",
       inVram: "{amount} na VRAM",
       inRam: "{amount} na RAM",
-      partlyOnCpu: "Parcialmente na CPU",
-      onCpu: "Na CPU",
-      shortfallHint: "A geração é mais lenta do que com o modelo inteiro na GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

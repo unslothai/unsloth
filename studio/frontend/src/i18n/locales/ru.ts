@@ -5719,9 +5719,6 @@ export const ru = {
       inSharedMemory: "{amount} в общей памяти",
       inVram: "{amount} в VRAM",
       inRam: "{amount} в RAM",
-      partlyOnCpu: "Частично на CPU",
-      onCpu: "На CPU",
-      shortfallHint: "Генерация идёт медленнее, чем когда вся модель на GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

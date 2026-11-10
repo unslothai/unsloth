@@ -5742,9 +5742,6 @@ export const en = {
       inSharedMemory: "{amount} in shared memory",
       inVram: "{amount} in VRAM",
       inRam: "{amount} in RAM",
-      partlyOnCpu: "Partly on CPU",
-      onCpu: "On CPU",
-      shortfallHint: "Generation is slower than with the whole model on the GPU.",
     },
   },
 } as const;

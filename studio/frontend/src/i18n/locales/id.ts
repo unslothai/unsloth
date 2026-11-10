@@ -6101,9 +6101,6 @@ export const id = {
       inSharedMemory: "{amount} di memori bersama",
       inVram: "{amount} di VRAM",
       inRam: "{amount} di RAM",
-      partlyOnCpu: "Sebagian di CPU",
-      onCpu: "Di CPU",
-      shortfallHint: "Generasi lebih lambat dibanding jika seluruh model ada di GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

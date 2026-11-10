@@ -6099,9 +6099,6 @@ export const vi = {
       inSharedMemory: "{amount} trong bộ nhớ dùng chung",
       inVram: "{amount} trong VRAM",
       inRam: "{amount} trong RAM",
-      partlyOnCpu: "Một phần trên CPU",
-      onCpu: "Trên CPU",
-      shortfallHint: "Tạo phản hồi chậm hơn so với khi toàn bộ mô hình nằm trên GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

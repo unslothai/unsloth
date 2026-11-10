@@ -5702,9 +5702,6 @@ export const hi = {
       inSharedMemory: "{amount} साझा मेमोरी में",
       inVram: "{amount} VRAM में",
       inRam: "{amount} RAM में",
-      partlyOnCpu: "आंशिक रूप से CPU पर",
-      onCpu: "CPU पर",
-      shortfallHint: "पूरा मॉडल GPU पर होने की तुलना में जनरेशन धीमा है।",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

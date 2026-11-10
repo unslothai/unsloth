@@ -8,8 +8,9 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { expertSpillNote, offloadCountsFrom, offloadShortfall, offloadWarning } =
-  await import("../src/features/chat/lib/partial-offload.ts");
+const { expertSpillNote, offloadCountsFrom, offloadWarning } = await import(
+  "../src/features/chat/lib/partial-offload.ts"
+);
 
 test("a split load is reported", () => {
   assert.match(
@@ -262,7 +263,6 @@ test("expert weights the fit kept on the CPU are stated, not warned about", () =
     hostWeightsMib: 5639.4,
   };
   assert.equal(offloadWarning(spill), null);
-  assert.equal(offloadShortfall(spill), null);
   assert.equal(
     expertSpillNote(spill),
     "All 31 layers are on the GPU. The expert weights of 7 layers are on the CPU. Model weights: 20 GiB on the GPU, 5.5 GiB on the CPU.",
@@ -296,33 +296,6 @@ test("a full count with every buffer in system memory is not a success", () => {
   const broken = offloadWarning({ ...hostOnly, gpuBackendUnavailable: true });
   assert.equal(broken?.titleSuffix, ", on CPU");
   assert.match(broken?.description ?? "", /could not use it/);
-  assert.equal(offloadShortfall({ ...hostOnly, gpuBackendUnavailable: true }), "cpu");
   // The same buffers on a machine with no GPU to miss are the expected placement.
   assert.equal(offloadWarning(hostOnly), null);
-  assert.equal(offloadShortfall(hostOnly), null);
-});
-
-test("what outlives the toast is what the toast warned about", () => {
-  assert.equal(offloadShortfall({ offloaded: 38, total: 60 }), "partial");
-  assert.equal(offloadShortfall({ offloaded: 0, total: 60 }), "cpu");
-  assert.equal(offloadShortfall({ offloaded: 0, total: 60, gpuBackendUnavailable: true }), "cpu");
-  assert.equal(offloadShortfall({ offloaded: 60, total: 60 }), null);
-  assert.equal(offloadShortfall({}), null);
-  assert.equal(
-    offloadShortfall({ offloaded: 20, total: 60, gpuMemoryMode: "manual", gpuLayers: 20 }),
-    null,
-  );
-  assert.equal(offloadShortfall({ offloaded: 20, total: 60, offloadOverridden: true }), null);
-  // Any CPU fallback, including a reason this build has no sentence for: the chat toast still says "on CPU".
-  assert.equal(offloadShortfall({ offloaded: 0, total: 60, cpuFallbackReason: "vulkan_no_device" }), "cpu");
-  assert.equal(offloadShortfall({ offloaded: 0, total: 60, cpuFallbackReason: "something" }), "cpu");
-  for (const counts of [
-    { offloaded: 38, total: 60 },
-    { offloaded: 0, total: 60 },
-    { offloaded: 60, total: 60 },
-    { offloaded: 20, total: 60, gpuMemoryMode: "manual", gpuLayers: 20 },
-    { offloaded: 31, total: 31, overflowLayers: 7 },
-  ]) {
-    assert.equal(offloadShortfall(counts) !== null, offloadWarning(counts) !== null);
-  }
 });

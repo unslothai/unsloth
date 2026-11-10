@@ -5935,9 +5935,6 @@ export const sv = {
       inSharedMemory: "{amount} i delat minne",
       inVram: "{amount} i VRAM",
       inRam: "{amount} i RAM",
-      partlyOnCpu: "Delvis på CPU:n",
-      onCpu: "På CPU:n",
-      shortfallHint: "Genereringen är långsammare än med hela modellen på GPU:n.",
     },
   },
 } as const;

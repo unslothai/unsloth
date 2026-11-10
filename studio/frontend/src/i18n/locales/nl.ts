@@ -6158,9 +6158,6 @@ export const nl = {
       inSharedMemory: "{amount} in gedeeld geheugen",
       inVram: "{amount} in VRAM",
       inRam: "{amount} in RAM",
-      partlyOnCpu: "Deels op de CPU",
-      onCpu: "Op de CPU",
-      shortfallHint: "Genereren is trager dan met het hele model op de GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

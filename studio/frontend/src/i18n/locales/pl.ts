@@ -6152,9 +6152,6 @@ export const pl = {
       inSharedMemory: "{amount} w pamięci współdzielonej",
       inVram: "{amount} w VRAM",
       inRam: "{amount} w RAM",
-      partlyOnCpu: "Częściowo na CPU",
-      onCpu: "Na CPU",
-      shortfallHint: "Generowanie jest wolniejsze niż przy całym modelu na GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -5760,9 +5760,6 @@ export const it = {
       inSharedMemory: "{amount} in memoria condivisa",
       inVram: "{amount} in VRAM",
       inRam: "{amount} in RAM",
-      partlyOnCpu: "In parte sulla CPU",
-      onCpu: "Sulla CPU",
-      shortfallHint: "La generazione è più lenta rispetto a quando l'intero modello è sulla GPU.",
     },
   },
 } as const;

@@ -427,8 +427,6 @@ export type LoadedPlacement = {
   hostWeightsMib: number | null;
   /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
   expertCacheMib: number | null;
-  /** Layers or the whole model on the CPU although the load did not ask for that; null otherwise. */
-  shortfall: "partial" | "cpu" | null;
 };
 // x = uncached kilotokens, y = server seconds; sums: n, x, x², x³, x⁴, y, xy, x²y.
 export type LivePrefillFit = { first: number; done: number; sums: readonly number[] };

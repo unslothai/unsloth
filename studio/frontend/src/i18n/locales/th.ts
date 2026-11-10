@@ -5821,9 +5821,6 @@ export const th = {
       inSharedMemory: "{amount} ในหน่วยความจำที่ใช้ร่วมกัน",
       inVram: "{amount} ใน VRAM",
       inRam: "{amount} ใน RAM",
-      partlyOnCpu: "บางส่วนอยู่บน CPU",
-      onCpu: "อยู่บน CPU",
-      shortfallHint: "การสร้างข้อความช้ากว่าเมื่อโมเดลทั้งหมดอยู่บน GPU",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

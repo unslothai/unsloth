@@ -5682,9 +5682,6 @@ export const ko = {
       inSharedMemory: "공유 메모리에 {amount}",
       inVram: "VRAM에 {amount}",
       inRam: "RAM에 {amount}",
-      partlyOnCpu: "일부가 CPU에",
-      onCpu: "CPU에",
-      shortfallHint: "모델 전체가 GPU에 있을 때보다 생성이 느립니다.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

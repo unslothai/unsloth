@@ -6115,9 +6115,6 @@ export const cs = {
       inSharedMemory: "{amount} ve sdílené paměti",
       inVram: "{amount} ve VRAM",
       inRam: "{amount} v RAM",
-      partlyOnCpu: "Částečně na CPU",
-      onCpu: "Na CPU",
-      shortfallHint: "Generování je pomalejší, než kdyby byl celý model na GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

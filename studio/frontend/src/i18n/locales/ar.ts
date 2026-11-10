@@ -5691,9 +5691,6 @@ export const ar = {
       inSharedMemory: "{amount} في الذاكرة المشتركة",
       inVram: "{amount} في VRAM",
       inRam: "{amount} في RAM",
-      partlyOnCpu: "جزئيًا على CPU",
-      onCpu: "على CPU",
-      shortfallHint: "التوليد أبطأ مما لو كان النموذج كله على GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

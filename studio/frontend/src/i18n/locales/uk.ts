@@ -6144,9 +6144,6 @@ export const uk = {
       inSharedMemory: "{amount} у спільній пам’яті",
       inVram: "{amount} у VRAM",
       inRam: "{amount} у RAM",
-      partlyOnCpu: "Частково на CPU",
-      onCpu: "На CPU",
-      shortfallHint: "Генерація повільніша, ніж коли вся модель на GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

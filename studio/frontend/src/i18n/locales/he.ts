@@ -5790,9 +5790,6 @@ export const he = {
       inSharedMemory: "{amount} בזיכרון משותף",
       inVram: "{amount} ב-VRAM",
       inRam: "{amount} ב-RAM",
-      partlyOnCpu: "חלקית על ה-CPU",
-      onCpu: "על ה-CPU",
-      shortfallHint: "היצירה איטית יותר מאשר כשכל המודל על ה-GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

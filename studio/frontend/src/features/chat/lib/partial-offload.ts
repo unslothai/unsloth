@@ -102,17 +102,6 @@ function shortfallCause(counts: OffloadCounts): ShortfallCause | null {
   return onGpu <= 0 ? "noneFit" : "partial";
 }
 
-export type OffloadShortfall = "partial" | "cpu";
-
-/** What the load notice warned about, for the surfaces that outlive the toast. */
-export function offloadShortfall(
-  counts: OffloadCounts,
-): OffloadShortfall | null {
-  const cause = shortfallCause(counts);
-  if (cause === null) return null;
-  return cause === "partial" ? "partial" : "cpu";
-}
-
 /** " Model weights: 12 GiB on the GPU, 5.7 GiB on the CPU." Weights only: the KV cache and compute buffers
  *  are not in these figures. Names the device, since VRAM and RAM are one pool on some machines. */
 function weightsSentence(counts: OffloadCounts): string {
@@ -176,12 +165,17 @@ export function expertSpillNote(counts: OffloadCounts): string | null {
 }
 
 /** --fit reports its own expert spill; a Manual load says it through n_cpu_moe instead. */
-export function loadedPlacementFrom(
-  response: OffloadCountsSource & {
-    is_gguf?: boolean | null;
-    n_cpu_moe?: number | null;
-  },
-): LoadedPlacement | null {
+export function loadedPlacementFrom(response: {
+  is_gguf?: boolean | null;
+  offloaded_layers?: number | null;
+  offload_total_layers?: number | null;
+  overflow_layers?: number | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
+  expert_cache_mib?: number | null;
+  gpu_memory_mode?: string | null;
+  n_cpu_moe?: number | null;
+}): LoadedPlacement | null {
   if (response.is_gguf === false) return null;
   const manualExperts =
     response.gpu_memory_mode === "manual" ? count(response.n_cpu_moe) : null;
@@ -193,7 +187,6 @@ export function loadedPlacementFrom(
     gpuWeightsMib: count(response.gpu_weights_mib),
     hostWeightsMib: count(response.host_weights_mib),
     expertCacheMib: count(response.expert_cache_mib) || null,
-    shortfall: offloadShortfall(offloadCountsFrom(response)),
   };
   return placement.total === null &&
     placement.gpuWeightsMib === null &&

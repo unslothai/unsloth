@@ -5593,9 +5593,6 @@ export const zhCN = {
       inSharedMemory: "{amount} 位于共享内存",
       inVram: "{amount} 位于 VRAM",
       inRam: "{amount} 位于 RAM",
-      partlyOnCpu: "部分位于 CPU",
-      onCpu: "位于 CPU",
-      shortfallHint: "生成速度比整个模型都在 GPU 上时慢。",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -5642,9 +5642,6 @@ export const ja = {
       inSharedMemory: "共有メモリに {amount}",
       inVram: "VRAM に {amount}",
       inRam: "RAM に {amount}",
-      partlyOnCpu: "一部が CPU 上",
-      onCpu: "CPU 上",
-      shortfallHint: "モデル全体が GPU 上にある場合より生成が遅くなります。",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -345,7 +345,7 @@ test("the live figures and the placement read in the reader's language", () => {
     formatPrefillDetails(prompt, tDe, "de-DE"),
     `${g.tokensOf.replace("{done}", "4.118").replace("{total}", "18.880")} · 1.401 tok/s`,
   );
-  const metal = { offloaded: 33, total: 33, overflowLayers: null, gpuWeightsMib: 2603.5, hostWeightsMib: 497.31, expertCacheMib: null, shortfall: null };
+  const metal = { offloaded: 33, total: 33, overflowLayers: null, gpuWeightsMib: 2603.5, hostWeightsMib: 497.31, expertCacheMib: null };
   assert.deepEqual(describePlacement(metal, tDe, "unified"), {
     layers: g.placement.allOnGpu.replace("{total}", "33"),
     memory: g.placement.inUnifiedMemory.replace("{amount}", "3.0 GiB"),
@@ -444,20 +444,20 @@ test("live progress is per thread, transient, and re-keyed with the thread's oth
 test("the placement readout names expert weights and gives both memory figures", () => {
   // gemma-4-26B-A4B Q8_0 on a 3090: --fit's verdict "31 layers ( 8 overflowing)", the first of them GATE-only.
   assert.deepEqual(
-    describePlacement({ offloaded: 31, total: 31, overflowLayers: 8, gpuWeightsMib: 20709.15, hostWeightsMib: 5639.4, expertCacheMib: null, shortfall: null }, t),
+    describePlacement({ offloaded: 31, total: 31, overflowLayers: 8, gpuWeightsMib: 20709.15, hostWeightsMib: 5639.4, expertCacheMib: null }, t),
     { layers: "All 31 layers on the GPU, expert weights of 8 layers in RAM", memory: "20 GiB in VRAM · 5.5 GiB in RAM" },
   );
   assert.equal(
-    describePlacement({ offloaded: 31, total: 31, overflowLayers: 1, gpuWeightsMib: 20000, hostWeightsMib: 900, expertCacheMib: null, shortfall: null }, t)
+    describePlacement({ offloaded: 31, total: 31, overflowLayers: 1, gpuWeightsMib: 20000, hostWeightsMib: 900, expertCacheMib: null }, t)
       .layers,
     "All 31 layers on the GPU, expert weights of 1 layer in RAM",
   );
   assert.deepEqual(
-    describePlacement({ offloaded: 41, total: 41, overflowLayers: 0, gpuWeightsMib: 8161.75, hostWeightsMib: 417.3, expertCacheMib: null, shortfall: null }, t),
+    describePlacement({ offloaded: 41, total: 41, overflowLayers: 0, gpuWeightsMib: 8161.75, hostWeightsMib: 417.3, expertCacheMib: null }, t),
     { layers: "All 41 layers on the GPU", memory: "8.0 GiB in VRAM · 0.4 GiB in RAM" },
   );
   assert.deepEqual(
-    describePlacement({ offloaded: 20, total: 31, overflowLayers: null, gpuWeightsMib: 12288, hostWeightsMib: 5120, expertCacheMib: null, shortfall: null }, t),
+    describePlacement({ offloaded: 20, total: 31, overflowLayers: null, gpuWeightsMib: 12288, hostWeightsMib: 5120, expertCacheMib: null }, t),
     { layers: "20 of 31 layers on the GPU, 11 on the CPU", memory: "12 GiB in VRAM · 5.0 GiB in RAM" },
   );
   // A Manual load reports its expert offload as n_cpu_moe, not through --fit.
@@ -475,37 +475,11 @@ test("the placement readout names expert weights and gives both memory figures",
   assert.equal(loadedPlacementFrom({ is_gguf: true }), null);
 });
 
-test("the stored placement remembers a split the load did not ask for", () => {
-  const status = { is_gguf: true, offload_total_layers: 66, gpu_weights_mib: 14000, host_weights_mib: 2400 };
-  assert.equal(loadedPlacementFrom({ ...status, offloaded_layers: 60 })?.shortfall, "partial");
-  assert.equal(loadedPlacementFrom({ ...status, offloaded_layers: 0, gpu_weights_mib: 0 })?.shortfall, "cpu");
-  assert.equal(loadedPlacementFrom({ ...status, offloaded_layers: 66 })?.shortfall, null);
-  // The user's own split, and the fit's expert spill, are stated by the row but are not a shortfall.
-  assert.equal(
-    loadedPlacementFrom({ ...status, offloaded_layers: 60, gpu_memory_mode: "manual", gpu_layers: 60 })?.shortfall,
-    null,
-  );
-  assert.equal(loadedPlacementFrom({ ...status, offloaded_layers: 60, offload_overridden: true })?.shortfall, null);
-  assert.equal(loadedPlacementFrom({ ...status, offloaded_layers: 66, overflow_layers: 7 })?.shortfall, null);
-  assert.equal(
-    loadedPlacementFrom({ ...status, offloaded_layers: 0, cpu_fallback_reason: "vulkan_startup_crash" })?.shortfall,
-    "cpu",
-  );
-});
-
-test("the placement row and the header chip need no setting", () => {
-  // Source text: neither component can be mounted here, since both pull in the chat feature's React tree.
+test("the placement row needs no setting", () => {
+  // Source text: the row cannot be mounted here, since it pulls in the chat feature's React tree.
   const row = readSrc("features/model-picker/components/loaded-placement-row.tsx");
   assert.doesNotMatch(row, /showGenerationDetails|useChatPreferencesStore/);
-  assert.match(row, /placement\.shortfall/);
-  const chip = readSrc("features/chat/components/chat-placement-notice.tsx");
-  assert.doesNotMatch(chip, /showGenerationDetails|useChatPreferencesStore/);
-  assert.match(chip, /!loaded \|\| modelLoading \|\| !placement\?\.shortfall\) return null/);
-  assert.match(chip, /generationStats\.placement\.partlyOnCpu/);
-  assert.match(chip, /generationStats\.placement\.onCpu/);
-  const page = readSrc("features/chat/chat-page.tsx");
-  const controls = page.slice(page.indexOf('data-chat-model-controls=""'), page.indexOf("<ChatModelNotice"));
-  assert.match(controls, /view\.mode !== "compare" && \(\s*<ChatPlacementNotice/);
+  assert.match(row, /if \(placement === null\) return null;/);
   // The switch now only governs the live speed lines, and says so.
   assert.equal(en.settings.chat.showGenerationDetails, "Detailed speed info");
   assert.doesNotMatch(en.settings.chat.showGenerationDetailsDescription, /layers/);
@@ -514,7 +488,7 @@ test("the placement row and the header chip need no setting", () => {
 test("a GPU build that fell back to the CPU is not reported as GPU layers", () => {
   // CUDA build, no usable device: llama.cpp still logs "offloaded 29/29 layers to GPU", buffers AMX + CPU_Mapped.
   assert.deepEqual(
-    describePlacement({ offloaded: 29, total: 29, overflowLayers: null, gpuWeightsMib: 0, hostWeightsMib: 499.8, expertCacheMib: null, shortfall: null }, t),
+    describePlacement({ offloaded: 29, total: 29, overflowLayers: null, gpuWeightsMib: 0, hostWeightsMib: 499.8, expertCacheMib: null }, t),
     { layers: "All 29 layers on the CPU", memory: "0.5 GiB in RAM" },
   );
 });
@@ -539,7 +513,7 @@ test("--moe-cache-mib auto reads as every expert in RAM with a GPU cache", () =>
 
 test("one memory pool gets one figure, and amounts under 0.1 GiB read in MiB", () => {
   // Qwen3.5-4B Q4_K_M under Metal on an M1 Mac mini: MTL0 2,603.5 MiB and CPU 497.3 MiB, one pool.
-  const metal = { offloaded: 33, total: 33, overflowLayers: null, gpuWeightsMib: 2603.5, hostWeightsMib: 497.31, expertCacheMib: null, shortfall: null };
+  const metal = { offloaded: 33, total: 33, overflowLayers: null, gpuWeightsMib: 2603.5, hostWeightsMib: 497.31, expertCacheMib: null };
   assert.deepEqual(describePlacement(metal, t, "unified"), {
     layers: "All 33 layers on the GPU",
     memory: "3.0 GiB in unified memory",
@@ -547,7 +521,7 @@ test("one memory pool gets one figure, and amounts under 0.1 GiB read in MiB", (
   assert.equal(describePlacement(metal, t).memory, "2.5 GiB in VRAM · 0.5 GiB in RAM");
   // A small model's token embeddings would otherwise print as "0.0 GiB in RAM".
   assert.equal(
-    describePlacement({ offloaded: 31, total: 31, overflowLayers: 0, gpuWeightsMib: 112.6, hostWeightsMib: 28.7, expertCacheMib: null, shortfall: null }, t).memory,
+    describePlacement({ offloaded: 31, total: 31, overflowLayers: 0, gpuWeightsMib: 112.6, hostWeightsMib: 28.7, expertCacheMib: null }, t).memory,
     "0.1 GiB in VRAM · 29 MiB in RAM",
   );
 });

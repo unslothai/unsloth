@@ -6096,9 +6096,6 @@ export const tr = {
       inSharedMemory: "{amount} paylaşılan bellekte",
       inVram: "{amount} VRAM'de",
       inRam: "{amount} RAM'de",
-      partlyOnCpu: "Kısmen CPU'da",
-      onCpu: "CPU'da",
-      shortfallHint: "Üretim, modelin tamamı GPU'dayken olduğundan daha yavaştır.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
