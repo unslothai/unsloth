@@ -26883,6 +26883,7 @@ _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 _MAX_VIDEO_BYTES = 256 * 1024 * 1024
 # llama-server's HTTP layer refuses bodies over 100 MB, so a clip larger than this is transcoded first.
 _LLAMA_VIDEO_FORWARD_BYTES = 64 * 1024 * 1024
+_LLAMA_VIDEO_FORWARD_B64_CHARS = 4 * math.ceil(_LLAMA_VIDEO_FORWARD_BYTES / 3)
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil(_MAX_VIDEO_BYTES / 3)
 # Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
 _MAX_VIDEO_SCHEME_CHARS = 16
@@ -27873,7 +27874,7 @@ async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
         else None
     )
     try:
-        return await asyncio.to_thread(
+        shrunk = await asyncio.to_thread(
             shrink_video_for_llama,
             video_b64,
             _LLAMA_VIDEO_FORWARD_BYTES,
@@ -27887,6 +27888,14 @@ async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
         raise HTTPException(
             status_code = 400, detail = "Could not process the provided video file."
         ) from None
+    # The helper hands back the original on failure; llama-server would 413 it with no reason given.
+    if len(shrunk) > _LLAMA_VIDEO_FORWARD_B64_CHARS:
+        raise HTTPException(
+            status_code = 413,
+            detail = "Video is too large to send to the model even after compressing it. "
+            "Trim it to a shorter clip and try again.",
+        )
+    return shrunk
 
 
 async def _shrink_video_parts(messages: list[dict], llama_backend) -> None:

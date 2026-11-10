@@ -928,3 +928,25 @@ def test_the_clip_count_includes_the_legacy_field():
     body["video_base64"] = tiny
     rejection = inference_route._request_video_rejection(ChatCompletionRequest.model_validate(body))
     assert rejection is not None and rejection[0] == 400
+
+
+def test_a_clip_still_over_the_forward_budget_after_transcoding_is_refused(monkeypatch):
+    """shrink_video_for_llama returns the original on failure; past 100 MB llama-server 413s it blind."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    limit = inference_route._LLAMA_VIDEO_FORWARD_B64_CHARS
+    returned = {}
+    monkeypatch.setattr(
+        inference_route, "shrink_video_for_llama", lambda clip, cap, **_: returned["clip"]
+    )
+
+    returned["clip"] = "A" * limit
+    assert asyncio.run(inference_route._shrink_clip_for_llama("QUJD", None)) == returned["clip"]
+
+    returned["clip"] = "A" * (limit + 1)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(inference_route._shrink_clip_for_llama("QUJD", None))
+    assert err.value.status_code == 413
+    assert "Trim it" in err.value.detail
