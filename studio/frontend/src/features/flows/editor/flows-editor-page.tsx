@@ -65,7 +65,7 @@ const BELOW_TITLEBAR =
   "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
 /** Whether to stay: saves first, and a failed or stuck save asks instead of leaving the user stuck. */
-function stayUnlessSaved(): Promise<boolean> {
+export function stayUnlessSaved(): Promise<boolean> {
   const wait = new Promise<"stuck">((resolve) =>
     setTimeout(() => resolve("stuck"), SAVE_WAIT_MS),
   );

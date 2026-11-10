@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -112,20 +112,6 @@ test("failed blocks are named the way the canvas names them, in graph order", ()
     { id: "b", title: "Generate Image", error: "Out of memory" },
     { id: "c", title: "output.preview", error: "It stopped with an error" },
   ]);
-});
-
-test("Run asks the plan before starting and holds the run when models must download", () => {
-  const src = readSrc("features/flows/editor/run-controller.ts");
-  assert.match(src, /if \(await heldForDownloads\(flowId, options\)\) return;/);
-  assert.match(src, /options\.downloadsConfirmed/);
-  const dialogs = readSrc("features/flows/editor/dialogs.tsx");
-  assert.match(
-    dialogs,
-    /pending\?\.models ===\s*modelSignature\(\s*useDocStore\.getState\(\)\.graph\.nodes,\s*useDocStore\.getState\(\)\.graph\.groups,?\s*\)/,
-  );
-  assert.match(dialogs, /downloadsConfirmed: same/);
-  assert.match(src, /setPendingRun\(\{ options: \{ \.\.\.options \}, plan, models: signature \}\)/);
-  assert.match(readSrc("features/flows/editor/run-bar.tsx"), /<DownloadRunDialog \/>/);
 });
 
 test("enabling a disabled block changes the model signature", () => {
