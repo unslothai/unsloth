@@ -614,8 +614,7 @@ def test_a_pending_admin_password_blocks_exposing_the_server(monkeypatch):
 def test_status_carries_the_bind_host_so_a_block_can_name_it(
     monkeypatch, bind_host, wildcard, expected_urls
 ):
-    """The launch-managed block covers a wildcard and a single-address bind
-    alike, so the address itself has to reach the settings UI."""
+    """The managed block covers wildcard and single-address binds, so the bind address must reach the UI."""
     monkeypatch.setattr(
         lan_access,
         "detect_lan_addresses",
@@ -672,8 +671,7 @@ def test_a_dual_stack_wildcard_launch_reports_both_address_families(monkeypatch)
 
 
 def test_the_response_model_carries_the_bind_host_to_the_client():
-    """The status dict reaches the client through LanAccessResponse, which drops
-    any field it does not declare."""
+    """The status dict reaches the client via LanAccessResponse, which drops any undeclared field."""
     state = SimpleNamespace(server_url = "http://10.1.1.144:8888")
     lan_settings.configure_lan_access(
         state,
@@ -701,8 +699,7 @@ def test_a_specific_host_launch_reports_the_address_it_was_given():
 def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public_address(
     monkeypatch,
 ):
-    """The status refreshes every LAN address instead of relying on server_url's
-    single direct base, and never leaks an obsolete public-address value."""
+    """Status lists every LAN address, not server_url's single base, and never a stale public address."""
     monkeypatch.setattr(file_manager, "_in_container", lambda: False)
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     state = _app(
@@ -904,8 +901,7 @@ def test_the_default_route_address_leads_so_it_becomes_the_shown_url(monkeypatch
 
 
 def test_detection_survives_a_host_that_resolves_to_nothing(monkeypatch):
-    """The hostname fallback only runs without psutil, and a Linux host mapping its
-    name to 127.0.1.1 is exactly why it cannot be the source of truth."""
+    """Hostname lookup is only a no-psutil fallback, since some Linux hosts map it to 127.0.1.1."""
 
     def _boom(*_args, **_kwargs):
         raise OSError("no such host")
@@ -918,8 +914,7 @@ def test_detection_survives_a_host_that_resolves_to_nothing(monkeypatch):
 
 @pytest.mark.allow_network
 def test_detection_enumerates_interfaces_rather_than_the_default_route(monkeypatch):
-    """An isolated LAN has no route to 8.8.8.8 and a multihomed host has more than
-    one interface, so neither the probe nor the hostname finds every address."""
+    """Enumerate interfaces: an isolated LAN has no route to 8.8.8.8, and multihomed hosts have several."""
     routed = _require_lan_address()
     assert routed in lan_access._interface_addresses()
 
@@ -1327,9 +1322,7 @@ def test_a_listener_that_fails_to_serve_gives_up_without_waiting_it_out(live_ser
 
 @pytest.mark.allow_network
 def test_a_stop_from_a_lan_client_does_not_wait_out_its_own_response(live_server):
-    """Settings > Stop pressed on the phone. uvicorn closes the listening sockets at
-    the top of its shutdown and only then drains in-flight responses, so a stop that
-    waited for serve() to return would be waiting for the very response it is."""
+    """uvicorn closes listeners before draining, so a stop waiting on serve() would wait on itself."""
     address = _require_lan_address()
     lan_access.start_lan_listener(live_server.app, live_server.loop, live_server.port)
 
@@ -1344,8 +1337,7 @@ def test_a_stop_from_a_lan_client_does_not_wait_out_its_own_response(live_server
 
 
 def test_a_stop_that_cannot_confirm_the_port_keeps_the_host_marked_reachable(monkeypatch):
-    """The sockets may still be accepting, so the loopback-only trust gates must
-    not reopen just because the teardown wait ran out."""
+    """Sockets may still accept, so loopback-only trust must stay if the teardown wait times out."""
 
     class _Server:
         should_exit = False
@@ -1414,9 +1406,7 @@ def test_a_schedule_that_cannot_reach_the_loop_releases_the_bound_sockets(live_s
 
 @pytest.mark.allow_network
 def test_a_stop_on_the_serving_loop_never_blocks_on_a_start_holding_the_lock(live_server):
-    """A start holds _lock while waiting for this loop to run serve(). /api/shutdown
-    reaches stop_lan_listener from that same loop, so blocking on the lock would
-    leave the two waiting each other out for the whole start timeout."""
+    """A stop on the serving loop must not block on _lock, which a start holds while awaiting that loop."""
     _require_lan_address()
     holding = threading.Event()
     release = threading.Event()
@@ -1446,8 +1436,7 @@ def test_a_stop_on_the_serving_loop_never_blocks_on_a_start_holding_the_lock(liv
 
 
 def test_the_server_thread_releases_the_listener_once_its_loop_ends():
-    """An embedded host calls run_server again in-process, and a stale _server would
-    report the old addresses as online and skip binding a new listener."""
+    """A stale _server after an in-process rerun would report old addresses online and skip the new bind."""
     source = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     run_body = source[
         source.index("    def _run():") : source.index("    thread = Thread(target = _run")
@@ -1541,8 +1530,7 @@ def test_trust_outlives_the_sockets_until_accepted_requests_drain(monkeypatch):
 
 
 def test_a_repeated_stop_does_not_clear_trust_a_pending_drain_still_owns(monkeypatch):
-    """The second stop finds no server and would otherwise release the flag out from
-    under requests the first stop left draining."""
+    """A repeat stop with no server must not clear trust that a pending drain still owns."""
     connections = {object()}
     server = SimpleNamespace(server_state = SimpleNamespace(connections = connections))
     monkeypatch.setattr(lan_access, "_DRAIN_TIMEOUT", 5.0)

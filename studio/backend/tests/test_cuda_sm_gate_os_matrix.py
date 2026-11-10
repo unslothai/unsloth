@@ -108,8 +108,7 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
     @pytest.mark.parametrize("os_key", OS_KEYS)
     @pytest.mark.parametrize("vendor", VENDORS)
     def test_only_an_nvidia_host_can_be_refused(self, os_key, vendor, monkeypatch, host):
-        """No nvidia-smi means unknowable coverage, so the gate opens whatever
-        the marker claims."""
+        """No nvidia-smi leaves coverage unknown, so the gate opens whatever the marker claims."""
         host(os_key)
         rows = "0, 7.5\n" if vendor == "nvidia" else None
         error = _gate(monkeypatch, sms = frozenset({86, 89}), caps_rows = rows)
@@ -123,8 +122,7 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
     def test_an_unmarked_install_never_probes_the_gpu(
         self, os_key, vendor, monkeypatch, host, marker_spy, smi_spy
     ):
-        """Unknown coverage must short-circuit before shelling out to
-        nvidia-smi on every load."""
+        """Unknown coverage must short-circuit before shelling out to nvidia-smi on every load."""
         host(os_key)
         monkeypatch.setattr(
             LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/x/llama-server")
@@ -135,8 +133,7 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
 
     @pytest.mark.parametrize("os_key", OS_KEYS)
     def test_a_non_cuda_bundle_is_inert(self, os_key, monkeypatch, host):
-        """Vulkan/CPU/ROCm bundles declare no supported_sms. That invariant is
-        why the call site needs no explicit is_vulkan_backend guard."""
+        """Bundles declaring no supported_sms need no is_vulkan_backend guard at the call site."""
         host(os_key)
         assert _gate(monkeypatch, sms = None, caps_rows = "0, 7.5\n") is None
 
@@ -155,8 +152,7 @@ class TestTheSmFloorDecision:
         ],
     )
     def test_floor_not_exact_membership(self, sms, cap, refused, monkeypatch):
-        """Only the too-old direction is broken: an exact-SM test would refuse
-        the legacy sm_50-61 PTX bundle that drives an sm_86 host fine."""
+        """Exact-SM matching would refuse the sm_50-61 PTX bundle that drives sm_86 fine."""
         error = _gate(monkeypatch, sms = frozenset(int(s) for s in sms), caps_rows = f"0, {cap}\n")
         assert bool(error) is refused, error
 
@@ -185,8 +181,7 @@ class TestTheSmFloorDecision:
 
 
 class TestVisibilityMasks:
-    """Mask entries are ordinals in CUDA's order while nvidia-smi reports
-    physical PCI indices, so the mask is trusted only when both agree."""
+    """Mask ids are CUDA ordinals, not nvidia-smi PCI indices; trusted only when the two agree."""
 
     def test_a_numeric_mask_hiding_the_old_card_opens_the_gate(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
@@ -217,9 +212,8 @@ class TestVisibilityMasks:
         ],
     )
     def test_a_uuid_or_mig_mask_is_ignored_and_the_whole_host_is_judged(self, mask, monkeypatch):
-        """Neither names a physical index we can map back, so the mask is
-        dropped and every card is weighed. That errs toward launching and only
-        refuses when nothing on the host could run, whichever instance wins."""
+        """UUID or MIG masks name no physical index we can map back, so the mask is dropped and
+        every card weighed; the gate refuses only if nothing could run, whichever instance wins."""
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
         assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n") is None
@@ -240,8 +234,7 @@ class TestMarkerParsing:
 
     @pytest.mark.parametrize("raw", [["86"], [86], [" 86 "], ["75", "86"]])
     def test_the_installer_string_format_round_trips(self, raw, monkeypatch):
-        """The installer writes sorted digit strings; the reader must take
-        those plus the ints an older marker may hold."""
+        """Installer writes sorted digit strings; readers also accept ints from older markers."""
         from utils import llama_cpp_freshness as freshness
 
         monkeypatch.setattr(freshness, "read_install_marker", lambda b: {"supported_sms": raw})

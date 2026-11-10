@@ -46,9 +46,8 @@ def _wait_for(predicate, timeout_s: float = 10.0) -> bool:
 
 
 def test_a_blocked_loop_dumps_after_consecutive_slow_probes(loop_in_thread, tmp_path):
-    """The GIL-free shape: something blocking sits on the loop, Python threads still
-    run, so the slow-probe counter reaches its threshold and dumps. The dump must
-    name the blocking frame, otherwise it answers nothing."""
+    """A GIL-free block still lets slow probes reach the threshold; the dump must name the blocking
+    frame."""
     dump_path = tmp_path / "dump.txt"
 
     def blocked_in_a_syscall():
@@ -81,9 +80,8 @@ def test_a_blocked_loop_dumps_after_consecutive_slow_probes(loop_in_thread, tmp_
 
 
 def test_a_gil_holding_stall_is_dumped_mid_stall(loop_in_thread, tmp_path):
-    """The #9712 shape: the GIL is held, so the watchdog thread itself is frozen and
-    slow-probe counting observes nothing until the stall is over. Only the dead
-    man's switch can capture this, firing from C while no Python thread runs."""
+    """The #9712 shape holds the GIL, so the watchdog thread is frozen; only the dead man's switch
+    can fire from C."""
     dump_path = tmp_path / "dump.txt"
     released = threading.Event()
 
@@ -125,9 +123,8 @@ def test_a_gil_holding_stall_is_dumped_mid_stall(loop_in_thread, tmp_path):
 
 
 def test_repeated_gil_stalls_dump_once_per_cooldown(loop_in_thread, tmp_path):
-    """The switch fires on its own once armed, so the cooldown has to gate the
-    arming: a host that stalls chronically must leave one dump, and silence, until
-    the window passes."""
+    """The switch fires on its own once armed, so the cooldown must gate arming: a chronically
+    stalling host gets one dump, then silence until the window passes."""
     dump_path = tmp_path / "dump.txt"
 
     def hold_gil_for(seconds: float):
@@ -176,9 +173,8 @@ def test_repeated_gil_stalls_dump_once_per_cooldown(loop_in_thread, tmp_path):
 
 
 def test_a_python_dump_disarms_the_switch_for_the_cooldown(loop_in_thread, tmp_path):
-    """The two paths share the cooldown. A slow-probe dump leaves the switch armed
-    from earlier in the same beat unless it is taken down with it, and a GIL freeze
-    right after would land a second dump inside the window."""
+    """The two dump paths share one cooldown: a slow-probe dump must disarm the switch, or a GIL
+    freeze right after would dump again inside the window."""
     dump_path = tmp_path / "dump.txt"
 
     def blocks_the_loop():
@@ -254,8 +250,7 @@ def test_stands_down_until_the_warm_is_over(monkeypatch):
 
 
 def test_no_dump_while_suppressed(loop_in_thread, tmp_path):
-    """The warm's `import torch` is a legitimate long GIL hold with a known frame.
-    While the suppress callable says so, neither capture path may fire."""
+    """While suppressed, the warm's import torch GIL hold must not trip either capture path."""
     dump_path = tmp_path / "dump.txt"
 
     with dump_path.open("w") as dump_file:
@@ -283,8 +278,7 @@ def test_no_dump_while_suppressed(loop_in_thread, tmp_path):
 
 
 def test_off_unless_the_env_opts_in(loop_in_thread, monkeypatch):
-    """Diagnostic tooling: a desktop run must carry neither the thread nor the
-    faulthandler timer, so nothing starts without the env the CI workflow sets."""
+    """Watchdog and faulthandler timer stay off unless UNSLOTH_STUDIO_STALL_WATCHDOG opts in."""
     monkeypatch.delenv("UNSLOTH_STUDIO_STALL_WATCHDOG", raising = False)
     assert start_stall_watchdog(loop_in_thread) is None
     assert not any(t.name == "stall-watchdog" for t in threading.enumerate())

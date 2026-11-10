@@ -8,6 +8,8 @@ lazy."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import os
 import re
@@ -115,6 +117,20 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _ROCM_PROBE_RETRY_S = 120.0
 _ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
 
+# Candidate-card probes must not flip the process-wide SDPA switches the running card also uses.
+_SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_sdpa_probe_read_only", default = False
+)
+
+
+@contextlib.contextmanager
+def read_only_sdpa_probe():
+    token = _SDPA_PROBE_READ_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _SDPA_PROBE_READ_ONLY.reset(token)
+
 
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     import time
@@ -126,8 +142,11 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
-        # Whichever check completes the probe applies its answer; fp32 never runs fused kernels.
-        if _rocm_guard_allowed() and str(dtype) in ("torch.float16", "torch.bfloat16"):
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and _rocm_guard_allowed()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+        ):
             try:
                 _apply_rocm_guard(available)
             except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
@@ -299,10 +318,7 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
 
 
 def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
-    """The SDPA backends that actually EXECUTE on ``target``, cheapest source of truth available.
-
-    Empty when the probe could not run at all (no torch, no device, an allocator failure) -- an
-    unanswerable probe must never be read as "only math", which is a claim about the hardware."""
+    """SDPA backends that really run on target; empty when the probe cannot run, never read as math-only."""
     kernels = _sdpa_capability(target)
     if _target_device(target).split(":")[0] == "mps":
         # MPS dispatch ignores the torch.backends.cuda toggles.
@@ -358,10 +374,7 @@ def _family_sdpa_kernels(target: Any, head_dims: Any = None) -> tuple[str, ...]:
 
 
 def sdpa_math_only(target: Any, head_dims: Any = None) -> bool:
-    """True only when MATH ran and every sub-quadratic backend refused.
-    ``head_dims`` (the family's; empty = unknown) narrows the shape-blind MPS answer.
-
-    A probe that answered nothing at all returns False: silence is not evidence."""
+    """True only when MATH ran and every sub-quadratic backend refused; an empty probe answer is False."""
     available = _family_sdpa_kernels(target, head_dims)
     if not available:
         return False
@@ -387,9 +400,7 @@ def warn_if_sdpa_math_only(
     logger: Any = None,
     head_dims: Any = None,
 ) -> bool:
-    """Log the math-only diagnosis at LOAD, not 70 seconds into a doomed generation.
-
-    Returns whether the warning fired, so callers can carry it into their resolved controls."""
+    """Log math-only at load, not 70 seconds into a doomed generation; returns whether it warned."""
     if not sdpa_math_only(target, head_dims):
         return False
     if logger is not None:
@@ -431,6 +442,33 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
         )
     available = _sdpa_capability(SimpleNamespace(device = device, dtype = dtype))
     return _apply_rocm_guard(available, logger)
+
+
+def guard_rocm_fused_sdpa_cards(
+    devices: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Switches are process-wide, so only kernels that ran on ALL cards stay on."""
+    from types import SimpleNamespace
+
+    if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
+        return ()
+    if dtype is None:
+        import torch
+        dtype = torch.float16  # _sdpa_capability's default
+    if str(dtype) not in ("torch.float16", "torch.bfloat16"):
+        return ()
+    answers = []
+    with read_only_sdpa_probe():
+        for device in devices:
+            available = _sdpa_capability(SimpleNamespace(device = str(device), dtype = dtype))
+            if available:
+                answers.append(available)
+    if not answers:
+        return ()
+    common = tuple(k for k in answers[0] if all(k in a for a in answers[1:]))
+    return _apply_rocm_guard(common, logger)
 
 
 def _rocm_guard_allowed() -> bool:
@@ -651,6 +689,19 @@ BLACKWELL_NATIVE_ATTN_ENV = (
     "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
 )
 _NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int], bool] = {}
+# Native flash measured faster than the cuDNN pin at every DiT/U-Net shape, bf16+fp16 (torch 2.14.1+cu130); others keep the pin.
+FLASH_FASTER_CAPABILITIES: dict[tuple[int, int], str] = {
+    (
+        8,
+        0,
+    ): "A100: cuDNN 1-44% slower than native flash (FLUX 0.92x, Lumina-2 0.74x, SD3.5 0.97x per call)",
+    (
+        8,
+        9,
+    ): "L4: cuDNN never faster than native flash (Lumina-2 0.70x per call, the rest 0.93-1.00x)",
+}
+NATIVE_FLASH_ATTN_ENV = "UNSLOTH_DIFFUSION_NATIVE_FLASH_ATTN"  # auto (default) | 0 keeps the cuDNN pin on FLASH_FASTER_CAPABILITIES cards
+_NATIVE_FLASH_CACHE: dict[tuple[str, str, int], bool] = {}
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
 ROCM_FLASH_MIN_GAIN = 0.03
 # Accuracy is judged on the raw attention output (flash vs native SDPA, same inputs), not the block: the residual and
@@ -658,9 +709,7 @@ ROCM_FLASH_MIN_GAIN = 0.03
 ROCM_FLASH_BLOCK_TOL = 2e-2  # attention output rel L1
 ROCM_FLASH_MAX_TOL = 5e-2  # attention max abs error / max abs output
 ROCM_FLASH_PROBE_TOKENS = 4096  # the load-time bucket: a 1024^2 image DiT sequence
-# Calls are gated per (query, key) length bucket pair (powers of two from 256 up, open ended): a pair is timed at its
-# lower edges on first use, so the 4096 verdict never decides a 30k-token video call, and a long-video x short-text
-# cross-attention is timed as that rectangle, not as square self-attention.
+# Gated per (query, key) length bucket pair, so a 4096 verdict never decides a 30k-token call.
 ROCM_FLASH_MIN_BUCKET = 256
 ROCM_FLASH_LONG_PROBE = (
     16384  # from here the probe times fewer runs (one native SDPA call is seconds at 64k tokens)
@@ -939,9 +988,7 @@ _ROCM_FLASH_LOCAL = threading.local()
 # (device, dtype, *geometry, query bucket, key bucket, batch bucket) -> flash serves it, filled on an eager call's
 # first use (the probe or a stored verdict). In memory: a bucket the probe rejected stays native.
 _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
-# On each hooked DiT: bucket keys whose probe could not run (no room beside the live forward, or it raised), native
-# until that DiT's next generation retries them. Never a verdict, so a transient shortfall cannot disable a working
-# kernel; per DiT, so another pipeline's generation boundary does not clear it.
+# Unrun probes defer per DiT, not verdicts; a transient shortfall cannot disable a working kernel
 ROCM_FLASH_DEFERRED_ATTR = "_unsloth_rocm_flash_deferred"
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
 # The native SDPA baseline the in-memory verdicts were timed against; when it moves (a later load re-enables or disables
@@ -1337,9 +1384,7 @@ def _rocm_flash_probe_bytes(
 
 
 def _rocm_flash_probe_fits(device: str, need: int) -> bool:
-    """Room for the probe beside the live forward: device free plus the allocator's cached-but-unused blocks, with
-    25% + 256 MiB to spare, less the user's VRAM Budget reserve (0 at the default). Unknown memory state counts as no
-    room."""
+    """Probe room: free plus idle cache, less 25% + 256 MiB and the VRAM Budget reserve; unknown is none"""
     try:
         import torch
 
@@ -2105,11 +2150,7 @@ def _install_dispatch_guard(
     make_op: Any = None,
     ran: Any = None,
 ) -> bool:
-    """Wrap diffusers' registered ``backend`` so calls its kernel cannot take run native. Idempotent.
-
-    False when the registry is not where expected: the caller then does not engage the backend. ``make_op(fn)``
-    optionally returns an opaque op for plain (no lse, no context-parallel) calls. ``ran()`` is called for each call
-    the kernel itself takes."""
+    """Wrap the registered backend so unsupported calls run native; idempotent; False if registry moved"""
     try:
         from diffusers.models.attention_dispatch import (
             AttentionBackendName,
@@ -2405,9 +2446,7 @@ def _untrack_rocm_flash_calls(pipe: Any) -> None:
 
 
 def attention_may_run_native(pipe: Any) -> bool:
-    """Whether some attention call of this pipe can run native SDPA although flash is engaged: ROCm flash routes masked
-    calls (explicit or auto), and in auto lengths flash does not win (or could not time beside a live forward), to native. For
-    memory budgets: conservative, never from what a past run reported."""
+    """Whether a call may run native SDPA despite flash; conservative, never from past run reports"""
     return bool(_rocm_flash_dits(pipe))
 
 
@@ -3406,6 +3445,41 @@ def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
         return False
 
 
+def _native_flash_measured_faster(pipe: Any, target: Any) -> bool:
+    """True on a ``FLASH_FASTER_CAPABILITIES`` card whose native SDPA picks FLASH for every DiT head dim; else keep the pin."""
+    if (os.environ.get(NATIVE_FLASH_ATTN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    if not _is_cuda_nvidia(target):
+        return False
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return False
+    dims = _dit_head_dims(pipe)
+    if not dims:
+        return False
+    try:
+        import torch
+        from torch.nn.attention import SDPBackend
+
+        device = _indexed_cuda_device(device)
+        if tuple(_device_capability(device)) not in FLASH_FASTER_CAPABILITIES:
+            return False
+        dtype = getattr(target, "dtype", None)
+        if dtype not in (torch.bfloat16, torch.float16):
+            return False
+        for dim in sorted(dims):
+            key = (device, str(dtype), int(dim))
+            hit = _NATIVE_FLASH_CACHE.get(key)
+            if hit is None:
+                hit = _native_sdp_choice(device, dtype, dim) == int(SDPBackend.FLASH_ATTENTION)
+                _NATIVE_FLASH_CACHE[key] = hit
+            if not hit:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - unaskable: keep the pin
+        return False
+
+
 def _cudnn_serves_pipe(
     pipe: Any,
     target: Any,
@@ -3550,6 +3624,18 @@ def apply_attention_backend(
                     BLACKWELL_NATIVE_ATTN_ENV,
                 )
             backend = None
+        if (
+            isinstance(backend, _AutoCudnn)
+            and target is not None
+            and _native_flash_measured_faster(pipe, target)
+        ):
+            if logger is not None:
+                logger.info(
+                    "diffusion.attention: auto keeps native SDPA (flash attention measured faster than the cuDNN "
+                    "pin on this card; %s=0 pins cuDNN)",
+                    NATIVE_FLASH_ATTN_ENV,
+                )
+            backend = None
         if backend is not None:
             backend = str(backend)
         if backend == "flash_4_hub" and not _install_fa4_dispatch_guard():
@@ -3583,6 +3669,9 @@ def apply_attention_backend(
             engaged = False
         if engaged:
             _tag_dits(pipe, backend)
+            if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):
+                from .diffusion_flux3_attn import install as install_flux3_strided
+                install_flux3_strided(pipe, backend, target, logger)
             if backend == "flash" and target is not None and _is_cuda_rocm(target):
                 _track_rocm_flash_calls(pipe)
             else:
@@ -3593,8 +3682,7 @@ def apply_attention_backend(
             if logger is not None:
                 logger.info("diffusion.attention: backend=%s", backend)
             return backend
-    # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in. One reset
-    # covers every fresh DiT.
+    # No backend requested or all failed: pin native so a stale process-wide backend cannot leak in.
     _tag_dits(pipe, None)
     _untrack_rocm_flash_calls(pipe)
     _restore_native_backend(setters[0], logger)
@@ -3674,9 +3762,7 @@ _NULL_PROCESSOR_CACHE: dict = {}
 
 
 def _set_hunyuan_null_mask(module: Any, enabled: bool) -> None:
-    """Set the null-mask flag on every block's attention of ``module``. The flag is valid ONLY for
-    the forward whose pre-hook removed the padding, so a post-hook clears it back to False after
-    each call (see the module note and _hunyuan_trim_post_hook)."""
+    """Null-mask flag on block attention, valid only for the forward whose pre-hook removed the padding."""
     for blk in getattr(module, "transformer_blocks", []):
         attn = getattr(blk, "attn", None)
         if attn is not None:
@@ -3792,9 +3878,7 @@ def _null_mask_processor_cls():
 
 
 def _trim_stream(states, mask):
-    """Drop the columns of a [B, S, D] text stream + its [B, S] mask that are padding for EVERY
-    batch element (globally invalid). Returns (states, mask, all_valid): all_valid is True when
-    the trimmed stream has NO partially-padded column left (so it needs no attention mask)."""
+    """Drops globally padded columns; all_valid (no partly padded column left) means no mask needed."""
     if states is None or mask is None or mask.dim() != 2:
         return states, mask, True  # nothing to mask -> treat as no-padding
     mb = mask.bool()
@@ -3803,8 +3887,7 @@ def _trim_stream(states, mask):
         states = states[:, keep]
         mask = mask[:, keep]
         mb = mb[:, keep]
-    # All remaining slots valid for every element (vacuously True for a 0-length stream, fine for an unused secondary
-    # stream e.g. byt5 in t2v).
+    # Vacuously True for a 0-length stream, e.g. the unused byt5 stream in t2v; all slots valid.
     all_valid = bool(mb.all().item())
     return states, mask, all_valid
 
@@ -3910,9 +3993,7 @@ def _hunyuan_trim_post_hook(module, _args, output):
 
 
 def _install_null_processors(dit: Any, logger: Any) -> bool:
-    """Swap every stock block attention processor on ``dit`` for the null-mask subclass. Only
-    touches blocks whose processor is exactly the stock class (so a diffusers change or an
-    already-installed run is a no-op). Preserves any pinned attention backend."""
+    """Swap stock block processors for the null-mask subclass; keep any pinned attention backend"""
     try:
         cls = _null_mask_processor_cls()
     except Exception as exc:  # noqa: BLE001 - diffusers moved / unavailable -> skip

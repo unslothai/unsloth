@@ -228,7 +228,7 @@ def test_generated_trainer_embeds_the_patched_gradient_function():
         and ast.unparse(node.func.value) == "RL_PRE_ITEMS['grpo_trainer']"
         and node.args
     ]
-    # The dispatch patch may be nested inside the hooked-head patch.
+    # The dispatch patch may be nested inside further source patches (hooked head, PrefixGrouper gate).
     calls = [
         inner
         for item in appended

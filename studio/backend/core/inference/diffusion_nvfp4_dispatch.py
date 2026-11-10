@@ -12,8 +12,8 @@ import weakref
 from functools import partial
 from typing import Any, Optional
 
-# The only versions whose private layout was read and verified. Exact, never a minimum.
-_SUPPORTED = ("0.6.6",)
+# Exact versions whose private layout was read, never a minimum.
+_SUPPORTED = ("0.6.6", "0.7.3")
 
 NVFP4_FAST_DISPATCH_ENV = "UNSLOTH_NVFP4_FAST_DISPATCH"
 
@@ -203,7 +203,16 @@ def _fast_quantize(
     if got is None:
         return None, None
     fn, pdl = got
-    xq, sf = fn(x, global_sf, 16, False, True, False, pdl)
+    # By keyword: 0.7 put ``is_global_scale_inversed`` before ``enable_pdl``; positional pdl inverts the scale.
+    xq, sf = fn(
+        x,
+        global_sf,
+        sf_vec_size = 16,
+        sf_use_ue8m0 = False,
+        is_sf_swizzled_layout = True,
+        is_sf_8x4_layout = False,
+        enable_pdl = pdl,
+    )
     return xq, sf.reshape((-1, x.shape[-1] // 16))
 
 

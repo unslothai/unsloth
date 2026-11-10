@@ -112,6 +112,14 @@ import {
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_MIME_TYPE,
+  CONVERSATION_PDF_MIME_TYPE,
+  type NamedConversationHtml,
+  buildConversationHtmlBody,
+  buildConversationHtmlDocument,
+} from "../utils/conversation-html";
+import { renderConversationPdf } from "../api/chat-export-api";
 import { planChatItemSources } from "../utils/project-source-plan";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
 import { saveMarkdownAsProjectSource } from "@/features/rag/api/save-markdown-source";
@@ -585,6 +593,70 @@ export const exportConversationMarkdown = (
   notifyNoContent: () => toast.info("No exportable content."),
 })(threadId);
 
+async function loadConversationForHtml(
+  threadId: string,
+  title?: string,
+  liveBranch?: string[] | null,
+): Promise<NamedConversationHtml | null> {
+  const messages = await loadDisplayedBranchMessages(threadId, { liveBranch });
+  if (!messages) return null;
+  const thread =
+    title === undefined
+      ? await getStoredChatThread(threadId).catch(() => undefined)
+      : undefined;
+  return {
+    title: title ?? (thread?.title?.trim() || "Conversation"),
+    messages: messages.map((msg) => ({
+      role: String(msg.role ?? ""),
+      content: stripSearchImageTokens(messageToMarkdown(msg)),
+    })),
+  };
+}
+
+async function pdfBytes(title: string, body: string): Promise<Uint8Array> {
+  const pending = toast.loading("Rendering PDF...");
+  try {
+    return await renderConversationPdf(title, body);
+  } finally {
+    toast.dismiss(pending);
+  }
+}
+
+async function exportConversationDocument(
+  threadId: string,
+  format: "html" | "pdf",
+  liveBranch?: string[] | null,
+): Promise<void> {
+  const conversation = await loadConversationForHtml(threadId, undefined, liveBranch);
+  if (!conversation) return;
+  const body = buildConversationHtmlBody([conversation]);
+  if (!body) { toast.info("No exportable content."); return; }
+  const basename = await conversationBasename(threadId);
+  if (format === "html") {
+    await downloadBlob(
+      buildConversationHtmlDocument(conversation.title, body),
+      `${basename}.html`,
+      CONVERSATION_HTML_MIME_TYPE,
+    );
+    return;
+  }
+  await downloadBlob(
+    await pdfBytes(conversation.title, body),
+    `${basename}.pdf`,
+    CONVERSATION_PDF_MIME_TYPE,
+  );
+}
+
+export const exportConversationHtml = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => exportConversationDocument(threadId, "html", liveBranch);
+
+export const exportConversationPdf = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => exportConversationDocument(threadId, "pdf", liveBranch);
+
 // "skipped" must not stop a pair; "failed" already toasted, so stop.
 type SaveSourceOutcome = "saved" | "skipped" | "failed";
 
@@ -664,7 +736,9 @@ export type ConvExportFormat =
   | "jsonl-messages"
   | "csv"
   | "sharegpt"
-  | "markdown";
+  | "markdown"
+  | "html"
+  | "pdf";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Training JSONL",
@@ -672,6 +746,8 @@ const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
   markdown: "Markdown",
+  html: "HTML",
+  pdf: "PDF",
 };
 
 export const EXPORT_FORMATS_LIST = (
@@ -731,12 +807,15 @@ function csvHeader(format: ConvExportFormat): string {
 function exportExt(format: ConvExportFormat): string {
   if (format === "csv") return "csv";
   if (format === "markdown") return "md";
+  if (format === "html" || format === "pdf") return format;
   return "jsonl";
 }
 
 function exportMime(format: ConvExportFormat): string {
   if (format === "csv") return CSV_MIME;
   if (format === "markdown") return CONVERSATION_MARKDOWN_MIME_TYPE;
+  if (format === "html") return CONVERSATION_HTML_MIME_TYPE;
+  if (format === "pdf") return CONVERSATION_PDF_MIME_TYPE;
   return "application/x-ndjson";
 }
 
@@ -751,30 +830,27 @@ export async function exportBulkConversationsMerged(
     return;
   }
 
+  if (format === "html" || format === "pdf") {
+    const conversations: NamedConversationHtml[] = [];
+    for (const { id, title } of await titledConversations(threadIds)) {
+      const conversation = await loadConversationForHtml(id, title);
+      if (conversation) conversations.push(conversation);
+    }
+    const body = buildConversationHtmlBody(conversations);
+    if (!body) { toast.info("No exportable content."); return; }
+    const title = conversations.length === 1 ? conversations[0].title : basename;
+    await downloadBlob(
+      format === "html"
+        ? buildConversationHtmlDocument(title, body)
+        : await pdfBytes(title, body),
+      `${basename}.${format}`,
+      exportMime(format),
+    );
+    return;
+  }
+
   if (format === "markdown" && threadIds.length > 1) {
-    const conversations: Array<{ id: string; title: string }> = [];
-    const pairs = new Map<string, ThreadRecord[]>();
-    for (const id of threadIds) {
-      const thread = await getStoredChatThread(id);
-      conversations.push({ id, title: thread?.title?.trim() || id });
-      if (thread?.pairId) {
-        const halves = pairs.get(thread.pairId) ?? [];
-        halves.push(thread);
-        pairs.set(thread.pairId, halves);
-      }
-    }
-    const pairedTitles = new Map<string, string>();
-    for (const [pairId, halves] of pairs) {
-      if (halves.length < 2) continue;
-      const plans = planChatItemSources(
-        { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
-        halves,
-      );
-      for (const plan of plans) pairedTitles.set(plan.id, plan.title);
-    }
-    for (const conversation of conversations) {
-      conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
-    }
+    const conversations = await titledConversations(threadIds);
     const body = await buildNamedConversationsMarkdown(
       conversations,
       buildConversationMarkdownForThread,
@@ -811,6 +887,36 @@ export async function exportBulkConversationsMerged(
   );
 }
 
+/** Thread titles, with compare halves named by model so the two can be told apart. */
+async function titledConversations(
+  threadIds: string[],
+): Promise<Array<{ id: string; title: string }>> {
+  const conversations: Array<{ id: string; title: string }> = [];
+  const pairs = new Map<string, ThreadRecord[]>();
+  for (const id of threadIds) {
+    const thread = await getStoredChatThread(id);
+    conversations.push({ id, title: thread?.title?.trim() || id });
+    if (thread?.pairId) {
+      const halves = pairs.get(thread.pairId) ?? [];
+      halves.push(thread);
+      pairs.set(thread.pairId, halves);
+    }
+  }
+  const pairedTitles = new Map<string, string>();
+  for (const [pairId, halves] of pairs) {
+    if (halves.length < 2) continue;
+    const plans = planChatItemSources(
+      { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
+      halves,
+    );
+    for (const plan of plans) pairedTitles.set(plan.id, plan.title);
+  }
+  for (const conversation of conversations) {
+    conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
+  }
+  return conversations;
+}
+
 export async function exportBulkConversationsSeparate(
   threadIds: string[],
   format: ConvExportFormat,
@@ -824,6 +930,16 @@ export async function exportBulkConversationsSeparate(
   const files: Record<string, Uint8Array> = {};
 
   for (const id of threadIds) {
+    if (format === "html" || format === "pdf") {
+      const conversation = await loadConversationForHtml(id);
+      const body = conversation ? buildConversationHtmlBody([conversation]) : "";
+      if (!conversation || !body) continue;
+      files[`${id}.${ext}`] =
+        format === "html"
+          ? strToU8(buildConversationHtmlDocument(conversation.title, body))
+          : await pdfBytes(conversation.title, body);
+      continue;
+    }
     const content = await buildThreadContent(id, format);
     if (!content) continue;
     const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
@@ -836,24 +952,33 @@ export async function exportBulkConversationsSeparate(
   await downloadBlob(zipped, `${basename}.zip`, "application/zip");
 }
 
-// "recents" = chats outside projects; "all" adds project chats.
+const SCOPE_BASENAMES = {
+  recents: "recents",
+  all: "all-chats",
+  history: "unsloth-chats",
+  archived: "unsloth-archived-chats",
+} as const;
+
+// "recents" = chats outside projects; "all" adds project chats; "history" adds archived ones too.
 export async function bulkExportConversationsByScope(
-  scope: "recents" | "all",
+  scope: keyof typeof SCOPE_BASENAMES,
   format: ConvExportFormat,
   merged: boolean,
 ): Promise<void> {
   try {
-    const threads = await listStoredChatThreads({
-      includeArchived: false,
+    const listed = await listStoredChatThreads({
+      includeArchived: scope === "history" || scope === "archived",
       ...(scope === "recents" ? { projectId: null } : {}),
     });
+    const threads =
+      scope === "archived" ? listed.filter((t) => t.archived) : listed;
     const ids = [...new Set(threads.map((t) => t.id))];
     if (ids.length === 0) {
       toast.info("No conversations to export.");
       return;
     }
     const ts = new Date().toISOString().slice(0, 10);
-    const basename = scope === "all" ? `all-chats-${ts}` : `recents-${ts}`;
+    const basename = `${SCOPE_BASENAMES[scope]}-${ts}`;
     if (merged) {
       await exportBulkConversationsMerged(ids, format, basename);
     } else {

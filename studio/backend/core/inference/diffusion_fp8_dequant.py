@@ -7,6 +7,7 @@ for every non-NaN value; torch imported lazily"""
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any, Callable, Optional
 
@@ -124,15 +125,20 @@ def dequant_rows(
     ``widen`` maps a row slice to its exact float32 values; ``fmt`` names the fp8 bits (None: integer codes)."""
     import torch
 
-    if triton_ok and _triton_ok(codes, dtype):
-        out = torch.empty(codes.shape, dtype = dtype, device = codes.device)
-        try:
-            launch_triton(codes, scale.contiguous(), out, fmt)
-            _WARM.add(_warm_key(codes, dtype))
-            return out
-        except Exception as exc:  # noqa: BLE001 - no Triton / launch failure: chunked torch below
-            _triton_failed(exc)
-        del out
+    if triton_ok:
+        # Triton launches on the current device's current stream and the capture probe reads that stream too:
+        # both must be the operand's device, not whichever GPU the caller left current.
+        guard = torch.cuda.device(codes.device) if codes.is_cuda else contextlib.nullcontext()
+        with guard:
+            if _triton_ok(codes, dtype):
+                out = torch.empty(codes.shape, dtype = dtype, device = codes.device)
+                try:
+                    launch_triton(codes, scale.contiguous(), out, fmt)
+                    _WARM.add(_warm_key(codes, dtype))
+                    return out
+                except Exception as exc:  # noqa: BLE001 - no Triton / launch failure: chunked torch below
+                    _triton_failed(exc)
+                del out
     rows = codes.shape[0]
     cols = codes.numel() // max(1, rows)
     step = chunk_rows(rows, cols, codes.device, 8 if codes.device.type == "mps" else 4)

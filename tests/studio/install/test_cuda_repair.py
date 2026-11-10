@@ -57,9 +57,8 @@ def _make_run(
     smi_rc = 0,
     compute_caps = ("8.6",),
 ):
-    """subprocess.run side_effect: the shared torch probe (sys.executable, text
-    stdout) vs the nvidia-smi version / compute-capability probes (smi path,
-    text=True), keyed on the executable."""
+    """subprocess.run side_effect: the shared torch probe runs sys.executable with text stdout,
+    while the nvidia-smi probes use the smi path with text=True, keyed on the executable."""
 
     def _run(cmd, *args, **kwargs):
         result = MagicMock()
@@ -958,9 +957,8 @@ class TestExpectedTorchFlavorSkips:
 
     @pytest.mark.parametrize("backend", ["rocm", "xpu"])
     def test_a_gpu_backend_that_disagrees_with_the_handover_is_a_no_op(self, backend):
-        """An explicit ROCm/XPU pin against a cu124 handover. The pin is the newer and
-        more specific instruction; the handover only describes what the install arm
-        above it happened to do, so the pin wins and this pass stays out of it."""
+        """An explicit ROCm or XPU pin beats a cu124 handover, which only records what the install
+        arm happened to do, so this pass stays out of it."""
         ok, mock_pip = _run_flavor_invariant(backend = backend, expected_env = "cu124")
         assert ok is True
         mock_pip.assert_not_called()
