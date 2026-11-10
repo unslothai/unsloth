@@ -1,19 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Normalize chat-message `content` (string or OpenAI multimodal list) to text.
-
-String-only formatting paths called string ops directly on `content` and broke
-on the list form (#4383). `content_to_text` collapses either shape to a string,
-dropping non-text parts. No heavy imports, so it is unit-testable alone.
-"""
+"""Collapses message content (string or OpenAI multimodal list) to text, dropping non-text parts; no
+heavy imports, so unit-testable alone."""
 
 from __future__ import annotations
 
 from typing import Any
 
-# The composer sends a long paste as a text attachment wrapped in this tag, so a paste-only turn carries no `content`
-# text at all.
+# A long paste arrives as a text attachment in this tag, with no `content` text
 _PASTED_TEXT_OPEN = "<pasted_text name="
 _PASTED_TEXT_CLOSE = "</pasted_text>"
 
@@ -65,12 +60,7 @@ def pasted_text_body(text: str) -> str:
 
 
 def message_text_with_pastes(message: Any) -> str:
-    """Text of a message including any pasted attachment bodies.
-
-    A paste above the composer's threshold is sent as an attachment rather than
-    inline, so `content_to_text` alone reads a paste-only turn as empty. Other
-    attachment types are left out: they were never part of a message's text.
-    """
+    """Includes pasted attachment bodies, since a paste-only turn reads as empty from content alone."""
     if not isinstance(message, dict):
         return ""
     parts = [content_to_text(message.get("content"))]

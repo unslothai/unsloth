@@ -677,3 +677,16 @@ def test_the_coordinated_warm_stages_do_not_import_diffusers():
     for name, fn in torch_warmup._STAGES:
         body = inspect.getsource(fn)
         assert "diffusers" not in body, f"warm stage {name!r} imports diffusers"
+
+
+@pytest.mark.parametrize("warm_quantization", [False, True])
+def test_diffusers_imports_do_not_require_the_allocating_quantization_probe(
+    warm, monkeypatch, warm_quantization
+):
+    _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"], "text-to-video": []})
+    _stub_diffusers(monkeypatch)
+    calls = []
+    monkeypatch.setattr(warm, "_prewarm_quant_probe", lambda: calls.append("probe"))
+
+    assert warm.prewarm_diffusers_if_image_models_exist(warm_quantization = warm_quantization) is True
+    assert calls == (["probe"] if warm_quantization else [])

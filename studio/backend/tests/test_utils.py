@@ -91,7 +91,8 @@ class TestGetDevice:
 
     @needs_torch
     def test_device0_probe_failure_is_logged_with_allocator_config(self, monkeypatch):
-        # failed CUDA initialization can crash later, so log its cause at error rather than debug
+        # a failed device-0 probe can mean a broken CUDA setup that crashes later, so log it at error;
+        # both probes fail, so the NVIDIA (driver query) and ROCm (get_device_properties) branches are covered
         monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising = False)
         monkeypatch.delenv("PYTORCH_HIP_ALLOC_CONF", raising = False)
         monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:maybe")
@@ -102,6 +103,7 @@ class TestGetDevice:
             patch("utils.hardware.hardware._has_torch", return_value = True),
             patch("torch.cuda.is_available", return_value = True),
             patch("torch.cuda.device_count", return_value = 1),
+            patch("utils.hardware.nvidia.get_cuda_device_info", side_effect = error),
             patch("torch.cuda.get_device_properties", side_effect = error),
             patch.object(_hw_module, "logger") as logger,
         ):
@@ -182,6 +184,7 @@ class TestClearGpuCache:
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
             patch("utils.hardware.hardware.is_apple_silicon", return_value = True),
+            patch("torch.backends.mps.is_available", return_value = True),
             patch("torch.mps.empty_cache") as mock_empty,
         ):
             clear_gpu_cache()
@@ -513,6 +516,21 @@ class TestLogGpuMemory:
 
         captured = capfd.readouterr()
         assert "No GPU available" in captured.out
+
+
+class TestGetPackageVersions:
+    def test_reports_mlx_under_the_key_the_engines_row_reads(self):
+        from importlib.metadata import PackageNotFoundError
+
+        def fake_version(name):
+            if name != "mlx":
+                raise PackageNotFoundError(name)
+            return "0.32.4"
+
+        with patch("utils.hardware.hardware.pkg_version", side_effect = fake_version):
+            versions = _hw_module.get_package_versions()
+
+        assert versions["mlx"] == "0.32.4"
 
 
 class TestCudaDeviceOrder:

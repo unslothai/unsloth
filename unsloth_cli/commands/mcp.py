@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth mcp add <agent>` and the checks behind `unsloth doctor --mcp`.
-
-Agent configs only name the environment variable that holds the API key. `mcp add`
-never reads the key; doctor sends it to the server to test it and never prints it.
-"""
+"""mcp add never reads the API key (configs name only its env var); doctor tests it, never prints it."""
 
 import copy
 import difflib
@@ -541,7 +537,7 @@ def mcp_verdict(facts: McpFacts) -> Tuple[bool, List[str], List[str]]:
         "error": f"Unsloth Studio failed while checking the key: {facts.key_detail}",
     }
     mcp_hints = {
-        "off": "Turn on Settings → API → Allow agent connections, or start Unsloth Studio "
+        "off": "Turn on Settings → Agents → Allow agent connections, or start Unsloth Studio "
         "with UNSLOTH_STUDIO_ENABLE_MCP=1.",
         "absent": "This Unsloth Studio has no MCP server. Update it: unsloth studio update",
         "refused": f"The MCP server refused the key: {facts.mcp_detail}",

@@ -231,6 +231,73 @@ def test_img_gen_failed_job_raises(patched):
         s.img_gen({"prompt": "x"})
 
 
+def _emit(server, line):
+    server._tail.append(line)
+    server._lines_seen += 1
+
+
+def _failing_job(server, lines):
+    def post(url, json):
+        for line in lines:
+            _emit(server, line)
+        return _Resp(202, {"id": "jobF"})
+
+    return post
+
+
+_JOB_FAILED = {
+    "status": "failed",
+    "error": {"code": "generation_failed", "message": "generate_image returned no results"},
+}
+_CUDA_OOM = (
+    "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 2304.00 MiB on device 0: "
+    "cudaMalloc failed: out of memory"
+)
+
+
+def test_img_gen_failure_carries_the_log_cause(patched):
+    client = _FakeClient(post = None, get = lambda url: _Resp(200, _JOB_FAILED))
+    s = _server_with(_FakePopen(), client)
+    client._post = _failing_job(s, ["[I] generating image: 1/1 - seed 42", _CUDA_OOM])
+    with pytest.raises(RuntimeError) as info:
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    message = str(info.value)
+    assert message.startswith(
+        "sd-server generation failed: generation_failed: generate_image returned no results"
+    )
+    assert "Last output:" in message
+    assert "out of memory" in message
+
+
+def test_img_gen_failure_carries_only_its_own_output(patched):
+    client = _FakeClient(post = None, get = lambda url: _Resp(200, _JOB_FAILED))
+    s = _server_with(_FakePopen(), client)
+    client._post = _failing_job(s, [_CUDA_OOM])
+    with pytest.raises(RuntimeError):
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    client._post = _failing_job(s, ["[E] failed to encode prompt --- image.cpp:450"])
+    with pytest.raises(RuntimeError) as info:
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    message = str(info.value)
+    assert "failed to encode prompt" in message
+    assert "out of memory" not in message
+
+
+def test_img_gen_failure_without_output_keeps_the_job_error(patched):
+    s = _server_with(
+        _FakePopen(),
+        _FakeClient(
+            post = lambda url, json: _Resp(202, {"id": "jobF"}),
+            get = lambda url: _Resp(
+                200, {"status": "failed", "error": {"code": "x", "message": "boom"}}
+            ),
+        ),
+    )
+    with pytest.raises(RuntimeError) as info:
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    assert str(info.value) == "sd-server generation failed: x: boom"
+
+
 def test_img_gen_queue_full_raises(patched):
     popen = _FakePopen()
     s = _server_with(popen, _FakeClient(post = lambda url, json: _Resp(429, text = "busy")))
@@ -535,7 +602,9 @@ def test_readiness_check_is_best_effort(patched):
     assert s._port_is_ours() is True
 
 
-def test_readiness_refuses_a_hidden_owner_when_our_child_is_not_listening():
+def test_readiness_refuses_a_hidden_owner_when_our_child_is_not_listening(monkeypatch):
+    # The Linux/macOS case: another user's socket shows no pid.
+    monkeypatch.setattr(srv, "_socket_owner_is_always_named", lambda: False)
     import http.server
     import subprocess
     import sys
@@ -582,3 +651,70 @@ def test_readiness_refuses_a_child_that_already_exited():
     s._process = child
     s.port = 1234
     assert s._port_is_ours() is False
+
+
+# ── Windows: psutil can misdescribe our own live listener (#15022) ──
+
+
+@pytest.fixture
+def idle_child():
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    yield child
+    child.kill()
+    child.wait()
+
+
+_PORT = 50855
+
+
+def _row(
+    status,
+    pid,
+    raddr = (),
+):
+    import types
+    return types.SimpleNamespace(
+        laddr = types.SimpleNamespace(ip = "127.0.0.1", port = _PORT),
+        raddr = raddr,
+        status = status,
+        pid = pid,
+    )
+
+
+def _owner_check(monkeypatch, child, *, own, everyone, windows):
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(srv, "_socket_owner_is_always_named", lambda: windows)
+    monkeypatch.setattr(
+        psutil.Process, "net_connections", lambda self, kind = "inet": own, raising = False
+    )
+    monkeypatch.setattr(psutil, "net_connections", lambda kind = "inet": everyone)
+    s = srv.SdCppServer.__new__(srv.SdCppServer)
+    s._process = child
+    s.port = _PORT
+    return s._port_is_ours()
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_our_child_reported_with_status_none_is_ours_on_windows(idle_child, monkeypatch, windows):
+    none = _row("NONE", idle_child.pid)
+    ours = _owner_check(monkeypatch, idle_child, own = [none], everyone = [none], windows = windows)
+    assert ours is windows
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_a_listener_owned_by_pid_0_is_unknown_on_windows(idle_child, monkeypatch, windows):
+    everyone = [_row("LISTEN", 0)]
+    ours = _owner_check(monkeypatch, idle_child, own = [], everyone = everyone, windows = windows)
+    assert ours is windows
+
+
+def test_a_named_foreign_listener_still_refuses_on_windows(idle_child, monkeypatch):
+    import types
+
+    accepted = _row("NONE", idle_child.pid, types.SimpleNamespace(ip = "127.0.0.1", port = 60000))
+    foreign = [_row("LISTEN", 0), _row("LISTEN", idle_child.pid + 100000)]
+    ours = _owner_check(monkeypatch, idle_child, own = [accepted], everyone = foreign, windows = True)
+    assert ours is False

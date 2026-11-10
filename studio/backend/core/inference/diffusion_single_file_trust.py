@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-file trust for single-file diffusion checkpoints from any Hugging Face repo.
-
-The repo allowlists guard ``from_pretrained`` (pickled weights, ``trust_remote_code``). A lone
-``.safetensors`` file has neither risk: only that file is downloaded, it is parsed without
-unpickling, and every config and companion still comes from the family's trusted base repo.
-"""
+"""Per-file trust for a lone .safetensors file from any HF repo (no pickle risk); configs from base."""
 
 from __future__ import annotations
 

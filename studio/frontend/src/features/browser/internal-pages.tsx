@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -21,17 +22,17 @@ import { isTauri } from "@/lib/api-base";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Cancel01Icon,
-  Delete02Icon,
+  Edit03Icon,
   FilterMailIcon,
-  Folder01Icon,
   InternetIcon,
   LinkSquare02Icon,
   MoreHorizontalIcon,
-  PencilEdit02Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DateRange } from "react-day-picker";
@@ -122,13 +123,10 @@ function Row({
   title: string;
   detail: string;
   time: string;
-  /** The page it came from, for the right-click menu; null for a file from chat. */
   url: string | null;
   onOpen?: () => void;
   onRemove: () => void;
-  /** Rows of the right-click menu ahead of Remove, and what to do with focus as it closes. */
   menu?: { rows: ReactNode; onCloseAutoFocus?: (event: Event) => void };
-  /** Something placed over the row, such as the anchor of a popover it opens. */
   anchor?: ReactNode;
 }) {
   const t = useT();
@@ -139,7 +137,7 @@ function Row({
       extra={
         <>
           {menu?.rows}
-          <MenuRow icon={Delete02Icon} onSelect={onRemove}>
+          <MenuRow icon={TrashIcon} onSelect={onRemove}>
             {t("browser.pages.remove")}
           </MenuRow>
         </>
@@ -218,7 +216,6 @@ const RANGE_LABELS = {
   month: { menu: "browser.pages.lastMonth", heading: "browser.pages.lastMonth" },
 } as const;
 
-/** The visit times a range keeps: from `since` up to but not including `until`. */
 function rangeBounds(range: HistoryRange, dates: DateRange | undefined): { since: number; until: number } {
   const today = startOfDay(Date.now());
   if (range === "today") return { since: today, until: Infinity };
@@ -254,7 +251,7 @@ function HistoryRow({
       tabId={tabId}
       extra={
         <MenuRow
-          icon={Delete02Icon}
+          icon={TrashIcon}
           onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}
         >
           {t("browser.pages.removeFromHistory")}
@@ -310,7 +307,7 @@ function HistoryRow({
               {t("browser.pages.openPage")}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}>
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
               {t("browser.pages.removeFromHistory")}
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -535,7 +532,12 @@ function HistoryPage({ tabId }: { tabId: string }) {
     [needle],
   );
   const { groups, more } = useDays(history, visitTime, matches, filter.bounds, limit);
-  const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
+  const clock = useTimeFormat();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger.
+  const timeFormat = useMemo(
+    () => new Intl.DateTimeFormat(locale, withTimeFormat({ timeStyle: "short" }, locale)),
+    [locale, clock],
+  );
   const selected = useMemo(() => {
     const ids = new Set(history.map((item) => item.id));
     return new Set([...selection].filter((id) => ids.has(id)));
@@ -706,7 +708,7 @@ function DownloadRow({
               {revealLabel}
             </MenuRow>
           ) : null}
-          <MenuRow icon={Delete02Icon} onSelect={remove}>
+          <MenuRow icon={TrashIcon} onSelect={remove}>
             {t("browser.pages.removeFromHistory")}
           </MenuRow>
         </>
@@ -793,7 +795,12 @@ function DownloadsPage() {
   const needle = query.trim().toLowerCase();
   const matches = useMemo(() => nameMatches(needle), [needle]);
   const { groups } = useDays(downloads, downloadTime, matches, filter.bounds);
-  const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
+  const clock = useTimeFormat();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger.
+  const timeFormat = useMemo(
+    () => new Intl.DateTimeFormat(locale, withTimeFormat({ timeStyle: "short" }, locale)),
+    [locale, clock],
+  );
   const { missing, recheck } = useMissingDownloads(downloads);
   return (
     <div className="size-full overflow-auto bg-background">
@@ -870,7 +877,7 @@ function BookmarkRow({ bookmark, tabId, time }: { bookmark: Bookmark; tabId: str
         menu={{
           rows: (
             <MenuRow
-              icon={PencilEdit02Icon}
+              icon={Edit03Icon}
               onSelect={() => {
                 editChosen.current = true;
                 setEditing(true);

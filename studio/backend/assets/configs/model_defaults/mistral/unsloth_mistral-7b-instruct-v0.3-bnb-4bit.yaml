@@ -1,10 +1,7 @@
-# Model defaults for unsloth/mistral-7b-instruct-v0.3-bnb-4bit
-# Based on Mistral_v0.3_(7B)-Conversational.ipynb
 # Also applies to: unsloth/mistral-7b-instruct-v0.3, mistralai/Mistral-7B-Instruct-v0.3
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

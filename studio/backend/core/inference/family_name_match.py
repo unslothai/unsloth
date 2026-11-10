@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separator-insensitive family-name matching (``qwen_image_2.1`` == ``Qwen-Image-2.1``) shared by
-the image and video family tables. Path separators stay boundaries."""
+"""Separator-insensitive family match shared by image/video tables; path separators are boundaries"""
 
 from __future__ import annotations
 

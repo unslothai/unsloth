@@ -15,7 +15,7 @@ const FlowAppPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/flows/$flowId/app",
-  staticData: { title: "Flows" },
+  staticData: { titleKey: "shell.navigation.flows" },
   beforeLoad: () => requireAuth(),
   component: FlowAppRoute,
 });

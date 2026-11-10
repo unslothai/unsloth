@@ -979,3 +979,19 @@ def test_a_cancel_during_the_background_pin_wait_ends_the_render_promptly(
         )
     assert time.perf_counter() - began < 10
     assert not rendered
+
+
+def test_refine_prices_the_denoise_phase_not_the_decoded_clip():
+    """The whole-module refine charges the DiT the denoise share only: a plan _video_prefer_whole_module kept (10000 MiB
+    DiT at 17000 MiB, 1280x704x121) stays whole-module; the LTX-2.5 Q4 DiT at a 16 GiB budget (OOM on main) streams."""
+    import types
+
+    import core.inference.video as V
+
+    runtime = V.estimate_video_runtime_mib(width = 1280, height = 704, num_frames = 121)
+    plan = types.SimpleNamespace(estimates = {"runtime_headroom_mib": runtime})
+    headroom = V._video_denoise_phase_headroom_mib(plan)
+    assert headroom == V._VIDEO_DENOISE_ACTIVATION_MIB + 2048 < runtime + 2048
+    assert 10000 + headroom <= 17000
+    assert 11642 + headroom > 13396
+    assert V._video_denoise_phase_headroom_mib(types.SimpleNamespace(estimates = {})) == 2048

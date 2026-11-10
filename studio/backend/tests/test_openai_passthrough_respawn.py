@@ -510,11 +510,12 @@ class _SlowRespawnBackend(_Backend):
         return True
 
 
-def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch):
+@pytest.mark.parametrize("failure_delay", [0, 0.3])
+def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch, failure_delay):
     """Keepalives must continue during a respawn, or a proxy drops the stream before the retry."""
     monkeypatch.setattr(inf_mod, "_OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S", 0.05)
     calls = []
-    transport = _SlowDeadTransport(calls)
+    transport = _SlowDeadTransport(calls, delay = failure_delay)
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
         inf_mod.httpx,

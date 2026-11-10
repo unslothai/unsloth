@@ -46,9 +46,14 @@ def test_b200_uses_8k_blocks_with_4_warps(vocab, monkeypatch):
     assert _route((10, 0), monkeypatch, vocab) == (8192, 4)
 
 
+@pytest.mark.parametrize("vocab", [65537, 128256, 151936, 256000, 262144])
+def test_sm120_uses_8k_blocks_with_4_warps(vocab, monkeypatch):
+    assert _route((12, 0), monkeypatch, vocab) == (8192, 4)
+
+
 @pytest.mark.parametrize(
     "capability",
-    [(6, 1), (7, 0), (7, 2), (8, 6), (8, 7), (8, 9), (9, 0), (10, 3), (12, 0)],
+    [(6, 1), (7, 0), (7, 2), (8, 6), (8, 7), (8, 9), (9, 0), (10, 3), (12, 1)],
 )
 @pytest.mark.parametrize("vocab", [128256, 262144])
 def test_other_archs_keep_the_previous_config(capability, vocab, monkeypatch):

@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which forwarded headers rewrite the ASGI client and scheme.
-
-uvicorn's default (``proxy_headers=True``, ``forwarded_allow_ips="127.0.0.1"``) lets any loopback peer pick
-``request.client`` via ``X-Forwarded-For``, so only Colab and ``UNSLOTH_STUDIO_TRUST_FORWARDED`` keep it;
-otherwise only requests from Studio's own Cloudflare tunnel are rewritten.
-"""
+"""Rewrites client and scheme only for the Studio Cloudflare tunnel, since any loopback peer could
+spoof X-Forwarded-For; only Colab or UNSLOTH_STUDIO_TRUST_FORWARDED keep the default"""
 
 from __future__ import annotations
 

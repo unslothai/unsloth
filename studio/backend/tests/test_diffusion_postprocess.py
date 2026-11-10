@@ -30,6 +30,7 @@ class _Pipe:
 @pytest.fixture(autouse = True)
 def _env(monkeypatch):
     monkeypatch.delenv(dp.DEVICE_POSTPROCESS_ENV, raising = False)
+    monkeypatch.delenv(dp.STRIP_UINT8_ENV, raising = False)
 
 
 def _decoded(
@@ -72,6 +73,90 @@ def test_uint8_conversion_matches_numpy_bit_for_bit(dtype, channels_last, channe
     stock = (VaeImageProcessor.pt_to_numpy(image) * 255).round().astype("uint8")
     assert ours.dtype == np.uint8 and ours.shape == stock.shape
     assert np.array_equal(ours, stock)
+
+
+def _whole_batch(image):
+    return (image.float() * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+
+
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
+@pytest.mark.parametrize("channels_last", [False, True])
+@pytest.mark.parametrize("strip_bytes", [1, 4096, 1 << 30])
+def test_strips_match_the_whole_batch_expression(dtype, channels_last, strip_bytes, monkeypatch):
+    """Every representable half value in [0, 1] (the rounding ties included), strips of one row, a few rows, all."""
+    monkeypatch.setattr(dp, "_STRIP_BYTES", strip_bytes)
+    if dtype == "float32":
+        image = _decoded(torch.float32, batch = 2, size = 37, channels = 4).mul(0.5).add(0.5).clamp(0, 1)
+    else:
+        bits = (
+            torch.arange(0, 1 << 16, dtype = torch.int32).to(torch.int16).view(getattr(torch, dtype))
+        )
+        values = bits[(bits >= 0) & (bits <= 1)]
+        count = 2 * 4 * 64 * 64
+        image = values.repeat(-(-count // values.numel()))[:count].reshape(2, 4, 64, 64)
+    if channels_last:
+        image = image.contiguous(memory_format = torch.channels_last)
+    ours = dp.uint8_hwc(image)
+    assert ours.is_contiguous() and ours.dtype == torch.uint8
+    assert torch.equal(ours, _whole_batch(image))
+    assert torch.equal(
+        dp.uint8_hwc(image[:, :3, 5:29]), _whole_batch(image[:, :3, 5:29])
+    )  # a non-contiguous view
+
+
+def test_strips_keep_one_float_strip_alive(monkeypatch):
+    import weakref
+
+    import torch.utils._pytree as pytree
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    size, refs, peak = {}, {}, [0]
+
+    def drop(key):
+        refs[key] -= 1
+        if not refs[key]:
+            del refs[key], size[key]
+
+    class _Live(TorchDispatchMode):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            known = {
+                t.untyped_storage().data_ptr()
+                for t in pytree.tree_leaves((args, kwargs))
+                if hasattr(t, "untyped_storage")
+            }
+            out = func(*args, **(kwargs or {}))
+            for t in pytree.tree_leaves(out):
+                if hasattr(t, "untyped_storage"):
+                    key = t.untyped_storage().data_ptr()
+                    if not key or (key in known and key not in size):
+                        continue
+                    if key not in size:
+                        size[key], refs[key] = t.untyped_storage().nbytes(), 0
+                    refs[key] += 1
+                    weakref.finalize(t, drop, key)
+            peak[0] = max(peak[0], sum(size.values()))
+            return out
+
+    image = torch.rand(1, 4, 512, 512, dtype = torch.bfloat16)
+    plane = image.numel() * 4
+    monkeypatch.setattr(dp, "_STRIP_BYTES", plane // 8)
+    peaks = {}
+    for flag in ("0", "1"):
+        monkeypatch.setenv(dp.STRIP_UINT8_ENV, flag)
+        peak[0] = 0
+        with _Live():
+            out = dp.uint8_hwc(image)
+        peaks[flag] = peak[0]
+        assert torch.equal(out, _whole_batch(image))
+        del out
+    assert peaks["0"] >= 2 * plane
+    assert peaks["1"] <= image.numel() + plane // 8 + 4096
 
 
 @needs_cuda

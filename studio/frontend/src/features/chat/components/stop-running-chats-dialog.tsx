@@ -13,9 +13,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useStopRunningChatsDialogStore } from "../stores/stop-running-chats-dialog-store";
 
-/** Confirmation for applying a model or reload-required setting while chats are generating. They
- *  share one llama-server, so the swap ends all of them: name them and make the user opt in
- *  rather than truncating silently. */
+/** Chats share one llama-server, so a swap ends all of them: confirm explicitly. */
 export function StopRunningChatsDialog() {
   const open = useStopRunningChatsDialogStore((s) => s.open);
   const count = useStopRunningChatsDialogStore((s) => s.count);
@@ -25,8 +23,6 @@ export function StopRunningChatsDialog() {
   const effect = useStopRunningChatsDialogStore((s) => s.effect);
   const resolve = useStopRunningChatsDialogStore((s) => s.resolve);
 
-  // Embeddings, raw completions and audio share the model but are not conversations, so name them
-  // generically rather than offering to stop chats that do not exist.
   const noun = hasNonChat
     ? count === 1
       ? "request"

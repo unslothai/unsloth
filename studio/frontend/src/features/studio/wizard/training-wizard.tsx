@@ -3,6 +3,7 @@
 
 import { NewBadge } from "@/components/new-badge";
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
+import { SectionBox, SectionField } from "@/components/section-box";
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import {
   Select,
@@ -16,7 +17,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { usePlatformStore } from "@/config/env";
 import { HfTokenIndicator } from "@/features/hub";
 import {
   DECISION_MODEL_LABELS,
@@ -27,11 +27,11 @@ import {
   type DecisionCheckpoint,
   TRAINING_METHOD_META,
   TRAINING_METHOD_ORDER,
-  isTrainingMethodSupportedOnDevice,
   useTrainingConfigStore,
   effectiveTrainingObjective,
 } from "@/features/training";
 import { useT } from "@/i18n";
+import { ChipIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
@@ -39,11 +39,9 @@ import {
   Award01Icon,
   BubbleChatEditIcon,
   Database02Icon,
-  FloppyDiskIcon,
-  Settings05Icon,
+  Edit03Icon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { DatasetPanel } from "../sections/dataset-section";
 import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
@@ -55,73 +53,6 @@ import { RlDatasetRoles } from "../sections/rl/rl-dataset-roles";
 import { RlParamsSection } from "../sections/rl/rl-params-section";
 import { ConfigActions } from "./config-actions";
 import type { ParamMode } from "./training-param-mode";
-
-function SectionBox({
-  title,
-  description,
-  icon,
-  chipTint,
-  titleAction,
-  titleBadge,
-  children,
-  dataTour,
-}: {
-  title?: string;
-  titleBadge?: ReactNode;
-  description?: string;
-  icon?: IconSvgElement;
-  chipTint?: string;
-  titleAction?: ReactNode;
-  children: ReactNode;
-  dataTour?: string;
-}) {
-  return (
-    <section
-      data-tour={dataTour}
-      className="@container/train-card elevated-card flex flex-col gap-7 bg-card p-5 pb-7"
-    >
-      {title && (
-        <div className="flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            {icon && (
-              <span
-                className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
-                style={
-                  chipTint
-                    ? ({ "--chip-tint": chipTint } as CSSProperties)
-                    : undefined
-                }
-              >
-                <HugeiconsIcon
-                  icon={icon}
-                  strokeWidth={1.5}
-                  className="size-[calc(18px*var(--ui-space-scale,1))]"
-                />
-              </span>
-            )}
-            <div className="min-w-0">
-              <h2 className="flex select-none items-center gap-1.5 text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.012em] text-foreground">
-                {title}
-                {titleBadge}
-              </h2>
-              {description && (
-                <p className="text-ui-11p5 leading-ui-15 text-muted-foreground/85">
-                  {description}
-                </p>
-              )}
-            </div>
-          </div>
-          {titleAction && (
-            <div className="w-full min-w-0 @md/train-card:w-auto @md/train-card:shrink-0">
-              {titleAction}
-            </div>
-          )}
-        </div>
-      )}
-      <div className="@container/train-section min-w-0">{children}</div>
-    </section>
-  );
-}
 
 function ParamModeToggle({
   mode,
@@ -165,14 +96,17 @@ function SetupField({
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
-        {label}
-        {hint ? <FieldHint text={hint} label={label} /> : null}
-        {badge}
-      </span>
-      <div className="min-w-0">{children}</div>
-    </div>
+    <SectionField
+      label={label}
+      hint={
+        <>
+          {hint ? <FieldHint text={hint} label={label} /> : null}
+          {badge}
+        </>
+      }
+    >
+      {children}
+    </SectionField>
   );
 }
 
@@ -187,7 +121,6 @@ function TrainingMethodSelect() {
       s.modelType === "decision" &&
       (s.decisionLayout === "clef" || s.decisionLayout === "llm"),
   );
-  const deviceType = usePlatformStore((state) => state.deviceType);
   const activeMeta = TRAINING_METHOD_META[trainingMethod];
   const activeLabel = activeMeta ? t(activeMeta.labelKey) : trainingMethod;
   return (
@@ -231,14 +164,10 @@ function TrainingMethodSelect() {
             (decisionTakesQlora && method === "qlora"),
         ).map((method) => {
           const meta = TRAINING_METHOD_META[method];
-          const unsupportedOnMlx = !isTrainingMethodSupportedOnDevice(
-            method,
-            deviceType,
-          );
           return (
             <Tooltip key={method} delayDuration={300}>
               <TooltipTrigger asChild={true} disableClickToggle={true}>
-                <SelectItem value={method} disabled={unsupportedOnMlx}>
+                <SelectItem value={method}>
                   <span className="flex items-center gap-2">
                     <span
                       aria-hidden="true"
@@ -248,11 +177,6 @@ function TrainingMethodSelect() {
                       )}
                     />
                     {t(meta.labelKey)}
-                    {unsupportedOnMlx && (
-                      <span className="text-ui-10 text-muted-foreground">
-                        · {t("studio.params.notSupportedAppleSilicon")}
-                      </span>
-                    )}
                   </span>
                 </SelectItem>
               </TooltipTrigger>
@@ -261,9 +185,7 @@ function TrainingMethodSelect() {
                 sideOffset={10}
                 className="max-w-[calc(220px*var(--ui-space-scale,1))] text-ui-11p5 leading-snug"
               >
-                {unsupportedOnMlx
-                  ? t("studio.params.notSupportedAppleSilicon")
-                  : t(meta.hintKey)}
+                {t(meta.hintKey)}
               </TooltipContent>
             </Tooltip>
           );
@@ -453,7 +375,7 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}
-        icon={AiBrain01Icon}
+        icon={ChipIcon}
         chipTint="var(--chart-1)"
       >
         <ModelPanel />
@@ -502,7 +424,7 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
-        icon={Settings05Icon}
+        icon={Settings01Icon}
         chipTint="var(--chart-1)"
         dataTour="studio-params"
         titleAction={
@@ -520,7 +442,7 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.configTitle")}
         description={t("studio.wizard.configDescription")}
-        icon={FloppyDiskIcon}
+        icon={Edit03Icon}
         chipTint="var(--chart-1)"
       >
         <ConfigActions />

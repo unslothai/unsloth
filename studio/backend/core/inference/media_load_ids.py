@@ -1,26 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Client load tokens for the image and video slots, so an unload can name the load it means.
-
-A load request may carry ``load_token`` (an opaque id the client makes up). The load route
-records it when the engine accepts the load, under ``account_access.media_load_lock``, together
-with the engine, its load epoch (``_load_token``, bumped by every begin_load and unload) and the
-state that was resident before. ``POST .../unload`` with ``expected_load_id`` then unloads only
-while that record still describes the engine: no begin_load or unload ran since (same epoch),
-and either a load is in flight (it can only be that one) or a state that load published is
-resident. Anything else answers without touching the slot:
-
-- ``superseded``: the token was admitted, but its load ended or another load replaced it;
-- ``cancelled``: the token was never admitted (its POST is still on its way, or was lost), so it
-  is remembered and that load is refused when it arrives, for the account that sent the unload only.
-
-A load sent without a token gets one from Studio, and the status routes report the token of the
-load in the slot as ``load_id``, so a client can unload exactly the model it saw.
-
-The check and the unload run under the same lock as the admission, so no load can be admitted
-between them. Loads without a token, and unloads without ``expected_load_id``, behave as before.
-"""
+"""load_token and expected_load_id: unload only while that load still owns the slot, else answer
+superseded or cancelled without touching it; check and unload share the admission lock; loads
+without a token and unloads without expected_load_id behave as before."""
 
 from __future__ import annotations
 

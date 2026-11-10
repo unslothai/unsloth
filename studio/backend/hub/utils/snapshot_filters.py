@@ -34,10 +34,7 @@ DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
     "flax_model.msgpack.index.json",
     "rust_model.ot",
 )
-# Resolved per repo, not globbed: a dtype variant is redundant only when the SAME variant ships
-# as safetensors (test_prefetch_snapshot_scope.py::test_variant_keeps_bin_when_only_default_safetensors),
-# and a glob kept whisper-large-v3's pytorch_model.bin.index.fp32.json while dropping its shards.
-# Both shard layouts, since transformers writes the counter-first one (unsloth/models/_utils.py).
+# Per repo, not globbed: a dtype variant is redundant only if the SAME variant ships as safetensors.
 _BIN_WEIGHT_RES = (
     re.compile(r"pytorch_model(?:\.(?P<variant>[A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin"),
     re.compile(r"pytorch_model[-_][0-9]+-of-[0-9]+\.(?P<variant>[A-Za-z0-9_]+)\.bin"),
@@ -54,8 +51,7 @@ def _variant_shard_re(variant: str) -> "re.Pattern[str]":
 _BIN_INDEX_RE = re.compile(
     r"pytorch_model(?:\.(?P<pre>[A-Za-z0-9_]+))?\.bin\.index(?:\.(?P<post>[A-Za-z0-9_]+))?\.json"
 )
-# [0-9] rather than \d: Python's \d also matches non-ASCII digits while JavaScript's does not, and the
-# frontend mirror in studio/frontend/src/features/hub/lib/dataset-size.ts has to answer this identically.
+# [0-9], not \d: must match the JS mirror in features/hub/lib/dataset-size.ts.
 SHARDED_SAFETENSORS_RE = re.compile(r"model[-_][0-9]+-of-[0-9]+\.safetensors")
 SAFETENSORS_INDEX = "model.safetensors.index.json"
 SNAPSHOT_WEIGHT_EXTENSIONS = (
@@ -99,11 +95,7 @@ def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
 
 
 def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
-    """Whether a load would find a COMPLETE root safetensors checkpoint.
-
-    Numbered shards are resolved through the index; with none, a load looks for a single
-    file and raises. So one shard is not evidence a checkpoint is there.
-    """
+    """One numbered shard proves nothing: a complete set must be named by the index."""
     names = list(filenames)
     if any(name == "model.safetensors" for name in names):
         return True
@@ -113,17 +105,13 @@ def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
 
 
 def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool:
-    """Whether `variant` is already covered by a COMPLETE safetensors checkpoint.
-
-    ``None`` is the canonical one, established by the root-safetensors gate. A named variant
-    needs its own safetensors, and its sharded form needs an index, as the canonical one does.
-    """
+    """A named variant needs its own safetensors, plus an index when sharded; None is the root
+    checkpoint."""
     if variant is None:
         return True
     if f"model.{variant}.safetensors" in names:
         return True
-    # _add_variant puts the variant second-to-last, so this is the only index spelling a
-    # variant load can find; accepting another would drop bins over an index nothing reads.
+    # _add_variant puts the variant second-to-last; accepting other index spellings would drop bins.
     if f"model.safetensors.index.{variant}.json" not in names:
         return False
     return any(_variant_shard_re(variant).fullmatch(name) for name in names)
@@ -199,16 +187,12 @@ def snapshot_download_size(siblings: Iterable) -> int:
 
 
 def total_size_for_siblings(siblings: Iterable) -> int:
-    """Sum of declared sizes across siblings verbatim (no ignore filter).
-
-    Use for repo types that download every file (datasets); models go
-    through ``snapshot_download_size`` so the ignore patterns apply."""
+    """Sums sibling sizes verbatim, with no ignore filter; models use snapshot_download_size instead."""
     return sum(_size(sibling) for sibling in siblings)
 
 
 def blob_hashes_for_siblings(siblings: Iterable) -> frozenset[str]:
-    # Blob filename == file etag (LFS sha256, else git blob id), so collecting both lets progress count
-    # exactly this revision's files without summing stale blobs from other revisions.
+    # Blob filename == etag, so progress counts only this revision's files.
     hashes: set[str] = set()
     for sibling in siblings:
         sha = getattr(getattr(sibling, "lfs", None), "sha256", None)

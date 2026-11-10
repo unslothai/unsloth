@@ -83,16 +83,7 @@ def candidate_roots() -> list[Path]:
 
 
 def _identity(path) -> str:
-    """One comparable spelling of a path, for containment and for dedup.
-
-    Two Windows quirks. realpath is called separately for the directory and for
-    each entry, and ntpath.realpath decides PER CALL whether to keep the \\\\?\\
-    extended-length prefix, so the directory can come back as C:\\... and the
-    file as \\\\?\\C:\\..., which pathlib reads as two different DRIVES:
-    containment fails and the whole family is silently dropped. And normcase
-    folds case (identity on POSIX), so a case-insensitive volume cannot yield
-    one file twice under two spellings.
-    """
+    """Windows realpath keeps the extended-length prefix only sometimes, so one drive can look like two."""
     text = os.path.normcase(str(path))
     for prefix in ("\\\\?\\unc\\", "\\\\?\\UNC\\", "\\\\?\\"):
         if text.startswith(prefix):

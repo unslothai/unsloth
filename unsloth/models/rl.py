@@ -35,9 +35,19 @@ from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+
+try:
+    from unsloth_zoo.compiler import _compile_versions_scope
+except ImportError:  # unsloth_zoo predates the scope
+
+    def _compile_versions_scope(function):
+        return function
+
+
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
 from . import _decode_graphs
 from .rl_replacements import (
+    _class_source,
     _unsloth_get_model_config,
     _unsloth_text_configs,
     RL_EXTRA_ARGS,
@@ -119,6 +129,14 @@ _GRPO_VLLM_SYNC_FUNCTIONS = frozenset(
         "_sync_fsdp2_params_to_vllm",
     )
 )
+_ONLINE_DPO_VLLM_SYNC_FUNCTIONS = frozenset(
+    (
+        "_move_model_to_vllm",
+        "_move_model_to_vllm_inner",
+        "_sync_fsdp1_params_to_vllm",
+        "_sync_fsdp2_params_to_vllm",
+    )
+)
 
 
 def _strip_vllm_weight_loads(function, source, trainer_file):
@@ -126,21 +144,27 @@ def _strip_vllm_weight_loads(function, source, trainer_file):
     # and TRL's own vLLM (colocate or server) needs these lines to receive the trainer weights.
     if trainer_file == "grpo_trainer" and function in _GRPO_VLLM_SYNC_FUNCTIONS:
         return source
-    source = re.sub(
-        r"(\n[\s]{4,}).+?model_executor\.driver_worker.+?\n",
-        r"\n\1pass\n",
-        source,
-    )
-    source = re.sub(
-        r"(\n[\s]{4,}).+?load_weights\(.+?\n",
-        r"\n\1pass\n",
-        source,
-    )
-    source = re.sub(
-        r"\.state_dict\(\)",
-        r"",
-        source,
-    )
+    if trainer_file == "online_dpo_trainer" and function in _ONLINE_DPO_VLLM_SYNC_FUNCTIONS:
+        return source
+    # Each pattern needs its literal; the line-anchored scans are slow on long sources.
+    if "model_executor.driver_worker" in source:
+        source = re.sub(
+            r"(\n[\s]{4,}).+?model_executor\.driver_worker.+?\n",
+            r"\n\1pass\n",
+            source,
+        )
+    if "load_weights(" in source:
+        source = re.sub(
+            r"(\n[\s]{4,}).+?load_weights\(.+?\n",
+            r"\n\1pass\n",
+            source,
+        )
+    if ".state_dict()" in source:
+        source = re.sub(
+            r"\.state_dict\(\)",
+            r"",
+            source,
+        )
     return source
 
 
@@ -269,8 +293,7 @@ def PatchRL(FastLanguageModel):
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
-        # Snapshot before TRL's unwrap CM, which calls gradient_checkpointing_disable() before
-        # yielding. Keep the mode value (e.g. "unsloth"), not a bool, so the finally restore matches.
+        # Snapshot before the TRL unwrap CM turns checkpointing off; keep the mode, not a bool, to restore it
         use_gradient_checkpointing = next(
             (
                 v
@@ -301,6 +324,9 @@ def PatchRL(FastLanguageModel):
                     return out.clone()
                 return out
 
+            generate_with_clone._unsloth_caller_sampling_only = (
+                generating_model is not unwrapped_model
+            )
             generating_model.generate = generate_with_clone
 
             try:
@@ -400,8 +426,7 @@ def PatchRL(FastLanguageModel):
                     if self.args.past_index >= 0:
                         self._past = outputs[self.args.past_index - 1]
         finally:
-            # An eval that raises must not leave logits forced on: UNSLOTH_RETURN_LOGITS=1 also
-            # blocks packing and padding-free for the next train() in this process.
+            # A raising eval must not leave UNSLOTH_RETURN_LOGITS=1 on, which blocks packing and padding-free
             os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
         if prediction_loss_only:
             return (loss, None, None)
@@ -546,7 +571,11 @@ def prepare_for_training_mode(f):
         output = f(self, *args, **kwargs)
         # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
-            if _was_training is False:
+            if _was_training is False and getattr(self, '_unsloth_tensor_parallel', False):
+                # Tensor / pipeline parallel: for_inference gathers a whole replica (refused for some layouts);
+                # restoring the mode needs only eval, and generate gathers when it is asked for.
+                self.model.eval()
+            elif _was_training is False:
                 self.model.for_inference()
             elif _was_training is True and hasattr(self.model, "for_training"):
                 self.model.for_training(use_gradient_checkpointing=use_gc)
@@ -1231,6 +1260,37 @@ def _attested_within_cap(dataset, cap):
     return claimed <= cap
 
 
+def _arrow_within_cap(dataset, cap):
+    """True when Arrow list lengths prove every ``input_ids`` fits ``cap``, else None (the row scan decides). Only plain python-format splits with nothing to decode, where a row's ``input_ids`` is its stored list."""
+    try:
+        import datasets
+        import pyarrow
+        import pyarrow.compute as pc
+        from datasets.features.features import require_decoding
+
+        if type(dataset) is not datasets.Dataset or dataset._format_type is not None:
+            return None
+        if any(require_decoding(feature) for feature in dataset.features.values()):
+            return None
+        column = dataset.data.column("input_ids")
+        kind = column.type
+        if not (
+            pyarrow.types.is_list(kind)
+            or pyarrow.types.is_large_list(kind)
+            or pyarrow.types.is_fixed_size_list(kind)
+        ):
+            return None
+        lengths = pc.list_value_length(column)
+        if dataset._indices is not None:
+            lengths = lengths.take(dataset._indices.column(0))
+        if lengths.null_count:
+            return None
+        longest = pc.max(lengths).as_py()
+        return True if longest is None or longest <= cap else None
+    except Exception:
+        return None
+
+
 def pretokenized_within_cap(dataset, cap):
     """Whether every pre-tokenized row in ``dataset`` already fits ``cap``. The generated ``__init__`` carries an inlined copy (that module is standalone and cannot import from here); this one serves callers reached when the generated block was never inserted, and a test pins the two to the same verdict. Unverifiable reads FALSE, never true: a single-pass stream cannot be scanned without consuming it, an unexhausted one proves only its prefix, and a split that raises mid-scan has said nothing, and in each case guessing yes is the silently-uncapped run."""
     if dataset is None:
@@ -1238,6 +1298,8 @@ def pretokenized_within_cap(dataset, cap):
     attested = _attested_within_cap(dataset, cap)
     if attested is not None:
         return attested
+    if _arrow_within_cap(dataset, cap):
+        return True
     try:
         try:
             n = len(dataset)
@@ -1451,10 +1513,8 @@ _DENSE_ROUTER_AUX_LOSS_OFF = (
     "pass\n"
 )
 
-# The one assignment of `self.aux_loss_enabled` in TRL's GRPOTrainer.__init__, whatever its right-hand
-# side. TRL 1.7.0 wrote `is_moe and args.router_aux_loss_coef != 0.0`; TRL main (#7248) reads the
-# coefficient from the model config when it is None. Anchoring on the exact expression lost the
-# fail-fast below on the first rewrite. Read without importing by tests/version_compat.
+# Matches the one assignment of `self.aux_loss_enabled` in GRPOTrainer.__init__, whatever its RHS.
+# Read without importing by tests/version_compat.
 _GRPO_AUX_LOSS_ENABLED_LINE = r"^([ \t]*)self\.aux_loss_enabled = [^\n]+$"
 _GRPO_AUX_LOSS_REJECT = (
     'if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router '
@@ -1479,12 +1539,7 @@ def _guard_kbit_prep_against_peft_models():
         if Version(trl.__version__) >= Version("0.24.0"):
             return False
     except Exception:
-        # A TRL run from a source tree with no distribution metadata sets
-        # __version__ = "unknown", which does not parse. Fall through to the
-        # source check rather than bailing, because bailing leaves exactly the
-        # pre-0.24 installs this exists for on the upcast. The source check is
-        # self-guarding: 0.24.0 and above already carry the clause, so they
-        # spell the branch differently and never match OLD.
+        # Unknown version from a source-tree TRL: fall through, do not bail, or pre-0.24 installs skip upcast
         pass
     try:
         from trl.models import utils as trl_models_utils
@@ -1501,21 +1556,14 @@ def _guard_kbit_prep_against_peft_models():
         source = inspect.getsource(original)
     except Exception:
         return False
-    # Bail rather than guess: if the branch is not spelled the way we expect, a
-    # blind edit is worse than leaving the upcast in place.
+    # Bail rather than blindly edit an unexpected spelling.
     if source.count(OLD) != 1:
         return False
     import functools, textwrap
 
     source = textwrap.dedent(source).replace(OLD, NEW)
 
-    # exec against the module's LIVE __dict__, not a copy of it. The body closes
-    # over PeftModel, prepare_model_for_kbit_training, get_peft_model,
-    # dataclasses and version, and a copy would freeze those at patch time: a
-    # later rebinding in trl.models.utils (another library patching it, a test
-    # swapping it out) would be invisible to the replacement while the original
-    # would have seen it. The exec defines only this one name, which is the name
-    # we are replacing anyway.
+    # exec against the module's LIVE __dict__ so later rebindings of its globals stay visible.
     namespace = vars(trl_models_utils)
     exec(compile(source, getattr(trl_models_utils, "__file__", "<unsloth>"), "exec"), namespace)
     patched = namespace.get("prepare_peft_model")
@@ -1524,10 +1572,7 @@ def _guard_kbit_prep_against_peft_models():
     functools.update_wrapper(patched, original)
     setattr(patched, _UNSLOTH_KBIT_PREP_GUARD_FLAG, True)
 
-    # Rebind everywhere, not just at the definition. Each trainer module does
-    # `from ..models import prepare_peft_model` at import time, so it holds its
-    # own reference; in TRL 0.22.2 that is seven modules, and sft_trainer is the
-    # one GKD actually inherits.
+    # Rebind everywhere: each trainer module holds its own `from ..models import prepare_peft_model`.
     rebound = 0
     for module in list(sys.modules.values()):
         if module is None:
@@ -1578,26 +1623,14 @@ def _widen_sft_config_instance_check(patched_config):
     shim = _WidenedInstanceCheck(
         installed.__name__,
         (installed,),
-        # Carry the patched-config marker in the shim's OWN __dict__, not only by
-        # inheritance. Callers that walk back to TRL's pristine class do it with
-        # `while "_unsloth_patched_rl_config" in cls.__dict__`, which is the right
-        # test because the generated subclass is renamed onto TRL's own name; a
-        # shim without the marker stops that walk on itself and answers with
-        # Unsloth's field set (tests/version_compat/test_trl_padding_free_max_length.py).
+        # Carry the marker in the shim's OWN __dict__: callers walk back to TRL's pristine class with
+        # `while "_unsloth_patched_rl_config" in cls.__dict__`.
         {
             _UNSLOTH_SFT_CONFIG_SHIM_FLAG: True,
             _UNSLOTH_PATCHED_CONFIG_FLAG: True,
         },
     )
-    # Answer to the module the shim is actually installed at, NOT to the module
-    # the class it stands in for calls home. Pickle stores a class as __module__
-    # plus __qualname__ and refuses unless the object living there IS the class,
-    # so a shim claiming `trl.trainer.sft_config` while the patched class still
-    # sits there is unpicklable, and `torch.save(trainer.args, ...)` from
-    # Trainer._save raises PicklingError. That is the failure
-    # _patch_config_pickle_identity exists to prevent, so point the shim at its
-    # own home and leave the patched class's home alone: both then pickle, and
-    # every other binding of the name keeps resolving exactly as it did before.
+    # Point the shim at its own module: pickle refuses unless __module__.__qualname__ IS the class.
     shim.__qualname__ = installed.__name__
     shim.__name__ = installed.__name__
     shim.__module__ = getattr(sft_trainer_module, "__name__", installed.__module__)
@@ -2194,11 +2227,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
-    # generate() validates its kwargs against inspect.signature(self.forward), so a bare
-    # (*args, **kwargs) wrapper makes every forward-only vision kwarg look unused.
-    # __signature__ and NOT functools.wraps: wraps sets __wrapped__, and accelerate's
-    # extract_model_from_parallel(keep_fp32_wrapper = False) walks that chain every GRPO
-    # step and rebinds past this wrapper, losing it. inspect.unwrap() stops at __signature__.
+    # generate() validates kwargs against inspect.signature(self.forward). Use __signature__, not
+    # functools.wraps: accelerate unwraps __wrapped__ every GRPO step and would drop this wrapper.
     wrapped_forward.__signature__ = forward_signature
     for _attribute in ("__name__", "__qualname__", "__doc__", "__module__"):
         try:
@@ -2404,11 +2434,16 @@ def _patch_ppo_policy_value_wrapper(module):
     wrapper.gradient_checkpointing_disable = gradient_checkpointing_disable
 
 
+# trainer_file -> "<ExceptionType>: <message>" of the last failed build, so a later refusal can name the cause.
+PATCHED_TRAINER_BUILD_ERRORS = {}
+
+
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Defensive wrapper matching patch_trl_rl_trainers()'s try/except, so direct callers do not see exceptions from the impl on TRL versions that rename or move classes.
     try:
         return _patch_trl_rl_trainers_impl(trainer_file)
     except Exception as e:
+        PATCHED_TRAINER_BUILD_ERRORS[trainer_file] = f"{type(e).__name__}: {e}"
         # Warning, not info: the impl RETURNS for the benign case, so reaching here means generation failed and the run silently falls back to trl's trainer, losing Unsloth's compute_loss, bf16/fp16 fixup and dataset handling.
         logger.warning_once(
             f"Unsloth: Could not build the patched trl.trainer.{trainer_file}, "
@@ -2503,6 +2538,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}: {e}"
         )
         return
+    if getattr(RLTrainer, "_unsloth_cpu", False):
+        # Unsloth's CPU backend (no accelerator found) runs TRL's own trainer behind unsloth_zoo.cpu's defaults
+        # subclass by design; that subclass has no readable source, so building from it would only fail.
+        PATCHED_TRAINER_BUILD_ERRORS[trainer_file] = (
+            "the CPU backend keeps TRL's own trainer (no GPU was found)"
+        )
+        logger.info(
+            f"Unsloth: CPU backend: trl.trainer.{trainer_file} keeps TRL's own {RLTrainer_name} "
+            "with unsloth_zoo.cpu's defaults."
+        )
+        return
     _config_resolved_module = None
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
@@ -2541,8 +2587,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     # TRL 0.26+: resolve thin wrappers (trl.trainer shims forwarding to trl.experimental) to their parent class, and only when that parent really lives in a trl.experimental module.
     _trainer_resolved_module = None
+    _trainer_src = _config_src = None
+    _trainer_src_of = RLTrainer
+    _config_src_of = RLConfig
     try:
-        _trainer_src = inspect.getsource(RLTrainer)
+        _trainer_src = _class_source(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
         _trainer_module_src = inspect.getsource(_trainer_module) if _trainer_module else ""
         if not RLTrainer.__module__.startswith("trl.experimental.") and (
@@ -2562,7 +2611,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         pass
 
     try:
-        _config_src = inspect.getsource(RLConfig)
+        _config_src = _class_source(RLConfig)
         _config_module = inspect.getmodule(RLConfig)
         _config_module_src = inspect.getsource(_config_module) if _config_module else ""
         if not RLConfig.__module__.startswith("trl.experimental.") and (
@@ -2580,8 +2629,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     except Exception:
         pass
 
-    old_RLTrainer_source = inspect.getsource(RLTrainer)
-    old_RLConfig_source = inspect.getsource(RLConfig)
+    # Reuse the probe reads above unless they failed or the class was swapped for its parent.
+    if _trainer_src is None or RLTrainer is not _trainer_src_of:
+        _trainer_src = _class_source(RLTrainer)
+    old_RLTrainer_source = _trainer_src
+    if _config_src is None or RLConfig is not _config_src_of:
+        _config_src = _class_source(RLConfig)
+    old_RLConfig_source = _config_src
 
     if _trainer_resolved_module is not None:
         all_imports = dir(_trainer_resolved_module)
@@ -2681,6 +2735,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "if full_finetuning:\n"
             "    if bfloat16 and use_fp16: use_fp16 = False\n"
             "    if float16 and use_bf16: use_bf16 = False\n"
+            # XPU keeps an explicit bf16 load in bf16 although the card has no native bf16, so `fp16 = not is_bfloat16_supported()` asks float16: follow the model.
+            "if not force_float32 and bfloat16 and use_fp16 and _unsloth_device_type == 'xpu' and not _bf16_supported():\n"
+            "    print('Unsloth: The model was loaded in bfloat16 on purpose, so training uses bfloat16 mixed precision instead of float16.')\n"
+            "    use_fp16 = False\n"
+            "    use_bf16 = True\n"
+            "    args.fp16 = False\n"
+            "    args.bf16 = True\n"
             "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"
             "if not force_float32 and (bfloat16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
             "if force_float32:\n"
@@ -2797,9 +2858,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         model_length_default = "model.max_seq_length"
         explicit_max_length = ""
         if trainer_file == "sft_trainer":
-            # A model limit must not widen a limit the CALLER asked for, and `SFTConfig.max_length`
-            # defaults to 1024 on every TRL from 0.22 to 1.x, so capping on "positive" instead
-            # would cap every run that named no length at all down to 1024.
+            # Never widen a caller's limit; SFTConfig.max_length defaults to 1024, so do not cap on positive.
             explicit_max_length = (
                 "_unsloth_explicit_max_length = None\n"
                 "try:\n"
@@ -2959,6 +3018,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_claim = _unsloth_own.get('_unsloth_truncated_to')\n"
                     "            if isinstance(_unsloth_claim, int) and not isinstance(_unsloth_claim, bool):\n"
                     "                return _unsloth_claim <= _unsloth_cap\n"
+                    # Inline copy of _arrow_within_cap: anything it cannot prove falls through to the row loop.
+                    "        try:\n"
+                    "            import datasets as _unsloth_hfds, pyarrow as _unsloth_pa, pyarrow.compute as _unsloth_pc\n"
+                    "            from datasets.features.features import require_decoding as _unsloth_decodes\n"
+                    "            if type(_ds) is _unsloth_hfds.Dataset and _ds._format_type is None and not any(_unsloth_decodes(_f) for _f in _ds.features.values()):\n"
+                    "                _unsloth_col = _ds.data.column('input_ids')\n"
+                    "                _unsloth_t = _unsloth_col.type\n"
+                    "                if _unsloth_pa.types.is_list(_unsloth_t) or _unsloth_pa.types.is_large_list(_unsloth_t) or _unsloth_pa.types.is_fixed_size_list(_unsloth_t):\n"
+                    "                    _unsloth_lens = _unsloth_pc.list_value_length(_unsloth_col)\n"
+                    "                    if _ds._indices is not None: _unsloth_lens = _unsloth_lens.take(_ds._indices.column(0))\n"
+                    "                    if not _unsloth_lens.null_count:\n"
+                    "                        _unsloth_longest = _unsloth_pc.max(_unsloth_lens).as_py()\n"
+                    "                        if _unsloth_longest is None or _unsloth_longest <= _unsloth_cap: return True\n"
+                    "        except Exception:\n"
+                    "            pass\n"
                     "        try:\n"
                     "            try:    _n = len(_ds)\n"
                     "            except Exception: _n = None\n"
@@ -3238,7 +3312,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         training_check = (
             "if hasattr(self, 'train'):\n"
-            "    self.train = MethodType(prepare_for_training_mode(self.__class__.train), self)\n"
+            # A context parallel trainer binds its train wrapper on the instance (context_parallel.py).
+            "    self.train = MethodType(prepare_for_training_mode(getattr(self.__dict__.get('train'), '__func__', None) or self.__class__.train), self)\n"
             "pass\n"
         )
         RLTrainer_post += training_check
@@ -3352,8 +3427,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "logging_steps": 1,
         "max_seq_length": None,
         "num_generations": 8,
-        # "steps_per_generation": 1,     # Otherwise defaults to ga_steps, which is wrong
-        # "generation_batch_size": None, # Useless. If steps_per_generation is set, generation_batch_size clashes
         "vllm_mode": "colocate",
         "generation_kwargs": {},
         "bf16": False,
@@ -3420,34 +3493,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += learning_rate_check
 
-    # bitsandbytes' 8-bit optimizers step plain tensors, but FSDP2 shards parameters as DTensors, so the
-    # first step dies with "got mixed torch.Tensor and DTensor" (unsloth#3551).
+    # optim = 'adamw_8bit' is kept under FSDP2: native FSDP2 (fsdp2_native._swap_bnb_optimizer) and
+    # accelerate's FSDP2 (fsdp2._localize_or_refuse_bnb after Accelerator._prepare_fsdp2) step bitsandbytes
+    # Adam / AdamW on each rank's local shard, and refuse the bitsandbytes optimizers that cannot (unsloth#3551).
     if "optim" in call_args:
-        extra_args += "_unsloth_fsdp2 = os.environ.get('FSDP_VERSION', '').strip() == '2'\n"
-        if "fsdp" in call_args and "fsdp_config" in call_args:
-            # TrainingArguments(fsdp = ..., fsdp_config = {"fsdp_version": 2} or a JSON path) without the launcher.
-            extra_args += (
-                "_unsloth_fsdp_cfg = fsdp_config\n"
-                "if fsdp and isinstance(_unsloth_fsdp_cfg, str) and os.path.isfile(_unsloth_fsdp_cfg):\n"
-                "    try:\n"
-                "        import json as _unsloth_json\n"
-                "        with open(_unsloth_fsdp_cfg, encoding = 'utf-8') as _unsloth_f:\n"
-                "            _unsloth_fsdp_cfg = _unsloth_json.load(_unsloth_f)\n"
-                "    except Exception:\n"
-                "        _unsloth_fsdp_cfg = None\n"
-                "if fsdp and _unsloth_fsdp_cfg is None:\n"
-                "    _unsloth_fsdp_cfg = {}\n"
-                "if fsdp and isinstance(_unsloth_fsdp_cfg, dict):\n"
-                f"    _unsloth_fsdp2 = _unsloth_fsdp2 or str(_unsloth_fsdp_cfg.get('fsdp_version', _unsloth_fsdp_cfg.get('version', {_FSDP_DEFAULT_VERSION}))) == '2'\n"
-            )
         extra_args += (
             "_unsloth_flash_adamw = str(getattr(optim, 'value', optim)).strip().lower() == 'adamw_flash'\n"
             "if _unsloth_flash_adamw: optim = 'adamw_torch'\n"
-        )
-        extra_args += (
-            "if _unsloth_fsdp2 and str(getattr(optim, 'value', optim)) == 'adamw_8bit':\n"
-            "    print(\"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' 8-bit optimizers cannot step. Switching optim = 'adamw_8bit' to 'adamw_torch_fused'.\")\n"
-            "    optim = 'adamw_torch_fused'\n"
         )
 
     # Fix num_train_epochs = None causing a TypeError in Trainer.__init__, which does `args.num_train_epochs > 0`.
@@ -3478,8 +3530,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         metadata = {'help': 'Ranks per context parallel group. 1 disables it.'},
     )
     context_parallel_backend : Optional[str] = field(
-        default = 'ring',
-        metadata = {'help': 'Context parallel attention backend: ring or ulysses (keeps packing).'},
+        default = 'auto',
+        metadata = {'help': 'Context parallel attention backend: auto (Ulysses unless the heads cannot be split, then ring), ulysses (keeps packing) or ring.'},
     )
     context_parallel_rotate_method : Optional[str] = field(
         default = 'allgather',
@@ -3487,7 +3539,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     )"""
         max_seq_length_call += (
             "context_parallel_size = 1,"
-            "context_parallel_backend = 'ring',"
+            "context_parallel_backend = 'auto',"
             "context_parallel_rotate_method = 'allgather',"
         )
         max_seq_length_post += (
@@ -3504,10 +3556,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         metadata = {'help': 'Ranks per context parallel group (training forwards only). 1 disables it.'},
     )
     context_parallel_backend : Optional[str] = field(
-        default = 'ulysses',
-        metadata = {'help': 'Context parallel attention backend; preference and RL trainers support ulysses.'},
+        default = 'auto',
+        metadata = {'help': 'Context parallel attention backend: auto (= ulysses); preference and RL trainers support ulysses.'},
     )"""
-        max_seq_length_call += "context_parallel_size = 1,context_parallel_backend = 'ulysses',"
+        max_seq_length_call += "context_parallel_size = 1,context_parallel_backend = 'auto',"
         max_seq_length_post += (
             "\n        self.context_parallel_size = context_parallel_size"
             "\n        self.context_parallel_backend = context_parallel_backend"
@@ -3573,8 +3625,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             + "\n"
         )
 
-    # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
-    # TRL >= 0.22 defaults scale_rewards to "group" (= True).
+    # Check dr_grpo loss_type with scale_rewards for GRPO; TRL >= 0.22 defaults scale_rewards to group.
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"
@@ -3683,34 +3734,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     RLConfig_extra_args = extra_args
     RLConfig_call_args = call_args
 
-    # Unsloth gradient checkpointing requires the reentrant path. The
-    # non-reentrant one recomputes every packed forward during backward and
-    # compares what each pass saved, so a region packed compiled and recomputed
-    # eagerly aborts the backward with "A different number of tensors was saved
-    # during the original forward and recomputation".
-    #
-    # Two different things push it to non-reentrant, and deleting the key only
-    # answers one of them:
-    #
-    #   TRL 0.27.0+ sets use_reentrant=False explicitly, which the delete below
-    #   used to handle on its own.
-    #
-    #   transformers substitutes {"use_reentrant": False} whenever
-    #   gradient_checkpointing_kwargs is None (see gradient_checkpointing_enable
-    #   in modeling_utils). A config on older TRL never sets the key at all, so
-    #   there is nothing to delete and transformers picks False for us.
-    #
-    # So the value is pinned rather than removed, for every TRL version. This is
-    # not hypothetical on older TRL: GKDConfig turns gradient_checkpointing on by
-    # default, so a distillation run reaches the non-reentrant path without ever
-    # having asked for gradient checkpointing at all.
-    #
-    # Only touched when gradient checkpointing is actually on, since otherwise
-    # transformers never reads these kwargs.
-    # A config asking for context_fn or debug is left alone. torch accepts
-    # neither under use_reentrant=True and raises as soon as a checkpointed
-    # forward runs, so pinning those would turn a working non-reentrant setup
-    # into a crash. determinism_check carries over fine and is not excluded.
+    # Unsloth gradient checkpointing requires use_reentrant=True: non-reentrant recompute aborts on
+    # packed compiled regions. Pinned (not deleted) because transformers substitutes False when the kwargs
+    # are None. context_fn / debug configs are left alone: torch rejects them under reentrant.
     RLConfig_post = (
         "        # Unsloth: keep the reentrant checkpoint path\n"
         "        if getattr(self, 'gradient_checkpointing', False):\n"
@@ -3718,6 +3744,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "            if _gc_kwargs.get('context_fn') is None and not _gc_kwargs.get('debug', False):\n"
         "                _gc_kwargs['use_reentrant'] = True\n"
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
+        "                if hasattr(self, 'activation_checkpointing_kwargs'):\n"
+        "                    self.activation_checkpointing_kwargs = _gc_kwargs\n"
     )
 
     if "optim" in call_args:
@@ -3730,7 +3758,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
 
     RLTrainer_extras = patch_functions(
-        RLTrainer, trainer_file, RLTrainer_name, all_imports, imports
+        RLTrainer,
+        trainer_file,
+        RLTrainer_name,
+        all_imports,
+        imports,
+        RLTrainer_source = old_RLTrainer_source,
     )
     if RLTrainer_extras is None:
         RLTrainer_extras = f"_Unsloth{RLTrainer_name} = {RLTrainer_name}"
@@ -4071,10 +4104,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         except Exception as e:
             logger.info(f"Unsloth: Could not widen the {RLConfig_name} isinstance check: {e}")
         try:
-            # Idempotent: the flag on the replacement makes repeat calls no-ops.
-            # Called from here rather than at import so TRL's trainer modules,
-            # which each hold their own reference to the name, are already
-            # imported and can be rebound in one pass.
+            # Called here, not at import, so TRL's trainer modules exist and are rebound in one pass.
             _guard_kbit_prep_against_peft_models()
         except Exception as e:
             logger.info(f"Unsloth: Could not guard the kbit prep against PEFT models: {e}")
@@ -4107,8 +4137,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
     if trainer_file in ("dpo_trainer", "grpo_trainer"):
         try:
-            from ..context_parallel import patch_rl_trainer
-            patch_rl_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"), trainer_file)
+            trainer_cls = getattr(created_module, f"Unsloth{RLTrainer_name}")
+            cp_module = sys.modules.get(__name__.rsplit(".", 2)[0] + ".context_parallel")
+            if cp_module is not None and not hasattr(cp_module, "patch_rl_trainer"):
+                # context_parallel is mid-import (its unsloth.utils import loaded us); it patches these at its end.
+                cp_module.__dict__.setdefault("_DEFERRED_RL_TRAINERS", []).append(
+                    (trainer_cls, trainer_file)
+                )
+            else:
+                from ..context_parallel import patch_rl_trainer
+                patch_rl_trainer(trainer_cls, trainer_file)
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
     if trainer_file == "ppo_trainer":
@@ -4130,8 +4168,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
 
-# TRL 1.10+ rejects the list train_dataset the vision notebooks pass; Dataset.from_list is no fix (re-encodes images).
-# Only list / tuple: a torch IterableDataset would skip TRL's streaming handling (dispatch_batches, RepeatSampler).
+# TRL 1.10+ rejects list train_dataset; only list or tuple, since IterableDataset skips TRL streaming
 _LIST_TRAIN_DATASET_TRAINERS = frozenset(("sft_trainer", "grpo_trainer", "rloo_trainer"))
 _TRL_TRAIN_DATASET_TYPE_CHECK = re.compile(
     r"(elif\s+not\s+isinstance\(\s*train_dataset\s*,\s*)\(?\s*(Dataset(?:\s*,\s*IterableDataset)?)\s*\)?(\s*\)\s*:)"
@@ -4151,7 +4188,14 @@ def _allow_list_train_dataset(function, source, trainer_file):
     return source
 
 
-def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
+def patch_functions(
+    RLTrainer,
+    trainer_file,
+    RLTrainer_name,
+    all_imports,
+    imports,
+    RLTrainer_source = None,
+):
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
@@ -4228,14 +4272,16 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 + "if (getattr(args, 'use_vllm', False) == False):\n"
                 + " " * 16
                 + "args.use_vllm = True\n"
-                # TRL >= 0.27 hands args.top_k to vLLM's SamplingParams unchanged, and it rejects None;
-                # the config-time guard misses this when vLLM comes only from fast_inference.
+                # TRL 0.27+ passes top_k to vLLM unchanged and vLLM rejects None; config guard misses fast_inference
                 + " " * 12
                 + "if getattr(args, 'top_k', -1) is None or getattr(args, 'top_k', -1) == 0:\n"
                 + " " * 16
                 + "args.top_k = -1\n"
             )
 
+            # The shared engine is local: a vllm_server would never get the trained weights.
+            if trainer_file == "online_dpo_trainer":
+                vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
                 if trl_version >= Version("0.23.0"):
@@ -4271,7 +4317,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         )
 
         if len(sampling_params) == 1:
-            sampling_params = sampling_params[0]
+            sampling_params = original_sampling_params = sampling_params[0]
             sampling_params = sampling_params.replace(
                 "guided_decoding=guided_decoding,",
                 "guided_decoding="
@@ -4294,19 +4340,24 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 last_indentation = len(last_line) - len(last_line.lstrip())
 
                 extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
+                # Merge, not two ** splats: a vllm_sampling_params key TRL also sets (top_p) is a TypeError.
                 to_replace = (
                     ",\n"
                     + " " * last_prev_indentation
+                    + "), "
                     + extra
-                    + ",\n"
+                    + "},\n"
                     + " " * last_indentation
                     + ")"
+                )
+                sampling_params = sampling_params.replace(
+                    "SamplingParams(", "SamplingParams(**{**dict(", 1
                 )
                 sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
-                new_vllm_part = (
-                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}\n{' ' * 8}else:\n"
+                new_vllm_part = new_vllm_part.replace(
+                    " " * 12 + original_sampling_params, sampling_params, 1
                 )
 
         if trl_version >= Version("0.18.0"):
@@ -4333,7 +4384,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         init = init.replace(vllm_part, new_vllm_part)
 
     functions = dir(RLTrainer)
-    RLTrainer_source = inspect.getsource(RLTrainer)
+    if RLTrainer_source is None:
+        RLTrainer_source = _class_source(RLTrainer)
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
     changed = {
@@ -4513,6 +4565,7 @@ def _patch_trl_experimental_trainer(name, module):
                 setattr(owner, x, cls)
 
 
+@_compile_versions_scope
 def patch_trl_rl_trainers():
     import trl.trainer
 
@@ -4609,6 +4662,12 @@ class _ApplyOnInputDevice:
     def __init__(self, function):
         self.function = function
 
+    def __getattr__(self, name):
+        # The wrapped kernel's sentinels and ``forward`` stay visible: the fused head adapter reads them.
+        if name == "function":
+            raise AttributeError(name)
+        return getattr(self.function, name)
+
     def apply(self, hidden, *args):
         device = hidden.device
         backend = getattr(torch, device.type, None) if device.type in ("cuda", "xpu") else None
@@ -4663,6 +4722,211 @@ def patch_trl_fused_lm_head_devices():
             setattr(_mod, "add_fused_lm_head", add_fused_lm_head)
 
 
+class _UnslothFusedLinearHead:
+    """TRL >= 1.15's ``_ChunkedLogProbFunction`` slot, served by unsloth_zoo's fused linear kernel (no backward
+    recompute for a frozen head, fp32 logits on CUDA). Anything it does not reproduce exactly goes to TRL's kernel."""
+
+    _unsloth_fused_linear = True
+
+    def __init__(self, function):
+        self.function = function
+        # TRL 1.14's kernel (1.1 - 1.13 take no bias and are not wrapped) takes no ``outputs`` and returns ``(log_probs, entropy)``.
+        try:
+            forward = getattr(function, "forward", None)
+            params = inspect.signature(forward).parameters if forward is not None else {}
+            self._legacy = forward is not None and "outputs" not in params
+            self._score_ids = "score_ids" in params
+        except (TypeError, ValueError):
+            self._legacy = False
+            self._score_ids = False
+        module = sys.modules.get(getattr(function, "__module__", None) or "")
+        # TRL tiles the projection as [min(N, TOKEN_CHUNK_SIZE), chunk_size]: chunk_size counts vocab columns.
+        self._token_rows = int(getattr(module, "TOKEN_CHUNK_SIZE", 4096))
+        self._default_chunk = int(
+            getattr(sys.modules.get("trl.trainer.utils"), "_CHUNKED_LOGPROB_CHUNK_SIZE", 32768)
+        )
+        # zoo op v4+ reads entropy_requires_grad=None as "gradient only if one arrives"; older zoos as "none".
+        try:
+            from unsloth_zoo.fused_losses import fused_linear as _fl
+            self._lazy_entropy = int(str(getattr(_fl, "_LP_OP", "")).rsplit("_v", 1)[-1]) >= 4
+        except Exception:
+            self._lazy_entropy = False
+
+    def __getattr__(self, name):
+        if name == "function":
+            raise AttributeError(name)
+        return getattr(self.function, name)
+
+    def _row_cap(self, hidden, weight, bias, chunk_size, outputs):
+        """``max_rows_per_chunk`` keeping the zoo kernel's logits buffer within TRL's tile for the same call
+        ([min(N, TOKEN_CHUNK_SIZE), chunk_size] in the compute dtype): 0 = no cap, None = TRL serves the call."""
+        # TRL's default tile: keep the zoo budget (lower peak); only an explicitly smaller chunk_size is honoured.
+        if int(chunk_size) >= self._default_chunk:
+            return 0
+        from unsloth_zoo.fused_losses import fused_linear as fl
+
+        N, H = hidden.shape[0], hidden.shape[-1]
+        V = weight.shape[0]
+        device_type = hidden.device.type
+        if torch.is_autocast_enabled(device_type):
+            compute_dtype = torch.get_autocast_dtype(device_type)
+        else:
+            compute_dtype = hidden.dtype
+        budget = min(N, self._token_rows) * int(chunk_size) * compute_dtype.itemsize
+        split_cols = int(getattr(fl, "_SPLIT_COLS", 16384))
+        cols = -(-V // 8) * 8
+        tiled_vocab = device_type == "cuda" and split_cols > 0 and V > 2 * split_cols
+        # Recompute tiles cannot fit a budget below _BWD_TILE_BYTES without being 2-8x slower: TRL serves those
+        # shapes. Decided from shapes alone, so a batch's no-grad and gradient passes pick the same kernel.
+        padded = -(-V // split_cols) * split_cols if tiled_vocab else cols
+        tile_bytes = getattr(fl, "_BWD_TILE_BYTES", 256 * 1024**2)
+        if min(tile_bytes, N * padded * 4) > budget:
+            return None
+        # Chunked forward (no grad, or frozen head without entropy grad): [rows, V] fp32 logits.
+        grad = torch.is_grad_enabled() and (
+            hidden.requires_grad
+            or weight.requires_grad
+            or (bias is not None and bias.requires_grad)
+        )
+        # A lazy entropy (see apply) leaves a frozen head on the chunked forward gradient even when it is returned.
+        head_grad = weight.requires_grad or (bias is not None and bias.requires_grad)
+        tiled = (
+            tiled_vocab
+            and grad
+            and (head_grad or ("entropy" in outputs and not self._lazy_entropy))
+        )
+        if tiled or fl.fused_linear_rows(N, H, V, 4, hidden.device) * cols * 4 <= budget:
+            return 0
+        cap = budget // (cols * 4)
+        return cap if cap >= 1 else None
+
+    def apply(
+        self,
+        hidden,
+        weight,
+        bias,
+        targets,
+        temperature,
+        chunk_size,
+        final_logit_softcapping = None,
+        logit_scale = 1.0,
+        outputs = ("entropy", "log_sum_sq_probs", "mean_logits", "is_top1"),
+        support_ids = None,
+        score_ids = None,
+    ):
+        if self._legacy:
+            args = (
+                hidden,
+                weight,
+                bias,
+                targets,
+                temperature,
+                chunk_size,
+                final_logit_softcapping,
+                logit_scale,
+            )
+            outputs = ("log_probs", "entropy")
+        else:
+            args = (
+                hidden,
+                weight,
+                bias,
+                targets,
+                temperature,
+                chunk_size,
+                final_logit_softcapping,
+                logit_scale,
+                outputs,
+            )
+        if self._score_ids:
+            if support_ids is not None or score_ids is not None:
+                return self.function.apply(*args, support_ids, score_ids)
+        elif support_ids is not None:
+            return self.function.apply(*args, support_ids)
+        if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+            return self.function.apply(*args)
+        try:
+            from unsloth_zoo.fused_losses.fused_linear import fused_linear_logprobs
+        except Exception:
+            return self.function.apply(*args)
+        device_type = hidden.device.type
+        if (
+            # 0.0 means "off" to the zoo kernel, a real multiplier to TRL.
+            logit_scale == 0.0
+            # TRL casts the head to the hidden dtype outside autocast (cast_lm_head_to_fp32); the zoo kernel the reverse.
+            or (not torch.is_autocast_enabled(device_type) and hidden.dtype != weight.dtype)
+            # DeepSpeed ZeRO-3 partitions the head again once TRL's gather context exits.
+            or hasattr(weight, "ds_id")
+            or any(
+                name not in ("log_probs", "entropy", "log_sum_sq_probs", "mean_logits", "is_top1")
+                for name in outputs
+            )
+        ):
+            return self.function.apply(*args)
+        row_cap = self._row_cap(hidden, weight, bias, chunk_size, outputs)
+        if row_cap is None:
+            return self.function.apply(*args)
+        want = {
+            name: name in outputs
+            for name in ("entropy", "mean_logits", "log_sum_sq_probs", "is_top1")
+        }
+        result = fused_linear_logprobs(
+            hidden,
+            weight,
+            targets,
+            bias = bias,
+            temperature = temperature,
+            logit_scale_multiply = 0.0 if logit_scale == 1.0 else float(logit_scale),
+            logit_softcapping = float(final_logit_softcapping or 0.0),
+            return_entropy = want["entropy"],
+            # TRL's kernel skips the entropy gradient when none arrives (DPO / KTO log it); None does the same.
+            **({"entropy_requires_grad": None} if self._lazy_entropy else {}),
+            return_mean_logits = want["mean_logits"],
+            return_log_sum_sq_probs = want["log_sum_sq_probs"],
+            return_is_top1 = want["is_top1"],
+            max_rows_per_chunk = row_cap or None,
+        )
+        result = iter(result if isinstance(result, tuple) else (result,))
+        log_probs = next(result)
+        extra = {name: next(result) if flag else None for name, flag in want.items()}
+        if extra["mean_logits"] is not None and temperature != 1.0:
+            # TRL averages the logits after the temperature, the zoo kernel (like logits.mean()) before it.
+            extra["mean_logits"] = extra["mean_logits"] / temperature
+        if self._legacy:
+            return log_probs, extra["entropy"]
+        return (
+            log_probs,
+            extra["entropy"],
+            extra["log_sum_sq_probs"],
+            extra["mean_logits"],
+            extra["is_top1"],
+        ) + ((None,) if self._score_ids else ())
+
+
+def patch_trl_fused_lm_head_kernel():
+    if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        return
+    try:
+        import trl.trainer.utils as _tu
+    except ImportError:
+        return
+    kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
+    if kernel is None or getattr(kernel, "_unsloth_fused_linear", False):
+        return
+    # TRL 1.1 - 1.13's kernel takes no ``bias``: the adapter would shift every argument after ``weight``.
+    forward = getattr(kernel, "forward", None)
+    try:
+        if forward is not None and "bias" not in inspect.signature(forward).parameters:
+            return
+    except (TypeError, ValueError):
+        return
+    try:
+        import unsloth_zoo.fused_losses.fused_linear  # noqa: F401
+    except Exception:
+        return
+    _tu._ChunkedLogProbFunction = _UnslothFusedLinearHead(kernel)
+
+
 def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
@@ -4712,8 +4976,8 @@ def _without_instance_bound_methods(obj):
 
 
 def _is_unsloth_fast_backbone(backbone):
-    from .llama import LlamaModel_fast_forward
-    return getattr(type(backbone), "forward", None) is LlamaModel_fast_forward
+    from .llama import LlamaModel_fast_forward, runs_fast_forward
+    return backbone is not None and runs_fast_forward(backbone, LlamaModel_fast_forward)
 
 
 def _text_prepended_position_ids(position_ids):
@@ -5233,6 +5497,10 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
         patch_trl_fused_lm_head_devices()
     except Exception as e:
         logger.info(f"Unsloth: Could not patch trl add_fused_lm_head for split models: {e}")
+    try:
+        patch_trl_fused_lm_head_kernel()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not route trl's fused lm_head to unsloth_zoo's kernel: {e}")
     # Also before patch_trl_rl_trainers, so the generated trainers import the wrapped helpers.
     try:
         from ._trl_tool_templates import patch_trl_tool_chat_templates

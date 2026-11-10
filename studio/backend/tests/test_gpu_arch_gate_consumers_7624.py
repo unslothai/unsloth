@@ -19,6 +19,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from core.inference import llama_cpp  # noqa: E402
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
 
 _REAL_POPEN = subprocess.Popen
@@ -524,9 +525,171 @@ class TestArchRetryDropsTensorSplit:
         text = path.read_text(encoding = "utf-8")
         # Arch-crash retry and the gated manual-split launch both mask devices under a positional ratio.
         assert text.count("self._without_tensor_split(") == 2
-        block = text.split("_arch_crash_retry_gpu_ids(\n")[-1].split('label = "-archfallback"')[0]
+        block = text.split("self._kernel_image_invalid(_arch_crash_tail)")[1]
+        block = block.split('label = "-archfallback"')[0]
         assert "_without_tensor_split(cmd)" in block
         assert "self._tensor_split = None" in block  # /status must not report a dropped split
+
+
+_MANUAL_SPLIT_CRASH = (
+    "ROCm error: invalid kernel file\n"
+    "  current device: 1, in function ggml_cuda_kernel_launch at common.cuh:1740"
+)
+
+
+def _load_manual_split(
+    monkeypatch,
+    tmp_path,
+    *,
+    outputs,
+    returncodes,
+    env = None,
+    extra_args = None,
+):
+    """load_model in manual mode over two ROCm GPUs, each spawn answering from the lists."""
+    for name in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+        "LLAMA_ARG_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(llama_cpp.sys, "platform", "linux")
+
+    def _s(value):
+        return struct.pack("<Q", len(value)) + value.encode()
+
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + _s("general.architecture")
+        + struct.pack("<I", 8)
+        + _s("llama")
+    )
+    gib16 = 16 * 1024**3
+    backend = LlamaCppBackend()
+    backend._get_gpu_memory = lambda _b = None, **_k: [(0, gib16, gib16), (1, gib16, gib16)]
+    backend._get_gpu_free_memory = lambda _b = None, **_k: [(0, gib16), (1, gib16)]
+    backend._effective_gpu_count = lambda *_a, **_k: 2
+    backend._read_gguf_metadata = lambda _p: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _p: 1024
+    backend._mmproj_vram_bytes = lambda _p: 0
+    backend._resolve_launch_mmproj_path = lambda **_k: None
+    backend._apu_ram_shortfall_message = lambda *_a, **_k: None
+    backend._amd_apu_wants_unified_memory = lambda *_a, **_k: False
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend.probe_server_capabilities = lambda _b: {"found": True}
+    backend._record_server_pid = lambda _p: None
+    backend._clear_server_pid = lambda: None
+    backend._llama_server_env_for_binary = lambda _b, **_k: dict(os.environ)
+    backend._prepare_cpu_fallback_launch = lambda *_a, **_k: None
+    monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _b = None: False))
+    monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
+    monkeypatch.setattr(llama_cpp, "_swa_cache_path", lambda: tmp_path / "swa.json")
+    launches = []
+
+    class _Process:
+        pid = 123
+        stdout = ()
+
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout = None):
+            return self.returncode
+
+        def kill(self):
+            return None
+
+    real_popen = subprocess.Popen
+
+    def _popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return real_popen(cmd, **kwargs)
+        launches.append((list(cmd), dict(kwargs["env"])))
+        return _Process(returncodes[min(len(launches), len(returncodes)) - 1])
+
+    def _wait_for_health(timeout = 600.0, **_k):
+        backend._stdout_lines = outputs[min(len(launches), len(outputs)) - 1].splitlines()
+        return returncodes[min(len(launches), len(returncodes)) - 1] is None
+
+    backend._wait_for_health = _wait_for_health
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    try:
+        loaded = backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "owner/model",
+                gpu_memory_mode = "manual",
+                gpu_layers = 999,
+                tensor_split = (1.0, 1.0),
+                extra_args = extra_args,
+            )
+        )
+    except RuntimeError:
+        loaded = False
+    return backend, launches, loaded
+
+
+def _tensor_split_arg(cmd):
+    return cmd[cmd.index("--tensor-split") + 1] if "--tensor-split" in cmd else None
+
+
+class TestUnpinnedArchCrashRetryLoad:
+    """A manual split launches unpinned; the arch-crash retry must still narrow it."""
+
+    def test_the_crashed_card_is_dropped_and_the_load_recovers(self, monkeypatch, tmp_path):
+        backend, launches, loaded = _load_manual_split(
+            monkeypatch, tmp_path, outputs = [_MANUAL_SPLIT_CRASH, ""], returncodes = [1, None]
+        )
+        assert loaded
+        assert len(launches) == 2
+        assert _tensor_split_arg(launches[0][0]) == "1,1"
+        retry_cmd, retry_env = launches[1]
+        assert _tensor_split_arg(retry_cmd) is None
+        assert retry_env["CUDA_VISIBLE_DEVICES"] == "0"
+        assert backend._arch_gate_dropped_tensor_split == (1.0, 1.0)
+
+    def test_a_companion_device_on_the_survivor_is_renumbered(self, monkeypatch, tmp_path):
+        crash_on_0 = _MANUAL_SPLIT_CRASH.replace("current device: 1", "current device: 0")
+        _backend, launches, loaded = _load_manual_split(
+            monkeypatch,
+            tmp_path,
+            outputs = [crash_on_0, ""],
+            returncodes = [1, None],
+            extra_args = ["--spec-draft-device", "ROCm1"],
+        )
+        assert loaded
+        retry_cmd, retry_env = launches[1]
+        assert retry_env.get("ROCR_VISIBLE_DEVICES", retry_env["CUDA_VISIBLE_DEVICES"]) == "1"
+        assert retry_cmd[retry_cmd.index("--spec-draft-device") + 1] == "ROCm0"
+
+    @pytest.mark.parametrize("env", [{"LLAMA_ARG_MAIN_GPU": "1"}, {"MTMD_BACKEND_DEVICE": "ROCm1"}])
+    def test_a_user_device_env_keeps_its_error(self, monkeypatch, tmp_path, env):
+        _backend, launches, loaded = _load_manual_split(
+            monkeypatch,
+            tmp_path,
+            outputs = [_MANUAL_SPLIT_CRASH],
+            returncodes = [1],
+            env = env,
+        )
+        assert not loaded
+        assert all(_tensor_split_arg(cmd) == "1,1" for cmd, _env in launches)
 
 
 class TestArchRetryRestoresTheMemoryPolicy:

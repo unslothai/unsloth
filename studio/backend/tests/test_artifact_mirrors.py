@@ -208,6 +208,10 @@ def test_the_fp8_artifact_mirror_lists_as_its_checkpoint_not_as_a_pipeline(
     Whatever part of them is cached, the row is the single-file checkpoint row (the shape the compatibility listing
     gave the FP8 repo before the folders arrived): visible and deletable, never offered as a pipeline load the backend
     rejects, never a companion-prefetch partial."""
+    if cached == "full" and scan is _inventory_row:
+        pytest.skip(
+            "a whole base pipeline lists as the base: test_a_base_pipeline_cached_in_an_artifact_mirror_..."
+        )
     files = {**_FP8_ROOT, **_FOLDERS, **(_DENOISER if cached == "full" else {})}
     row = scan(monkeypatch, tmp_path, _FP8_REPO, files)
     assert row["single_file"] is True
@@ -927,3 +931,197 @@ def test_artifact_folder_bytes_without_inodes_keys_by_blob_path(monkeypatch, tmp
 
     monkeypatch.setattr(Path, "stat", no_inode)
     assert cache_inventory.artifact_folder_bytes(repo_dir) == 800
+
+
+def _scan_rows(monkeypatch, cached_repos, active_hub_cache: Path) -> list[dict]:
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    scans = [SimpleNamespace(repos = list(cached_repos))]
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
+    return cache_inventory._scan_cached_models(active_hub_cache = active_hub_cache)
+
+
+_CASED_ARTIFACT_MIRRORS = sorted(m for _u, m in df._MIRROR_PAIRS if df.mirror_hosts_artifacts(m))
+
+
+@pytest.mark.parametrize("root_checkpoint", [False, True])
+@pytest.mark.parametrize("repo", _CASED_ARTIFACT_MIRRORS)
+def test_a_base_pipeline_cached_in_an_artifact_mirror_lists_as_the_base(
+    monkeypatch, tmp_path, repo, root_checkpoint
+):
+    """A cached base pipeline in the FP8 mirror lists, loads, sizes and deletes as the base."""
+    files = {**_FOLDERS, **_DENOISER, **(_FP8_ROOT if root_checkpoint else {})}
+    cached = _cache_repo(tmp_path, repo, files)
+    rows = _scan_rows(monkeypatch, [cached], tmp_path)
+    base = df.canonical_base(repo)
+    assert base.lower() != repo.lower()
+    assert [r["repo_id"] for r in rows] == [base]
+    row = rows[0]
+    assert row["single_file"] is False and not row["partial"] and not row["companion"]
+    assert row["load_id"] == base
+    assert row["cache_path"] == str(cached.repo_path)
+    assert row["size_bytes"] == sum(v for k, v in files.items() if k.endswith(".safetensors"))
+
+
+def test_a_base_pipeline_in_a_mirror_outside_the_active_cache_pins_its_snapshot(
+    monkeypatch, tmp_path
+):
+    cached = _cache_repo(tmp_path / "old", _FP8_REPO, {**_FOLDERS, **_DENOISER})
+    rows = _scan_rows(monkeypatch, [cached], tmp_path / "live")
+    assert [r["repo_id"] for r in rows] == ["Qwen/Qwen-Image-2.1-Turbo"]
+    assert rows[0]["load_id"] == str(Path(cached.revisions[0].snapshot_path).resolve())
+    assert rows[0]["single_file"] is False and rows[0]["active_cache"] is False
+
+
+def test_an_artifact_mirror_without_the_denoiser_keeps_its_checkpoint_row(monkeypatch, tmp_path):
+    """Folders without the denoiser do not load as the base, so the row stays the mirror's checkpoint row."""
+    cached = _cache_repo(tmp_path, _FP8_REPO, {**_FP8_ROOT, **_FOLDERS})
+    rows = _scan_rows(monkeypatch, [cached], tmp_path)
+    assert [(r["repo_id"], r["single_file"]) for r in rows] == [(_FP8_REPO, True)]
+
+
+def test_deleting_the_base_row_targets_the_artifact_mirror_copy(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    fp8 = _cache_repo(tmp_path, _FP8_REPO, {**_FOLDERS, **_DENOISER})
+    gguf = _cache_repo(tmp_path, "unsloth/Z-Image-GGUF", {"z-image-Q4_K_M.gguf": 5, **_FOLDERS})
+    scans = [SimpleNamespace(repos = [fp8, gguf])]
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
+    resolve = cache_inventory.artifact_mirror_delete_id
+    assert resolve("Qwen/Qwen-Image-2.1-Turbo", str(fp8.repo_path)) == _FP8_REPO
+    assert resolve("Qwen/Qwen-Image-2.1-Turbo", None) == _FP8_REPO
+    assert (
+        resolve("Qwen/Qwen-Image-2.1-Turbo", str(tmp_path / "models--Qwen--Qwen-Image-2.1-Turbo"))
+        is None
+    )
+    assert resolve(_FP8_REPO, str(fp8.repo_path)) is None
+    assert resolve("Qwen/Qwen-Image-2512", None) is None
+    # A -GGUF mirror holding a quant: its folders belong to the GGUF row, never deleted through the base.
+    assert resolve("Tongyi-MAI/Z-Image", str(gguf.repo_path)) is None
+    assert resolve("Tongyi-MAI/Z-Image", None) is None
+
+
+def test_the_delete_route_passes_the_mirror_id_to_the_destructive_step(monkeypatch, tmp_path):
+    import asyncio
+
+    from hub.services.models import cache_inventory, deletion
+
+    fp8 = _cache_repo(tmp_path, _FP8_REPO, {**_FOLDERS, **_DENOISER})
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [fp8])]
+    )
+    monkeypatch.setattr(deletion.account_access, "require_installation_owner", lambda: None)
+    seen = {}
+
+    def fake_delete(
+        repo_id,
+        variant,
+        hf_token,
+        cache_path = None,
+        **_kw,
+    ):
+        seen["repo_id"] = repo_id
+        return {"status": "deleted", "repo_id": repo_id}
+
+    monkeypatch.setattr(deletion, "_delete_cached_model_blocking", fake_delete)
+    result = asyncio.run(
+        deletion.delete_cached_model_response(
+            "Qwen/Qwen-Image-2.1-Turbo", None, None, str(fp8.repo_path)
+        )
+    )
+    assert seen["repo_id"] == _FP8_REPO
+    assert result["repo_id"] == "Qwen/Qwen-Image-2.1-Turbo"
+
+
+def _mirror_delete_route(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory, deletion
+
+    fp8 = _cache_repo(tmp_path, _FP8_REPO, {**_FOLDERS, **_DENOISER})
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [fp8])]
+    )
+    monkeypatch.setattr(deletion.account_access, "require_installation_owner", lambda: None)
+    for name in (
+        "_llama_cpp_blocks_delete",
+        "_inference_backend_blocks_delete",
+        "_audio_cpp_blocks_delete",
+    ):
+        monkeypatch.setattr(deletion, name, lambda *_a, **_k: False)
+    monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *_a, **_k: None)
+    deleted = []
+    monkeypatch.setattr(
+        deletion,
+        "_delete_cached_model_blocking",
+        lambda repo_id, *_a, **_k: deleted.append(repo_id)
+        or {"status": "deleted", "repo_id": repo_id},
+    )
+    return deletion, fp8, deleted
+
+
+def test_a_load_from_the_mirror_snapshot_blocks_deleting_the_base_row(monkeypatch, tmp_path):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    deletion, fp8, deleted = _mirror_delete_route(monkeypatch, tmp_path)
+    snapshot = str(fp8.revisions[0].snapshot_path)
+    monkeypatch.setattr(
+        deletion,
+        "iter_repo_cache_dirs",
+        lambda _t, rid: [Path(fp8.repo_path)] if rid.lower() == _FP8_REPO.lower() else [],
+    )
+    monkeypatch.setattr(
+        deletion,
+        "_diffusion_blocks_delete",
+        lambda gid: "Unload the model before deleting"
+        if deletion._loaded_id_matches_repo(snapshot, gid)
+        else None,
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            deletion.delete_cached_model_response(
+                "Qwen/Qwen-Image-2.1-Turbo", None, None, str(fp8.repo_path)
+            )
+        )
+    assert exc.value.status_code == 400 and deleted == []
+
+
+def test_a_download_into_the_mirror_blocks_deleting_the_base_row(monkeypatch, tmp_path):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    deletion, fp8, deleted = _mirror_delete_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *_a, **_k: None)
+    held, released = [], []
+
+    def begin_delete(key, variant):
+        if key.lower() == _FP8_REPO.lower():
+            return False
+        held.append(key)
+        return True
+
+    monkeypatch.setattr(deletion.downloads.registry, "begin_delete", begin_delete)
+    monkeypatch.setattr(
+        deletion.downloads.registry, "end_delete", lambda key, _v: released.append(key)
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            deletion.delete_cached_model_response(
+                "Qwen/Qwen-Image-2.1-Turbo", None, None, str(fp8.repo_path)
+            )
+        )
+    assert exc.value.status_code == 400 and deleted == []
+    assert held == released == ["Qwen/Qwen-Image-2.1-Turbo"]

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reveal and delete for on-device models outside the Hugging Face cache (LM Studio, custom
-folders, ./models, Ollama, Hermes, oMLX). Only a path the local inventory lists is accepted, so
-callers cannot probe or remove arbitrary files."""
+"""Reveal and delete for non-HF-cache local models; only inventory-listed paths accepted, so callers
+cannot probe or remove arbitrary files."""
 
 from __future__ import annotations
 

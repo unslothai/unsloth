@@ -114,7 +114,8 @@ def test_route_llama_streaming_async_clients_disable_proxy_env():
         if isinstance(node, ast.Call) and _is_local_async_client(node.func)
     ]
 
-    assert len(calls) == 5
+    # One factory per kind of llama-server client: streamed, and cancellable non-streaming.
+    assert len(calls) == 2
     for call in calls:
         assert any(
             kw.arg == "trust_env" and isinstance(kw.value, ast.Constant) and kw.value.value is False

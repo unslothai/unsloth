@@ -13,7 +13,7 @@ const BenchmarksPage = lazyRouteComponent(
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/benchmarks",
-  staticData: { title: "Benchmarks" },
+  staticData: { titleKey: "shell.navigation.benchmarks" },
   beforeLoad: () => requireAuth(),
   component: BenchmarksPage,
 });

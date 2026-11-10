@@ -128,7 +128,7 @@ test("the Environment rows wait for the same read", () => {
 
 test("no tile fabricates a usage percentage for a host it has not read", () => {
   // An unread host is not an idle one, so no tile may pass 0.
-  const tiles = tabSrc.match(/<MetricTile\b[\s\S]*?\/>/g) ?? [];
+  const tiles = tabSrc.match(/<MetricTile\b[\s\S]*?(?:<\/MetricTile>|\/>)/g) ?? [];
   // Count opening tags too: the optional models-disk tile may be missed by the match above.
   const opened = (tabSrc.match(/<MetricTile\b/g) ?? []).length;
   assert.ok(tiles.length >= 4, `the Live monitor's tiles: found ${tiles.length}`);
@@ -136,6 +136,8 @@ test("no tile fabricates a usage percentage for a host it has not read", () => {
   for (const tile of tiles) {
     const label = /label=\{t\("([^"]+)"\)\}/.exec(tile)?.[1] ?? "?";
     const percent = /percent=\{([^}]*)\}/.exec(tile)?.[1] ?? "";
+    // A share tile draws its own bar and shows no percentage.
+    if (/showUsage=\{false\}/.test(tile) && percent === "null") continue;
     assert.match(
       percent,
       /hostUnread \? null :|vramUsageKnown \? metrics\.vramPercent : null/,

@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the top-level group and a block prefix of a block-streamed Wan or HunyuanVideo-1.5 denoiser resident, re-fitted
-per request.
-
-Room = free + unused cache + already resident - need. Need is the streamed floor + base overhead + the runtime estimate,
-or, for a request no larger (pixels x frames) than a completed one, that request's measured peak x 1.15 + 1 GiB; the
-estimate stays the lower bound. Resident groups keep their host copy, so streaming them again is a pointer swap.
-Kill switches: UNSLOTH_VIDEO_DIT_RESIDENT=0, UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top-level group only),
-UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0 (estimate only).
-
-Calibration is not Wan-only: ``arm_request`` arms the same peak measurement for any video family, and every recorded
-peak also lands in a process-wide table keyed by the loaded model (``calibration_key``), so a reload of the same model
-and the offload refusal (``measured_extra_mib``) reuse it. ``UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0`` turns reuse off.
-"""
+"""Keeps top group and block prefix of a Wan, HunyuanVideo-1.5, LTX-2 or LTX-2.5 denoiser resident, re-fitted per
+request; need estimate stays the lower bound; kill switches UNSLOTH_VIDEO_DIT_RESIDENT=0,
+UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top group only), UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0
+(estimate only)."""
 
 from __future__ import annotations
 
@@ -26,6 +17,8 @@ VIDEO_DIT_RESIDENT_MEASURED_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED"
 RESIDENT_POLICIES = ("group", "streaming")
 # Single-DiT families measured under the fit (MiniMax-H3 has its own controller, video_minimax_h3_residency).
 RESIDENT_FAMILY_PREFIXES = ("wan", "hunyuanvideo-1.5")
+# Exact names: "ltx-2" covers LTX-2.0 to 2.3; LTX-2.5 lends blocks to its encoder worker (video_ltx25).
+RESIDENT_FAMILIES = ("ltx-2", "ltx-2.5")
 # A measured peak is scaled by this and a fixed slack is kept on top (allocator fragmentation, cuDNN workspaces).
 MEASURED_PEAK_MARGIN = 1.15
 MEASURED_SLACK_MIB = 1024
@@ -73,7 +66,10 @@ def applies(
         residency_enabled()
         and not modular
         and not is_moe
-        and str(family_name or "").startswith(RESIDENT_FAMILY_PREFIXES)
+        and (
+            str(family_name or "").startswith(RESIDENT_FAMILY_PREFIXES)
+            or str(family_name or "") in RESIDENT_FAMILIES
+        )
         and offload_policy in RESIDENT_POLICIES
         and str(device or "").startswith("cuda")
     )

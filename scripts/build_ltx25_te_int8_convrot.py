@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build the hosted int8 ConvRot Gemma 4 encoder LTX-2.5's text-encoder sidecar loads instead of quantizing at load.
-
-The file IS the sidecar's own at-load build, written once: this runs the worker's ``_load`` (transformers 5.10
-sidecar, ``from_pretrained(torch_dtype = bfloat16)``, the dead-tail trim, then ``quantize_int8_convrot_`` on the card)
-and saves the resulting state dict. So every key is the loaded model's own name (transformers 5 renames some
-checkpoint keys at load), every decoder projection is the ``Int8ConvRotLinear`` buffers (``<name>.weight`` int8,
-``<name>.weight_scale`` float32 [out, 1]) and every other tensor is the bf16 tensor the at-load path holds. The tied
-``lm_head`` has no key (it is re-tied to the embedding at load). The header is the plain-tensor container the prequant
-readers share (``unsloth_format`` + ``unsloth_metadata`` + ``tensor_names``), written canonically, so a rebuild on the
-same device kind is byte-identical.
-
-  python scripts/build_ltx25_te_int8_convrot.py \\
-      --out outputs/te_default/unsloth/LTX-2.5-FP8/LTX-2.5-text_encoder-INT8-ConvRot.safetensors
-"""
+"""Builds the int8 ConvRot Gemma 4 encoder for LTX-2.5's sidecar; keys use the loaded model's names."""
 
 from __future__ import annotations
 

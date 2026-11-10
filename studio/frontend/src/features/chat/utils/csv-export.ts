@@ -7,7 +7,7 @@ export function csvEscape(val: string): string {
 
 export const CSV_MIME = "text/csv;charset=utf-8";
 
-// Excel decodes a BOM-less .csv with the system code page (e.g. Windows-1252), garbling non-Latin1 text.
+// Excel needs a BOM to decode .csv as UTF-8.
 export function csvDocument(lines: string[]): string {
   return "\ufeff" + lines.join("\n");
 }

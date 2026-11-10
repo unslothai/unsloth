@@ -47,6 +47,8 @@ NO_UNSLOTH_REPO = frozenset(
     {
         "wan-ai/wan2.1-t2v-1.3b-diffusers",
         "wan-ai/wan2.1-t2v-14b-diffusers",
+        "nvidia/cosmos3-nano",
+        "nvidia/cosmos3-edge",
     }
 )
 

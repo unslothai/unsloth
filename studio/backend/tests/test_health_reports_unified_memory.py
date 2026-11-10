@@ -107,7 +107,7 @@ def test_an_unauthenticated_reply_carries_neither(monkeypatch):
     assert "apple_silicon" not in body
 
 
-def test_the_gate_is_the_one_the_metal_budget_uses(monkeypatch):
+def test_the_gate_is_the_one_the_metal_budget_uses(monkeypatch, real_apple_metal_budget):
     """Not a second definition of Apple Silicon. If these ever diverge, the UI starts
     describing a memory model the loader is not enforcing."""
     import inspect

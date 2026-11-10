@@ -13,7 +13,7 @@ const FlowsEditorPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/flows/$flowId",
-  staticData: { title: "Flows" },
+  staticData: { titleKey: "shell.navigation.flows" },
   beforeLoad: () => requireAuth(),
   component: FlowEditorRoute,
 });

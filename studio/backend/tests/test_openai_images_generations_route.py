@@ -368,6 +368,9 @@ def test_batch_persists_batch_size(monkeypatch):
     records = sorted(store.values(), key = lambda r: r["batch_index"])
     assert [r["batch_index"] for r in records] == [0, 1, 2]
     assert all(r["batch_size"] == 3 for r in records)
+    assert records[0]["generation_seconds"] >= 0
+    assert all(r["generation_seconds"] == records[0]["generation_seconds"] for r in records)
+    assert all(r["generation_count"] == 3 for r in records)
 
 
 def test_uses_active_engine_not_diffusers_singleton(monkeypatch):

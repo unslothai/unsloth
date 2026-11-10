@@ -177,8 +177,6 @@ test("Remember and Save wait for the first read, so its older result cannot over
     /\.finally\(\(\) => \{\s*if \(!controller\.signal\.aborted\) \{\s*setLoaded\(true\);/,
   );
   assert.match(footer, /checked=\{remember\}\s*disabled=\{!loaded\}/);
-  assert.match(
-    footer,
-    /disabled=\{!loaded \|\| busy \|\| \(remember && unchanged\)\}/,
-  );
+  assert.match(footer, /disabled=\{!loaded \|\| busy\}/);
+  assert.match(footer, /\(remember \? !unchanged : saved !== null\) &&/);
 });

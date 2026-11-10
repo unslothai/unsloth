@@ -351,7 +351,7 @@ def test_the_mlx_vlm_prefill_predicate_matches_its_decoder_gate():
 
 
 def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_it():
-    """The clip rides the command like an image; a backend without ``video`` fails the request."""
+    """Clips ride the command like images; a backend without ``videos`` fails the request."""
     from pathlib import Path
 
     from core.inference.orchestrator import InferenceOrchestrator, _mirrored_model_entry
@@ -360,11 +360,11 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
     o.models, o.active_model_name = {}, None
     o._stop_ledger = o._pending_teardowns = None
-    assert "video_base64" not in o._build_generate_cmd("r", None, messages = [])
+    assert "videos_base64" not in o._build_generate_cmd("r", None, messages = [])
     cmd = o._build_generate_cmd(
-        "r", None, messages = [{"role": "user", "content": "hi"}], video_b64 = "AAAA"
+        "r", None, messages = [{"role": "user", "content": "hi"}], videos_b64 = ["AAAA", "BBBB"]
     )
-    assert cmd["video_base64"] == "AAAA"
+    assert cmd["videos_base64"] == ["AAAA", "BBBB"]
 
     class _FakeQueue:
         def __init__(self):
@@ -379,10 +379,10 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
 
         def generate_chat_response(
             self,
-            video = None,
+            videos = None,
             **kwargs,
         ):
-            self.received = video
+            self.received = videos
             return iter(())
 
     class _TextBackend:
@@ -395,7 +395,7 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
 
     takes = _VideoBackend()
     _handle_generate(takes, cmd, _FakeQueue(), threading.Event())
-    assert takes.received == "AAAA"
+    assert takes.received == ["AAAA", "BBBB"]
     refuses, queue = _TextBackend(), _FakeQueue()
     _handle_generate(refuses, cmd, queue, threading.Event())
     assert refuses.called is False
@@ -440,10 +440,10 @@ def test_both_orchestrator_entry_points_forward_the_clip_into_the_command():
     o._build_generate_cmd = _build
     turn = [{"role": "user", "content": "hi"}]
     with pytest.raises(_Built):
-        list(o.generate_chat_response(messages = turn, video = "AAAA"))
+        list(o.generate_chat_response(messages = turn, videos = ["AAAA"]))
     with pytest.raises(_Built):
-        list(o.generate_with_adapter_control(use_adapter = True, messages = turn, video = "AAAA"))
-    assert [kw["video_b64"] for kw in built] == ["AAAA", "AAAA"]
+        list(o.generate_with_adapter_control(use_adapter = True, messages = turn, videos = ["AAAA"]))
+    assert [kw["videos_b64"] for kw in built] == [["AAAA"], ["AAAA"]]
 
 
 def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serves_it():

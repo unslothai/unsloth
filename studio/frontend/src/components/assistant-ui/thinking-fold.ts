@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// With the fold preference on, one Thinking block holds a span's whole run-up to the answer: its
-// own thoughts, every tool call, and any thinking that follows those calls. The parts are grouped
-// by type, so those pieces render as siblings of the block; these helpers say which of them it
-// holds and which stay where they are.
-//
-// A span is a maximal run of thinking, tool calls and blank text, and is led by its first
-// reasoning group. Only answer text with something in it ends a span: the whitespace a provider
-// leaves between a closed think block and its tool call is not an answer, and neither is the
-// previous reply a continuation is seeded with, which sits before the new round rather than
-// ending it. A message can therefore hold several spans, each folded under its own lead.
+// With the fold preference on, one Thinking block holds a span's run-up to the answer: its
+// thoughts, tool calls and later thinking. Only non-blank answer text ends a span.
 
 interface PartLike {
   readonly type: string;
   readonly text?: unknown;
 }
 
-/** One Thinking block, named by the message and the last part of its reasoning group. */
 export function reasoningRoundKey(messageId: string, endIndex: number): string {
   return `${messageId}:${endIndex}`;
 }
@@ -71,7 +62,6 @@ export function leadReasoningEnd(
   return end;
 }
 
-/** Index just past the run the lead heads: where the answer starts, or the end of the parts. */
 export function foldEnd(parts: readonly PartLike[], leadEnd: number): number {
   return foldRun(parts, leadEnd)?.end ?? leadEnd + 1;
 }
@@ -88,7 +78,6 @@ export function governingReasoningEnd(
   return lead;
 }
 
-/** A later reasoning group that shows inside its lead instead of heading its own block. */
 export function isFoldedReasoningGroup(
   parts: readonly PartLike[],
   startIndex: number,
@@ -96,9 +85,7 @@ export function isFoldedReasoningGroup(
   return governingReasoningEnd(parts, startIndex) !== null;
 }
 
-/** Tool calls the lead is holding, for its collapsed header. A run the thread keeps visible
- *  (see tool-fold-exemptions.ts) is left out, so the header never claims a call that is on
- *  screen below it. */
+/** Tool calls the lead holds; runs kept visible (tool-fold-exemptions.ts) are excluded. */
 export function countFoldedToolParts(
   parts: readonly PartLike[],
   leadEnd: number,
@@ -122,10 +109,7 @@ export function countFoldedToolParts(
   return count;
 }
 
-/** Time the lead reports: every reasoning group in its run, added up. Rounds with no saved
- *  duration are left out rather than zeroing the total: a reply saved with only the legacy
- *  last-round duration still reports that. Undefined only when no round is known, so the
- *  caller falls back to its own clock. */
+/** Sum of the run's reasoning durations, skipping unknown rounds; undefined if none known. */
 export function foldedTurnDuration(
   parts: readonly PartLike[],
   leadEnd: number,
@@ -149,8 +133,6 @@ export function foldedTurnDuration(
   return total;
 }
 
-/** Whether the part at `endIndex` is the last thing shown under its lead and the answer comes
- *  right after: where the rule that closes the trace goes. */
 export function endsFoldedSpan(
   parts: readonly PartLike[],
   endIndex: number,
@@ -164,8 +146,7 @@ export function endsFoldedSpan(
   return last === endIndex;
 }
 
-/** What the header says it is holding while closed. Same wording as the tool group trigger, so
- *  the count reads the same once the block is open. */
+/** Closed-header summary, worded like the tool group trigger so the count matches. */
 export function foldedToolSummary(count: number): string | null {
   if (count <= 0) return null;
   return `${count} tool ${count === 1 ? "call" : "calls"}`;

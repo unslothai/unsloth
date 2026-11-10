@@ -19,7 +19,6 @@ export function composerPasteDraftKey(): string {
   return PASTE_DRAFT_KEY;
 }
 
-// The names are not stored: a pasted file is named from its own text, so recreating it reproduces the name it had.
 export function readPasteDraft(key: string): string[] {
   let raw: string | null = null;
   try {
@@ -37,9 +36,16 @@ export function readPasteDraft(key: string): string[] {
   }
 }
 
-// A paste large enough to blow the storage quota throws here, leaving the text draft untouched,
-// which is why the two slots are written separately.
+// This tab's pastes once it saves any, as `latest` is for its text.
+let latestPastes: string[] | null = null;
+
+export function latestPasteDraft(): string[] {
+  return latestPastes !== null ? [...latestPastes] : readPasteDraft(PASTE_DRAFT_KEY);
+}
+
+// A quota error here leaves the text draft untouched, hence separate slots.
 export function writePasteDraft(key: string, pastes: readonly string[]): void {
+  if (key === PASTE_DRAFT_KEY) latestPastes = [...pastes];
   try {
     if (pastes.length > 0) {
       window.localStorage.setItem(key, JSON.stringify(pastes));
@@ -51,8 +57,7 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
   }
 }
 
-// All storage access is best-effort: localStorage throws when unavailable (private mode, blocked
-// storage) or full, so swallow failures.
+// localStorage throws when unavailable or full, so all access is best-effort.
 export function readComposerDraft(key: string): string | null {
   try {
     return window.localStorage.getItem(key);
@@ -92,6 +97,8 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
         throw error;
       }
       adopted = true;
+      seeded = null;
+      latestPastes = null;
     }
     storage.removeItem(`${LEGACY_DRAFT_PREFIX}${id}`);
     storage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);
@@ -101,16 +108,18 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
   }
 }
 
-// The chat composer stays mounted, hidden, under Compare's, and localStorage tells only other tabs
-// about a write. So every composer publishes its text here as it changes, and hears the others and
-// other tabs here too; `latestDraft` is ahead of the debounced save.
+// The chat composer stays mounted, hidden, under Compare's, so every composer publishes its text
+// here and hears the others; `latestDraft` is ahead of the debounced save. Other open tabs are
+// never heard (#15782): the saved slot only seeds a tab once, for a reload or a new tab.
 type DraftListener = (text: string, source: symbol) => void;
 const draftListeners = new Set<DraftListener>();
 let latest: string | null = null;
-const OTHER_TAB = Symbol("other tab");
+let seeded: string | null = null;
 
 export function latestDraft(): string {
-  return latest ?? readComposerDraft(DRAFT_KEY) ?? "";
+  if (latest !== null) return latest;
+  seeded ??= readComposerDraft(DRAFT_KEY) ?? "";
+  return seeded;
 }
 
 export function publishDraft(text: string, source: symbol): void {
@@ -125,12 +134,6 @@ export function subscribeDraft(source: symbol, listener: (text: string) => void)
   };
   draftListeners.add(wrapped);
   return () => draftListeners.delete(wrapped);
-}
-
-if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("storage", (event) => {
-    if (event.key === DRAFT_KEY) publishDraft(event.newValue ?? "", OTHER_TAB);
-  });
 }
 
 // A deleted chat's leftover per-chat draft; never the shared one.

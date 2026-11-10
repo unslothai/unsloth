@@ -9,7 +9,7 @@ import { Route as rootRoute } from "./__root";
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/flows/$flowId/play",
-  staticData: { title: "Flows" },
+  staticData: { titleKey: "shell.navigation.flows" },
   beforeLoad: () => requireAuth(),
   component: () => null,
 });

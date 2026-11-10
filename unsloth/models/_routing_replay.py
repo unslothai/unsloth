@@ -18,8 +18,9 @@ Only used when routing replay is requested. Two things the zoo hooks need from t
 - their routing weight formula is picked from the first replayed router call, which reads tensor
   values; done inside a compiled region that is a graph break (fullgraph fails), so it is picked
   here once, eagerly, right after the hooks are installed;
-- PEFT reference scoring (`disable_adapter()`) must see the base model's own routing, as a separate
-  reference model does, so the hooks are detached inside that context.
+- PEFT reference scoring (`disable_adapter()`, or a named reference adapter made active with
+  `set_adapter()`) must see the reference's own routing, as a separate reference model does, so the
+  hooks are detached while it scores.
 """
 
 import contextlib
@@ -55,10 +56,8 @@ def _new_hooks(model, before):
     return hooks
 
 
-@contextlib.contextmanager
-def _detached(hooks):
-    # Hook order is call order, and ids do not give it (register_*_hook(prepend = True) puts a newer
-    # id first): keep each table's own key order and put it back exactly.
+def _detach(hooks):
+    # Keep each table's key order: ids do not give call order (prepend = True).
     orders = {}
     removed = []
     for module, name, extras, hook_id in hooks:
@@ -67,19 +66,55 @@ def _detached(hooks):
                 continue
             orders.setdefault(id(table), (table, list(table.keys())))
             removed.append((table, hook_id, table.pop(hook_id)))
+    return orders, removed
+
+
+def _reattach(detached):
+    orders, removed = detached
+    for table, hook_id, value in removed:
+        table[hook_id] = value
+    for table, order in orders.values():
+        known = set(order)
+        added = [k for k in table if k not in known]  # registered while detached: keep last
+        items = dict(table)
+        table.clear()
+        for k in order + added:
+            if k in items:
+                table[k] = items[k]
+
+
+class _ReplayDetacher:
+    """Replay hooks stay off while any reason holds (disabled adapter or non-policy set_adapter)."""
+
+    def __init__(self, hooks):
+        self.hooks = hooks
+        self.reasons = []
+        self.detached = None
+
+    def push(self, reason):
+        self.reasons.append(reason)
+        if self.detached is None:
+            self.detached = _detach(self.hooks)
+
+    def pop(self, reason):
+        if reason in self.reasons:
+            self.reasons.remove(reason)
+        if not self.reasons and self.detached is not None:
+            detached, self.detached = self.detached, None
+            _reattach(detached)
+
+
+def _active_adapters(model):
     try:
-        yield
-    finally:
-        for table, hook_id, value in removed:
-            table[hook_id] = value
-        for table, order in orders.values():
-            known = set(order)
-            added = [k for k in table if k not in known]  # registered inside the context: keep last
-            items = dict(table)
-            table.clear()
-            for k in order + added:
-                if k in items:
-                    table[k] = items[k]
+        active = model.active_adapter
+    except Exception:
+        return None
+    if isinstance(active, str):
+        return frozenset((active,))
+    try:
+        return frozenset(active)
+    except TypeError:
+        return None
 
 
 def _router_extra_args(module, parent):
@@ -202,7 +237,8 @@ def _remove_hook(module, name, extras, hook_id):
 
 def prepare_routing_replay(model, before):
     """After install_routing_replay(model, ...): prime the router formulas outside compilation and
-    detach the replay hooks during `model.disable_adapter()` (PEFT reference scoring). A router that
+    detach the replay hooks during `model.disable_adapter()` and while `model.set_adapter()` leaves a
+    non-policy adapter active (PEFT reference scoring). A router that
     cannot be primed loses its replay hook (it keeps its natural routing) with a warning, rather
     than reaching the data dependent formula pick inside a compiled graph. Returns the number of
     replay hooks left (0 when routing replay installed nothing)."""
@@ -249,14 +285,48 @@ def prepare_routing_replay(model, before):
                 stacklevel = 2,
             )
 
+    detacher = getattr(model, "_unsloth_routing_replay_detacher", None)
+    if detacher is None:
+        detacher = _ReplayDetacher(hooks)
+        try:
+            model._unsloth_routing_replay_detacher = detacher
+        except Exception:
+            pass
+
     disable_adapter = getattr(model, "disable_adapter", None)
     if callable(disable_adapter) and not getattr(disable_adapter, "_unsloth_routing_replay", False):
 
         @contextlib.contextmanager
         def disable_adapter_without_replay(*args, **kwargs):
-            with disable_adapter(*args, **kwargs), _detached(hooks):
-                yield
+            with disable_adapter(*args, **kwargs):
+                detacher.push("disable_adapter")
+                try:
+                    yield
+                finally:
+                    detacher.pop("disable_adapter")
 
         disable_adapter_without_replay._unsloth_routing_replay = True
         model.disable_adapter = disable_adapter_without_replay
+
+    # TRL use_adapter(model, "ref") calls set_adapter: score it with natural routing like disable_adapter().
+    policy = _active_adapters(model)
+    set_adapter = getattr(model, "set_adapter", None)
+    if (
+        policy
+        and callable(set_adapter)
+        and not getattr(set_adapter, "_unsloth_routing_replay", False)
+    ):
+
+        def set_adapter_without_replay(*args, **kwargs):
+            out = set_adapter(*args, **kwargs)
+            active = _active_adapters(model)
+            if active is not None and active != policy:
+                if "set_adapter" not in detacher.reasons:
+                    detacher.push("set_adapter")
+            else:
+                detacher.pop("set_adapter")
+            return out
+
+        set_adapter_without_replay._unsloth_routing_replay = True
+        model.set_adapter = set_adapter_without_replay
     return len(hooks)

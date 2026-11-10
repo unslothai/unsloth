@@ -85,7 +85,8 @@ def test_family_records():
     for fam in (distilled, base):
         # One text-to-image call takes up to 10 reference images (the BFL reference's MAX_REFERENCES).
         assert fam.reference and fam.max_condition_images == 10
-        assert not fam.edit and not fam.unified_edit
+        # Edit is that same call (BFL's i2i / mi2i), not Qwen-Image-2.1's localized unified edit.
+        assert fam.reference_edit and not fam.edit and not fam.unified_edit
         assert fam.dimension_multiple == 16
         # A single file / GGUF denoiser assembles around the base's modular companions.
         assert not fam.pipeline_only
@@ -95,6 +96,38 @@ def test_family_records():
     # The flow-map checkpoint samples without CFG; the base runs CFG with a negative prompt.
     assert distilled.uses_negative_prompt is False
     assert base.uses_negative_prompt is True
+
+
+def test_fp16_only_cards_promote_flux3_to_fp32():
+    import torch
+
+    from core.inference.diffusion import _resolve_diffusion_compute_dtype
+    for fam in (detect_family(DISTILLED), detect_family(BASE)):
+        assert fam.fp16_incompatible is True and fam.fp16_guard is None
+        assert _resolve_diffusion_compute_dtype(fam, torch.float16) is torch.float32
+        assert _resolve_diffusion_compute_dtype(fam, torch.bfloat16) is torch.bfloat16
+        assert _resolve_diffusion_compute_dtype(fam, torch.float32) is torch.float32
+
+
+@pytest.mark.parametrize(
+    "value, promoted", [("1", False), ("true", False), ("0", True), ("", True)]
+)
+def test_flux3_fp16_kill_switch(value, promoted):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "UNSLOTH_STUDIO_FLUX3_FP16": value, "PYTHONPATH": str(backend)}
+    code = (
+        "from core.inference.diffusion_families import detect_family as d;"
+        f"print(d({DISTILLED!r}).fp16_incompatible, d({BASE!r}).fp16_incompatible)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], cwd = backend, env = env, capture_output = True, text = True
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.split()[-2:] == [str(promoted)] * 2
 
 
 def test_modular_index_class_names_identify_the_family(tmp_path):
@@ -138,14 +171,18 @@ def test_bf16_component_table():
         assert vae_gb <= 0.5
 
 
-# ── unreleased diffusers gate ────────────────────────────────────────────────
-def test_minimum_is_the_unreleased_next_release():
+# ── diffusers version gate ───────────────────────────────────────────────────
+def test_minimum_is_the_released_0_42(monkeypatch):
+    """0.42.0 shipped FLUX.3 Klein, so a 0.41.0 install on Python 3.11+ is told to update, not sent to a git build."""
+    monkeypatch.setattr(families.sys, "version_info", (3, 12, 1, "final", 0))
     for cls in ("Flux3ModularPipeline", "Flux3DistilledModularPipeline"):
         minimum, _ = pipeline_class_requirement(cls)
         assert minimum == "0.42.0"
-        assert minimum in families._UNRELEASED_MIN_DIFFUSERS
+        assert minimum not in families._UNRELEASED_MIN_DIFFUSERS
     message = families._too_old_message("Flux3DistilledModularPipeline", "flux.3-klein", "0.41.0")
-    assert "has not been released yet" in message
+    assert "has not been released yet" not in message and "git" not in message, message
+    assert "Settings, Check for updates" in message
+    assert "pip install -U 'diffusers>=0.42.0'" in message and "Python >= 3.11" in message
 
 
 def _fake_diffusers(monkeypatch, root, version):
@@ -611,16 +648,18 @@ def test_contiguous_guard_feeds_mx_linears_a_contiguous_activation():
     assert not getattr(model[1], "_unsloth_contig_hook", False)
 
 
-def test_python_310_gets_a_reason_it_can_act_on(monkeypatch):
-    # Diffusers main (and so the pinned FLUX.3 build) needs Python 3.11; the installer skips it below that, so the
-    # refusal must not send a 3.10 user to reinstall or fetch an archive that cannot install.
-    monkeypatch.setattr(families.sys, "version_info", (3, 10, 14, "final", 0))
+@pytest.mark.parametrize("old_python", [(3, 10, 14, "final", 0), (3, 9, 18, "final", 0)])
+def test_python_below_311_gets_a_reason_it_can_act_on(monkeypatch, old_python):
+    # diffusers 0.42.0 needs Python 3.11 and diffusers-pin.txt keeps 0.41.0 on 3.10 (0.36.0 on 3.9), so the
+    # refusal must not send that user to an update or a pip upgrade that cannot install.
+    monkeypatch.setattr(families.sys, "version_info", old_python)
     message = families._too_old_message("Flux3DistilledModularPipeline", "flux.3-klein", "0.41.0")
-    assert "Python 3.11" in message and "3.10" in message
-    assert "archive" not in message
-    monkeypatch.setattr(families.sys, "version_info", (3, 12, 1, "final", 0))
+    assert "Python 3.11" in message and f"Python 3.{old_python[1]}" in message, message
+    assert "pip install" not in message and "Check for updates" not in message, message
+    assert "archive" not in message and "has not been released yet" not in message
+    monkeypatch.setattr(families.sys, "version_info", (3, 11, 0, "final", 0))
     message = families._too_old_message("Flux3DistilledModularPipeline", "flux.3-klein", "0.41.0")
-    assert "Python 3.11" not in message and "has not been released yet" in message
+    assert "this is Python" not in message and "Check for updates" in message
 
 
 # ── hosted artifacts ─────────────────────────────────────────────────────────
@@ -647,13 +686,16 @@ def test_prequant_repos_point_each_variant_at_its_own_fp8_repo():
 
 @pytest.mark.parametrize("variant", ["distilled", "base"])
 @pytest.mark.parametrize("scheme, stem", [("int8", "INT8"), ("fp8", "FP8")])
-def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, variant):
+def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, variant, monkeypatch):
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
 
     name, base, model = {
         "distilled": (FLUX3_KLEIN_FAMILY_NAME, DISTILLED, "flux-3-image-klein"),
         "base": (FLUX3_KLEIN_BASE_FAMILY_NAME, BASE, "flux-3-image-klein-base"),
     }[variant]
+    if variant == "distilled" and scheme == "int8":
+        # The hosted distilled int8 file is unrotated: read only with the ConvRot kill switch.
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_CONVROT", "0")
     source = resolve_prequant_source(_family(name), scheme, base_repo = base)
     assert source.kind == "repo" and source.location == f"unsloth/{model}-FP8"
     names = candidate_filenames_of(source)
@@ -2129,7 +2171,7 @@ def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsam
 def test_a_modular_flux3_dir_with_one_root_checkpoint_stays_a_pipeline(tmp_path):
     # FLUX.3 ships modular_model_index.json, not model_index.json: a lone root .safetensors must not turn
     # the directory into a single-file load before the modular validation sees it.
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.diffusion_flux3 import FLUX3_INDEX
 
     d = tmp_path / "flux3-klein"

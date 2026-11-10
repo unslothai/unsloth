@@ -440,10 +440,10 @@ test("the rail is anchored to its corner, not placed from JS", () => {
 test("a missing audio.cpp runtime reads as a first install, not unknown → latest", () => {
   assert.match(
     LLAMA,
-    /row\.component === "audio\.cpp" && row\.installedTag === null\s*\?\s*"Install the audio runtime"[\s\S]*\{lead \? `\$\{lead\} ` : null\}/,
+    /row\.component === "audio\.cpp" && row\.installedTag === null\s*\?\s*t\("runtimeUpdate\.installAudio"\)[\s\S]*\{lead \? `\$\{lead\} ` : null\}/,
   );
   assert.match(
     LLAMA,
-    /title = firstInstall\s*\?\s*"Installing the audio runtime\.\.\."/,
+    /title = firstInstall\s*\?\s*t\("runtimeUpdate\.installingAudio"\)/,
   );
 });

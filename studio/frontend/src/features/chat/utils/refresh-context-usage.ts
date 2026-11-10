@@ -82,7 +82,6 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   };
 }
 
-/** Rolling 32-bit hash. Only has to change when the input does, not resist an adversary. */
 function foldHash(text: string, seed: number): number {
   let hash = seed;
   for (let i = 0; i < text.length; i += 1) {
@@ -96,15 +95,12 @@ function foldPart(part: unknown, seed: number): number {
   try {
     serialized = JSON.stringify(part) ?? "";
   } catch {
-    // Unserializable payload: fall back to the part kind, which both sides derive the same way.
     serialized = String((part as { type?: unknown })?.type);
   }
   return foldHash(serialized, seed);
 }
 
-/** Identity of the branch a count priced. Content is hashed, not measured: a run mutates a
- *  turn in place, so neither a length nor a part tally sees it. Attachments are folded in
- *  because the counter prices them too. */
+/** Hashed, not measured: a run mutates a turn in place. */
 function branchSignature(messages: readonly ThreadMessage[]): string {
   let hash = 0;
   let parts = 0;
@@ -132,13 +128,10 @@ function branchSignature(messages: readonly ThreadMessage[]): string {
   return `${messages.length}:${parts}:${messages.at(-1)?.id ?? ""}:${hash}`;
 }
 
-/** The branch the mounted runtime is showing for the thread the store calls active. */
 type ActiveBranchReader = () => readonly ThreadMessage[] | null;
 
 let readActiveBranch: ActiveBranchReader | null = null;
 
-/** Publish the mounted runtime's visible branch so the recount prices it instead of the
- *  persisted records. Only the single-chat pane registers one. */
 export function setActiveBranchReader(reader: ActiveBranchReader | null): void {
   readActiveBranch = reader;
 }
@@ -191,13 +184,11 @@ export function currentContextUsageSettingsKey(
 type RefreshOptions =
   | {
       threadId?: string;
-      /** When true, skip the modelLoading guard (post-load recount). */
       afterModelLoad?: boolean;
       invalidate?: boolean;
     }
   | undefined;
 
-/** Re-count prompt tokens for the active local chat and fill the usage bar. */
 export async function refreshContextUsage(
   options?: RefreshOptions,
 ): Promise<void> {
@@ -224,8 +215,7 @@ export async function refreshContextUsage(
     return;
   }
 
-  // An output-only audio GGUF never sends a chat completion: the adapter routes the turn to
-  // /audio/generate, which returns no usage, so a chat-template total is never corrected.
+  // Output-only audio GGUFs never get chat usage to correct the count.
   const activeModel = store.models?.find(
     (model: { id: string }) => model.id === checkpoint,
   );
@@ -236,10 +226,7 @@ export async function refreshContextUsage(
   }
   const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
-  // Never count while anything is generating: the endpoint refuses, and the recount effect
-  // depends on this so the last run finishing re-fires it. runningByThreadId, not the
-  // narrower local one: the endpoint refuses during an external-provider run too, and
-  // nothing re-fires this effect when an external run ends unless it is in the deps.
+  // The endpoint refuses during any run, external included, and run end re-fires this effect.
   if (Object.values(store.runningByThreadId ?? {}).some(Boolean)) return;
 
   const capturedThreadId = threadId ?? null;
@@ -272,9 +259,7 @@ export async function refreshContextUsage(
   let replayQueued = true;
   let inputsChanged = stale;
   try {
-    // Prefer the mounted runtime: it is what the next request reads from. A captured null is
-    // EXCLUDED, not matched: New Chat leaves the outgoing conversation mounted until
-    // switchToNewThread() settles, so null === null would price it into the empty chat.
+    // Exclude a captured null: New Chat keeps the old conversation mounted until the switch settles.
     const readOwnBranch = (): readonly ThreadMessage[] | null =>
       capturedThreadId != null &&
       useChatRuntimeStore.getState().activeThreadId === capturedThreadId
@@ -339,7 +324,6 @@ export async function refreshContextUsage(
       );
     };
 
-    // undefined, not null: a chat with no persisted thread has no project to resolve from.
     const payloadThreadId = threadId ?? undefined;
     const countHistory = await buildLocalTokenCountHistory(
       runMessages,

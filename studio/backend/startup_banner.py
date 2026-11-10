@@ -80,15 +80,9 @@ def print_studio_access_banner(
     include_stop_hint: bool = True,
     lan_addresses: "tuple[str, ...]" = (),
     scheme: str = "http",
+    remote_access_starting: bool = False,
 ) -> None:
-    """Pretty-print URLs once the server is listening. Set ``include_stop_hint=False`` to omit the
-    trailing stop block; pair with :func:`print_studio_stop_hint` after inserting your own content.
-    ``lan_addresses`` are the addresses a runtime LAN listener (Settings > LAN access) is already
-    serving on. A loopback launch that carries one is not reachable on this machine only, so the
-    banner must say where else it answers. ``network_host`` is the address printed under "another
-    device on your network", defaulting to ``display_host``. A wildcard-bind caller passes both:
-    ``display_host`` can be a public WAN IP, which is the reachability probe's business and not what
-    a LAN peer can open (#8868)."""
+    """Prints server URLs once listening; display_host may be a public WAN IP, so pass network_host for LAN; include_stop_hint=False omits the stop block."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"
@@ -169,6 +163,23 @@ def print_studio_access_banner(
         ]
     )
 
+    if remote_access_starting:
+        lines.extend(
+            [
+                "",
+                style(
+                    "  Remote access is set to start automatically, so a PUBLIC Cloudflare URL "
+                    "is starting.",
+                    stop_hint_style,
+                ),
+                style(
+                    "  Relaunch with --no-cloudflare to skip it, or turn it off in "
+                    "Settings > Remote & LAN.",
+                    secondary,
+                ),
+            ]
+        )
+
     if loopback_bind and not listen_all:
         if lan_addresses:
             lines.append("")
@@ -177,7 +188,7 @@ def print_studio_access_banner(
             )
             lines.extend(style(f"    {scheme}://{a}:{port}", secondary) for a in lan_addresses)
             lines.append(style("  Turn it off in Settings > Remote & LAN > LAN access.", secondary))
-        else:
+        elif not remote_access_starting:
             lines.extend(
                 [
                     "",
@@ -192,12 +203,13 @@ def print_studio_access_banner(
                     ),
                 ]
             )
-        lines.append(
-            style(
-                "  Only on trusted networks -- anyone who reaches this machine can use Unsloth.",
-                secondary,
+        if lan_addresses or not remote_access_starting:
+            lines.append(
+                style(
+                    "  Only on trusted networks -- anyone who reaches this machine can use Unsloth.",
+                    secondary,
+                )
             )
-        )
 
     if include_stop_hint:
         lines.extend(

@@ -2235,8 +2235,12 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
         work = tmp_path / f"case{abs(hash((unsloth_ref, ls_remote)))}"
         stub = work / "bin"
         stub.mkdir(parents = True)
-        # Stub `git` returns LS_OUT and `sleep` returns at once.
-        (stub / "git").write_text("#!/bin/sh\nprintf '%s' \"$LS_OUT\"\n")
+        # Stub `git` returns LS_OUT, `^{}` rows only when asked for as real git does; `sleep` returns at once.
+        (stub / "git").write_text(
+            "#!/bin/sh\n"
+            'for a in "$@"; do case "$a" in *"^{}") printf "%s" "$LS_OUT"; exit 0 ;; esac; done\n'
+            'printf "%s" "$LS_OUT" | grep -v "\\^{}$" || true\n'
+        )
         name, out = _shared_setup_2(stub, work)
         env = dict(
             os.environ,

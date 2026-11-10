@@ -406,6 +406,43 @@ def test_gemini3_pro_passes_medium_through(monkeypatch):
         assert tc == {"thinkingLevel": "medium", "includeThoughts": True}, (model, tc)
 
 
+@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"reasoning_effort": "minimal"},
+        {"reasoning_effort": "none"},
+        {"enable_thinking": False},
+    ],
+)
+def test_new_gemini_thinking_floor(monkeypatch, model, kwargs):
+    body = _capture_body(monkeypatch, model = model, **kwargs)["body"]
+    assert body["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "low"
+
+
+@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"])
+def test_new_gemini_rejects_presence_penalty(monkeypatch, model):
+    body = _capture_body(monkeypatch, model = model, presence_penalty = 0.5)["body"]
+    assert "presencePenalty" not in body["generationConfig"]
+
+
+@pytest.mark.parametrize("requested,expected", [(8192, 4096), (1024, 1024)])
+def test_gemini_lite_image_output_limit(monkeypatch, requested, expected):
+    body = _capture_body(monkeypatch, model = "gemini-3.1-flash-lite-image", max_tokens = requested)[
+        "body"
+    ]
+    assert body["generationConfig"]["maxOutputTokens"] == expected
+
+
+def test_gemini_nano_banana_search_grounding(monkeypatch):
+    body = _capture_body(
+        monkeypatch,
+        model = "gemini-nano-banana-2.1",
+        enabled_tools = ["web_search", "image_generation"],
+    )["body"]
+    assert {"googleSearch": {}} in body.get("tools", [])
+
+
 def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
     """Gemini 3 Pro rejects thinkingLevel="minimal", so use "low"."""
     captured = _capture_body(

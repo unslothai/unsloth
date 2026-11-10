@@ -101,6 +101,22 @@ def test_truncation_drops_middle_keeps_anchors():
     assert new[-2] == msgs[-2]
 
 
+def test_truncation_keeps_roles_alternating_at_the_cut():
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u0"},
+        {"role": "assistant", "content": "A" * 20000},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+    ]
+    new, dropped = _truncate_middle_messages(messages, 0.5)
+    assert dropped == 1
+    assert [m["role"] for m in new] == ["system", "user", "assistant", "user"]
+    assert new[1]["content"] == "u0\n\nu1"
+    assert messages[1]["content"] == "u0"
+
+
 def test_truncation_never_orphans_tool_results():
     msgs = _conversation()
     new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.4)

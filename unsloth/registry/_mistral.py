@@ -6,7 +6,6 @@ _IS_MISTRAL_SMALL_REGISTERED = False
 
 _MISTRAL_SMALL_03_25_VERSION = "2503"
 _MISTRAL_SMALL_01_25_VERSION = "2501"
-_MISTRAL_SMALL_09_24_VERSION = "2409"  # Not uploaded to unsloth
 
 
 class MistralSmallModelInfo(ModelInfo):

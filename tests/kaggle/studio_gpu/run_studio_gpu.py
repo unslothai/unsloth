@@ -37,6 +37,7 @@ from studio_client import (  # noqa: E402
     StudioError,
     adapter_verdict,
     export_verdict,
+    hardware_detected,
     health_is_ready,
     newest_gguf,
     nonfinite_losses,
@@ -641,6 +642,8 @@ class Payload:
                     f"--password was passed to `unsloth studio` and logging in "
                     f"with it failed, so the flag did not take effect: {exc}"
                 )
+            if not failures:
+                failures.extend(self.request_hardware_detection())
             return self.record(
                 "authenticate", not failures, {"source": "--password", "failures": failures}
             )
@@ -655,9 +658,27 @@ class Payload:
             self.studio.login(password)
         except StudioError as exc:
             failures.append(str(exc))
+        if not failures:
+            failures.extend(self.request_hardware_detection())
         return self.record(
             "authenticate", not failures, {"source": "bootstrap", "failures": failures}
         )
+
+    def request_hardware_detection(self) -> list[str]:
+        """Without the startup hardware warmup Unsloth detects on the first authenticated
+        ``/api/health?detect_hardware=true`` (what the UI sends after sign-in); train and export wait on it."""
+        ok, last, reason = wait_for(
+            probe = lambda: self.studio.get("/api/health?detect_hardware=true")[1],
+            accept = hardware_detected,
+            deadline_s = self.args.health_deadline,
+            interval_s = 2.0,
+            alive = self.server_alive,
+        )
+        if ok:
+            return []
+        return [
+            f"hardware detection never finished after sign-in: {reason} (last health: {str(last)[:300]})"
+        ]
 
     def server_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -2221,16 +2242,28 @@ class Payload:
 
             if api_key:
                 client.token = api_key
-                code, body = client.post(
-                    "/v1/chat/completions",
-                    {
-                        "model": "default",
-                        "messages": [{"role": "user", "content": "Say hello in one word."}],
-                        "max_tokens": 32,
-                        "temperature": 0.0,
-                    },
-                    timeout = self.args.chat_timeout,
-                )
+                # The server answers before `unsloth run` finishes loading its model (no startup hardware warmup
+                # gates /api/health any more): retry "No model loaded" while the process lives, up to the deadline.
+                load_deadline = time.time() + self.args.health_deadline
+                while True:
+                    code, body = client.post(
+                        "/v1/chat/completions",
+                        {
+                            "model": "default",
+                            "messages": [{"role": "user", "content": "Say hello in one word."}],
+                            "max_tokens": 32,
+                            "temperature": 0.0,
+                        },
+                        timeout = self.args.chat_timeout,
+                    )
+                    if not (
+                        code == 400
+                        and "No model loaded" in str(body)
+                        and proc.poll() is None
+                        and time.time() < load_deadline
+                    ):
+                        break
+                    time.sleep(3.0)
                 detail["completion_status"] = code
                 text = ""
                 if code == 200 and isinstance(body, dict):

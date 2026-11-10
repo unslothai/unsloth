@@ -16,7 +16,6 @@ export type DatasetStreamingBlocker =
   | "embeddingModel"
   | "imageDataset"
   | "audioDataset"
-  | "appleSilicon"
   | "rlObjective";
 
 export function getFileExtension(fileName: string): string {
@@ -43,7 +42,6 @@ export function getDatasetStreamingBlockers({
   datasetSource,
   datasetSplit,
   evalSteps,
-  isAppleSilicon,
   isAudioModel,
   isDatasetAudio,
   isDatasetImage,
@@ -57,7 +55,6 @@ export function getDatasetStreamingBlockers({
   datasetSource: DatasetSource;
   datasetSplit: string | null;
   evalSteps: number;
-  isAppleSilicon: boolean;
   isAudioModel: boolean;
   isDatasetAudio: boolean;
   isDatasetImage: boolean | null;
@@ -100,9 +97,6 @@ export function getDatasetStreamingBlockers({
   }
   if (isDatasetAudio) {
     blockers.push("audioDataset");
-  }
-  if (isAppleSilicon) {
-    blockers.push("appleSilicon");
   }
   if (trainingObjective !== "sft") {
     blockers.push("rlObjective");

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""API routes for external LLM provider management: the provider-type registry, CRUD for saved provider
-configurations and their API keys, the RSA public key used to encrypt those keys, connectivity tests, and model
-listing.
-"""
+"""External LLM provider routes: types, saved configs; API keys RSA-encrypted; tests, model listing."""
 
 import asyncio
 import hashlib
@@ -66,6 +63,7 @@ from models.providers import (
     ProviderTestRequest,
     ProviderTestResult,
     ProviderUpdate,
+    normalize_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 from storage import credential_secrets, providers_db
@@ -146,7 +144,21 @@ def _log_provider_failure(event: str, exc: Exception, **fields) -> None:
 _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only they can change it."
 
 
-def _provider_response(row: dict) -> ProviderResponse:
+def _request_extra_headers(payload, via_api_key: bool) -> dict[str, str]:
+    if "extra_headers" in getattr(payload, "model_fields_set", set()):
+        return normalize_provider_extra_headers(payload.extra_headers)
+    provider_id = getattr(payload, "provider_id", None)
+    # Saved headers can carry credentials: same gate as the saved key.
+    if not provider_id or payload.encrypted_api_key or via_api_key:
+        return {}
+    row = providers_db.get_provider(provider_id)
+    # Saved headers go only to the saved endpoint, like the saved key.
+    if not row or (payload.base_url or None) != (row.get("base_url") or None):
+        return {}
+    return normalize_provider_extra_headers(row.get("extra_headers"))
+
+
+def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResponse:
     has_api_key = credential_secrets.provider_api_key_saved(row["id"])
     return ProviderResponse(
         id = row["id"],
@@ -155,6 +167,12 @@ def _provider_response(row: dict) -> ProviderResponse:
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
+        # Header values can carry credentials; other accounts and API keys never read them.
+        extra_headers = (
+            {}
+            if hide_headers or row.get("shared_by_owner")
+            else normalize_provider_extra_headers(row.get("extra_headers"))
+        ),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = has_api_key,
         auth_kind = ("chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"),
@@ -225,9 +243,7 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
     if models is None:
         return
-    # Same order of evidence the chat route uses, so a save cannot persist a model that every send would then
-    # refuse: the plan's catalog once it is known, otherwise the seed, plus what this row already carries unless it
-    # was left by another account.
+    # Same evidence order as the chat route, so a save cannot persist a model every send refuses.
     if provider_id and openai_codex_client.subscription_catalog_known(provider_id):
         allowed = openai_codex_client.offered_subscription_model_ids(provider_id) | {
             slug
@@ -244,8 +260,7 @@ def _validate_provider_auth_contract(
             and proven
             and not (provider_id and openai_codex_client.subscription_catalog_stale(provider_id))
         ):
-            # Already accepted on this row once, so an upstream outage must not make an
-            # unrelated edit such as a rename unsavable.
+            # Already accepted once, so an upstream outage must not block unrelated edits.
             allowed |= set(persisted_models)
     if not models or not set(models).issubset(allowed):
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
@@ -256,11 +271,7 @@ def _validate_max_output_tokens_contract(
     field_was_set: bool,
     value: Optional[int] = None,
 ) -> None:
-    """Reject a non-null override on a ChatGPT subscription. Codex routing, model list and output cap
-    are all fixed, so an override stored there would never be read. Every other type takes one: the
-    frontend uses it to lower a model's documented cap, or to replace the 32,768-token fallback for
-    a model with no documented cap. An explicit null is allowed everywhere, Codex included: a blank
-    field serialises as null rather than as an omission, and clearing an absent override is a no-op."""
+    """Rejects a non-null override on ChatGPT subscriptions, where the output cap is fixed."""
     if field_was_set and value is not None and provider_type == "openai_codex":
         raise HTTPException(
             status_code = 400,
@@ -308,10 +319,13 @@ async def get_pricing_snapshot(current_subject: str = Depends(get_current_subjec
 
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/", response_model = list[ProviderResponse])
-def list_provider_configs(_current_subject: str = Depends(get_current_subject)):
+def list_provider_configs(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
-    return [_provider_response(row) for row in rows]
+    return [_provider_response(row, hide_headers = via_api_key) for row in rows]
 
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
@@ -378,6 +392,7 @@ async def create_provider_config(
             max_output_tokens = payload.max_output_tokens,
             api_type = payload.api_type,
             reasoning_config = payload.reasoning_config,
+            extra_headers = payload.extra_headers,
             shared = payload.shared,
         )
         try:
@@ -430,13 +445,10 @@ async def update_provider_config(
         payload.max_output_tokens,
     )
     persisted_models = list(existing.get("models") or [])
-    # One reading of who owns this connection, used for every decision in this request: a second lookup later could
-    # name a different account than the one the selection was actually judged against.
+    # Single ownership read: a later lookup could name a different account.
     validated_account: str | None = None
     if existing_info.get("auth_kind") == "chatgpt_oauth":
-        # The OAuth bundle is shared through the installation DB while the catalog is per process, so another worker
-        # may have rebound this connection. The chat route makes the same check; without it here a save would persist
-        # exactly what every send then refuses.
+        # Bundle is shared via DB but catalog is per process; another worker may have rebound it.
         current_bundle = openai_codex_auth.load_oauth_bundle(provider_id)
         validated_account = current_bundle.get("account_id") if current_bundle else None
         current_account = validated_account
@@ -446,9 +458,7 @@ async def update_provider_config(
             openai_codex_client.forget_subscription_models(provider_id)
             openai_codex_client.mark_subscription_catalog_stale(provider_id)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
-        # Only a slug that is neither seeded nor already saved here needs the plan catalog. Reaching upstream for the
-        # others would make an ordinary save wait out the 20s connect / 120s read timeout whenever ChatGPT is
-        # unreachable, and would fail an unrelated edit to a connection whose selection was accepted long ago.
+        # Only unproven slugs hit the catalog, so saves do not wait on upstream timeouts.
         unproven = (
             set(payload.models) - set(existing_info["default_models"]) - set(persisted_models)
         )
@@ -487,12 +497,12 @@ async def update_provider_config(
         "max_output_tokens",
         "api_type",
         "reasoning_config",
+        "extra_headers",
         "shared",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
-    # Only a *changed* base URL is validated. The dialog re-sends the stored value on every edit, so validating an
-    # unchanged legacy row would lock the user out of editing its models or API key. Outbound use is still checked.
+    # Validate only a changed base URL, or unchanged legacy rows become uneditable.
     base_url = payload.base_url
     if base_url and base_url != existing["base_url"]:
         try:
@@ -529,6 +539,8 @@ async def update_provider_config(
                 if payload.reasoning_config is not None
                 else None
             )
+        if "extra_headers" in payload.model_fields_set:
+            metadata_updates["extra_headers"] = payload.extra_headers or {}
 
     # The row snapshot this request found, keyed the way update_provider takes it.
     _restorable = dict(
@@ -540,6 +552,7 @@ async def update_provider_config(
         max_output_tokens = existing.get("max_output_tokens"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
+        extra_headers = existing.get("extra_headers") or {},
         shared = bool(existing.get("shared")),
     )
 
@@ -550,14 +563,7 @@ async def update_provider_config(
         return current.get(field) == written
 
     def _restore_metadata() -> None:
-        """Undo this request's own metadata write, while it is still the row. update_provider commits
-        and closes its own connection, so the row is already durable by the time any later step
-        fails; a compensating write is the only undo there is. This handler suspends between that
-        commit and the proof write, though (remember_catalog_account awaits a 30s file lock, and the
-        failure worth undoing is exactly the one where that lock was contended), so a second save
-        can land in between. Restoring the whole pre-request snapshot would silently erase it. Put
-        back only the columns this request set, and only those the row still holds this request's
-        value for: a column a later save has since claimed belongs to that save."""
+        """Restores only columns this request set and still holds, so a later save is not erased."""
         if not metadata_requested:
             return
         current = providers_db.get_provider(provider_id)
@@ -568,7 +574,11 @@ async def update_provider_config(
             if field == "id":
                 continue
             # Explicit null clears nullable overrides; elsewhere it means "not sent".
-            if written is None and field not in {"max_output_tokens", "reasoning_config"}:
+            if written is None and field not in {
+                "max_output_tokens",
+                "reasoning_config",
+                "extra_headers",
+            }:
                 continue
             if not _current_matches(current, field, written):
                 continue
@@ -583,8 +593,7 @@ async def update_provider_config(
     with current_credential_write(credential):
         credential_requested = replacement_api_key is not None or payload.clear_api_key
         if metadata_requested and credential_requested:
-            # Metadata and the saved key share studio.db.  Commit them together so
-            # another process can never route to the new endpoint with the old key.
+            # Commit metadata and key together so no process routes to the new endpoint with the old key.
             with providers_db.provider_bundle_transaction() as connection:
                 providers_db.update_provider(**metadata_updates, connection = connection)
                 if replacement_api_key is not None:
@@ -611,15 +620,7 @@ async def update_provider_config(
 
     row = providers_db.get_provider(provider_id)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models is not None:
-        # Record the proof here rather than when a catalog is read: reading one only shows which account answered,
-        # while this is the point where the row's models were actually judged against it and stored. The account the
-        # selection was judged against, not whatever owns the connection by now: remember_catalog_account re-reads
-        # under the guard and declines to write when the bundle has moved on, so a rebind in between records nothing.
-        # Written after the row, never before: a proof recorded ahead of a commit that then failed would license
-        # models this connection never saved. Recording it is part of the save, so a failure here undoes the row too.
-        # Leaving the new models behind without the proof is the state saved_models_proven_for exists to catch, and it
-        # outlives the process: after a restart, with the plan catalog unreadable, the row's own slugs stop
-        # authorizing chat and the next save is refused as well.
+        # Recorded after the row commit and as part of the save; a failure here undoes the row too.
         if validated_account:
             try:
                 await openai_codex_auth.remember_catalog_account(provider_id, validated_account)
@@ -709,12 +710,7 @@ async def delete_provider_config(
                         "provider.delete_credential_rollback_failed", provider_id = provider_id
                     )
                 raise
-            # The plan catalog is held per connection in this process and is only released by
-            # forget_subscription_models. Disconnecting the OAuth bundle calls it, deleting the whole connection did
-            # not, so every ChatGPT connection a user removed left its catalog, its account marker and its request
-            # ticket behind for the life of the process. Ids come from uuid4 and are never reused, so nothing stale
-            # could be consulted again; it simply accumulated. Released here, after the row is gone for good, so a
-            # rolled back delete keeps the catalog it is about to need again.
+            # Release the per-process catalog only after the delete commits; a rollback still needs it.
             openai_codex_client.forget_subscription_models(provider_id)
 
 
@@ -1013,6 +1009,7 @@ async def test_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = _request_extra_headers(payload, via_api_key),
         timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
     )
 
@@ -1021,6 +1018,8 @@ async def test_provider(
         try:
             if answers_decisions_only(payload.provider_type, payload.api_type):
                 await client.list_decision_models()
+            elif payload.provider_type == "openrouter":
+                await client.verify_models_endpoint_lightweight()
             else:
                 await client.list_models()
         except Exception:
@@ -1056,6 +1055,8 @@ async def test_provider(
                 ),
                 models_count = None,
             )
+        if payload.provider_type == "openrouter":
+            await client.verify_models_endpoint_lightweight()
         models = await client.list_models()
         if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
             return ProviderTestResult(
@@ -1190,7 +1191,10 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
     # Per credential: one key's model list is not another caller's.
-    key_digest = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:16]
+    extra_headers = _request_extra_headers(payload, via_api_key)
+    key_digest = hashlib.sha256(
+        json.dumps([api_key or "", extra_headers], sort_keys = True).encode("utf-8")
+    ).hexdigest()[:16]
     cache_key = f"{payload.provider_type}\n{base_url}\n{key_digest}"
     cached = _model_capability_cache.get(cache_key)
     if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
@@ -1202,6 +1206,7 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = extra_headers,
         timeout = 15.0,
     )
     try:
@@ -1288,6 +1293,7 @@ async def list_provider_models(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = _request_extra_headers(payload, via_api_key),
         timeout = 15.0,
     )
 
@@ -1320,10 +1326,7 @@ async def list_provider_models(
 
     try:
         models = await client.list_models()
-        # Registry model-id filters describe one vendor's own catalog, so they only apply on that vendor's host. A
-        # Gemini OAI-compat proxy returns prefixed ids the allowlist strips, and an Azure or self-hosted OpenAI base
-        # returns operator-chosen deployment names that can carry any word the denylist reads as non-chat
-        # (`gpt-5.5-image-analysis`). Either way the picker empties out for a connection that works.
+        # Model-id filters only apply on the vendor's own host; proxies and Azure use other names.
         _NATIVE_HOSTS = {
             "gemini": ("generativelanguage.googleapis.com",),
             "openai": ("api.openai.com",),

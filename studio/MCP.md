@@ -79,7 +79,7 @@ your API key, so it sees what that key may see and nothing more.
 ### Turn it on
 
 The server is off by default. While it is off, `/mcp/` answers 404. The Unsloth
-Unsloth owner turns it on in Settings > API with **Allow agent connections**.
+Studio owner turns it on in Settings > Agents with **Allow agent connections**.
 Starting Unsloth Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1` also turns it on and
 locks the switch, which then reads "Set by UNSLOTH_STUDIO_ENABLE_MCP."
 
@@ -321,6 +321,21 @@ models its node names (unloading others to make room), and GPU steps run one at 
 A run acts as a short-lived internal key of the caller's account, so it sees what that account may see.
 These tools reach `/api/flows/` through the same in-process forwarding as every other tool; that prefix is
 the only one Flows add to the MCP list.
+
+### Choose tools
+
+Every tool is on by default, including tools added by a later update. The
+Unsloth Studio owner turns single tools off in Settings > Agents with **Choose tools**.
+The choice covers the whole installation and every API key. A tool that is off
+is left out of `tools/list`, and a call to it fails with
+`[tool_disabled] <tool> is turned off in Unsloth Studio. The owner can turn it on in Settings > Agents.`
+A prompt is hidden while a tool it reads (`studio_status` or `list_models`) is
+off. The forced switch from `UNSLOTH_STUDIO_ENABLE_MCP=1` does not lock the tool
+choices.
+
+Agents read the tool list when they connect, so an agent that is already
+connected keeps showing a tool you turned off until it reconnects. Its calls to
+that tool are refused at once.
 
 ### Media and files
 

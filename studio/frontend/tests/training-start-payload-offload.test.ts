@@ -123,6 +123,8 @@ test("offload goes out off wherever the run cannot offload", () => {
     assert.equal(offloadPayload({ ...on, ...blocked }).offload_vram_gb, null);
   }
   assert.equal(offloadSupported(on), true);
+  // Gemma 3n/4 take audio input on a decoder that streams like any other.
+  assert.equal(offloadSupported({ ...on, isAudioModel: true, isVisionModel: true }), true);
 });
 
 test("a count above the backend limit is clamped instead of failing the start", () => {

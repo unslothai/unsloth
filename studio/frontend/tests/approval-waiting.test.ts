@@ -186,7 +186,7 @@ test("both writers record which chat a parked call belongs to", () => {
   const provider = readSrc("features/chat/runtime-provider.tsx");
   assert.match(
     provider,
-    /\.setToolConfirmation\(\s*partId,\s*approvalId,\s*sessionId,\s*`\$\{sessionId \|\| "_default"\}:\$\{threadId\}`,\s*threadId,\s*\)/,
+    /\.setToolConfirmation\(\s*partId,\s*approvalId,\s*sessionId,\s*`\$\{sessionId \|\| "_default"\}:\$\{threadId\}`,\s*threadId,\s*undefined,\s*runId,\s*\)/,
   );
 });
 

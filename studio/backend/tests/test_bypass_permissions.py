@@ -100,8 +100,9 @@ def captured_popen(monkeypatch):
     cap = {}
 
     def fake_popen(cmd, **kwargs):
-        cap["cmd"] = cmd
-        cap["kwargs"] = kwargs
+        # First call only: on macOS a later `ps` Popen would replace the tool launch.
+        cap.setdefault("cmd", cmd)
+        cap.setdefault("kwargs", kwargs)
         return _FakeProc()
 
     monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
@@ -133,7 +134,13 @@ def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_prepared_la
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
     kwargs = captured_prepared_launch["kwargs"]
-    assert _carries(kwargs["preexec_fn"], tools._sandbox_preexec)
+    if "preexec_fn" in kwargs:
+        assert _carries(kwargs["preexec_fn"], tools._sandbox_preexec)
+    else:
+        # The same setup without a Python pre-exec: setsid and umask by Popen, the rest by setpriv/prlimit.
+        argv = captured_prepared_launch["prepared"].argv
+        assert kwargs["start_new_session"] is True and kwargs["umask"] == 0o077
+        assert argv[1:5] == ("--no-new-privs", "--pdeathsig", "KILL", "--")
     assert "HF_TOKEN" not in kwargs["env"]
 
 
@@ -142,7 +149,8 @@ def test_python_bypass_uses_bypass_preexec_and_bypass_env(captured_popen, monkey
     monkeypatch.setenv("HOSTVAR", "benign-xyz")
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = True)
-    assert captured_popen["kwargs"]["preexec_fn"] is tools._bypass_preexec
+    assert captured_popen["kwargs"]["start_new_session"] is True
+    assert "preexec_fn" not in captured_popen["kwargs"]
     env = captured_popen["kwargs"]["env"]
     assert env.get("HOSTVAR") == "benign-xyz"
     assert env.get("PYTHONIOENCODING") == "utf-8"
@@ -168,7 +176,8 @@ def test_bash_blocklist_skipped_when_bypassed(captured_popen):
 def test_bash_bypass_uses_bypass_preexec(captured_popen, monkeypatch):
     monkeypatch.delenv("PYTHONIOENCODING", raising = False)
     _bash_exec("echo hi", None, 5, "t", disable_sandbox = True)
-    assert captured_popen["kwargs"]["preexec_fn"] is tools._bypass_preexec
+    assert captured_popen["kwargs"]["start_new_session"] is True
+    assert "preexec_fn" not in captured_popen["kwargs"]
     assert "PYTHONIOENCODING" not in captured_popen["kwargs"]["env"]
 
 
@@ -669,3 +678,16 @@ def test_anthropic_request_model_bypass_default_false():
     assert AnthropicMessagesRequest.model_fields["bypass_permissions"].default is False
     req = AnthropicMessagesRequest(model = "x", messages = [], max_tokens = 8)
     assert bool(req.bypass_permissions) is False
+
+
+@_POSIX_ONLY
+def test_bypass_child_leads_its_own_session():
+    # Every kill path is killpg based, so the bypass child must not share the server's session.
+    out = _python_exec(
+        "import os; print('LEADER=' + str(os.getsid(0) == os.getpid() == os.getpgid(0)))",
+        None,
+        30,
+        "test-bypass-session",
+        disable_sandbox = True,
+    )
+    assert "LEADER=True" in out

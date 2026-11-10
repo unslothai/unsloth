@@ -34,7 +34,8 @@ test("a pool with no dedicated VRAM shows the shared total alone, with its headr
     floatingMonitor,
     /hasSharedPool && memoryTotals\.dedicated === 0/,
   );
-  assert.match(floatingMonitor, /hasSharedPool && !unifiedPool/);
+  // The floating VRAM row counts dedicated cards only, so it never prints a "VRAM + shared" total.
+  assert.doesNotMatch(floatingMonitor, /environment\.vramWithShared/);
   assert.match(
     floatingMonitor,
     /formatGiB\(memoryDisplay\.unifiedAvailableGb\)/,
@@ -48,6 +49,14 @@ test("the Live Monitor shows -- for RAM until the host has been read", () => {
   );
   assert.match(
     floatingMonitor,
-    /ramKnown \? `\$\{Math\.round\(ramPercent\)\}%` : "--"/,
+    /percent=\{ramKnown \? ramPercent : null\}/,
+  );
+  assert.match(floatingMonitor, /: "-- \/ --";/);
+});
+
+test("a unified pool's tile is GPU memory, not VRAM", () => {
+  assert.match(
+    resourcesTab,
+    /memoryDisplay\.sharedOnly \|\| unifiedPool\s*\?\s*"settings\.resources\.gpu\.memory"/,
   );
 });

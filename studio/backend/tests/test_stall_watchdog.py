@@ -313,9 +313,9 @@ def test_the_lifespan_wires_it_in():
     startup and retires it at shutdown entry, and either side can be edited alone."""
     source = (_BACKEND_DIR / "main.py").read_text(encoding = "utf-8")
     assert (
-        "start_stall_watchdog(asyncio.get_running_loop()" in source
+        "start_stall_watchdog(" in source and "asyncio.get_running_loop()" in source
     ), "main.py no longer starts the stall watchdog; the next #9712 stall leaves no dump behind"
-    assert "suppress = stand_down_for_the_warm" in source, (
+    assert "stand_down_for_the_warm(warm_expected = _startup_warm_expected)" in source, (
         "the watchdog no longer stands down for the warm; every cold start would "
         "dump over the torch import"
     )
@@ -330,3 +330,25 @@ def test_the_lifespan_wires_it_in():
         "the watchdog is opt-in and the mac smoke workflow no longer opts in; the "
         "one place #9712 stalls have been seen runs without it"
     )
+
+
+@pytest.mark.parametrize("warm_expected", [False, True])
+def test_watchdog_uses_lifespan_warm_expectation_before_a_worker_starts(monkeypatch, warm_expected):
+    import utils.stall_watchdog as sw
+    import utils.torch_warmup as tw
+
+    monkeypatch.delenv(tw.DISABLE_ENV_VAR, raising = False)
+    monkeypatch.setattr(
+        tw, "warm_status", lambda: {"started": False, "finished": False, "alive": False}
+    )
+    assert sw.stand_down_for_the_warm(warm_expected = warm_expected) is warm_expected
+
+
+def test_an_active_warm_still_suppresses_the_watchdog_without_a_planned_warm(monkeypatch):
+    import utils.stall_watchdog as sw
+    import utils.torch_warmup as tw
+
+    monkeypatch.setattr(
+        tw, "warm_status", lambda: {"started": True, "finished": False, "alive": True}
+    )
+    assert sw.stand_down_for_the_warm(warm_expected = False)

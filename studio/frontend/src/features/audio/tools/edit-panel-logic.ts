@@ -28,7 +28,6 @@ function editPanelLogic(adapter: EditAdapter): EditPanelLogic {
       ctx.audioFamily === family &&
       ctx.audioWorkflows?.includes("edit") === true,
     initial: () => null,
-    // buildEditRun builds the edit part from the page's inputs.
     toRequest: () => ({}),
     validate: (_value, core) => {
       const edit = core.edit;

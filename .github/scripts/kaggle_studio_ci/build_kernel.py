@@ -53,16 +53,12 @@ from pathlib import Path
 DRIVER_SENTINEL = "KAGGLE_STUDIO_CI_DRIVER"
 PAYLOAD_SENTINEL = "KAGGLE_STUDIO_CI_PAYLOAD"
 
-# Shared with the notebook leg's launcher, which scrapes this prefix out of the executed notebook and the kernel log.
-# Keeping it identical is what lets .github/scripts/kaggle_t4_ci/launch.py transport this payload's result without a
-# line of change.
+# Must match kaggle_t4_ci/launch.py's RESULT_PREFIX, which scrapes it.
 RESULT_PREFIX = "T4_SMOKE_REPORT "
 
 PAYLOAD_NOTEBOOK = "studio_gpu.ipynb"
 OUTPUT_NOTEBOOK = "studio_gpu_output.ipynb"
 
-# Files the payload directory has to contain. Checked at build time so a rename that breaks the kernel fails on the
-# runner, in seconds, rather than forty minutes into a GPU session.
 PAYLOAD_FILES = (
     "run_studio_gpu.py",
     "gpu_assert.py",
@@ -71,9 +67,6 @@ PAYLOAD_FILES = (
 )
 
 
-# Runs under the Unsloth venv's interpreter and reports what is actually importable there. Kept as a plain constant
-# rather than spliced into a generated f-string cell: the notebook leg lost a whole GPU session to a cell that had been
-# assembled out of nested quoting and did not parse.
 _PROBE_SCRIPT = """
 import importlib, json
 out = {"versions": {}, "missing": []}
@@ -141,17 +134,10 @@ def _models_from(payload_args: str) -> list[str]:
     tokens = payload_args.split()
     picked = {}
     for flag, default in (
-        # These defaults must track run_studio_gpu.py's own, or the prefetch
-        # warms a cache the payload never reads -- which downloads happily and
-        # reports success. tests/kaggle/test_t4_ci_transport.py compares the
-        # two, which is how this pair was caught drifting.
+        # Must track run_studio_gpu.py's defaults (tests/kaggle/test_t4_ci_transport.py checks).
         ("--chat-model", "unsloth/Qwen3.5-2B-MTP-GGUF"),
         ("--train-model", "unsloth/Qwen3.5-2B"),
-        # Read for the same reason as the repos: Studio loads ONE quant out of
-        # a GGUF repo that ships many, and an unfiltered snapshot pulls all of
-        # them. Run 32667451396 fetched 69.1 GB of Qwen3.5-2B-GGUF to serve a
-        # single UD-Q4_K_XL file. Taken off argv rather than hardcoded so a
-        # dispatch that overrides the variant filters on the variant it chose.
+        # Studio loads one quant; an unfiltered snapshot would pull every quant in the repo.
         ("--chat-variant", "UD-Q4_K_XL"),
     ):
         value = default
@@ -161,13 +147,7 @@ def _models_from(payload_args: str) -> list[str]:
             elif token.startswith(flag + "="):
                 value = token.split("=", 1)[1]
         picked[flag] = value
-    # Chat model first: it is the GGUF that llama.cpp has to serve, and it is
-    # the larger of the two.
-    # The variant glob is deliberately loose at both ends. Multi-part GGUFs are
-    # named `...UD-Q4_K_XL-00001-of-00002.gguf`, so anchoring the suffix would
-    # match the single-file case and silently miss every shard of the split
-    # one -- which downloads nothing, reports success, and leaves Studio to
-    # fetch it itself.
+    # Glob is loose on both ends so split GGUF shards (`-00001-of-00002`) also match.
     variant = picked["--chat-variant"]
     chat = (picked["--chat-model"], [f"*{variant}*"]) if variant else picked["--chat-model"]
     return [chat, picked["--train-model"]]
@@ -432,23 +412,7 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 # aborting here would lose the cells below it.
 """
 
-    # Studio's two models, fetched on the half that is ALREADY hidden.
-    # Both were previously pulled inside run_studio_gpu.py, which is the TEST
-    # half, so the merged kernel hid Studio's clone, pip and Playwright browser
-    # and then paid full price for its downloads with both cards idle. They go
-    # here instead, under Studio's own HF_HOME -- which is why this cannot use
-    # the t4 driver's lane: that one deliberately targets the image default so
-    # the training legs can read it, and Studio's install is a user-shaped
-    # install with a cache root of its own.
-    # Last in the install phase, after the venv and the browser: those are what
-    # the test half cannot start without, and a download that overruns the card
-    # queue must not be what delays them.
-    # hf_home=None means "inherit", NOT "use the default". The setup cell runs
-    # first in this same notebook and has already put Studio's private root in
-    # os.environ["HF_HOME"], so inheriting is how this lands there. Passing the
-    # path again would be a second copy of _pick_work_root's answer, free to
-    # disagree with the real one. `test_the_studio_prefetch_lands_in_studios
-    # _own_cache` pins the ordering that makes inheriting correct.
+    # hf_home=None inherits the HF_HOME the earlier setup cell set; do not pass the path again.
     prefetch = _prefetch_builder().prefetch_cell(
         _models_from(payload_args),
         hf_home = None,
@@ -456,16 +420,12 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
         total_timeout = 1200,
     )
 
-    # Marks the GPU-free half done, on its own line, so the driver can gate the
-    # test half on a sentinel it saw rather than on a returncode alone.
     installed = f"""print("{PAYLOAD_SENTINEL} INSTALLED " + json.dumps({{
     "studio_home": str(STUDIO_HOME), "venv": str(VENV_PY),
 }}), flush=True)
 """
 
-    # Re-derives what the install half left on disk. VENV_PY is defined in the
-    # install cell, which the test half does not carry, so without this the
-    # verify cell below dies on a NameError rather than on anything it tests.
+    # VENV_PY lives in the install cell, which the test half does not carry.
     bridge = f"""VENV_PY = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
 if not VENV_PY.is_file():
     fail_report(f"the install phase left no interpreter at {{VENV_PY}}; it either "

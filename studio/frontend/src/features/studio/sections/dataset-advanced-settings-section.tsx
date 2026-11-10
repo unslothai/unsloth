@@ -15,7 +15,6 @@ import { getDatasetStreamingBlockers } from "./dataset-panel-helpers";
 
 export function DatasetAdvancedSettingsSection() {
   const t = useT();
-  const platformDeviceType = usePlatformStore((state) => state.deviceType);
   const {
     datasetEvalSplit,
     datasetFormat,
@@ -68,7 +67,6 @@ export function DatasetAdvancedSettingsSection() {
     datasetSource,
     datasetSplit,
     evalSteps,
-    isAppleSilicon: platformDeviceType === "mac",
     isAudioModel,
     isDatasetAudio,
     isDatasetImage,

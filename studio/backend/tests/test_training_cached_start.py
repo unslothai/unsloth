@@ -132,7 +132,7 @@ def _known_cache_root(monkeypatch, tmp_path):
 
 @pytest.fixture
 def _cuda_trainer():
-    # Continuation needs the CUDA trainer; an Apple Silicon runner would take the MLX refusal.
+    # On the CUDA trainer only PEFT weight names count as adapter weights.
     with patch("core.training.training.should_use_mlx_training_backend", return_value = False):
         yield
 
@@ -519,7 +519,7 @@ def test_untrainable_gate_refuses_cached_hub_adapter_snapshot_for_lora(tmp_path)
     assert exc_info.value.detail["code"] == "training_hub_adapter_unsupported"
 
 
-@pytest.mark.parametrize("runner", ["embedding", "decision", "mlx"])
+@pytest.mark.parametrize("runner", ["embedding", "decision"])
 def test_start_refuses_adapter_dir_where_runner_builds_a_fresh_adapter(tmp_path, runner):
     route = _load_route_module(f"training_route_adapter_dir_{runner}")
     (tmp_path / "adapter_config.json").write_text("{}")
@@ -531,12 +531,43 @@ def test_start_refuses_adapter_dir_where_runner_builds_a_fresh_adapter(tmp_path,
         is_decision = runner == "decision",
     )
 
-    with patch(
-        "core.training.training.should_use_mlx_training_backend",
-        return_value = runner == "mlx",
-    ):
-        exc_info = _shared_setup_2(request, route)
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_model_adapter_not_trainable"
+
+
+@pytest.mark.parametrize("weights", ["adapter_model.safetensors", "adapters.safetensors"])
+def test_mlx_start_continues_a_peft_or_mlx_adapter_dir(tmp_path, weights):
+    route = _load_route_module(f"training_route_mlx_adapter_dir_{weights}")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / weights).write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with patch("core.training.training.should_use_mlx_training_backend", return_value = True):
+        result = route._reject_untrainable_model_request(request)
+    assert result.model_name == str(tmp_path.resolve())
+
+
+def test_mlx_start_refuses_a_bin_only_peft_adapter_dir(tmp_path):
+    route = _load_route_module("training_route_mlx_bin_adapter_dir")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model.bin").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with patch("core.training.training.should_use_mlx_training_backend", return_value = True):
+        exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_weights_missing"
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_cuda_start_refuses_an_mlx_only_adapter_dir(tmp_path):
+    route = _load_route_module("training_route_cuda_mlx_adapter_dir")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapters.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_weights_missing"
 
 
 @pytest.mark.parametrize("refused", [True, False])
@@ -1815,9 +1846,7 @@ def test_streaming_rejects_cached_dataset_hints(cache_overrides):
 @pytest.mark.parametrize(
     ("request_overrides", "expected"),
     [
-        ({"training_type": "Continued Pretraining"}, "Continued Pretraining"),
         ({"is_embedding": True}, "Embedding model training"),
-        ({"is_dataset_audio": True}, "Audio dataset training"),
         ({"use_loftq": True}, "LoftQ"),
     ],
 )
@@ -1838,7 +1867,7 @@ def test_mlx_start_rejects_unsupported_training_config(request_overrides, expect
     assert expected in exc_info.value.detail
 
 
-def test_mlx_start_accepts_dora():
+def test_mlx_start_accepts_dora_cpt_and_audio_datasets():
     # LoftQ alongside DoRA so a gate that refuses nothing cannot pass.
     from utils.hardware import hardware
 
@@ -1847,6 +1876,8 @@ def test_mlx_start_accepts_dora():
     with patch.object(hardware, "DEVICE", hardware.DeviceType.MLX):
         route._validate_training_platform(_request(use_dora = True))
         route._validate_training_platform(_request(is_decision = True))
+        route._validate_training_platform(_request(training_type = "Continued Pretraining"))
+        route._validate_training_platform(_request(is_dataset_audio = True))
         with pytest.raises(HTTPException) as exc_info:
             route._validate_training_platform(_request(use_loftq = True))
 
@@ -1857,7 +1888,7 @@ def test_mlx_start_detects_hardware_before_platform_validation():
     from utils.hardware import hardware
 
     route = _load_route_module("training_route_mlx_warm_platform_reject")
-    request = _request(training_type = "Continued Pretraining")
+    request = _request(use_loftq = True)
     detection_calls = 0
 
     def detect_mlx():
@@ -1876,7 +1907,7 @@ def test_mlx_start_detects_hardware_before_platform_validation():
 
     assert detection_calls == 1
     assert exc_info.value.status_code == 400
-    assert "Continued Pretraining" in exc_info.value.detail
+    assert "LoftQ" in exc_info.value.detail
 
 
 def test_route_forwards_cache_reference_fields():
@@ -2419,7 +2450,7 @@ def test_pending_hub_model_resume_before_attestation_is_allowed():
         },
     }
 
-    actual_repo_id, requires_exact_model, requires_exact_dataset, _, _ = (
+    actual_repo_id, requires_exact_model, requires_exact_dataset, _, _, _ = (
         route._prepare_resume_resource_provenance(request, resume_run)
     )
 
@@ -2901,8 +2932,9 @@ def test_worker_rejects_inference_only_model_formats():
         assert (
             worker._untrainable_model_format_error({**lora_adapter, runner_flag: True}) is not None
         )
-    with patch.object(worker, "_uses_mlx_training_backend", return_value = True):
-        assert worker._untrainable_model_format_error(lora_adapter) is not None
+    # The MLX runner continues a saved adapter too.
+    with patch("core.training.training.should_use_mlx_training_backend", return_value = True):
+        assert worker._untrainable_model_format_error(lora_adapter) is None
     assert worker._untrainable_model_format_error({"model_format": "safetensors"}) is None
     assert worker._untrainable_model_format_error({}) is None
 
@@ -3539,6 +3571,78 @@ def test_worker_cached_auto_eval_without_split_metadata_stays_offline(monkeypatc
     assert eval_dataset is None
     assert cache_calls == ["train"]
     assert warnings == []
+
+
+@pytest.mark.parametrize("eval_steps", [0, 0.1])
+def test_mlx_streaming_loads_lazily_and_caps_a_separate_eval_split(eval_steps):
+    from core.training import worker
+    from core.training.eval_dataset import STREAMING_EVAL_MAX_SAMPLES
+
+    class _Stream:
+        def __init__(self, split):
+            self.split, self.taken = split, None
+
+        def take(self, count):
+            self.taken = count
+            return self
+
+    loads: list[dict] = []
+
+    def load_dataset(path, **kwargs):
+        loads.append({"path": path, **kwargs})
+        return _Stream(kwargs["split"])
+
+    config = {
+        "hf_dataset": "org/dataset",
+        "subset": "sub",
+        "train_split": "train",
+        "eval_split": "validation",
+        "eval_steps": eval_steps,
+        "dataset_streaming": True,
+    }
+
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config, None, load_dataset, lambda _message: None
+    )
+
+    assert dataset.split == "train" and dataset.taken is None
+    assert all(load["streaming"] is True and load["name"] == "sub" for load in loads)
+    if eval_steps:
+        assert eval_dataset.split == "validation"
+        assert eval_dataset.taken == STREAMING_EVAL_MAX_SAMPLES
+    else:
+        assert eval_dataset is None and len(loads) == 1
+
+
+class _SliceStream:
+    def __init__(self):
+        self.calls = []
+
+    def skip(self, count):
+        self.calls.append(("skip", count))
+        return self
+
+    def take(self, count):
+        self.calls.append(("take", count))
+        return self
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "calls"),
+    [
+        (None, None, []),
+        (3, None, [("skip", 3)]),
+        (None, 9, [("take", 10)]),
+        (5, 9, [("skip", 5), ("take", 5)]),
+        (5, 3, [("skip", 5), ("take", 0)]),
+    ],
+)
+def test_mlx_streaming_slice_is_lazy(start, end, calls):
+    from core.training import worker
+
+    stream = _SliceStream()
+    assert worker._slice_streaming_dataset(stream, start, end) is stream
+    assert stream.calls == calls
 
 
 def test_worker_model_retry_refreshes_tokenizer_before_dataset():

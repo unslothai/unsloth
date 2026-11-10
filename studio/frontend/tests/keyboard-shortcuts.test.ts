@@ -327,18 +327,23 @@ test("the workspace chords land where the guard lets them", async () => {
     SRC__ROOT,
     /const chatOnlyMeasured = usePlatformStore\(\n\s*\(s\) => s\.isChatOnly\(\) && !s\.capabilitiesUnknown\(\),/,
   );
+  // Train follows its own verdict: a CPU training host is chat-only yet trains.
+  assert.match(
+    SRC__ROOT,
+    /const trainBlocked = usePlatformStore\(\n\s*\(s\) => s\.isTrainUnavailable\(\) && !s\.capabilitiesUnknown\(\),/,
+  );
   assert.match(
     SRC__ROOT,
     /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
   );
   assert.match(
     SRC__ROOT,
-    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !chatOnlyMeasured,/,
+    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !trainBlocked,/,
   );
   // /video checks only auth, so the chord would land on the unsupported-hardware gate.
   assert.match(
     SRC__ROOT,
-    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\) !== undefined;/,
+    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining\) !== undefined;/,
   );
   assert.match(
     SRC__ROOT,
@@ -346,7 +351,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\);/,
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining\);/,
   );
   assert.match(APP_SIDEBAR, /disabled: videoDisabled,/);
 
@@ -1819,14 +1824,11 @@ test("the chat walk's bracket pair is reserved on macOS only", () => {
   assert.equal(defaultBindingFor(walk!, "primary", true), "Mod+Shift+BracketRight");
 });
 
-// The desktop signs out through the OS account menu, so the chord can never fire there.
-test("the logout row is not offered on the desktop build", async () => {
+// The desktop signs out from the sidebar menu too, so its chord is offered there.
+test("the logout row is offered on the desktop build", async () => {
   const logout = SHORTCUT_DEFS.find((def) => def.id === "logOut");
-  assert.equal(logout?.webOnly, true);
-  assert.deepEqual(
-    SHORTCUT_DEFS.filter((def) => def.webOnly).map((def) => def.id),
-    ["logOut"],
-  );
+  assert.equal(logout?.webOnly, undefined);
+  assert.deepEqual(SHORTCUT_DEFS.filter((def) => def.webOnly).map((def) => def.id), []);
   assert.match(KEYBOARD_SHORTCUTS_TAB, /!\(isTauri && def\.webOnly\)/);
 });
 

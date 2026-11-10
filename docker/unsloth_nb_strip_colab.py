@@ -163,8 +163,7 @@ def _stage_clean(path):
 def _publish(tmp, path, before):
     """Move the staged copy onto the notebook. False if it was not published."""
     try:
-        # JupyterLab is already serving the tree, so a save between the read above and
-        # this replace would be overwritten and then recorded as pristine forever
+        # JupyterLab is serving the tree, so recheck before replacing.
         if _sha256(path) != before:
             _unlink(tmp)
             return False

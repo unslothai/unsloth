@@ -4,8 +4,8 @@
 """Honour ``use_gradient_checkpointing = False`` when the trainer config only carries TRL's default.
 
 TRL configs default ``gradient_checkpointing = True``, so ``Trainer.train()`` would re-enable it (~25-30% slower).
-Unsloth configs record whether it was passed to ``__init__`` as ``_unsloth_gradient_checkpointing_explicit``,
-not compared to a default (which varies by TRL release); full rebuilds (``dataclasses.replace``,
+Unsloth configs record whether it was passed to ``__init__`` (or assigned on the config afterwards, e.g.
+``args.gradient_checkpointing = True``) as ``_unsloth_gradient_checkpointing_explicit``, not compared to a default (which varies by TRL release); full rebuilds (``dataclasses.replace``,
 ``Config(**args.to_dict())``) count as explicit, keeping the old behaviour.
 
 Rules, at trainer construction:
@@ -27,6 +27,7 @@ __all__ = [
 EXPLICIT_FLAG = "_unsloth_gradient_checkpointing_explicit"
 _WRAPPED_FLAG = "_unsloth_tracks_explicit_gradient_checkpointing"
 _NOTED = set()
+_FIELDS = ("gradient_checkpointing", "activation_checkpointing")
 
 
 def _note(key, message):
@@ -47,17 +48,30 @@ def track_explicit_gradient_checkpointing(config_class):
         return False
     if "gradient_checkpointing" not in names:
         return False
-    position = names.index("gradient_checkpointing") - 1
+    # transformers >= 5.23 renames it activation_checkpointing and mirrors the old name from the new one.
+    fields = [name for name in _FIELDS if name in names]
+    positions = [names.index(name) - 1 for name in fields]
 
     @functools.wraps(init)
     def __init__(self, *args, **kwargs):
-        explicit = "gradient_checkpointing" in kwargs or len(args) > position
+        explicit = any(name in kwargs for name in fields) or len(args) > min(positions)
         init(self, *args, **kwargs)
         # Not a dataclass field: to_dict(), to_json_string() and asdict() never see it.
         self.__dict__[EXPLICIT_FLAG] = explicit
 
     setattr(__init__, _WRAPPED_FLAG, True)
     config_class.__init__ = __init__
+
+    # An assignment after construction (args.gradient_checkpointing = True) is a user choice too.
+    # Inside __init__ the flag is not set yet, so the dataclass's own field assignments do not count.
+    original_setattr = config_class.__setattr__
+
+    def __setattr__(self, name, value):
+        original_setattr(self, name, value)
+        if name in _FIELDS and EXPLICIT_FLAG in self.__dict__:
+            self.__dict__[EXPLICIT_FLAG] = True
+
+    config_class.__setattr__ = __setattr__
     return True
 
 
@@ -87,6 +101,8 @@ def honour_gradient_checkpointing_off(args, model):
         )
         return False
     args.gradient_checkpointing = False
+    if hasattr(args, "activation_checkpointing"):
+        args.activation_checkpointing = False
     _note(
         "off",
         "Unsloth: the model was set up with use_gradient_checkpointing = False, so gradient checkpointing stays "

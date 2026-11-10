@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The ``generate_image`` chat tool: one image on the image model already loaded in Unsloth Studio.
-
-The tool runs on a chat worker thread. It hands the Images route's core to the server loop,
-bound to the calling account, so the image lands in that account's gallery and goes through
-the same access checks. It never loads or unloads a model.
-"""
+"""Chat tool: one image on the loaded image model for the caller's account; never loads/unloads models"""
 
 from __future__ import annotations
 

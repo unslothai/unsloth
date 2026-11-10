@@ -109,7 +109,7 @@ export function HfDatasetSubsetSplitSelectors({
   const showPlaceholderDropdowns =
     variant === "studio" && !enabled && !datasetName;
 
-  // Auto-select subset and split in one pass to avoid racing effects
+  // Auto-select subset and split in one pass to avoid racing effects.
   useEffect(() => {
     const next = nextHfDatasetOptionSelection({
       subsets: hfSubsets,
@@ -286,8 +286,7 @@ function ManualDatasetOptions({
     draftSources,
   );
   if (drafts !== storedDrafts) {
-    // Persist observed prop transitions so an A -> B -> A cycle cannot revive
-    // an obsolete draft. The identity guard makes this a single adjustment.
+    // Persist observed transitions so an A -> B -> A cycle cannot revive an obsolete draft.
     setStoredDrafts(drafts);
   }
   const subsetDraft = drafts.subset.value;
@@ -379,9 +378,7 @@ function ManualDatasetOptions({
       },
     };
     setDatasetSubset(value);
-    // It nulls datasetEvalSplit but not evalSteps, so this is what stops evaluation staying
-    // armed with no split (a 422 once streaming is on). setDatasetSplit(null) is not needed:
-    // it only adds a runDatasetCheck against an assumed "train" split.
+    // Stops evaluation staying armed with no split (a 422 once streaming is on).
     setDatasetEvalSplit(null);
     setStoredDrafts(nextDrafts);
     setManualDatasetOptionsValid(

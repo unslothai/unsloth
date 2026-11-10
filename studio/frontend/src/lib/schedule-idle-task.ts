@@ -10,10 +10,13 @@ const INPUT_EVENTS = [
   "touchstart",
   "touchmove",
 ] as const;
+const SCROLL_EVENTS: ReadonlySet<string> = new Set(["wheel", "scroll", "touchmove"]);
 let lastInputAt = Number.NEGATIVE_INFINITY;
+let lastNonScrollInputAt = Number.NEGATIVE_INFINITY;
 let watchingInput = false;
-const noteInput = (): void => {
+const noteInput = (event?: Event): void => {
   lastInputAt = performance.now();
+  if (!(event && SCROLL_EVENTS.has(event.type))) lastNonScrollInputAt = lastInputAt;
 };
 const watchInput = (): void => {
   if (watchingInput || typeof document === "undefined") return;
@@ -26,6 +29,12 @@ const watchInput = (): void => {
 export const inputQuietIn = (): number => {
   watchInput();
   return INPUT_QUIET_MS - (performance.now() - lastInputAt);
+};
+
+/** Like inputQuietIn, but wheel and touch scrolling do not count: work sliced per frame can run under them. */
+export const nonScrollInputQuietIn = (): number => {
+  watchInput();
+  return INPUT_QUIET_MS - (performance.now() - lastNonScrollInputAt);
 };
 
 /**

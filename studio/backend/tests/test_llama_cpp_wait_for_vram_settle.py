@@ -596,6 +596,29 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
         proc.wait(timeout = 5)
 
 
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_reap_recorded_pid_spares_live_server_without_psutil(tmp_path, monkeypatch, platform):
+    """Unknown parent liveness (no psutil, no /proc) must never reap a live server."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text(str(proc.pid))
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", platform)
+    try:
+        assert LlamaCppBackend._pid_parent_is_alive(proc.pid) is True
+        with (
+            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+        ):
+            n = LlamaCppBackend._reap_recorded_pid()
+        assert n == 0, "unknown parent liveness must not reap a server"
+        assert proc.poll() is None
+        assert pidfile.exists()
+    finally:
+        proc.kill()
+        proc.wait(timeout = 5)
+
+
 def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
     """A recorded PID recycled to a non-llama-server must NOT be killed (only the
     stale pidfile is cleaned), so the user's vllm/games are never touched."""

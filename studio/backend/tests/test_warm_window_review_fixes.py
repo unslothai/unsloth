@@ -813,6 +813,12 @@ def test_health_still_kicks_detection_when_the_warm_is_on(monkeypatch):
 
     import main as main_mod
 
+    monkeypatch.setattr(
+        main_mod,
+        "_startup_ml_warmup_features",
+        frozenset({"hardware", "text", "datasets", "media", "quantization"}),
+    )
+
     kicks = []
     monkeypatch.setattr(
         main_mod, "start_background_detection", lambda: kicks.append(1), raising = True

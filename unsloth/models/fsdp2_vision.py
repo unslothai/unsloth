@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Mixed image / text micro-batches under native FSDP2.
-
-When one rank's micro-batch has images and another's does not, only the image rank runs the vision
-tower: its units all-gather on that rank alone and NCCL pairs the collectives wrongly (hang), and
-FSDP2 reduce-scatters only parameters whose gradient is not None, so even a vision tower held in the
-root unit (fit layout) desyncs at the reduce-scatter. Here a rank without images runs the vision
-encoder on a minimal dummy input before the language model (same collective order as an image rank)
-and adds `0.0 * sum(outputs)` to the multimodal model's output, so every vision parameter gets a zero
-gradient on that rank. No collective and no host sync is added (the decision is local: is
-`pixel_values` given). Installed only by `fsdp2_native.shard_model`, and only when some vision tower
-or projector parameter issues a gradient collective (FSDP2-managed, or replicated with an all-reduce
-hook). `UNSLOTH_FSDP2_VISION_DUMMY=0` turns it off (then every rank's micro-batch must carry an image).
-"""
+"""Image-less ranks run a dummy vision pass (else NCCL hangs); UNSLOTH_FSDP2_VISION_DUMMY=0
+disables, then every rank micro-batch must carry an image."""
 
 import inspect
 import os

@@ -15,7 +15,7 @@ const FlowsGalleryPage = lazyRouteComponent(
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/flows",
-  staticData: { title: "Flows" },
+  staticData: { titleKey: "shell.navigation.flows" },
   beforeLoad: () => requireAuth(),
   component: FlowsGalleryPage,
 });

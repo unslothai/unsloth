@@ -303,3 +303,58 @@ def test_a_source_past_the_connection_limit_is_refused_before_upload(stub, conne
     assert events[-1]["type"] == "error"
     assert "a connection takes" in events[-1]["message"]
     assert not connection and not stub.bytes
+
+
+def _long_input(account, seconds = 3.0) -> str:
+    save = audio_inputs.save_stream(_chunks([wav_bytes(seconds)]), "long.wav")
+    return run_as(account, lambda: asyncio.run(save)[0]["id"])
+
+
+@pytest.fixture
+def short_caps(monkeypatch):
+    from core.inference import stt_sidecar
+
+    monkeypatch.delenv(audio_inputs.TRANSCRIBE_MAX_MINUTES_ENV, raising = False)
+    monkeypatch.setattr(audio_inputs, "MAX_SECONDS", 1)
+    monkeypatch.setattr(stt_sidecar, "_MAX_AUDIO_SECONDS", 1)
+
+
+def test_audio_cpp_reads_the_whole_source_past_the_other_engines_cap(stub, short_caps):
+    input_id = _long_input(ALICE)
+    with _client(ALICE) as client:
+        response, events = _post(client, source = {"input_id": input_id})
+    assert response.status_code == 200, response.text
+    ((path, rate, _, _),) = stub.paths
+    assert path.name == f"{input_id}.16000.mono.m14400.wav"
+    with wave.open(str(path)) as w:
+        assert w.getnframes() / w.getframerate() == pytest.approx(3.0, abs = 0.05)
+    assert events[-1]["type"] == "complete"
+
+
+def test_another_engine_refuses_a_source_past_its_cap_before_loading(stub, short_caps):
+    source = {"input_id": _long_input(ALICE)}
+    with _client(ALICE) as client:
+        response, _ = _post(client, model = "small", engine = "transformers", source = source)
+    assert response.status_code == 413
+    assert response.json()["detail"] == (
+        "This model transcribes up to 0 minutes of audio. Trim it, or pick an audio.cpp model, "
+        "which takes up to 4 hours."
+    )
+    assert not (stub.loads or stub.bytes or stub.paths)
+
+
+def test_a_source_just_past_the_cap_is_refused_not_cut(stub, short_caps):
+    source = {"input_id": _long_input(ALICE, seconds = 1.5)}
+    with _client(ALICE) as client:
+        response, _ = _post(client, model = "small", engine = "transformers", source = source)
+    assert response.status_code == 413
+    assert not (stub.loads or stub.bytes or stub.paths)
+
+
+def test_a_connection_refuses_a_source_past_its_cap_before_upload(stub, connection, short_caps):
+    source = {"input_id": _long_input(ALICE)}
+    with _client(ALICE) as client:
+        response, _ = _post(client, provider_id = "conn-1", model = "whisper-1", source = source)
+    assert response.status_code == 413
+    assert response.json()["detail"].startswith("A connection takes up to 0 minutes of audio.")
+    assert connection == [] and not (stub.loads or stub.bytes)

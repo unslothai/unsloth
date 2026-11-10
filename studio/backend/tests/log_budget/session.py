@@ -37,6 +37,8 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
     "/api/engines": (30.0, "declared"),
     # The Benchmark runtime lifecycle re-reads it every 5s while mounted (use-benchmark-runtime-lifecycle.ts).
     "/api/benchmarks/evals/status": (5.0, "declared"),
+    # The Images page's queue panel: every 5s idle, every 1s while jobs wait (use-image-queue.ts).
+    "/api/inference/images/queue": (5.0, "declared"),
 }
 
 # Polls only while an operation is in flight; separate so the idle envelope is not averaged.

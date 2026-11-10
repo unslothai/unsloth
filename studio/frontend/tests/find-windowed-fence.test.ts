@@ -28,7 +28,7 @@ test("while the find bar is open a long fence renders every line, so the highlig
   assert.match(defer, /const FIND_BAR_FLAG = "data-find-bar-open";/);
   assert.match(
     defer,
-    /findBarObserver = new MutationObserver\(scheduleRemeasure\);\s*findBarObserver\.observe\(document\.documentElement, \{\s*attributes: true,\s*attributeFilter: \[FIND_BAR_FLAG\],\s*\}\);/,
+    /findBarObserver = new MutationObserver\(scheduleRemeasure\);\s*findBarObserver\.observe\(document\.documentElement, \{\s*attributes: true,\s*attributeFilter: \[FIND_BAR_FLAG, "data-code-wrap", "data-code-line-numbers"\],\s*\}\);/,
     "find paints live ranges over a line's text, and a window move swapped that text for token spans, so the highlights vanished until the index was rebuilt",
   );
   assert.ok(defer.indexOf("findBarObserver?.disconnect();") > defer.indexOf("const unwatchWindows = "));

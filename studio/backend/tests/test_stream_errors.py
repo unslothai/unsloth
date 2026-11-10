@@ -353,3 +353,32 @@ class TestTheStarvationTextDoesNotReadAsAContextLimitOnTheClient:
         raw = "Context size has been exceeded."
         assert any(m in raw.lower() for m in self.CLIENT_CONTEXT_LIMIT_MARKERS)
         assert describe_stream_error(raw) == KV_STARVATION_MESSAGE
+
+
+class TestARefusalBeforeTheReplyStartsKeepsItsCause:
+    REFUSAL = RuntimeError(
+        'llama-server returned 400: {"error":{"code":400,"message":"Cannot have 2 or more '
+        'assistant messages at the end of the list.","type":"invalid_request_error"}}'
+    )
+
+    @staticmethod
+    def _routes():
+        import routes.inference as routes_inference
+        return routes_inference
+
+    def test_the_server_message_reaches_the_client(self):
+        routes = self._routes()
+        expected = (
+            "llama-server error: Cannot have 2 or more assistant messages at the end of the list."
+        )
+        assert routes._friendly_error(self.REFUSAL) == expected
+        chunk = routes._openai_stream_error_chunk(self.REFUSAL)
+        assert chunk["error"]["message"] == expected
+        assert chunk["error"]["type"] == "invalid_request_error"
+
+    def test_a_server_failure_stays_generic(self):
+        routes = self._routes()
+        failure = RuntimeError(
+            'llama-server returned 500: {"error":{"code":500,"message":"/srv/secret crashed"}}'
+        )
+        assert routes._friendly_error(failure) == "An internal error occurred"
