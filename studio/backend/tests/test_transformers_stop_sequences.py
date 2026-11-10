@@ -318,8 +318,7 @@ def test_a_cleanup_rewrite_split_across_tokens_still_matches_a_stop(pieces, rule
     torch = pytest.importorskip("torch")
 
     class Tokenizer(_Tokenizer):
-        # Reported as well as applied: the wider re-decode is gated on this, since it is
-        # pure cost for the tokenizers that ship cleanup off.
+        # Reported and applied: the re-decode is gated on this, pure cost when cleanup is off.
         clean_up_tokenization_spaces = True
 
         def decode(self, ids, **kwargs):

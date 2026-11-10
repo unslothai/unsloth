@@ -535,9 +535,8 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     return dq, dk, dv
 
 
-# Opaque custom ops keep torch.compile from tracing into Triton (no graph break, no
-# re-emission with fp fusion). The plain autograd.Function is the fallback for torch
-# builds without torch.library.custom_op.
+# Opaque custom ops keep torch.compile from tracing into Triton (no graph break, no re-emission with
+# fp fusion); the plain autograd.Function is the fallback without torch.library.custom_op.
 _HAS_CUSTOM_OP = (
     hasattr(torch, "library")
     and hasattr(torch.library, "custom_op")
@@ -637,13 +636,10 @@ def intervals_from_mask(
     S,
     _rows = 1024,
 ):
-    """(lo, hi) int32 [B, S] such that query i attends exactly keys lo[i]..hi[i], or None.
-
-    None unless every row of `mask` (bool, or additive float with 0 = keep) allows one
-    non-empty contiguous key range and both ends are non-decreasing down the rows. One
-    host sync; the verdict is cached on the mask so every layer sharing it reuses it.
-    Inference tensors have no version counter, so they are rescanned on every call.
-    """
+    """Returns (lo, hi) int32 [B, S] (query i attends lo[i]..hi[i]) or None unless each mask row
+    (bool, or additive float with 0 = keep) is one non-empty contiguous key range with
+    non-decreasing ends; one host sync, cached on the mask, but inference tensors are rescanned
+    each call."""
     if not torch.is_tensor(mask) or mask.dim() != 4 or mask.shape[1] != 1:
         return None
     if mask.shape[-2] != S or mask.shape[-1] != S or mask.shape[0] not in (1, B):
@@ -721,13 +717,9 @@ _enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
 
 
 def _row_span(x):
-    """Largest element offset the kernels compute in int32 for a [B, H, S, D] operand.
-
-    Batch and head offsets are int64 in every kernel; the row and column offsets
-    (offs_m * stride_m + offs_d) are int32, so they are what must stay below 2**31. A strided
-    view can have a small numel and still reach far past 2**31 elements along S. An operand
-    whose last stride is not 1 is copied contiguous before launch, so its numel bounds it.
-    """
+    """Largest int32 element offset for a [B, H, S, D] operand (row and column offsets must stay
+    below 2^31; batch and head offsets are int64); a strided view can reach past it, but a
+    non-unit last stride is copied contiguous first, so numel bounds it."""
     if x.stride(-1) != 1:
         return x.numel()
     return (x.shape[-2] - 1) * x.stride(-2) + (x.shape[-1] - 1)
@@ -971,9 +963,8 @@ _PATCHED = [False]
 
 
 def patch_large_head_attention(model = None):
-    """Route transformers' `sdpa` attention through the large head kernel when a call
-    qualifies; everything else reaches the previous `sdpa` function unchanged. With a
-    model, only installs if one of its modules has head_dim > 256."""
+    """Routes transformers' sdpa attention through the large head kernel when a call qualifies, else
+    the previous sdpa; with a model, installs only if a module has head_dim > 256."""
     if not _enabled() or not torch.cuda.is_available() or torch.version.hip is not None:
         return False
     if model is not None:

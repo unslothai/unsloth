@@ -665,6 +665,8 @@ export const es = {
     keepsRunning: "Cerrar esto no detiene la configuración. El resultado aparece en Ajustes > Seguridad.",
   },
   composerSettings: {
+    shareDraft: "Compartir borradores entre chats",
+    shareDraftDescription: "Usa un borrador para los chats y las comparaciones. Desactivado por defecto; cada chat conserva su propio borrador.",
     title: "Redacción de mensajes",
     plainText: "Redactor de texto sin formato",
     plainTextDescription: "Mantener el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
@@ -1665,6 +1667,13 @@ export const es = {
         audioUploadCancel: "Cancelar transcripción",
         audioUploadTranscribing: "Transcribiendo audio…",
         sectionTitle: "Dictado",
+        micTargetLabel: "Botón del micrófono",
+        micTargetAsr: "Transcribir con ASR",
+        micTargetModel: "Enviar audio al modelo",
+        micTargetAsrDescription: "El botón del micrófono escribe lo que dices en el cuadro de mensaje.",
+        micTargetModelDescription: "Con un modelo con entrada de audio cargado, el micrófono graba un clip y lo adjunta a tu mensaje. Los demás modelos siguen usando dictado.",
+        micTargetModelUnavailable: "Carga un modelo que acepte entrada de audio (por ejemplo, LFM3-Omni) para enviarle tu voz.",
+        micRecordForModel: "Grabar audio para el modelo",
         engineLabel: "Motor de dictado",
         engineBrowser: "Navegador",
         engineBrowserDescription:
@@ -1690,6 +1699,13 @@ export const es = {
         sttQuantDescription:
           "Elige o busca un modelo STT para ejecutarlo en local y luego su cuantización.",
         sttDeviceLabel: "Cargar en",
+        sttContextLabel: "Contexto de voz",
+        sttContextAuto: "Auto (recomendado)",
+        sttContextAutoDescription:
+          "Se adapta a cada grabación y usa más memoria para audios más largos. Los entornos de ejecución antiguos pueden necesitar un tamaño fijo para reducir el uso de memoria. Se aplica a Qwen3-ASR en Voz y Transcribir.",
+        sttContextFixedDescription:
+          "Los límites más pequeños usan menos memoria. Las grabaciones que no quepan necesitan un límite mayor o Auto. Se aplica a Qwen3-ASR en Voz y Transcribir.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU cuando esté disponible",
         sttDeviceCpu: "RAM de la CPU",
         sttDeviceAutoDescription:

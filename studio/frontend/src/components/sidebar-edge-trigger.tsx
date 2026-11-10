@@ -15,8 +15,7 @@ import { cn } from "@/lib/utils";
 import { type ReactElement, useRef, useState } from "react";
 
 /**
- * Draggable window edge for the zero-width desktop sidebar. On macOS a decorated window's resize
- * border takes presses in the first few pixels, so hover and keyboard are what work there.
+ * Sidebar drag edge; macOS's window resize border takes the presses, so only hover and keys work.
  */
 export function SidebarEdgeTrigger({
   className,
@@ -42,9 +41,8 @@ export function SidebarEdgeTrigger({
     setWidth,
     resetWidth,
   } = useSidebarWidth();
-  // A drag that reaches the minimum pins the sidebar part-way through, which
-  // would unmount this: the handle would lose pointer capture and the width
-  // would never commit. Hold on until the pointer is released.
+  // Holds the drag until release: reaching the minimum would pin the sidebar and unmount this
+  // handle.
   const [holding, setHolding] = useState(false);
   const release = () => setHolding(false);
 
