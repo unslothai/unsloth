@@ -7356,6 +7356,35 @@ class ExternalProviderClient:
         response.raise_for_status()
         return [item["b64_json"] for item in response.json()["data"]]
 
+    async def create_image_edits(
+        self, prompt: str, model: str, n: int, images: list[bytes]
+    ) -> list[str]:
+        """Post PNG source images to an OpenAI-compatible /images/edits endpoint.
+
+        No ``size``: the endpoint sizes the result from the source image."""
+        # One image goes under `image` and several under `image[]`, the two names the spec takes.
+        field = "image" if len(images) == 1 else "image[]"
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _client().post(
+            _append_provider_path(self.base_url, "/images/edits"),
+            headers = headers,
+            # `model` is a form field: a router such as llama-swap picks the upstream from it.
+            data = {
+                "model": model,
+                "prompt": prompt,
+                "n": str(n),
+                "response_format": "b64_json",
+            },
+            files = [
+                (field, (f"image-{index}.png", image, "image/png"))
+                for index, image in enumerate(images, start = 1)
+            ],
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return [item["b64_json"] for item in response.json()["data"]]
+
     async def create_transcription(
         self,
         audio: bytes,

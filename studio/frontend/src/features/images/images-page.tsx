@@ -164,6 +164,7 @@ import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
 import {
+  CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
   recipeWorkflowLabel,
@@ -5896,7 +5897,7 @@ export function ImagesPage({
 
   useEffect(() => {
     if (external) {
-      setSupported(["create"]);
+      setSupported([...CONNECTION_WORKFLOWS]);
       return;
     }
     if (!status?.loaded) {
@@ -7064,7 +7065,8 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {!unifiedEditActive && sizeControls}
+            {/* A connection sizes an edit from the source image: /images/edits is sent no size. */}
+            {!unifiedEditActive && !(external && workflow === "edit") && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
             {!external && (

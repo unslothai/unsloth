@@ -84,6 +84,11 @@ export const WORKFLOW_TABS: Array<{
   },
 ];
 
+/** What a connection runs: Create through its /images/generations, Edit through its /images/edits.
+ *  The other workflows need a strength or a mask, which those endpoints do not take the same way
+ *  from one server to the next. */
+export const CONNECTION_WORKFLOWS: readonly WorkflowId[] = ["create", "edit"];
+
 export const BACKEND_WORKFLOW_RECIPE_LABELS: Record<string, string> = {
   txt2img: "Create",
   img2img: "Transform",
