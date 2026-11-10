@@ -46,6 +46,9 @@ on:
       - 'tests/studio/test_css_culprit.py'
       - 'tests/studio/_area_matrix.py'
       - 'tests/studio/test_area_matrix.py'
+      - 'tests/studio/_webkit_leg.py'
+      - 'tests/studio/test_webkit_leg.py'
+      - 'tests/studio/test_webkit_leg_ci.py'
       - 'tests/studio/_appearance_coverage.py'
       - 'tests/studio/test_appearance_coverage.py'
       - 'tests/studio/_has_lint.py'
@@ -105,6 +108,9 @@ on:
       - 'tests/studio/test_css_culprit.py'
       - 'tests/studio/_area_matrix.py'
       - 'tests/studio/test_area_matrix.py'
+      - 'tests/studio/_webkit_leg.py'
+      - 'tests/studio/test_webkit_leg.py'
+      - 'tests/studio/test_webkit_leg_ci.py'
       - 'tests/studio/_appearance_coverage.py'
       - 'tests/studio/test_appearance_coverage.py'
       - 'tests/studio/_has_lint.py'
@@ -431,6 +437,8 @@ jobs:
             tests/studio/test_code_block_flicker_contract.py \
             tests/studio/test_css_culprit.py \
             tests/studio/test_area_matrix.py \
+            tests/studio/test_webkit_leg.py \
+            tests/studio/test_webkit_leg_ci.py \
             tests/studio/test_appearance_coverage.py \
             tests/studio/test_has_lint.py -q
 
@@ -684,6 +692,72 @@ jobs:
           name: studio-frontend-dist
           path: studio/frontend/dist
           retention-days: 1
+
+  # WebKit leg of the long-chat gate (tests/studio/_webkit_leg.py), in parallel with the build job so
+  # its WebKit install and run stay off that job's critical path. Times opening and closing the
+  # browser pane, Settings, shortcuts, palette, composer menu, sidebar and a thread scroll at 1 and 150
+  # turns in Playwright WebKit with a macOS and a Linux user agent (Safari, the macOS app, the Linux
+  # desktop app): fails when the long chat is over 2.5x the short one and over 200 ms, or has a frame
+  # over 250 ms and over 2.5x the short chat's, beyond the known costs pinned in that file.
+  webkit:
+    name: Long-chat gate (WebKit)
+    runs-on: ubuntu-latest
+    env:
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Upgrade npm to 11.x (allowScripts enforcement)
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm install -g npm@^11 --no-fund --no-audit
+          V=$(npm -v)
+          case "$V" in
+            11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+            *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+          esac
+
+      # Must run BEFORE npm ci, where a compromised tarball's install scripts run.
+      - name: Lockfile supply-chain audit (pre-install scan)
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      - name: Install dependencies
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
+
+      - name: WebKit for the long-chat gate
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        timeout-minutes: 10
+        env:
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          python3 -m pip install 'playwright>=1.45,<2'
+          python3 -m playwright install webkit
+          if ! python3 -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.webkit.launch().close(); p.stop()"; then
+            bash .github/scripts/retry-with-apt-lock.sh python3 -m playwright install-deps webkit
+          fi
+
+      - name: Long-chat production build
+        run: npx vite build --config vite.long-thread.config.ts
+
+      - name: Browser gate for long-chat cost in WebKit
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        timeout-minutes: 20
+        env:
+          LONG_THREAD_WEBKIT: '1'
+        run: python3 tests/studio/_webkit_leg.py
 
   # The suite reads sources and resolves module URLs, so it can break only on Windows.
   # .gitattributes pins LF for studio/frontend, so exact-substring assertions hold.
