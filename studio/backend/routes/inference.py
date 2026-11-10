@@ -35301,6 +35301,15 @@ async def produce_openai_chat_completions(
         if _sf_heal
         else None
     )
+    _sf_call_prefix = ""
+    if _sf_heal and payload.tool_choice not in (None, "auto") and not _sf_continue:
+        from core.inference.passthrough_healing import forced_call_prefix
+        _sf_call_prefix = forced_call_prefix(
+            _sf_heal,
+            _sf_image_tpl,
+            (_sf_model_info.get("chat_template_info") or {}).get("template"),
+            *(getattr(target, "chat_template", None) for target in _sf_chat_targets),
+        )
     if _sf_client_tools:
         # Re-derive from messages to keep tool history; fold system and developer into one system message; tool_choice none drops tools or markup leaks as prose
         _sf_tc = payload.tool_choice
@@ -35391,6 +35400,8 @@ async def produce_openai_chat_completions(
         template = _sf_image_tpl,
         prefer_tool_use = _sf_image_tpl is None,
     )
+    if _sf_call_prefix:
+        _sf_reasoning_prefilled = False
     if gen_kwargs.get("response_format") is not None:
         gen_kwargs["reasoning_is_extracted"] = bool(_sf_parse_think)
 
@@ -35480,6 +35491,16 @@ async def produce_openai_chat_completions(
                 "system_prompt": fitted["system_prompt"],
             }
             events = fitted.get("events") or ()
+        if _sf_call_prefix:
+            # After fitting: compaction leaves a prompt ending in a continuation untouched.
+            fitted_kwargs = {
+                **fitted_kwargs,
+                "messages": [
+                    *(fitted_kwargs.get("messages") or []),
+                    {"role": "assistant", "content": _sf_call_prefix},
+                ],
+                "continue_final_message": True,
+            }
         _sf_fit_cache["kwargs"] = fitted_kwargs
         return fitted_kwargs, events
 
@@ -35586,6 +35607,8 @@ async def produce_openai_chat_completions(
                         mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
+                    if cumulative:
+                        cumulative = _sf_call_prefix + cumulative
                     new_text = cumulative[len(prev_text) :]
                     prev_text = cumulative
                     if not new_text:
@@ -35864,6 +35887,9 @@ async def produce_openai_chat_completions(
                             ),
                         )
                     raise HTTPException(status_code = 500, detail = _msg)
+                if full_text:
+                    # The prefill alone is no call: an empty or cancelled reply stays empty.
+                    full_text = _sf_call_prefix + full_text
 
                 # Heal only visible text so tool markup inside reasoning is never promoted.
                 _reasoning_text, _visible_text = _extract_responses_reasoning(
@@ -35895,7 +35921,7 @@ async def produce_openai_chat_completions(
                     ):
                         if _finish != "length":
                             _finish = "tool_calls"
-                    elif nudge_enabled(
+                    elif not _sf_call_prefix and nudge_enabled(
                         payload.nudge_tool_calls,
                         response_format = _sf_response_format,
                     ):
