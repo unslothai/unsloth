@@ -4,28 +4,13 @@
 // What each recipe block is called and how it looks on a Flows node card: Recipe Studio's icons and names,
 // tones from the card's tone set. Plain data, loaded with the canvas.
 
-import {
-  BalanceScaleIcon,
-  Clock01Icon,
-  CodeIcon,
-  CodeSimpleIcon,
-  DiceFaces03Icon,
-  DocumentAttachmentIcon,
-  DocumentCodeIcon,
-  EqualSignIcon,
-  FingerPrintIcon,
-  FunctionIcon,
-  GithubIcon,
-  Parabola02Icon,
-  PencilEdit02Icon,
-  Plant01Icon,
-  Plug01Icon,
-  Shield02Icon,
-  Tag01Icon,
-  TagsIcon,
-  UserAccountIcon,
-} from "@hugeicons/core-free-icons";
+import { DiceFaces03Icon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
+import {
+  type BlockKind,
+  type BlockType,
+  getBlockDefinition,
+} from "@/features/recipe-studio/blocks/definitions";
 import { CATEGORY_TONES } from "../editor/node-tones";
 import type { RecipeColumn } from "./recipe-columns";
 
@@ -50,49 +35,52 @@ export interface RecipeBlock {
   tone: string;
 }
 
+/** A block as Recipe Studio names and draws it, in a Flows tone. */
 const block = (
   kind: RecipeBlock["kind"],
   type: string,
-  label: string,
-  icon: IconSvgElement,
   tone: string,
-): RecipeBlock => ({ kind, type, label, icon, tone });
+): RecipeBlock => {
+  const definition = getBlockDefinition(kind as BlockKind, type as BlockType);
+  if (!definition) throw new Error(`No Recipe Studio block ${kind}/${type}`);
+  return { kind, type, label: definition.title, icon: definition.icon, tone };
+};
 
 /** Every column Recipe Studio can add, in its sheet's order. */
 export const COLUMN_BLOCKS: RecipeBlock[] = [
-  block("llm", "text", "AI text", PencilEdit02Icon, RECIPE_TONES.llm),
-  block("llm", "structured", "AI structured data", CodeIcon, RECIPE_TONES.llm),
-  block("llm", "code", "AI code", CodeSimpleIcon, RECIPE_TONES.llm),
-  block("llm", "judge", "AI scorer", BalanceScaleIcon, RECIPE_TONES.llm),
-  block("sampler", "category", "Category", Tag01Icon, RECIPE_TONES.sampler),
-  block("sampler", "subcategory", "Subcategory", TagsIcon, RECIPE_TONES.sampler),
-  block("sampler", "uniform", "Random number", EqualSignIcon, RECIPE_TONES.sampler),
-  block("sampler", "gaussian", "Bell-curve number", Parabola02Icon, RECIPE_TONES.sampler),
-  block("sampler", "bernoulli", "Yes/no value", EqualSignIcon, RECIPE_TONES.sampler),
-  block("sampler", "datetime", "Date and time", Clock01Icon, RECIPE_TONES.sampler),
-  block("sampler", "timedelta", "Time offset", Clock01Icon, RECIPE_TONES.sampler),
-  block("sampler", "uuid", "Unique ID", FingerPrintIcon, RECIPE_TONES.sampler),
-  block("sampler", "person", "Synthetic person", UserAccountIcon, RECIPE_TONES.person),
-  block("expression", "expression", "Formula", FunctionIcon, RECIPE_TONES.expression),
-  block("validator", "validator_python", "Python check", Shield02Icon, RECIPE_TONES.validator),
-  block("validator", "validator_sql", "SQL check", Shield02Icon, RECIPE_TONES.validator),
-  block("validator", "validator_oxc", "JS/TS check", Shield02Icon, RECIPE_TONES.validator),
-  block("validator", "validator_json", "JSON check", Shield02Icon, RECIPE_TONES.validator),
-  block("validator", "validator_markdown", "Markdown check", Shield02Icon, RECIPE_TONES.validator),
+  block("llm", "text", RECIPE_TONES.llm),
+  block("llm", "structured", RECIPE_TONES.llm),
+  block("llm", "code", RECIPE_TONES.llm),
+  block("llm", "judge", RECIPE_TONES.llm),
+  block("sampler", "category", RECIPE_TONES.sampler),
+  block("sampler", "subcategory", RECIPE_TONES.sampler),
+  block("sampler", "uniform", RECIPE_TONES.sampler),
+  block("sampler", "gaussian", RECIPE_TONES.sampler),
+  block("sampler", "bernoulli", RECIPE_TONES.sampler),
+  block("sampler", "datetime", RECIPE_TONES.sampler),
+  block("sampler", "timedelta", RECIPE_TONES.sampler),
+  block("sampler", "uuid", RECIPE_TONES.sampler),
+  block("sampler", "person", RECIPE_TONES.person),
+  block("expression", "expression", RECIPE_TONES.expression),
+  block("validator", "validator_python", RECIPE_TONES.validator),
+  block("validator", "validator_sql", RECIPE_TONES.validator),
+  block("validator", "validator_oxc", RECIPE_TONES.validator),
+  block("validator", "validator_json", RECIPE_TONES.validator),
+  block("validator", "validator_markdown", RECIPE_TONES.validator),
 ];
 
 export const SEED_BLOCKS: RecipeBlock[] = [
-  block("seed", "seed_hf", "Hugging Face dataset", Plant01Icon, RECIPE_TONES.seed),
-  block("seed", "seed_local", "CSV or JSON file", DocumentCodeIcon, RECIPE_TONES.seed),
-  block("seed", "seed_unstructured", "Document file", DocumentAttachmentIcon, RECIPE_TONES.seed),
-  block("seed", "seed_github", "GitHub repositories", GithubIcon, RECIPE_TONES.seed),
+  block("seed", "seed_hf", RECIPE_TONES.seed),
+  block("seed", "seed_local", RECIPE_TONES.seed),
+  block("seed", "seed_unstructured", RECIPE_TONES.seed),
+  block("seed", "seed_github", RECIPE_TONES.seed),
 ];
 
 /** Recipe-level blocks; Recipe Studio files them under its AI sheet. */
 export const SETUP_BLOCKS: RecipeBlock[] = [
-  block("llm", "model_provider", "Provider connection", Shield02Icon, RECIPE_TONES.provider),
-  block("llm", "model_config", "Model preset", Plant01Icon, RECIPE_TONES.model),
-  block("llm", "tool_config", "Tool access", Plug01Icon, RECIPE_TONES.tools),
+  block("llm", "model_provider", RECIPE_TONES.provider),
+  block("llm", "model_config", RECIPE_TONES.model),
+  block("llm", "tool_config", RECIPE_TONES.tools),
 ];
 
 export const SEED_TYPE_BLOCK: Record<string, string> = {
@@ -149,7 +137,13 @@ export function columnBlock(column: RecipeColumn): RecipeBlock {
   else if (type === "validation") key = validatorBlock(column);
   return (
     COLUMN_BLOCKS.find((b) => b.type === key) ??
-    block("sampler", key, key || "Column", DiceFaces03Icon, RECIPE_TONES.sampler)
+    ({
+      kind: "sampler",
+      type: key,
+      label: key || "Column",
+      icon: DiceFaces03Icon,
+      tone: RECIPE_TONES.sampler,
+    } satisfies RecipeBlock)
   );
 }
 
