@@ -5028,6 +5028,8 @@ class SdCppDiffusionBackend:
         # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False
         device_losses = 0
+        # One restart under a smaller VRAM budget per request; the budget itself stays for the load.
+        vram_restarted = False
         hires_payload: Optional[dict] = None
         hires_staged: list[Path] = []
 
@@ -5123,10 +5125,11 @@ class SdCppDiffusionBackend:
                                     state, str(exc), cancel
                                 )
                                 device_respawned = server is not None
-                        if server is None:
+                        if server is None and not vram_restarted:
                             server, vram_budget = self._restart_server_with_vram_headroom(
                                 state, str(exc), cancel
                             )
+                            vram_restarted = server is not None
                         if server is None:
                             raise exc
                         old_server = state.server
@@ -5311,10 +5314,15 @@ class SdCppDiffusionBackend:
         defers the destruction of allocations, so that figure can trail a release: the request is refused while
         the memory is free and the job ends in ``generate_image returned no results``. Half the planned free
         VRAM leaves the released memory unclaimed, at the cost of re-staging weights that no longer stay
-        cached. Once per load: a second refusal is surfaced to the caller."""
+        cached.
+
+        The caller allows one restart per request. The budget is computed once, from the plan of the first
+        server that refused, and reused after that: a server restarted while another application held the
+        card plans with what was free then and keeps refusing after the card frees up, so the next request
+        has to restart it again, and that server's own plan is too small to halve."""
         if not sd_cpp_args_mod.is_vram_refusal_text(error_text):
             return None, None
-        if state.vram_budget is not None or state.device == "cpu" or self._cpu_backend_forced:
+        if state.device == "cpu" or self._cpu_backend_forced:
             return None, None
         if state.server is None or cancel.is_set():
             return None, None
@@ -5325,7 +5333,7 @@ class SdCppDiffusionBackend:
         ):
             return None, None
         planned = dict(getattr(state.server, "planned_free_vram_mib", None) or {})
-        budget = sd_cpp_args_mod.image_vram_retry_budget(
+        budget = state.vram_budget or sd_cpp_args_mod.image_vram_retry_budget(
             planned, _backend_devices(state.offload_flags)
         )
         if budget is None or ("=" in budget and not _layer_split_supported(binary)):
@@ -5333,8 +5341,9 @@ class SdCppDiffusionBackend:
         if not self._begin_replacement(state):
             return None, None
         logger.warning(
-            "sd-server refused the render for VRAM; restarting it with --max-vram %s (half the free VRAM it "
-            "planned with, in MiB: %s) and retrying once. Details: %s",
+            "sd-server refused the render for VRAM; restarting it with --max-vram %s (half the free VRAM this "
+            "load first planned with; the refusing server planned with, in MiB: %s) and retrying once. "
+            "Details: %s",
             budget,
             planned,
             error_text[:300],

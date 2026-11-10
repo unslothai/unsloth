@@ -709,8 +709,14 @@ def is_device_oom_text(text: Optional[str]) -> bool:
     return False
 
 
-# sd.cpp's first segment stage: the model manager could not stage the segment's weights on the device.
-_WEIGHT_PREPARATION_MARKER = "failed during weight preparation"
+# The stages at which sd.cpp's model manager declines a graph segment for device memory (``fail_segment`` in
+# ``src/core/ggml_runner.cpp``). A raw allocation failure is not one of them and keeps its error.
+_SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
+    "failed during weight preparation",
+    "failed during workspace capacity check",
+    "failed during workspace allocation",
+    "failed during allocated capacity check",
+)
 # Share of the free VRAM sd-server planned with that the image retry may use. sd.cpp fills its budget (free less
 # 512 MiB) with cached weights, so each phase needs memory the previous one just released. Half leaves that much
 # unclaimed while the driver still reports the release as in use (Windows defers the destruction of allocations).
@@ -718,8 +724,9 @@ IMAGE_VRAM_RETRY_SCALE = 0.5
 
 
 def is_vram_refusal_text(text: Optional[str]) -> bool:
-    """A failed render whose output shows sd.cpp declining the work for device memory."""
-    return is_device_oom_text(text) or _WEIGHT_PREPARATION_MARKER in str(text or "").lower()
+    """A failed render whose output shows sd.cpp declining a segment for device memory."""
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _SEGMENT_REFUSAL_MARKERS)
 
 
 def image_vram_retry_budget(

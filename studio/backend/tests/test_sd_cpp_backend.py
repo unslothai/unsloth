@@ -3150,6 +3150,7 @@ def _vram_refusal_backend(
     *,
     refusals,
     planned_free_mib = None,
+    restarted_plans = (),
     error = _VRAM_REFUSAL,
     max_vram_supported = True,
     per_device_supported = True,
@@ -3157,17 +3158,20 @@ def _vram_refusal_backend(
     device = "cuda",
 ):
     """A CUDA server load pinned to CUDA1 whose first ``refusals`` jobs fail with ``error``, on whichever
-    server runs them. ``planned_free_mib`` is the free VRAM per card in the server's auto-fit plan."""
+    server runs them. ``planned_free_mib`` is the free VRAM per card in the first server's auto-fit plan,
+    ``restarted_plans`` what each replacement reads in turn."""
     events: list = []
     remaining = {"refusals": refusals}
     planned = {"CUDA1": 6666} if planned_free_mib is None else planned_free_mib
+    plans = [planned, *restarted_plans]
 
     class _FakeServer:
         lora_dir = None
 
         def __init__(self, binary):
             self.binary = binary
-            self.planned_free_vram_mib = dict(planned)
+            # Each server reads the card when it starts: the next plan in line, then the last one again.
+            self.planned_free_vram_mib = dict(plans.pop(0) if len(plans) > 1 else plans[0])
 
         def start(self, files, **kwargs):
             events.append(
@@ -3236,11 +3240,29 @@ def test_a_vram_refusal_leaves_a_full_bystander_card_to_sd_cpp(monkeypatch):
     assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "CUDA1=3.25")]
 
 
-def test_a_second_vram_refusal_is_surfaced(monkeypatch):
+def test_a_second_vram_refusal_in_the_same_request_is_surfaced(monkeypatch):
     b, events = _vram_refusal_backend(monkeypatch, refusals = 2)
     with pytest.raises(RuntimeError, match = "failed during weight preparation"):
         b._generate_server(b._state, **_gen_kwargs())
     assert len([e for e in events if e[0] == "start"]) == 1
+
+
+def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
+    # Another application holds the card during the first request: the restarted server plans with 466 MiB and
+    # is refused too. That plan is fixed for the server's life, so once the card is free again the next request
+    # must restart it, under the budget from the first plan (half of 466 MiB would be no budget at all).
+    b, events = _vram_refusal_backend(
+        monkeypatch,
+        refusals = 3,
+        restarted_plans = ({"CUDA1": 466}, {"CUDA1": 6666}),
+    )
+    with pytest.raises(RuntimeError, match = "failed during weight preparation"):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert b._state.vram_budget == "3.25"
+    assert b._state.server.planned_free_vram_mib == {"CUDA1": 466}
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "3.25")] * 2
 
 
 @pytest.mark.parametrize(
@@ -3258,8 +3280,11 @@ def test_a_second_vram_refusal_is_surfaced(monkeypatch):
         {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 5771}, "per_device_supported": False},
         # A CPU render is not short of VRAM.
         {"device": "cpu"},
-        # Not a memory refusal.
+        # Not a memory refusal, and an allocation that failed outright rather than a segment sd.cpp declined.
         {"error": "sd-server generation failed: generation_failed: invalid sampler"},
+        {
+            "error": "[E] ggml: alloc_tensor_range: failed to allocate CUDA0 buffer of size 220288512"
+        },
     ],
     ids = [
         "no_plan",
@@ -3270,6 +3295,7 @@ def test_a_second_vram_refusal_is_surfaced(monkeypatch):
         "no_per_device_budgets",
         "cpu",
         "other_error",
+        "allocation_failure",
     ],
 )
 def test_a_vram_refusal_without_a_usable_budget_is_surfaced_unchanged(monkeypatch, kwargs):

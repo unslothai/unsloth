@@ -963,10 +963,11 @@ def test_image_vram_refusal_text_covers_every_segment_stage():
         assert args_mod.is_vram_refusal_text(
             f"[E] MOSS-Image segment 1/43 (moss_image.layers.0) failed during {stage} --- ggml_runner.cpp:934"
         )
-    assert args_mod.is_vram_refusal_text(_AUDIT_OOM)
     assert not args_mod.is_vram_refusal_text("generation_failed: invalid sampler")
     assert not args_mod.is_vram_refusal_text(None)
-    # Weight preparation is not one of the video path's retry markers.
+    # An allocation that failed outright is the video path's retry, not this one, and the reverse holds for
+    # weight preparation.
+    assert args_mod.is_device_oom_text(_AUDIT_OOM) and not args_mod.is_vram_refusal_text(_AUDIT_OOM)
     assert not args_mod.is_device_oom_text("segment 1/43 failed during weight preparation")
 
 
