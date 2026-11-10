@@ -11241,7 +11241,6 @@ class DiffusionBackend:
                         if headroom and (
                             plan.resident_transformer_mib
                             or plan.resident_text_encoder_mib
-                            # every encoder layer gave way to the edit: the guard still reads what it covered
                             or plan.estimates.get("measured_reference_te_cut_mib")
                         ):
                             pipe._unsloth_measured_reserve = (
@@ -15155,7 +15154,6 @@ class DiffusionBackend:
                         )
 
                     if extra_mib > 0 and guard_reference_pixels > 0:
-                        # a load that priced an edit: release only what free memory lacks right now
                         reference_need = load_covered_reference_need_mib(
                             state.pipe,
                             width = guard_width,
@@ -15170,13 +15168,11 @@ class DiffusionBackend:
                             if reference_need is None
                             else static_reference_release_mib(state.pipe, reference_need)
                         )
-                        # a learned or tier peak raised the planned release past the token estimate: keep it whole
                         if static_release is not None and extra_mib <= static_release:
                             short = live_reference_shortfall_mib(
                                 state.pipe, reference_need, guard_target.torch_device
                             )
-                            # never looser than the activation guard below: a request it would refuse on the
-                            # current memory keeps the planned release
+                            # never looser than the activation guard below
                             if short is not None and short < extra_mib:
                                 fits = image_activation_verdict(
                                     **{k: v for k, v in _guard_kwargs().items() if k != "logger"}

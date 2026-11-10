@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An edit-capable load places for a reference's denoise, so the first edit does not hook the resident transformer;
-CPU only. The encoder gives way at load only where releasing it at render time could not cover the reference;
-elsewhere text-to-image keeps it resident and an edit releases what it lacks from the encoder alone.
+"""An edit-capable load places for a reference's denoise, so the first edit does not hook the resident transformer.
 
-From a Qwen-Image-2.1 int8 edit under a 16 GiB budget: the load kept the 6922 MiB transformer resident and 1488 MiB of
-the 8917 MiB encoder, and every edit then released the flat 8192 MiB/MP x 0.32 x 1.15 = 3014 MiB, more than the
-encoder held, so the transformer took offload hooks, pinned and streamed mid-render."""
+Repro: Qwen-Image-2.1 int8 edit at 16 GiB released a flat 3014 MiB, more than the encoder held, so the transformer
+streamed mid-render."""
 
 from __future__ import annotations
 
@@ -97,7 +94,6 @@ def _refine(pipe, plan):
 
 
 def _reserve(plan):
-    """The reserve diffusion.py stores from the refined plan."""
     est = plan.estimates
     covered = (
         (int(est["measured_reference_phase_mib"]), int(est["measured_reference_reserve_mib"]))
@@ -149,7 +145,6 @@ def test_where_the_encoder_can_cover_an_edit_text_to_image_keeps_it_resident(q21
     assert plan.resident_transformer_mib in (None, 6922)
     # the guidance-free 1024 edit: 768 x 2 joint sequence + 2048 MiB condition cache x 1.15 -> 4096
     assert plan.estimates["measured_reference_need_mib"] == 4096
-    # the text-to-image placement is untouched
     assert plan.resident_text_encoder_mib == min(8959, _room(budget))
     assert plan.estimates["measured_reference_te_cut_mib"] == 0
     # the edit is priced from its tokens (not the flat 3014 MiB) and the resident encoder alone covers it: no hooks
@@ -201,8 +196,7 @@ def test_a_streaming_tier_load_is_untouched(q21):
 
 
 def test_the_encoders_give_way_down_to_none(q21):
-    """The logged 16 GiB budget: the 1489 MiB of resident encoder cannot cover the 1792 MiB the edit adds, so the guard
-    would hook the transformer; the whole encoder streams instead, and the reserve still records what it covered."""
+    """16 GiB: the 1489 MiB resident encoder cannot cover the 1792 MiB edit, so the whole encoder streams instead."""
     plan = _refine(q21, _plan(13407, 16376))
     assert _room(13407) == 1489 < 4096 - 2304
     assert plan.resident_text_encoder_mib is None
@@ -234,8 +228,7 @@ def _q21_family():
     "budget,total", [(21432, 24576), (20000, 23034), (14500, 16376), (13407, 16376)]
 )
 def test_the_load_and_the_first_edit_guard_agree_on_a_default_edit(q21, budget, total):
-    """The guard's inputs for a default edit (no reference_resolution sent, one source image), built the way generate()
-    builds them, against the reserve the load stored: the guard never needs to hook the transformer."""
+    """A default edit's guard inputs, built as generate() builds them, never need to hook the transformer."""
     from core.inference.diffusion_conditioning import (
         effective_reference_resolution,
         reference_request_pixels,
@@ -246,7 +239,6 @@ def test_the_load_and_the_first_edit_guard_agree_on_a_default_edit(q21, budget, 
     reference_pixels = reference_request_pixels(side, 0)
     condition_pixels = int(1 * side * side * fam.condition_pixel_weight)
     plan = _refine(q21, _plan(budget, total))
-    # the load priced the same processed reference the request path will send
     assert dm._default_reference_pixels("qwen-image-2.1") == reference_pixels == REF
     need = dm.load_covered_reference_need_mib(
         _with_reserve(q21, plan),

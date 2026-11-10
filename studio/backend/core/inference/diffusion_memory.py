@@ -5016,8 +5016,7 @@ def _refine_plan_from_loaded_weights(
             and not wide_dit
             and (not bool(getattr(plan, "stream_transformer", True)) or dit_room >= dit)
         ):
-            # An edit-capable family: the resident transformer must hold a reference's denoise too, or the first edit
-            # hooks and streams it mid-render. The idle-while-denoising encoders give way first.
+            # The resident transformer must also hold an edit's denoise, else the first edit streams it mid-render.
             reference = _load_reference_need(
                 pipe,
                 family = family,
@@ -5027,14 +5026,11 @@ def _refine_plan_from_loaded_weights(
             )
             if reference is not None:
                 basis = phase_headroom if lend > 0 and phase_headroom is not None else headroom
-                # room the encoders' residency left unused already counts toward the reference
                 spare = max(
                     0, int(room) + int(headroom) - int(basis) - int(dit_room) - int(te_room)
                 )
                 short = max(0, int(reference[1]) - int(basis) - spare)
-                # Only where releasing the resident encoder at render time could not cover the reference (the guard
-                # would hook the transformer) does every encoder layer give way here; elsewhere text-to-image keeps its
-                # encoder resident and an edit releases what it lacks from it.
+                # Cut the encoder only when a render-time release of it could not cover the reference.
                 reference_cut = int(te_room) if short > int(te_room) else 0
                 te_room -= reference_cut
                 if lend > 0:
@@ -6247,8 +6243,7 @@ def derived_reference_need_mib(
 
 # "0": the load places for text-to-image only; an edit's reference then streams resident groups mid-render.
 EDIT_LOAD_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_EDIT_LOAD_PLACEMENT"
-# ``_unsloth_measured_reserve`` slot: (denoise phase MiB, MiB the placement covers) of a load that priced one
-# guidance-free reference at the default canvas.
+# ``_unsloth_measured_reserve`` slot: (denoise phase MiB, MiB the placement covers).
 MEASURED_RESERVE_REFERENCE_INDEX = 14
 
 
@@ -6257,8 +6252,7 @@ def edit_load_placement_enabled() -> bool:
 
 
 def _default_reference_pixels(family: str) -> int:
-    """Reference pixels of a default edit for ``family``, from the request path's own helpers (the reference resized
-    to the family's default ``reference_resolution``), so the load and the render-time guard price the same image."""
+    """Uses the request path's helpers so the load and the render-time guard price the same image."""
     try:
         from .diffusion_conditioning import default_reference_pixels
         from .diffusion_families import _FAMILIES
@@ -6277,9 +6271,7 @@ def _load_reference_need(
     quant: Optional[str],
     static_seed: bool,
 ) -> Optional[tuple[int, int]]:
-    """(denoise phase MiB, denoise MiB) of a guidance-free edit at the default canvas with one reference at the
-    family's default ``reference_resolution`` (the family's default guidance is 1.0), for a reference-priced family; None when unpriced or switched off. The
-    phase is the static denoise seed; a learned edit peak of this build raises the need, as at request time."""
+    """(denoise phase MiB, denoise MiB) of a guidance-free default edit; None when unpriced or switched off."""
     name = (str(family or "").split() or [""])[0].lower()
     if not edit_load_placement_enabled() or name not in _DERIVED_REFERENCE_FAMILIES:
         return None
@@ -6328,8 +6320,6 @@ def load_covered_reference_need_mib(
     cfg: Optional[bool] = None,
     quadratic_attention: bool = False,
 ) -> Optional[int]:
-    """Denoise MiB of a reference request on a load that priced an edit (``MEASURED_RESERVE_REFERENCE_INDEX``), or
-    None (no such load, no reference, unpriced)."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None) or ()
     if len(reserve) <= MEASURED_RESERVE_REFERENCE_INDEX or int(reference_pixels or 0) <= 0:
         return None
@@ -6351,7 +6341,6 @@ def load_covered_reference_need_mib(
 
 
 def static_reference_release_mib(pipe: Any, need_mib: int) -> Optional[int]:
-    """The release ``measured_request_extra_mib`` derives from ``need_mib`` alone (no learned or tier peak), or None."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve or len(reserve) <= MEASURED_RESERVE_REFERENCE_INDEX:
         return None
@@ -6366,9 +6355,7 @@ def live_reference_shortfall_mib(
     need_mib: int,
     device: Any = None,
 ) -> Optional[int]:
-    """MiB a reference request's denoise ``need_mib`` (above the resident weights) lacks in free memory now: driver
-    free less the VRAM Budget reserve plus the reusable allocator cache, against the need and the decode slack. None
-    when unreadable (the caller keeps its planned release)."""
+    """MiB ``need_mib`` lacks in free memory now (driver free less budget reserve, plus reusable cache); None if unreadable."""
     try:
         import torch
 
@@ -6555,8 +6542,7 @@ def measured_request_extra_mib(
         and base_need is not None
         and int(base_need) <= int(headroom)
     ):
-        # a load that priced an edit: only the steps grow with the reference, priced from their tokens against what
-        # the placement covered (encode and decode run under their own hooks)
+        # only the steps grow with the reference (encode and decode run under their own hooks)
         derived = load_covered_reference_need_mib(
             pipe,
             width = width,
