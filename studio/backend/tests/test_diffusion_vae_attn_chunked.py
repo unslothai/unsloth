@@ -398,7 +398,7 @@ def test_half_math_leaves_other_threads_and_the_flag_alone(rocm, monkeypatch):
         assert _HALF_FLAG() == before
         assert torch.equal(unrelated(), reference)
     finally:
-        for block, thread in zip(blocks, threads):  # first in, first out
+        for block, thread in zip(blocks, threads):
             block.release.set()
             thread.join(10)
     assert not errors and not any(t.is_alive() for t in threads)

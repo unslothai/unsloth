@@ -37,8 +37,7 @@ def half_math_sdpa(
     v: Any,
     scale: Optional[float] = None,
 ) -> Any:
-    """PyTorch's math SDPA as it runs with ``allow_fp16_bf16_reduction_math_sdp(True)``: same ops in the same order, in
-    the inputs' dtype (fp32 GEMM accumulation either way). The flag is process-global, so it is never touched here."""
+    """Math SDPA as with ``allow_fp16_bf16_reduction_math_sdp(True)``, without touching that process-global flag."""
     import torch
 
     s = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
@@ -196,7 +195,7 @@ def _mode_class() -> Any:
                         if _half_math_call(q):
                             self.half += 1
                             cast = _autocast_dtype(q.device.type)
-                            if cast is not None:  # the dtype autocast would hand SDPA
+                            if cast is not None:
                                 q, k, v = (t.to(cast) for t in (q, k, v))
                             with torch.autocast(q.device.type, enabled = False):
                                 if _score_bytes(q, k) > self.budget:
