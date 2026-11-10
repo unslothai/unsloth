@@ -7792,11 +7792,13 @@ html[data-glass][data-glass-cpu] :is([data-slot="chat-settings-panel"], [data-sl
 html[data-glass][data-glass-cpu] :is([data-slot$="popover-content"], [data-slot$="menu-content"]) .sticky {
   background-color: var(--glass-page-popover);
 }
-/* Side panes over the wallpaper: the chat settings panel and the browser panel. */
+/* Side panes over the wallpaper: the chat settings panel and the browser panel. At the sidebar's 96% cap,
+   never opaque: the browser's tab strip is its own layer (z-40), and WebKitGTK paints an opaque one black
+   when the pane opens, until something restyles it. */
 html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
 html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
 html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
-  background-color: var(--glass-panel-fill);
+  background-color: color-mix(in srgb, var(--glass-panel-fill) 96%, transparent);
 }
 /* Light page controls and cards are thin white washes over the image. */
 html[data-glass][data-glass-cpu]:not(.dark) {
@@ -7805,6 +7807,13 @@ html[data-glass][data-glass-cpu]:not(.dark) {
 html[data-glass][data-glass-cpu]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"],
 html[data-glass][data-glass-cpu]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .api-monitor-page {
   --page-glass-card-fill: rgb(255 255 255 / .85);
+}
+/* The liquid sheen fades a few percent of white out across half the surface. WebKitGTK does not dither
+   gradients, so over these dense, unblurred fills each 8-bit step shows as a wide diagonal stripe
+   (five of them across a dark Settings dialog). No sheen there; the rims and glows carry the look. */
+html[data-glass^="liquid"][data-glass-cpu],
+html[data-glass^="liquid"][data-glass-cpu] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+  --glass-sheen: none;
 }
 /* Liquid 3D's wide inner glows and lifts are blurred box-shadows, which WebKitGTK re-rasterises on the
    CPU whenever the surface repaints; there the glows are drawn as gradients and the lifts get a smaller blur. */

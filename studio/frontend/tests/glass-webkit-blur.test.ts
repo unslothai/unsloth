@@ -89,6 +89,18 @@ test("WebKitGTK liquid 3D draws its wide inner glows as gradients, not blurred s
   assert.equal(glowUses.length, 3, "composer, menus and dialogs; elsewhere --glass-glow is unset, so the layer is none");
 });
 
+test("WebKitGTK liquid glass drops the sheen, which bands into stripes over a flat fill", () => {
+  const rule = ruleAt('html[data-glass^="liquid"][data-glass-cpu],');
+  assert.ok(
+    rule.includes('html[data-glass^="liquid"][data-glass-cpu] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {'),
+    "the composer sets its own sheen, so it is cleared there too",
+  );
+  assert.match(rule, /--glass-sheen: none;/);
+  // Every sheen definition must come before the override: equal specificity, so the later rule wins.
+  const at = CSS.indexOf('html[data-glass^="liquid"][data-glass-cpu],');
+  assert.doesNotMatch(CSS.slice(at), /--glass-sheen: linear-gradient/);
+});
+
 test("the WebKitGTK rules are unlayered top-level rules", () => {
   const found: string[] = [];
   postcss.parse(CSS).walkRules((rule) => {
@@ -122,7 +134,11 @@ test("no surface that loses its blur is left with a see-through fill", () => {
   );
   const panes = ruleAt('html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],');
   assert.ok(panes.includes("> .browser-chrome,") && panes.includes("> .browser-panel-body {"));
-  assert.match(panes, /background-color: var\(--glass-panel-fill\);/);
+  assert.match(
+    panes,
+    /background-color: color-mix\(in srgb, var\(--glass-panel-fill\) 96%, transparent\);/,
+    "dense, but not opaque: WebKitGTK paints the browser's opaque z-40 tab strip black when the pane opens",
+  );
   assert.match(ruleAt("html[data-glass][data-glass-cpu]:not(.dark) {"), /--glass-control: rgb\(255 255 255 \/ \.8\);/);
   assert.match(
     ruleAt('html[data-glass][data-glass-cpu]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"],'),
