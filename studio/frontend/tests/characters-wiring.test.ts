@@ -51,3 +51,11 @@ test("a reply subscribes to its own speaker, not the whole library", () => {
   const parts = read("features/characters/chat/message-parts.tsx");
   assert.doesNotMatch(parts, /useCharactersStore\(\(s\) => s\.characters\)/);
 });
+
+test("a scene text field keeps what is being typed when an earlier save answers", () => {
+  const panel = read("features/characters/chat/roleplay-panel.tsx");
+  const field = panel.slice(panel.indexOf("function SavedTextarea"));
+  assert.match(field, /if \(!editing\.current\) setDraft\(value\);/);
+  assert.match(field, /onFocus=\{\(\) => \{\s*editing\.current = true;/);
+  assert.match(field, /onBlur=\{\(\) => \{\s*editing\.current = false;/);
+});

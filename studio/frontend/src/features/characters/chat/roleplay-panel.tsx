@@ -25,7 +25,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { startCharacterChat } from "../actions";
 import { updateCharacter, type ScenePatch } from "../api";
 import { Portrait } from "../components/portrait";
@@ -324,7 +324,11 @@ function SavedTextarea({
   rows?: number;
 }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  // A save answering an earlier blur must not replace what is being typed now.
+  const editing = useRef(false);
+  useEffect(() => {
+    if (!editing.current) setDraft(value);
+  }, [value]);
   return (
     <label className="flex flex-col gap-1.5">
       <span className="text-ui-12 font-medium text-nav-fg-muted">{label}</span>
@@ -334,7 +338,11 @@ function SavedTextarea({
         placeholder={placeholder}
         className="max-h-48 min-h-14 text-ui-13"
         onChange={(event) => setDraft(event.target.value)}
+        onFocus={() => {
+          editing.current = true;
+        }}
         onBlur={() => {
+          editing.current = false;
           if (draft.trim() !== value.trim()) onSave(draft.trim());
         }}
       />
