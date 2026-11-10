@@ -3,12 +3,21 @@
 
 """A managed account's folder browser is confined to its workspace, suggestions included."""
 
+import pytest
+
+import storage.studio_db as studio_db
 from routes import models as models_routes
 from utils.account_context import AccountContext, run_as
 from utils.paths import storage_roots
 from utils.paths.storage_roots import workspace_root
 
 ALICE = AccountContext("a" * 32, "alice")
+
+
+@pytest.fixture(autouse = True)
+def _denylist_inert(monkeypatch):
+    # macOS tmp_path is under denied /private/var.
+    monkeypatch.setattr(studio_db, "is_denied_system_path", lambda _p: False)
 
 
 def test_managed_browse_suggests_only_the_workspace(isolated_auth):
