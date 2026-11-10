@@ -6409,11 +6409,13 @@ html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {
   background: transparent;
 }
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting {
+/* A real image only: over the plain Glass backdrop there is nothing to lift the greeting from, and the faint
+   gradient there bands into rings around it. data-wallpaper-image keeps the selector's specificity. */
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-image][data-wallpaper-ready] .unsloth-welcome-greeting {
   position: relative;
   isolation: isolate;
 }
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting::before {
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-image][data-wallpaper-ready] .unsloth-welcome-greeting::before {
   content: "";
   position: absolute;
   inset: -48px -40px;
