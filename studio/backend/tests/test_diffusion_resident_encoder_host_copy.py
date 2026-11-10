@@ -163,7 +163,8 @@ def test_tied_partners_rebuild_one_shared_copy():
     assert dm.rebuild_dropped_host_copy(b) == 0
 
 
-def test_cuda_dropped_encoder_streams_bit_identical_after_an_eviction(monkeypatch):
+@pytest.mark.parametrize("pin_budget", [None, 0])
+def test_cuda_dropped_encoder_streams_bit_identical_after_an_eviction(monkeypatch, pin_budget):
     """Real diffusers leaf-level group offload on CUDA: the deferred encoder pin drops every resident group's host
     copy, an oversized release copies them back in one registered slab, the streamed forward and the restored one
     match the reference bit for bit."""
@@ -174,6 +175,9 @@ def test_cuda_dropped_encoder_streams_bit_identical_after_an_eviction(monkeypatc
 
     monkeypatch.delenv(dm.RESIDENT_HOST_DROP_ENV, raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    if pin_budget is not None:
+        # host RAM cannot pin the copy-back now: pageable copies, same values
+        monkeypatch.setattr(dm, "_pin_budget_mib", lambda: pin_budget)
     torch.manual_seed(0)
     net = torch.nn.Sequential(*(torch.nn.Linear(256, 256) for _ in range(6)))
     x = torch.randn(4, 256)
@@ -203,9 +207,46 @@ def test_cuda_dropped_encoder_streams_bit_identical_after_an_eviction(monkeypatc
     assert restore is not None
     assert not any(getattr(g, dm._HOST_DROPPED_ATTR, None) for g in groups)
     assert all(next(m.parameters()).device.type == "cpu" for m in net)
-    assert all(h.is_pinned() for g in groups for h in g.cpu_param_dict.values())
+    hosts = [h for g in groups for h in g.cpu_param_dict.values()]
+    assert all(h.is_pinned() for h in hosts) == (pin_budget is None)
     for _ in range(2):
         assert torch.equal(net(x.cuda()).cpu(), ref)
     restore()
     assert all(next(m.parameters()).device.type == "cuda" for m in net)
     assert torch.equal(net(x.cuda()).cpu(), ref)
+    # a second evict / restore reuses the copies: nothing is copied or pinned again
+    again = dm.release_resident_groups(pipe, 1024)
+    assert [h.data_ptr() for g in groups for h in g.cpu_param_dict.values()] == [
+        h.data_ptr() for h in hosts
+    ]
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+    again()
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_a_group_whose_copy_back_fails_stays_resident_and_the_release_goes_on(monkeypatch):
+    monkeypatch.setattr(dm, "_bump_placement_epoch", lambda: None)
+
+    def refuse(groups):
+        raise MemoryError("host RAM")
+
+    monkeypatch.setattr(dm, "rebuild_dropped_host_copies", refuse)
+    monkeypatch.setattr(
+        dm,
+        "rebuild_dropped_host_copy",
+        lambda g: refuse([g]) if getattr(g, dm._HOST_DROPPED_ATTR, None) else 0,
+    )
+    dropped = _Group([_param(1.0)], resident = True, card = "cpu")
+    dropped.cpu_param_dict.clear()
+    setattr(dropped, dm._HOST_DROPPED_ATTR, list(dropped.parameters))
+    dropped._unsloth_resident_bytes = 4 << 20
+    kept = _Group([_param(2.0)], resident = True, card = "cpu")
+    kept._unsloth_resident_bytes = 4 << 20
+    module = types.SimpleNamespace(_unsloth_resident_room = 8, _unsloth_resident_device = None)
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: [kept, dropped])
+    monkeypatch.setattr(dm, "_is_text_encoder_module", lambda pipe, m: True)
+    pipe = types.SimpleNamespace(components = {"text_encoder": module})
+    restore = dm.release_resident_groups(pipe, 8)
+    assert restore is not None
+    assert dropped._unsloth_resident is True and dropped.offloaded == 0
+    assert kept._unsloth_resident is False and kept.offloaded == 1

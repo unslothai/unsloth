@@ -5401,13 +5401,24 @@ def release_resident_groups(
                     if getattr(member, "_unsloth_resident", False) and member not in pending:
                         pending.append(member)
                         budget -= int(getattr(member, "_unsloth_resident_bytes", 0))
-        rebuild_dropped_host_copies(pending)
+        try:
+            rebuild_dropped_host_copies(pending)
+        except Exception as exc:  # noqa: BLE001 - a group still without a host copy stays resident below
+            if logger is not None:
+                logger.warning(
+                    "diffusion.memory: copying resident groups back to the host failed (%s)", exc
+                )
         for module in modules:
             for group in reversed(_offload_groups(module) or []):
                 if left <= 0:
                     break
                 if not getattr(group, "_unsloth_resident", False):
                     continue
+                if any(
+                    getattr(m, _HOST_DROPPED_ATTR, None)
+                    for m in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]
+                ):
+                    continue  # no host copy to stream from: it stays resident, later groups may still free room
                 # Before demoting: a release that fails part way must still wait on the copy stream.
                 state = getattr(module, "_unsloth_stream_state", None)
                 if isinstance(state, dict):
@@ -7287,7 +7298,15 @@ def rebuild_dropped_host_copies(groups: Iterable[Any]) -> int:
         total += -(-int(live.nbytes) // _REBUILD_ALIGN) * _REBUILD_ALIGN
     device = next((live.device for live in lives.values() if live.device.type == "cuda"), None)
     slab = None
-    if device is not None and host_pinning_allowed(device):
+    # Pinned only where pinning is allowed now and the copy fits what host RAM can pin now; else pageable copies
+    # (the group streams slower, the release itself never waits on a pin).
+    budget = None if device is None or _pinned_memory_capped() else _pin_budget_mib()
+    if (
+        device is not None
+        and host_pinning_allowed(device)
+        and budget is not None
+        and (total >> 20) <= budget
+    ):
         try:
             slab = registered_pinned_empty(total)
         except Exception:  # noqa: BLE001 - per-tensor pageable copies below
