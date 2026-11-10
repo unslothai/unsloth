@@ -327,11 +327,13 @@ test("a card's date shows on hover, on keyboard focus and always on touch", () =
   const date = /"([^"]*)",\s*\)}\s*>\s*\{formatCardTime/.exec(readSrc("features/library/components/library-cards.tsx"))?.[1].split(" ");
   for (const reveal of [
     "group-hover/library-card:opacity-100",
-    "group-has-[:focus-visible]/library-card:opacity-100",
+    // keyboard focus: the card sets --card-time-opacity with its own has-[:focus-visible]
+    "opacity-[var(--card-time-opacity,0)]",
     "pointer-coarse:opacity-100",
   ]) {
     assert.ok(date?.includes(reveal), reveal);
   }
+  assert.match(readSrc("features/library/components/library-cards.tsx"), /className="group\/library-card has-\[:focus-visible\]:\[--card-time-opacity:1\] relative"/);
 });
 
 test("a moved folder's files are read again by the galleries and the Library", () => {

@@ -23,6 +23,7 @@ import {
   usePlusMenuPrefsStore,
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
+import { plusMenuAtDefaults } from "@/features/chat/stores/plus-menu-prefs-store";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useIsAccountOwner } from "@/features/auth";
@@ -58,8 +59,13 @@ import {
 } from "../api/tool-result-limit";
 import { ChatMenuOrderList } from "../components/chat-menu-order-list";
 import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
+import { GenerationStatsUpdatesRow } from "../components/generation-stats-updates-row";
 import { SettingsRow } from "../components/settings-row";
-import { ComposerSettings } from "../components/composer-settings";
+import {
+  ComposerFormatRows,
+  ComposerSettings,
+  ContextWindowUsageRow,
+} from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
@@ -295,6 +301,9 @@ export function ChatTab() {
   const pillId = useId();
   const navigate = useNavigate();
   const resetPlusMenu = usePlusMenuPrefsStore((state) => state.resetMenu);
+  const plusMenuPristine = usePlusMenuPrefsStore((state) =>
+    plusMenuAtDefaults(state.pins, state.order),
+  );
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const projectAttachmentTarget = useChatRuntimeStore(
@@ -509,64 +518,6 @@ export function ChatTab() {
       <SettingsSection title={t("settings.general.chatDefaults")}>
         <ComposerSettings embedded={true} />
         <SettingsRow
-          label={t("settings.chat.pastedTextThreshold")}
-          description={
-            pastedTextMinChars > 0
-              ? t("settings.chat.pastedTextShortDescription", {
-                  count: pastedTextMinChars.toLocaleString(),
-                })
-              : t("settings.chat.pastedTextOffDescription")
-          }
-          hint={t("settings.chat.pastedTextThresholdDescription", {
-            shortcut: plainPasteLabel,
-          })}
-        >
-          <Select
-            value={String(pastedTextMinChars)}
-            onValueChange={(value) => setPastedTextMinChars(Number(value))}
-          >
-            <SelectTrigger
-              className="w-36"
-              aria-label={t("settings.chat.pastedTextThreshold")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PASTED_TEXT_THRESHOLD_CHOICES.map((choice) => (
-                <SelectItem key={choice} value={String(choice)}>
-                  {choice === 0
-                    ? t("settings.chat.pastedTextThresholdOff")
-                    : choice.toLocaleString()}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.autoCompact")}
-          description={t("settings.chat.autoCompactDescription")}
-          hint={t("settings.chat.autoCompactHint")}
-        >
-          <Switch
-            aria-label={t("settings.chat.autoCompact")}
-            checked={autoCompactEnabled}
-            onCheckedChange={setAutoCompactEnabled}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.keepRunningWhenTabClosed")}
-          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
-          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
-        >
-          <Switch
-            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
-            checked={keepRunningWhenTabClosed}
-            onCheckedChange={setKeepRunningWhenTabClosed}
-          />
-        </SettingsRow>
-        {isOwner ? <ToolResultLimitRow /> : null}
-        {isOwner ? <FirstTokenTimeoutRow /> : null}
-        <SettingsRow
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}
         >
@@ -601,24 +552,47 @@ export function ChatTab() {
           </div>
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.replyNotification")}
-          description={t("settings.chat.replyNotificationDescription")}
+          label={t("settings.chat.pastedTextThreshold")}
+          description={
+            pastedTextMinChars > 0
+              ? t("settings.chat.pastedTextShortDescription", {
+                  count: pastedTextMinChars.toLocaleString(),
+                })
+              : t("settings.chat.pastedTextOffDescription")
+          }
+          hint={t("settings.chat.pastedTextThresholdDescription", {
+            shortcut: plainPasteLabel,
+          })}
         >
-          <Switch
-            aria-label={t("settings.chat.replyNotification")}
-            checked={notifyWhenReplyFinishes}
-            onCheckedChange={(checked) => {
-              setNotifyWhenReplyFinishes(checked);
-              if (!checked) return;
-              void requestReplyFinishedPermission().then((granted) => {
-                if (granted) return;
-                setNotifyWhenReplyFinishes(false);
-                toast.error(t("settings.chat.replyNotificationBlocked"));
-              });
-            }}
-          />
+          <Select
+            value={String(pastedTextMinChars)}
+            onValueChange={(value) => setPastedTextMinChars(Number(value))}
+          >
+            <SelectTrigger
+              className="w-36"
+              aria-label={t("settings.chat.pastedTextThreshold")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PASTED_TEXT_THRESHOLD_CHOICES.map((choice) => (
+                <SelectItem key={choice} value={String(choice)}>
+                  {choice === 0
+                    ? t("settings.chat.pastedTextThresholdOff")
+                    : choice.toLocaleString()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </SettingsRow>
+        <GenerationStatsUpdatesRow />
       </SettingsSection>
+
+      <LazyImportBoundary fallback={null}>
+        <Suspense fallback={null}>
+          <ChatMemorySection />
+        </Suspense>
+      </LazyImportBoundary>
 
       <SettingsSection title={t("settings.chat.groups.conversations.title")}>
         <SettingsRow
@@ -676,31 +650,54 @@ export function ChatTab() {
             onCheckedChange={setAutoTitle}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <LazyImportBoundary fallback={null}>
-        <Suspense fallback={null}>
-          <ChatMemorySection />
-        </Suspense>
-      </LazyImportBoundary>
-
-      <SettingsSection title={t("settings.chat.groups.display.title")}>
         <SettingsRow
-          label={t("settings.chat.showLinkPreviews")}
-          description={t("settings.chat.showLinkPreviewsDescription")}
+          label={t("settings.chat.autoCompact")}
+          description={t("settings.chat.autoCompactDescription")}
+          hint={t("settings.chat.autoCompactHint")}
         >
           <Switch
-            aria-label={t("settings.chat.showLinkPreviews")}
-            checked={showLinkPreviews}
-            onCheckedChange={setShowLinkPreviews}
+            aria-label={t("settings.chat.autoCompact")}
+            checked={autoCompactEnabled}
+            onCheckedChange={setAutoCompactEnabled}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.groups.replies.title")}>
+        <SettingsRow
+          label={t("settings.chat.keepRunningWhenTabClosed")}
+          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
+          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
+            checked={keepRunningWhenTabClosed}
+            onCheckedChange={setKeepRunningWhenTabClosed}
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.webSearch.images")}
-          description={t("settings.chat.webSearch.imagesDescription")}
+          label={t("settings.chat.replyNotification")}
+          description={t("settings.chat.replyNotificationDescription")}
         >
-          <Switch checked={searchImages} onCheckedChange={setSearchImages} />
+          <Switch
+            aria-label={t("settings.chat.replyNotification")}
+            checked={notifyWhenReplyFinishes}
+            onCheckedChange={(checked) => {
+              setNotifyWhenReplyFinishes(checked);
+              if (!checked) return;
+              void requestReplyFinishedPermission().then((granted) => {
+                if (granted) return;
+                setNotifyWhenReplyFinishes(false);
+                toast.error(t("settings.chat.replyNotificationBlocked"));
+              });
+            }}
+          />
         </SettingsRow>
+        {isOwner ? <ToolResultLimitRow /> : null}
+        {isOwner ? <FirstTokenTimeoutRow /> : null}
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.groups.thinkingTools.title")}>
         <SettingsRow
           label={t("settings.chat.thinking.visibility")}
           description={t("settings.chat.thinking.visibilityDescription")}
@@ -779,6 +776,25 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.chat.webSearch.images")}
+          description={t("settings.chat.webSearch.imagesDescription")}
+        >
+          <Switch checked={searchImages} onCheckedChange={setSearchImages} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.groups.display.title")}>
+        <SettingsRow
+          label={t("settings.chat.showLinkPreviews")}
+          description={t("settings.chat.showLinkPreviewsDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.showLinkPreviews")}
+            checked={showLinkPreviews}
+            onCheckedChange={setShowLinkPreviews}
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.chat.showResponseModel")}
           description={t("settings.chat.showResponseModelDescription")}
         >
@@ -808,6 +824,7 @@ export function ChatTab() {
             onCheckedChange={setShowGenerationDetails}
           />
         </SettingsRow>
+        <ContextWindowUsageRow />
         <SettingsRow
           label={t("settings.chat.inlineEditResponse")}
           description={t("settings.chat.inlineEditResponseDescription")}
@@ -828,6 +845,7 @@ export function ChatTab() {
             onCheckedChange={setShowTurnNavigation}
           />
         </SettingsRow>
+        <ComposerFormatRows />
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.modelSelection.title")}>
@@ -890,12 +908,20 @@ export function ChatTab() {
           ) as Record<PlusMenuItemId, { label: string; icon: ReactNode }>}
           />
         </div>
-        <div className="flex justify-end pt-1">
-          <Button variant="ghost" size="sm" onClick={resetPlusMenu}>
-            {t("settings.chat.menu.reset")}
-          </Button>
-        </div>
       </SettingsSection>
+
+      {/* Same footer as Appearance: a rule, then the reset on the right. */}
+      <div className="flex justify-end border-t border-border/60 pt-4">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={plusMenuPristine}
+          onClick={resetPlusMenu}
+        >
+          {t("settings.chat.menu.reset")}
+        </Button>
+      </div>
     </div>
   );
 }

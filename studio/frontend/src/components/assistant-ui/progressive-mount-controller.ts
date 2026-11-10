@@ -94,6 +94,29 @@ export function widen(current: MountWindow, count: number, chunk = CHUNK_MESSAGE
   return { start };
 }
 
+/**
+ * Largest WebKitGTK step for parked history. 32 restored the pre-windowing load time but made single
+ * frames up to ~1.4 s on CPU-painted WebKit; 16 keeps the worst frame at the 2-per-step level.
+ */
+export const FAR_MOUNT_CHUNK = 16;
+
+/**
+ * WebKitGTK step size. Rows prepended within `reach` px above the viewport top stay unparked and can
+ * move what the reader sees, so they mount `near` at a time; past that they are parked as they land,
+ * so the step grows fourfold per frame up to `max` (each commit has a fixed cost there). `previous`
+ * is 0 before the first step, which stays `near` so it does not delay the tail's first paint.
+ */
+export function nextMountChunk(
+  previous: number,
+  frontierAbovePx: number | null,
+  near: number,
+  reach: number,
+  max = FAR_MOUNT_CHUNK,
+): number {
+  if (frontierAbovePx == null || !(frontierAbovePx > reach)) return near;
+  return Math.max(near, Math.min(max, previous * 4));
+}
+
 /** Out-of-window indices are not rendered at all: hiding would not avoid the mount cost. */
 export function admits(current: MountWindow, index: number): boolean {
   return current == null || index >= current.start;

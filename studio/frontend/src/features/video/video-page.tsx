@@ -23,6 +23,7 @@ import {
   FlimSlateIcon,
   ImageCropIcon,
   InformationCircleIcon,
+  PaintBrush02Icon,
   Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
@@ -57,6 +58,7 @@ import {
 } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
+import { VideoRestylePanel } from "./restyle-panel";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyPin,
@@ -225,6 +227,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
+import { videoFailureToast } from "./generation-failure";
 import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
@@ -285,6 +288,28 @@ function useVideoModels(
   );
 }
 
+const FAILURE_WITH_REASON_TOAST_MS = 10_000;
+
+/** False for the user's own Cancel, which is not an error. */
+function showVideoFailureToast(error: string | null | undefined): boolean {
+  const failure = videoFailureToast(error);
+  if (!failure) return false;
+  const { title, errorType, detail } = failure;
+  const hasReason = Boolean(errorType || detail);
+  toast.error(title, {
+    description: hasReason ? (
+      <span className="[overflow-wrap:anywhere]">
+        {errorType && <code className="font-mono">{errorType}</code>}
+        {errorType && detail ? ": " : null}
+        {detail}
+      </span>
+    ) : undefined,
+    duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
+    action: generationFailureLogsAction(title),
+  });
+  return true;
+}
+
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
 // normalized like the backend's family matcher (separator runs become "-", plus a trailing "-"), so "Wan2_1-T2V-14B"
 // and "wan2.1_t2v_14b" hit the same row.
@@ -318,12 +343,9 @@ function defaultsFor(repoId: string, family?: string): { steps: number; guidance
   const id = fold(repoId);
   // The Wan and FusionX rows count only in the model / file name, as on the backend.
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
-  // LTX-2.5 (diffusers' pre-release "2.4" too) is decided on the two names the backend gets: the selected file and
-  // the repo, read by their last segment. A local file's repo is the folder it sits in (the picker loads it from that
-  // directory), a Hub file's is the repo segment after the owner. The version is ltx_name_version's ("ltx-2.5",
-  // "LTX25", "ltx2.5", "LTX-Video-2.5"), or the explicit ltx-2.5 family. The variant is ltx25_is_dev's: the first
-  // name naming one decides, "distill" before a dev / full / sft token (or transformer_full); a dev pick runs 30
-  // steps at guidance 3, anything else the distilled 8 at guidance 1.
+  // LTX-2.5 (and pre-release 2.4) is read from the file and repo last path segments as the backend
+  // does; the first name naming a variant decides, distill before a dev, full or sft token (or
+  // transformer_full); dev runs 30 steps at guidance 3, else distilled 8 at guidance 1.
   const segments = repoId.replace(/[\\/]+$/, "").split(/[\\/]/);
   const local = /^([\\/~.]|[a-z]:)/i.test(repoId);
   const fileLeaf = segments[segments.length - 1] ?? "";
@@ -1294,15 +1316,18 @@ function VideoGenerator({
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // Controlled so the body-portaled selector force-closes when off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const [pageMode, setPageMode] = useState<"create" | "train">("create");
+  const [pageMode, setPageMode] = useState<"create" | "restyle" | "train">("create");
   // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
   const [trainMounted, setTrainMounted] = useState(false);
   if (pageMode === "train" && !trainMounted) setTrainMounted(true);
+  // Kept mounted once opened: its poll is what saves a finished restyle into the gallery.
+  const [restyleMounted, setRestyleMounted] = useState(false);
+  if (pageMode === "restyle" && !restyleMounted) setRestyleMounted(true);
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
   const navigateToImages = useNavigate();
-  const tourSteps = useMemo(() => buildVideoTourSteps({ pageMode }), [pageMode]);
+  const tourSteps = useMemo(() => buildVideoTourSteps({ pageMode: pageMode === "train" ? "train" : "create" }), [pageMode]);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
   const tour = useGuidedTourController({
     id: "video",
@@ -2415,16 +2440,16 @@ function VideoGenerator({
     setQuant(null);
   }, [refreshStatus, dropResidentState]);
 
-  // Starting a training run unloads the video model, so re-read it on the way back to Create. Status only:
-  // dropResidentState would cancel the poll of a load still running from before the switch.
-  const leftForTrain = useRef(false);
+  // Starting a training run or a restyle unloads the video model, so re-read it on the way back to Create.
+  // Status only: dropResidentState would cancel the poll of a load still running from before the switch.
+  const leftCreate = useRef(false);
   useEffect(() => {
-    if (pageMode === "train") {
-      leftForTrain.current = true;
+    if (pageMode !== "create") {
+      leftCreate.current = true;
       return;
     }
-    if (!active || !leftForTrain.current) return;
-    leftForTrain.current = false;
+    if (!active || !leftCreate.current) return;
+    leftCreate.current = false;
     void refreshStatus();
   }, [active, pageMode, refreshStatus]);
 
@@ -2636,10 +2661,8 @@ function VideoGenerator({
               void ensureSrc(clip);
             }
           } else if (p.phase === "failed") {
-            const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+            showVideoFailureToast(p.error);
           }
           return;
         }
@@ -2698,9 +2721,7 @@ function VideoGenerator({
           }
         } else if (g.phase === "failed") {
           // Kept until the next job, so a reload still shows the failure.
-          const msg = g.error || "Video generation failed";
-          if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+          showVideoFailureToast(g.error);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3675,8 +3696,9 @@ function VideoGenerator({
       });
     } catch (err) {
       if (!isMounted.current) return;
-      const refusal = err instanceof Error ? err.message : "Video generation failed";
-      toast.error(refusal, { action: generationFailureLogsAction(refusal) });
+      const refusal = err instanceof Error ? err.message : null;
+      // A refusal is never the user's own Cancel, so one that mentions "cancelled" still shows.
+      if (!showVideoFailureToast(refusal) && refusal) toast.error(refusal);
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded"; re-read status.
@@ -3948,6 +3970,10 @@ function VideoGenerator({
                   setTrainBaseChoice(repo);
                 }}
               />
+            ) : pageMode === "restyle" ? (
+              <span className="ml-1.5 flex h-[var(--studio-chat-control-height,34px)] items-center truncate px-2.5 text-sm font-medium text-foreground">
+                Cosmos3-Nano-Sim-Transfer
+              </span>
             ) : (
             <ModelSelector
               triggerDataTour="video-model"
@@ -4008,11 +4034,12 @@ function VideoGenerator({
               dataTour="video-mode"
               ariaLabel="Page mode"
               value={pageMode}
-              onValueChange={(v) => setPageMode(v as "create" | "train")}
+              onValueChange={(v) => setPageMode(v as "create" | "restyle" | "train")}
               fit={true}
               className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
+                { value: "restyle", label: "Restyle", icon: <HugeiconsIcon icon={PaintBrush02Icon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
               ]}
             />
@@ -4048,7 +4075,12 @@ function VideoGenerator({
           />
         </div>
       )}
-      {pageMode !== "train" && (
+      {restyleMounted && (
+        <div className={pageMode === "restyle" ? "contents" : "hidden"} inert={pageMode !== "restyle" || undefined}>
+          <VideoRestylePanel active={active} />
+        </div>
+      )}
+      {pageMode === "create" && (
       /* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
           wide row pan the page sideways on a phone. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">

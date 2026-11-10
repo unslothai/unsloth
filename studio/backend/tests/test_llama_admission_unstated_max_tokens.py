@@ -46,8 +46,7 @@ class TestWhatCountsAsUnstated:
         )
 
     def test_a_cap_just_under_the_window_is_still_a_cap(self):
-        """Only the whole window reads as unstated; asking for nearly all of it is a
-        statement, and is charged."""
+        """Only the whole window is unstated; nearly all of it is a statement and is charged."""
         assert (
             _openai_llama_admission_output_allowance(32767, budget = 32768, prompt_tokens = 100)
             == 32767

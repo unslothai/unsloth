@@ -690,8 +690,152 @@ def _write_float_seeds(path: Path, signature: str, names: set) -> bool:
         return False
 
 
+FLOAT_SEED_DEFAULTS_ENV = "UNSLOTH_DIFFUSION_FLOAT_SEED_DEFAULTS"
+# Only repeat blocks: never change one block's trace.
+_LAYER_COUNT_KEYS = frozenset({"num_layers", "num_single_layers", "n_layers", "n_refiner_layers"})
+# Names a first compile learns, recorded on CUDA (torch 2.13, diffusers 0.42.1) from one random-weight layer through
+# the load patches and _compile_repeated_blocks. SymFloat ids hash the source name (ShapeEnv._generate_unique_id), not
+# sizes. Any key not listed compiles as before.
+_FLOAT_SEED_DEFAULTS: dict[str, str] = {
+    # FLUX.2-klein-4B, FLUX.2-klein-base-4B
+    "5dd2ab806177446849627b4464e399c23085a03960a47640163a005ead876c76": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
+    # FLUX.2-klein-9B, FLUX.2-klein-base-9B
+    "ed77982ae6d06d727fa45f55b8a9b54d1cfefd714faf4c49661d0c40d45c25cf": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
+    # FLUX.2-dev
+    "08155a26395df986bc2ebe6a03764b3853aea472ce7071d970a2b6d26e78128d": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
+    # FLUX.1-dev, FLUX.1-Krea-dev, FLUX.1-Kontext-dev
+    "f9da488bd5a25610cba88496c39c38734d14c11e72e3f0688d40379c0995cdc7": (
+        "zf7 zf9 zf12 zf21 zf22 zf40 zf65 zf70 zf71 zf79 zf88 zf90 zf92"
+    ),
+    # FLUX.1-schnell
+    "b96ece9558717c01650c7eb9c9c4107bbc0d362cb67ac73edef2d20b96abfa80": (
+        "zf7 zf9 zf12 zf21 zf22 zf40 zf65 zf70 zf71 zf79 zf88 zf90 zf92"
+    ),
+    # Qwen-Image, Qwen-Image-2512
+    "117a3c53808c528a69646ef6779e6c14e0006d00b744ad2933141adb4dc3e100": (
+        "zf14 zf17 zf21 zf28 zf35 zf51 zf63 zf71 zf72 zf88 zf90"
+    ),
+    # Z-Image-Turbo, Z-Image
+    "dca7906be5a3ff641e546d2701df36ac68e154b101afcf9ed7b9c7834002611c": "zf5 zf28 zf34 zf60 zf61 zf88 zf93",
+    # Wan2.1-T2V-1.3B-Diffusers
+    "e167abbacdd33d070a5afb4db4fab562d48e6947d66516c81e5d82b6e4a33deb": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf88"
+    ),
+    # Wan2.2-T2V-A14B-Diffusers
+    "1964c3258a9e85943eff4f23607798c2b87f1507cba02c4c2ec9426a56c41393": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf88"
+    ),
+    # Wan2.2-TI2V-5B-Diffusers
+    "1bd1ee540edd9dcab8d689c2b48cfb729b19901aaee45bbf67a5b885e176d191": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf87"
+    ),
+}
+
+
+def float_seed_defaults_enabled() -> bool:
+    raw = (os.environ.get(FLOAT_SEED_DEFAULTS_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _source_digest(fn: Any) -> str:
+    """Source digest (stable across Python builds), else bytecode."""
+    import inspect
+
+    fn = getattr(fn, "__func__", fn)
+    try:
+        return hashlib.sha256(inspect.getsource(fn).encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001 - no source (C ext / generated): bytecode, or nothing
+        code = getattr(fn, "__code__", None)
+        return _code_digest(code) if code is not None else f"<{type(fn).__qualname__}>"
+
+
+def _callable_id(fn: Any) -> str:
+    fn = getattr(fn, "__func__", fn)
+    return f"{getattr(fn, '__module__', '')}.{getattr(fn, '__qualname__', type(fn).__qualname__)}"
+
+
+def _traced_code(fn: Any) -> list:
+    """``fn`` plus the module-level functions it calls by name, so swapping either moves the key."""
+    fn = getattr(fn, "__func__", fn)
+    out = [f"{_callable_id(fn)}:{_source_digest(fn)}"]
+    code = getattr(fn, "__code__", None)
+    scope = getattr(fn, "__globals__", None) or {}
+    for name in sorted(set(getattr(code, "co_names", ()) or ())):
+        ref = scope.get(name)
+        if callable(ref) and not isinstance(ref, type) and hasattr(ref, "__code__"):
+            out.append(f"{name}={_callable_id(ref)}")
+    return out
+
+
+def _block_layout(block: Any) -> list:
+    out = []
+    for name, sub in block.named_modules():
+        proc = getattr(sub, "processor", None)
+        out.append(
+            [
+                name,
+                _callable_id(type(sub)),
+                _traced_code(type(sub).forward),
+                []
+                if proc is None
+                else [_callable_id(type(proc))] + _traced_code(type(proc).__call__),
+                "forward" in vars(sub),
+            ]
+        )
+    return out
+
+
+def _default_float_seed_key(module: Any) -> Optional[str]:
+    """Portable key of the block trace: torch minor, diffusers version, config, and the code each block runs."""
+    try:
+        import diffusers
+        import torch
+
+        from .diffusion_block_graph import repeated_blocks
+
+        config = getattr(module, "config", None)
+        if not isinstance(config, dict) or getattr(module, "peft_config", None):
+            return None
+        config = {
+            k: v
+            for k, v in config.items()
+            if not str(k).startswith("_") and k not in _LAYER_COUNT_KEYS
+        }
+        first: dict = {}
+        for block in repeated_blocks(module):
+            first.setdefault(type(block), block)
+        if not first:
+            return None
+        parts = [
+            ".".join(str(torch.__version__).split("+", 1)[0].split(".")[:2]),
+            str(diffusers.__version__),
+            _callable_id(type(module)),
+            json.dumps(config, sort_keys = True, default = str),
+        ]
+        for cls in sorted(first, key = _callable_id):
+            parts.append(json.dumps(_block_layout(first[cls])))
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001 - no key, no defaults
+        return None
+
+
+def _default_float_seeds(modules: Any) -> set:
+    if not float_seed_defaults_enabled() or not _FLOAT_SEED_DEFAULTS:
+        return set()
+    names: set = set()
+    for module in list(modules) if isinstance(modules, (list, tuple)) else [modules]:
+        names.update(_FLOAT_SEED_DEFAULTS.get(_default_float_seed_key(module) or "", "").split())
+    return {n for n in names if _SYMFLOAT_NAME.match(n)}
+
+
 def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple], int]:
-    """Pre-seed the SymFloat names the last compile of this key learned; returns (keep state, names added)."""
+    """Pre-seed the names this key learned, else the built-in ones; returns (keep state, names added)."""
     if seed_dir is None or not float_seeds_enabled():
         return None, 0
     try:
@@ -702,24 +846,28 @@ def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple
         path = Path(seed_dir) / FLOAT_SEEDS_FILE
         before = set(state.force_specializations)
         seeds = _read_float_seeds(path, signature)
+        builtin = False
+        if not seeds:
+            seeds = _default_float_seeds(modules)
+            builtin = bool(seeds)
         for name in sorted(seeds - before):
             state.specialize(name)
-        return (state, path, signature, before, seeds), len(seeds - before)
+        return (state, path, signature, before, seeds, builtin), len(seeds - before)
     except Exception:  # noqa: BLE001 - no seeds: the compile restarts as before
         return None, 0
 
 
 def _keep_floats(seeded: Optional[tuple]) -> int:
-    """Save this compile's specialised names if changed; returns how many are new."""
+    """Save the specialised names if changed or built-in; returns how many are new."""
     if seeded is None:
         return 0
-    state, path, signature, before, seeds = seeded
+    state, path, signature, before, seeds, builtin = seeded
     try:
         names = {
             n for n in set(state.force_specializations) - before if _SYMFLOAT_NAME.match(str(n))
         }
         names |= seeds & set(state.force_specializations)
-        if names and names != seeds:
+        if names and (names != seeds or builtin):
             _write_float_seeds(path, signature, names)
         return len(names - seeds)
     except Exception:  # noqa: BLE001 - bookkeeping only
@@ -742,6 +890,7 @@ class InlineFloatSeeds:
         self.logger = logger
         self.float_seeds = 0
         self.float_seeds_learned = 0
+        self.float_seeds_builtin = False
         self.seeded = False
         self.kept = False
         self._seeds: Optional[tuple] = None
@@ -751,11 +900,13 @@ class InlineFloatSeeds:
             return 0
         self.seeded = True
         self._seeds, self.float_seeds = _seed_floats(self.modules, self.seed_dir)
+        self.float_seeds_builtin = bool(self._seeds and self._seeds[5])
         if self.float_seeds and self.logger is not None:
             with contextlib.suppress(Exception):
                 self.logger.info(
-                    "diffusion.float_seeds: %d float specialisation(s) pre-seeded for the %s compile",
+                    "diffusion.float_seeds: %d %sfloat specialisation(s) pre-seeded for the %s compile",
                     self.float_seeds,
+                    "built-in " if self.float_seeds_builtin else "",
                     "/".join(type(m).__name__ for m in self.modules),
                 )
         return self.float_seeds

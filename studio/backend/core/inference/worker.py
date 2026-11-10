@@ -893,6 +893,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
+                        "precision_folder",
                         "audio_workflows",
                         "audio_reference_text",
                         "audio_required_inputs",

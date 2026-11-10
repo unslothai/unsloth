@@ -57,6 +57,7 @@ _READY_PATH = "/v1/models"
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
 _VID_GEN_PATH = "/sdcpp/v1/vid_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
+_CAPABILITIES_PATH = "/sdcpp/v1/capabilities"
 
 # Compute-buffer lines excluded: they vary per generation, params stay until exit.
 _TOTAL_PARAMS_VRAM_RE = re.compile(
@@ -68,8 +69,7 @@ _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
 
-# Grace for the best-effort native cancel to show in job status; without the cap a lost cancel would hold the generate
-# lock until the job ends.
+# Grace for the best-effort native cancel; uncapped, a lost cancel holds the generate lock.
 _CANCEL_GRACE_S = 5.0
 
 
@@ -167,6 +167,7 @@ class SdCppServer:
         self._resident_params_vram_gb: Optional[float] = None
         # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
         self._tail: deque[str] = deque(maxlen = 200)
+        self._lines_seen = 0
         self._stdout_thread: Optional[threading.Thread] = None
         self._lifecycle_lock = threading.Lock()
         # Set lock-free by stop() so a blocking start()/readiness wait bails promptly.
@@ -178,6 +179,7 @@ class SdCppServer:
         # trust_env=False: loopback-only client must not route through HTTP(S)_PROXY.
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
         self._scratch_dir: Optional[str] = None
+        self._vid_gen_features: Optional[dict] = None
         self._stopped = False
         atexit.register(self.stop)
 
@@ -190,6 +192,23 @@ class SdCppServer:
         """Server rescans this dir per request; reference staged files via the lora field, not
         prompt tags."""
         return self._scratch_dir
+
+    def vid_gen_accepts(self, features: tuple[str, ...]) -> bool:
+        """Read once per server, idle only (capabilities can block behind a job); older builds get False."""
+        if not features:
+            return True
+        caps = self._vid_gen_features
+        if caps is None:
+            try:
+                resp = self._client.get(f"{self.base_url}{_CAPABILITIES_PATH}", timeout = 10.0)
+                data = resp.json() if resp.status_code == 200 else {}
+            except (*_TRANSPORT_ERRORS, httpx.TimeoutException, ValueError):
+                return False
+            modes = data.get("features_by_mode") if isinstance(data, dict) else None
+            caps = modes.get("vid_gen") if isinstance(modes, dict) else None
+            caps = caps if isinstance(caps, dict) else {}
+            self._vid_gen_features = caps
+        return all(caps.get(key) is True for key in features)
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
@@ -435,8 +454,7 @@ class SdCppServer:
         return True
 
     def _drain_stdout(self, proc: subprocess.Popen) -> None:
-        """Drain stdout so the pipe never deadlocks; keep a tail for diagnostics and
-        feed each line to the active generation's step callback."""
+        """Drains stdout (no deadlock); keeps a tail, feeds each line to the step callback."""
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
@@ -444,6 +462,7 @@ class SdCppServer:
                 if not line:
                     continue
                 self._tail.append(line)
+                self._lines_seen += 1
                 match = _TOTAL_PARAMS_VRAM_RE.search(line)
                 if match is not None:
                     value = float(match.group(1)) / 1024.0
@@ -482,8 +501,7 @@ class SdCppServer:
         return {int(physical_gpu_id): float(value)}
 
     def stop(self) -> None:
-        """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP
-        client + atexit handler. Idempotent."""
+        """SIGTERM then SIGKILL, join the drain, release HTTP client and atexit; idempotent."""
         # Set abort BEFORE taking the lock so a start() readiness wait bails instead of blocking.
         self._abort.set()
         self._stopped = True
@@ -492,9 +510,8 @@ class SdCppServer:
             self._dispose()
 
     def _dispose(self) -> None:
-        """Release per-instance resources (on stop / failed start). The backend never
-        reuses a disposed server, so this closes the pooled httpx client and drops the
-        atexit handler that would otherwise pin every reloaded instance for the session."""
+        """Closes the httpx client and drops the atexit handler, which would pin each reloaded
+        instance; the backend never reuses a disposed server."""
         try:
             atexit.unregister(self.stop)
         except Exception:  # noqa: BLE001
@@ -600,6 +617,7 @@ class SdCppServer:
             raise RuntimeError("sd-server is not running.")
 
         self._step_listener = on_step
+        job_mark = self._lines_seen
         job_id: Optional[str] = None
         # Before submit, so a line logged while the POST is in flight already counts.
         pacer = _LogPacedWait(getattr(self, "_log_wake", None), poll_interval)
@@ -688,11 +706,13 @@ class SdCppServer:
                         "sd-server generation failed: "
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
-                    if kind == "vid_gen":
-                        # The job error is generic; the cause (OOM, abort) is only in the log.
-                        tail = _diagnostic_tail(self._tail)
-                        if tail:
-                            message += "\nLast output:\n" + tail[:1500]
+                    # The cause is only in this job's output; an earlier job's stale OOM would mislabel it.
+                    lines = list(self._tail)
+                    tail = _diagnostic_tail(
+                        lines[max(0, len(lines) - (self._lines_seen - job_mark)) :]
+                    )
+                    if tail:
+                        message += "\nLast output:\n" + tail[:1500]
                     raise RuntimeError(message)
                 if status == _TERMINAL_CANCELLED:
                     raise SdCppCancelled("sd-server generation was cancelled.")

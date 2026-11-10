@@ -228,9 +228,7 @@ def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
 
 
 def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
-    """The cap now lives in _tts_max_new_tokens, which both TTS routes share, rather than
-    being computed at the speech route. Exercised directly since the route tests fake the
-    shared core that applies it."""
+    """The TTS token cap lives in _tts_max_new_tokens; route tests fake the core, so test it directly."""
     from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
     from models.inference import ChatCompletionRequest
 
@@ -282,6 +280,8 @@ def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
     monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
     monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
     monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+    # The resident model is a speech model, so an unnamed request is answered by it.
+    monkeypatch.setattr(routes_module, "_serves_audio_workflow", lambda _w: True)
     payload = SimpleNamespace(audio_instructions = None, audio_language = None)
     request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
     model = "org/B-GGUF" if named else routes_module._RELOAD_ONLY_MODEL
@@ -363,8 +363,7 @@ def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path
 
 
 def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(monkeypatch, tmp_path):
-    """The newest clip is the one the caller just generated. Pruning it because it alone
-    exceeds the quota would read as a silent failure."""
+    """Never prune the newest clip just generated, even if alone it exceeds the quota."""
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", "64")
     meta = {

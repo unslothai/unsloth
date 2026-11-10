@@ -665,6 +665,8 @@ export const ru = {
     keepsRunning: "Закрытие не останавливает настройку. Результат появится в разделе Настройки > Безопасность.",
   },
   composerSettings: {
+    shareDraft: "Общий черновик для чатов",
+    shareDraftDescription: "Использовать один черновик в чатах и сравнении. По умолчанию выключено; у каждого чата свой черновик.",
     title: "Ввод сообщений",
     plainText: "Обычный текст",
     plainTextDescription: "Показывать код, Markdown и ссылки как обычный текст. Отключите для предпросмотра форматирования.",
@@ -1664,6 +1666,13 @@ export const ru = {
         audioUploadCancel: "Отменить расшифровку",
         audioUploadTranscribing: "Расшифровка аудио…",
         sectionTitle: "Диктовка",
+        micTargetLabel: "Кнопка микрофона",
+        micTargetAsr: "Распознавать через ASR",
+        micTargetModel: "Отправлять аудио модели",
+        micTargetAsrDescription: "Кнопка микрофона вводит сказанное в поле сообщения.",
+        micTargetModelDescription: "Если загружена модель со звуковым вводом, микрофон записывает клип и прикрепляет его к сообщению. Для остальных моделей по-прежнему работает диктовка.",
+        micTargetModelUnavailable: "Загрузите модель со звуковым вводом (например, LFM3-Omni), чтобы отправлять ей свой голос.",
+        micRecordForModel: "Записать аудио для модели",
         engineLabel: "Движок диктовки",
         engineBrowser: "Браузер",
         engineBrowserDescription:
@@ -1689,6 +1698,13 @@ export const ru = {
         sttQuantDescription:
           "Выберите или найдите модель STT для локального запуска, затем её квантизацию.",
         sttDeviceLabel: "Загружать в",
+        sttContextLabel: "Голосовой контекст",
+        sttContextAuto: "Авто (рекомендуется)",
+        sttContextAutoDescription:
+          "Подбирает размер для каждой записи: чем длиннее аудио, тем больше памяти требуется. В старых версиях среды выполнения для снижения расхода памяти может потребоваться фиксированный размер. Применяется к Qwen3-ASR в разделах «Голос» и «Транскрибировать».",
+        sttContextFixedDescription:
+          "Чем меньше лимит, тем меньше расход памяти. Для записей, которые не укладываются в лимит, увеличьте его или выберите «Авто». Применяется к Qwen3-ASR в разделах «Голос» и «Транскрибировать».",
+        sttContextTokens: "Токенов: {count}",
         sttDeviceAuto: "GPU, если доступен",
         sttDeviceCpu: "ОЗУ процессора",
         sttDeviceAutoDescription:
@@ -2574,7 +2590,7 @@ export const ru = {
         apiDescription: "Смотрите, что другие приложения отправляют в API этого сервера, по мере поступления.",
         summary: "Активные запросы, ошибки и использование токенов",
         status: "активных: {active} · недавних: {recent} · {model}",
-        noModelLoaded: "модель не загружена",
+        noModelLoaded: "Модель не загружена",
         autoOpen: "Автоматически показывать плавающий монитор",
         autoOpenDescription:
           "Открывает небольшую панель при появлении трафика API.",
@@ -2591,11 +2607,25 @@ export const ru = {
         gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
         detailedView: "Подробный вид",
         detailedViewDescription:
-          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне.",
-        cpuLoad: "Загрузка CPU",
+          "Показывать загрузку, температуру и мощность каждой GPU в плавающем окне.",
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
         power: "Мощность",
+        memory: "Память",
+        gpuInUse: "Используется GPU",
+        availableForModels: "Доступно для моделей",
+        refreshRate: "Частота обновления",
+        refreshRateDescription: "Как часто плавающий монитор считывает использование памяти и GPU, пока он открыт.",
+        refreshEvery: "Каждые {seconds} с",
+        unsloth: "Unsloth",
+        otherApps: "Другие приложения",
+        otherInUse: "Прочее",
+        freeLabel: "Свободно",
+        unslothApp: "Приложение Unsloth",
+        unslothShare: "Показывать долю Unsloth",
+        unslothShareDescription: "Делит память на занятую Unsloth, другими приложениями и свободную.",
+        modelBreakdown: "Разбивка по моделям",
+        modelBreakdownDescription: "Делит долю Unsloth на полосе памяти между загруженными моделями и остальной частью приложения.",
       },
       gpu: {
         title: "Устройства GPU",
@@ -2608,7 +2638,7 @@ export const ru = {
         detecting: "Поиск GPU...",
         unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
-          "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
+          "Отдельный GPU не обнаружен.",
         noUsableGpu: "Ни один GPU на этой машине недоступен для PyTorch.",
         mismatchCpuBuild:
           "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
@@ -2684,7 +2714,7 @@ export const ru = {
           "llama.cpp backend gguf инференс cuda rocm hip vulkan metal cpu gpu ускоритель prebuilt переключить движок",
       },
       modelMemory: {
-        title: "Память модели",
+        title: "Загрузка модели",
         keepResident: "Держать модель в памяти GPU",
         keepResidentDescription: "Остаётся в видеопамяти между запросами.",
         keepResidentHint: "Веса не возвращаются в системную ОЗУ, пока модель загружена. Отключает автовыгрузку по простою, а если веса действительно находятся в ОЗУ хоста (единая память или частичная выгрузка на GPU), дополнительно передаёт --mlock, чтобы ОС не вытесняла их и не загружала заново при следующем запросе.",
@@ -2865,7 +2895,7 @@ export const ru = {
       configurationDocs: "документации",
       configurationFlagsSuffix: "о флагах.",
       modelNote:
-        "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
+        "Claude Code и Codex требуют модель GGUF, обслуживаемую llama-server, или модель MLX. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
       subagent: {
         title: "Использовать локальную модель в качестве субагента",
         description:
@@ -2944,6 +2974,8 @@ export const ru = {
     },
     chat: {
       groups: {
+        replies: { title: "Ответы" },
+        thinkingTools: { title: "Размышления и инструменты" },
         conversations: { title: "Беседы" },
         files: { title: "Файлы и вставка" },
         display: { title: "Отображение" },
@@ -3025,11 +3057,20 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
-      showGenerationDetails: "Подробности генерации",
+      showGenerationDetails: "Подробности о скорости и загрузке",
       showGenerationDetailsDescription:
-        "Показывать в реальном времени скорость обработки промпта и ответа с числом токенов, а также где загружены слои модели.",
+        "Добавляет к живым показателям скорость чтения запроса, число токенов и принятие черновиков, а также показывает, куда загружены слои модели.",
       showGenerationDetailsKeywords:
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Статистика скорости и контекста",
+      generationStatsUpdatesDescription:
+        "В реальном времени считает токены в секунду и использование контекста, пока ответ передаётся. По завершении обновляет их, когда каждый ответ закончен.",
+      generationStatsUpdatesHint:
+        "В реальном времени обновляет показатель токенов в секунду под ответом и полосу контекста вверху чата несколько раз в секунду, пока ответ пишется. По завершении обновляет их один раз, когда каждый ответ закончен. Режим реального времени может вызывать подтормаживания или снижать производительность, особенно на старых или загруженных компьютерах.",
+      generationStatsUpdatesSettled: "По завершении",
+      generationStatsUpdatesRealtime: "В реальном времени",
+      generationStatsUpdatesKeywords:
+        "реальное время вживую обновление скорость контекст статистика realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       turnNavigation: "Навигация по ходам",
@@ -3163,12 +3204,10 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL или Markdown, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML или PDF, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
-      exportCombinedSuffix: "(объединённо)",
-      exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
         "Импортируйте файлы JSON, JSONL, NDJSON, CSV или Markdown в Недавние.",
@@ -3395,6 +3434,89 @@ export const ru = {
       description:
         "Откройте этот Unsloth с других устройств: через локальную сеть или временный публичный URL.",
     },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Агенты входят с ключом API Unsloth.",
+      createKey: "Создать ключ API",
+      tools: {
+        title: "Инструменты",
+        count: "Включено {on} из {total}",
+        choose: "Выбрать инструменты",
+        dialogTitle: "Инструменты Unsloth MCP",
+        allTools: "Все инструменты",
+        selectAll: "Выбрать все",
+        selectNone: "Не выбирать ничего",
+        description:
+          "Каждый включённый инструмент добавляется к тому, что агенты читают перед началом, поэтому выключите ненужные. Агенты никогда не видят выключенный инструмент, а его вызовы отклоняются. Уже подключённые агенты увидят изменение после переподключения.",
+        saveError: "Не удалось сохранить настройку инструмента Unsloth MCP.",
+        groups: {
+          models: "Модели",
+          generate: "Генерация",
+          training: "Обучение и экспорт",
+          library: "Данные и библиотека",
+          jobs: "Задачи",
+          other: "Другое",
+        },
+        chatNote: "Чат никогда не получает {tools}.",
+      },
+      status: {
+        on: "Вкл.",
+        off: "Выкл.",
+      },
+      apiKeysRow: {
+        open: "Открыть в разделе «Агенты»",
+      },
+      toolLabels: {
+        studioStatus: "Состояние",
+        listModels: "Список моделей",
+        loadModel: "Загрузить модель",
+        unloadModel: "Выгрузить модель",
+        planLoad: "Спланировать загрузку",
+        downloadModel: "Скачать модель",
+        chat: "Чат",
+        embed: "Встроить текст",
+        systemOne: "Модель решений",
+        generateImage: "Создать изображения",
+        generateAudio: "Создать аудио",
+        transcribe: "Транскрибировать",
+        analyzeAudio: "Анализ аудио",
+        generateVideo: "Создать видео",
+        runRecipe: "Запустить Data Recipe",
+        getJob: "Статус задания",
+        datasets: "Наборы данных",
+        startTraining: "Начать обучение",
+        listTrainingRuns: "Запуски обучения",
+        exportModel: "Экспортировать модель",
+        listMedia: "Сохранённые медиа",
+        voices: "Голоса",
+        cancel: "Отменить работу",
+      },
+      toolDescriptions: {
+        studioStatus: "Проверить, что загружено, работает и свободно на этом компьютере.",
+        listModels: "Показать модели, которые агенты могут загрузить.",
+        loadModel: "Загрузить модель, чтобы агенты могли общаться или генерировать.",
+        unloadModel: "Выгрузить модель, чтобы освободить память.",
+        planLoad: "Посмотреть размер загрузки и память без загрузки модели.",
+        downloadModel: "Скачать модель с Hugging Face.",
+        chat: "Общаться с загруженной моделью.",
+        embed: "Превратить текст в векторы или упорядочить тексты по сходству.",
+        systemOne: "Задать модели решений вопросы да/нет, выбора или оценки.",
+        generateImage: "Генерировать изображения и сохранять их в галерею.",
+        generateAudio: "Генерировать речь или другой звук.",
+        transcribe: "Превратить речь в текст.",
+        analyzeAudio: "Проверить говорящих, тайминг и соответствие клипа сценарию.",
+        generateVideo: "Сгенерировать видео.",
+        runRecipe: "Запустить Data Recipe, чтобы создать датасет.",
+        getJob: "Следить за долгой задачей до её завершения.",
+        datasets: "Показать и загрузить датасеты.",
+        startTraining: "Начать fine-tuning.",
+        listTrainingRuns: "Показать обучения и их результаты.",
+        exportModel: "Экспортировать обученную модель, например в GGUF.",
+        listMedia: "Просмотреть сохранённые изображения, аудио и видео.",
+        voices: "Показать, сохранить, переименовать или удалить голоса.",
+        cancel: "Остановить текущую работу, например обучение или экспорт.",
+      },
+    },
     apiKeys: {
       title: "API",
       description: "Доступ к Unsloth через OpenAI-совместимый API.",
@@ -3560,14 +3682,14 @@ export const ru = {
       },
       mcp: {
         title: "Доступ агентов (MCP)",
-        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth через MCP. Агенты входят с ключом API Unsloth с этой страницы.",
+        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth через MCP.",
         enable: "Разрешить подключения агентов",
         enableDescription: "Обслуживает /mcp/ для запросов с ключом API Unsloth.",
         lockedByEnv: "Задано через {name}.",
         loadError: "Не удалось загрузить настройки доступа агентов.",
         saveError: "Не удалось сохранить настройку доступа агентов.",
         agent: "Агент",
-        exportKeyHint: "Перед запуском агента задайте в {name} ключ API Unsloth с этой страницы.",
+        exportKeyHint: "Перед запуском агента задайте в {name} ключ API Unsloth.",
         configFileHint: "Добавьте это в {path}.",
         keywords: "mcp model context protocol agents claude codex tools агенты агент инструменты протокол контекста модели",
       },
@@ -5492,6 +5614,7 @@ export const ru = {
     monitor: {
       dragHandleLabel: "Переместить живой монитор. Стрелки сдвигают его понемногу, двойной щелчок сбрасывает положение.",
       reconnecting: "Повторное подключение…",
+      resizeHint: "Потяните за сторону или угол, чтобы изменить ширину. Двойной щелчок сбрасывает её.",
     },
   },
   projectsPage: {

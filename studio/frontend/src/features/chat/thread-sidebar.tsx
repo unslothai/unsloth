@@ -53,6 +53,10 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html";
+import {
   deleteChatItem,
   renameChatItem,
   useChatSidebarItems,
@@ -64,15 +68,17 @@ import {
   exportConversationCsv,
   exportConversationShareGPT,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
-  COMBINED_EXPORT_FORMATS_LIST,
-  EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { BulkExportItems } from "./components/bulk-export-items";
+import { ExportFormatItems } from "./components/export-format-items";
 
 const EXPORT_FORMATS = [
   { label: "Training JSONL", fn: exportConversationRawJsonl },
@@ -80,6 +86,8 @@ const EXPORT_FORMATS = [
   { label: "CSV", fn: exportConversationCsv },
   { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
   { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
+  { label: CONVERSATION_HTML_LABEL, fn: exportConversationHtml },
+  { label: CONVERSATION_PDF_LABEL, fn: exportConversationPdf },
 ] as const;
 
 async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {
@@ -232,17 +240,7 @@ export function ThreadSidebar({
                     Export Recents
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
-                        {label} — combined
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`r-s-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, false)}>
-                        {label} — per chat
-                      </DropdownMenuItem>
-                    ))}
+                    <BulkExportItems onExport={(fmt, merged) => void handleBulkExport("recents", fmt, merged)} />
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
                 <DropdownMenuSub>
@@ -251,17 +249,7 @@ export function ThreadSidebar({
                     Export Recents + Projects
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
-                        {label} — combined
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`a-s-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, false)}>
-                        {label} — per chat
-                      </DropdownMenuItem>
-                    ))}
+                    <BulkExportItems onExport={(fmt, merged) => void handleBulkExport("all", fmt, merged)} />
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
               </DropdownMenuContent>
@@ -303,14 +291,13 @@ export function ThreadSidebar({
                           Export
                         </DropdownMenuSubTrigger>
                         <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                          {EXPORT_FORMATS.map(({ label, fn }) => (
-                            <DropdownMenuItem
-                              key={label}
-                              onSelect={() => handleExport(item, fn)}
-                            >
-                              {label}
-                            </DropdownMenuItem>
-                          ))}
+                          <ExportFormatItems
+                            options={EXPORT_FORMATS.map(({ label }) => ({ key: label, label }))}
+                            onSelect={(label) => {
+                              const format = EXPORT_FORMATS.find((f) => f.label === label);
+                              if (format) handleExport(item, format.fn);
+                            }}
+                          />
                         </DropdownMenuSubContent>
                       </DropdownMenuSub>
                       <DropdownMenuSeparator />

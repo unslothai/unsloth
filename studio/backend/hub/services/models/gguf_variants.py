@@ -230,6 +230,9 @@ def gguf_variant_requirements(
     variant: str,
     hf_token: Optional[str] = None,
 ) -> Optional[_GgufVariantRequirement]:
+    # A scope is never in the repo's quant listing, so it would miss the cache and refetch model_info every call.
+    if _is_scope_key(variant):
+        return None
     key = _variant_hash_cache_key(repo_id, variant, hf_token)
     cached = _variant_requirement_cache_get(key)
     if cached is not None:
@@ -1153,7 +1156,7 @@ async def _mlx_precision_variants_answer(
     else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone."""
     if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
         return None
-    from hub.utils.mlx_variants import cached_precision_folder
+    from hub.utils.mlx_variants import cached_precision_folder, looks_like_mlx_repo
     from hub.utils.snapshot_filters import (
         precision_variant_subfolders,
         repo_ships_root_safetensors,
@@ -1177,7 +1180,11 @@ async def _mlx_precision_variants_answer(
                 logger.debug("MLX precision folders for %s unavailable: %s", repo_id, exc)
             else:
                 tags = {str(tag).lower() for tag in (info.tags or [])}
-                if "mlx" not in tags and str(info.library_name or "").lower() != "mlx":
+                if (
+                    "mlx" not in tags
+                    and str(info.library_name or "").lower() != "mlx"
+                    and not looks_like_mlx_repo(repo_id)
+                ):
                     return None
                 sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
                 hashes = {s.rfilename: sibling_sha256(s) for s in (info.siblings or [])}
@@ -1631,8 +1638,7 @@ async def get_gguf_variants_answer(
             await listing_thread(
                 False, account_access.authorize_download, repo_id, "model", hf_token
             )
-    # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
-    # the copy from the request alone.
+    # Sent back since the HF cache answers before local_path; callers cannot infer the copy.
     answered_from: list[Optional[str]] = [None]
     # A repo id naming a directory is answered by that directory alone, or a GGUF-less dir evicts it.
     answered_locally = [False]
@@ -1988,8 +1994,7 @@ async def get_gguf_variants_answer(
                 complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
             answered_locally[0] = True
-            # Surface the resolution so the CLI gate matches the local resolver's exact labels rather than the
-            # id's shape, and no client mirrors its grammar.
+            # Report the resolution so the CLI gate matches the resolver, not the id's shape.
             return _local_response(
                 repo_id, variants, has_vision, complete, context_root = local_id
             ).model_copy(
