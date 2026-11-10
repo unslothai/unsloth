@@ -175,7 +175,7 @@ def test_no_park_without_a_streamed_denoiser():
 def test_video_wires_install_and_render_end_park():
     src = (
         pathlib.Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     swap = src.index("install_pinned_swap(\n")
     install = src.index("install_h3_rotation_park(pipe, park = bool(denoiser_streamed)")
     assert swap < install < swap + 800
