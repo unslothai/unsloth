@@ -915,18 +915,15 @@ def test_a_stale_stable_reading_waits_for_the_release():
 
 
 def test_a_release_already_reported_costs_the_same_single_poll():
-    """Linux: the memory is back before the first read, so the baseline adds no wait."""
     assert _settle([_AFTER, _AFTER], _BASELINE) == (2, 1)
 
 
 def test_a_partial_release_is_not_the_release():
-    """Under half the held weights back is still mid-reclaim, however stable it reads."""
     partial = [(0, 9000)]
     assert _settle([_BEFORE, partial, partial, _AFTER, _AFTER], _BASELINE)[0] == 5
 
 
 def test_a_gpu_that_reports_late_is_not_covered_by_one_that_already_did():
-    """16 GB on each of two cards: the first card's release is half the total, and not the release."""
     baseline = {0: (2000, _HELD), 1: (2000, _HELD)}
     before = [(0, 2000), (1, 2000)]
     first_only = [(0, 18000), (1, 2000)]
