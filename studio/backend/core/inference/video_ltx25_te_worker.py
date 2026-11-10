@@ -23,8 +23,7 @@ def _version_tuple(text: str) -> tuple[int, ...]:
 
 
 def _activate_sidecar(venv_dir: str) -> None:
-    # A transformers already imported here (a parent __main__ re-imported by spawn) shadows the sidecar; the version
-    # check in _load then names the problem.
+    # Already-imported transformers shadow the sidecar; the version check names the problem.
     if not venv_dir or not os.path.isdir(venv_dir):
         raise RuntimeError(f"the transformers 5.10 sidecar is missing at '{venv_dir}'")
     if venv_dir not in sys.path:
@@ -206,9 +205,8 @@ def _dense_scale_vs_bf16(dtype: Any) -> float:
 
 
 def _require_room_for_dense(config: dict, exc: Exception) -> None:
-    """The load was planned at the hosted file's size: refuse the dense fallback when free memory cannot hold the
-    dense encoder, rather than let the OS kill the process mid-read (on Apple Silicon the same pool as the DiT).
-    ``dense_te_gb`` is bf16; a float32 load (fp16 promoted without bf16) needs twice that."""
+    """Refuses the dense fallback if free memory cannot hold it, rather than an OS kill mid-read;
+    dense_te_gb is bf16, so a float32 load needs twice that"""
     need = (
         float(config.get("dense_te_gb") or 0.0)
         * 1000**3
@@ -438,9 +436,7 @@ def quantize_int8_convrot_(
     device: Any = "cpu",
     resident: bool = False,
 ) -> int:
-    """Swap every decoder-layer projection for the ConvRot INT8 linear in place; the number swapped. ``resident``
-    quantizes layer by layer on the card. Otherwise mapped bf16 pages are released per projection; if any cannot be,
-    host tensors are copied out of the map so it can close."""
+    """Swaps decoder projections for ConvRot INT8 in place; mapped pages are released or copied out."""
     import torch
     from torch import nn
 
@@ -1087,6 +1083,11 @@ def _pack_hidden_states(model: Any, ids: Any, mask: Any) -> Any:
     return torch.stack(out.hidden_states, dim = -1).flatten(2, 3).to(dtype = model.dtype)
 
 
+def compact_valid_rows(embeds: Any, mask: Any) -> Any:
+    """``[B, L, D]`` -> ``[valid rows, D]``, row-major over ``(B, L)`` as ``masked_scatter_`` refills it."""
+    return embeds[mask.to(device = embeds.device).bool()]
+
+
 def _truncate_dead_tail(tokenizer: Any, model: Any) -> dict:
     """All hidden states are read, so only the unused 262k-vocab logits head goes."""
     from core.inference.diffusion_te_truncate import truncate_text_encoders
@@ -1231,6 +1232,9 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
             ids = inputs.input_ids.to(device)
             mask = inputs.attention_mask.to(device)
             embeds = _pack_hidden_states(model, ids, mask)
+            if config.get("_compact"):
+                # Valid rows only: the connectors zero padded rows before mixing tokens.
+                embeds = compact_valid_rows(embeds, mask)
             embeds_host = embeds.to("cpu")
             mask_host = mask.to("cpu")
             del embeds
@@ -1250,11 +1254,30 @@ def _no_context() -> Any:
     return contextlib.nullcontext()
 
 
+def _bind_device(config: dict) -> None:
+    """Make the configured card current (not cuda:0), re-resolving the ordinal by the server's card UUID."""
+    device = str(config.get("device") or "")
+    if not config.get("bind_device") or not device.startswith("cuda"):
+        return
+    import torch
+
+    index = torch.device(device).index or 0
+    uuid = config.get("device_uuid")
+    if uuid:
+        for i in range(torch.cuda.device_count()):
+            if str(torch.cuda.get_device_properties(i).uuid) == uuid:
+                index = i
+                break
+    config["device"] = f"cuda:{index}"
+    torch.cuda.set_device(index)
+
+
 def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
     if _BACKEND_PATH not in sys.path:
         sys.path.insert(0, _BACKEND_PATH)
     try:
         _activate_sidecar(config.get("venv_dir") or "")
+        _bind_device(config)
         tokenizer, model = _load(config)
         import transformers
 
@@ -1295,6 +1318,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
             continue
         try:
             config["_pin_host"] = bool(msg.get("pin_host"))
+            config["_compact"] = bool(msg.get("compact"))
             embeds, mask, device = _encode_on(
                 tokenizer,
                 model,
@@ -1309,6 +1333,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     "id": msg.get("id"),
                     "embeds": embeds,
                     "mask": mask,
+                    "compact": bool(config.get("_compact")),
                     "device": device,
                     "streamed": bool(config.get("_streamed")),
                     "prefetched_layers": int(

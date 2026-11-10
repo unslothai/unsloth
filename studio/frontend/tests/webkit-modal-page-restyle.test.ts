@@ -55,6 +55,25 @@ test("the lock's body styles are static, with what react-remove-scroll-bar injec
   }
 });
 
+test("on screen <body> already has the lock's overflow and position, so a lock toggle is a no-op", () => {
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /@media screen \{\s*body \{\s*overflow: hidden;\s*position: relative;\s*\}\s*\}/,
+  );
+  const lock = rule(css, "body[data-scroll-locked]");
+  assert.ok(lock.includes("overflow: hidden !important;") && lock.includes("position: relative !important;"));
+});
+
+test("the login and change-password pages scroll in their own <main>, now that <body> never does", () => {
+  const hiddenRouteMain = /<main className="([^"]*--studio-hidden-route-top-inset[^"]*)"/.exec(
+    readSrc("app/routes/__root.tsx"),
+  );
+  assert.ok(hiddenRouteMain, "the hidden-navbar <main> is gone");
+  const classes = hiddenRouteMain[1].split(" ");
+  assert.ok(classes.includes("h-dvh") && classes.includes("overflow-y-auto"), hiddenRouteMain[1]);
+});
+
 test("document pointer listeners are pinned once per type, before the app mounts", () => {
   const added: [string, unknown][] = [];
   const target = {

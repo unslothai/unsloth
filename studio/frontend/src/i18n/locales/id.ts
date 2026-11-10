@@ -746,6 +746,8 @@ export const id = {
       "Menutup ini tidak menghentikan penyiapan. Hasilnya ditampilkan di Pengaturan > Keamanan.",
   },
   composerSettings: {
+    shareDraft: "Bagikan draf antarobrolan",
+    shareDraftDescription: "Gunakan satu draf untuk obrolan dan perbandingan. Nonaktif secara default; setiap obrolan menyimpan drafnya sendiri.",
     title: "Kolom pesan",
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:
@@ -1831,6 +1833,13 @@ export const id = {
         audioUploadCancel: "Batalkan transkripsi",
         audioUploadTranscribing: "Mentranskripsikan audio…",
         sectionTitle: "Dikte",
+        micTargetLabel: "Tombol mikrofon",
+        micTargetAsr: "Transkripsi dengan ASR",
+        micTargetModel: "Kirim audio ke model",
+        micTargetAsrDescription: "Tombol mikrofon mengetik ucapan Anda ke kotak pesan.",
+        micTargetModelDescription: "Saat model dengan input audio dimuat, mikrofon merekam klip dan melampirkannya ke pesan Anda. Model lain tetap menggunakan dikte.",
+        micTargetModelUnavailable: "Muat model yang menerima input audio (misalnya LFM3-Omni) untuk mengirim suara Anda.",
+        micRecordForModel: "Rekam audio untuk model",
         engineLabel: "Engine dikte",
         engineBrowser: "Browser",
         engineBrowserDescription:
@@ -1856,6 +1865,13 @@ export const id = {
         sttQuantDescription:
           "Pilih atau cari model STT untuk dijalankan secara lokal, lalu kuantisasinya.",
         sttDeviceLabel: "Muat ke",
+        sttContextLabel: "Konteks suara",
+        sttContextAuto: "Otomatis (disarankan)",
+        sttContextAutoDescription:
+          "Menyesuaikan dengan setiap rekaman, dengan lebih banyak memori untuk audio yang lebih panjang. Runtime lama mungkin memerlukan ukuran tetap untuk mengurangi memori. Berlaku untuk Qwen3-ASR di Suara dan Transkripsikan.",
+        sttContextFixedDescription:
+          "Batas yang lebih kecil menggunakan lebih sedikit memori. Rekaman yang tidak muat memerlukan batas lebih tinggi atau Otomatis. Berlaku untuk Qwen3-ASR di Suara dan Transkripsikan.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "GPU jika tersedia",
         sttDeviceCpu: "RAM CPU",
         sttDeviceAutoDescription: "Gunakan GPU jika ada, dan CPU jika tidak.",

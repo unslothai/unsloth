@@ -666,6 +666,8 @@ export const ja = {
     keepsRunning: "閉じても設定は止まりません。結果は 設定 > セキュリティ に表示されます。",
   },
   composerSettings: {
+    shareDraft: "チャット間で下書きを共有",
+    shareDraftDescription: "チャットと比較で1つの下書きを使用します。既定ではオフで、各チャットが個別の下書きを保持します。",
     title: "入力欄",
     plainText: "プレーンテキスト入力",
     plainTextDescription: "コード、Markdown、リンクをそのままのテキストで表示します。オフにすると書式付きプレビューを表示します。",
@@ -1664,6 +1666,13 @@ export const ja = {
         audioUploadCancel: "文字起こしをキャンセル",
         audioUploadTranscribing: "音声を文字起こし中…",
         sectionTitle: "音声入力",
+        micTargetLabel: "マイクボタン",
+        micTargetAsr: "ASR で文字起こし",
+        micTargetModel: "音声をモデルに送信",
+        micTargetAsrDescription: "マイクボタンで話した内容をメッセージ欄に入力します。",
+        micTargetModelDescription: "音声入力対応のモデルを読み込んでいると、マイクでクリップを録音してメッセージに添付します。その他のモデルでは従来どおり音声入力になります。",
+        micTargetModelUnavailable: "音声を送るには、音声入力に対応したモデル（例: LFM3-Omni）を読み込んでください。",
+        micRecordForModel: "モデル用に音声を録音",
         engineLabel: "音声入力エンジン",
         engineBrowser: "ブラウザー",
         engineBrowserDescription:
@@ -1689,6 +1698,13 @@ export const ja = {
         sttQuantDescription:
           "ローカルで実行する STT モデルを選択または検索し、量子化を選びます。",
         sttDeviceLabel: "読み込み先",
+        sttContextLabel: "音声コンテキスト",
+        sttContextAuto: "自動（推奨）",
+        sttContextAutoDescription:
+          "録音ごとにコンテキスト長を調整します。長い音声ほど多くのメモリを使用します。古いランタイムでは、メモリ使用量を減らすために固定サイズの指定が必要な場合があります。「音声」と「文字起こし」の Qwen3-ASR に適用されます。",
+        sttContextFixedDescription:
+          "上限が小さいほどメモリ使用量を抑えられます。録音が上限に収まらない場合は、上限を増やすか「自動」を選択してください。「音声」と「文字起こし」の Qwen3-ASR に適用されます。",
+        sttContextTokens: "{count} トークン",
         sttDeviceAuto: "GPU（利用できる場合）",
         sttDeviceCpu: "CPU メモリ",
         sttDeviceAutoDescription:

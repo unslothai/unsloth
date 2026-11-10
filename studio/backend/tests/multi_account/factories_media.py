@@ -521,4 +521,9 @@ SKIPPED = {
     "routes.npu:DELETE:/models/{model_id}": _NPU_INSTALLATION_MODEL,
     "routes.npu:POST:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
     "routes.npu:GET:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
+    "routes.video_restyle:GET:/video/restyle/{job_id}/{kind}.mp4": (
+        "serves the in-memory restyle runner's current job, not a stored object, so there is "
+        "nothing to seed; media_path answers only the job's own account "
+        "(test_runner_hides_another_accounts_job)"
+    ),
 }

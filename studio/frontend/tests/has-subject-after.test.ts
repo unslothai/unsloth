@@ -59,7 +59,7 @@ const ALLOWED_TAILWIND = new Set<string>([
   "group-has-[[data-orientation=horizontal]]/field:text-balance",
   "group-has-[[data-slot=command-shortcut]]/command-item:hidden",
   "group-has-[input:disabled]/number:pointer-events-none",
-  "group-has-[input:disabled]/number:opacity-0",
+  "group-has-[input:disabled]/number:opacity-0!",
   "group-has-[>input]/input-group:pt-3",
   "group-has-[>input]/input-group:pb-3",
   "group-has-[>svg]/alert:col-start-2",
