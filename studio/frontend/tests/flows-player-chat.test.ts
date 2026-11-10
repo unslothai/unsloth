@@ -47,7 +47,7 @@ test("a saved chat round-trips and a foreign save starts fresh", () => {
 });
 
 test("a re-roll never runs the chat entry point", () => {
-  const d = doc([node("out", "chat.output"), node("w", "story.generator")]);
+  const d = doc([node("out", "chat.output"), node("w", "world.generator")]);
   assert.deepEqual(rerollTargets(d), ["w"]);
 });
 

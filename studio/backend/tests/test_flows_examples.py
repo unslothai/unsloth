@@ -14,6 +14,7 @@ from core.flows.registry import load_handlers
 from core.flows.schema import FlowDocument
 from core.flows.specs import SPECS_BY_TYPE
 from core.flows.story import compile_story_report, walk_check
+from core.flows.world import normalize_world, resolve_world_report
 
 from .flows_player_fakes import FakeCtx, run
 
@@ -37,8 +38,8 @@ def _run_example(name: str, stubs: dict):
 
 
 def test_the_example_count():
-    # 51 hand-built examples plus the 9 Data Recipes learning recipes as Recipe groups.
-    assert len(BUILT) == 60
+    # 56 hand-built examples plus the 9 Data Recipes learning recipes as Recipe groups.
+    assert len(BUILT) == 65
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -84,6 +85,46 @@ def test_lantern_picnic_needs_no_models():
     doc = _example("lantern-picnic")
     assert doc["requirements"]["models"] == []
     assert not [n for n in doc["nodes"] if SPECS_BY_TYPE[n["type"]]["lane"] == "gpu"]
+
+
+def test_pocket_village_plays_after_a_run():
+    doc = _example("pocket-village")
+    world = normalize_world(
+        {
+            "title": "Hollow",
+            "npcs": [{"name": "Bea"}],
+            "items": [{"name": "Bell"}],
+            "quests": [{"title": "Bell", "giver": "Bea", "requires_item": "Bell"}],
+        },
+        seed = 1,
+    )
+    w, warnings = resolve_world_report(doc, {"art": {"world": world}})
+    assert not warnings
+    assert [n["name"] for n in w["npcs"]] == ["Bea", "Grandma Fern"]
+    assert w["entry_points"] == {"npc_reply": "reply"}
+
+
+def test_lantern_isle_3d_opens_in_first_person():
+    doc = _example("lantern-isle-3d")
+    world = normalize_world({"title": "Isle", "npcs": [{"name": "Bea"}]}, seed = 1)
+    w, warnings = resolve_world_report(doc, {"art": {"world": world}})
+    assert not warnings
+    assert w["render"] == "3d" and w["view3d"] == {"time_of_day": "dusk"}
+    assert [n["name"] for n in w["npcs"]] == ["Bea", "Keeper Ines"]
+    w, _ = resolve_world_report(_example("pocket-village"), {"art": {"world": world}})
+    assert "render" not in w
+
+
+def test_smallville_lite_is_a_simulated_village():
+    w, warnings = resolve_world_report(_example("smallville-lite"))
+    assert not warnings
+    assert w["entry_points"] == {"npc_reply": "reply", "npc_plan": "plan", "npc_chat": "chat"}
+    assert len(w["npcs"]) == 6 and len(w["simulation"]["places"]) == 5
+    isabella = w["npcs"][0]
+    assert "Valentine's Day party at Hobbs Cafe" in isabella["seed_memories"][0]["text"]
+    assert isabella["seed_memories"][0]["importance"] == 8
+    assert w["vars"] == {"party_attendance": 0}
+    assert "Park et al. 2023" in _example("smallville-lite")["notes"][0]["text"]
 
 
 @pytest.mark.parametrize("name", ["lantern-picnic", "sloth-moon"])

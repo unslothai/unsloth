@@ -168,6 +168,21 @@ def _live_chat(monkeypatch, slots: int):
     return eng, d, probe
 
 
+def test_the_world_live_calls_share_the_chat_model_and_planning_runs_in_the_background():
+    from core.flows.specs import SPECS_BY_TYPE
+
+    shared = {t for t, s in SPECS_BY_TYPE.items() if s.get("shares_chat")}
+    background = {t for t, s in SPECS_BY_TYPE.items() if s.get("background")}
+    assert shared == {
+        "story.next_scene",
+        "world.npc_reply",
+        "world.npc_plan",
+        "world.npc_chat",
+        "world.describe_place",
+    }
+    assert background == {"world.npc_plan", "world.npc_chat"}
+
+
 def _parked(lease: GpuLease) -> int:
     """Callers blocked on the lease and not yet woken: they cannot run until the lease notifies again."""
     return sum(1 for fut in lease._cond._waiters if not fut.done())

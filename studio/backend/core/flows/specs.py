@@ -27,6 +27,7 @@ CATEGORIES = [
     {"id": "automation", "title": "Automation", "color": "#14b8a6"},
     {"id": "output", "title": "Output", "color": "#0ea5e9"},
     {"id": "story", "title": "Story Game", "color": "#a855f7"},
+    {"id": "world", "title": "World Game", "color": "#22c55e"},
     {"id": "chat", "title": "Chat & Agents", "color": "#14b8a6"},
     {"id": "memory", "title": "Memory", "color": "#0d9488"},
 ]
@@ -45,6 +46,7 @@ PORT_COLORS = {
     "model": "#38bdf8",
     "checkpoint": "#2dd4bf",
     "story": "#c084fc",
+    "world": "#4ade80",
     "table": "#22d3ee",
     "chart": "#facc15",
     "heatmap": "#fb7185",
@@ -1865,6 +1867,70 @@ NODE_SPECS: list[dict] = [
         lane = "gpu", model_kind = "image", entrypoint = True, icon = "palette",
     ),
     spec(
+        "world.generator", "World Generator", "world",
+        "Design a small world from a premise with an LLM: NPCs with personas, items, a quest and regions.",
+        inputs = [inp("premise", "text", optional = True), inp("seed", "number", optional = True)],
+        outputs = [out("world", "world")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("premise", "textarea", "", "Premise"),
+            P("npcs", "int", 4, "NPCs", min = 1, max = 16),
+            P("items", "int", 4, "Items", min = 0, max = 32),
+            P("biome", "select", "meadow", "Biome", options = ["meadow", "forest", "desert", "snow", "town", "dungeon", "beach"]),
+            P("style", "text", "cute 16-bit pixel art, top-down RPG", "Art style"),
+            P("seed", "seed", None, "Seed"),
+        ],
+        lane = "gpu", model_kind = "chat", icon = "globe",
+    ),
+    spec(
+        "world.art", "World Art", "world",
+        "Generate sprites for the player, NPCs and items, and tile textures, then cut them out.",
+        inputs = [inp("world", "world")],
+        outputs = [out("world", "world")],
+        params = [
+            P("model", "model", None, "Image model", model_kind = "image"),
+            P("tiles", "bool", True, "Tile textures"),
+            P("sprites", "bool", True, "Character and item sprites"),
+            P("seed", "seed", None, "Seed"),
+        ],
+        lane = "gpu", model_kind = "image", icon = "palette",
+    ),
+    spec(
+        "world.spec", "World", "world", "Author a world by hand (JSON) or edit a generated one.",
+        inputs = [inp("world", "world", optional = True), inp("tileset", "json", optional = True)],
+        outputs = [out("world", "world")],
+        params = [P("world", "world", None, "World")], icon = "map",
+    ),
+    spec(
+        "world.npc", "NPC", "world", "A character the player can talk to.",
+        inputs = [inp("sprite", "image", optional = True)],
+        outputs = [out("npc", "json")],
+        params = [
+            P("name", "text", "Villager", "Name"),
+            P("persona", "textarea", "", "Persona"),
+            P("greeting", "text", "Hello there!", "Greeting"),
+        ],
+        icon = "user",
+    ),
+    spec(
+        "world.npc_reply", "NPC Reply (live)", "world",
+        "Entrypoint the world player calls when you talk to an NPC: replies in character from the world state. "
+        "Long conversations are summarised in the background, so each NPC remembers what was said, and new quests "
+        "keep appearing as old ones are finished.",
+        inputs = [inp("state", "json", optional = True)],
+        outputs = [out("reply", "json")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("max_tokens", "int", 200, "Max tokens"),
+            P("rules", "textarea", "Stay in character. Keep replies under 60 words.", "Rules"),
+            P("summarise", "bool", True, "Summarise long conversations"),
+            P("new_quests", "bool", True, "Keep generating quests"),
+            P("autonomy", "select", "off", "Villagers act on their own", options = ["off", "village", "rivals", "full"]),
+        ],
+        lane = "gpu", model_kind = "chat", entrypoint = True, cacheable = False, shares_chat = True,
+        icon = "chat",
+    ),
+    spec(
         "trigger.schedule", "Schedule", "automation",
         "Runs the flow every few minutes or on a cron schedule, only while Unsloth Studio is open (missed times are "
         "not made up). Owner account only, after you approve it. Run by hand it fires once now.",
@@ -1919,6 +1985,59 @@ NODE_SPECS: list[dict] = [
         ],
         side_effect = True,
         requires_approval = ["python"], icon = "braces",
+    ),
+    spec(
+        "world.npc_plan", "NPC Plan (live)", "world",
+        "Entrypoint the world player calls once per NPC per game day in a simulated world: plans the day as "
+        "blocks of time at the world's places, from the NPC's persona, routine and memories. After Park et al. 2023.",
+        inputs = [inp("state", "json", optional = True)],
+        outputs = [out("plan", "json")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("relevance", "select", "embeddings", "Relevance", options = ["embeddings", "keywords"]),
+        ],
+        lane = "gpu", model_kind = "chat", entrypoint = True, cacheable = False, shares_chat = True,
+        background = True, icon = "calendar",
+    ),
+    spec(
+        "world.npc_chat", "NPC Chat (live)", "world",
+        "Entrypoint the world player calls when two NPCs meet in a simulated world: writes their short chat and "
+        "what each learns from the other, so news spreads through the village. After Park et al. 2023.",
+        inputs = [inp("state", "json", optional = True)],
+        outputs = [out("chat", "json")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("relevance", "select", "embeddings", "Relevance", options = ["embeddings", "keywords"]),
+        ],
+        lane = "gpu", model_kind = "chat", entrypoint = True, cacheable = False, shares_chat = True,
+        background = True, icon = "users",
+    ),
+    spec(
+        "world.describe_place", "Describe a Place", "world",
+        "Lays out a place from a short description: the model lists areas, props and how they relate (near, against "
+        "a wall, facing, in an area) and a solver puts them on free tiles the player can still walk to. The 3D "
+        "scene editor calls it; a refused answer is asked again twice, then a built-in layout is used.",
+        inputs = [inp("request", "json", optional = True), inp("world", "world", optional = True)],
+        outputs = [out("place", "json")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("description", "textarea", "A small market square with a well", "Description"),
+        ],
+        lane = "gpu", model_kind = "chat", entrypoint = True, cacheable = False, shares_chat = True,
+        icon = "map",
+    ),
+    spec(
+        "world.play", "World Player", "world",
+        "Open the world in the player. View picks the top-down map or the first-person 3D walk (Auto uses "
+        "what the world asks for, else the map).",
+        inputs = [inp("world", "world"), inp("ambient", "audio", "Ambient sound", optional = True)],
+        outputs = [out("world", "world")],
+        params = [
+            P("view", "select", "auto", "View", options = ["auto", "2d", "3d"]),
+            P("time_of_day", "select", "auto", "Time of day (3D)", options = ["auto", "dawn", "day", "dusk", "night"]),
+            P("gameplay", "select", "explore", "Gameplay (3D)", options = ["explore", "action", "shooter"]),
+        ],
+        icon = "gamepad",
     ),
     spec(
         "memory.add", "Remember", "memory",

@@ -1186,6 +1186,20 @@ def story(flow_id: str) -> dict:
         raise HTTPException(status_code = 422, detail = str(exc))
 
 
+@router.get("/{flow_id}/world")
+def world(flow_id: str) -> dict:
+    from core.flows.world import resolve_world
+
+    record = _flow_or_404(flow_id)
+    try:
+        found = resolve_world(record["doc"], _node_outputs(record))
+    except ValueError as exc:
+        raise HTTPException(status_code = 422, detail = str(exc))
+    if found is None:
+        raise HTTPException(status_code = 404, detail = "Run the flow first: it has no world yet")
+    return found
+
+
 @router.get("/{flow_id}/sessions")
 def list_sessions(flow_id: str) -> dict:
     _flow_or_404(flow_id)

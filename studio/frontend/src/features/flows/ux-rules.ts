@@ -72,7 +72,7 @@ export function categoriesOf(flow: CategorySource): GalleryCategory[] {
   for (const { id } of GALLERY_CATEGORIES) {
     const hit =
       id === "games"
-        ? flow.kind === "story"
+        ? flow.kind === "story" || flow.kind === "world"
         : TAGS[id].some((t) => tags.has(t)) ||
           (NEEDS[id] ?? []).some((n) => needs.has(n));
     if (hit) out.push(id);

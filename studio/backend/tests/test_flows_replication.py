@@ -121,10 +121,10 @@ async def test_every_export_mode_is_stamped_and_still_imports(tmp_path, monkeypa
         } in stamp["models"]
 
 
-def test_live_conversations_flags_games_whose_players_call_a_model():
-    assert replication.live_conversations(doc([node("r", "story.next_scene")]))
+def test_live_conversations_flags_worlds_whose_players_call_a_model():
+    assert replication.live_conversations(doc([node("r", "world.npc_reply")]))
     assert not replication.live_conversations(
-        doc([{**node("r", "story.next_scene"), "disabled": True}])
+        doc([{**node("r", "world.npc_reply"), "disabled": True}])
     )
     assert not replication.live_conversations(doc([node("t", "input.text", value = "x")]))
 

@@ -22,6 +22,7 @@ from core.flows.nodes import (  # noqa: F401
     training,
     transform,
     video,
+    world,
 )
 
 __all__ = [
@@ -43,4 +44,5 @@ __all__ = [
     "training",
     "transform",
     "video",
+    "world",
 ]

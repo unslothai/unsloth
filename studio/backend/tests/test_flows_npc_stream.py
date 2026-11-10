@@ -5,6 +5,7 @@ import asyncio
 import json
 
 from core.flows import engine as engine_mod
+from core.flows.nodes._common import JsonFieldStream
 import pytest
 
 from core.flows.specs import SPECS_BY_TYPE
@@ -13,6 +14,28 @@ from utils.account_context import OWNER, bind_account, reset_account
 from ._flows_helpers import chat_entry_spec, doc, make_engine, node, wait_until
 
 STATE = {"history": [], "player_message": "hi"}
+
+
+def _feed_all(raw: str, step: int) -> str:
+    stream = JsonFieldStream("text")
+    return "".join(stream.feed(raw[:end]) for end in range(step, len(raw) + step, step))
+
+
+def test_text_field_streams_decoded_whatever_the_chunking():
+    raw = json.dumps(
+        {"text": 'Hi "friend", a \\ path\nnext line é \U0001f41d done', "give_item": "bell"}
+    )
+    want = json.loads(raw)["text"]
+    for step in (1, 2, 3, 5, 7, len(raw)):
+        assert _feed_all(raw, step) == want, step
+
+
+def test_text_field_ignores_what_comes_before_and_after():
+    stream = JsonFieldStream("text")
+    assert stream.feed('{"te') == ""
+    assert stream.feed('{"text": "ab') == "ab"
+    assert stream.feed('{"text": "abc", "take_item": "x"}') == "c"
+    assert stream.feed('{"text": "abc", "take_item": "xyz"}') == ""
 
 
 @pytest.fixture(autouse = True)
