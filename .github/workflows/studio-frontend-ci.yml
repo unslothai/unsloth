@@ -48,6 +48,7 @@ on:
       - 'tests/studio/test_area_matrix.py'
       - 'tests/studio/_webkit_leg.py'
       - 'tests/studio/test_webkit_leg.py'
+      - 'tests/studio/test_webkit_leg_ci.py'
       - 'tests/studio/_appearance_coverage.py'
       - 'tests/studio/test_appearance_coverage.py'
       - 'tests/studio/_has_lint.py'
@@ -109,6 +110,7 @@ on:
       - 'tests/studio/test_area_matrix.py'
       - 'tests/studio/_webkit_leg.py'
       - 'tests/studio/test_webkit_leg.py'
+      - 'tests/studio/test_webkit_leg_ci.py'
       - 'tests/studio/_appearance_coverage.py'
       - 'tests/studio/test_appearance_coverage.py'
       - 'tests/studio/_has_lint.py'
@@ -436,6 +438,7 @@ jobs:
             tests/studio/test_css_culprit.py \
             tests/studio/test_area_matrix.py \
             tests/studio/test_webkit_leg.py \
+            tests/studio/test_webkit_leg_ci.py \
             tests/studio/test_appearance_coverage.py \
             tests/studio/test_has_lint.py -q
 

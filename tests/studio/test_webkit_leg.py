@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The long-chat gate's WebKit leg: verdicts, known ceilings, rechecks and CI wiring."""
+"""The long-chat gate's WebKit leg: verdicts, known ceilings and rechecks (CI wiring: test_webkit_leg_ci.py)."""
 
 import sys
 from pathlib import Path
@@ -153,30 +153,6 @@ def test_known_ceilings_name_their_fix():
         assert metric in ("open", "close", "open_frame", "close_frame")
     if wk.KNOWN_DEFAULT:
         assert "Fix work:" in block
-
-
-def test_frontend_ci_runs_the_webkit_leg_with_webkit_installed():
-    ci = (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
-    jobs = ci[ci.index("\njobs:") :]
-    build = jobs[jobs.index("\n  build:") : jobs.index("\n  webkit:")]
-    webkit = jobs[jobs.index("\n  webkit:") : jobs.index("\n  windows:")]
-    # Its own job, in parallel: the build job's critical path installs no WebKit and runs no leg.
-    assert "needs:" not in webkit
-    for needle in (
-        "install webkit",
-        "chromium webkit",
-        "p.webkit",
-        "LONG_THREAD_WEBKIT",
-        "python3 tests/studio/_webkit_leg.py",
-    ):
-        assert needle not in build
-    assert "python3 -m playwright install webkit" in webkit
-    assert "vite.long-thread.config.ts" in webkit
-    assert "LONG_THREAD_WEBKIT: '1'" in webkit
-    assert "python3 tests/studio/_webkit_leg.py" in webkit
-    assert "tests/studio/test_webkit_leg.py" in build
-    for path in ("tests/studio/_webkit_leg.py", "tests/studio/test_webkit_leg.py"):
-        assert ci[: ci.index("\njobs:")].count(f"- '{path}'") == 2
 
 
 def test_a_frame_that_is_already_long_in_the_short_chat_is_a_mount_cost_not_a_long_chat_one():
