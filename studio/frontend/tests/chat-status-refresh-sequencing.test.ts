@@ -52,7 +52,11 @@ test("the lora inventory settles from its own request, not from a sibling's", ()
     /const loraGeneration = includeLoras \? \+\+loraSyncGeneration : null;/,
   );
   // Both outcomes hang off listLoras() itself so a sibling rejection cannot discard a good list.
-  assert.match(LORA_REQUEST, /setLoras\(lorasRes\.loras\.map\(toLoraSummary\)\)/);
+  // Decision API models are listed for the Library too, but never reach Chat.
+  assert.match(
+    LORA_REQUEST,
+    /setLoras\(\s*lorasRes\.loras\s*\.filter\(\(lora\) => !lora\.is_decision\)\s*\.map\(toLoraSummary\),?\s*\)/,
+  );
   assert.match(LORA_REQUEST, /loraInventorySettled: true/);
   assert.match(LORA_REQUEST, /!loraSuperseded\(\)/);
   const catchBlock = SYNC.slice(SYNC.indexOf("} catch (error) {"));

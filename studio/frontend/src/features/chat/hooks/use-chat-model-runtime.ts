@@ -681,7 +681,12 @@ export async function syncInferenceStatusToStore(options?: {
         ? listLoras().then(
             (lorasRes) => {
               if (!signal?.aborted && !loraSuperseded()) {
-                setLoras(lorasRes.loras.map(toLoraSummary));
+                // Decision API models are served from Settings > API, never as a chat model.
+                setLoras(
+                  lorasRes.loras
+                    .filter((lora) => !lora.is_decision)
+                    .map(toLoraSummary),
+                );
               }
               return lorasRes;
             },

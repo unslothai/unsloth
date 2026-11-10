@@ -179,3 +179,138 @@ def test_a_chat_model_still_loads(monkeypatch, model_path):
     asyncio.run(inference_route.load_model_gated(request, object(), "test"))
 
     assert loaded == [model_path]
+
+
+# Decision models that are not built-in repos: Studio's own decision runs, a downloaded one in outputs, a
+# third-party one in the HF cache. Only their files say what they are.
+THIRD_PARTY_CLEF = "someone/clef-finetune"
+_QWEN3_CONFIG = b'{"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}'
+CHAT_FILES = {"config.json": _QWEN3_CONFIG, "model.safetensors": b"\x00" * 4096}
+CLEF_FILES = {
+    **CHAT_FILES,
+    "joint_head.safetensors": b"\x00" * 64,
+    "joint_head_config.json": b"{}",
+}
+CLEF_ADAPTER_FILES = {
+    "adapter_config.json": b'{"base_model_name_or_path": "unsloth/Qwen3-0.6B"}',
+    "adapter_model.safetensors": b"\x00" * 4096,
+    "joint_head.safetensors": b"\x00" * 64,
+    "joint_head_config.json": b"{}",
+}
+LAYA_FILES = {
+    "rl_agent_config.json": b"{}",
+    "model.safetensors": b"\x00" * 4096,
+    "encoder/config.json": b"{}",
+    "tokenizer/tokenizer.json": b"{}",
+}
+
+
+def _write(folder, files):
+    for name, data in files.items():
+        (folder / name).parent.mkdir(parents = True, exist_ok = True)
+        (folder / name).write_bytes(data)
+    return folder
+
+
+def test_decision_runs_in_outputs_are_flagged_in_the_fine_tune_list():
+    from utils.paths import exports_root, outputs_root
+
+    _write(outputs_root() / "clef-run", CLEF_FILES)
+    _write(outputs_root() / "clef-lora-run", CLEF_ADAPTER_FILES)
+    _write(outputs_root() / "qwen3-run", CHAT_FILES)
+
+    response = asyncio.run(
+        models_route.scan_loras(
+            outputs_dir = str(outputs_root()),
+            exports_dir = str(exports_root()),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    # Still listed, as the Library and the Audio page read this list too; Chat skips the flagged rows.
+    rows = {row.display_name: (row.export_type, row.is_decision) for row in response.loras}
+    assert rows == {
+        "clef-run": ("merged", True),
+        "clef-lora-run": ("lora", True),
+        "qwen3-run": ("merged", False),
+    }
+
+
+@pytest.mark.parametrize(
+    ("files", "refused"),
+    [(CLEF_FILES, True), (CLEF_ADAPTER_FILES, True), (LAYA_FILES, True), (CHAT_FILES, False)],
+    ids = ["clef", "clef-adapter", "laya", "chat-fine-tune"],
+)
+def test_only_a_chat_fine_tune_in_outputs_loads_as_chat(monkeypatch, files, refused):
+    from utils.paths import outputs_root
+
+    folder = _write(outputs_root() / "run", files)
+    loaded = _patch_load(monkeypatch)
+    request = inference_route.LoadRequest(model_path = str(folder))
+
+    if not refused:
+        asyncio.run(inference_route.load_model_gated(request, object(), "test"))
+        assert loaded == [str(folder)]
+        return
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.load_model_gated(request, object(), "test"))
+    assert exc.value.status_code == 400
+    assert "Decision API" in exc.value.detail
+    assert loaded == []
+
+
+def test_a_cached_third_party_decision_repo_is_a_non_chat_row(tmp_path):
+    from huggingface_hub import scan_cache_dir
+
+    from hub.services.models import cache_inventory
+
+    _cache_repo(tmp_path, THIRD_PARTY_CLEF, CLEF_FILES)
+    _cache_repo(tmp_path, "unsloth/Qwen3-0.6B", CHAT_FILES)
+
+    rows = {
+        row["repo_id"]: row["capabilities"]
+        for row in cache_inventory._scan_cached_models(
+            cache_scans = [scan_cache_dir(tmp_path)], active_hub_cache = tmp_path
+        )
+    }
+
+    assert rows[THIRD_PARTY_CLEF]["can_chat"] is False
+    assert rows[THIRD_PARTY_CLEF]["can_train"] is True
+    assert rows["unsloth/Qwen3-0.6B"]["can_chat"] is True
+
+
+def test_the_chat_picker_hides_a_cached_third_party_decision_repo(monkeypatch, tmp_path):
+    from huggingface_hub import scan_cache_dir
+
+    _cache_repo(tmp_path, THIRD_PARTY_CLEF, CLEF_FILES)
+    _cache_repo(tmp_path, "unsloth/Qwen3-0.6B", CHAT_FILES)
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan_cache_dir(tmp_path)])
+
+    _needles, exact_ids, _paths = models_route.hidden_model_matchers()
+
+    assert THIRD_PARTY_CLEF in exact_ids
+    assert "unsloth/qwen3-0.6b" not in exact_ids
+
+
+def test_loading_a_cached_third_party_decision_repo_as_chat_is_refused(monkeypatch, tmp_path):
+    _cache_repo(tmp_path, THIRD_PARTY_CLEF, CLEF_FILES)
+    _cache_repo(tmp_path, "unsloth/Qwen3-0.6B", CHAT_FILES)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    loaded = _patch_load(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.load_model_gated(
+                inference_route.LoadRequest(model_path = THIRD_PARTY_CLEF), object(), "test"
+            )
+        )
+    asyncio.run(
+        inference_route.load_model_gated(
+            inference_route.LoadRequest(model_path = "unsloth/Qwen3-0.6B"), object(), "test"
+        )
+    )
+
+    assert exc.value.status_code == 400
+    assert "Decision API" in exc.value.detail
+    assert loaded == ["unsloth/Qwen3-0.6B"]

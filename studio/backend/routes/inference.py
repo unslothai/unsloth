@@ -91,6 +91,7 @@ from urllib.parse import quote as _urlquote, unquote as _urlunquote
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.models.checkpoints import is_full_finetune_output
+from utils.models.model_config import is_decision_model
 
 from utils.api_errors import (
     ANTHROPIC_TYPE_BY_STATUS,
@@ -18112,7 +18113,13 @@ async def load_model_gated(
     return mid-load and hide a late failure in an unread body. This blocks until the
     model is resident and raises the real exception.
     """
-    if is_decision_api_model(request.model_path):
+    # By id for the built-ins, by its files for any other Clef or Laya folder or cached repo.
+    if is_decision_api_model(request.model_path) or await asyncio.to_thread(
+        is_decision_model,
+        request.model_path,
+        account_access.account_hf_token(request.hf_token),
+        local_files_only = True,
+    ):
         raise HTTPException(
             status_code = 400,
             detail = (
