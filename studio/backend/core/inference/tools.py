@@ -6723,7 +6723,7 @@ def _quote_end(line: str, i: int) -> int:
         if quote == '"' and line[j] == "\\":
             j += 2
         elif quote == '"' and line.startswith("$(", j):
-            j = _substitution_end(line, j + 2)
+            j = _quoted_substitution_end(line, j + 2)
             if j < 0:
                 return -1
         elif quote == '"' and line[j] == "`":
@@ -6735,7 +6735,7 @@ def _quote_end(line: str, i: int) -> int:
     return j if j < n else -1
 
 
-def _substitution_end(line: str, j: int) -> int:
+def _quoted_substitution_end(line: str, j: int) -> int:
     depth, n = 1, len(line)
     while j < n:
         ch = line[j]
