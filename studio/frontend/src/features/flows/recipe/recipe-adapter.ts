@@ -288,7 +288,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-
 /** `form` with each field the form left as it was (`prior` = the form's value before the edit) taken from
  * `original`, so a value the form cannot show (a uniform temperature) survives an edit of another field. */
 function untouchedFromSaved(
