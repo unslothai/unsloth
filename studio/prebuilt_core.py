@@ -1027,8 +1027,7 @@ def release_asset_download_url(repo: str, release_tag: str, asset_name: str) -> 
     )
 
 
-# The currency check and the resolve after it ask the same HEAD seconds apart. Only a resolved tag is kept,
-# and only briefly, so a failure or a later run (or any long-lived importer) asks again.
+# Currency check + resolve ask seconds apart; short TTL so a failure, later run or long-lived importer re-asks.
 _DOWNLOAD_HOST_LATEST_TAG_TTL_S = 300.0
 _DOWNLOAD_HOST_LATEST_TAG_MEMO: dict[tuple[str, Any], tuple[str, float]] = {}
 
