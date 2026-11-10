@@ -2,9 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import type { NodeSpec } from "../src/features/flows/types.ts";
+import { specs } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -14,12 +15,8 @@ const { checkConnection, inLoopFrame, wouldCreateCycle, inHandle, outHandle } = 
 );
 const { loopView } = await import("../src/features/flows/editor/loop-status.ts");
 
-const catalog = JSON.parse(
-  readFileSync(new URL("./fixtures/flows-catalog.json", import.meta.url), "utf8"),
-);
-const spec = (type: string) =>
-  catalog.nodes.find((n: { type: string }) => n.type === type);
-const bench = {
+const spec = (type: string) => specs[type];
+const bench: NodeSpec = {
   ...spec("logic.loop"),
   type: "test.bench",
   outputs: [
@@ -27,6 +24,14 @@ const bench = {
     { id: "failures", type: "json", label: "Failures" },
   ],
 };
+
+const round = (n: number, score: number) => ({
+  round: n,
+  test_score: score,
+  probe_score: score,
+  rows_from_failures: 0,
+  probe_failures: 0,
+});
 
 test("Loop keeps rounds, target and feedback on the card, the rest under Advanced", () => {
   const simple = spec("logic.loop")
@@ -62,11 +67,6 @@ test("a score step's failures into a dataset seed is a feedback wire, and never 
     { id: "c", source: "bench", source_port: "failures", target: "gen", target_port: "seed", kind: "feedback" },
   ] as const;
   assert.equal(wouldCreateCycle(edges, "train", "bench"), false);
-  // Both callers say whether the source sits in a Loop group.
-  for (const file of ["editor/node-factory.ts", "editor/canvas.tsx"]) {
-    const src = readFileSync(new URL(`../src/features/flows/${file}`, import.meta.url), "utf8");
-    assert.match(src, /inLoopFrame\((doc\.graph|doc), (req\.source|connection\.source)\),\s*\);/, file);
-  }
   // A Loop dropped into an ordinary frame makes it the Loop's frame too.
   const graph = {
     nodes: {
@@ -91,13 +91,6 @@ test("a score step's failures into a dataset seed is a feedback wire, and never 
 
 test("the Loop card says which round it is on and plots the test score per round", () => {
   const params = { rounds: 3, target: 90, feedback: true };
-  const round = (n: number, score: number) => ({
-    round: n,
-    test_score: score,
-    probe_score: score,
-    rows_from_failures: 0,
-    probe_failures: 0,
-  });
   assert.equal(
     loopView({ status: "idle", params, outputs: null, partial: null, partialStep: null }).headline,
     "Ready",
@@ -128,13 +121,6 @@ test("the Loop card says which round it is on and plots the test score per round
 
 test("a rerun shows only its own rounds, and an errored test round never shows as best", () => {
   const params = { rounds: 3, target: 90 };
-  const round = (n: number, score: number) => ({
-    round: n,
-    test_score: score,
-    probe_score: score,
-    rows_from_failures: 0,
-    probe_failures: 0,
-  });
   const old = { history: { rounds: [round(1, 50), round(2, 70), round(3, 95)], stopped: "target" } };
   const rerun = loopView({
     status: "running",

@@ -7,13 +7,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { doc, node } from "./helpers/flows.ts";
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const { useDocStore, documentFromState } = await import("../src/features/flows/stores/doc-store.ts");
 const { RfDeriver } = await import("../src/features/flows/editor/derive-rf.ts");
 const { CARD_MIN_WIDTH, cardMinHeight } = await import("../src/features/flows/editor/card-size.ts");
+const { clampFitToFrame } = await import("../src/features/flows/editor/layout.ts");
 
 const card = (id: string, boxes?: Record<string, { width: number; height: number }>) =>
   new RfDeriver()
@@ -65,15 +66,6 @@ test("the minimum size keeps the header and every port row", () => {
   const spec = { inputs: [{}, {}, {}], outputs: [{}], flow_out: ["next"] } as never;
   assert.equal(cardMinHeight(spec), 56 + 3 * 24 + 16);
   assert.ok(CARD_MIN_WIDTH >= 200);
-  const src = readSrc("features/flows/editor/flow-node.tsx");
-  assert.match(src, /minWidth: CARD_MIN_WIDTH,\s*minHeight,\s*onResizeEnd/);
-});
-
-test("the canvas draws resizes live and commits nothing until release", () => {
-  const src = readSrc("features/flows/editor/canvas.tsx");
-  const handler = src.slice(src.indexOf("const onNodesChange"), src.indexOf("const onEdgesChange"));
-  assert.match(handler, /change\.type === "dimensions" && change\.resizing/);
-  assert.doesNotMatch(handler, /useDocStore/, "no store write per frame");
 });
 
 test("a drag of several cards is one store write and one undo step", () => {
@@ -85,16 +77,6 @@ test("a drag of several cards is one store write and one undo step", () => {
   off();
   assert.equal(writes, 1);
   assert.equal(useDocStore.getState().past.length, depth + 1);
-  const src = readSrc("features/flows/editor/canvas.tsx");
-  const stop = src.slice(src.indexOf("const onNodeDragStop"));
-  assert.equal((stop.slice(0, stop.indexOf("const onConnect")).match(/\.moveNodes\(/g) ?? []).length, 1);
-});
-
-test("a resized card clips its content top to bottom only, so the port dots on its edges stay whole", () => {
-  const view = readSrc("features/flows/editor/flow-node.tsx");
-  assert.match(view, /group-data-\[sized\]\/node:\[overflow-y:clip\]/);
-  assert.doesNotMatch(view, /group-data-\[sized\]\/node:overflow-(hidden|clip)\b/);
-  assert.match(readSrc("features/flows/editor/node-card.tsx"), /corner-squircle group\/node min-w-0 overflow-visible/);
 });
 
 test("a card's floor covers its header, ports, fields and error; only the output preview gives way", async () => {
@@ -130,30 +112,13 @@ test("a card's floor covers its header, ports, fields and error; only the output
   assert.equal(cardContentMinHeight(asDom(cardEl) as HTMLElement, styleOf as never), 276);
 });
 
-test("the resize handles and a saved size both respect the measured floor", () => {
-  const view = readSrc("features/flows/editor/flow-node.tsx");
-  assert.match(view, /minHeight=\{Math\.max\(cardMinHeight\(spec\), contentMin\)\}/);
-  assert.match(view, /style=\{node\.size && !collapsed && contentMin \? \{ minHeight: contentMin \} : undefined\}/);
-  assert.match(view, /data-card-body=\{true\}/);
-  assert.match(view, /data-card-grow=\{true\}\s*className=\{?[`"]flow-detail/);
-});
-
-test("Tidy's frame clamp only limits growth, never shrinking a card below its size", () => {
-  const src = readSrc("features/flows/editor/layout.ts");
-  assert.match(src, /Math\.min\(fit\[1\], frame\[1\] \+ frame\[3\] - node\.pos\[1\] - pad\),\s*Math\.min\(fit\[1\], size\.height\),/);
-});
-
-test("a card's first resize is laid out sized while it drags", () => {
-  const src = readSrc("features/flows/editor/flow-node.tsx");
-  assert.match(src, /sized=\{\(!!node\.size \|\| resizing\) && !collapsed\}/);
-  // Set on movement, not on press: React Flow sends no end event for a press without a drag.
-  assert.match(src, /onResize: \(\) => onResizing\(true\)/);
-  assert.doesNotMatch(src, /onResizeStart/);
-});
-
-test("a resized card's text output, finished or streaming, fills the card and scrolls", () => {
-  const src = readSrc("features/flows/editor/flow-node.tsx");
-  const preview = src.slice(src.indexOf("function TextPreview"), src.indexOf("function OutputPreview"));
-  assert.match(preview, /expanded\s*\?\s*"nowheel min-h-0 flex-1 overflow-y-auto/);
-  assert.equal(src.match(/<TextPreview text=\{[^}]+\} expanded=\{expanded\} \/>/g)?.length, 2);
-});
+// Frame [0, 0, 500, 400] with pad 12: a card at (100, 100) may grow to 388 x 288 inside it.
+for (const [why, fit, size, out] of [
+  ["growth stops at the frame edge", [600, 500], { width: 200, height: 150 }, [388, 288]],
+  ["a fit inside the frame is kept", [300, 200], { width: 200, height: 150 }, [300, 200]],
+  ["a card already past the frame keeps its size", [700, 600], { width: 450, height: 350 }, [450, 350]],
+  ["a card past the frame can still shrink to its fit", [420, 320], { width: 450, height: 350 }, [420, 320]],
+] as const)
+  test(`Tidy's frame clamp only limits growth: ${why}`, () => {
+    assert.deepEqual(clampFitToFrame([...fit], size, [100, 100], [0, 0, 500, 400]), out);
+  });

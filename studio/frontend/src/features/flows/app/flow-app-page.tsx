@@ -50,6 +50,7 @@ import {
   appOutputs,
   applyAppValues,
   foldAppEvents,
+  textFieldValue,
 } from "./app-form";
 
 const IDLE: AppRunState = {
@@ -187,13 +188,7 @@ function FieldInput({
         <Textarea
           fieldSizing="fixed"
           rows={field.kind === "json" ? 5 : 3}
-          value={
-            typeof value === "string"
-              ? value
-              : value == null
-                ? ""
-                : JSON.stringify(value)
-          }
+          value={textFieldValue(value)}
           onChange={(e) => onChange(e.target.value)}
         />
       );

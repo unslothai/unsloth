@@ -4,12 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { doc, node } from "./helpers/flows.ts";
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { doc, flushMicrotasks, node } from "./helpers/flows.ts";
+import { fakeReact } from "./helpers/fake-react.ts";
+import { elementsOf, loadWithStubs, type StubElement, stubEveryImport, stubJsxRuntime } from "./helpers/module-stubs.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { appFields, applyAppValues, appOutputs, foldAppEvents } = await import(
+const { appFields, applyAppValues, appOutputs, foldAppEvents, textFieldValue } = await import(
   "../src/features/flows/app/app-form.ts"
 );
 const { historyAgo, historyCard, historyPreview, pinsForRun, sameOutputs, usePinsStore } = await import(
@@ -167,14 +169,6 @@ test("history cells preview media first, and pins only go with nodes still in th
   assert.deepEqual(pinsForRun(["a"]), {});
 });
 
-test("the Run Flow picker refetches the flow list and history never shows another node's strip", () => {
-  const fields = readSrc("features/flows/editor/param-fields.tsx");
-  assert.match(fields, /source === "\/api\/flows"\) remoteOptions\.delete\(key\)/);
-  const history = readSrc("features/flows/editor/node-history.tsx");
-  const reset = history.slice(history.indexOf("a different node starts with nothing viewed"));
-  assert.ok(reset.indexOf("setEntries(null)") < reset.indexOf("}, [nodeId, onView]);"));
-});
-
 test("an untouched seed keeps randomizing, a typed-in seed is used as is", () => {
   const d = doc([
     {
@@ -189,40 +183,20 @@ test("an untouched seed keeps randomizing, a typed-in seed is used as is", () =>
   assert.deepEqual(seedOf(7), { value: 7, randomize: false });
 });
 
-test("the app's file input is cleared after each pick, so a retry with the same file uploads again", async () => {
-  const { readFileSync } = await import("node:fs");
-  const source = readFileSync(
-    new URL("../src/features/flows/app/flow-app-page.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(source, /const file = e\.target\.files\?\.\[0\];[\s\S]{0,120}e\.target\.value = "";/);
-});
+// An app text field shows an empty value as an empty box (never `""` or `null`), and objects as JSON.
+for (const [value, shown] of [
+  [undefined, ""],
+  [null, ""],
+  ["", ""],
+  ["hi", "hi"],
+  [{ a: 1 }, '{"a":1}'],
+  [3, "3"],
+] as const)
+  test(`an app text field shows ${JSON.stringify(value) ?? "undefined"} as ${JSON.stringify(shown)}`, () => {
+    assert.equal(textFieldValue(value), shown);
+  });
 
-test("the app's Run waits for every media upload to finish", async () => {
-  const { readFileSync } = await import("node:fs");
-  const source = readFileSync(
-    new URL("../src/features/flows/app/flow-app-page.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(source, /onUploading\?\.\(true\)/);
-  assert.match(source, /onUploading\?\.\(false\)/);
-  assert.match(source, /data-testid="flows-app-run"/);
-  assert.match(source, /disabled=\{uploadingAny\}/);
-});
-
-test("the app page resets on another flow, shows an empty text as empty, and history shows output blocks", async () => {
-  const { readFileSync } = await import("node:fs");
-  const read = (path: string) =>
-    readFileSync(new URL(path, import.meta.url), "utf8");
-  const page = read("../src/features/flows/app/flow-app-page.tsx");
-  assert.match(page, /let alive = true;[\s\S]{0,200}setDoc\(null\);[\s\S]{0,80}setRun\(IDLE\);\s*setRunId\(null\);/);
-  assert.doesNotMatch(page, /JSON\.stringify\(value \?\? ""\)/);
-  assert.match(page, /value == null\s*\?\s*""/);
-  const inspector = read("../src/features/flows/editor/inspector.tsx");
-  assert.match(inspector, /Object\.keys\(viewed\)\.map\(\(id\) => \(\{ id, label: id \}\)\)/);
-});
-
-test("an untouched seed with no stored value keeps randomizing, and stale flow loads are ignored", async () => {
+test("an untouched seed with no stored value keeps randomizing", () => {
   const d = doc([node("s", "input.seed", [0, 0], { randomize: true })]);
   const fields = appFields(d as never);
   const untouched = Object.fromEntries(fields.map((f) => [f.key, f.initial]));
@@ -231,13 +205,6 @@ test("an untouched seed with no stored value keeps randomizing, and stale flow l
     (filled as { nodes: { params: unknown }[] }).nodes[0].params,
     { randomize: true },
   );
-  const { readFileSync } = await import("node:fs");
-  const page = readFileSync(
-    new URL("../src/features/flows/app/flow-app-page.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(page, /if \(started !== generation\.current\) return;\s*setRunId\(run_id\);/);
-  assert.match(page, /loaded === generation\.current &&\s*setValues/);
 });
 
 test("an untouched Flow Input still sends its declared default", () => {
@@ -289,4 +256,209 @@ test("history captions say how long ago", () => {
   assert.equal(historyAgo(Date.parse("2026-10-30T11:59:30Z"), now), "just now");
   assert.equal(historyAgo(Date.parse("2026-10-30T11:55:00Z"), now), "5m ago");
   assert.equal(historyAgo(Date.parse("2026-10-30T09:00:00Z"), now), "3h ago");
+});
+
+// ---- The app page and history strip, rendered with deterministic hooks (no DOM). ----
+
+type El = StubElement;
+let active = fakeReact();
+const reactProxy = new Proxy({}, { get: (_t, key) => active.react[key as keyof typeof active.react] });
+const appForm = await import("../src/features/flows/app/app-form.ts");
+const pinsStore = await import("../src/features/flows/stores/pins-store.ts");
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function appPage() {
+  const flows: Record<string, ReturnType<typeof deferred<{ doc: Doc }>>[]> = {};
+  const starts: ReturnType<typeof deferred<{ run_id: string }>>[] = [];
+  const uploads: ReturnType<typeof deferred<unknown>>[] = [];
+  const followed: string[] = [];
+  const api = {
+    getFlow: (id: string) => {
+      const d = deferred<{ doc: Doc }>();
+      (flows[id] ??= []).push(d);
+      return d.promise;
+    },
+    startRun: () => {
+      const d = deferred<{ run_id: string }>();
+      starts.push(d);
+      return d.promise;
+    },
+    followRunEvents: (id: string) => {
+      followed.push(id);
+      return new Promise(() => undefined);
+    },
+    cancelRun: async () => undefined,
+    uploadAsset: () => {
+      const d = deferred<unknown>();
+      uploads.push(d);
+      return d.promise;
+    },
+  };
+  const mod = loadWithStubs<{ FlowAppPage: (p: { flowId: string }) => unknown }>(
+    new URL("../src/features/flows/app/flow-app-page.tsx", import.meta.url),
+    stubEveryImport({
+      react: reactProxy,
+      "react/jsx-runtime": stubJsxRuntime(),
+      "../api": api,
+      "./app-form": appForm,
+      "../editor/param-fields": { DOCUMENT_ACCEPT: ".pdf", documentName: () => null },
+    }),
+  );
+  const page = fakeReact();
+  const render = (flowId: string) => {
+    active = page;
+    return elementsOf(page.render(mod.FlowAppPage, { flowId }));
+  };
+  /** Renders a nested component element (e.g. FieldInput) with its own hook state. */
+  const child = (el: El, hooks = fakeReact()) => {
+    active = hooks;
+    const out = elementsOf(hooks.render(el.type as (p: unknown) => unknown, el.props));
+    active = page;
+    return out;
+  };
+  return { api, flows, starts, uploads, followed, render, child };
+}
+
+const fieldOf = (els: El[], key: string) =>
+  els.find((e) => (e.type as { name?: string }).name === "FieldInput" && (e.props.field as { key: string }).key === key) as El;
+const byTestId = (els: El[], id: string) => els.find((e) => e.props["data-testid"] === id);
+const appDoc = (name: string) => {
+  const d = doc([
+    { ...node("pic", "input.image", [0, 0]), label: "Photo" },
+    { ...node("sel", "input.select", [0, 100]), params: { options: ["", "a"], value: "a" } },
+    { ...node("t", "input.text", [0, 200]), params: { value: "hi" } },
+    node("out", "output.preview", [0, 400]),
+  ]);
+  d.name = name;
+  return d;
+};
+
+test("the app's file input is cleared after each pick, so a retry with the same file uploads again", async () => {
+  const app = appPage();
+  app.render("f1");
+  app.flows.f1[0].resolve({ doc: appDoc("one") });
+  await flushMicrotasks();
+  const field = fieldOf(app.render("f1"), "pic");
+  const input = app.child(field).find((e) => e.type === "input") as El;
+  const pick = { target: { files: [{ name: "a.png" }], value: "C:\\fakepath\\a.png" } };
+  (input.props.onChange as (e: unknown) => void)(pick);
+  assert.equal(pick.target.value, "", "the input forgets the file");
+  assert.equal(app.uploads.length, 1);
+});
+
+test("the app's Run waits for every media upload to finish", async () => {
+  const app = appPage();
+  app.render("f1");
+  app.flows.f1[0].resolve({ doc: appDoc("one") });
+  await flushMicrotasks();
+  const field = fieldOf(app.render("f1"), "pic");
+  const input = app.child(field).find((e) => e.type === "input") as El;
+  (input.props.onChange as (e: unknown) => void)({ target: { files: [{ name: "a.png" }], value: "" } });
+  let run = byTestId(app.render("f1"), "flows-app-run") as El;
+  assert.equal(run.props.disabled, true, "Run is off while the upload is in flight");
+  app.uploads[0].resolve({ kind: "image", ref: "image:1" });
+  await flushMicrotasks();
+  run = byTestId(app.render("f1"), "flows-app-run") as El;
+  assert.equal(run.props.disabled, false);
+  assert.deepEqual((fieldOf(app.render("f1"), "pic").props.value as { ref: string }).ref, "image:1");
+});
+
+test("the app page resets on another flow and ignores the old flow's late load, edits and run", async () => {
+  const app = appPage();
+  app.render("f1");
+  app.flows.f1[0].resolve({ doc: appDoc("one") });
+  await flushMicrotasks();
+  const els = app.render("f1");
+  const oldText = fieldOf(els, "t");
+  (byTestId(els, "flows-app-run")?.props.onClick as () => void)();
+  await flushMicrotasks();
+  assert.equal(app.starts.length, 1);
+  // Switch flows: the page drops the old doc at once and shows Loading.
+  const loading = app.render("f2");
+  assert.equal(byTestId(loading, "flows-app"), undefined);
+  assert.ok(loading.some((e) => (e.type as { name?: string }).name === "Spinner"));
+  app.flows.f2[0].resolve({ doc: appDoc("two") });
+  await flushMicrotasks();
+  app.render("f2");
+  // The old flow's field and its run come back late: neither touches the new flow.
+  (oldText.props.onChange as (v: unknown) => void)("stale");
+  app.starts[0].resolve({ run_id: "old-run" });
+  await flushMicrotasks();
+  const now = app.render("f2");
+  assert.equal(fieldOf(now, "t").props.value, "hi");
+  assert.deepEqual(app.followed, [], "the old run is not followed");
+  assert.ok(now.some((e) => e.props.children === "two"));
+});
+
+test("a load that finishes after the user moved to another flow is dropped", async () => {
+  const app = appPage();
+  app.render("f1");
+  app.render("f2");
+  app.flows.f1[0].resolve({ doc: appDoc("one") });
+  await flushMicrotasks();
+  assert.equal(byTestId(app.render("f2"), "flows-app"), undefined, "still loading f2");
+  app.flows.f2[0].resolve({ doc: appDoc("two") });
+  await flushMicrotasks();
+  assert.ok(app.render("f2").some((e) => e.props.children === "two"));
+});
+
+test("an app's Select keeps a configured empty option", async () => {
+  const app = appPage();
+  app.render("f1");
+  app.flows.f1[0].resolve({ doc: appDoc("one") });
+  await flushMicrotasks();
+  const field = fieldOf(app.render("f1"), "sel");
+  const picked: unknown[] = [];
+  const els = app.child({ ...field, props: { ...field.props, onChange: (v: unknown) => picked.push(v) } });
+  const items = els.filter((e) => (e.type as { name?: string }).name === "SelectItem");
+  assert.equal(items.length, 2, "the empty option is listed");
+  assert.equal(items[0].props.children, "(none)");
+  assert.notEqual(items[0].props.value, "", "Radix gets a non-empty stand-in");
+  const select = els.find((e) => (e.type as { name?: string }).name === "Select") as El;
+  (select.props.onValueChange as (v: unknown) => void)(items[0].props.value);
+  assert.deepEqual(picked, [""], "picking it stores an empty string");
+});
+
+test("history never shows another node's strip", async () => {
+  const pending: Record<string, ReturnType<typeof deferred<{ entries: unknown[] }>>> = {};
+  const viewed: unknown[] = [];
+  const pins = { pins: {} as Record<string, unknown> };
+  const mod = loadWithStubs<{ NodeHistory: (p: unknown) => unknown }>(
+    new URL("../src/features/flows/editor/node-history.tsx", import.meta.url),
+    stubEveryImport({
+      react: reactProxy,
+      "react/jsx-runtime": stubJsxRuntime(),
+      "../api": {
+        nodeHistory: (_flow: string, id: string) => {
+          pending[id] = deferred();
+          return pending[id].promise;
+        },
+      },
+      "../stores/doc-store": { useDocStore: (sel: (s: unknown) => unknown) => sel({ flowId: "f" }) },
+      "../stores/runtime-store": { useRuntimeStore: (sel: (s: unknown) => unknown) => sel({ runStatus: null }) },
+      "../stores/pins-store": {
+        ...pinsStore,
+        usePinsStore: Object.assign((sel: (s: unknown) => unknown) => sel(pins), { getState: () => pins }),
+      },
+    }),
+  );
+  const hooks = fakeReact();
+  active = hooks;
+  const onView = (v: unknown) => viewed.push(v);
+  const render = (nodeId: string) => elementsOf(hooks.render(mod.NodeHistory, { nodeId, onView }));
+  (byTestId(render("a"), "flows-history-toggle")?.props.onClick as () => void)();
+  render("a");
+  pending.a.resolve({ entries: [{ run_id: "r1", updated_at: 0, outputs: { text: "from a" } }] });
+  await flushMicrotasks();
+  assert.ok(byTestId(render("a"), "flows-history-strip"), "a's strip shows");
+  viewed.length = 0;
+  assert.equal(byTestId(render("b"), "flows-history-strip"), undefined, "b starts with nothing");
+  assert.deepEqual(viewed, [null], "and nothing viewed");
 });

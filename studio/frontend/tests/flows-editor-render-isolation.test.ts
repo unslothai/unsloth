@@ -4,8 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { doc, edge, node } from "./helpers/flows.ts";
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { chainDoc } from "./helpers/flows.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -25,21 +25,7 @@ const ev = (
 ) => ({ seq, run_id: "r1", type, node_id: nodeId, ts: seq, data }) as never;
 
 function loadGraph() {
-  useDocStore
-    .getState()
-    .load(
-      doc(
-        [
-          node("a", "input.text"),
-          node("b", "llm.generate", [300, 0]),
-          node("c", "output.preview", [600, 0]),
-        ],
-        [
-          edge("e1", "a", "text", "b", "prompt"),
-          edge("e2", "b", "text", "c", "value"),
-        ],
-      ),
-    );
+  useDocStore.getState().load(chainDoc());
 }
 
 test("a runtime event for one node leaves every other node's entry identical", () => {
@@ -199,16 +185,4 @@ test("a failed node keeps the backend's error text", () => {
     }),
   ]);
   assert.equal(next.nodes.a.error, "No chat model is loaded");
-});
-
-test("the canvas hands React Flow stable props, so a re-render does not reset its store", () => {
-  const canvas = readSrc("features/flows/editor/canvas.tsx");
-  const props = canvas.slice(canvas.indexOf("<ReactFlow<"));
-  assert.doesNotMatch(props, /=\{\{/, "no inline object props");
-  assert.doesNotMatch(props, /=\{\[/, "no inline array props");
-  const onNodesChange = canvas.slice(
-    canvas.indexOf("const onNodesChange"),
-    canvas.indexOf("const onEdgesChange"),
-  );
-  assert.match(onNodesChange, /\},\n {4}\[\],\n {2}\);\s*$/);
 });

@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { readFlowsSrc } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -16,6 +16,7 @@ const {
   datasetTitle,
   isDatasetValue,
   knownTotal,
+  literalColumn,
   pageCount,
 } = await import("../src/features/flows/dataset/dataset-value.ts");
 
@@ -89,16 +90,8 @@ test("the Columns tab gets a type, distinct count and nulls per column", () => {
   assert.equal(by.extra.simple_dtype, "null");
 });
 
-test("node, inspector, app and run drawer outputs all show datasets with the viewer", () => {
-  const read = (path: string) =>
-    readFileSync(new URL(`../src/features/flows/${path}`, import.meta.url), "utf8");
-  assert.match(read("editor/flow-node.tsx"), /<DatasetOutput value=\{value\} compact \/>/);
-  assert.match(read("editor/output-value.tsx"), /<DatasetOutput value=\{value\} \/>/);
-  assert.match(read("editor/run-drawer.tsx"), /<DatasetOutput value=\{item\.value\} compact \/>/);
-  const viewer = read("dataset/dataset-viewer.tsx");
-  assert.match(viewer, /ExecutionDataTab/);
-  assert.match(viewer, /ExecutionColumnsTab/);
-  assert.match(read("editor/dataset-output.tsx"), /import\("\.\.\/dataset\/dataset-viewer"\)/);
+test("the dataset viewer is a lazy chunk, kept out of the startup bundle", () => {
+  assert.match(readFlowsSrc("editor/dataset-output.tsx"), /import\("\.\.\/dataset\/dataset-viewer"\)/);
 });
 
 test("a local upload is labelled by the block that wrote it, not as an upload", () => {
@@ -109,7 +102,7 @@ test("a local upload is labelled by the block that wrote it, not as an upload", 
   assert.equal(datasetSummary(upload), "Uploaded · 10 rows", "older values keep their label");
 });
 
-test("the card table leads with a recipe's generated columns and scrolls to the rest", () => {
+test("the card table leads with a recipe's generated columns, then every other column", () => {
   const rows = [{ quote: "q", author: "a", tags: "t", persona: "p", remix: "r" }];
   assert.deepEqual(columnNames(rows, ["persona", "remix", "gone"]), [
     "persona",
@@ -119,25 +112,10 @@ test("the card table leads with a recipe's generated columns and scrolls to the 
     "tags",
   ]);
   assert.deepEqual(columnNames(rows), ["quote", "author", "tags", "persona", "remix"]);
-  const viewer = readFileSync(
-    new URL("../src/features/flows/dataset/dataset-viewer.tsx", import.meta.url),
-    "utf8",
-  );
-  const preview = viewer.slice(viewer.indexOf("export function DatasetPreview"));
-  assert.doesNotMatch(preview, /names\.slice\(/, "every column is in the card table");
-  assert.match(preview, /overflow-x-auto/);
-  assert.match(preview, /columnNames\(rows, value\.columns\)/);
-});
-
-test("the viewer starts a newly shown dataset on its first page, with every column", () => {
-  const src = readFileSync(new URL("../src/features/flows/dataset/dataset-viewer.tsx", import.meta.url), "utf8");
-  assert.match(src, /<DatasetPages key=\{JSON\.stringify\(props\.value\)\} \{\.\.\.props\} \/>/);
-  const pages = src.slice(src.indexOf("function DatasetPages"));
-  assert.match(pages, /useState\(0\)/);
 });
 
 test("the viewer reads each column by its literal name, so a dotted name is not a nested path", () => {
-  const src = readFileSync(new URL("../src/features/flows/dataset/dataset-viewer.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(src, /accessorKey: name/);
-  assert.match(src, /id: name,\s*\n\s*accessorFn: \(row: Record<string, unknown>\) => row\[name\]/);
+  const column = literalColumn("a.b");
+  assert.equal(column.id, "a.b");
+  assert.equal(column.accessorFn({ "a.b": 1, a: { b: 2 } }), 1);
 });

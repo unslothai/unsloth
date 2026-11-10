@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { specs } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -14,12 +14,7 @@ const { benchmarkView, percent } = await import(
 );
 const { readable } = await import("../src/features/flows/editor/value-kinds.ts");
 
-const catalog = JSON.parse(
-  readFileSync(new URL("./fixtures/flows-catalog.json", import.meta.url), "utf8"),
-);
-const node = catalog.nodes.find(
-  (n: { type: string }) => n.type === "train.benchmark",
-);
+const node = specs["train.benchmark"];
 
 const base = {
   status: "idle" as const,
@@ -32,16 +27,16 @@ const base = {
 
 test("Benchmark keeps task, scorer, rows and model up front and scores into three outputs", () => {
   const simple = node.params
-    .filter((p: { advanced?: boolean }) => !p.advanced)
-    .map((p: { id: string }) => p.id);
+    .filter((p) => !p.advanced)
+    .map((p) => p.id);
   assert.deepEqual(simple, ["task", "scorer", "max_rows", "model"]);
   assert.deepEqual(
-    node.outputs.map((p: { id: string; type: string }) => `${p.id}:${p.type}`),
+    node.outputs.map((p) => `${p.id}:${p.type}`),
     ["score:number", "results:dataset", "failures:dataset"],
   );
-  const inputs = node.inputs.filter((p: { param?: string }) => !p.param);
+  const inputs = node.inputs.filter((p) => !p.param);
   assert.deepEqual(
-    inputs.map((p: { id: string; type: string; optional: boolean }) => [p.id, p.type, p.optional]),
+    inputs.map((p) => [p.id, p.type, p.optional]),
     [
       ["checkpoint", "checkpoint", true],
       ["model", "model", true],

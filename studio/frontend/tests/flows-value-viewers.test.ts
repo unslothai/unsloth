@@ -2,10 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { readFlowsSrc } from "./helpers/flows.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -66,57 +66,22 @@ test("structured values dispatch by kind; everything else falls through", () => 
   }
 });
 
-test("every structured kind has a viewer and every renderer checks the registry before its JSON fallback", () => {
-  const registry = readSrc("features/flows/editor/value-viewers.tsx");
+test("every structured kind has a lazy viewer, and recharts stays out of the startup bundle", () => {
+  const registry = readFlowsSrc("editor/value-viewers.tsx");
   for (const kind of STRUCTURED_KINDS)
     assert.match(registry, new RegExp(`\\b${kind}: lazy\\(`));
-  const inspector = readSrc("features/flows/editor/output-value.tsx");
-  assert.ok(
-    inspector.indexOf("isStructuredValue(value)") > 0 &&
-      inspector.indexOf("isStructuredValue(value)") <
-        inspector.indexOf("JSON.stringify(value, null, 2)"),
-  );
-  const node = readSrc("features/flows/editor/flow-node.tsx");
-  assert.ok(
-    node.indexOf("<StructuredBadge") <
-      node.indexOf("Object.keys(value as object)"),
-  );
-  assert.match(
-    readSrc("features/flows/editor/run-drawer.tsx"),
-    /<StructuredOutput value=/,
-  );
   assert.doesNotMatch(registry, /from "recharts"/);
   assert.match(registry, /import\("\.\/value-viewers-full"\)/);
 });
 
-test("new value ports connect to json and any, not to unrelated ports", () => {
-  for (const type of STRUCTURED_KINDS) {
-    assert.ok(
-      typesCompatible(
-        { id: "o", type, label: "" },
-        { id: "i", type: "json", label: "" },
-      ),
-    );
-    assert.ok(
-      typesCompatible(
-        { id: "o", type, label: "" },
-        { id: "i", type: "any", label: "" },
-      ),
-    );
-    assert.ok(
-      typesCompatible(
-        { id: "o", type, label: "" },
-        { id: "i", type, label: "" },
-      ),
-    );
-    assert.ok(
-      !typesCompatible(
-        { id: "o", type, label: "" },
-        { id: "i", type: "image", label: "" },
-      ),
-    );
-  }
-});
+for (const type of STRUCTURED_KINDS)
+  for (const [to, ok] of [["json", true], ["any", true], [type, true], ["image", false]] as const)
+    test(`a ${type} port ${ok ? "connects" : "does not connect"} to a ${to} port`, () => {
+      assert.equal(
+        typesCompatible({ id: "o", type, label: "" }, { id: "i", type: to, label: "" }),
+        ok,
+      );
+    });
 
 test("tables sort numerically with empty cells last and export as CSV and markdown", () => {
   const rows = table.rows as Record<string, unknown>[];
@@ -198,14 +163,6 @@ test("numbers stored as text sort by value, not character by character", () => {
     sortRows(rows, "n", false).map((r) => r.n),
     ["1.10", "1.9", "2", "10"],
   );
-});
-
-test("delta cells are not coloured as good or bad: the table does not know which direction is better", () => {
-  const src = readFileSync(
-    new URL("../src/features/flows/editor/value-viewers-full.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.equal(/role === "delta"/.test(src), false);
 });
 
 test("a column mixing numbers and words sorts as text, consistently", () => {

@@ -2,10 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import type { ParamSpec } from "../src/features/flows/types.ts";
+import { specs } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -17,12 +17,7 @@ const { paramVisible } = await import(
   "../src/features/flows/editor/param-visible.ts"
 );
 
-const catalog = JSON.parse(
-  readFileSync(new URL("./fixtures/flows-catalog.json", import.meta.url), "utf8"),
-);
-const finetune = catalog.nodes.find(
-  (n: { type: string }) => n.type === "train.finetune",
-);
+const finetune = specs["train.finetune"];
 
 const base = {
   status: "idle" as const,

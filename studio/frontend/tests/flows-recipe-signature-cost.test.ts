@@ -2,16 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { doc, node } from "./helpers/flows.ts";
+import { doc, learningRecipe, node, recipeGroup } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
-const { COLUMN_TYPE, groupColumns, groupPayload, recipeSignature } = await import(
+const { groupColumns, groupPayload, recipeSignature } = await import(
   "../src/features/flows/recipe/recipe-columns.ts"
 );
 const { applyConfigPatch, commitStudioEdit, studioView } = await import(
@@ -34,32 +33,9 @@ function countStringify<T>(run: () => T): { value: T; calls: number } {
 }
 
 function learningGroup() {
-  const payload = JSON.parse(
-    readFileSync(
-      new URL("../src/features/data-recipes/learning-recipes/text-to-sql.json", import.meta.url),
-      "utf8",
-    ),
-  ) as { recipe: Record<string, unknown> & { columns: Record<string, unknown>[] }; ui?: Record<string, unknown> };
-  const { columns, ...config } = payload.recipe;
-  const nodes = columns.map((column, i) => ({
-    id: `recipe_col_${i + 1}`,
-    type: COLUMN_TYPE,
-    v: 1,
-    params: { column },
-    pos: [i * 320, 0] as [number, number],
-    label: String(column.name),
-    group: "recipe",
-  }));
-  const group = {
-    id: "recipe",
-    label: "Recipe",
-    rect: [0, 0, 4000, 400] as [number, number, number, number],
-    kind: "recipe" as const,
-    config,
-    run: { rows: 5 },
-    ui: payload.ui ?? {},
-  };
-  return { group, nodes };
+  const payload = learningRecipe("text-to-sql.json");
+  const { group, nodes } = recipeGroup(payload);
+  return { group: { ...group, ui: payload.ui ?? {} }, nodes };
 }
 
 test("a recipe form's signature selector does not re-serialize the recipe on unrelated updates", (t) => {
