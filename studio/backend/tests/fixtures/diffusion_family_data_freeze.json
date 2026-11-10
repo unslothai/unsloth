@@ -1,5 +1,11 @@
 {
  "auto_static_skip_by_base": {
+  "anima": {
+   "circlestone-labs/Anima-Base-v1.0-Diffusers": null
+  },
+  "chroma": {
+   "lodestones/Chroma1-HD": null
+  },
   "cosmos3-edge": {
    "nvidia/Cosmos3-Edge": null
   },
@@ -119,6 +125,14 @@
   }
  },
  "defaults": {
+  "anima": [
+   30,
+   4.0
+  ],
+  "chroma": [
+   26,
+   3.5
+  ],
   "cosmos3-edge": {
    "fields": [
     20,
@@ -303,6 +317,18 @@
   ]
  },
  "flags": {
+  "anima": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [],
+   "vae_fused_encoder": true
+  },
+  "chroma": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [],
+   "vae_fused_encoder": true
+  },
   "cosmos3-edge": {
    "cudnn_benchmark": false,
    "filter_reduction_configs": false,
@@ -976,6 +1002,206 @@
    "preview_key": "qwen_image",
    "te_int8_effective": "fp8"
   },
+  "anima": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "chroma": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
   "cosmos3-edge": {
    "auto": {
     "convrot_filename": null,
@@ -1506,7 +1732,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1522,11 +1748,27 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/FLUX.2-klein-4B-FP8",
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "context_embedder",
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "attn.add_q_proj",
+      "attn.add_k_proj",
+      "attn.add_v_proj",
+      "attn.to_add_out",
+      "ff.linear_in",
+      "ff.linear_out",
+      "ff_context.linear_in",
+      "ff_context.linear_out",
+      "attn.to_qkv_mlp_proj",
+      "attn.to_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -1618,7 +1860,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1640,11 +1882,18 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "flux-3-image-klein-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/flux-3-image-klein-FP8",
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "ff.linear_in",
+      "ff.linear_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -1753,7 +2002,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1778,8 +2027,15 @@
     "convrot_filename": null,
     "convrot_repo": null,
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "ff.linear_in",
+      "ff.linear_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -4217,6 +4473,7 @@
    "wan2.2-ti2v-5b"
   ],
   "family_auto_bf16_when_resident": {
+   "anima": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
    "flux.2-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "flux.3-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "flux.3-klein-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -4304,6 +4561,10 @@
    }
   },
   "family_scheme_deny": {
+   "chroma": [
+    "mxfp8",
+    "nvfp4"
+   ],
    "flux.3-klein": [
     "nvfp4"
    ],
@@ -4361,6 +4622,48 @@
    "time_embed"
   ],
   "int8_family_convrot": {
+   "flux.2-klein": [
+    256,
+    [
+     "context_embedder",
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "attn.add_q_proj",
+     "attn.add_k_proj",
+     "attn.add_v_proj",
+     "attn.to_add_out",
+     "ff.linear_in",
+     "ff.linear_out",
+     "ff_context.linear_in",
+     "ff_context.linear_out",
+     "attn.to_qkv_mlp_proj",
+     "attn.to_out"
+    ]
+   ],
+   "flux.3-klein": [
+    256,
+    [
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "ff.linear_in",
+     "ff.linear_out"
+    ]
+   ],
+   "flux.3-klein-base": [
+    256,
+    [
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "ff.linear_in",
+     "ff.linear_out"
+    ]
+   ],
    "moss-image": [
     256,
     [
@@ -4410,6 +4713,9 @@
    ]
   },
   "int8_family_convrot_default_on": [
+   "flux.2-klein",
+   "flux.3-klein",
+   "flux.3-klein-base",
    "ltx-2.5",
    "moss-image",
    "moss-image-base",
@@ -4417,12 +4723,16 @@
    "z-image"
   ],
   "int8_family_convrot_filename": {
+   "flux.2-klein": "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+   "flux.3-klein": "flux-3-image-klein-INT8-ConvRot.safetensors",
    "moss-image": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
    "moss-image-base": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors"
   },
   "int8_family_convrot_repo": {
+   "flux.2-klein": "unsloth/FLUX.2-klein-4B-FP8",
+   "flux.3-klein": "unsloth/flux-3-image-klein-FP8",
    "moss-image": "unsloth/MOSS-Image-SFT-FP8",
    "moss-image-base": "unsloth/MOSS-Image-SFT-FP8",
    "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
@@ -4561,6 +4871,8 @@
    ]
   },
   "train_family_labels": {
+   "anima": "Anima",
+   "chroma": "Chroma",
    "flux.1": "FLUX.1-dev",
    "flux.2-dev": "FLUX.2-dev",
    "flux.2-klein": "FLUX.2 Klein",
@@ -4593,6 +4905,7 @@
    "black-forest-labs/flux.2-klein-9b",
    "black-forest-labs/flux.2-klein-base-4b",
    "black-forest-labs/flux.2-klein-base-9b",
+   "circlestone-labs/anima-base-v1.0-diffusers",
    "hidream-ai/hidream-i1-dev",
    "hidream-ai/hidream-i1-fast",
    "hidream-ai/hidream-i1-full",
@@ -4602,6 +4915,7 @@
    "ideogram-ai/ideogram-4-nf4-diffusers",
    "krea/krea-2-raw",
    "krea/krea-2-turbo",
+   "lodestones/chroma1-hd",
    "openmoss-team/moss-image-base",
    "openmoss-team/moss-image-sft",
    "qwen/qwen-image",

@@ -452,6 +452,8 @@ export type LiveGenerationProgress = {
   decode: LiveDecodeProgress | null;
   /** The context fit is evicting turns; ends with this pass's context_truncated or its first prefill sample. */
   compacting?: boolean;
+  /** This pass's own context_usage has landed: it counts the reply exactly, so live figures step aside. */
+  settled?: boolean;
 };
 export type PendingImageEditReference = {
   threadId: string | null;
@@ -2745,6 +2747,7 @@ type ChatRuntimeStore = {
   setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
   setLiveCompacting: (threadId: string | null, compacting: boolean) => void;
   clearLiveGenerationForThread: (threadId: string | null) => void;
+  settleLiveGeneration: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
@@ -6008,6 +6011,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             prefill: current?.prefill ?? null,
             prefillShown: current?.prefillShown ?? false,
             decode,
+            ...(current?.settled ? { settled: true } : {}),
           },
         },
       };
@@ -6023,6 +6027,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         : { ...current!, compacting: false };
       return {
         liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: next },
+      };
+    }),
+  settleLiveGeneration: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (current === undefined || current.settled) return state;
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: { ...current, settled: true } },
       };
     }),
   clearLiveGenerationForThread: (threadId) =>

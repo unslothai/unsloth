@@ -191,9 +191,8 @@ def _read_adapter(path):
 
 
 def _enable_reentrant_gc(model):
-    """Reentrant checkpointing only back-propagates into a segment whose input requires grad; with the
-    embeddings frozen (LoRA) that needs enable_input_require_grads, which transformers 4.x
-    gradient_checkpointing_enable does not do for a PEFT model (5.x does)."""
+    """Reentrant checkpointing needs a grad-requiring input: frozen LoRA embeddings need
+    enable_input_require_grads, which transformers 4.x skips for PEFT but 5.x does."""
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     model.enable_input_require_grads()
 
@@ -770,6 +769,30 @@ def test_layer_call_format_reads_tuple_loops():
             return hidden_states
 
     assert ppn._layer_call_format(Decoder(), "layers") == "tuple"
+
+
+def test_layer_call_format_knows_the_renamed_checkpointing_layer():
+    class ActivationCheckpointingLayer(torch.nn.Module):
+        pass
+
+    class Decoder(torch.nn.Module):
+        gradient_checkpointing = True
+
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList()
+
+        def forward(self, hidden_states):
+            for decoder_layer in self.layers:
+                if isinstance(decoder_layer, ActivationCheckpointingLayer):
+                    hidden_states = decoder_layer(hidden_states)
+                else:
+                    hidden_states = self._gradient_checkpointing_func(
+                        decoder_layer.__call__, hidden_states
+                    )
+            return hidden_states
+
+    assert ppn._layer_call_format(Decoder(), "layers") == "tensor"
 
 
 def test_non_last_stage_compiles_as_one_graph():

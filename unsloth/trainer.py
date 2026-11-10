@@ -276,11 +276,7 @@ def _should_skip_auto_packing_error(exc: Exception) -> bool:
 
 
 def _should_skip_auto_padding_free_error(exc: Exception) -> bool:
-    """Net for a TRL that words the padding-free / `max_length` guard differently.
-
-    rl.py already handles the known wording; both terms must appear here so an
-    unrelated ValueError still propagates.
-    """
+    """Matches a reworded TRL padding_free + max_length error; both terms, so other errors propagate."""
     message = str(exc).lower()
     return "padding_free" in message and "max_length" in message
 
@@ -690,11 +686,7 @@ def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
 
 
 def _forward_signature_accepts_packing(forward, name = "packed_seq_lengths") -> bool:
-    """The signature question alone, so a class can be asked it as well as an instance.
-
-    Shared, not duplicated: a disagreement would turn padding-free on for one
-    spelling of a checkpoint and off for the other.
-    """
+    """Signature check for a class or instance; shared so the two never disagree on padding-free."""
     if forward is None:
         return True
     try:
@@ -801,11 +793,8 @@ def _string_model_trust_remote_code(config_arg):
 
 
 def _is_hybrid_linear_attention_model(model) -> bool:
-    """Detect models mixing linear-attention / state-space mixers (gated-delta,
-    Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
-    padding-free flatten the batch, and those recurrent + conv ops leak state
-    across sequence boundaries, so they must not be packed. Uses composite
-    structural evidence rather than a model-name match."""
+    """Hybrid linear-attention/state-space models with causal conv1d leak state across packed
+    sequences, so they must not be packed; detected by structural evidence, not model name."""
     if model is None:
         return False
 
@@ -855,9 +844,7 @@ def _config_has_stateful_mixer(config, trust_remote_code = False) -> bool:
 
 
 def _resolve_string_model_config(model_name, config_arg):
-    """TRL materializes a string ``model=`` inside ``__init__``; resolve its config
-    up front so the packing guards run before the dataset is packed. Best-effort:
-    returns None if the config cannot be loaded."""
+    """Config of a string `model=`, resolved early so packing guards run first; None if unloadable."""
     try:
         from transformers import AutoConfig
 
@@ -1318,9 +1305,7 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
             base.load_state_dict(self, state_dict)
             self._last_lr = [group["lr"] for group in self.optimizer.param_groups]
             return
-        # Gated on the optimizer having just migrated: length alone cannot tell a legacy
-        # [ordinary, embedding] pair from two current non-embedding groups, and remapping
-        # the latter collapses distinct per-group min_lr floors onto the first.
+        # Remap only when the optimizer just migrated; length alone cannot tell legacy pairs apart.
         if not getattr(built, "_unsloth_loaded_legacy", False):
             return base.load_state_dict(self, state_dict)
         for key in ("base_lrs", "_last_lr", "min_lrs"):
@@ -1488,10 +1473,8 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if not any("rank" in group for group in param_groups):
-            # make_q_galore_param_groups selects on param.dim() == 2, and FSDP1 hands us 1-D
-            # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
-            # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
-            # quietly become ordinary 8-bit AdamW. Say so instead.
+            # FSDP1 gives 1-D views that Q-GaLore's 2-D selection never matches, so raise, not run
+            # plain AdamW.
             raise ValueError(
                 "Unsloth: Q-GaLore was requested but no parameter matched, so the run would "
                 "silently be ordinary AdamW 8bit. Projection needs 2-D parameters; under FSDP "
@@ -1926,6 +1909,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # condition the post-init check skips on, so leaving it armed is free.
         cp_size = getattr(config_arg, "context_parallel_size", 1) or 1
         is_ring_context_parallel = False
+        ulysses_packing_blocker = None
         if isinstance(cp_size, int) and cp_size > 1:
             from .context_parallel import resolve_cp_backend
 
@@ -1937,6 +1921,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
             is_ring_context_parallel = cp_backend == "ring"
+            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an
+            # automatic padding-free choice would fail the first CP step.
+            # A deferred (string) model is classified by its resolved config's model types.
+            if cp_backend == "ulysses":
+                from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
+                ulysses_packing_blocker = _ulysses_packing_blocker(
+                    None if _packing_gate_deferred else model,
+                    model_types if _packing_gate_deferred else (),
+                )
         boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
@@ -1954,6 +1947,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         blocked = (
             (data_collator is not None)
             or is_ring_context_parallel
+            or ulysses_packing_blocker is not None
             or is_pipeline_parallel_env
             or auto_off_cp_tp
             or (is_processor and not processor_text_only)
@@ -1987,7 +1981,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 setattr(config_arg, "padding_free", False)
         # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
         if (
-            is_ring_context_parallel or is_pipeline_parallel_env or boundary_blocker is not None
+            is_ring_context_parallel
+            or ulysses_packing_blocker is not None
+            or is_pipeline_parallel_env
+            or boundary_blocker is not None
         ) and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
 
@@ -2011,6 +2008,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     f"{cp_size} ranks)"
                     if getattr(config_arg, "_unsloth_cp_backend_auto", False)
                     else "ring context parallelism; context_parallel_backend = 'ulysses' keeps it"
+                )
+            elif ulysses_packing_blocker is not None:
+                reason = (
+                    f"Ulysses context parallelism: {ulysses_packing_blocker} refuses packed batches"
                 )
             elif is_pipeline_parallel_env:
                 reason = "pipeline parallel (UNSLOTH_PP_SIZE)"

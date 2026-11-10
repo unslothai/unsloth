@@ -76,6 +76,7 @@ import {
   OpenChatFolderItem,
   UploadToChatFolderItem,
 } from "./open-chat-folder-item";
+import { ExportFormatItems } from "./export-format-items";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -392,14 +393,14 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           {t("common.export")}
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className={cn(MENU, "w-48")}>
-          {chatExportOptions().map(({ label: name, format }) => (
-            <DropdownMenuItem
-              key={format}
-              onSelect={() => void exportAs(format)}
-            >
-              {name}
-            </DropdownMenuItem>
-          ))}
+          <ExportFormatItems
+            options={chatExportOptions().map(({ label, format }) => ({
+              key: format,
+              label,
+            }))}
+            onSelect={(format) => void exportAs(format)}
+            subContentClassName={cn(MENU, "w-48")}
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
       {/* Only with the folder items, or it doubles the next separator. */}

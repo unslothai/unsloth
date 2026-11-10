@@ -87,7 +87,9 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
       status: auth === "Bearer new-access" ? 200 : 401,
     });
   };
-  t.after(() => {
+  t.after(async () => {
+    // Drain deferred work first: a rejected authFetch redirects through window.location after it returns.
+    for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
     globalThis.window = previousWindow;
     globalThis.fetch = previousFetch;
     globalThis.setTimeout = previousSetTimeout;
@@ -404,4 +406,66 @@ test("the route guard still sends a rejected refresh to /login", async (t) => {
   f.tokens.access = null;
   await assert.rejects(loadGuards(f).requireAuth(), /redirect \/login/);
   assert.equal(f.tokens.refresh, null);
+});
+
+// Web Locks need a secure context, so plain-HTTP tabs can race one single-use refresh token.
+test("without Web Locks a peer tab's rotation does not sign every tab out", async (t) => {
+  const f = fixture(t, [
+    () => new Promise<Response>((resolve) =>
+      setImmediate(() => setImmediate(() => resolve(rotated())))),
+    () => new Response(null, { status: 401 }),
+  ]);
+  const otherWindow = f.makeApi();
+  const results = await Promise.all([
+    f.api.refreshSessionOutcome(),
+    otherWindow.refreshSessionOutcome(),
+  ]);
+  assert.deepEqual(results, ["ok", "ok"]);
+  assert.equal(f.refreshBodies.length, 2);
+  assert.deepEqual(f.tokens, { access: "new-access", refresh: "new-refresh" });
+  assert.equal(f.clears(), 0);
+});
+
+test("without Web Locks a 401 after a peer stored the rotation replays instead of redirecting", async (t) => {
+  const f = fixture(t, [() => {
+    f.tokens.access = "new-access";
+    f.tokens.refresh = "new-refresh";
+    return new Response(null, { status: 401 });
+  }]);
+  const response = await f.api.authFetch("/api/models");
+  assert.equal(response.status, 200);
+  assert.deepEqual(f.apiTokens, ["Bearer old-access", "Bearer new-access"]);
+  assert.equal(f.clears(), 0);
+  await f.settle();
+  assert.equal(f.location.href, "");
+});
+
+test("without Web Locks a sign-in that replaced the session is not taken for a peer's rotation", async (t) => {
+  const f = fixture(t, [() => {
+    f.state.mark = "another-session";
+    f.tokens.access = "other-access";
+    f.tokens.refresh = "other-refresh";
+    return new Response(null, { status: 401 });
+  }]);
+  assert.equal(await f.api.refreshSessionOutcome(), "rejected");
+  assert.deepEqual(f.tokens, { access: "other-access", refresh: "other-refresh" });
+  assert.equal(f.clears(), 0);
+});
+
+test("without Web Locks a session with no mark does not take a later sign-in for a peer's rotation", async (t) => {
+  const f = fixture(t, [() => {
+    f.state.mark = "new-sign-in";
+    f.tokens.access = "other-access";
+    f.tokens.refresh = "other-refresh";
+    return new Response(null, { status: 401 });
+  }]);
+  f.state.mark = null;
+  const response = await f.api.authFetch("/api/models");
+  assert.equal(response.status, 401);
+  assert.deepEqual(f.apiTokens, ["Bearer old-access"]);
+  assert.deepEqual(f.tokens, { access: "other-access", refresh: "other-refresh" });
+  assert.equal(f.clears(), 0);
+  // The 401 path reads window.location after authFetch returns; settle before teardown removes the window.
+  await f.settle();
+  assert.equal(f.location.href, "/login");
 });

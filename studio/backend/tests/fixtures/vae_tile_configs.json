@@ -764,6 +764,111 @@
     "use_quant_conv": false
    }
   },
+  "chroma": {
+   "kind": "image",
+   "repo": "lodestones/Chroma1-HD",
+   "revision": "0e0c60ece1e82b17cb7f77342d765ba5024c40c0",
+   "config": {
+    "_class_name": "AutoencoderKL",
+    "_diffusers_version": "0.35.1",
+    "_name_or_path": "/home/ubuntu/FLUX.1-schnell",
+    "act_fn": "silu",
+    "block_out_channels": [
+     128,
+     256,
+     512,
+     512
+    ],
+    "down_block_types": [
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D"
+    ],
+    "force_upcast": true,
+    "in_channels": 3,
+    "latent_channels": 16,
+    "latents_mean": null,
+    "latents_std": null,
+    "layers_per_block": 2,
+    "mid_block_add_attention": true,
+    "norm_num_groups": 32,
+    "out_channels": 3,
+    "sample_size": 1024,
+    "scaling_factor": 0.3611,
+    "shift_factor": 0.1159,
+    "up_block_types": [
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D"
+    ],
+    "use_post_quant_conv": false,
+    "use_quant_conv": false
+   }
+  },
+  "anima": {
+   "kind": "image",
+   "repo": "circlestone-labs/Anima-Base-v1.0-Diffusers",
+   "revision": "073c3a9db359c31ad0e8aa268d15775473c2176c",
+   "config": {
+    "_class_name": "AutoencoderKLQwenImage",
+    "_diffusers_version": "0.39.0.dev0",
+    "attn_scales": [],
+    "base_dim": 96,
+    "dim_mult": [
+     1,
+     2,
+     4,
+     4
+    ],
+    "dropout": 0.0,
+    "input_channels": 3,
+    "latents_mean": [
+     -0.7571,
+     -0.7089,
+     -0.9113,
+     0.1075,
+     -0.1745,
+     0.9653,
+     -0.1517,
+     1.5508,
+     0.4134,
+     -0.0715,
+     0.5517,
+     -0.3632,
+     -0.1922,
+     -0.9497,
+     0.2503,
+     -0.2921
+    ],
+    "latents_std": [
+     2.8184,
+     1.4541,
+     2.3275,
+     2.6558,
+     1.2196,
+     1.7708,
+     2.6052,
+     2.0743,
+     3.2687,
+     2.1526,
+     2.8652,
+     1.5579,
+     1.6382,
+     1.1253,
+     2.8251,
+     1.916
+    ],
+    "num_res_blocks": 2,
+    "temperal_downsample": [
+     false,
+     true,
+     true
+    ],
+    "z_dim": 16
+   }
+  },
   "hunyuanimage-2.1": {
    "kind": "image",
    "repo": "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",

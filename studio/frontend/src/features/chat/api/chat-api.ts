@@ -1540,7 +1540,11 @@ export async function buildBackendChatExport(): Promise<{
   messages: MessageRecord[];
 }> {
   const response = await authFetch("/api/chat/export");
-  return parseJsonOrThrow(response);
+  const data = await parseJsonOrThrow<Awaited<
+    ReturnType<typeof buildBackendChatExport>
+  > | null>(response);
+  if (!data) throw new Error("The chat export did not download completely.");
+  return data;
 }
 
 // Server-side legacy-Dexie import ledger, so a studio.db wipe keeps the import recoverable.

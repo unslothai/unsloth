@@ -386,11 +386,9 @@ def dequantize_nf4(
     dtype: torch.dtype,
     out: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Dequantize a bitsandbytes NF4 weight into ``out`` (allocated when None).
-
-    ``code`` is the quant state's fp32 [16] NF4 codebook. ``code2``, ``absmax2`` and the device
-    tensor ``offset`` are None when the absmax is not double quantized (it is then fp32).
-    """
+    """Dequantize a bitsandbytes NF4 weight into out (allocated when None); code is the fp32 [16]
+    NF4 codebook, and code2, absmax2 and offset are None when the absmax is not double quantized
+    (it is then fp32)."""
     if dtype not in (torch.float16, torch.bfloat16, torch.float32):
         raise TypeError(f"Unsloth: dequantize_nf4 does not support dtype {dtype}")
     if not _is_pow2(blocksize) or blocksize < 2 or (code2 is not None and not _is_pow2(blocksize2)):

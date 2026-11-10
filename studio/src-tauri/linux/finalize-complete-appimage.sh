@@ -74,6 +74,15 @@ done < <(find "$appdir" -path "$appdir/usr/bin/host" -prune -o -type f -print0)
 
 ((patched > 0)) || { echo "AppDir contains no dynamic ELF objects" >&2; exit 1; }
 
+# libappindicator-sys dlopens libayatana-appindicator3.so.1 before libappindicator3.so.1, and the
+# bundle ships only the latter. The first name would miss the RUNPATH and load the host's Ayatana
+# against the bundled GLib (#16605), so alias it to the bundled library. A real bundled Ayatana wins.
+tray_library="$libdir/libappindicator3.so.1"
+tray_alias="$libdir/libayatana-appindicator3.so.1"
+if [[ -f "$tray_library" ]] && { [[ -L "$tray_alias" ]] || [[ ! -e "$tray_alias" ]]; }; then
+  ln -sfn "libappindicator3.so.1" "$tray_alias"
+fi
+
 # AppRun runs this copy when the host has a complete WebKitGTK >= 2.54 stack.
 [[ ! -e "$appdir/usr/bin/lib" ]] || {
   echo "AppDir has usr/bin/lib, which the host-mode executable's RUNPATH reaches" >&2

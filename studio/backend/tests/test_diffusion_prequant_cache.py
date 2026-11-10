@@ -715,9 +715,8 @@ def test_an_artifact_over_the_budget_never_evicts_the_existing_cache(
 def test_bases_sharing_their_weights_but_not_their_identity_never_share_an_entry(
     env, tmp_path, scheme
 ):
-    """Two bases whose shards are one Hub blob (a mirror and its upstream under different names) fingerprint alike,
-    but the loader validates the artifact's recorded base_model_id against the requested base: each needs its own
-    entry."""
+    """Bases sharing one Hub blob fingerprint alike, but the loader checks base_model_id, so each
+    base needs its own cache entry."""
     base_a, model = _write_base(tmp_path, name = "model-a")
     shard = "transformer/diffusion_pytorch_model.safetensors"
     blob = tmp_path / "blobs" / ("ab" * 32)

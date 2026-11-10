@@ -50,7 +50,7 @@ import { isMlxId } from "@/features/model-picker/components/model-selector/recom
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
@@ -143,6 +143,7 @@ import {
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
+import { prepareComparePaneRun } from "../compare-run-ownership";
 import {
   lengthIncompleteReason,
   lengthStopCause,
@@ -175,6 +176,7 @@ import {
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
+  externalModelTakesVideo,
   isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -2078,12 +2080,11 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-/** The MCP image bound applied to the run's own tool results, BEFORE they are
- *  serialized. Bounding the OpenAI history afterwards meant every result's image
- *  array was stringified into an envelope on the main thread and then parsed again
- *  to be cut or dropped -- on every send, for pictures the request would not carry.
- *  A result that keeps no picture becomes its plain text, which is what the
- *  serializer emits for a stripped envelope. */
+/**
+ * MCP image bound applied to the run's tool results before serialization; bounding afterwards
+ * stringified and re-parsed every image array on each send, for pictures the request would not
+ * carry; a result with no picture becomes plain text.
+ */
 function boundMcpImageResults(
   messages: RunMessages,
   { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
@@ -3372,6 +3373,46 @@ async function adoptInFlightServerLoad(
     : "server-idle";
 }
 
+// Busy-host detection outlasts readHealth's one 5 s wait; past this bound autoload stays fail-open.
+const AUTO_LOAD_VERDICT_WAIT_MS = 60_000;
+const AUTO_LOAD_VERDICT_POLL_MS = 500;
+
+async function awaitMeasuredVerdict(signal?: AbortSignal): Promise<void> {
+  const deadline = Date.now() + AUTO_LOAD_VERDICT_WAIT_MS;
+  // readHealth has no timeout or signal: a stalled read must not outlive the deadline or a stopped send.
+  const bounded = (read: () => Promise<unknown>) =>
+    new Promise<"ok" | "failed" | "timeout">((resolve, reject) => {
+      const timer = setTimeout(() => settle("timeout"), Math.max(0, deadline - Date.now()));
+      const onAbort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      function cleanup() {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+      function settle(outcome: "ok" | "failed" | "timeout") {
+        cleanup();
+        resolve(outcome);
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      read().then(
+        () => settle("ok"),
+        () => settle("failed"),
+      );
+    });
+  signal?.throwIfAborted();
+  if ((await bounded(() => fetchDeviceType({ detectHardware: true }))) !== "ok") return;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    const platform = usePlatformStore.getState();
+    if (!platform.capabilitiesUnknown() || platform.detectionDeferred) return;
+    await new Promise((resolve) => setTimeout(resolve, AUTO_LOAD_VERDICT_POLL_MS));
+    signal?.throwIfAborted();
+    if ((await bounded(() => fetchDeviceType({ force: true }))) !== "ok") return;
+  }
+}
+
 async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
@@ -4006,6 +4047,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ggufSettled.status === "rejected" || modelsSettled.status === "rejected";
     if (inventoryIncomplete) hadNonTrustFailure = true;
 
+    // A deferred verdict admits non-GGUF caches a chat-only host refuses; GGUF-only caches skip the probe.
+    if (
+      usePlatformStore.getState().detectionDeferred &&
+      (allModelRepos.some(isChattableCachedRepo) ||
+        localRows.some(
+          (row) =>
+            !isGgufLocalRow(row) &&
+            isAutoLoadableLocalRow(row, cachedInventoryFailed),
+        ))
+    ) {
+      await awaitMeasuredVerdict(options?.abortSignal);
+      options?.abortSignal?.throwIfAborted();
+    }
+
     // Include on-disk models the picker indexes, not just the managed cache.
     const sources = orderAutoLoadSources(
       buildAutoLoadSources(
@@ -4464,6 +4519,13 @@ export function createOpenAIStreamAdapter(
           "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
         );
       }
+      await prepareComparePaneRun(
+        options.pairId,
+        options.modelType,
+        abortSignal,
+        () => waitForModelReady(abortSignal),
+      );
+      abortSignal.throwIfAborted();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable across chat switches during model load.
       const resolvedThreadId =
@@ -5479,6 +5541,7 @@ export function createOpenAIStreamAdapter(
         audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
         audioCount: latestUserAudioClips(survivingMessages).length,
         video: Boolean(videoBase64),
+        externalTakesVideo: externalModelTakesVideo(params.checkpoint),
       });
       if (attachedMediaReason) {
         blockAttachmentRun(attachedMediaReason);
@@ -6379,6 +6442,8 @@ export function createOpenAIStreamAdapter(
         if (usageThreadKey !== null) {
           store.setThreadContextUsage(usageThreadKey, usage);
         }
+        // The realtime meter shows this exact count from here until the next pass starts.
+        store.settleLiveGeneration(usageKey);
         if (
           store.activeThreadId === (usageThreadKey ?? activeThreadIdAtRunStart) &&
           store.params.checkpoint === params.checkpoint
@@ -6664,6 +6729,7 @@ export function createOpenAIStreamAdapter(
                 : {}),
               stream: true,
               stream_options: { include_usage: true },
+              video_base64: findLatestUserVideoBase64(currentTurnMessages),
               // Never forwarded upstream; the trailing assistant turn is what requests continuation.
               ...(continuation ? { continue_final_message: true } : {}),
               // Reasoning-class models (OpenAI gpt-5.x / o3) reject temperature and top_p; forward only when supported.

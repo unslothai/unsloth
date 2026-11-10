@@ -49,8 +49,7 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Stub only if httpx is not installed: a stub without Response breaks later
-# starlette.testclient imports for the whole session.
+# Stub httpx only if missing: one without Response breaks later starlette.testclient imports.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -158,8 +157,7 @@ class TestMaxContextLengthForWeightsExceedVRAM:
         assert got == _AUTO_OFFLOAD_CTX
 
     def test_native_below_fallback_is_preserved(self):
-        """If native ctx is itself below the fallback, don't advertise a larger
-        value than the model supports."""
+        """If native ctx is below the fallback, do not advertise more than the model supports."""
         got = _compute_max_available_ctx(
             native_ctx = 2048,
             model_gib = 200,

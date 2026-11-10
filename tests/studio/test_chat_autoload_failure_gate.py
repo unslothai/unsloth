@@ -129,6 +129,12 @@ export type Scenario = {
   platformFetched: boolean;
   /** true = the backend answered but deferred hardware detection. */
   detectionDeferred: boolean;
+  /** What a detectHardware read measures; unset keeps chatOnly. */
+  detectedChatOnly?: boolean;
+  /** Health reads after the detectHardware read before the verdict lands (a busy host). */
+  detectionReads?: number;
+  /** The detectHardware read never answers; the user stops the send shortly after. */
+  stallHealth?: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -600,10 +606,37 @@ const usePlatformStore = {
     // Server-reported unless a scenario says the probe has not landed.
     fetched: SCENARIO.platformFetched !== false,
     isChatOnly: () => SCENARIO.chatOnly === true,
+    detectionDeferred: SCENARIO.detectionDeferred === true,
     capabilitiesUnknown: () =>
       SCENARIO.platformFetched === false || SCENARIO.detectionDeferred === true,
   }),
 };
+// A detectHardware read starts detection; it lands after detectionReads more health reads (0 = within
+// that read's own wait). detectedChatOnly is what the host turns out to be.
+let DETECTION_READS_LEFT = -1;
+async function fetchDeviceType(options?: any) {
+  if (options?.detectHardware) {
+    EVENTS.push({ kind: "detectHardware" });
+    if (SCENARIO.stallHealth) {
+      setTimeout(() => (globalThis as any).__stopSend?.(), 50);
+      return new Promise(() => {});
+    }
+    SCENARIO.detectionDeferred = false;
+    DETECTION_READS_LEFT = SCENARIO.detectionReads ?? 0;
+  } else if (DETECTION_READS_LEFT > 0) {
+    EVENTS.push({ kind: "healthRead" });
+    DETECTION_READS_LEFT -= 1;
+  }
+  if (DETECTION_READS_LEFT === 0) {
+    SCENARIO.platformFetched = true;
+    if (SCENARIO.detectedChatOnly !== undefined) SCENARIO.chatOnly = SCENARIO.detectedChatOnly;
+    DETECTION_READS_LEFT = -1;
+  } else if (DETECTION_READS_LEFT > 0) {
+    // Still detecting: the reply is provisional, so the verdict stays unmeasured.
+    SCENARIO.platformFetched = false;
+  }
+  return SCENARIO.platform?.deviceType ?? SCENARIO.deviceType ?? "linux";
+}
 function isMlxId(value: string) {
   return typeof value === "string" && value.toLowerCase().includes("mlx");
 }
@@ -962,8 +995,15 @@ def _run(
         + textwrap.dedent(
             f"""
         setScenario({scenario_expr});
-        const signal = new AbortController().signal;
-        const result = await {entry};
+        const run = new AbortController();
+        const signal = run.signal;
+        globalThis.__stopSend = () => run.abort(new DOMException("Stopped", "AbortError"));
+        let result;
+        try {{
+          result = await {entry};
+        }} catch (error) {{
+          result = {{ thrown: error?.name ?? String(error) }};
+        }}
         const s = storeState();
         console.log(JSON.stringify({{
           result,
@@ -1231,8 +1271,7 @@ def test_a_local_model_wins_over_the_default_even_when_the_cache_is_empty():
 
 
 def test_the_smallest_on_device_model_wins_across_inventories():
-    """Cached and local rows compete in one size-ordered cascade, not one list
-    then the other."""
+    """Cached and local rows compete in one size-ordered cascade, not one list and then the other."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " localModels: [LOCAL_GGUF] })"
@@ -1257,9 +1296,8 @@ def test_an_inventory_failure_never_reads_as_an_empty_device(inventory):
 
 @pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos", "localModels"])
 def test_one_broken_inventory_still_loads_a_model_another_one_found(broken):
-    """A failure is one unknown source, not a verdict on the other two.
-    Promise.all rejected the batch, discarding lists that had already arrived,
-    so a broken local scan left a loadable model unused."""
+    """A failure is one unknown source, not a verdict on the other two; Promise.all rejected the
+    whole batch and discarded lists already received, leaving a loadable model unused."""
     holder = "localModels" if broken != "localModels" else "ggufRepos"
     rows = "[LOCAL_GGUF]" if holder == "localModels" else "[GEMMA]"
     extra = "" if holder == "localModels" else ", variants: { [GEMMA.repo_id]: GEMMA_VARIANTS }"
@@ -1368,9 +1406,8 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
 
 
 def test_an_image_generation_row_is_never_auto_loaded_for_chat():
-    """Diffusion rows carry an image/video task while can_chat stays true on
-    file format alone. The picker routes them to the Images page on click; a
-    background load has no routing step, so it has to skip them."""
+    """Diffusion rows carry an image or video task while can_chat stays true on file format alone;
+    the picker routes them to Images on click, so a background load must skip them."""
     for task in ("text-to-image", "text-to-video", "image-diffusion-unsupported"):
         rows = (
             f"{{ ...LOCAL_GGUF, id: 'img', load_id: 'img', path: 'img', task: '{task}',"
@@ -1556,8 +1593,7 @@ def test_a_download_that_survives_a_failed_cancel_is_not_loaded():
 
 
 def test_a_failed_cancel_does_not_latch_the_toast_action_off():
-    """The retry latch must clear once the request settles, or every later
-    Cancel click is swallowed."""
+    """The retry latch must clear once the request settles, or every later Cancel click is swallowed."""
     src = (WORKDIR / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
         encoding = "utf-8"
     )
@@ -1699,18 +1735,77 @@ def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
 
 
 def test_a_deferred_hardware_verdict_does_not_hide_cached_non_gguf_rows():
-    """Deferred detection reports a provisional chat_only, not a measurement."""
+    """Deferred detection reports a provisional chat_only, not a measurement: autoload measures it
+    first, and a host that turns out to have a GPU backend still loads the cached non-GGUF repo."""
     out = _run(
-        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true,"
+        "scenario({ chatOnly: true, detectedChatOnly: false, platformFetched: true,"
+        " detectionDeferred: true,"
         " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
     )
+    assert [e for e in out["events"] if e["kind"] == "detectHardware"] == [
+        {"kind": "detectHardware"}
+    ]
     assert _loaded_paths(out) == ["org/st"]
 
 
+def test_a_deferred_verdict_on_a_chat_only_host_falls_back_to_the_default_gguf():
+    """Measured chat-only: the cached non-GGUF repo is skipped and the default GGUF loads, as when
+    detection ran at startup, instead of a refused load ending the autoload with an error."""
+    out = _run(
+        "scenario({ chatOnly: true, detectedChatOnly: true, platformFetched: true,"
+        " detectionDeferred: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }],"
+        " load: (p) => p.model_path === 'org/st'"
+        " ? new Error('Chat-only install: this model needs a GPU backend; load a GGUF model.')"
+        " : LOADED(p) })"
+    )
+    assert "org/st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+    assert out["result"]["loaded"] is True
+
+
+def test_a_deferred_verdict_that_outlasts_the_health_wait_is_still_awaited():
+    """On a busy host detection outlasts the health read's own wait: autoload keeps reading until the
+    verdict lands instead of trying the cached non-GGUF repo on the still-unknown one."""
+    out = _run(
+        "scenario({ chatOnly: true, detectedChatOnly: true, detectionReads: 3,"
+        " platformFetched: true, detectionDeferred: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }],"
+        " load: (p) => p.model_path === 'org/st'"
+        " ? new Error('Chat-only install: this model needs a GPU backend; load a GGUF model.')"
+        " : LOADED(p) })"
+    )
+    assert [e["kind"] for e in out["events"] if e["kind"] in ("detectHardware", "healthRead")] == [
+        "detectHardware",
+        "healthRead",
+        "healthRead",
+        "healthRead",
+    ]
+    assert "org/st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_stalled_health_read_does_not_outlive_a_stopped_send():
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true, stallHealth: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert out["result"] == {"thrown": "AbortError"}
+    assert _loaded_paths(out) == []
+
+
+def test_a_deferred_verdict_with_only_gguf_cached_does_not_detect_hardware():
+    """A GGUF-only cache runs anywhere, so autoload keeps the idle path free of the hardware probe."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true,"
+        " ggufRepos: [{ repo_id: 'org/g-GGUF', size_bytes: 1 }] })"
+    )
+    assert [e for e in out["events"] if e["kind"] == "detectHardware"] == []
+
+
 def test_a_cached_adapter_repo_is_never_auto_loaded():
-    """A cached LoRA has no weights of its own: /load fetches the base from the
-    Hub when it is not cached, which is why the local twin is dropped too.
-    Adapters are tiny, so the size order puts one first."""
+    """A cached LoRA has no weights of its own: /load fetches the base from the Hub when uncached,
+    which is why the local twin is dropped too; the size order would put it first."""
     out = _run(
         "scenario({ modelRepos: [{ repo_id: 'org/lora', load_id: 'org/lora',"
         " size_bytes: 40000000, model_format: 'adapter',"
@@ -1754,9 +1849,8 @@ def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
 
 
 def test_an_admitted_hf_cache_row_is_not_attempted_twice():
-    """The surviving cached list may name the same model as the admitted
-    hf_cache row, so the load-target dedupe has to collapse them or the pair
-    spends two of the three attempts on one model."""
+    """The surviving cached list may name the same model as the admitted hf_cache row, so the
+    load-target dedupe must collapse them or the pair spends two of three attempts on one model."""
     row = (
         "{ ...LOCAL_GGUF, source: 'hf_cache', load_id: 'org/dup', path: 'org/dup', id: 'org/dup' }"
     )
