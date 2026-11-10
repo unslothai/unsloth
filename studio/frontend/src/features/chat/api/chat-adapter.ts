@@ -176,6 +176,7 @@ import {
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
+  externalModelTakesVideo,
   isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -5540,6 +5541,7 @@ export function createOpenAIStreamAdapter(
         audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
         audioCount: latestUserAudioClips(survivingMessages).length,
         video: Boolean(videoBase64),
+        externalTakesVideo: externalModelTakesVideo(params.checkpoint),
       });
       if (attachedMediaReason) {
         blockAttachmentRun(attachedMediaReason);
@@ -6727,6 +6729,7 @@ export function createOpenAIStreamAdapter(
                 : {}),
               stream: true,
               stream_options: { include_usage: true },
+              video_base64: findLatestUserVideoBase64(currentTurnMessages),
               // Never forwarded upstream; the trailing assistant turn is what requests continuation.
               ...(continuation ? { continue_final_message: true } : {}),
               // Reasoning-class models (OpenAI gpt-5.x / o3) reject temperature and top_p; forward only when supported.
