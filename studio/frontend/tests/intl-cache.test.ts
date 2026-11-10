@@ -170,3 +170,18 @@ test("the system clock still follows the locale's language on every call", () =>
     "h23",
   );
 });
+
+test("a time zone change while the page is open formats in the new zone", () => {
+  const previous = process.env.TZ;
+  const when = new Date(Date.UTC(2026, 3, 10, 22, 10));
+  const options: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
+  try {
+    process.env.TZ = "America/New_York";
+    assert.equal(formatDate(when, "en-US", options), when.toLocaleString("en-US", options));
+    process.env.TZ = "Asia/Tokyo";
+    assert.equal(formatDate(when, "en-US", options), when.toLocaleString("en-US", options));
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});

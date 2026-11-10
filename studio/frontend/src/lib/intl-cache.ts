@@ -5,6 +5,30 @@
 const dateFormats = new Map<string, Intl.DateTimeFormat>();
 const numberFormats = new Map<string, Intl.NumberFormat>();
 
+// A cached DateTimeFormat keeps the time zone it was built in, while toLocale*String follows the
+// current one, and the OS zone can change while the page is open. Two UTC offsets are a cheap
+// per-call check; the zone name is re-read at most once a second for same-offset zone changes.
+const JAN = Date.UTC(2026, 0, 1);
+const JUL = Date.UTC(2026, 6, 1);
+let zoneOffsets = "";
+let zoneName: string | undefined;
+let zoneCheckedAt = Number.NEGATIVE_INFINITY;
+
+function dropFormatsFromOldZone(): void {
+  const offsets = `${new Date(JAN).getTimezoneOffset()}/${new Date(JUL).getTimezoneOffset()}`;
+  const now = Date.now();
+  if (offsets === zoneOffsets && now - zoneCheckedAt < 1000 && now >= zoneCheckedAt) {
+    return;
+  }
+  zoneOffsets = offsets;
+  zoneCheckedAt = now;
+  const name = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (name !== zoneName) {
+    zoneName = name;
+    dateFormats.clear();
+  }
+}
+
 const keyOf = (locale: string | undefined, options: object) =>
   `${locale ?? ""}\u0000${JSON.stringify(options)}`;
 
@@ -18,6 +42,7 @@ export function formatDate(
   if (Number.isNaN(date.getTime())) {
     return date.toLocaleString(locale, options);
   }
+  dropFormatsFromOldZone();
   const key = keyOf(locale, options);
   let formatter = dateFormats.get(key);
   if (!formatter) {
