@@ -683,7 +683,7 @@ def prefer_cached_pickle_twins(
         def _reusable(name: str) -> bool:
             if not _ok(name) or not _cached(name):
                 return False
-            # a cached pickle stands in for a safetensors download only under the same rule as below
+            # same pickle trust rule as below
             if name.lower().endswith(_PICKLE_SUFFIXES):
                 return not prefer_safetensors and _verified(name)
             return True
