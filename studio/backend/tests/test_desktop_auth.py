@@ -827,6 +827,9 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     browser_module.BROWSER_FRAME_PATH = "/api/browser/frame"
     browser_module.BROWSER_PRINT_PATH = "/api/browser/print"
     browser_module.EXPOSED_HEADERS = ()
+    benchmarks_module = ModuleType("routes.benchmarks")
+    benchmarks_module.router = APIRouter()
+    benchmarks_module.BenchmarkTrafficMiddleware = lambda app: app
     flows_module = ModuleType("routes.flows")
     flows_module.router = APIRouter()
     flows_module.hooks_router = APIRouter()
@@ -858,6 +861,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.sandbox_capability", sandbox_capability_module)
     monkeypatch.setitem(sys.modules, "routes.systemone", systemone_module)
     monkeypatch.setitem(sys.modules, "routes.browser", browser_module)
+    monkeypatch.setitem(sys.modules, "routes.benchmarks", benchmarks_module)
     monkeypatch.setitem(sys.modules, "routes.flows", flows_module)
 
     import studio.backend.main as backend_main

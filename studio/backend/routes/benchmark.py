@@ -7,17 +7,19 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import importlib.util
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 
+import yaml
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from loggers import get_logger
 from utils.utils import safe_error_detail
 
@@ -38,8 +40,16 @@ from utils.paths.storage_roots import outputs_root
 
 from models.benchmark import (
     BenchmarkRunRequest,
+    BenchmarkRunSummary,
+    BenchmarkRunListResponse,
     BenchmarkRunDetail,
+    BenchmarkStatusResponse,
     BenchmarkOperationResponse,
+    BenchmarkTaskConfigResponse,
+    BenchmarkTaskInfo,
+    BenchmarkTasksResponse,
+    BenchmarkGraphRequest,
+    BenchmarkExportRequest,
 )
 
 from core.benchmark import (
@@ -51,17 +61,236 @@ from core.benchmark import (
 from core.benchmark.recipe_heldout import RECIPE_HELDOUT_TASK_ID
 
 
-# Only whether it is installed: importing lm_eval builds its task index, seconds at startup.
-_lm_eval_available = importlib.util.find_spec("lm_eval") is not None
+# ── Curated benchmark tasks ──────────────────────────
+_CURATED_TASKS: list[BenchmarkTaskInfo] = [
+    BenchmarkTaskInfo(
+        id = RECIPE_HELDOUT_TASK_ID,
+        name = "Recipe held-out",
+        description = "Held-out rows scored with a reference match or an LLM judge (Flows Benchmark node)",
+        task_type = "generation",
+        runner = "recipe",
+    ),
+    BenchmarkTaskInfo(
+        id = "mmlu",
+        name = "MMLU",
+        description = "Massive Multitask Language Understanding",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "mmlu_pro",
+        name = "MMLU-Pro",
+        description = "MMLU-Pro (more challenging MMLU variant)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "gpqa_main_cot_zeroshot",
+        name = "GPQA",
+        description = "Google Proof Q&A (PhD-level science, CoT zero-shot)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "hellaswag",
+        name = "HellaSwag",
+        description = "Commonsense reasoning (sentence completion)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "arc_challenge",
+        name = "ARC-Challenge",
+        description = "AI2 Reasoning Challenge (challenge split)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "winogrande",
+        name = "WinoGrande",
+        description = "Winograd schema coreference",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "gsm8k",
+        name = "GSM8K",
+        description = "Grade-school math (5-shot, chain-of-thought)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "hendrycks_math",
+        name = "MATH",
+        description = "Hendrycks MATH (mathematical reasoning)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "ifeval",
+        name = "IFEval",
+        description = "Instruction Following Evaluation",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "truthfulqa_mc1",
+        name = "TruthfulQA MC1",
+        description = "Truthfulness & safety (single-true)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "longbench",
+        name = "LongBench",
+        description = "Long-context understanding (multi-task)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "bbh",
+        name = "BBH",
+        description = "Big Bench Hard (chain-of-thought few-shot)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "bbh_fewshot",
+        name = "BBH (few-shot)",
+        description = "Big Bench Hard (few-shot, no CoT)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "bbh_zeroshot",
+        name = "BBH (zero-shot)",
+        description = "Big Bench Hard (zero-shot, no CoT)",
+        task_type = "log_likelihood",
+    ),
+]
+
+_task_cache: list[BenchmarkTaskInfo] | None = None
+
+
+def _build_task_cache() -> list[BenchmarkTaskInfo]:
+    curated_map = {t.id: t for t in _CURATED_TASKS}
+    try:
+        if _lm_eval_available:
+            logger.info("lm_eval available — building task index...")
+            all_names = _get_task_manager().all_tasks
+            logger.info(f"Loaded {len(all_names)} tasks from lm_eval: first 5 = {all_names[:5]}")
+        else:
+            logger.warning("lm_eval not available — using curated tasks only")
+            all_names = list(curated_map.keys())
+    except Exception as e:
+        logger.warning(f"Failed to load lm_eval tasks: {e}")
+        all_names = list(curated_map.keys())
+
+    seen: set[str] = set()
+    for name in all_names:
+        if name not in curated_map:
+            parent = None
+            for t in _CURATED_TASKS:
+                if name.startswith(t.id + "_"):
+                    parent = t
+                    break
+            if parent is not None:
+                curated_map[name] = BenchmarkTaskInfo(
+                    id = name,
+                    name = name,
+                    description = parent.description,
+                    task_type = parent.task_type,
+                )
+            else:
+                curated_map[name] = BenchmarkTaskInfo(id = name, name = name)
+        seen.add(name)
+    for t in _CURATED_TASKS:
+        if t.id not in seen:
+            all_names.append(t.id)
+    return [curated_map[n] for n in all_names]
+
+
+def _get_task_cache() -> list[BenchmarkTaskInfo]:
+    global _task_cache
+    if _task_cache is None:
+        try:
+            logger.info("Building task cache...")
+            _task_cache = _build_task_cache()
+            logger.info(f"Task cache built: {len(_task_cache)} tasks")
+        except Exception as e:
+            logger.error(f"Task cache build failed: {e}", exc_info = True)
+            _task_cache = [t for t in _CURATED_TASKS]
+    return _task_cache
+
+
+_task_mgr_cache = None
+
+
+def _get_task_manager():
+    global _task_mgr_cache
+    if _task_mgr_cache is None:
+        _task_mgr_cache = _lm_eval_tasks.TaskManager()
+    return _task_mgr_cache
+
+
+try:
+    import lm_eval.tasks as _lm_eval_tasks
+    _lm_eval_available = True
+except ImportError:
+    _lm_eval_available = False
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+# Warm the task cache in the background at startup so the first /tasks
+# request doesn't pay the cost of building the full lm_eval task index.
+threading.Thread(target = _get_task_cache, daemon = True).start()
 
 
 def _run_output_path(task: str) -> str:
     """The run's results folder; its name is also the run id, so two runs in one second need a suffix."""
     ts = time.strftime("%Y%m%d_%H%M%S")
     return str(outputs_root() / "evals" / f"benchmark_{task}_{ts}_{uuid.uuid4().hex[:6]}")
+
+
+@router.get("/tasks", response_model = BenchmarkTasksResponse)
+async def list_benchmark_tasks(current_subject: str = Depends(get_current_subject)):
+    """List available benchmark tasks — curated shortlist merged with all lm_eval tasks."""
+    try:
+        tasks = _get_task_cache()
+        logger.info(f"Returning {len(tasks)} tasks")
+        return BenchmarkTasksResponse(tasks = tasks)
+    except Exception as e:
+        logger.error(f"Error listing benchmark tasks: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to list benchmark tasks",
+        )
+
+
+@router.get("/task/{task_id}/config", response_model = BenchmarkTaskConfigResponse)
+async def get_task_config(task_id: str, current_subject: str = Depends(get_current_subject)):
+    """Load a single task's YAML config and return its metadata (num_fewshot, etc.)."""
+    if not _lm_eval_available:
+        return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
+
+    try:
+        task_mgr = _get_task_manager()
+        idx = task_mgr.task_index.get(task_id)
+        if idx is None:
+            return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
+
+        # task_index entries may be dicts or Entry objects — handle both
+        yaml_path = idx.get("yaml_path") if hasattr(idx, "get") else getattr(idx, "yaml_path", None)
+        if not yaml_path or yaml_path == -1:
+            return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
+
+        # Read the raw YAML — num_fewshot is null if absent (user can customize)
+        # or 0 if explicitly disabled (slider hidden).
+        # lm_eval YAMLs use !function tags; register a no-op constructor for them.
+        yaml.add_constructor("!function", lambda loader, node: None, Loader = yaml.FullLoader)
+        with open(yaml_path, encoding = "utf-8") as f:
+            cfg = yaml.full_load(f)
+        if not isinstance(cfg, dict):
+            return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
+        nf = cfg.get("num_fewshot")
+        # lm_eval treats null as "no default" (user can still set it),
+        # and 0 as "explicitly disabled"
+        if nf is None:
+            num_fewshot: int | None = None
+        else:
+            num_fewshot = int(nf)
+        return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = num_fewshot)
+    except Exception as e:
+        logger.warning(f"Failed to load config for task '{task_id}': {e}")
+        return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
 
 
 # lm_eval with the gguf backend is not on PyPI yet (EleutherAI/lm-evaluation-harness#4012).
@@ -84,7 +313,8 @@ def _without_api_keys(value: Any) -> Any:
 
 
 def _redact_eval_run(run: dict, *, via_api_key: bool) -> dict:
-    """``model`` and ``output_path`` are absolute host paths, hidden from API-key callers."""
+    """``model`` and ``output_path`` are absolute host paths; API-key callers get
+    the same redaction the sweep runs route applies (routes/benchmarks._redact_run)."""
     if host_paths_visible(via_api_key):
         return run
     ids = redact_host_paths({"active_model": run.get("model")}, via_api_key = via_api_key)
@@ -167,6 +397,7 @@ async def run_benchmark(
         return await run_recipe_heldout(request, http_request, credential, via_api_key)
     backend = get_benchmark_backend()
 
+    api_key_raw: str | None = None
     api_key_id: int | None = None
     run_seq: int | None = None
     started = False
@@ -181,6 +412,9 @@ async def run_benchmark(
         # Claimed before the first await: checking here and claiming later on
         # the executor thread let two concurrent requests both start a run.
         account = current_account()
+        from routes.benchmarks import sweep_refusal
+
+        sweep_refusal()
         run_seq = backend.try_begin(account, request.run_token)
         if run_seq is None:
             raise HTTPException(
@@ -247,6 +481,7 @@ async def run_benchmark(
                 expires_at = expires_at,
                 internal = True,
             )
+            api_key_raw = raw_key
             api_key_id = row["id"]
             # StudioGGUFLM sends it as a bearer header on every request.
             lm_eval_kwargs["model_args"]["api_key"] = raw_key
@@ -372,6 +607,9 @@ async def reserve_benchmark(
     """Hold the run slot for the run ``token`` starts next (a Flows Benchmark loads its model first,
     which must not swap the model under a run in progress). Freed by ``/cancel?token=``."""
     backend = get_benchmark_backend()
+    from routes.benchmarks import sweep_refusal
+
+    sweep_refusal()
     if not backend.reserve(current_account(), token):
         raise HTTPException(
             status_code = 409,
@@ -408,7 +646,175 @@ async def cancel_benchmark(
         )
 
 
+@router.get("/status", response_model = BenchmarkStatusResponse)
+async def get_benchmark_status(current_subject: str = Depends(get_current_subject)):
+    """Get benchmark backend status."""
+    try:
+        backend = get_benchmark_backend()
+        if _run_hidden_from(backend, current_account()):
+            # Busy-ness stays visible so Run reports the 409, nothing else does.
+            return BenchmarkStatusResponse(is_benchmark_active = backend.is_active())
+        return BenchmarkStatusResponse(
+            is_benchmark_active = backend.is_active(),
+            last_op_status = backend.get_last_op_status(),
+            last_op_error = backend.get_last_error(),
+            last_op_seq = backend.get_op_seq(),
+        )
+    except Exception as e:
+        logger.error(f"Error getting benchmark status: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to get benchmark status",
+        )
+
+
+def _live_progress(backend) -> Optional[dict]:
+    """Progress of the run in flight; none while idle, so a stream opened just
+    before ``/run`` lands doesn't show the previous run's last count."""
+    return backend.get_latest_progress() if backend.is_active() else None
+
+
+@router.get("/logs/stream")
+async def stream_benchmark_logs(
+    request: Request,
+    since: Optional[int] = Query(
+        None,
+        description = "Return log entries with seq strictly greater than this cursor.",
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Stream benchmark logs as Server-Sent Events.
+
+    This single long-lived stream replaces the old `/logs` poll + short-lived
+    `/logs/stream` pair: it replays everything from the start of the current run,
+    then pushes each new log line as it arrives, keeping the connection open
+    (with periodic heartbeats) until the client disconnects. Clients resume on
+    reconnect via `?since=` or the `Last-Event-ID` header.
+
+    Events:
+      - `log`      : a single log line (data: {"stream","line","ts"})
+      - `heartbeat`: periodic keepalive carrying {"active": bool} when idle
+
+    Each event's `id:` is the log entry's monotonic seq, used for resume.
+    """
+    backend = get_benchmark_backend()
+    viewer = current_account()
+
+    # Resume cursor: explicit `since` wins, then Last-Event-ID on reconnect.
+    last_event_id = request.headers.get("last-event-id")
+    if since is None and last_event_id is not None:
+        try:
+            since = int(last_event_id)
+        except ValueError:
+            pass
+
+    if since is not None:
+        cursor = max(0, int(since))
+    elif backend.is_active():
+        # First connect mid-run: replay the whole current run.
+        cursor = backend.get_run_start_seq()
+    else:
+        # First connect while idle — e.g. the stream opens just before the
+        # `/run` POST lands — so don't replay stale logs from an earlier run;
+        # wait for the live ones instead.
+        cursor = backend.get_current_log_seq()
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        nonlocal cursor
+        # Reconnect after 3 seconds if the connection drops.
+        yield "retry: 3000\n\n"
+
+        last_yield = time.monotonic()
+        last_progress = None
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+
+                entries, new_cursor = backend.get_logs_since(cursor)
+                if entries and _run_hidden_from(backend, viewer):
+                    cursor = new_cursor
+                    entries = []
+                if entries:
+                    for entry in entries:
+                        payload = json.dumps(
+                            {
+                                "stream": entry.get("stream", "stdout"),
+                                "line": entry.get("line", ""),
+                                "ts": entry.get("ts"),
+                            }
+                        )
+                        yield _format_sse(
+                            payload,
+                            event = "log",
+                            event_id = int(entry.get("seq", 0)),
+                        )
+                    cursor = new_cursor
+                    last_yield = time.monotonic()
+                else:
+                    now = time.monotonic()
+                    if now - last_yield > 10.0:
+                        yield _format_sse(
+                            json.dumps({"active": backend.is_active()}),
+                            event = "heartbeat",
+                            event_id = cursor,
+                        )
+                        last_yield = now
+
+                # Surface lm_eval tqdm progress as a dedicated SSE event.
+                progress = _live_progress(backend)
+                if (
+                    progress is not None
+                    and progress != last_progress
+                    and not _run_hidden_from(backend, viewer)
+                ):
+                    last_progress = progress
+                    yield _format_sse(json.dumps(progress), event = "progress")
+
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            # Client disconnected mid-yield: end cleanly so StreamingResponse finalizes.
+            return
+        except Exception as exc:
+            logger.error("Benchmark log stream failed: %s", exc, exc_info = True)
+            try:
+                yield _format_sse(
+                    json.dumps({"error": safe_error_detail(exc)}),
+                    event = "error",
+                )
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ── Past eval runs ─────────────────────────────
+
+
+@router.get("/runs", response_model = BenchmarkRunListResponse)
+async def list_benchmark_runs(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """List past benchmark runs, newest first."""
+    try:
+        from storage.studio_db import list_benchmark_runs as db_list_runs
+        runs = db_list_runs()
+        return BenchmarkRunListResponse(
+            runs = [BenchmarkRunSummary(**_redact_eval_run(r, via_api_key = via_api_key)) for r in runs]
+        )
+    except Exception as e:
+        logger.error(f"Error listing benchmark runs: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to list benchmark runs")
 
 
 @router.get("/runs/{run_id}", response_model = Optional[BenchmarkRunDetail])
@@ -430,3 +836,204 @@ async def get_benchmark_run_detail(
     except Exception as e:
         logger.error(f"Error loading benchmark run: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to load benchmark run")
+
+
+@router.delete("/runs/{run_id}", response_model = BenchmarkOperationResponse)
+async def delete_benchmark_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+    """Delete a benchmark run and its per-sample data."""
+    import shutil
+    try:
+        from storage.studio_db import get_benchmark_run as db_get_run
+        from storage.studio_db import delete_benchmark_run as db_delete_run
+
+        run = db_get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code = 404, detail = "Benchmark run not found")
+
+        # Remove results.json directory if it exists
+        output_path = run.get("output_path")
+        if output_path and os.path.isdir(output_path):
+            try:
+                shutil.rmtree(output_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete output directory {output_path}: {e}")
+
+        db_delete_run(run_id)
+        return BenchmarkOperationResponse(
+            success = True,
+            message = f"Deleted benchmark run {run_id}",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting benchmark run: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to delete benchmark run")
+
+
+def _format_sse(
+    data: str,
+    event: str,
+    event_id: Optional[int] = None,
+) -> str:
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append(f"data: {data}")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
+
+
+@router.post("/graph")
+async def generate_benchmark_graph(
+    request: BenchmarkGraphRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Generate a benchmark comparison chart as a PNG image."""
+    from fastapi.responses import Response
+    from storage.studio_db import get_benchmark_run_detail as db_get_run_detail
+
+    try:
+        if len(request.run_ids) < 1:
+            raise HTTPException(
+                status_code = 400,
+                detail = "At least one run ID is required.",
+            )
+
+        if request.chart_type not in ("bar", "line", "grouped_bar", "radar"):
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Invalid chart type: {request.chart_type}. Must be 'bar', 'line', 'grouped_bar', or 'radar'.",
+            )
+
+        _VALID_THEMES = {
+            "light",
+            "dark",
+            "unsloth-dark",
+            "ggplot",
+            "fivethirtyeight",
+            "bmh",
+            "grayscale",
+            "seaborn-v0_8",
+            "seaborn-v0_8-darkgrid",
+        }
+        if request.theme not in _VALID_THEMES:
+            import matplotlib.style
+            if request.theme not in matplotlib.style.available:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"Invalid theme: '{request.theme}'. Not a built-in theme or a known matplotlib style.",
+                )
+
+        runs = []
+        for run_id in request.run_ids:
+            run = db_get_run_detail(run_id)
+            if run is None:
+                raise HTTPException(
+                    status_code = 404,
+                    detail = f"Benchmark run not found: {run_id}",
+                )
+            runs.append(run)
+
+        from core.benchmark.graph import generate_chart
+
+        png_bytes = await asyncio.to_thread(
+            generate_chart,
+            runs = runs,
+            chart_type = request.chart_type,
+            metric = request.metric,
+            width = request.width,
+            height = request.height,
+            theme = request.theme,
+        )
+
+        return Response(
+            content = png_bytes,
+            media_type = "image/png",
+            headers = {
+                "Content-Disposition": 'attachment; filename="benchmark-chart.png"',
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating benchmark graph: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to generate chart: {safe_error_detail(e)}",
+        )
+
+
+@router.post("/export")
+async def export_benchmark_runs(
+    request: BenchmarkExportRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Export benchmark runs as JSON with metadata and results.json contents."""
+    from fastapi.responses import Response
+    from storage.studio_db import get_benchmark_run_detail as db_get_run_detail
+
+    try:
+        if len(request.run_ids) < 1:
+            raise HTTPException(
+                status_code = 400,
+                detail = "At least one run ID is required.",
+            )
+
+        exported = []
+        for run_id in request.run_ids:
+            run = db_get_run_detail(run_id)
+            if run is None:
+                raise HTTPException(
+                    status_code = 404,
+                    detail = f"Benchmark run not found: {run_id}",
+                )
+
+            output_path = run.get("output_path", "")
+            results_json = None
+            if output_path:
+                results_path = os.path.join(output_path, "results.json")
+                if os.path.isfile(results_path):
+                    try:
+                        with open(results_path, "r", encoding = "utf-8") as f:
+                            results_json = _without_api_keys(json.load(f))
+                    except Exception as e:
+                        logger.warning(f"Failed to read results.json for {run_id}: {e}")
+
+            entry = {
+                "id": run.get("id"),
+                "task": run.get("task"),
+                "model": run.get("model"),
+                "metrics": run.get("metrics", []),
+                "n_samples": run.get("n_samples", 0),
+                "num_fewshot": run.get("num_fewshot"),
+                "created_at": run.get("created_at"),
+                "output_path": output_path,
+                "correct_count": run.get("correct_count", 0),
+                "total_count": run.get("total_count", 0),
+                "samples": run.get("samples", []),
+                "results": results_json,
+            }
+            if not host_paths_visible(via_api_key):
+                # results.json repeats the model path throughout its configs.
+                entry = _redact_eval_run(entry, via_api_key = via_api_key)
+                entry["results"] = None
+            exported.append(entry)
+
+        payload = json.dumps(exported, indent = 2, default = str)
+        return Response(
+            content = payload,
+            media_type = "application/json",
+            headers = {
+                "Content-Disposition": 'attachment; filename="benchmark-export.json"',
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting benchmark runs: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to export runs: {safe_error_detail(e)}",
+        )

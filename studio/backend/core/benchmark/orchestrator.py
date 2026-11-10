@@ -150,7 +150,7 @@ def _run_benchmark_task(params: dict) -> dict:
 def _held_benchmark_task(params: dict) -> dict:
     """An lm-eval run under the scoring hold for the worker's whole life, a drain after Stop
     included: its requests name the loaded model, so a reload or a sweep mid-run would mix models."""
-    from core.benchmark.hold import check_resident, scoring_hold
+    from routes.benchmarks import check_resident, scoring_hold
     with scoring_hold():
         check_resident(params.get("_expected_model"))
         return _run_benchmark_task(params)
