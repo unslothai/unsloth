@@ -6705,6 +6705,10 @@ _SHELL_LINE_OPERATORS = (
     "<",
     ">",
 )
+_HEREDOC_INTERPRETER_MENTION_RE = re.compile(
+    r"(?<![\w.-])(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)(?![\w-])"
+)
+_COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
 _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVxR?")
 
 
@@ -6796,18 +6800,22 @@ def _python_reads_stdin_program(words: list) -> "bool | None":
 
 def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
     """Heredocs taken in shell order, each owned by its simple command: Python executing stdin gets
-    the body screened; other interpreters, a second stdin redirection, expansions in an unquoted
-    body, or a line that does not tokenize fail closed."""
+    the body screened. Other interpreters, a second stdin redirection, expansions in an unquoted
+    body, or any owner or terminator this cannot resolve while an interpreter is named fail closed."""
+    mentioned = bool(_HEREDOC_INTERPRETER_MENTION_RE.search(command))
     lines = command.splitlines()
     i = 0
     while i < len(lines):
         line = lines[i]
         i += 1
+        while i < len(lines) and (len(line) - len(line.rstrip("\\"))) % 2:
+            line = line[:-1] + lines[i]
+            i += 1
         if "<<" not in line:
             continue
         tokens = _shell_line_tokens(line)
         if tokens is None:
-            if _HEREDOC_INTERPRETER_RE.search(line):
+            if mentioned:
                 return True
             continue
         commands, current = [], []
@@ -6837,13 +6845,23 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 if heredoc[3] is None:
                     heredoc[3] = (names, stdin_redirects)
         for delimiter, dash, quoted, (names, stdin_redirects) in pending:
-            body = []
+            body, terminated = [], False
             while i < len(lines):
                 text = lines[i].lstrip("\t") if dash else lines[i]
                 i += 1
                 if text == delimiter:
+                    terminated = True
                     break
                 body.append(text)
+            if not terminated and _HEREDOC_INTERPRETER_MENTION_RE.search("\n".join(body)):
+                return True
+            command_word = next((w for w in names if not re.match(r"\w+=", w)), "")
+            if mentioned and (
+                not command_word
+                or command_word in _COMPOUND_CLOSERS
+                or any(ch in command_word for ch in "$`")
+            ):
+                return True
             at = next(
                 (
                     n
@@ -6853,6 +6871,8 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
                 None,
             )
             if at is None:
+                if _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names)):
+                    return True
                 continue
             if stdin_redirects > 1 or any("PYTHONINSPECT" in w for w in names[:at]):
                 return True
