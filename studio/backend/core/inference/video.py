@@ -12865,6 +12865,7 @@ class VideoBackend:
         if offload_policy != "none" and (te_streamed or denoiser_streamed):
             # Only the VAEs rotate now, evicting each other every render. Installed last: the levers above replace weights.
             from .video_minimax_h3_residency import install_pinned_swap
+
             for vae_name in ("vae", "audio_vae"):
                 try:
                     install_pinned_swap(
@@ -12872,6 +12873,9 @@ class VideoBackend:
                     )
                 except Exception as exc:  # noqa: BLE001 -- stock moves
                     logger.warning("video.h3_pinned_swap: %s: %s", vae_name, exc)
+            from .video_minimax_h3_residency import install_h3_rotation_park
+
+            install_h3_rotation_park(pipe, park = bool(denoiser_streamed), logger = logger)
         if te_streamed == "stream_lazy":
             # Last host copy, so available RAM is final.
             from .video_minimax_h3_te import h3_te_resident_enabled, keep_h3_te_resident
@@ -14373,7 +14377,12 @@ class VideoBackend:
                         reset_static_step_skip(_skip_pipe(state, pipe), None)
                     if fam.modular_workflow:
                         from .video_minimax_h3_vae import settle_h3_vae_fallback
+
                         settle_h3_vae_fallback(state, pipe)
+                        from .video_minimax_h3_residency import park_h3_rotation
+
+                        # The next request's VRAM floor reads free memory before its first forward evicts these.
+                        park_h3_rotation(pipe)
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
