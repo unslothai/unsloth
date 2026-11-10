@@ -1651,7 +1651,6 @@ async def get_gguf_variants_answer(
     cache_authorized = [True]
     variant_context_sources: dict[str, str] = {}
     hub_listing = None
-    # The model_info this request's own Hub listing fetched; the MLX fallback reuses it.
     hub_model_info: list = []
     # The downloaded rows a Hub-less answer proved complete from disk, see _locally_resolved.
     locally_proven: list[Optional[frozenset]] = [None]

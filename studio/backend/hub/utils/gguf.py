@@ -1337,8 +1337,7 @@ def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, 
     return whole or variants, has_vision, None
 
 
-# A list set here by a caller receives the model_info list_gguf_variants fetched, so the same
-# request can reuse it instead of listing the repo on the Hub again.
+# A caller's list here receives the model_info list_gguf_variants fetched, for reuse in the same request.
 HUB_MODEL_INFO_SINK: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
     "gguf_hub_model_info_sink", default = None
 )
