@@ -7198,8 +7198,8 @@ html[data-glass][data-glass-menus][data-glass-plain]:not(.dark) :is([data-slot$=
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .665), inset 0 -1px 0 color-mix(in srgb, var(--foreground) 8%, transparent), inset 0 6px 10px -8px rgb(255 255 255 / .175), var(--glass-lift, 0 0 #0000) !important;
 }
 }
-/* !important: Sonner injects its base rules at runtime. */
-html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
+/* !important: Sonner injects its base rules at runtime. .toast-surface: the update cards that float like toasts. */
+html[data-glass][data-glass-menus] :is([data-sonner-toast][data-styled="true"], .toast-surface) {
   --accent: var(--glass-hover);
   --muted: var(--glass-hover);
   --secondary: var(--glass-field);
@@ -7208,7 +7208,7 @@ html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent) !important;
 }
-html[data-glass^="liquid"][data-glass-menus] [data-sonner-toast][data-styled="true"] {
+html[data-glass^="liquid"][data-glass-menus] :is([data-sonner-toast][data-styled="true"], .toast-surface) {
   background-image: var(--glass-sheen);
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
@@ -7492,7 +7492,7 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
    Windows desktop portals when glass menus are enabled. Toasts use the opaque palette. */
 html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]),
 html[data-glass-clear] #root,
-html[data-glass-clear] #root [data-sonner-toaster] {
+html[data-glass-clear] #root :is([data-sonner-toaster], .toast-surface) {
   --clear-alpha: var(--glass-fill-alpha, 50%);
   --background: color-mix(in srgb, var(--glass-page-bg) var(--clear-alpha), transparent);
   --card: color-mix(in srgb, var(--glass-page-card) var(--clear-alpha), transparent);
@@ -7509,7 +7509,7 @@ html[data-glass-clear] #root [data-sonner-toaster] {
   --color-secondary: var(--secondary);
   --color-sidebar: var(--sidebar);
 }
-html[data-glass-clear] #root [data-sonner-toaster] {
+html[data-glass-clear] #root :is([data-sonner-toaster], .toast-surface) {
   --clear-alpha: 100%;
 }
 /* text-background labels sit on solid action fills, so they keep the opaque colour. */
@@ -7752,7 +7752,7 @@ html[data-glass][data-glass-menus][data-glass-cpu] [data-slot="dialog-content"] 
   background-color: var(--glass-page-bg);
 }
 /* Sonner's rule above sets its blur !important at a higher specificity than the universal one. */
-html[data-glass][data-glass-menus][data-glass-cpu] [data-sonner-toast][data-styled="true"] {
+html[data-glass][data-glass-menus][data-glass-cpu] :is([data-sonner-toast][data-styled="true"], .toast-surface) {
   background-color: var(--popover) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;

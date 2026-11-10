@@ -43,7 +43,7 @@ test("WebKitGTK glass drops every live Glass blur, the sidebar's included", () =
   assert.match(rule, /-webkit-backdrop-filter: none !important;/);
   assert.match(rule, /\n\s*backdrop-filter: none !important;/);
   assert.doesNotMatch(rule, /:has\(/, "a :has() here would re-match on every DOM change");
-  const toast = ruleAt(`html[data-glass][data-glass-menus][data-glass-cpu] [data-sonner-toast][data-styled="true"] {`);
+  const toast = ruleAt(`html[data-glass][data-glass-menus][data-glass-cpu] :is([data-sonner-toast][data-styled="true"], .toast-surface) {`);
   assert.match(toast, /\n\s*backdrop-filter: none !important;/, "Sonner's own !important blur outranks the universal rule");
 });
 
