@@ -208,6 +208,7 @@ export const he = {
     tabs: "כרטיסיות דפדפן",
     newTab: "כרטיסייה חדשה",
     newTabFullView: "כרטיסייה חדשה בתצוגה מלאה",
+    newTabFloating: "כרטיסייה חדשה בחלון צף",
     closeTab: "סגור כרטיסייה",
     close: "סגור דפדפן",
     show: "הצג דפדפן",
@@ -399,6 +400,12 @@ export const he = {
       openChat: "פתח בתצוגה מלאה",
       moveLeft: "העבר לחלונית השמאלית",
       moveRight: "העבר לחלונית הימנית",
+    },
+    floating: {
+      enter: "חלון צף",
+      dock: "עגינה לצד",
+      close: "סגירת החלון הצף",
+      handle: "הזזת החלון. מקשי החצים מזיזים אותו, ו־Shift עם החצים משנה את גודלו.",
     },
     annotate: {
       countOne: "הערה אחת",
@@ -691,6 +698,8 @@ export const he = {
       "סגירת חלון זה לא עוצרת את ההגדרה. התוצאה תוצג בהגדרות > אבטחה.",
   },
   composerSettings: {
+    shareDraft: "שיתוף טיוטות בין שיחות",
+    shareDraftDescription: "שימוש בטיוטה אחת בשיחות ובהשוואה. כבוי כברירת מחדל; כל שיחה שומרת טיוטה משלה.",
     title: "עורך ההודעות",
     plainText: "עורך טקסט פשוט",
     plainTextDescription:
@@ -823,6 +832,8 @@ export const he = {
   picker: {
     unifiedTightFit: "התאמה צפופה",
     unifiedTightFitHint: "ייתכן שייטען עם הקשר קצר יותר או ירוץ לאט יותר ב-Mac הזה.",
+    residentToRun: "להרצה",
+    residentToRunHint: "זיכרון GPU שבדיקת הטעינה דורשת בזמן הריצה",
     onDevice: "במכשיר",
     huggingFace: "Hugging Face",
     retry: "נסה שוב",
@@ -1134,6 +1145,9 @@ export const he = {
       modelAccessHint: "מודל אחד בכל שורה, למשל unsloth/Qwen3-4B-GGUF, או unsloth/* לארגון שלם. השאירו ריק כדי לאפשר את כל המודלים.",
       modelAccessSave: "שמירה",
       modelAccessLimited: "גישה מוגבלת למודלים",
+      rename: "שינוי שם",
+      renameTitle: "שינוי השם של {username}",
+      renameDescription: "בחרו את השם שבו החשבון הזה מתחבר. השיחות, הקבצים ומפתחות ה-API נשארים בחשבון. המשתמש יתנתק ויתחבר מחדש עם השם החדש והסיסמה הנוכחית.",
       empty: "אין עדיין חשבונות נוספים",
       setupCode: "קוד הגדרה",
       setupFor: "קוד הגדרה עבור {username}",
@@ -1718,6 +1732,13 @@ export const he = {
         audioUploadCancel: "ביטול תמלול",
         audioUploadTranscribing: "מתמלל אודיו…",
         sectionTitle: "הכתבה",
+        micTargetLabel: "כפתור המיקרופון",
+        micTargetAsr: "תמלול באמצעות ASR",
+        micTargetModel: "שליחת שמע למודל",
+        micTargetAsrDescription: "כפתור המיקרופון מקליד את מה שאתם אומרים בתיבת ההודעה.",
+        micTargetModelDescription: "כאשר טעון מודל שמקבל קלט שמע, המיקרופון מקליט קטע ומצרף אותו להודעה. מודלים אחרים ממשיכים לקבל הכתבה.",
+        micTargetModelUnavailable: "טענו מודל שמקבל קלט שמע (לדוגמה LFM3-Omni) כדי לשלוח לו את הקול שלכם.",
+        micRecordForModel: "הקלטת שמע למודל",
         engineLabel: "מנוע הכתבה",
         engineBrowser: "דפדפן",
         engineBrowserDescription:
@@ -1741,6 +1762,13 @@ export const he = {
         sttQuantDescription:
           "בחר או חפש מודל STT להרצה מקומית, ואז את הקוונטיזציה שלו.",
         sttDeviceLabel: "טען אל",
+        sttContextLabel: "הקשר קולי",
+        sttContextAuto: "אוטומטי (מומלץ)",
+        sttContextAutoDescription:
+          "מתאים את גודל ההקשר לכל הקלטה, ומשתמש ביותר זיכרון להקלטות ארוכות יותר. בסביבות ריצה ישנות ייתכן שיהיה צורך בגודל קבוע כדי להפחית את השימוש בזיכרון. חל על Qwen3-ASR ב״קול״ וב״תמלול״.",
+        sttContextFixedDescription:
+          "מגבלות קטנות יותר צורכות פחות זיכרון. להקלטות שחורגות מהמגבלה יש לבחור מגבלה גבוהה יותר או מצב אוטומטי. חל על Qwen3-ASR ב״קול״ וב״תמלול״.",
+        sttContextTokens: "{count} טוקנים",
         sttDeviceAuto: "GPU כאשר זמין",
         sttDeviceCpu: "זיכרון RAM של ה-CPU",
         sttDeviceAutoDescription: "השתמש ב-GPU כאשר קיים, וב-CPU במקרים אחרים.",
@@ -2163,6 +2191,12 @@ export const he = {
         autoHint: "בוחר לפי המחשב ועובר ל-HTTPS אם Xet נתקע או נכשל כאן.",
         autoCurrently: "מצב אוטומטי משתמש כעת ב-{transport} במחשב זה.",
         xetMissing: "Xet אינו זמין מכיוון ש-hf_xet אינו מותקן.",
+        speedLimit: "מגבלת מהירות הורדה",
+        speedLimitDescription:
+          "ללא מגבלה אלא אם הוגדר ערך. הורדה מוגבלת משתמשת ב-HTTPS.",
+        speedLimitNoLimit: "ללא מגבלה",
+        speedLimitInvalid: "הזינו מספר ב-Mbit/s או השאירו את השדה ריק.",
+        speedLimitUsesHttps: "כל עוד מוגדרת מגבלת מהירות, ההורדות משתמשות ב-HTTPS. קבצים מעל 50GB עדיין משתמשים ב-Xet, ללא המגבלה.",
       },
       uploads: {
         sectionTitle: "העלאות",
@@ -2538,6 +2572,10 @@ export const he = {
         contrast: {
           label: "ניגודיות",
         },
+        elementOutline: {
+          label: "מתאר רכיבים",
+          description: "עוצמת הגבול של כפתורים, שדות, כרטיסים ותפריטים.",
+        },
         reduceMotion: {
           label: "הפחתת תנועה",
           description: "הפחת אנימציות או התאם להגדרות המערכת.",
@@ -2611,11 +2649,25 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
-        cpuLoad: "עומס מעבד",
+          "הצגת עומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
         power: "הספק",
+        memory: "זיכרון",
+        gpuInUse: "בשימוש ה-GPU",
+        availableForModels: "זמין למודלים",
+        refreshRate: "קצב רענון",
+        refreshRateDescription: "באיזו תדירות המוניטור הצף קורא את השימוש בזיכרון וב-GPU כשהוא פתוח.",
+        refreshEvery: "כל {seconds} שנ׳",
+        unsloth: "Unsloth",
+        otherApps: "אפליקציות אחרות",
+        otherInUse: "שימוש אחר",
+        freeLabel: "פנוי",
+        unslothApp: "אפליקציית Unsloth",
+        unslothShare: "הצגת החלק של Unsloth",
+        unslothShareDescription: "חלוקת הזיכרון בין Unsloth, אפליקציות אחרות וזיכרון פנוי.",
+        modelBreakdown: "פירוט לפי מודל",
+        modelBreakdownDescription: "חלוקת החלק של Unsloth בסרגל הזיכרון לכל מודל טעון ולשאר האפליקציה.",
       },
       gpu: {
         title: "התקני GPU",
@@ -2627,7 +2679,7 @@ export const he = {
         unavailable: "לא זמין",
         detecting: "בודק קיום מעבדים גרפיים (GPUs)...",
         unreadable: "לא ניתן לקרוא את חומרת השרת.",
-        noGpu: "לא זוהה GPU גלוי. משאבי CPU בלבד מוצגים למעלה.",
+        noGpu: "לא זוהה GPU ייעודי.",
         noUsableGpu: "אף GPU במחשב זה אינו שמיש על ידי PyTorch.",
         mismatchCpuBuild:
           "גרסת PyTorch מותאמת ל-CPU בלבד ({version}), ולכן לא ניתן להשתמש ב-GPUs שלמטה. תקן את ההתקנה כדי לשחזר תמיכה ב-GPU.",
@@ -2713,7 +2765,7 @@ export const he = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary הסקה מאיץ החלפה מנוע מותאם בנייה",
       },
       modelMemory: {
-        title: "זיכרון מודל",
+        title: "טעינת מודל",
         keepResident: "שמור מודל בזיכרון ה-GPU",
         keepResidentDescription: "הישאר ב-VRAM בין פרומפטים.",
         keepResidentHint:
@@ -2902,7 +2954,7 @@ export const he = {
       configurationDocs: "תיעוד",
       configurationFlagsSuffix: "עבור דגלים.",
       modelNote:
-        "Codex דורש מודל GGUF המוגש על ידי llama-server. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
+        "Claude Code ו-Codex דורשים מודל GGUF המוגש על ידי llama-server, או מודל MLX. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
       subagent: {
         title: "השתמש במודל מקומי כתת-סוכן",
         description:
@@ -2976,6 +3028,8 @@ export const he = {
     },
     chat: {
       groups: {
+        replies: { title: "תשובות" },
+        thinkingTools: { title: "חשיבה וכלים" },
         conversations: {
           title: "שיחות",
         },
@@ -3069,11 +3123,20 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
-      showGenerationDetails: "פרטי יצירה",
+      showGenerationDetails: "מידע מפורט על מהירות וטעינה",
       showGenerationDetailsDescription:
-        "הצגת מהירויות הפרומפט והתשובה בזמן אמת עם מספר האסימונים, והיכן נטענו השכבות של המודל.",
+        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות, ומציג היכן נטענו שכבות המודל.",
       showGenerationDetailsKeywords:
         "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "נתוני מהירות והקשר",
+      generationStatsUpdatesDescription:
+        "מצב זמן אמת סופר טוקנים לשנייה ושימוש בהקשר בזמן שתשובה מוזרמת. מצב בסיום מעדכן אותם כשכל תשובה מסתיימת.",
+      generationStatsUpdatesHint:
+        "זמן אמת מרענן את מד הטוקנים לשנייה מתחת לתשובה ואת סרגל ההקשר בראש הצ'אט כמה פעמים בשנייה בזמן שהתשובה נכתבת. בסיום מעדכן אותם פעם אחת, אחרי שכל תשובה מסתיימת. זמן אמת עלול לגרום להאטה או לביצועים נמוכים יותר, במיוחד במחשבים ישנים או עמוסים.",
+      generationStatsUpdatesSettled: "בסיום",
+      generationStatsUpdatesRealtime: "זמן אמת",
+      generationStatsUpdatesKeywords:
+        "זמן אמת חי עדכון מהירות הקשר נתונים realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
@@ -3211,12 +3274,10 @@ export const he = {
       exportingAction: "מייצא...",
       exportConversations: "ייצוא אחרונים ופרויקטים",
       exportConversationsDescription:
-        "הורד צ'אטים מ'אחרונים' או מ'אחרונים ופרויקטים' בפורמט Training JSONL, CSV, ShareGPT JSONL או Markdown, כקובץ מאוחד או לכל צ'אט בנפרד. Message JSONL זמין לכל צ'אט בנפרד.",
+        "הורד צ'אטים מ'אחרונים' או מ'אחרונים ופרויקטים' בפורמט Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML או PDF, כקובץ מאוחד או לכל צ'אט בנפרד. Message JSONL זמין לכל צ'אט בנפרד.",
       exportConversationsAction: "ייצוא",
       exportScopeRecents: "אחרונים",
       exportScopeAll: "אחרונים + פרויקטים",
-      exportCombinedSuffix: "(משולב)",
-      exportPerChatSuffix: "(לכל צ'אט)",
       importChats: "ייבוא צ'אטים",
       importChatsDescription:
         "ייבא קובצי JSON, JSONL, NDJSON, CSV או Markdown אל 'אחרונים'.",
@@ -3442,6 +3503,89 @@ export const he = {
       description:
         "גש ל-Unsloth זה מהמכשירים האחרים שלך, דרך הרשת המקומית או באמצעות כתובת URL ציבורית זמנית.",
     },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "סוכנים מתחברים עם מפתח API של Unsloth.",
+      createKey: "יצירת מפתח API",
+      tools: {
+        title: "כלים",
+        count: "{on} מתוך {total} פעילים",
+        choose: "בחירת כלים",
+        dialogTitle: "כלי Unsloth MCP",
+        allTools: "כל הכלים",
+        selectAll: "בחר הכול",
+        selectNone: "אל תבחר כלום",
+        description:
+          "כל כלי שנשאר פעיל מתווסף למה שסוכנים קוראים לפני שהם מתחילים, אז כבה את אלה שאינך צריך. סוכנים לעולם לא רואים כלי כבוי, וקריאות אליו נדחות. סוכנים שכבר מחוברים יראו את השינוי כשיתחברו מחדש.",
+        saveError: "לא ניתן לשמור את הגדרת הכלי של Unsloth MCP.",
+        groups: {
+          models: "מודלים",
+          generate: "יצירה",
+          training: "אימון וייצוא",
+          library: "נתונים וספרייה",
+          jobs: "משימות",
+          other: "אחר",
+        },
+        chatNote: "הצ'אט אף פעם לא מקבל את {tools}.",
+      },
+      status: {
+        on: "פועל",
+        off: "כבוי",
+      },
+      apiKeysRow: {
+        open: "פתח בסוכנים",
+      },
+      toolLabels: {
+        studioStatus: "סטטוס",
+        listModels: "הצגת מודלים",
+        loadModel: "טעינת מודל",
+        unloadModel: "פריקת מודל",
+        planLoad: "תכנון טעינה",
+        downloadModel: "הורדת מודל",
+        chat: "צ'אט",
+        embed: "הטמעת טקסט",
+        systemOne: "מודל החלטות",
+        generateImage: "יצירת תמונות",
+        generateAudio: "יצירת אודיו",
+        transcribe: "תמלול",
+        analyzeAudio: "ניתוח אודיו",
+        generateVideo: "יצירת וידאו",
+        runRecipe: "הרצת Data Recipe",
+        getJob: "מצב משימה",
+        datasets: "מערכי נתונים",
+        startTraining: "התחלת אימון",
+        listTrainingRuns: "ריצות אימון",
+        exportModel: "ייצוא מודל",
+        listMedia: "מדיה שמורה",
+        voices: "קולות",
+        cancel: "ביטול עבודה",
+      },
+      toolDescriptions: {
+        studioStatus: "לבדוק מה טעון, רץ ופנוי במחשב הזה.",
+        listModels: "להציג את המודלים שסוכנים יכולים לטעון.",
+        loadModel: "לטעון מודל כדי שסוכנים יוכלו לשוחח או ליצור איתו.",
+        unloadModel: "לפרוק מודל כדי לפנות זיכרון.",
+        planLoad: "לראות את גודל ההורדה והזיכרון של טעינה בלי לטעון.",
+        downloadModel: "להוריד מודל מ-Hugging Face.",
+        chat: "לשוחח עם המודל הטעון.",
+        embed: "להפוך טקסט לווקטורים, או לדרג טקסטים לפי דמיון.",
+        systemOne: "לשאול את מודל ההחלטות שאלות כן או לא, בחירה או ציון.",
+        generateImage: "ליצור תמונות ולשמור אותן בגלריה.",
+        generateAudio: "ליצור דיבור או שמע אחר.",
+        transcribe: "להפוך דיבור לטקסט.",
+        analyzeAudio: "לבדוק דוברים, תזמון והתאמה של קטע לתסריט.",
+        generateVideo: "ליצור סרטון.",
+        runRecipe: "להריץ Data Recipe כדי לבנות מערך נתונים.",
+        getJob: "לעקוב אחרי משימה ארוכה עד שתסתיים.",
+        datasets: "להציג ולהעלות מערכי נתונים.",
+        startTraining: "להתחיל אימון fine-tuning.",
+        listTrainingRuns: "להציג הרצות אימון ואת התוצאות שלהן.",
+        exportModel: "לייצא מודל מאומן, למשל ל-GGUF.",
+        listMedia: "לעיין בתמונות, בשמע ובסרטונים שנשמרו.",
+        voices: "להציג, לשמור, לשנות שם או למחוק קולות.",
+        cancel: "לעצור עבודה שרצה, כמו אימון או ייצוא.",
+      },
+    },
     apiKeys: {
       title: "API",
       description: "גישה ל-Unsloth באמצעות ה-API התואם ל-OpenAI.",
@@ -3613,14 +3757,14 @@ export const he = {
       },
       mcp: {
         title: "גישת סוכנים (MCP)",
-        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth דרך MCP. סוכנים מתחברים עם מפתח API של Unsloth מהדף הזה.",
+        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth דרך MCP.",
         enable: "אפשר חיבורי סוכנים",
         enableDescription: "מגיש את /mcp/ לבקשות שנושאות מפתח API של Unsloth.",
         lockedByEnv: "נקבע על ידי {name}.",
         loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
         saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",
         agent: "סוכן",
-        exportKeyHint: "הגדר את {name} למפתח API של Unsloth מהדף הזה לפני שתפעיל את הסוכן.",
+        exportKeyHint: "הגדר את {name} למפתח API של Unsloth לפני שתפעיל את הסוכן.",
         configFileHint: "הוסף את זה ל-{path}.",
         keywords: "mcp model context protocol agents claude codex tools סוכנים סוכן כלים פרוטוקול הקשר מודל",
       },
@@ -5266,6 +5410,7 @@ export const he = {
     monitor: {
       dragHandleLabel: "הזז את מסך הניטור החי. מקשי החיצים מזיזים אותו מעט, ולחיצה כפולה מאפסת אותו.",
       reconnecting: "מתחבר מחדש...",
+      resizeHint: "גררו צד או פינה כדי לשנות את הרוחב. לחיצה כפולה מאפסת אותו.",
     },
   },
   projectsPage: {
@@ -5572,7 +5717,7 @@ export const he = {
     skippedVersion: "דילגת על {component} {version} בינתיים",
     skippedUpdate: "דילגת על העדכון של {component} בינתיים",
     skippedUpdates: "דילגת על העדכונים של {components} בינתיים",
-    vulkanFaster: "Vulkan מהיר ביותר מ-10% מ-ROCM. אין צורך בהפעלה מחדש",
+    vulkanFaster: "מהיר ביותר מ-10%",
     noRestart: "אין צורך בהפעלה מחדש",
     downloadSize: "הורדה של {size}",
     backendChange: "סביבת חישוב {change}",
@@ -5581,8 +5726,8 @@ export const he = {
     installingPhase: "מתקין את {component} ({current} מתוך {total})...",
     installingCount: "מתקין {count} עדכונים...",
     bundleTitle: "{count} עדכוני סביבת זמן ריצה",
-    newBackend: "סביבת חישוב חדשה עבור {component}",
-    newUpdate: "עדכון חדש עבור {component}",
+    newBackend: "סביבת חישוב חדשה לזמן הריצה",
+    newUpdate: "עדכון חדש לסביבת זמן הריצה",
     hideUpdate: "הסתר את העדכון של {component} עד לפתיחה מחדש של Unsloth",
     hideUpdates: "הסתר את העדכונים של {components} עד לפתיחה מחדש של Unsloth",
     whatsNew: "מה חדש",

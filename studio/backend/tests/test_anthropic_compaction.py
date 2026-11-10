@@ -624,8 +624,7 @@ def test_build_external_messages_non_vision_anthropic_keeps_compaction():
         "content": "prior summary",
         "encrypted_content": "opaque-compaction",
     } in parts
-    # Non-anthropic + non-vision -> compaction stripped, text collapsed
-    # back to a string.
+    # Non-Anthropic, non-vision providers strip compaction and collapse text to a string.
     out2 = _build_external_messages(msgs, supports_vision = False, provider_type = "deepseek")
     assert out2[0]["content"] == "answer", out2
 

@@ -362,6 +362,100 @@ class _Backend:
     BACKEND_NAME = "fake"
 
 
+@pytest.fixture(
+    params = list(itertools.product(("linux", "darwin"), ("settings", "capability"))),
+    ids = lambda case: "-".join(case),
+)
+def posix_refresh(request, monkeypatch, probe_env):
+    from core.inference import sandbox_linux
+    from routes import sandbox_capability, settings
+
+    platform, route = request.param
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda: False)
+    monkeypatch.setattr(os_sandbox, "_host_key", lambda: "host")
+    monkeypatch.setattr(os_sandbox, "linux_unavailable_remediation", lambda: "blocked")
+    monkeypatch.setattr(settings, "_sandbox_terminal_target", lambda: ("/bin/bash", None))
+    monkeypatch.setattr(settings, "_sandbox_setup_status", lambda _available: None)
+    return settings._build_sandbox_status if route == "settings" else sandbox_capability._refresh
+
+
+def test_a_successful_refresh_probes_once_and_refreshes_both_tools(posix_refresh, probe_env):
+    _identity, verdicts, _gate, calls = probe_env
+    for tool in os_sandbox.ISOLATED_TOOLS:
+        os_sandbox.note_tool_isolation(tool, False, backend = "none", reason = "old failure")
+    verdicts.extend((True, f"fresh {i}") for i in range(3))
+
+    for i in range(3):
+        posix_refresh(True)
+        assert len(calls) == i + 1
+        for tool in os_sandbox.ISOLATED_TOOLS:
+            answer = os_sandbox.cached_tool_capability(tool)
+            assert answer[0] is True and answer[2] == f"fresh {i}"
+        posix_refresh(False)
+        assert len(calls) == i + 1
+
+
+@pytest.mark.parametrize("reason", ["blocked", sandbox_probe.UndecidedReason("out of disk")])
+def test_a_failed_refresh_retries_even_after_a_cached_pass(
+    posix_refresh, probe_env, monkeypatch, reason
+):
+    _identity, verdicts, _gate, calls = probe_env
+    verdicts.append((True, "old pass"))
+    assert os_sandbox.capability_snapshot(force = True).available
+    calls.clear()
+    verdicts.extend([(False, reason), (False, "still blocked")])
+
+    posix_refresh(True)
+
+    assert len(calls) == 2
+    # Reading an undecided answer would otherwise start an unrelated background retry.
+    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "1")
+    assert os_sandbox.cached_tool_capability("python") == (False, "none", reason)
+    assert os_sandbox.cached_tool_capability("terminal") == (False, "none", "still blocked")
+
+
+@pytest.mark.parametrize("change", ["reset", "runtime"])
+def test_a_refresh_rechecks_when_the_cache_changes_between_tools(
+    posix_refresh, probe_env, monkeypatch, change
+):
+    identity, verdicts, _gate, calls = probe_env
+    verdicts.extend([(True, "before change"), (False, "after change")])
+    real_snapshot = os_sandbox.capability_snapshot
+    answers = []
+
+    def snapshot(**kwargs):
+        if kwargs["execution_kind"] == "terminal":
+            if change == "reset":
+                sandbox_probe.reset_probe_cache()
+            else:
+                identity[0] = "new runtime"
+        answer = real_snapshot(**kwargs)
+        answers.append(answer.available)
+        return answer
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", snapshot)
+    posix_refresh(True)
+
+    assert len(calls) == 2
+    assert answers == [True, False]
+
+
+def test_windows_capability_refresh_keeps_forcing_each_tool(monkeypatch, probe_env):
+    from routes import sandbox_capability
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    calls = []
+
+    def refresh(tool, *, force = False):
+        calls.append((tool, force))
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    sandbox_capability._refresh(True)
+    assert calls == [("python", True), ("terminal", True)]
+
+
 def _wait_for(predicate, timeout = 5.0):
     deadline = time.time() + timeout
     while not predicate() and time.time() < deadline:

@@ -15,7 +15,7 @@ import {
   type GgufFitClass,
   type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
-  classifyGgufFitWithLookupTables,
+  classifyVariantFitOnCard,
   ggufVariantFitSizeBytes,
 } from "../../../../lib/gguf-fit.ts";
 import {
@@ -85,6 +85,8 @@ export interface CatalogGroup {
   aliases?: readonly string[];
   /** Capability glyph fallback; the Hub listing's tags win. */
   capabilities?: Partial<ModelCapabilities>;
+  /** A package the load needs that the app does not install, shown as a chip on the row. */
+  requires?: string;
   /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
   pinToTop?: boolean;
   /** With `pinToTop`: every row of this group (its GGUF too) leads before the next pinned group's
@@ -704,11 +706,18 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  // Not Cosmos3 Nano: its checkpoint enables the guardrail, whose package Studio does not install.
+  {
+    canonicalId: "nvidia/Cosmos3-Nano",
+    displayName: "Cosmos3 Nano",
+    description: "Text and image to video up to 720p · needs cosmos-guardrail",
+    scope: "video",
+    requires: "cosmos-guardrail",
+    artifacts: [bf16Pipeline("nvidia/Cosmos3-Nano", 32, { totalParams: 15750057456 })],
+  },
   {
     canonicalId: "nvidia/Cosmos3-Edge",
     displayName: "Cosmos3 Edge",
-    description: "Text and image to video 480p, small",
+    description: "Text and image to video up to 480p, small",
     scope: "video",
     artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
   },
@@ -1164,7 +1173,8 @@ export function curatedRowLabelFor(
       tags: twin ? ["llama.cpp"] : [],
     };
   }
-  if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
+  const needs = hit.group.requires ? [`needs ${hit.group.requires}`] : [];
+  if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: needs };
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
   // The chip is the stored precision; "Safetensors" is left off (the format dot says it).
   const tags = [format.trim()].filter((tag) => tag && tag.toLowerCase() !== "safetensors");
@@ -1177,7 +1187,7 @@ export function curatedRowLabelFor(
     kept.length > 0
       ? `${hit.group.displayName} (${kept.join(LABEL_PART_SEPARATOR)})`
       : hit.group.displayName;
-  return { name: qualify(name), tags };
+  return { name: qualify(name), tags: [...tags, ...needs] };
 }
 
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
@@ -1348,11 +1358,12 @@ export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   variants: readonly T[],
   fitOf: (sizeBytes: number) => GgufFitClass,
   preferred: T | null = null,
+  gpuGb = 0,
 ): T | null {
   // Judged on the download footprint, which includes companion GGUFs (mmproj, drafter).
   // A `streamed` quant (tables left on disk) runs but never outranks one that fits fully resident.
   const fitOfVariant = (variant: T) =>
-    classifyGgufFitWithLookupTables(fitOf, variant);
+    classifyVariantFitOnCard(fitOf, variant, gpuGb);
   // Zero size means unknown (old backend or stat error) and must not compete as comfortable.
   const sized = variants.filter((variant) => ggufVariantFitSizeBytes(variant) > 0);
   if (sized.length === 0) return null;
@@ -1388,6 +1399,7 @@ export interface QuantVariant {
   size_bytes: number;
   downloaded?: boolean;
   lookup_table_bytes?: number;
+  estimated_resident_gb?: number | null;
 }
 
 /** The quant a bare group/repo click loads: largest downloaded non-OOM quant, else the repo default
@@ -1401,9 +1413,14 @@ export function pickDefaultQuant(
   const anyBudget = (budget.gpuGb || 0) > 0 || (budget.systemRamGb || 0) > 0;
   const runs = (v: QuantVariant) =>
     ggufFitRuns(
-      classifyGgufFitWithLookupTables(
+      classifyVariantFitOnCard(
         (bytes) => classifyGgufFit(bytes, budget),
-        { size_bytes: v.size_bytes, lookup_table_bytes: v.lookup_table_bytes },
+        {
+          size_bytes: v.size_bytes,
+          lookup_table_bytes: v.lookup_table_bytes,
+          estimated_resident_gb: v.estimated_resident_gb,
+        },
+        budget.gpuGb || 0,
       ),
     );
   const downloadedFitting = variants

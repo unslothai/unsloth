@@ -204,6 +204,7 @@ export const en = {
     tabs: "Browser tabs",
     newTab: "New tab",
     newTabFullView: "New tab in full view",
+    newTabFloating: "New tab in floating window",
     closeTab: "Close tab",
     close: "Close browser",
     show: "Show browser",
@@ -386,6 +387,12 @@ export const en = {
       openChat: "Open in full view",
       moveLeft: "Move to left pane",
       moveRight: "Move to right pane",
+    },
+    floating: {
+      enter: "Floating window",
+      dock: "Dock to side",
+      close: "Close floating window",
+      handle: "Move window. Arrow keys move it; Shift and arrow keys resize it.",
     },
     annotate: {
       countOne: "1 annotation",
@@ -655,6 +662,8 @@ export const en = {
     keepsRunning: "Closing this does not stop the setup. Its result shows in Settings > Security.",
   },
   composerSettings: {
+    shareDraft: "Share drafts across chats",
+    shareDraftDescription: "Use one draft across chats and Compare. Off by default; each chat keeps its own draft.",
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
@@ -791,6 +800,8 @@ export const en = {
   picker: {
     unifiedTightFit: "Tight fit",
     unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
+    residentToRun: "to run",
+    residentToRunHint: "GPU memory the load check needs while running",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -1104,6 +1115,9 @@ export const en = {
       modelAccessHint: "One model per line, for example unsloth/Qwen3-4B-GGUF, or unsloth/* for a whole organization. Leave empty to allow every model.",
       modelAccessSave: "Save",
       modelAccessLimited: "Limited model access",
+      rename: "Rename",
+      renameTitle: "Rename {username}",
+      renameDescription: "Choose the name this account signs in with. Their chats, files and API keys stay with the account. They are signed out and sign in again with the new name and their current password.",
       empty: "No other accounts yet",
       setupCode: "Setup code",
       setupFor: "Setup code for {username}",
@@ -1658,6 +1672,16 @@ export const en = {
         audioUploadCancel: "Cancel transcription",
         audioUploadTranscribing: "Transcribing audio…",
         sectionTitle: "Dictation",
+        micTargetLabel: "Mic button",
+        micTargetAsr: "Transcribe with ASR",
+        micTargetModel: "Send audio to the model",
+        micTargetAsrDescription:
+          "The mic button types what you say into the message box.",
+        micTargetModelDescription:
+          "With an audio-input model loaded, the mic records a clip and attaches it to your message. Other models still get dictation.",
+        micTargetModelUnavailable:
+          "Load a model that accepts audio input (for example LFM3-Omni) to send it your voice.",
+        micRecordForModel: "Record audio for the model",
         engineLabel: "Dictation engine",
         engineBrowser: "Browser",
         engineBrowserDescription:
@@ -1681,6 +1705,13 @@ export const en = {
         sttQuantDescription:
           "Choose or search a STT model to run locally, then its quantization.",
         sttDeviceLabel: "Load into",
+        sttContextLabel: "Voice context",
+        sttContextAuto: "Auto (recommended)",
+        sttContextAutoDescription:
+          "Fits each recording, with more memory for longer audio. Older runtimes may need a fixed size to reduce memory. Applies to Qwen3-ASR in Voice and Transcribe.",
+        sttContextFixedDescription:
+          "Smaller limits use less memory. Recordings that do not fit need a higher limit or Auto. Applies to Qwen3-ASR in Voice and Transcribe.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU when available",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:
@@ -2122,6 +2153,12 @@ export const en = {
           "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
         autoCurrently: "Auto is using {transport} on this machine.",
         xetMissing: "Xet is unavailable because hf_xet is not installed.",
+        speedLimit: "Download speed limit",
+        speedLimitDescription:
+          "No limit unless a figure is set. A limited download uses HTTPS.",
+        speedLimitNoLimit: "No limit",
+        speedLimitInvalid: "Enter a number of Mbit/s, or leave the field empty.",
+        speedLimitUsesHttps: "Downloads use HTTPS while a speed limit is set. Files over 50 GB still use Xet, without the limit.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2500,6 +2537,10 @@ export const en = {
         contrast: {
           label: "Contrast",
         },
+        elementOutline: {
+          label: "Element outline",
+          description: "Border strength for buttons, fields, cards and menus.",
+        },
         reduceMotion: {
           label: "Reduce motion",
           description: "Reduce animations or match your system.",
@@ -2558,7 +2599,7 @@ export const en = {
         apiDescription: "See what other apps send to this server's API as it arrives.",
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
-        noModelLoaded: "no model loaded",
+        noModelLoaded: "No model loaded",
         autoOpen: "Floating monitor opens automatically",
         autoOpenDescription: "Opens a small panel when API traffic arrives.",
         cpu: "CPU",
@@ -2574,11 +2615,25 @@ export const en = {
         gpuUnusableDetail: "Detected, but PyTorch cannot use it",
         detailedView: "Detailed view",
         detailedViewDescription:
-          "Show CPU load and each GPU's load, temperature and power in the floating window.",
-        cpuLoad: "CPU load",
+          "Show each GPU's load, temperature and power in the floating window.",
         gpuLoad: "GPU load",
         temperature: "Temperature",
         power: "Power",
+        memory: "Memory",
+        gpuInUse: "GPU in use",
+        availableForModels: "Available for models",
+        refreshRate: "Refresh rate",
+        refreshRateDescription: "How often the floating monitor reads memory and GPU usage while it is open.",
+        refreshEvery: "Every {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Other apps",
+        otherInUse: "Other in use",
+        freeLabel: "Free",
+        unslothApp: "Unsloth app",
+        unslothShare: "Show Unsloth's share",
+        unslothShareDescription: "Split memory into what Unsloth uses, what other apps use, and what is free.",
+        modelBreakdown: "Break down by model",
+        modelBreakdownDescription: "Split Unsloth's part of the memory bar into each loaded model and the rest of the app.",
       },
       gpu: {
         title: "GPU devices",
@@ -2590,7 +2645,7 @@ export const en = {
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
-        noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noGpu: "No dedicated GPU detected.",
         noUsableGpu: "No GPU on this machine is usable by PyTorch.",
         mismatchCpuBuild:
           "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
@@ -2667,7 +2722,7 @@ export const en = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "Model memory",
+        title: "Model loading",
         keepResident: "Keep model in GPU memory",
         keepResidentDescription: "Stay in VRAM between prompts.",
         keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
@@ -2852,7 +2907,7 @@ export const en = {
       configurationDocs: "docs",
       configurationFlagsSuffix: "for flags.",
       modelNote:
-        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
+        "Claude Code and Codex need a GGUF model served by llama-server, or an MLX model. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
       subagent: {
         title: "Use a local model as a subagent",
         description:
@@ -2924,6 +2979,8 @@ export const en = {
     },
     chat: {
       groups: {
+        replies: { title: "Replies" },
+        thinkingTools: { title: "Thinking and tools" },
         conversations: { title: "Conversations" },
         files: { title: "Files & pasting" },
         display: { title: "Display" },
@@ -3005,11 +3062,20 @@ export const en = {
       showReplyTimesDescription: "Show when each reply finished, below the reply.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Generation details",
+      showGenerationDetails: "Detailed speed and loading info",
       showGenerationDetailsDescription:
-        "Show live prompt and reply speeds with token counts, and where a model's layers loaded.",
+        "Adds prompt-reading speed, token counts and draft acceptance to the live readouts, and shows where a model's layers loaded.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "generation details verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Speed and context stats",
+      generationStatsUpdatesDescription:
+        "Realtime counts tokens per second and context usage while a reply streams. When done updates them as each reply finishes.",
+      generationStatsUpdatesHint:
+        "Realtime refreshes the tokens per second readout under a reply and the context bar at the top of the chat a few times a second while the reply is written. When done updates them once, after each reply finishes. Realtime may cause lag or slower performance, especially on older or busy machines.",
+      generationStatsUpdatesSettled: "When done",
+      generationStatsUpdatesRealtime: "Realtime",
+      generationStatsUpdatesKeywords:
+        "realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
@@ -3147,12 +3213,10 @@ export const en = {
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
       exportConversationsDescription:
-        "Download Recents or Recents plus project chats as Training JSONL, CSV, ShareGPT JSONL, or Markdown, combined or per chat. Message JSONL is available per chat.",
+        "Download Recents or Recents plus project chats as Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML, or PDF, combined or per chat. Message JSONL is available per chat.",
       exportConversationsAction: "Export",
       exportScopeRecents: "Recents",
       exportScopeAll: "Recents + Projects",
-      exportCombinedSuffix: "(combined)",
-      exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
         "Import JSON, JSONL, NDJSON, CSV, or Markdown files into Recents.",
@@ -3542,16 +3606,99 @@ export const en = {
       },
       mcp: {
         title: "Agent access (MCP)",
-        description: "Let coding agents such as Claude Code and Codex use Unsloth over MCP. Agents sign in with an Unsloth API key from this page.",
+        description: "Let coding agents such as Claude Code and Codex use Unsloth over MCP.",
         enable: "Allow agent connections",
         enableDescription: "Serves /mcp/ to requests that carry an Unsloth API key.",
         lockedByEnv: "Set by {name}.",
         loadError: "Couldn't load agent access settings.",
         saveError: "Couldn't save the agent access setting.",
         agent: "Agent",
-        exportKeyHint: "Set {name} to an Unsloth API key from this page before you start the agent.",
+        exportKeyHint: "Set {name} to an Unsloth API key before you start the agent.",
         configFileHint: "Add this to {path}.",
         keywords: "mcp model context protocol agents claude codex tools",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Agents sign in with an Unsloth API key.",
+      createKey: "Create an API key",
+      tools: {
+        title: "Tools",
+        count: "{on} of {total} on",
+        choose: "Choose tools",
+        dialogTitle: "Unsloth MCP tools",
+        allTools: "All tools",
+        selectAll: "Select all",
+        selectNone: "Select none",
+        description:
+          "Every tool you leave on adds to what agents read before they start, so turn off the ones you don't need. Agents never see a tool that's off, and calls to it are refused. Agents already connected see the change when they reconnect.",
+        saveError: "Couldn't save the Unsloth MCP tool setting.",
+        groups: {
+          models: "Models",
+          generate: "Generate",
+          training: "Training and export",
+          library: "Data and library",
+          jobs: "Jobs",
+          other: "Other",
+        },
+        chatNote: "The chat never gets {tools}.",
+      },
+      status: {
+        on: "On",
+        off: "Off",
+      },
+      apiKeysRow: {
+        open: "Open in Agents",
+      },
+      toolLabels: {
+        studioStatus: "Status",
+        listModels: "List models",
+        loadModel: "Load model",
+        unloadModel: "Unload model",
+        planLoad: "Plan a load",
+        downloadModel: "Download model",
+        chat: "Chat",
+        embed: "Embed text",
+        systemOne: "Decision model",
+        generateImage: "Generate images",
+        generateAudio: "Generate audio",
+        transcribe: "Transcribe",
+        analyzeAudio: "Analyze audio",
+        generateVideo: "Generate video",
+        runRecipe: "Run Data Recipe",
+        getJob: "Job status",
+        datasets: "Datasets",
+        startTraining: "Start training",
+        listTrainingRuns: "Training runs",
+        exportModel: "Export model",
+        listMedia: "Saved media",
+        voices: "Voices",
+        cancel: "Cancel work",
+      },
+      toolDescriptions: {
+        studioStatus: "Check what's loaded, running and free on this computer.",
+        listModels: "List the models agents can load.",
+        loadModel: "Load a model so agents can chat or generate with it.",
+        unloadModel: "Unload a model to free memory.",
+        planLoad: "Preview a load's download size and memory use without loading.",
+        downloadModel: "Download a model from Hugging Face.",
+        chat: "Chat with the loaded model.",
+        embed: "Turn text into vectors, or rank texts by similarity.",
+        systemOne: "Ask the decision model yes or no, choice or score questions.",
+        generateImage: "Generate images and save them to the gallery.",
+        generateAudio: "Generate speech or other audio.",
+        transcribe: "Turn speech into text.",
+        analyzeAudio: "Check a clip's speakers, timing and match to a script.",
+        generateVideo: "Generate a video.",
+        runRecipe: "Run a Data Recipe to build a dataset.",
+        getJob: "Follow a long job until it finishes.",
+        datasets: "List and upload datasets.",
+        startTraining: "Start a fine-tuning run.",
+        listTrainingRuns: "List training runs and their results.",
+        exportModel: "Export a trained model, for example to GGUF.",
+        listMedia: "Browse saved images, audio and videos.",
+        voices: "List, save, rename or delete saved voices.",
+        cancel: "Stop running work, such as a training run or an export.",
       },
     },
     about: {
@@ -5206,6 +5353,7 @@ export const en = {
       dragHandleLabel:
         "Move the live monitor. Arrow keys nudge it, double-click resets it.",
       reconnecting: "Reconnecting...",
+      resizeHint: "Drag a side or corner to change the width. Double-click resets it.",
     },
   },
   projectsPage: {
@@ -5515,7 +5663,7 @@ export const en = {
     skippedVersion: "Skipped {component} {version} for now",
     skippedUpdate: "Skipped the {component} update for now",
     skippedUpdates: "Skipped the {components} updates for now",
-    vulkanFaster: "Vulkan is >10% faster than ROCM. No restart needed",
+    vulkanFaster: "Over 10% faster",
     noRestart: "No restart needed",
     downloadSize: "{size} download",
     // {change}: "<from backend> → <to backend>".
@@ -5525,8 +5673,8 @@ export const en = {
     installingPhase: "Installing {component} ({current} of {total})...",
     installingCount: "Installing {count} updates...",
     bundleTitle: "{count} runtime updates",
-    newBackend: "New {component} backend",
-    newUpdate: "New {component} update",
+    newBackend: "New runtime backend",
+    newUpdate: "New runtime update",
     hideUpdate: "Hide the {component} update until Unsloth is reopened",
     hideUpdates: "Hide the {components} updates until Unsloth is reopened",
     whatsNew: "What's new",

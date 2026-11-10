@@ -16,6 +16,7 @@ pytest.importorskip("peft")
 from core.inference import diffusion as dmod  # noqa: E402
 
 FUSE_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE"
+HOST_GUARD_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_HOST_GUARD"
 
 
 def _unet_with_lora():
@@ -73,6 +74,13 @@ class _Pipe(types.SimpleNamespace):
 @pytest.fixture
 def engine(monkeypatch):
     monkeypatch.delenv(FUSE_ENV, raising = False)
+    from core.inference import diffusion_memory
+    from core.inference.diffusion_small_host import HOST_RAM_LIMIT_ENV
+
+    monkeypatch.delenv(HOST_GUARD_ENV, raising = False)
+    monkeypatch.delenv(HOST_RAM_LIMIT_ENV, raising = False)
+    # CI runners can sit below the reserve; the RAM tests cap it explicitly.
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
     monkeypatch.setattr(dmod, "_refuse_lora_without_loader", lambda *a, **k: None)
     monkeypatch.setattr(dmod, "_lora_load_block_reason", lambda pipe: None)
     monkeypatch.setattr(dmod, "invalidate_cfg_replica", lambda *a, **k: None)
@@ -238,3 +246,126 @@ def test_fold_and_restore_on_the_gpu_in_bf16(engine, monkeypatch, backup):
     assert _merged_layers(engine.unet) == 0
     after = _base_weights(engine.unet)
     assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+def test_a_host_backup_that_cuts_into_the_ram_reserve_stays_unfused(engine, monkeypatch):
+    from core.inference import diffusion_lora_fuse as lf
+    from core.inference.diffusion_small_host import HOST_RAM_LIMIT_ENV
+
+    monkeypatch.setenv(HOST_RAM_LIMIT_ENV, "2048")  # below the 3 GiB reserve alone
+    before = _base_weights(engine.unet)
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) == 0
+    assert not lf.fused(engine.pipe)
+    assert all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
+    monkeypatch.setenv(HOST_GUARD_ENV, "0")
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) > 0
+
+
+@pytest.mark.parametrize(
+    "available_mib, nbytes_mib, fits",
+    [
+        (1 << 20, 4 << 10, True),
+        (4 << 10, 512, True),
+        (4 << 10, 2 << 10, False),
+        (None, 8 << 10, True),  # unreadable host: the allocation decides
+    ],
+)
+def test_the_host_backup_keeps_the_small_host_reserve(monkeypatch, available_mib, nbytes_mib, fits):
+    from core.inference import diffusion_lora_fuse as lf
+    from core.inference import diffusion_small_host
+
+    monkeypatch.delenv(lf.HOST_GUARD_ENV, raising = False)
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (16 << 10, available_mib))
+    assert lf._host_backup_fits(nbytes_mib << 20) is fits
+    monkeypatch.setenv(lf.HOST_GUARD_ENV, "0")
+    assert lf._host_backup_fits(nbytes_mib << 20) is True
+
+
+@pytest.mark.parametrize("integrated", [True, False])
+def test_the_host_backup_is_pageable_on_an_integrated_gpu(monkeypatch, integrated):
+    from core.inference import diffusion_lora_fuse as lf
+    from core.inference import host_pinning
+
+    monkeypatch.delenv(lf.HOST_GUARD_ENV, raising = False)
+    asked = []
+    monkeypatch.setattr(
+        host_pinning, "device_is_integrated", lambda device = None: asked.append(device) or integrated
+    )
+    assert lf.HOST_GUARD_ENV == HOST_GUARD_ENV
+    cuda = torch.device("cuda", 1)
+    assert lf._host_backup_pinned(cuda) is (not integrated)
+    assert asked == [cuda]  # the weights' card, not the current device
+    assert lf._host_backup_pinned(torch.device("cpu")) is False
+    monkeypatch.setenv(lf.HOST_GUARD_ENV, "0")
+    assert lf._host_backup_pinned(cuda) is True
+
+
+def _pinned_backup_charge(monkeypatch, shapes):
+    from core.inference import diffusion_lora_fuse as lf
+
+    weights = [torch.empty(s, dtype = torch.bfloat16, device = "meta") for s in shapes]
+    monkeypatch.setattr(lf, "_plan", lambda denoisers: [(None, ["px"], w) for w in weights])
+    monkeypatch.setattr(lf, "_backup_on_device", lambda device, nbytes: False)
+    monkeypatch.setattr(lf, "_host_backup_pinned", lambda device: True)
+    charged, pinned = [], []
+    monkeypatch.setattr(lf, "_host_backup_fits", lambda nbytes: charged.append(nbytes) or True)
+    real_empty = torch.empty
+
+    def empty(
+        *args,
+        pin_memory = False,
+        **kwargs,
+    ):
+        if pin_memory:
+            pinned.append(args[0])
+            return real_empty(1, dtype = torch.uint8)
+        return real_empty(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "empty", empty)
+    try:
+        assert lf.fuse(types.SimpleNamespace(), [None]) is False  # stops at the stub backup
+    finally:
+        monkeypatch.setattr(torch, "empty", real_empty)
+    # CUDA's caching host allocator rounds every pinned block up to a power of two
+    return charged[0], sum(1 << (n - 1).bit_length() for n in pinned)
+
+
+_FLUX_LIKE = [(3072, 12288)] * 24 + [(3072, 21504), (15360, 3072)] * 4 + [(3072, 3072)] * 8
+
+
+def test_the_host_guard_is_charged_what_the_pinned_allocator_holds(monkeypatch):
+    from core.inference import diffusion_lora_fuse as lf
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_LORA_FUSE_POW2_PACK", raising = False)
+    charged, held = _pinned_backup_charge(monkeypatch, _FLUX_LIKE)
+    assert charged >= held
+    exact = sum(-(-r * c * 2 // 64) * 64 for r, c in _FLUX_LIKE)
+    assert held <= exact * 1.15
+
+
+def test_power_of_two_layout_places_every_weight_inside_its_chunk():
+    from core.inference import diffusion_lora_fuse as lf
+
+    nbytes = [-(-r * c * 2 // 64) * 64 for r, c in _FLUX_LIKE]
+    places, sizes = lf._layout(nbytes, pow2 = True)
+    assert all(s & (s - 1) == 0 for s in sizes)
+    spans = {}
+    for n, (ci, off) in zip(nbytes, places):
+        assert off % lf._ALIGN == 0 and off + n <= sizes[ci]
+        spans.setdefault(ci, []).append((off, off + n))
+    for chunk in spans.values():
+        chunk.sort()
+        assert all(a[1] <= b[0] for a, b in zip(chunk, chunk[1:]))
+
+
+def test_power_of_two_packing_kill_switch_keeps_the_exact_slabs(monkeypatch):
+    from core.inference import diffusion_lora_fuse as lf
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_LORA_FUSE_POW2_PACK", "0")
+    assert lf.POW2_PACK_ENV == "UNSLOTH_DIFFUSION_LORA_FUSE_POW2_PACK"
+    charged, _held = _pinned_backup_charge(monkeypatch, _FLUX_LIKE)
+    assert charged == sum(
+        lf._layout([-(-r * c * 2 // 64) * 64 for r, c in _FLUX_LIKE], pow2 = False)[1]
+    )

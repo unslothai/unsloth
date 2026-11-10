@@ -212,6 +212,7 @@ export const th = {
     tabs: "แท็บเบราว์เซอร์",
     newTab: "แท็บใหม่",
     newTabFullView: "แท็บใหม่แบบเต็มหน้าจอ",
+    newTabFloating: "แท็บใหม่ในหน้าต่างลอย",
     closeTab: "ปิดแท็บ",
     close: "ปิดเบราว์เซอร์",
     show: "แสดงเบราว์เซอร์",
@@ -415,6 +416,12 @@ export const th = {
       openChat: "เปิดในมุมมองเต็ม",
       moveLeft: "ย้ายไปบานหน้าต่างซ้าย",
       moveRight: "ย้ายไปบานหน้าต่างขวา",
+    },
+    floating: {
+      enter: "หน้าต่างลอย",
+      dock: "ปักไว้ด้านข้าง",
+      close: "ปิดหน้าต่างลอย",
+      handle: "ย้ายหน้าต่าง ปุ่มลูกศรใช้ย้าย และ Shift กับปุ่มลูกศรใช้ปรับขนาด",
     },
     annotate: {
       countOne: "คำอธิบายประกอบ 1 รายการ",
@@ -705,6 +712,8 @@ export const th = {
       "การปิดหน้าต่างนี้จะไม่หยุดการตั้งค่า ผลลัพธ์จะแสดงในการตั้งค่า > ความปลอดภัย",
   },
   composerSettings: {
+    shareDraft: "แชร์แบบร่างระหว่างแชต",
+    shareDraftDescription: "ใช้แบบร่างเดียวกันในแชตและการเปรียบเทียบ ปิดไว้ตามค่าเริ่มต้น โดยแต่ละแชตจะเก็บแบบร่างของตนเอง",
     title: "ช่องเขียนข้อความ",
     plainText: "ช่องเขียนข้อความแบบข้อความธรรมดา",
     plainTextDescription:
@@ -837,6 +846,8 @@ export const th = {
   picker: {
     unifiedTightFit: "พอดีแบบเฉียดฉิว",
     unifiedTightFitHint: "อาจโหลดด้วยบริบทที่สั้นลงหรือทำงานช้าลงบน Mac เครื่องนี้",
+    residentToRun: "สำหรับการรัน",
+    residentToRunHint: "หน่วยความจำ GPU ที่การตรวจสอบการโหลดต้องใช้ระหว่างทำงาน",
     onDevice: "ในอุปกรณ์",
     huggingFace: "Hugging Face",
     retry: "ลองอีกครั้ง",
@@ -1152,6 +1163,9 @@ export const th = {
         "หนึ่งโมเดลต่อหนึ่งบรรทัด เช่น unsloth/Qwen3-4B-GGUF หรือ unsloth/* สำหรับทั้งองค์กร เว้นว่างไว้เพื่ออนุญาตทุกโมเดล",
       modelAccessSave: "บันทึก",
       modelAccessLimited: "สิทธิ์เข้าถึงโมเดลแบบจำกัด",
+      rename: "เปลี่ยนชื่อ",
+      renameTitle: "เปลี่ยนชื่อ {username}",
+      renameDescription: "เลือกชื่อที่บัญชีนี้ใช้ลงชื่อเข้าใช้ แชต ไฟล์ และคีย์ API จะยังอยู่ในบัญชี ผู้ใช้จะถูกออกจากระบบและต้องลงชื่อเข้าใช้อีกครั้งด้วยชื่อใหม่และรหัสผ่านปัจจุบัน",
       empty: "ยังไม่มีบัญชีอื่น",
       setupCode: "รหัสตั้งค่า",
       setupFor: "รหัสตั้งค่าสำหรับ {username}",
@@ -1736,6 +1750,13 @@ export const th = {
         audioUploadCancel: "ยกเลิกการถอดเสียง",
         audioUploadTranscribing: "กำลังถอดเสียง…",
         sectionTitle: "การป้อนตามคำบอก",
+        micTargetLabel: "ปุ่มไมโครโฟน",
+        micTargetAsr: "ถอดความด้วย ASR",
+        micTargetModel: "ส่งเสียงไปยังโมเดล",
+        micTargetAsrDescription: "ปุ่มไมโครโฟนจะพิมพ์สิ่งที่คุณพูดลงในช่องข้อความ",
+        micTargetModelDescription: "เมื่อโหลดโมเดลที่รับอินพุตเสียง ไมโครโฟนจะบันทึกคลิปและแนบไปกับข้อความของคุณ โมเดลอื่นยังคงใช้การป้อนตามคำบอก",
+        micTargetModelUnavailable: "โหลดโมเดลที่รับอินพุตเสียงได้ (เช่น LFM3-Omni) เพื่อส่งเสียงของคุณไปให้",
+        micRecordForModel: "บันทึกเสียงสำหรับโมเดล",
         engineLabel: "เอนจินการป้อนตามคำบอก",
         engineBrowser: "เบราว์เซอร์",
         engineBrowserDescription:
@@ -1759,6 +1780,13 @@ export const th = {
         sttQuantDescription:
           "เลือกหรือค้นหาโมเดล STT เพื่อรันภายในเครื่อง แล้วเลือกการควอนไทซ์",
         sttDeviceLabel: "โหลดลงใน",
+        sttContextLabel: "บริบทเสียง",
+        sttContextAuto: "อัตโนมัติ (แนะนำ)",
+        sttContextAutoDescription:
+          "ปรับตามการบันทึกแต่ละครั้ง โดยใช้หน่วยความจำมากขึ้นสำหรับเสียงที่ยาวขึ้น รันไทม์รุ่นเก่าอาจต้องใช้ขนาดคงที่เพื่อลดการใช้หน่วยความจำ ใช้กับ Qwen3-ASR ในเสียงพูดและถอดเสียง",
+        sttContextFixedDescription:
+          "ขีดจำกัดที่เล็กลงจะใช้หน่วยความจำน้อยลง การบันทึกที่ใส่ไม่พอต้องใช้ขีดจำกัดที่สูงขึ้นหรืออัตโนมัติ ใช้กับ Qwen3-ASR ในเสียงพูดและถอดเสียง",
+        sttContextTokens: "{count} โทเค็น",
         sttDeviceAuto: "GPU เมื่อพร้อมใช้งาน",
         sttDeviceCpu: "RAM ของ CPU",
         sttDeviceAutoDescription: "ใช้ GPU เมื่อมี หากไม่มีให้ใช้ CPU",
@@ -2189,6 +2217,12 @@ export const th = {
         autoHint: "เลือกตามเครื่อง และเปลี่ยนเป็น HTTPS หาก Xet ค้างหรือล้มเหลวบนเครื่องนี้",
         autoCurrently: "อัตโนมัติกำลังใช้ {transport} บนเครื่องนี้",
         xetMissing: "Xet ใช้งานไม่ได้เนื่องจากไม่ได้ติดตั้ง hf_xet",
+        speedLimit: "จำกัดความเร็วดาวน์โหลด",
+        speedLimitDescription:
+          "ไม่จำกัดจนกว่าจะตั้งค่าตัวเลข การดาวน์โหลดที่ถูกจำกัดจะใช้ HTTPS",
+        speedLimitNoLimit: "ไม่จำกัด",
+        speedLimitInvalid: "กรอกตัวเลขเป็น Mbit/s หรือเว้นว่างไว้",
+        speedLimitUsesHttps: "การดาวน์โหลดจะใช้ HTTPS ขณะที่ตั้งค่าขีดจำกัดความเร็วไว้ ไฟล์ที่ใหญ่กว่า 50 GB ยังคงใช้ Xet โดยไม่จำกัดความเร็ว",
       },
       uploads: {
         sectionTitle: "การอัปโหลด",
@@ -2574,6 +2608,10 @@ export const th = {
         contrast: {
           label: "คอนทราสต์",
         },
+        elementOutline: {
+          label: "เส้นขอบองค์ประกอบ",
+          description: "ความเข้มของเส้นขอบปุ่ม ช่องกรอก การ์ด และเมนู",
+        },
         reduceMotion: {
           label: "ลดการเคลื่อนไหว",
           description: "ลดภาพเคลื่อนไหวหรือใช้ตามระบบ",
@@ -2631,6 +2669,21 @@ export const th = {
         summary: "คำขอ ข้อผิดพลาด และการใช้โทเค็นแบบสด",
         status: "ใช้งานอยู่ {active} · ล่าสุด {recent} · {model}",
         noModelLoaded: "ไม่ได้โหลดโมเดล",
+        memory: "หน่วยความจำ",
+        gpuInUse: "GPU ที่ใช้งาน",
+        availableForModels: "ว่างสำหรับโมเดล",
+        refreshRate: "อัตราการรีเฟรช",
+        refreshRateDescription: "ความถี่ที่มอนิเตอร์แบบลอยอ่านการใช้หน่วยความจำและ GPU ขณะเปิดอยู่",
+        refreshEvery: "ทุก {seconds} วินาที",
+        unsloth: "Unsloth",
+        otherApps: "แอปอื่น",
+        otherInUse: "การใช้งานอื่น",
+        freeLabel: "ว่าง",
+        unslothApp: "แอป Unsloth",
+        unslothShare: "แสดงส่วนของ Unsloth",
+        unslothShareDescription: "แบ่งหน่วยความจำเป็นส่วนที่ Unsloth ใช้ ส่วนที่แอปอื่นใช้ และส่วนที่ว่าง",
+        modelBreakdown: "แยกตามโมเดล",
+        modelBreakdownDescription: "แบ่งส่วนของ Unsloth ในแถบหน่วยความจำออกเป็นแต่ละโมเดลที่โหลดและส่วนที่เหลือของแอป",
         autoOpen: "เปิดตัวตรวจสอบแบบลอยโดยอัตโนมัติ",
         autoOpenDescription: "เปิดแผงขนาดเล็กเมื่อมีทราฟฟิก API เข้ามา",
         cpu: "CPU",
@@ -2646,8 +2699,7 @@ export const th = {
         gpuUnusableDetail: "ตรวจพบ แต่ PyTorch ใช้งานไม่ได้",
         detailedView: "มุมมองแบบละเอียด",
         detailedViewDescription:
-          "แสดงโหลด CPU และโหลด อุณหภูมิ และพลังงานของ GPU แต่ละตัวในหน้าต่างลอย",
-        cpuLoad: "โหลด CPU",
+          "แสดงโหลด อุณหภูมิ และพลังงานของ GPU แต่ละตัวในหน้าต่างลอย",
         gpuLoad: "โหลด GPU",
         temperature: "อุณหภูมิ",
         power: "พลังงาน",
@@ -2663,7 +2715,7 @@ export const th = {
         unavailable: "ไม่พร้อมใช้งาน",
         detecting: "กำลังตรวจหา GPU...",
         unreadable: "ไม่สามารถอ่านฮาร์ดแวร์ของเซิร์ฟเวอร์นี้ได้",
-        noGpu: "ไม่พบ GPU ทรัพยากรที่แสดงด้านบนเป็นของ CPU เท่านั้น",
+        noGpu: "ไม่พบ GPU แยก",
         noUsableGpu: "ไม่มี GPU ในเครื่องนี้ที่ PyTorch ใช้งานได้",
         mismatchCpuBuild:
           "PyTorch เป็นบิลด์สำหรับ CPU เท่านั้น ({version}) จึงใช้ GPU ด้านล่างไม่ได้ ซ่อมแซมการติดตั้งเพื่อกู้คืนการรองรับ GPU",
@@ -2746,7 +2798,7 @@ export const th = {
           "แบ็กเอนด์ การอนุมาน เอนจิน โฟลเดอร์ พาธ llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "หน่วยความจำโมเดล",
+        title: "การโหลดโมเดล",
         keepResident: "เก็บโมเดลไว้ในหน่วยความจำ GPU",
         keepResidentDescription: "คงอยู่ใน VRAM ระหว่างพรอมต์",
         keepResidentHint:
@@ -2940,7 +2992,7 @@ export const th = {
       configurationDocs: "เอกสาร",
       configurationFlagsSuffix: "สำหรับแฟล็ก",
       modelNote:
-        "Codex ต้องใช้โมเดล GGUF ที่ให้บริการโดย llama-server เอเจนต์อื่นใช้โมเดลที่ทำงานด้วย transformers ได้ด้วย นำ --model ออกเพื่อใช้โมเดลที่โหลดอยู่ใน Unsloth แล้ว",
+        "Claude Code และ Codex ต้องใช้โมเดล GGUF ที่ให้บริการโดย llama-server หรือโมเดล MLX เอเจนต์อื่นใช้โมเดลที่ทำงานด้วย transformers ได้ด้วย นำ --model ออกเพื่อใช้โมเดลที่โหลดอยู่ใน Unsloth แล้ว",
       subagent: {
         title: "ใช้โมเดลภายในเครื่องเป็นเอเจนต์ย่อย",
         description:
@@ -3011,6 +3063,8 @@ export const th = {
     },
     chat: {
       groups: {
+        replies: { title: "คำตอบ" },
+        thinkingTools: { title: "การคิดและเครื่องมือ" },
         conversations: {
           title: "การสนทนา",
         },
@@ -3102,11 +3156,20 @@ export const th = {
       showReplyTimesDescription: "แสดงเวลาที่การตอบกลับแต่ละครั้งเสร็จสิ้นไว้ใต้การตอบกลับ",
       showReplyTimesKeywords:
         "เวลา นาฬิกา วันที่ ชั่วโมง เมื่อใด เสร็จ มาถึง ตอบกลับ คำตอบ ข้อความ timestamp time clock date reply response message",
-      showGenerationDetails: "รายละเอียดการสร้าง",
+      showGenerationDetails: "ข้อมูลความเร็วและการโหลดแบบละเอียด",
       showGenerationDetailsDescription:
-        "แสดงความเร็วของพรอมต์และการตอบกลับแบบเรียลไทม์พร้อมจำนวนโทเค็น และตำแหน่งที่โหลดเลเยอร์ของโมเดล",
+        "เพิ่มความเร็วการอ่านพรอมต์ จำนวนโทเค็น และอัตราการยอมรับร่างลงในการแสดงผลสด และแสดงว่าเลเยอร์ของโมเดลโหลดไว้ที่ใด",
       showGenerationDetailsKeywords:
         "ละเอียด นักพัฒนา สถิติ ความเร็ว เลเยอร์ verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "สถิติความเร็วและบริบท",
+      generationStatsUpdatesDescription:
+        "แบบเรียลไทม์จะนับโทเค็นต่อวินาทีและการใช้บริบทระหว่างที่คำตอบกำลังสตรีม แบบเมื่อเสร็จจะอัปเดตเมื่อแต่ละคำตอบจบ",
+      generationStatsUpdatesHint:
+        "แบบเรียลไทม์จะรีเฟรชตัวแสดงโทเค็นต่อวินาทีใต้คำตอบและแถบบริบทด้านบนแชทหลายครั้งต่อวินาทีขณะเขียนคำตอบ แบบเมื่อเสร็จจะอัปเดตครั้งเดียวหลังแต่ละคำตอบจบ แบบเรียลไทม์อาจทำให้หน่วงหรือประสิทธิภาพลดลง โดยเฉพาะบนเครื่องรุ่นเก่าหรือเครื่องที่ทำงานหนัก",
+      generationStatsUpdatesSettled: "เมื่อเสร็จ",
+      generationStatsUpdatesRealtime: "เรียลไทม์",
+      generationStatsUpdatesKeywords:
+        "เรียลไทม์ สด อัปเดต ความเร็ว บริบท สถิติ realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "แก้ไขคำตอบบนคำตอบ",
       inlineEditResponseDescription:
         "แสดง “แก้ไขคำตอบ” บนทุกคำตอบ แทนที่จะอยู่ในเมนูเพิ่มเติม",
@@ -3248,12 +3311,10 @@ export const th = {
       exportingAction: "กำลังส่งออก...",
       exportConversations: "ส่งออกรายการล่าสุดและโปรเจกต์",
       exportConversationsDescription:
-        "ดาวน์โหลดรายการล่าสุด หรือรายการล่าสุดพร้อมแชทในโปรเจกต์ เป็น Training JSONL, CSV, ShareGPT JSONL หรือ Markdown แบบรวมไฟล์เดียวหรือแยกตามแชท ส่วน Message JSONL ใช้ได้เฉพาะแบบแยกตามแชท",
+        "ดาวน์โหลดรายการล่าสุด หรือรายการล่าสุดพร้อมแชทในโปรเจกต์ เป็น Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML หรือ PDF แบบรวมไฟล์เดียวหรือแยกตามแชท ส่วน Message JSONL ใช้ได้เฉพาะแบบแยกตามแชท",
       exportConversationsAction: "ส่งออก",
       exportScopeRecents: "รายการล่าสุด",
       exportScopeAll: "รายการล่าสุด + โปรเจกต์",
-      exportCombinedSuffix: "(รวม)",
-      exportPerChatSuffix: "(แยกตามแชท)",
       importChats: "นำเข้าแชท",
       importChatsDescription:
         "นำเข้าไฟล์ JSON, JSONL, NDJSON, CSV หรือ Markdown ไปยังรายการล่าสุด",
@@ -3659,17 +3720,100 @@ export const th = {
       mcp: {
         title: "การเข้าถึงของเอเจนต์ (MCP)",
         description:
-          "ให้เอเจนต์เขียนโค้ด เช่น Claude Code และ Codex ใช้ Unsloth ผ่าน MCP เอเจนต์จะลงชื่อเข้าใช้ด้วยคีย์ API ของ Unsloth จากหน้านี้",
+          "ให้เอเจนต์เขียนโค้ด เช่น Claude Code และ Codex ใช้ Unsloth ผ่าน MCP",
         enable: "อนุญาตการเชื่อมต่อจากเอเจนต์",
         enableDescription: "ให้บริการ /mcp/ แก่คำขอที่มีคีย์ API ของ Unsloth",
         lockedByEnv: "ตั้งค่าโดย {name}",
         loadError: "ไม่สามารถโหลดการตั้งค่าการเข้าถึงของเอเจนต์ได้",
         saveError: "ไม่สามารถบันทึกการตั้งค่าการเข้าถึงของเอเจนต์ได้",
         agent: "เอเจนต์",
-        exportKeyHint: "ตั้งค่า {name} เป็นคีย์ API ของ Unsloth จากหน้านี้ก่อนเริ่มเอเจนต์",
+        exportKeyHint: "ตั้งค่า {name} เป็นคีย์ API ของ Unsloth ก่อนเริ่มเอเจนต์",
         configFileHint: "เพิ่มส่วนนี้ลงใน {path}",
         keywords:
           "เอเจนต์ เครื่องมือ โปรโตคอล mcp model context protocol agents claude codex tools",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "เอเจนต์ลงชื่อเข้าใช้ด้วยคีย์ API ของ Unsloth",
+      createKey: "สร้างคีย์ API",
+      tools: {
+        title: "เครื่องมือ",
+        count: "เปิดอยู่ {on} จาก {total}",
+        choose: "เลือกเครื่องมือ",
+        dialogTitle: "เครื่องมือ Unsloth MCP",
+        allTools: "เครื่องมือทั้งหมด",
+        selectAll: "เลือกทั้งหมด",
+        selectNone: "ไม่เลือกเลย",
+        description:
+          "เครื่องมือทุกตัวที่เปิดไว้จะเพิ่มสิ่งที่เอเจนต์ต้องอ่านก่อนเริ่มงาน จึงควรปิดตัวที่ไม่ได้ใช้ เอเจนต์จะไม่เห็นเครื่องมือที่ปิดอยู่ และการเรียกใช้จะถูกปฏิเสธ เอเจนต์ที่เชื่อมต่ออยู่แล้วจะเห็นการเปลี่ยนแปลงเมื่อเชื่อมต่อใหม่",
+        saveError: "บันทึกการตั้งค่าเครื่องมือ Unsloth MCP ไม่สำเร็จ",
+        chatNote: "แชทจะไม่ได้รับ {tools}",
+        groups: {
+          models: "โมเดล",
+          generate: "สร้าง",
+          training: "การเทรนและการส่งออก",
+          library: "ข้อมูลและคลัง",
+          jobs: "งาน",
+          other: "อื่นๆ",
+        },
+      },
+      status: {
+        on: "เปิด",
+        off: "ปิด",
+      },
+      apiKeysRow: {
+        open: "เปิดในเอเจนต์",
+      },
+      toolLabels: {
+        studioStatus: "สถานะ",
+        listModels: "แสดงรายการโมเดล",
+        loadModel: "โหลดโมเดล",
+        unloadModel: "ยกเลิกการโหลดโมเดล",
+        planLoad: "วางแผนการโหลด",
+        downloadModel: "ดาวน์โหลดโมเดล",
+        chat: "แชท",
+        embed: "ฝังข้อความ",
+        systemOne: "โมเดลตัดสินใจ",
+        generateImage: "สร้างรูปภาพ",
+        generateAudio: "สร้างเสียง",
+        transcribe: "ถอดเสียง",
+        analyzeAudio: "วิเคราะห์เสียง",
+        generateVideo: "สร้างวิดีโอ",
+        runRecipe: "เรียกใช้ Data Recipe",
+        getJob: "สถานะงาน",
+        datasets: "ชุดข้อมูล",
+        startTraining: "เริ่มการเทรน",
+        listTrainingRuns: "การเทรนที่ผ่านมา",
+        exportModel: "ส่งออกโมเดล",
+        listMedia: "สื่อที่บันทึกไว้",
+        voices: "เสียงพูด",
+        cancel: "ยกเลิกงาน",
+      },
+      toolDescriptions: {
+        studioStatus: "ดูว่าอะไรโหลดอยู่ กำลังทำงาน และว่างอยู่บนคอมพิวเตอร์นี้",
+        listModels: "แสดงรายการโมเดลที่เอเจนต์โหลดได้",
+        loadModel: "โหลดโมเดลเพื่อให้เอเจนต์แชตหรือสร้างงานได้",
+        unloadModel: "ยกเลิกการโหลดโมเดลเพื่อคืนหน่วยความจำ",
+        planLoad: "ดูขนาดดาวน์โหลดและหน่วยความจำก่อนโหลดจริง",
+        downloadModel: "ดาวน์โหลดโมเดลจาก Hugging Face",
+        chat: "แชตกับโมเดลที่โหลดอยู่",
+        embed: "แปลงข้อความเป็นเวกเตอร์ หรือจัดอันดับข้อความตามความคล้าย",
+        systemOne: "ถามโมเดลตัดสินใจด้วยคำถามใช่หรือไม่ ตัวเลือก หรือคะแนน",
+        generateImage: "สร้างภาพและบันทึกลงแกลเลอรี",
+        generateAudio: "สร้างเสียงพูดหรือเสียงอื่น",
+        transcribe: "แปลงเสียงพูดเป็นข้อความ",
+        analyzeAudio: "ตรวจผู้พูด จังหวะเวลา และความตรงกับสคริปต์ของคลิป",
+        generateVideo: "สร้างวิดีโอ",
+        runRecipe: "เรียกใช้ Data Recipe เพื่อสร้างชุดข้อมูล",
+        getJob: "ติดตามงานที่ใช้เวลานานจนเสร็จ",
+        datasets: "แสดงรายการและอัปโหลดชุดข้อมูล",
+        startTraining: "เริ่มการ fine-tuning",
+        listTrainingRuns: "แสดงรายการการเทรนและผลลัพธ์",
+        exportModel: "ส่งออกโมเดลที่เทรนแล้ว เช่น เป็น GGUF",
+        listMedia: "ดูภาพ เสียง และวิดีโอที่บันทึกไว้",
+        voices: "แสดง บันทึก เปลี่ยนชื่อ หรือลบเสียง",
+        cancel: "หยุดงานที่กำลังทำ เช่น การเทรนหรือการส่งออก",
       },
     },
     about: {
@@ -5299,6 +5443,7 @@ export const th = {
     },
     monitor: {
       dragHandleLabel: "ย้ายตัวตรวจสอบแบบเรียลไทม์ ใช้ปุ่มลูกศรเพื่อขยับ ดับเบิลคลิกเพื่อรีเซ็ต",
+      resizeHint: "ลากขอบหรือมุมเพื่อเปลี่ยนความกว้าง ดับเบิลคลิกเพื่อรีเซ็ต",
       reconnecting: "กำลังเชื่อมต่อใหม่...",
     },
   },
@@ -5603,7 +5748,7 @@ export const th = {
     skippedVersion: "ข้าม {component} {version} ไว้ก่อน",
     skippedUpdate: "ข้ามการอัปเดต {component} ไว้ก่อน",
     skippedUpdates: "ข้ามการอัปเดต {components} ไว้ก่อน",
-    vulkanFaster: "Vulkan เร็วกว่า ROCM มากกว่า 10% ไม่ต้องรีสตาร์ท",
+    vulkanFaster: "เร็วขึ้นมากกว่า 10%",
     noRestart: "ไม่ต้องรีสตาร์ท",
     downloadSize: "ดาวน์โหลด {size}",
     backendChange: "แบ็กเอนด์ {change}",
@@ -5612,8 +5757,8 @@ export const th = {
     installingPhase: "กำลังติดตั้ง {component} ({current} จาก {total})...",
     installingCount: "กำลังติดตั้งการอัปเดต {count} รายการ...",
     bundleTitle: "การอัปเดตรันไทม์ {count} รายการ",
-    newBackend: "แบ็กเอนด์ {component} ใหม่",
-    newUpdate: "การอัปเดต {component} ใหม่",
+    newBackend: "แบ็กเอนด์รันไทม์ใหม่",
+    newUpdate: "การอัปเดตรันไทม์ใหม่",
     hideUpdate: "ซ่อนการอัปเดต {component} จนกว่าจะเปิด Unsloth อีกครั้ง",
     hideUpdates: "ซ่อนการอัปเดต {components} จนกว่าจะเปิด Unsloth อีกครั้ง",
     whatsNew: "มีอะไรใหม่",

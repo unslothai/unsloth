@@ -6,13 +6,9 @@ import sys
 
 
 def drop_unwritable_ssl_keylog_file():
-    """Unset SSLKEYLOGFILE when this process cannot append to it.
-
-    ssl.create_default_context opens that path for every context it builds, so an
-    unwritable one makes every HTTPS client raise: httpx at construction, which
-    kills the Studio backend on import, and requests on every call. Some security
-    software sets it machine-wide to a path no user process can open.
-    """
+    """Unset SSLKEYLOGFILE if it cannot be appended: ssl.create_default_context opens it per
+    context, so an unwritable path makes every HTTPS client raise; security software sets it
+    machine-wide."""
     path = os.environ.get("SSLKEYLOGFILE")
     if not path:
         return False

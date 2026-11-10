@@ -42,9 +42,8 @@ def _undo_slice_identity_fix():
 
 
 def _stub_gguf_accel(monkeypatch):
-    """Replace the real compiled-dequant installer (which touches torch.compile /
-    diffusers) with a recorder, so the tier-gating logic in apply_speed_optims is tested
-    in isolation. Returns a dict of how many times it was called."""
+    """Stubs the compiled-dequant installer with a call counter so apply_speed_optims tier gating is
+    tested in isolation."""
     called = {"compiled_dequant": 0}
 
     def _install(logger = None):
@@ -451,7 +450,8 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     # dynamic=True, no autotune: fast cold start, resolution-robust, avoids the CUDA-graph crash
     assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": True}
     assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
-    assert applied["tf32"] is False and applied["fused_qkv"] is False
+    assert applied["tf32"] is True and torch.backends.cuda.matmul.allow_tf32 is True
+    assert applied["fused_qkv"] is False
     assert applied["compiled_dequant"] is False
     assert called == {"compiled_dequant": 0}
 
@@ -1155,6 +1155,24 @@ def test_unet_whole_compile_failure_degrades_to_eager(monkeypatch):
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["compiled"] is False
+
+
+@pytest.mark.parametrize("mode", [SPEED_DEFAULT, SPEED_MAX])
+def test_the_tf32_kill_switch(monkeypatch, mode):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_TF32", "0")
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = _family(), speed_mode = mode
+    )
+    assert applied["tf32"] is False and torch.backends.cuda.matmul.allow_tf32 is False
+
+
+def test_the_eager_tier_leaves_tf32_off(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = _family(), speed_mode = SPEED_EAGER
+    )
+    assert applied["tf32"] is False and torch.backends.cuda.matmul.allow_tf32 is False
 
 
 def test_speed_max_tf32_only_on_cuda(monkeypatch):
@@ -2774,8 +2792,7 @@ def test_rocm_kill_switch_also_stops_the_gguf_dequant_compile(monkeypatch):
 
 
 def test_loader_probes_rocm_only_for_an_engaged_pipeline_quant():
-    # speed=off with quant off must not pay the allocating probe: the loader's probe=True call sits inside the
-    # engaged-quant branch.
+    # speed=off and quant off skip the allocating ROCm probe; it runs only for engaged quant.
     import ast
     import inspect
 

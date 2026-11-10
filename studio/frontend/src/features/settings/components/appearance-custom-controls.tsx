@@ -69,6 +69,10 @@ import {
   useTheme,
 } from "../stores/theme-store";
 import { COLOR_THEMES } from "../lib/color-themes";
+import {
+  GLASS_ELEMENT_OUTLINE,
+  useThemeElementOutline,
+} from "../lib/element-outline-default";
 import { ColorPickerSwatch } from "./color-picker";
 import { normalizeSizeInputDraft } from "./size-input-value";
 
@@ -979,6 +983,41 @@ export function ContrastSliderRow() {
         step={1}
         onChange={(value) => patch({ contrast: value })}
         ariaLabel={t("settings.appearance.custom.contrast.label")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
+export function ElementOutlineSliderRow() {
+  const t = useT();
+  const { resolved } = useTheme();
+  const outline = useAppearanceCustomStore((s) => s.customization.elementOutline);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  // Unset starts at the theme's own strength, so the first drag does not jump.
+  const themeOutline = useThemeElementOutline(outline === null);
+  const value = outline ?? themeOutline ?? GLASS_ELEMENT_OUTLINE[resolved];
+  const set = (next: number) => patch({ elementOutline: next });
+  const label = t("settings.appearance.custom.elementOutline.label");
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={label}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={label}
         className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
         fixedWidth={true}
         size={4}

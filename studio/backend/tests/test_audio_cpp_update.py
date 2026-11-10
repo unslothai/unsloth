@@ -127,8 +127,7 @@ def test_assets_of_another_release_never_decide_the_offer(managed):
 
 
 def test_a_tag_that_extends_the_offered_one_is_another_release(managed, monkeypatch):
-    # Upstream publishes v0.8.2 and later v0.8.2-audio8-perf-hotfix: the hotfix's assets start with
-    # "audio-v0.8.2-" too, yet say nothing about v0.8.2.
+    # Hotfix v0.8.2-audio8-perf-hotfix has audio-v0.8.2- assets, so prefix matching misfires.
     monkeypatch.setattr(aupd, "_target", lambda: ("0xShug0/audio.cpp", None))
     _write_record(
         managed.tree,
