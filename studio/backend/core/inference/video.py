@@ -274,6 +274,8 @@ from .video_families import (
     local_cosmos3_pipeline_family,
     local_ltx_pipeline_family,
     pipeline_available_video_families,
+    COSMOS3_CONTINUATION_FRAMES,
+    DEFAULT_VIDEO_CONTINUATION_KEEP,
     VideoFamily,
     default_video_generation_params,
     detect_video_family,
@@ -281,6 +283,7 @@ from .video_families import (
     snap_num_frames,
     snap_video_size,
     supported_video_family_names,
+    validate_video_continuation,
     validate_video_flow_controls,
     validate_video_keyframe_conditioning,
     validate_video_reference_conditioning,
@@ -1076,6 +1079,9 @@ def _decode_b64_media(data: Optional[str]) -> bytes:
     return blob
 
 
+VIDEO_CONTINUATION_CONDITIONING = "v2v"
+
+
 class _VideoGenerationCancelled(Exception):
     """Unwinds a denoise loop that has no cooperative interrupt (no step callback);
     generate() maps it to the VIDEO_CANCELLED_MSG sentinel the routes 409 on."""
@@ -1676,6 +1682,7 @@ class _VideoResolvedInputs:
     references: Any
     flow_shift: Optional[float]
     audio_flow_shift: Optional[float]
+    continuation: Any = None
 
 
 @dataclass
@@ -13189,6 +13196,8 @@ class VideoBackend:
         reference_image_size: Optional[str] = None,
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
+        continuation_video: Optional[str] = None,
+        continuation_keep: Optional[str] = None,
         video_id: Optional[str] = None,
         decoded_reference_audios: Optional[Any] = None,
         decoded_reference_images: Optional[Any] = None,
@@ -13264,6 +13273,19 @@ class VideoBackend:
                 run_num_frames = k * step + offset
             if references:
                 conditioning = h3_conditioning_mode(has_references = True)
+            continuation, canvas_w, canvas_h = self._resolve_continuation(
+                state.family,
+                continuation_video,
+                continuation_keep,
+                requested_size = (width, height),
+                canvas = (canvas_w, canvas_h),
+                fps = fps,
+                num_frames = run_num_frames,
+                has_keyframes = bool(resolved_first_frame or last_frame),
+                has_references = bool(references),
+            )
+            if continuation is not None:
+                conditioning = VIDEO_CONTINUATION_CONDITIONING
             resolved_inputs = _VideoResolvedInputs(
                 state = state,
                 first_frame = first_pil,
@@ -13274,6 +13296,7 @@ class VideoBackend:
                 references = references,
                 flow_shift = shift,
                 audio_flow_shift = audio_shift,
+                continuation = continuation,
             )
             with self._lock:
                 if self._state is not state:
@@ -13556,6 +13579,8 @@ class VideoBackend:
         reference_image_size: Optional[str] = None,
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
+        continuation_video: Optional[str] = None,
+        continuation_keep: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         _resolved_inputs: Optional[_VideoResolvedInputs] = None,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
@@ -13614,6 +13639,7 @@ class VideoBackend:
                     )
                 fam = state.family
                 if _resolved_inputs is None:
+                    requested_size = (width, height)
                     first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
                         fam, state.h3_task, first_frame, last_frame, width, height
                     )
@@ -13630,6 +13656,19 @@ class VideoBackend:
                     )
                     if references:
                         conditioning = h3_conditioning_mode(has_references = True)
+                    continuation, width, height = self._resolve_continuation(
+                        fam,
+                        continuation_video,
+                        continuation_keep,
+                        requested_size = requested_size,
+                        canvas = (width, height),
+                        fps = fps,
+                        num_frames = num_frames,
+                        has_keyframes = bool(first_frame or last_frame),
+                        has_references = bool(references),
+                    )
+                    if continuation is not None:
+                        conditioning = VIDEO_CONTINUATION_CONDITIONING
                     shift, audio_shift = self._resolve_flow_shifts(
                         fam, state.engine, flow_shift, audio_flow_shift
                     )
@@ -13640,6 +13679,7 @@ class VideoBackend:
                     height = _resolved_inputs.height
                     conditioning = _resolved_inputs.conditioning
                     references = _resolved_inputs.references
+                    continuation = _resolved_inputs.continuation
                     shift = _resolved_inputs.flow_shift
                     audio_shift = _resolved_inputs.audio_flow_shift
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
@@ -14055,6 +14095,9 @@ class VideoBackend:
                 if references:
                     from .video_minimax_h3 import h3_diffusers_references
                     kwargs["references"] = h3_diffusers_references(references)
+                if continuation is not None:
+                    kwargs["video"], kwargs["condition_video_keep"] = continuation
+                    request_shape["continuation"] = continuation[1]
                 # Set scheduler shifts every run so prior requests cannot leak state.
                 for component, value in (
                     ("scheduler", shift),
@@ -14064,14 +14107,15 @@ class VideoBackend:
                     if callable(setter) and value is not None:
                         setter(float(value))
                 if fam.name == "minimax-h3":
+                    from .video_minimax_h3 import h3_num_inference_steps
                     from .video_minimax_h3_pdd import (
                         bind_h3_pdd_render,
                         h3_pdd_num_inference_steps,
                     )
 
-                    # A PDD head bank reads each step's (sigma, sigma_next) off this render's video schedule. The
-                    # H3 scheduler's grid holds the terminal 0, so `steps` model evaluations (ComfyUI's count, which
-                    # the bank's 8-step partition is distilled for) is a grid of steps + 1.
+                    # H3 grid includes the terminal 0: `steps` evaluations need steps + 1 points.
+                    kwargs["num_inference_steps"] = h3_num_inference_steps(steps)
+                    # PDD bank is distilled for ComfyUI's count, so it keeps steps + 1 even under the kill switch.
                     if bind_h3_pdd_render(pipe, shift, audio_shift):
                         kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
                         request_shape["pdd"] = True
@@ -14350,18 +14394,43 @@ class VideoBackend:
                     publish = _publish_preview,
                     total_steps = steps,
                 )
+                render_call = (
+                    ltx25_render_call
+                    if ltx25_render_call is not None
+                    else (
+                        lambda: _carried_call(pipe, kwargs, has_step_callback or carry_by_scheduler)
+                    )
+                )
+
+                def _render_streamed_after_oom() -> Any:
+                    try:
+                        return render_call()
+                    except Exception as exc:  # noqa: BLE001
+                        if static_skip or cancel.is_set() or not is_oom_error(exc):
+                            raise
+                        from . import video_stream_residency
+                        if not video_stream_residency.may_stream_after_oom(state.pipe):
+                            raise
+                    from . import diffusion_cuda_graph, video_stream_residency
+
+                    # outside the handler so the failed attempt's tensors are freed; graph pools escape empty_cache()
+                    diffusion_cuda_graph.reset_all(
+                        getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ()
+                    )
+                    video_stream_residency.stream_after_oom(state.pipe, logger = logger)
+                    from .diffusion_nvfp4_protect import restart_protect_generation
+
+                    restart_protect_generation(pipe)
+                    if state.transformer_cache:
+                        self._reset_step_cache(pipe)
+                    seeded = kwargs.get("generator")
+                    if isinstance(seeded, torch.Generator):
+                        seeded.manual_seed(int(seed))
+                    return render_call()
+
                 try:
                     with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
-                        output = render_thread.run(
-                            "video",
-                            ltx25_render_call
-                            if ltx25_render_call is not None
-                            else (
-                                lambda: _carried_call(
-                                    pipe, kwargs, has_step_callback or carry_by_scheduler
-                                )
-                            ),
-                        )
+                        output = render_thread.run("video", _render_streamed_after_oom)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); offloaded modules would stay on GPU.
                     free_hooks = getattr(pipe, "maybe_free_model_hooks", None)
@@ -14562,6 +14631,47 @@ class VideoBackend:
             last = fit_h3_keyframe(last, width, height, anchor = H3_ANCHOR_LAST)
         conditioning = h3_conditioning_mode(has_first = first is not None, has_last = last is not None)
         return first, last, width, height, conditioning
+
+    @staticmethod
+    def _resolve_continuation(
+        fam: VideoFamily,
+        video: Optional[str],
+        keep: Optional[str],
+        *,
+        requested_size: tuple[Optional[int], Optional[int]],
+        canvas: tuple[int, int],
+        fps: Optional[int],
+        num_frames: Optional[int],
+        has_keyframes: bool,
+        has_references: bool,
+    ) -> tuple[Any, int, int]:
+        """Omitting both dimensions takes the preset nearest the clip's aspect, as a first frame does."""
+        validate_video_continuation(
+            fam,
+            has_video = bool(video),
+            keep = keep,
+            has_keyframes = has_keyframes,
+            has_references = has_references,
+            num_frames = (
+                snap_num_frames(fam, num_frames or fam.default_num_frames) if video else None
+            ),
+        )
+        if not video:
+            return None, *canvas
+        from .video_cosmos3 import decode_continuation_clip, fit_continuation_frames
+
+        validate_video_fps(fam, fps)
+        keep = keep or DEFAULT_VIDEO_CONTINUATION_KEEP
+        clip = decode_continuation_clip(
+            _decode_b64_media(video),
+            keep = keep,
+            fps = int(fps or fam.default_fps),
+            count = COSMOS3_CONTINUATION_FRAMES,
+        )
+        width, height = canvas
+        if requested_size == (None, None):
+            width, height = first_frame_canvas(fam, *clip[0].size)
+        return (fit_continuation_frames(clip, width, height), keep), width, height
 
     @staticmethod
     def _resolve_ltx25_first_frame(
@@ -15416,6 +15526,7 @@ class VideoBackend:
                 "supports_first_frame": False,
                 "supports_last_frame": False,
                 "supports_references": False,
+                "supports_video_continuation": False,
                 "h3_task": None,
                 "defaults": None,
                 "resolved": None,
@@ -15492,6 +15603,7 @@ class VideoBackend:
             "supports_last_frame": video_family_accepts_last_frame(fam)
             and state.h3_task != H3_TASK_REFERENCES,
             "supports_references": fam.supports_references and state.h3_task == H3_TASK_REFERENCES,
+            "supports_video_continuation": fam.supports_video_continuation,
             "h3_task": state.h3_task,
             "defaults": {
                 "steps": default_steps,

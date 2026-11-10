@@ -1252,3 +1252,32 @@ def test_the_video_claim_idle_check_runs_under_the_arbiter_lock(weights, monkeyp
     monkeypatch.setattr(arb, "_drop_resident", lambda owner: None)
     vr.RestyleRunner()._release_video_claim()
     assert held == [True]
+
+
+def test_upload_is_received_before_the_gpu_is_reserved(weights, monkeypatch):
+    # A reservation refuses every model load and training start, so a slow or stalled upload must not hold one.
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import video_restyle as route
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    monkeypatch.setattr(vr, "runner", runner)
+    held_while_reading = []
+    real_read = route._read_upload
+
+    async def watching_read(request):
+        held_while_reading.append(runner.holds_gpu())
+        return await real_read(request)
+
+    monkeypatch.setattr(route, "_read_upload", watching_read)
+    monkeypatch.setattr(vr, "frames_from_video", lambda data: _frames(5))
+    app = FastAPI()
+    app.include_router(route.router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    files = [("video", ("a.mp4", b"x", "video/mp4"))]
+    res = TestClient(app).post("/api/inference/video/restyle", data = {"prompt": ""}, files = files)
+    assert res.status_code == 400
+    assert held_while_reading == [False]
+    runner.release(runner.reserve())

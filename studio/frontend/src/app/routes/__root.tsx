@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usesWindowsTitlebar } from "@/components/tauri/window-titlebar";
+import { shouldUseCustomWindowTitlebar } from "@/components/tauri/window-titlebar";
 import {
   ChatBackground,
   WindowMaterialMount,
@@ -17,7 +17,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { routeNeedsHardware, videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
-import { DownloadApprovalDialog } from "@/features/browser";
+import { DownloadApprovalDialog } from "@/features/browser/download-approval";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
@@ -434,7 +434,8 @@ function RootLayout() {
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   const isChatRoute = pathname === "/chat";
-  const windowsTitlebar = usesWindowsTitlebar();
+  // The in-page titlebar, shared by Windows and Linux; the data-windows-* names predate Linux using it.
+  const windowsTitlebar = shouldUseCustomWindowTitlebar();
   const windowsWallpaperPage = !isChatRoute && windowsTitlebar;
   const { pinned, setPinned, togglePinned } = useSidebarPin();
   const navigate = useNavigate();

@@ -6701,6 +6701,12 @@ def _strip_tool_xml_for_display(
     """Only with Auto-Heal on; bare NAME[ARGS] needs an enabled non-execution tool; [TOOL_CALLS] always."""
     if not auto_heal_tool_calls:
         return text
+    # No arm edits text holding no sentinel and no ``call:`` (as ``_StreamingDisplayStrip`` relies on): skip the chain.
+    if (
+        not any(sentinel in text for sentinel in _DISPLAY_STRIP_SENTINELS)
+        and _DISPLAY_GEMMA_CALL_RE.search(text) is None
+    ):
+        return text
     from core.tool_healing import (
         _markerless_promotable,
         _strip_bracket_tag_calls,
@@ -6756,7 +6762,8 @@ _DISPLAY_STRIP_SENTINELS = (
     "</param",
 )
 _DISPLAY_SENTINEL_OVERLAP = max(len(sentinel) for sentinel in _DISPLAY_STRIP_SENTINELS) - 1
-_DISPLAY_GEMMA_CALL_RE = _re.compile(r"(?<!\w)call\s*:")
+# Lookbehind after the literal keeps ``call`` a literal prefix, so re scans for it instead of trying every position.
+_DISPLAY_GEMMA_CALL_RE = _re.compile(r"call(?<!\wcall)\s*:")
 # A trailing ``call`` (or a prefix of one) that later text could still turn into ``call:``.
 _DISPLAY_GEMMA_TAIL_RE = _re.compile(r"(?<!\w)c(?:a(?:l(?:l\s*)?)?)?\Z")
 
@@ -9625,6 +9632,16 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
             raise HTTPException(
                 status_code = 413,
                 detail = _audio_too_long_detail(),
+            ) from None
+        except _AudioTooShortError:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    _AUDIO_TOO_SHORT_DETAIL,
+                    status = 400,
+                    code = "invalid_value",
+                    param = "audio_base64",
+                ),
             ) from None
         except Exception:
             raise HTTPException(
@@ -26896,10 +26913,19 @@ _MAX_DECODE_BLOCK_SAMPLES = 1 << 20
 _RESAMPLE_SLICE_SAMPLES = 1 << 18
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
+# llama-server aborts (mtmd GGML_ASSERT) on audio that resamples to one sample.
+_MIN_AUDIO_SECONDS = 0.001
 
 
 class _DecodedAudioTooLongError(ValueError):
     """Decoded audio crossed the duration cap before it could be buffered."""
+
+
+class _AudioTooShortError(ValueError):
+    """A clip too short for llama-server to decode without aborting."""
+
+
+_AUDIO_TOO_SHORT_DETAIL = "Audio is too short (min 1 ms)."
 
 
 # (seconds, samples) the current decode may use: what earlier clips in the request left over.
@@ -27508,6 +27534,8 @@ def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
             decoded[index] = (arr, sr)
             samples_held += len(arr)
             seconds = len(arr) / float(sr) if sr else 0.0
+        if seconds < _MIN_AUDIO_SECONDS:
+            raise _AudioTooShortError(_AUDIO_TOO_SHORT_DETAIL)
         total_seconds += seconds
         if total_seconds > _MAX_AUDIO_SECONDS:
             raise _DecodedAudioTooLongError(
@@ -27580,7 +27608,8 @@ def _llama_passthrough_audio(raw: bytes) -> Optional[tuple[str, float]]:
 
 
 _VIDEO_INPUT_REFUSAL = (
-    "Video input is only supported on a local GGUF or MLX model with video support."
+    "Video input is only supported on a local GGUF or MLX model with video support, "
+    "or a custom OpenAI-compatible connection."
 )
 _VIDEO_NEEDS_FFMPEG_DETAIL = (
     "This model takes video, but ffmpeg and ffprobe were not found in llama-server's search path. "
@@ -27898,6 +27927,32 @@ async def _shrink_video_parts(messages: list[dict], llama_backend) -> None:
             if rejection is not None:
                 continue
             part["video_url"] = {"url": await _shrink_clip_for_llama(clip, llama_backend)}
+
+
+_VIDEO_URL_PROVIDER_TYPES = frozenset({"custom", "vllm", "llama_cpp", "ollama"})
+
+
+async def _external_video_url(clip: str) -> str:
+    bare = _video_b64_rejection(clip)[0]
+    shrunk = await _shrink_clip_for_llama(bare, None)
+    if shrunk != bare:
+        return f"data:video/x-matroska;base64,{shrunk}"
+    return clip if clip[:5].lower() == "data:" else f"data:video/mp4;base64,{bare}"
+
+
+async def _forward_external_video(messages: list[dict], legacy_clip: Optional[str]) -> None:
+    if legacy_clip:
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    content = msg["content"] = [{"type": "text", "text": content or ""}]
+                content.append({"type": "video_url", "video_url": {"url": legacy_clip}})
+                break
+    for msg in messages:
+        for part in msg.get("content") if isinstance(msg.get("content"), list) else []:
+            if isinstance(part, dict) and part.get("type") == "video_url":
+                part["video_url"] = {"url": await _external_video_url(part["video_url"]["url"])}
 
 
 def _translate_video_parts(messages: list[dict]) -> None:
@@ -28560,6 +28615,10 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif part.type == "video_url":
+                        parts.append(
+                            {"type": "video_url", "video_url": {"url": part.video_url.url}}
+                        )
                     elif (
                         responses_native_parts
                         and msg.role == "assistant"
@@ -29035,6 +29094,14 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
     _refuse_decision_connection(provider_type, api_type)
+    if _request_has_video(payload):
+        if provider_type not in _VIDEO_URL_PROVIDER_TYPES or (
+            provider_type == "custom" and api_type == "responses"
+        ):
+            raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
+        rejection = _request_video_rejection(payload)
+        if rejection is not None:
+            raise HTTPException(status_code = rejection[0], detail = rejection[1])
     if provider_type == "custom":
         try:
             validate_provider_reasoning_contract(provider_type, api_type, reasoning_config)
@@ -29592,6 +29659,8 @@ async def _proxy_to_external_provider(
         model = model,
         preserve_thinking = payload.preserve_thinking,
     )
+    if _request_has_video(payload):
+        await _forward_external_video(chat_messages, payload.video_base64)
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -31324,9 +31393,6 @@ async def produce_openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        # Refuse video here: the proxy cannot place a clip, and video_url is refused as the legacy field is.
-        if _request_has_video(payload):
-            raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
         # _build_external_messages has no input_audio case; refuse rather than drop it.
         if _messages_have_input_audio(payload.messages):
             raise HTTPException(
@@ -32381,6 +32447,8 @@ async def produce_openai_chat_completions(
                 # A valid but over-long file reports the duration limit like the non-GGUF path, not corrupt audio.
                 logger.info("Audio rejected at the duration limit: %s", e)
                 raise _reject(413, _audio_too_long_detail())
+            except _AudioTooShortError:
+                raise _reject(400, _AUDIO_TOO_SHORT_DETAIL)
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
@@ -35271,6 +35339,15 @@ async def produce_openai_chat_completions(
         if _sf_heal
         else None
     )
+    _sf_call_prefix = ""
+    if _sf_heal and payload.tool_choice not in (None, "auto") and not _sf_continue:
+        from core.inference.passthrough_healing import forced_call_prefix
+        _sf_call_prefix = forced_call_prefix(
+            _sf_heal,
+            _sf_image_tpl,
+            (_sf_model_info.get("chat_template_info") or {}).get("template"),
+            *(getattr(target, "chat_template", None) for target in _sf_chat_targets),
+        )
     if _sf_client_tools:
         # Re-derive from messages to keep tool history; fold system and developer into one system message; tool_choice none drops tools or markup leaks as prose
         _sf_tc = payload.tool_choice
@@ -35361,6 +35438,8 @@ async def produce_openai_chat_completions(
         template = _sf_image_tpl,
         prefer_tool_use = _sf_image_tpl is None,
     )
+    if _sf_call_prefix:
+        _sf_reasoning_prefilled = False
     if gen_kwargs.get("response_format") is not None:
         gen_kwargs["reasoning_is_extracted"] = bool(_sf_parse_think)
 
@@ -35450,6 +35529,16 @@ async def produce_openai_chat_completions(
                 "system_prompt": fitted["system_prompt"],
             }
             events = fitted.get("events") or ()
+        if _sf_call_prefix:
+            # After fitting: compaction leaves a prompt ending in a continuation untouched.
+            fitted_kwargs = {
+                **fitted_kwargs,
+                "messages": [
+                    *(fitted_kwargs.get("messages") or []),
+                    {"role": "assistant", "content": _sf_call_prefix},
+                ],
+                "continue_final_message": True,
+            }
         _sf_fit_cache["kwargs"] = fitted_kwargs
         return fitted_kwargs, events
 
@@ -35556,6 +35645,8 @@ async def produce_openai_chat_completions(
                         mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
+                    if cumulative:
+                        cumulative = _sf_call_prefix + cumulative
                     new_text = cumulative[len(prev_text) :]
                     prev_text = cumulative
                     if not new_text:
@@ -35834,6 +35925,9 @@ async def produce_openai_chat_completions(
                             ),
                         )
                     raise HTTPException(status_code = 500, detail = _msg)
+                if full_text:
+                    # The prefill alone is no call: an empty or cancelled reply stays empty.
+                    full_text = _sf_call_prefix + full_text
 
                 # Heal only visible text so tool markup inside reasoning is never promoted.
                 _reasoning_text, _visible_text = _extract_responses_reasoning(
@@ -35865,7 +35959,7 @@ async def produce_openai_chat_completions(
                     ):
                         if _finish != "length":
                             _finish = "tool_calls"
-                    elif nudge_enabled(
+                    elif not _sf_call_prefix and nudge_enabled(
                         payload.nudge_tool_calls,
                         response_format = _sf_response_format,
                     ):
@@ -38817,23 +38911,35 @@ async def _studio_embeddings(
         raise HTTPException(
             status_code = 502, detail = f"Embedding model failed: {_friendly_error(exc)}"
         ) from exc
-    payload = {
-        "object": "list",
-        "data": [
-            {
-                "object": "embedding",
-                "index": index,
-                "embedding": _embedding_payload(vector, encoding_format),
-            }
-            for index, vector in enumerate(vectors)
-        ],
-        "model": _public_embedding_identity(identity, model_name, label),
-        "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
-    }
+
+    def _serialize():
+        payload = {
+            "object": "list",
+            "data": [
+                {
+                    "object": "embedding",
+                    "index": index,
+                    "embedding": _embedding_payload(vector, encoding_format),
+                }
+                for index, vector in enumerate(vectors)
+            ],
+            "model": _public_embedding_identity(identity, model_name, label),
+            "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+        }
+        # json.dumps(payload) holds the GIL for the whole body; per row, the loop gets it back between rows.
+        rows = ", ".join([json.dumps(row) for row in payload["data"]])
+        content = json.dumps({**payload, "data": []}).replace('"data": []', f'"data": [{rows}]', 1)
+        return payload, content
+
+    try:
+        payload, content = await asyncio.to_thread(_serialize)
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
     # The gauge only makes sense for a single input; prompt_tokens sums the batch.
     _monitor_openai_chunk(monitor_id, payload, limit if len(texts) == 1 else None)
     api_monitor.finish(monitor_id)
-    return Response(content = json.dumps(payload), media_type = "application/json")
+    return Response(content = content, media_type = "application/json")
 
 
 # llama-server's refusals past one micro-batch (500) or the slot context (400), server-context.cpp;
@@ -38904,9 +39010,41 @@ async def _truncated_llama_embedding_inputs(
     return out if cut else None
 
 
-def _embedding_width(resp) -> Optional[int]:
+def _embedding_response_json(resp):
+    """The parsed body, or the exception parsing raised (each caller swallows it)."""
     try:
-        embedding = resp.json()["data"][0]["embedding"]
+        return resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return exc
+
+
+def _embedding_tail_usage(content: bytes) -> Optional[dict]:
+    """``usage`` when it is the body's last top-level key, else None.
+
+    llama-server's json keeps keys sorted, so usage follows the data rows (format_embeddings_response_oaicompat).
+    """
+    start = content.rfind(b'"usage"')
+    before = start - 1
+    while before >= 0 and content[before] in b" \t\r\n":
+        before -= 1
+    if before < 0 or content[before] not in b",{":
+        return None
+    try:
+        tail = content[start + 7 :].decode().lstrip()
+        if not tail.startswith(":"):
+            return None
+        tail = tail[1:].lstrip()
+        usage, end = json.JSONDecoder().raw_decode(tail)
+    except ValueError:
+        return None
+    return usage if isinstance(usage, dict) and tail[end:].strip() == "}" else None
+
+
+def _embedding_width(data) -> Optional[int]:
+    try:
+        if isinstance(data, Exception):
+            raise data
+        embedding = data["data"][0]["embedding"]
         if isinstance(embedding, str):
             return len(base64.b64decode(embedding)) // 4
         return len(embedding)
@@ -39039,17 +39177,29 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
             body["input"] = inputs
             resp = await upstream.post(body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
-    if resp.status_code == 200 and dimensions is not None and dimensions != _embedding_width(resp):
+    # A full parse holds the GIL even in a thread; the monitor alone needs only the tail's usage.
+    data = None
+    if resp.status_code == 200 and monitor_id and dimensions is None:
+        usage = _embedding_tail_usage(resp.content)
+        data = None if usage is None else {"usage": usage}
+    if resp.status_code == 200 and data is None and (dimensions is not None or monitor_id):
+        try:
+            data = await asyncio.to_thread(_embedding_response_json, resp)
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+    if resp.status_code == 200 and dimensions is not None and dimensions != _embedding_width(data):
         detail = f"'dimensions' is not supported by {_llama_public_model_id(llama_backend)}."
         api_monitor.fail(monitor_id, detail)
         raise HTTPException(status_code = 400, detail = detail)
     if resp.status_code != 200:
         api_monitor.fail(monitor_id, resp.text[:500])
     else:
-        try:
-            _monitor_openai_chunk(monitor_id, resp.json(), _monitor_context_length())
-        except Exception:
-            pass
+        if monitor_id and not isinstance(data, Exception):
+            try:
+                _monitor_openai_chunk(monitor_id, data, _monitor_context_length())
+            except Exception:
+                pass
         api_monitor.finish(monitor_id)
     return Response(
         content = resp.content,
@@ -41917,6 +42067,42 @@ def _llama_image_data_url(raw: bytes) -> str:
     return f"data:image/png;base64,{_image_bytes_to_png_b64(raw)}"
 
 
+# Chat history images are sent again on every turn and the result depends only on the payload.
+_LLAMA_IMAGE_MEMO: "collections.OrderedDict[bytes, str]" = collections.OrderedDict()
+_LLAMA_IMAGE_MEMO_MAX_CHARS = 64 * 1024 * 1024
+# Also bound the entry count: a pass-through entry stores only its short prefix.
+_LLAMA_IMAGE_MEMO_MAX_ENTRIES = 256
+_llama_image_memo_chars = 0
+_llama_image_memo_lock = threading.Lock()
+
+
+def _llama_image_data_url_from_b64(b64data: str) -> str:
+    """_llama_image_data_url(base64.b64decode(b64data)), remembering recent successful results; failures raise as before"""
+    global _llama_image_memo_chars
+    key = _hashlib.sha256(b64data.encode("utf-8", "surrogatepass")).digest()
+    with _llama_image_memo_lock:
+        kept = _LLAMA_IMAGE_MEMO.get(key)
+        if kept is not None:
+            _LLAMA_IMAGE_MEMO.move_to_end(key)
+    if kept is not None:
+        # A bare prefix means the payload passed through unchanged.
+        return kept + b64data if kept.endswith(",") else kept
+    data_url = _llama_image_data_url(base64.b64decode(b64data))
+    prefix = data_url[: len(data_url) - len(b64data)]
+    kept = prefix if data_url.endswith(b64data) and prefix.endswith(";base64,") else data_url
+    with _llama_image_memo_lock:
+        if key not in _LLAMA_IMAGE_MEMO and len(kept) <= _LLAMA_IMAGE_MEMO_MAX_CHARS:
+            _LLAMA_IMAGE_MEMO[key] = kept
+            _llama_image_memo_chars += len(kept)
+            while (
+                _llama_image_memo_chars > _LLAMA_IMAGE_MEMO_MAX_CHARS
+                or len(_LLAMA_IMAGE_MEMO) > _LLAMA_IMAGE_MEMO_MAX_ENTRIES
+            ):
+                _, dropped = _LLAMA_IMAGE_MEMO.popitem(last = False)
+                _llama_image_memo_chars -= len(dropped)
+    return data_url
+
+
 # Match llama-server's per-image limit and add a per-request budget.
 _REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _REMOTE_IMAGE_REQUEST_BUDGET_BYTES = 32 * 1024 * 1024
@@ -42154,8 +42340,7 @@ def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_imag
 
             try:
                 _, b64data = url.split(",", 1)
-                raw = base64.b64decode(b64data)
-                data_url = _llama_image_data_url(raw)
+                data_url = _llama_image_data_url_from_b64(b64data)
             except Exception:
                 raise HTTPException(
                     status_code = 400,
@@ -42392,6 +42577,7 @@ async def _mlx_count_chat_tokens(
                 payload.messages,
                 getattr(payload, "tool_choice", None),
                 getattr(payload, "mcp_image", None),
+                remember = False,
             )
 
             # A database read, so off the loop; guarded like the GGUF count, or an interleaving edit pairs a new row with a stale schema
@@ -42837,6 +43023,7 @@ async def chat_count_tokens(
             payload.messages,
             getattr(payload, "tool_choice", None),
             getattr(payload, "mcp_image", None),
+            remember = False,
         )
         from core.inference.mcp_client import mcp_server_snapshot_guard
 
@@ -46768,8 +46955,7 @@ def _openai_messages_for_passthrough(
 
     if normalize_images:
         try:
-            raw = base64.b64decode(payload.image_base64)
-            data_url = _llama_image_data_url(raw)
+            data_url = _llama_image_data_url_from_b64(payload.image_base64)
         except Exception:
             raise HTTPException(
                 status_code = 400,
@@ -49940,7 +50126,8 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
                         plan.cells[index].request, captured = captured
                     )
                 records[index] = result.images[0]
-                pictures[index] = diffusion_xy.fit_cell(captured[0], plan)
+                # LANCZOS on a large render would block the event loop.
+                pictures[index] = await asyncio.to_thread(diffusion_xy.fit_cell, captured[0], plan)
         # No await between these two: a Stop after the last cell ends the grid, one after this is not acknowledged.
         _xy_grid_stops.remove(stop)
         if ticket.cancelled():

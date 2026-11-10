@@ -325,6 +325,29 @@ _NATIVE_TOOL_FORMATS = (
 )
 
 
+_FORCED_CALL_OPENERS = {
+    "hermes": ('<tool_call>\n{"name":', lambda name: f' {json.dumps(name)}, "arguments":'),
+    "qwen3_coder": ("<tool_call>\n<function=", lambda name: f"{name}>\n"),
+}
+
+
+def forced_call_prefix(names: Optional[set], *templates: Any) -> str:
+    """Opening of the model's own call markup for a forced tool_choice (in-process engines have no
+    grammar to force one); empty unless every template body with a call format agrees on it."""
+    from core.inference.engine_adapters import tool_parser_for_template
+
+    parsers = {
+        tool_parser_for_template(body, "vllm")
+        for template in templates
+        for body in _template_strings(template)
+    } - {None}
+    opener = _FORCED_CALL_OPENERS.get(parsers.pop()) if len(parsers) == 1 else None
+    if not names or opener is None:
+        return ""
+    head, named = opener
+    return head + named(next(iter(names))) if len(names) == 1 else head
+
+
 def native_tool_format(*templates: Any) -> Optional[NativeToolFormat]:
     """The block format the model's chat template writes tool calls in, if it is one of these."""
     bodies = [body for template in templates for body in _template_strings(template)]

@@ -337,6 +337,7 @@ class VideoFamily:
     unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
+    supports_video_continuation: bool = False
     # Guidance-distilled families expose neither CFG nor a negative prompt.
     supports_cfg: bool = True
     # True when Unsloth can TRAIN a LoRA on this family (every such name must resolve through get_trainer).
@@ -1049,6 +1050,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
         i2v_fits_first_frame = False,
+        # Nano only: Edge's card lists text, image and action input, no video.
+        supports_video_continuation = True,
         scheduler_overrides = _COSMOS3_NANO_SCHEDULER,
         cudnn_benchmark = False,
         vae_fused_encoder = False,
@@ -1676,6 +1679,41 @@ def validate_video_keyframe_conditioning(
             "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "
             "rather than keyframes. Load a minimax_h3_fl2va checkpoint to generate from a first "
             "or last frame."
+        )
+
+
+VIDEO_CONTINUATION_KEEP = ("last", "first")
+DEFAULT_VIDEO_CONTINUATION_KEEP = "last"
+# Pixel frames the pipeline keeps clean: latent indexes (0, 1) under the Wan2.2 VAE's 4x temporal compression.
+COSMOS3_CONTINUATION_FRAMES = 5
+
+
+def validate_video_continuation(
+    fam: VideoFamily,
+    *,
+    has_video: bool,
+    keep: Optional[str] = None,
+    has_keyframes: bool = False,
+    has_references: bool = False,
+    num_frames: Optional[int] = None,
+) -> None:
+    """Pure, so the route can judge an auto-switch target before evicting anything."""
+    if not has_video:
+        if keep is not None:
+            raise ValueError("continuation_keep needs a continuation_video.")
+        return
+    if not fam.supports_video_continuation:
+        raise ValueError(f"{fam.name} takes no input video, so it cannot continue a clip.")
+    if keep is not None and keep not in VIDEO_CONTINUATION_KEEP:
+        raise ValueError("continuation_keep must be 'last' or 'first'.")
+    if has_keyframes or has_references:
+        raise ValueError(
+            "A clip to continue cannot be combined with a start frame, end frame or references."
+        )
+    if num_frames is not None and num_frames <= COSMOS3_CONTINUATION_FRAMES:
+        raise VideoShapeError(
+            f"Continuing a clip keeps its {COSMOS3_CONTINUATION_FRAMES} frames, so the length must be more than "
+            f"{COSMOS3_CONTINUATION_FRAMES} frames to generate anything; got {num_frames}."
         )
 
 

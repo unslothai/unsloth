@@ -26,6 +26,23 @@ H3_AUDIO_VAE = "vae/official/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 
+# diffusers' H3 grid of n points (terminal 0 included) runs n - 1 evaluations; SGLang/ComfyUI/sd.cpp run n. "0" = old grid.
+H3_STEP_EVALUATIONS_ENV = "UNSLOTH_H3_STEP_EVALUATIONS"
+
+
+def h3_step_evaluations_enabled() -> bool:
+    return os.environ.get(H3_STEP_EVALUATIONS_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def h3_num_inference_steps(steps: int) -> int:
+    return int(steps) + 1 if h3_step_evaluations_enabled() else int(steps)
+
+
 # Measured (Diffusers T2VA, component CPU offload, 960x544..1344x768, 124-345 frames); base is largest component plus overhead; margin = allocator variance.
 H3_DIFFUSERS_VRAM_BASE_GB = 68.5
 H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08

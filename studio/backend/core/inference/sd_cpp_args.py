@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
@@ -846,6 +847,22 @@ def offload_flags(
     return out
 
 
+# sd-cli's own <lora:NAME:W> pattern; it loads an absolute NAME from anywhere, whatever --lora-model-dir says.
+_LORA_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
+
+
+def strip_lora_tags(prompt: str) -> str:
+    """Removes every tag sd-cli would parse, to a fixed point so a split tag cannot reassemble, plus any dangling
+    ``<lora:`` that could pair with a tag appended after it."""
+    out, prev = prompt, None
+    while prev != out:
+        prev = out
+        out = _LORA_TAG_RE.sub("", out).replace("<lora:", "")
+    if out == prompt:
+        return prompt
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+
 def build_sd_cpp_command(
     binary: str,
     files: SdCppModelFiles,
@@ -880,7 +897,9 @@ def build_sd_cpp_command(
         if value:
             cmd += [flag, value]
 
-    cmd += ["--prompt", params.prompt]
+    # Tags are only honoured against a lora_dir the caller filled with validated adapters.
+    prompt = params.prompt if params.lora_dir else strip_lora_tags(params.prompt)
+    cmd += ["--prompt", prompt]
     if params.negative_prompt:
         cmd += ["--negative-prompt", params.negative_prompt]
     if params.init_img:
@@ -1001,7 +1020,8 @@ def build_sd_cpp_video_command(
         cmd += ["--ref-audio", ref]
     cmd += [
         "--prompt",
-        params.prompt,
+        # Video has no LoRA selection, so no prompt tag is legitimate.
+        strip_lora_tags(params.prompt),
         "--cfg-scale",
         _fmt_float(params.cfg_scale),
         "--width",
