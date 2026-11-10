@@ -86,8 +86,13 @@ def _terms(token: str) -> list[str]:
 
 
 def _or_terms(tokens) -> str:
+    # Only CJK phrases (the spaced terms) are deduplicated: a repeated plain word keeps its bm25 weight.
+    seen = set()
     return " OR ".join(
-        f'"{t}"' for t in dict.fromkeys(t for token in tokens for t in _terms(token))
+        f'"{t}"'
+        for token in tokens
+        for t in _terms(token)
+        if " " not in t or not (t in seen or seen.add(t))
     )
 
 
