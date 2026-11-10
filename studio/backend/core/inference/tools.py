@@ -6750,6 +6750,43 @@ _SOURCE_ENCODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
 _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
 
+def _quote_end(line: str, i: int) -> int:
+    """Index of the quote closing the one at ``i``; a `$(` inside double quotes opens a fresh
+    quoting context, as in bash. -1 when unterminated."""
+    quote, j, n = line[i], i + 1, len(line)
+    while j < n and line[j] != quote:
+        if quote == '"' and line[j] == "\\":
+            j += 2
+        elif quote == '"' and line.startswith("$(", j):
+            j = _substitution_end(line, j + 2)
+            if j < 0:
+                return -1
+        else:
+            j += 1
+    return j if j < n else -1
+
+
+def _substitution_end(line: str, j: int) -> int:
+    depth, n = 1, len(line)
+    while j < n:
+        ch = line[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch in "'\"":
+            j = _quote_end(line, j)
+            if j < 0:
+                return -1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if not depth:
+                return j + 1
+        j += 1
+    return -1
+
+
 def _shell_line_tokens(line: str) -> "list | None":
     """Bash's word split of one line as (kind, text, quoted), kind word / op / fd; adjacent quoted
     parts concatenate. None on an unterminated quote or arithmetic expansion."""
@@ -6777,10 +6814,8 @@ def _shell_line_tokens(line: str) -> "list | None":
             quoted = active = True
             i += 2
         elif ch in "'\"":
-            j = i + 1
-            while j < n and line[j] != ch:
-                j += 2 if ch == '"' and line[j] == "\\" else 1
-            if j >= n:
+            j = _quote_end(line, i)
+            if j < 0:
                 return None
             text = line[i + 1 : j]
             word.append(re.sub(r'\\([$`"\\\n])', r"\1", text) if ch == '"' else text)
