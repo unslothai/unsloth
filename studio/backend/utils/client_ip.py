@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from urllib.parse import urlparse
 
 _TRUST_FORWARDED_ENV = "UNSLOTH_STUDIO_TRUST_FORWARDED"
@@ -152,6 +153,67 @@ def _host_header_is_loopback(host_header: str | None) -> bool:
         host = host.split(":", 1)[0]
     host = host.lower().rstrip(".")
     return host == "localhost" or _is_loopback_ip(host)
+
+
+# Opt-in: public hostnames a reverse proxy on this computer (cloudflared, nginx, Caddy) serves Studio at.
+_PROXY_HOSTS_ENV = "UNSLOTH_STUDIO_PROXY_HOSTS"
+_DNS_NAME = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)*")
+
+
+def _authority_hostname(value: str | None) -> str | None:
+    """Lowercased DNS name of a ``host[:port]`` authority; None for IP literals, ``localhost`` and junk."""
+    host = (value or "").strip().lower()
+    if "://" in host:  # tolerate a pasted URL in the setting
+        host = host.split("://", 1)[1].split("/", 1)[0]
+    if host.count(":") == 1:
+        host, port = host.split(":", 1)
+        if not port.isdigit():
+            return None
+    host = host.rstrip(".")
+    # Names only: loopback and IP literals have their own gates, and a wildcard would admit any rebound name.
+    if host == "localhost" or not _DNS_NAME.fullmatch(host):
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    return None
+
+
+def trusted_proxy_hosts() -> frozenset[str]:
+    """Hostnames from ``UNSLOTH_STUDIO_PROXY_HOSTS`` (comma or space separated); empty unless opted in."""
+    raw = os.environ.get(_PROXY_HOSTS_ENV, "")
+    names = (_authority_hostname(entry) for entry in raw.replace(",", " ").split())
+    return frozenset(name for name in names if name)
+
+
+def request_via_trusted_proxy(scope) -> bool:
+    """A loopback connection from a local reverse proxy naming an allowlisted public hostname.
+
+    ``Host`` must be loopback or allowlisted and every ``X-Forwarded-Host`` entry allowlisted: a page on a
+    rebound name sends that name as ``Host``, so it cannot borrow the allowlist through a header it sets."""
+    allowed = trusted_proxy_hosts()
+    if not allowed or not isinstance(scope, dict):
+        return False
+    server = scope.get("server")
+    client = scope.get("client")
+    if not server or not client or not _is_loopback_ip(server[0]) or not _is_loopback_ip(client[0]):
+        return False
+    host_values = []
+    forwarded_hosts = []
+    for name, value in scope.get("headers") or ():
+        if name == b"host":
+            host_values.append(value.decode("latin-1"))
+        elif name == b"x-forwarded-host":
+            forwarded_hosts.extend(p for p in value.decode("latin-1").split(",") if p.strip())
+    if len(host_values) != 1:
+        return False
+    host_allowed = _authority_hostname(host_values[0]) in allowed
+    if not host_allowed and not _host_header_is_loopback(host_values[0]):
+        return False
+    if any(_authority_hostname(part) not in allowed for part in forwarded_hosts):
+        return False
+    return host_allowed or bool(forwarded_hosts)
 
 
 # Hop headers a proxy adds without naming the client (Apache's X-Forwarded-Server, an nginx block that
