@@ -57,6 +57,15 @@ def pane_center(page) -> tuple[float, float]:
 def pan_metrics(page, label: str) -> None:
     box = page.locator(".react-flow__pane").bounding_box()
     x, y = box["x"] + 230, box["y"] + 90
+    # Start the drag on empty pane: zoomed in, the fixed point can sit on a node, which drags the node.
+    spot = page.evaluate(
+        """([x0, y0, w, h]) => { for (let dy = 0; dy < h - 60; dy += 40) for (let dx = 0; dx < w - 420; dx += 40) {
+        const e = document.elementFromPoint(x0 + dx, y0 + dy);
+        if (e && e.classList.contains('react-flow__pane')) return [x0 + dx, y0 + dy]; } return null; }""",
+        [x, y, box["x"] + box["width"] - x, box["y"] + box["height"] - y],
+    )
+    if spot:
+        x, y = spot
     transform = "() => document.querySelector('.react-flow__viewport').style.transform"
     before = page.evaluate(transform)
     page.evaluate(
@@ -154,7 +163,17 @@ def main() -> int:
             page.wait_for_timeout(300)
             page.screenshot(path = str(SHOTS / "editor_download_before_run.png"))
             page.click('[data-testid="flows-download-and-run"]')
-            page.wait_for_selector('[data-testid="flows-run-drawer"]', timeout = 5_000)
+            page.wait_for_selector(
+                '[data-testid="flows-download-run"]', state = "hidden", timeout = 15_000
+            )
+            page.wait_for_function(
+                "() => window.__flowsSmoke.runtime.getState().runStatus !== null",
+                timeout = 15_000,
+            )
+            # A run does not open the drawer by itself; the Runs button in the run bar toggles it.
+            if page.locator('[data-testid="flows-run-drawer"]').count() == 0:
+                page.click('[data-testid="flows-runs"]')
+            page.wait_for_selector('[data-testid="flows-run-drawer"]', timeout = 15_000)
             page.wait_for_function(
                 "() => window.__flowsSmoke.runtime.getState().runStatus === 'completed'",
                 timeout = 30_000,
