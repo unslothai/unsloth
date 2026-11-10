@@ -143,9 +143,7 @@ def card_load_kwargs(
     resident: Optional[str] = None,
     resident_variant: Optional[str] = None,
 ) -> Optional[dict]:
-    """What the scheduler groups by, before the run resolves saved settings: theirs when the card follows them.
-    A card with Model unset reads as the resident model and its quant, so GGUF-only and quant-specific settings
-    match what the run resolves."""
+    """What the scheduler groups by, before the run resolves saved settings: theirs when the card follows them."""
     choice = params.get("model")
     picked = choice.get("repo") if isinstance(choice, dict) else None
     repo = picked or resident

@@ -1662,9 +1662,7 @@ _REQUESTED_GPU_IDS: contextvars.ContextVar[Optional[tuple]] = contextvars.Contex
 
 
 def _active_component_specs() -> Optional[dict]:
-    """The text-encoder / VAE files this load used by component, supplied or found beside a ComfyUI DiT, as a load
-    request takes them, so a reload rebuilds the same model: discovery run again under a pinned precision can rank
-    another file of the folder first."""
+    """This load's text-encoder / VAE files, so a reload rebuilds the same model rather than re-ranking the folder."""
     from .diffusion_comfy_components import active_component_overrides
 
     overrides = active_component_overrides()
