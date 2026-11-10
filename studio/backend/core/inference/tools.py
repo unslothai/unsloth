@@ -164,7 +164,7 @@ _DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
 _DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
 _DDGS_PENDING = threading.local()
 
-# Tier 2 runs only if tier 1 found nothing; engines in neither tier are never contacted.
+# Tier 2 runs unless tier 1 found more than Wikipedia; engines in neither tier are never contacted.
 _SEARCH_ENGINE_TIERS = (
     ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
     ("grokipedia", "google", "yahoo"),
@@ -8378,19 +8378,22 @@ def _windows_program_roots() -> list[str]:
 def _resolve_trusted_windows_git() -> tuple[str, str]:
     """Finds git in a trusted Program Files dir; the first PATH match may be an untrusted shim, so the other entries are scanned."""
     exts = [e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)]
-    candidates: list[str] = []
-    primary = shutil.which("git")
-    if primary:
-        candidates.append(primary)
-    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
-        entry = entry.strip().strip('"')
-        if not entry or not os.path.isabs(entry):
-            continue
-        for ext in exts:
-            cand = os.path.join(entry, "git" + ext)
-            if os.path.isfile(cand):
-                candidates.append(cand)
-    for git_exe in candidates:
+
+    def _candidates():
+        # Lazy, in the original order: a trusted hit stops the PATH x PATHEXT stat scan.
+        primary = shutil.which("git")
+        if primary:
+            yield primary
+        for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if not entry or not os.path.isabs(entry):
+                continue
+            for ext in exts:
+                cand = os.path.join(entry, "git" + ext)
+                if os.path.isfile(cand):
+                    yield cand
+
+    for git_exe in _candidates():
         git_dir = os.path.dirname(git_exe)
         if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
             return os.path.realpath(git_dir), os.path.splitext(git_exe)[1].upper()
@@ -17084,6 +17087,11 @@ def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, websi
     ]
 
 
+def _is_wikipedia_result(result) -> bool:
+    host = urllib.parse.urlsplit(str(result.get("href") or "").strip()).hostname or ""
+    return host == "wikipedia.org" or host.endswith(".wikipedia.org")
+
+
 def _usable_search_results(results, website_policy):
     from .web_access_policy import check_url_access
     return [
@@ -17186,12 +17194,14 @@ def _web_search(
                     client = DDGS(timeout = remaining)
                 try:
                     candidates = _ddgs_text(client, effective_query, wanted, backend)
-                    results = _usable_search_results(candidates, website_policy)
-                    rejected_results = rejected_results or bool(candidates and not results)
+                    found = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not found)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
                     last_error = exc
                     continue
-                if results:
+                seen = {r.get("href") for r in results}
+                results += [r for r in found if r.get("href") not in seen]
+                if not all(_is_wikipedia_result(r) for r in results):
                     break
         except Exception as exc:
             last_error = exc

@@ -347,7 +347,8 @@ import {
 } from "@/features/chat/hooks/use-sidebar-drag";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
-import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
+import { PinnedPageRow, usePinnedPages } from "@/features/browser/pinned-page-row";
+import type { PinnedPage } from "@/features/browser/pinned-pages-store";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";

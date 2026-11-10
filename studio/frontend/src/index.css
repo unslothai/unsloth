@@ -6665,52 +6665,53 @@ html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-ro
 html[data-glass="frosted"] .wallpaper-preview-composer {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
+/* Unblurred rims and linear sheens: WebKit's CPU painter re-blurs inset shadows over the whole surface on every repaint, and paints radial gradients slowly. */
 html[data-glass^="liquid"] {
-  --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .059), transparent 58%), linear-gradient(rgb(255 255 255 / .016), transparent 45%, rgb(255 255 255 / .013));
+  --glass-sheen: linear-gradient(170deg, rgb(255 255 255 / .047), transparent 55%);
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .432);
   --glass-lift: 0 12px 32px -12px rgb(0 0 0 / .19), 0 2px 8px -4px rgb(0 0 0 / .075);
 }
 html.dark[data-glass^="liquid"] {
-  --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .02), transparent 58%);
+  --glass-sheen: linear-gradient(170deg, rgb(255 255 255 / .016), transparent 55%);
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .115), inset 0 0 0 1px rgb(255 255 255 / .036);
   --glass-lift: 0 0 12px 0 color-mix(in srgb, var(--background) 75%, transparent);
 }
 html[data-glass="liquid-3d"] {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .149), rgb(255 255 255 / .02) 30%, transparent 55%, rgb(255 255 255 / .02) 80%, rgb(255 255 255 / .089));
-  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .347), inset 0 16px 30px -20px rgb(255 255 255 / .396), inset 0 -18px 34px -20px rgb(255 255 255 / .297);
-  --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .075), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .055), transparent 62%), linear-gradient(172deg, rgb(255 255 255 / .019), transparent 50%);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .347);
+  --glass-sheen: linear-gradient(160deg, rgb(255 255 255 / .06), transparent 55%, transparent 75%, rgb(255 255 255 / .044));
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .297), rgb(255 255 255 / .069) 62%, rgb(255 255 255 / .139));
-  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .396), inset 0 -2px 5px rgb(255 255 255 / .149), inset 0 0 0 1px rgb(255 255 255 / .099);
+  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .396), inset 0 -1px 0 rgb(255 255 255 / .149), inset 0 0 0 1px rgb(255 255 255 / .099);
 }
 html.dark[data-glass="liquid-3d"] {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .059), rgb(255 255 255 / .01) 30%, transparent 55%, rgb(255 255 255 / .01) 80%, rgb(255 255 255 / .035));
-  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .109), inset 0 16px 30px -20px rgb(255 255 255 / .109), inset 0 -18px 34px -20px rgb(255 255 255 / .069);
-  --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .022), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .011), transparent 62%);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .109);
+  --glass-sheen: linear-gradient(160deg, rgb(255 255 255 / .018), transparent 55%, transparent 75%, rgb(255 255 255 / .009));
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .099), rgb(255 255 255 / .02) 62%, rgb(255 255 255 / .04));
-  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .139), inset 0 -2px 5px rgb(255 255 255 / .03), inset 0 0 0 1px rgb(255 255 255 / .035);
+  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .139), inset 0 -1px 0 rgb(255 255 255 / .03), inset 0 0 0 1px rgb(255 255 255 / .035);
 }
 /* The composer and files panel keep the full sheen. */
 html[data-glass^="liquid"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
-  --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .066), transparent 58%), linear-gradient(rgb(255 255 255 / .018), transparent 45%, rgb(255 255 255 / .014));
+  --glass-sheen: linear-gradient(170deg, rgb(255 255 255 / .053), transparent 55%);
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .48), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent);
 }
 html.dark[data-glass^="liquid"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
-  --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .022), transparent 58%);
+  --glass-sheen: linear-gradient(170deg, rgb(255 255 255 / .018), transparent 55%);
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .128), inset 0 0 0 1px rgb(255 255 255 / .04);
 }
 html[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .165), rgb(255 255 255 / .022) 30%, transparent 55%, rgb(255 255 255 / .022) 80%, rgb(255 255 255 / .099));
-  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .385), inset 0 16px 30px -20px rgb(255 255 255 / .44), inset 0 -18px 34px -20px rgb(255 255 255 / .33), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 9%, transparent);
-  --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .083), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .061), transparent 62%), linear-gradient(172deg, rgb(255 255 255 / .021), transparent 50%);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .385), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 9%, transparent);
+  --glass-sheen: linear-gradient(160deg, rgb(255 255 255 / .066), transparent 55%, transparent 75%, rgb(255 255 255 / .049));
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .33), rgb(255 255 255 / .077) 62%, rgb(255 255 255 / .154));
-  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .44), inset 0 -2px 5px rgb(255 255 255 / .165), inset 0 0 0 1px rgb(255 255 255 / .11);
+  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .44), inset 0 -1px 0 rgb(255 255 255 / .165), inset 0 0 0 1px rgb(255 255 255 / .11);
 }
 html.dark[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .066), rgb(255 255 255 / .011) 30%, transparent 55%, rgb(255 255 255 / .011) 80%, rgb(255 255 255 / .039));
-  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .121), inset 0 16px 30px -20px rgb(255 255 255 / .121), inset 0 -18px 34px -20px rgb(255 255 255 / .077);
-  --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .024), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .012), transparent 62%);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .121);
+  --glass-sheen: linear-gradient(160deg, rgb(255 255 255 / .019), transparent 55%, transparent 75%, rgb(255 255 255 / .01));
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .11), rgb(255 255 255 / .022) 62%, rgb(255 255 255 / .044));
-  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .154), inset 0 -2px 5px rgb(255 255 255 / .033), inset 0 0 0 1px rgb(255 255 255 / .039);
+  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .154), inset 0 -1px 0 rgb(255 255 255 / .033), inset 0 0 0 1px rgb(255 255 255 / .039);
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before,
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
@@ -7209,7 +7210,7 @@ html[data-glass][data-glass-menus][data-glass-plain]:not(.dark) :is([data-slot$=
 }
 @layer utilities {
 html[data-glass][data-glass-menus][data-glass-plain]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / .665), inset 0 -1px 0 color-mix(in srgb, var(--foreground) 8%, transparent), inset 0 6px 10px -8px rgb(255 255 255 / .175), var(--glass-lift, 0 0 #0000) !important;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .665), inset 0 -1px 0 color-mix(in srgb, var(--foreground) 8%, transparent), var(--glass-lift, 0 0 #0000) !important;
 }
 }
 /* !important: Sonner injects its base rules at runtime. .toast-surface: the update cards that float like toasts. */
@@ -7238,7 +7239,7 @@ html[data-glass]:not(.dark) {
   --glass-control-hover: rgb(255 255 255 / .45);
   --glass-control-pill: rgb(255 255 255 / .55);
   --glass-control-rim: inset 0 1px 0 rgb(255 255 255 / .48);
-  --glass-light-inner: inset 0 1px 1px rgb(255 255 255 / .7), inset 0 16px 30px -20px rgb(255 255 255 / .55), inset 0 -18px 34px -20px rgb(255 255 255 / .4);
+  --glass-light-inner: inset 0 1px 0 rgb(255 255 255 / .7);
   --glass-light-edge: inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--element-outline, 12%), transparent), var(--glass-light-inner);
 }
 html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]),

@@ -424,6 +424,38 @@ def _static_layer_types():
 _FULL_LAYERS, _SLIDING_LAYERS = _static_layer_types()
 
 
+def _linear_layer_types():
+    # Exact types: LinearAttentionAndFullAttentionLayer has a dynamic KV part.
+    try:
+        from transformers import cache_utils
+    except Exception:
+        return ()
+    return tuple(
+        t for t in (getattr(cache_utils, "LinearAttentionLayer", None),) if isinstance(t, type)
+    )
+
+
+_LINEAR_LAYERS = _linear_layer_types()
+
+
+def _linear_states(layer):
+    """Fixed-shape conv + recurrent states, updated in place, so a replay addresses them like KV rows."""
+    out = []
+    for name in ("conv_states", "recurrent_states"):
+        states = getattr(layer, name, None)
+        if isinstance(states, torch.Tensor):
+            out.append(states)
+        elif isinstance(states, dict):
+            out.extend(states[i] for i in sorted(states) if isinstance(states[i], torch.Tensor))
+        elif isinstance(states, (list, tuple)):
+            out.extend(t for t in states if isinstance(t, torch.Tensor))
+    return out
+
+
+def _attention_layers(cache):
+    return [layer for layer in cache.layers if type(layer) not in _LINEAR_LAYERS]
+
+
 def wanted(model):
     """Whether this generate() call routes its decode steps through decode_step()."""
     if torch.compiler.is_compiling():
@@ -807,9 +839,15 @@ def _release_if_training(module, args):
 def _cache_batch(cache):
     """Rows of a StaticCache (4.x: max_batch_size; 5.x layers only carry their tensors)."""
     try:
-        keys = cache.layers[0].keys
-        if isinstance(keys, torch.Tensor) and keys.dim() >= 1:
-            return int(keys.shape[0])
+        for layer in cache.layers:
+            tensors = (
+                [getattr(layer, "keys", None)]
+                if type(layer) not in _LINEAR_LAYERS
+                else _linear_states(layer)
+            )
+            for t in tensors:
+                if isinstance(t, torch.Tensor) and t.dim() >= 1:
+                    return int(t.shape[0])
     except Exception:
         pass
     try:
@@ -826,7 +864,7 @@ def _kept_len(state):
 def _cache_len(cache):
     """Slots of a StaticCache's full layers (sliding layers are shorter; 5.x has no cache-level length)."""
     try:
-        return max(int(layer.max_cache_len) for layer in cache.layers)
+        return max(int(layer.max_cache_len) for layer in _attention_layers(cache))
     except Exception:
         return None
 
@@ -1176,6 +1214,11 @@ def _cache_reason(cache):
         return "legacy cache"
     for layer in layers:
         kind = type(layer)
+        if kind in _LINEAR_LAYERS:
+            reason = _linear_reason(layer)
+            if reason is not None:
+                return reason
+            continue
         # Exact types: 5.x linear-attention / indexed layers subclass StaticLayer.
         if kind not in _FULL_LAYERS and kind not in _SLIDING_LAYERS:
             return f"layer {kind.__name__}"
@@ -1183,6 +1226,28 @@ def _cache_reason(cache):
         if not getattr(layer, "is_initialized", False) or not isinstance(keys, torch.Tensor):
             return "uninitialized layer"
         if keys.device.type != _BACKEND.device_type:
+            return "cache not on CUDA"
+    return None
+
+
+def _linear_reason(layer):
+    # A layer recording its past (speculative decoding) grows conv states: not graphable.
+    if getattr(layer, "record_past", False):
+        return "linear layer recording its past"
+    flags = getattr(layer, "has_previous_state", None)
+    # Dict per state index (5.17+), else one bool plus is_*_initialized flags.
+    if isinstance(flags, dict):
+        ready = bool(flags) and all(flags.values())
+    else:
+        ready = flags is True and all(
+            getattr(layer, name, True)
+            for name in ("is_conv_states_initialized", "is_recurrent_states_initialized")
+        )
+    states = _linear_states(layer)
+    if not ready or not states:
+        return "uninitialized layer"
+    for t in states:
+        if t.device.type != _BACKEND.device_type:
             return "cache not on CUDA"
     return None
 
@@ -1352,6 +1417,11 @@ def _snapshot(cache, rows = True):
                 host.append((layer, name, value))
             elif isinstance(value, torch.Tensor) and value.numel() == 1:
                 device.append((value, value.clone(), False))
+        if rows and type(layer) in _LINEAR_LAYERS:
+            # Restore conv + recurrent states too, or the eager step after an undone replay advances them twice.
+            for t in _linear_states(layer):
+                device.append((t, t.clone(), False))
+            continue
         if rows and type(layer) in _SLIDING_LAYERS:
             count = _host_counter(layer)
             if count is not None and count >= layer.max_cache_len:
@@ -1885,7 +1955,9 @@ def decode_step(
         # Their static buffers could not be refilled outside inference mode.
         return _refusal(state, "inference tensor outside inference mode")
     layout = tuple(
-        (
+        (type(layer).__name__, tuple((tuple(t.shape), t.dtype) for t in _linear_states(layer)))
+        if type(layer) in _LINEAR_LAYERS
+        else (
             type(layer).__name__,
             layer.capacity if type(layer) is KV.GrowableLayer else layer.max_cache_len,
             tuple(layer.keys.shape),
@@ -1908,7 +1980,10 @@ def decode_step(
         return _refusal(state, refused)
     # Graphs address this cache's tensors: a new cache re-captures; one reordered in place stays eager.
     cache_sig = (id(cache), KV.epoch(cache)) + tuple(
-        (layer.keys.data_ptr(), layer.values.data_ptr()) for layer in cache.layers
+        tuple(t.data_ptr() for t in _linear_states(layer))
+        if type(layer) in _LINEAR_LAYERS
+        else (layer.keys.data_ptr(), layer.values.data_ptr())
+        for layer in cache.layers
     )
     if cache_sig != state.cache_sig:
         moved = state.cache_sig is not None and state.cache_sig[:2] == cache_sig[:2]

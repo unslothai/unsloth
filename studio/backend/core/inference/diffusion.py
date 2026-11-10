@@ -154,6 +154,7 @@ from .diffusion_conditioning import (
     decode_condition_images,
     edit_takes_extra_images,
     effective_reference_resolution,
+    reference_request_pixels,
     match_source_size,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
@@ -232,6 +233,8 @@ from .diffusion_memory import (
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
+    image_activation_verdict,
+    ACTIVATION_REFUSE,
     raise_on_unified_memory_shortfall,
     scoped_allow_oversized_load,
     UNIFIED_OVERSIZE_REFUSAL_CODE,
@@ -273,6 +276,9 @@ from .diffusion_memory import (
     take_deferred_restore,
     resident_group_mib,
     hook_resident_denoiser,
+    live_reference_shortfall_mib,
+    static_reference_release_mib,
+    load_covered_reference_need_mib,
     measured_request_extra_mib,
     DECODE_LEND_ATTR,
     decode_lend_from_plan,
@@ -11233,7 +11239,9 @@ class DiffusionBackend:
                             "measured_runtime_headroom_mib"
                         )
                         if headroom and (
-                            plan.resident_transformer_mib or plan.resident_text_encoder_mib
+                            plan.resident_transformer_mib
+                            or plan.resident_text_encoder_mib
+                            or plan.estimates.get("measured_reference_te_cut_mib")
                         ):
                             pipe._unsloth_measured_reserve = (
                                 int(headroom),
@@ -11251,6 +11259,13 @@ class DiffusionBackend:
                                 bool(streamed_headroom),
                                 # MEASURED_RESERVE_DENOISE_PHASE_INDEX: the blocks sized from the denoise phase
                                 plan.estimates.get("measured_denoise_phase_headroom_mib"),
+                                # MEASURED_RESERVE_REFERENCE_INDEX: the edit the placement priced, if any
+                                (
+                                    int(plan.estimates["measured_reference_phase_mib"]),
+                                    int(plan.estimates["measured_reference_reserve_mib"]),
+                                )
+                                if plan.estimates.get("measured_reference_reserve_mib")
+                                else None,
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
@@ -15059,8 +15074,8 @@ class DiffusionBackend:
                     )
                     # unweighted reference pixels: a measured placement prices them from their token count
                     if ref_resolution is not None and not layer_count:
-                        guard_reference_pixels = int(
-                            (1 + len(ref_extra)) * ref_resolution * ref_resolution
+                        guard_reference_pixels = reference_request_pixels(
+                            ref_resolution, len(ref_extra)
                         )
                     if layer_count:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
@@ -15114,6 +15129,56 @@ class DiffusionBackend:
                         guard_capture_gen = cuda_graph.capture_generation(_peak_device_index(state))
                     # groups an earlier oversized request streamed out stay out when this one streams them all too
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
+
+                    def _guard_kwargs() -> dict:
+                        return dict(
+                            # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
+                            device_memory = reclaimable_snapshot_device_memory(guard_target),
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            # The hint the load planned with, so the distilled / edit multipliers match.
+                            family = state.variant_hint,
+                            # Only img2img is bounded by the Resolution control (_fit_within); others need an upload-side fix.
+                            source_driven = source_sized and workflow != "img2img",
+                            condition_pixels = guard_condition_pixels,
+                            vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
+                            vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
+                            quadratic_attention = guard_quadratic,
+                            allow_oversized = allow_oversized,
+                            calibrated_placement = bool(
+                                getattr(state, "calibrated_placement", False)
+                            ),
+                            controlnet = workflow == "controlnet" and control_pil is not None,
+                            logger = logger,
+                        )
+
+                    if extra_mib > 0 and guard_reference_pixels > 0:
+                        reference_need = load_covered_reference_need_mib(
+                            state.pipe,
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            reference_pixels = guard_reference_pixels,
+                            cfg = guard_cfg,
+                            quadratic_attention = guard_quadratic,
+                        )
+                        static_release = (
+                            None
+                            if reference_need is None
+                            else static_reference_release_mib(state.pipe, reference_need)
+                        )
+                        if static_release is not None and extra_mib <= static_release:
+                            short = live_reference_shortfall_mib(
+                                state.pipe, reference_need, guard_target.torch_device
+                            )
+                            # never looser than the activation guard below
+                            if short is not None and short < extra_mib:
+                                fits = image_activation_verdict(
+                                    **{k: v for k, v in _guard_kwargs().items() if k != "logger"}
+                                )
+                                if fits.action != ACTIVATION_REFUSE:
+                                    extra_mib = short
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (
@@ -15129,25 +15194,7 @@ class DiffusionBackend:
                             if restore_resident is None
                             else chained_restore(carried_restore, restore_resident)
                         )
-                    guard_kwargs = dict(
-                        # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
-                        device_memory = reclaimable_snapshot_device_memory(guard_target),
-                        width = guard_width,
-                        height = guard_height,
-                        batch_size = guard_batch,
-                        # The hint the load planned with, so the distilled / edit multipliers match.
-                        family = state.variant_hint,
-                        # Only img2img is bounded by the Resolution control (_fit_within); others need an upload-side fix.
-                        source_driven = source_sized and workflow != "img2img",
-                        condition_pixels = guard_condition_pixels,
-                        vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
-                        vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
-                        quadratic_attention = guard_quadratic,
-                        allow_oversized = allow_oversized,
-                        calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
-                        controlnet = workflow == "controlnet" and control_pil is not None,
-                        logger = logger,
-                    )
+                    guard_kwargs = _guard_kwargs()
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)

@@ -15,7 +15,7 @@ import {
   CONVERSATION_HTML_LABEL,
   CONVERSATION_PDF_FORMAT,
   CONVERSATION_PDF_LABEL,
-} from "../utils/conversation-html";
+} from "../utils/conversation-html-format";
 import { allRecordedSandboxSessionIds } from "../utils/recorded-sandbox-session";
 import { liveThreadBranch } from "../utils/live-thread-head";
 import {

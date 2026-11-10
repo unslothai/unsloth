@@ -5008,7 +5008,41 @@ def _refine_plan_from_loaded_weights(
                     measured_decode_peak_quadratic = split["quadratic"],
                     decode_lend_text_encoder_mib = lend,
                 )
-        if dit_room <= 0 and te_room <= 0:
+        reference_cut = 0
+        if (
+            policy == OFFLOAD_GROUP
+            and stream_te
+            and not whole_dit
+            and not wide_dit
+            and (not bool(getattr(plan, "stream_transformer", True)) or dit_room >= dit)
+        ):
+            # The resident transformer must also hold an edit's denoise, else the first edit streams it mid-render.
+            reference = _load_reference_need(
+                pipe,
+                family = family,
+                speed_mode = speed_mode,
+                quant = read_quant,
+                static_seed = static_seed,
+            )
+            if reference is not None:
+                basis = phase_headroom if lend > 0 and phase_headroom is not None else headroom
+                spare = max(
+                    0, int(room) + int(headroom) - int(basis) - int(dit_room) - int(te_room)
+                )
+                short = max(0, int(reference[1]) - int(basis) - spare)
+                # Cut the encoder only when a render-time release of it could not cover the reference.
+                reference_cut = int(te_room) if short > int(te_room) else 0
+                te_room -= reference_cut
+                if lend > 0:
+                    lend = max(0, lend - reference_cut)
+                    estimates["decode_lend_text_encoder_mib"] = lend
+                estimates.update(
+                    measured_reference_phase_mib = reference[0],
+                    measured_reference_need_mib = reference[1],
+                    measured_reference_reserve_mib = int(basis) + spare + reference_cut,
+                    measured_reference_te_cut_mib = reference_cut,
+                )
+        if dit_room <= 0 and te_room <= 0 and not reference_cut:
             return plan
         if whole_dit or wide_dit:
             estimates["resident_dit_slack_mib"] = _resident_dit_slack_mib(memory)
@@ -5042,6 +5076,12 @@ def _refine_plan_from_loaded_weights(
                     else ""
                 )
                 + "); the rest streams"
+                + (
+                    f" ({reference_cut} MiB of the encoders stream instead so the transformer also holds a "
+                    f"{estimates['measured_reference_need_mib']} MiB edit denoise)"
+                    if reference_cut
+                    else ""
+                )
                 + (
                     f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"
                     f" {encode_room} MiB of it while the encoders run)"
@@ -6201,6 +6241,142 @@ def derived_reference_need_mib(
     return int(-(-total // step) * step)
 
 
+# "0": the load places for text-to-image only; an edit's reference then streams resident groups mid-render.
+EDIT_LOAD_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_EDIT_LOAD_PLACEMENT"
+# ``_unsloth_measured_reserve`` slot: (denoise phase MiB, MiB the placement covers).
+MEASURED_RESERVE_REFERENCE_INDEX = 14
+
+
+def edit_load_placement_enabled() -> bool:
+    return derived_reference_pricing_enabled() and not _env_off(EDIT_LOAD_PLACEMENT_ENV)
+
+
+def _default_reference_pixels(family: str) -> int:
+    """Uses the request path's helpers so the load and the render-time guard price the same image."""
+    try:
+        from .diffusion_conditioning import default_reference_pixels
+        from .diffusion_families import _FAMILIES
+
+        fam = next((f for f in _FAMILIES if str(f.name).lower() == family), None)
+        return default_reference_pixels(fam) if fam is not None else 0
+    except Exception:  # noqa: BLE001 - unreadable: no edit placement
+        return 0
+
+
+def _load_reference_need(
+    pipe: Any,
+    *,
+    family: Optional[str],
+    speed_mode: Optional[str],
+    quant: Optional[str],
+    static_seed: bool,
+) -> Optional[tuple[int, int]]:
+    """(denoise phase MiB, denoise MiB) of a guidance-free default edit; None when unpriced or switched off."""
+    name = (str(family or "").split() or [""])[0].lower()
+    if not edit_load_placement_enabled() or name not in _DERIVED_REFERENCE_FAMILIES:
+        return None
+    phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(name)
+    if (
+        phases is None
+        or not static_seed
+        or not bool(getattr(pipe, "_unsloth_phase_seeds", False))
+        or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES
+    ):
+        return None
+    reference = _default_reference_pixels(name)
+    if not reference:
+        return None
+    step = _MEASURED_PEAK_ROUND_MIB
+    row = phases[1 if speed_mode == "max" else 0]
+    phase = int(math.ceil(row[_PHASE_DENOISE_COLUMN] * _MEASURED_PEAK_MARGIN))
+    phase = int(-(-phase // step) * step)
+    need = derived_reference_need_mib(
+        pipe,
+        family = family,
+        phase_mib = phase,
+        width = DEFAULT_IMAGE_WIDTH,
+        height = DEFAULT_IMAGE_HEIGHT,
+        reference_pixels = reference,
+        cfg = False,
+    )
+    if need is None:
+        return None
+    if quant is not None:
+        learned = measured_image_runtime_mib(
+            family, speed_mode, quant = with_workflow(quant, "edit"), static_seed = False
+        )
+        if learned is not None:
+            need = max(int(need), int(learned))
+    return phase, int(need)
+
+
+def load_covered_reference_need_mib(
+    pipe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    reference_pixels: int = 0,
+    cfg: Optional[bool] = None,
+    quadratic_attention: bool = False,
+) -> Optional[int]:
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None) or ()
+    if len(reserve) <= MEASURED_RESERVE_REFERENCE_INDEX or int(reference_pixels or 0) <= 0:
+        return None
+    covered = reserve[MEASURED_RESERVE_REFERENCE_INDEX]
+    if not covered or not edit_load_placement_enabled():
+        return None
+    return derived_reference_need_mib(
+        pipe,
+        family = reserve[1],
+        phase_mib = int(covered[0]),
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        reference_pixels = int(reference_pixels),
+        cfg = cfg,
+        compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2,
+        quadratic_attention = quadratic_attention,
+    )
+
+
+def static_reference_release_mib(pipe: Any, need_mib: int) -> Optional[int]:
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None)
+    if not reserve or len(reserve) <= MEASURED_RESERVE_REFERENCE_INDEX:
+        return None
+    covered = reserve[MEASURED_RESERVE_REFERENCE_INDEX]
+    if not covered:
+        return None
+    return max(0, int(need_mib) - max(int(reserve[0]), int(covered[1])))
+
+
+def live_reference_shortfall_mib(
+    pipe: Any,
+    need_mib: int,
+    device: Any = None,
+) -> Optional[int]:
+    """MiB ``need_mib`` lacks in free memory now (driver free less budget reserve, plus reusable cache); None if unreadable."""
+    try:
+        import torch
+
+        dev = torch.device(device if device is not None else "cuda")
+        if dev.type != "cuda":
+            return None
+        if dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        free, total = (int(x) for x in torch.cuda.mem_get_info(dev))
+        free -= user_budget_reserve_bytes(dev, total)
+        cached = max(
+            0,
+            int(torch.cuda.memory_reserved(dev))
+            - int(torch.cuda.memory_allocated(dev))
+            - _graph_held_cache_bytes(dev.index),
+        )
+        return max(0, int(need_mib) + _DECODE_SLACK_MIB - ((free + cached) >> 20))
+    except Exception:  # noqa: BLE001 - unreadable: the planned release stands
+        return None
+
+
 def measured_request_extra_mib(
     pipe: Any,
     *,
@@ -6352,6 +6528,34 @@ def measured_request_extra_mib(
                 need = own if need is None else max(need, own)
     if need is None:
         return 0
+    covered = (
+        reserve[MEASURED_RESERVE_REFERENCE_INDEX]
+        if len(reserve) > MEASURED_RESERVE_REFERENCE_INDEX
+        else None
+    )
+    if (
+        not phase
+        and covered
+        and allowance > 0
+        and int(reference_pixels or 0) > 0
+        and tier_peak is None
+        and base_need is not None
+        and int(base_need) <= int(headroom)
+    ):
+        # only the steps grow with the reference (encode and decode run under their own hooks)
+        derived = load_covered_reference_need_mib(
+            pipe,
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            reference_pixels = int(reference_pixels),
+            cfg = cfg,
+            quadratic_attention = quadratic_attention,
+        )
+        if derived is not None:
+            if own_learned is not None:
+                derived = max(int(derived), int(own_learned))
+            return max(0, int(derived) - max(int(headroom), int(covered[1])))
     if phase:
         pixels = (
             max(64, int(width or DEFAULT_IMAGE_WIDTH))

@@ -329,7 +329,9 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     # Windows AMD: amd-smi is opt-in, but the DirectX registry records every adapter's dedicated memory.
     if platform.system() == "Windows":
         # The registry outlives the hardware, so a record only RE-LABELS an adapter the live WMI scan also returned, never adds one (setup.ps1 has the same rule).
-        _live = _windows_live_adapter_names()
+        # The PowerShell WMI scan costs ~1 s, so run it once, and only when a vendor has records.
+        _live_unset = object()
+        _live = _live_unset
         for _vendor, _vendor_id in (
             ("amd", _AMD_PCI_VENDOR_ID),
             # Same registry, one more vendor id: an Arc host whose XPU wheel became a CPU one.
@@ -346,6 +348,8 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                 continue
             if not records:
                 continue
+            if _live is _live_unset:
+                _live = _windows_live_adapter_names()
             if _live is None:
                 # The live scan could not answer, so contribute nothing and say so.
                 unanswered.add(_vendor)
@@ -3620,6 +3624,125 @@ def _engine_instance_luid(instance_name: str) -> Optional[int]:
     return _parse_adapter_luid(instance_name[head:])
 
 
+_rocm_win_counter_lock = threading.Lock()
+# (completed_at, gpu_memory_events generation, spawn seconds, {key: stdout})
+_rocm_win_counter_cache: dict[str, tuple[float, int, float, dict[tuple[str, str], str]]] = {}
+_ROCM_WIN_COUNTER_SPACING = 4.0
+_ROCM_WIN_COUNTER_MAX_AGE_S = 10.0
+# Empty combined reading (localized names, hung PowerShell): each counter runs its own call until this retry.
+_ROCM_WIN_COUNTER_EMPTY_RETRY_S = 60.0
+_ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("vram", "Dedicated Usage"): (
+        "D",
+        "\\GPU Adapter Memory(*)\\Dedicated Usage",
+        "[int64]$_.CookedValue",
+    ),
+    ("vram", "Shared Usage"): (
+        "S",
+        "\\GPU Adapter Memory(*)\\Shared Usage",
+        "[int64]$_.CookedValue",
+    ),
+    ("util", "3D"): (
+        "U",
+        "\\GPU Engine(*engtype_3D*)\\Utilization Percentage",
+        "$_.CookedValue",
+    ),
+}
+
+
+def _rocm_windows_combined_counter_ps() -> str:
+    paths = ",".join(f"'{path}'" for _, path, _ in _ROCM_WIN_DISPLAY_COUNTERS.values())
+    branches = "else".join(
+        f"if($p.EndsWith('{path[path.rindex(chr(92)):].lower()}'))"
+        f"{{'{tag}|{{0}}|{{1}}' -f $_.InstanceName,{value}}}"
+        for tag, path, value in _ROCM_WIN_DISPLAY_COUNTERS.values()
+    )
+    return (
+        f"$s=(Get-Counter -Counter {paths} -ErrorAction SilentlyContinue).CounterSamples;"
+        f"if($s){{$s|ForEach-Object{{$p=$_.Path.ToLower();{branches}}}}}"
+        "else{'__NONE__'}"
+    )
+
+
+def _rocm_windows_split_combined(stdout: str) -> dict[tuple[str, str], str]:
+    by_tag: dict[str, list[str]] = {}
+    for line in stdout.splitlines():
+        tag, sep, rest = line.strip().partition("|")
+        if sep:
+            by_tag.setdefault(tag, []).append(rest)
+    return {
+        key: "\n".join(by_tag[tag]) + "\n"
+        for key, (tag, _, _) in _ROCM_WIN_DISPLAY_COUNTERS.items()
+        if by_tag.get(tag)
+    }
+
+
+def _rocm_windows_counter_stdout(key: tuple[str, str], ps: str) -> Optional[str]:
+    """stdout of ``ps`` or None. Display reads share one combined Get-Counter, kept max(TTL, 4x spawn time) until a GPU memory event; misses fall back to ``ps``, failures are never served."""
+    try:
+        from utils import gpu_memory_events
+        from utils.hardware import gpu_query
+
+        use_cache = gpu_query.display_cache_allowed() and key in _ROCM_WIN_DISPLAY_COUNTERS
+        ttl = gpu_query.ttl_for(gpu_query.DISPLAY)
+    except Exception:
+        use_cache = False
+    if use_cache and ttl > 0:
+        stdout = None
+        try:
+            with _rocm_win_counter_lock:
+                cached = _rocm_win_counter_cache.get("display")
+                generation = gpu_memory_events.generation()
+                if (
+                    cached is None
+                    or cached[1] != generation
+                    or (
+                        time.monotonic() - cached[0]
+                        >= (
+                            min(
+                                _ROCM_WIN_COUNTER_MAX_AGE_S,
+                                max(ttl, _ROCM_WIN_COUNTER_SPACING * cached[2]),
+                            )
+                            if cached[3]
+                            else _ROCM_WIN_COUNTER_EMPTY_RETRY_S
+                        )
+                    )
+                ):
+                    _rocm_win_counter_cache.pop("display", None)
+                    started = time.monotonic()
+                    try:
+                        combined = _rocm_windows_counter_stdout_uncached(
+                            _rocm_windows_combined_counter_ps()
+                        )
+                    except Exception:
+                        combined = None
+                    done = time.monotonic()
+                    readings = _rocm_windows_split_combined(combined) if combined else {}
+                    cached = (done, generation, done - started, readings)
+                    _rocm_win_counter_cache["display"] = cached
+                if cached is not None:
+                    stdout = cached[3].get(key)
+        except Exception:
+            stdout = None
+        if stdout is not None:
+            return stdout
+    return _rocm_windows_counter_stdout_uncached(ps)
+
+
+def _rocm_windows_counter_stdout_uncached(ps: str) -> Optional[str]:
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 5,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return r.stdout
+
+
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
     """AMD GPU compute utilization via Windows Performance Counters (3D engine nodes). ``luid`` narrows the sum to one adapter's engines, matched here rather than in the counter path so tests can reach it."""
     if platform.system() != "Windows":
@@ -3631,19 +3754,12 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
             "else{'__NONE__'}"
         )
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        stdout = _rocm_windows_counter_stdout(("util", "3D"), ps)
+        if stdout is None:
             return None
         total = 0.0
         matched = False
-        for line in r.stdout.splitlines():
+        for line in stdout.splitlines():
             line = line.strip()
             if not line or line == "__NONE__" or "|" not in line:
                 continue
@@ -3808,18 +3924,11 @@ def _rocm_windows_perf_counter_vram_by_adapter(
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,[int64]$_.CookedValue}}"
             "else{'__NONE__'}"
         )
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        stdout = _rocm_windows_counter_stdout(("vram", counter), ps)
+        if stdout is None:
             return None
         adapters: list[tuple[str, float]] = []
-        for line in r.stdout.splitlines():
+        for line in stdout.splitlines():
             line = line.strip()
             if not line or line == "__NONE__" or "|" not in line:
                 continue
