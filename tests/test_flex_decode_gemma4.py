@@ -172,7 +172,8 @@ def _generate(model, ids, mask, new):
     return out.sequences, torch.stack(out.logits, 1)
 
 
-_SLOW = pytest.mark.slow
+# The checkpoints' windows on CPU take minutes: over the default per-test timeout on a CI runner.
+_SLOW = [pytest.mark.slow, pytest.mark.timeout(900)]
 
 
 @pytest.mark.parametrize(
@@ -180,11 +181,10 @@ _SLOW = pytest.mark.slow
     [
         ("e2b", 32, 40, 4, 40),
         ("26b", 32, 40, 4, 40),
-        # The checkpoints' windows (512 / 1024): minutes on CPU.
+        # The checkpoints' windows (512 / 1024); a batch past the 1024 window is covered by the window-32 rows.
         pytest.param("e2b", None, 400, 1, 160, marks = _SLOW),
         pytest.param("e2b", None, 400, 4, 160, marks = _SLOW),
         pytest.param("26b", None, 900, 1, 140, marks = _SLOW),
-        pytest.param("26b", None, 900, 4, 140, marks = _SLOW),
     ],
 )
 def test_gemma4_flex_decode_matches_sdpa_past_the_window(flex, kind, window, prompt, batch, new):
