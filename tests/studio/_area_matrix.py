@@ -746,7 +746,17 @@ class Api:
             "/api/hub/local": {"models": []},
             "/api/hub/hidden-models": {"hidden": []},
             "/api/settings/pinned-models": {"pinned": []},
-            "/api/health": {"status": "ok"},
+            # A settled hardware verdict, as the real backend gives once detection ends. Without
+            # `version` / `chat_only` the app keeps capabilities "unknown" and the sidebar Train row
+            # spins for the whole run: an always-running animation, and Chromium then recomputes every
+            # IntersectionObserver target on each frame, so every action's cost grew with the chat.
+            "/api/health": {
+                "status": "healthy",
+                "version": "2026.11.1",
+                "device_type": "linux",
+                "chat_only": False,
+                "hardware_detecting": False,
+            },
             "/api/inference/status": {
                 "active_model": STUB_MODEL,
                 "model_identifier": STUB_MODEL,

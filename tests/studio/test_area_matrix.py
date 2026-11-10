@@ -749,6 +749,14 @@ def test_stream_area_is_last_sends_a_fixed_reply_and_waits_for_its_end():
     assert am.stream_frames() == frames, "deterministic"
 
 
+def test_the_stub_health_settles_the_hardware_verdict():
+    # An unsettled verdict leaves the Train row spinner running, which made every measured action pay
+    # an IntersectionObserver pass over the whole chat on each frame (env.ts capabilitiesUnknown).
+    health = am.Api(2).bodies["/api/health"]
+    assert health.get("version") and health.get("chat_only") is False
+    assert not health.get("hardware_detecting") and not health.get("hardware_detection_deferred")
+
+
 def test_the_stub_has_a_resident_model_and_saves_the_streamed_turn():
     api = am.Api(2)
     assert api.bodies["/api/inference/status"]["active_model"]
