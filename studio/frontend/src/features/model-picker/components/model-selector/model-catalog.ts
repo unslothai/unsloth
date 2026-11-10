@@ -290,11 +290,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // MiniMax-H3-Image: text to image and edits with 1-16 <Picture N> references. The backend streams the release
-    // and quantizes the DiT and the shared Qwen3-VL encoder to int8 at load (fp8 on Ada / Hopper and newer), so the
-    // size is the released bf16 total in GiB (66.3 DiT + 66.7 encoder + 2.3 VAE) and the tiers are the measured
-    // offloaded runs in GiB: L4 (22 GiB card, 39.8 GiB host peak) and A100 40GB (39.5 GiB card, 59.2 GiB host).
-    // CUDA / ROCm only (host-artifact-policy).
+    // MiniMax-H3-Image: text to image and edits with 1-16 <Picture N> references. Size is the released bf16 total
+    // (the backend quantizes at load); tiers are measured offloaded runs. CUDA / ROCm only.
     canonicalId: "MiniMaxAI/MiniMax-H3-Image",
     displayName: "MiniMax-H3-Image",
     description: "Text-to-image and image editing with up to 16 pictures",

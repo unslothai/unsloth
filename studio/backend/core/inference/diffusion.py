@@ -5770,8 +5770,7 @@ class DiffusionBackend:
                 )
             kwargs["base_repo"] = base
             if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
-                # Its loader fetches exactly the files it reads (the hosted int8 encoder, never the 66.7 GB bf16
-                # one the model_index points at), so the generic estimate / prefetch is skipped.
+                # Its loader fetches only the files it reads, so the generic estimate / prefetch is skipped.
                 self.load_pipeline(**kwargs)
                 with self._load_cancel_lock:
                     if self._load_token == token:
@@ -8584,8 +8583,8 @@ class DiffusionBackend:
                 except Exception as exc:  # noqa: BLE001 - keying only
                     logger.debug("nvfp4 cache tag reset skipped: %r", exc)
                 if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
-                    # 33B DiT + 33B encoder in a native layout: the in-tree loader streams, converts, quantizes and
-                    # places them itself, so the generic plan (which would materialise the bf16 DiT) never runs.
+                    # Native layout: the in-tree loader streams, converts, quantizes and places it, so the generic
+                    # plan (which would materialise the bf16 DiT) never runs.
                     return self._load_h3_image_locked(
                         repo_id = repo_id,
                         display_repo_id = display_repo_id,

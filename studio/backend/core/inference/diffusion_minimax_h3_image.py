@@ -40,7 +40,7 @@ H3_IMAGE_BASE_REPO = "MiniMaxAI/MiniMax-H3-Image"
 # The image release conditions on MiniMax-H3's text encoder without carrying it (model_index.json names this repo).
 H3_IMAGE_TEXT_ENCODER_REPO = "MiniMaxAI/MiniMax-H3"
 H3_IMAGE_PIPELINE_CLASS = "MiniMaxH3ImagePipeline"
-# The diffusers class (PR 15230); the release's own model_index names its native class MiniMaxH3DiTModel.
+# The diffusers class; the release's own model_index names its native class MiniMaxH3DiTModel.
 H3_IMAGE_TRANSFORMER_CLASS = "MiniMaxH3ImageTransformer2DModel"
 H3_IMAGE_NATIVE_TRANSFORMER_CLASS = "MiniMaxH3DiTModel"
 H3_IMAGE_VAE_CLASS = "AutoencoderKLMiniMaxH3Image"
@@ -97,8 +97,7 @@ H3_IMAGE_PRESETS: tuple[tuple[int, int], ...] = (
     (1536, 2720),
 ) + H3_IMAGE_16MP_SIZES
 
-# Decimal GB, measured from the safetensors headers: dense DiT 66.28 (33.1B), of which the 50 AdaLN projections are
-# 13.0B parameters (26.0 GB) that the grid table replaces; VAE 2.34 (fp32).
+# Decimal GB, from the safetensors headers.
 H3_IMAGE_DIT_BF16_GB = 66.3
 H3_IMAGE_DIT_TABLE_BF16_GB = 40.3
 H3_IMAGE_DIT_TABLE_INT8_GB = 21.9
@@ -108,7 +107,7 @@ H3_IMAGE_TE_INT8_GB = 27.2
 
 PDD_HEADS_FILE = "pdd_fused_heads.safetensors"
 PDD_CONFIG_FILE = "pdd_config.json"
-# A converted (diffusers-layout) repo keeps these beside the native transformer/ and vae/ (PR 15230 converter).
+# A converted (diffusers-layout) repo keeps these beside the native transformer/ and vae/.
 DIFFUSERS_TRANSFORMER_SUBFOLDER = "transformer_diffusers"
 DIFFUSERS_VAE_SUBFOLDER = "vae_diffusers"
 
@@ -217,7 +216,7 @@ def in_tree_class(name: str) -> Any:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Native checkpoint -> diffusers layout (PR 15230 converter, applied per tensor while streaming).
+# Native checkpoint -> diffusers layout, applied per tensor while streaming.
 # ---------------------------------------------------------------------------------------------------------------------
 
 
@@ -574,7 +573,7 @@ def convert_dense_transformer_to_table(
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Sampling recipe (PR 15230 blocks).
+# Sampling recipe.
 # ---------------------------------------------------------------------------------------------------------------------
 
 
@@ -1261,7 +1260,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
 
         def resize(image: Any, lo: int, hi: int) -> Any:
             size = bound_short_edge(*image.size, lo, hi)
-            # diffusers VaeImageProcessor.resize (PIL, lanczos), as the PR's resize step does.
+            # diffusers VaeImageProcessor.resize (PIL, lanczos), as the reference resize step does.
             return image if image.size == size else image.resize(size, resample = Image.LANCZOS)
 
         vae_images = [resize(i, *H3_IMAGE_REFERENCE_SHORT_EDGE) for i in prepared]
@@ -1601,8 +1600,7 @@ def qwen3vl_hidden_state(
     for name, value in (vision_inputs or {}).items():
         kwargs[name] = value.to(device, te_dtype) if name.startswith("pixel_") else value.to(device)
     # hidden_states[layer] is the output of decoder layer ``layer - 1``: captured by a hook instead of keeping every
-    # layer's states (16 references x 1024 vision tokens would hold ~10 GB of them), and the layers past it are cut
-    # for the call (the bf16 encoder has 64; nothing after the read layer reaches the DiT).
+    # layer's states (~10 GB with 16 references), and the layers past it are cut for the call.
     language_model = getattr(model, "language_model", None)
     layers = getattr(language_model, "layers", None)
     if layers is None or len(layers) < layer:
@@ -1764,11 +1762,9 @@ def quantize_block_(block: Any, scheme: str, *, device: Any) -> int:
     return len(names)
 
 
-# cuBLASLt int8 GEMMs (torch._int_mm) refuse some row counts (A100, CUDA 13: 4396 and 4432 rows raise
-# CUBLAS_STATUS_NOT_SUPPORTED, 4352 and 6880 run), and torchao then falls back to an fp32 matmul without a word:
-# 0.21 s for one 33B block vs 6.8 ms for the int8 GEMM, 64.9 s vs 36.0 s for a 2048 render. A packed H3 sequence has
-# as many rows as the prompt has tokens plus the image rows, so it rarely lands on a supported count. Every count
-# measured as a multiple of 32 ran; 32 also suits the fp8 row-wise GEMM.
+# cuBLASLt int8 GEMMs (torch._int_mm) refuse some row counts with CUBLAS_STATUS_NOT_SUPPORTED, and torchao then
+# silently falls back to a much slower fp32 matmul. A packed sequence rarely lands on a supported count; multiples
+# of 32 always ran and also suit the fp8 row-wise GEMM.
 ROW_MULTIPLE = 32
 
 
@@ -2520,8 +2516,7 @@ def load_minimax_h3_image_pipeline(
     }
     engaged_te = te_scheme if text_encoder is None else "supplied"
     if text_encoder is None and (root / "text_encoder" / "config.json").is_file():
-        # A local folder that carries its own encoder (PR 15230's converter copies it in) reads it there; a Hub
-        # snapshot never fetches that folder (the bf16 encoder is 66.7 GB).
+        # A local folder that carries its own encoder reads it there; a Hub snapshot never fetches that folder.
         import transformers
         text_encoder = transformers.Qwen3VLForConditionalGeneration.from_pretrained(
             str(root / "text_encoder"), torch_dtype = dtype, low_cpu_mem_usage = True
@@ -2531,8 +2526,7 @@ def load_minimax_h3_image_pipeline(
         text_encoder, engaged_te = load_h3_image_text_encoder(te_scheme, **te_kwargs)
     check()
     if text_encoder is not None:
-        # The plan sized the encoder as the scheme it asked for; a bf16 fallback or a local text_encoder/ folder is
-        # 66.7 GB, not 27.2: plan again with the real size, so the encoder is never placed under the int8 budget.
+        # A bf16 fallback or local text_encoder/ is far larger than the int8 size the plan assumed: plan again.
         plan = replan_for_encoder(plan, _module_gb(text_encoder), plan_args)
     pipe = MiniMaxH3ImagePipeline(
         transformer = transformer,

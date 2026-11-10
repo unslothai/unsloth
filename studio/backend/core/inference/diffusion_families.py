@@ -1483,10 +1483,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_arch_marker = "MOSS-Image",
         sd_cpp_scheduler = "simple",
     ),
-    # MiniMax-H3-Image: the 33B MiniMax-H3 DiT without audio plus per-step PDD output heads, conditioned by H3's
-    # Qwen3-VL-32B. diffusers has no class yet (PR 15230), so the pipeline is the in-tree one in
-    # diffusion_minimax_h3_image, which converts the native release layout while it streams and loads/quantizes/places
-    # it itself (diffusion.py routes the load there before the generic planner).
+    # MiniMax-H3-Image: 33B H3 DiT without audio plus per-step PDD heads, conditioned by Qwen3-VL-32B. diffusers has
+    # no class yet, so diffusion_minimax_h3_image loads, converts, quantizes and places it itself.
     DiffusionFamily(
         name = MINIMAX_H3_IMAGE_FAMILY_NAME,
         label = "MiniMax-H3-Image",
@@ -1497,8 +1495,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Guidance-distilled to 6 fixed PDD steps: no CFG, no negative prompt.
         uses_negative_prompt = False,
         uses_guidance = False,
-        # Text-to-image that also takes 1-16 reference images (<Picture N>), at the requested size; it edits through
-        # that same call.
+        # Text-to-image that also takes 1-16 reference images (<Picture N>); edits go through the same call.
         reference = True,
         reference_edit = True,
         max_condition_images = 16,
@@ -1514,11 +1511,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_only = True,
         gguf_loadable = False,
         supports_torch_compile = False,
-        # No te_quant_auto: the in-tree loader picks Studio's hosted int8 ConvRot Qwen3-VL (unsloth/MiniMax-H3-FP8, the
-        # H3 video family's file) itself when the request leaves the encoder unset; the generic TE prequant table
-        # never runs for this family.
-        # Hosted pre-quantized DiTs (curve-form AdaLN, the H3 video recipe). The in-tree loader checks the file exists
-        # before using it and quantizes the release on the fly otherwise, so the row is safe before the upload.
+        # No te_quant_auto: the in-tree loader picks the hosted int8 Qwen3-VL itself when the encoder is unset.
+        # Hosted pre-quantized DiTs: the loader checks the file exists and quantizes on the fly otherwise.
         prequant_repos = (
             ("int8", "unsloth/MiniMax-H3-Image-FP8"),
             ("fp8", "unsloth/MiniMax-H3-Image-FP8"),
