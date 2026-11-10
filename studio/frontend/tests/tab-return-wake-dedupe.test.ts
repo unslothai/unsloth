@@ -14,11 +14,6 @@ const { subscribeGenerationRecoveryTriggers } = await import(
   "../src/features/chat/utils/chat-generation-recovery.ts"
 );
 
-// Requests one wake costs: chat recovery = IndexedDB scan + GET thread + GET messages;
-// chat resident status = models list + inference status + settings.
-const CHAT_RECOVERY_REQUESTS = 3;
-const RESIDENT_STATUS_REQUESTS = 3;
-
 function recoveryHarness(wakeKey = () => "thread-1" as string | undefined) {
   const windowTarget = new EventTarget();
   const documentTarget = Object.assign(new EventTarget(), {
@@ -56,11 +51,7 @@ function recoveryHarness(wakeKey = () => "thread-1" as string | undefined) {
 test("a tab return recovers the open chat thread once", () => {
   const harness = recoveryHarness();
   harness.returnToTab();
-  assert.equal(
-    harness.recoveries * CHAT_RECOVERY_REQUESTS,
-    CHAT_RECOVERY_REQUESTS,
-    "visible + focus must cost one recovery, not two",
-  );
+  assert.equal(harness.recoveries, 1, "visible + focus must cost one recovery");
   harness.unsubscribe();
 });
 
@@ -132,11 +123,7 @@ test("a tab return re-reads the resident model status once", () => {
       }
     };
     returnToTab();
-    assert.equal(
-      reads * RESIDENT_STATUS_REQUESTS,
-      RESIDENT_STATUS_REQUESTS,
-      `${order.join(" then ")} must cost one status read, not two`,
-    );
+    assert.equal(reads, 1, `${order.join(" then ")} must cost one read`);
     clock += 1_000;
     returnToTab();
     assert.equal(reads, 2, "the next tab return still reads");
