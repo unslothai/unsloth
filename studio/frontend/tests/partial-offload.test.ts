@@ -213,7 +213,7 @@ test("the advice does not promise that a smaller quantization fits", () => {
   }
 });
 
-test("the notice says how much of the weights each device holds", () => {
+test("the notice says how much of the weights is on the GPU and on the CPU", () => {
   // A T4 load of a 27B: CUDA0 12677.16 MiB, CPU_Mapped 5833.19 MiB.
   assert.match(
     offloadWarning({ offloaded: 45, total: 66, gpuWeightsMib: 12677.16, hostWeightsMib: 5833.19 })
