@@ -2154,6 +2154,15 @@ html[data-chat-font] .aui-root {
 	body {
 		--removed-body-scroll-bar-size: 0px;
 	}
+	/* The scroll lock's body styles, preset on screen: flipping them re-laid out the whole page in WebKit
+	   (20-30 ms per modal at 150 turns). Safe because the page never scrolls itself (views sit in h-full
+	   html, body and #root); print keeps document flow. */
+	@media screen {
+		body {
+			overflow: hidden;
+			position: relative;
+		}
+	}
 
 	/* Radix modal layers (dialogs, modal menus, selects) write pointer-events: none on <body>.
 	   That property is inherited, so every open and close restyled each element of the chat:
@@ -2176,6 +2185,20 @@ html[data-chat-font] .aui-root {
 		inset: 0;
 		z-index: 49;
 		pointer-events: auto;
+	}
+	/* Firefox only: the cover is always there and the lock only flips its pointer-events. Adding it per
+	   open made Firefox lay out the thread root's flex column again, measuring every message (about
+	   250 ms per modal open and close at 150 turns, 20 ms at 1 turn). Inert when unlocked: no paint,
+	   pointer-events: none. Not for WebKit: a permanent cover made the Glass browser pane open there
+	   about 60 ms slower at 150 turns. */
+	@supports (-moz-appearance: none) {
+		.aui-thread-root::after {
+			content: "";
+			position: absolute;
+			inset: 0;
+			z-index: 49;
+			pointer-events: none;
+		}
 	}
 	/* The side pane (browser, research) sets its own pointer-events: auto once shown, so it never
 	   inherited the lock and its scrollers (file view, page) took wheel and touch under a modal menu.
@@ -3952,7 +3975,7 @@ html[data-chat-font] .aui-root {
 		white-space: nowrap;
 	}
 
-	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
+	.chat-artifact-split[data-artifact-layout-animating="true"]:not([data-artifact-layout-instant]) > [data-panel] {
 		transition:
 			flex-basis 260ms var(--ease-out-cubic),
 			flex-grow 260ms var(--ease-out-cubic),
@@ -6426,35 +6449,35 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
   background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] [data-side-panel-inset]:not(.chat-header-fade),
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] {
   background: transparent;
   backdrop-filter: none;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .chat-header-fade,
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar-decoration"] {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar-decoration"] {
   visibility: hidden;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] [data-wallpaper-chrome-controls],
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] [data-wallpaper-chrome-controls] {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] [data-wallpaper-chrome-controls] {
   background: transparent;
   backdrop-filter: none;
   text-shadow: 0 1px 8px var(--background);
 }
 /* The sidebar and any viewport backdrop already paint beneath this transparent bar;
    repeating either here doubles the tint, so a modal dims only the navigation glyphs. */
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"]::after {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"]::after {
   background: transparent;
 }
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] > [data-wallpaper-chrome-controls]:first-child {
   transition: opacity 100ms;
 }
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-backdrop-open] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"][data-viewport-backdrop-open] > [data-wallpaper-chrome-controls]:first-child {
   opacity: .7;
 }
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-backdrop-tone="strong"] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"][data-viewport-backdrop-tone="strong"] > [data-wallpaper-chrome-controls]:first-child {
   opacity: .6;
 }
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-backdrop-tone="dense"] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"][data-viewport-backdrop-tone="dense"] > [data-wallpaper-chrome-controls]:first-child {
   opacity: .3;
 }
 /* One viewport-sized crop, so opening the sidebar does not reframe the image. */
@@ -6698,8 +6721,12 @@ html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="side
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
   box-shadow: inset -1px 0 0 rgb(255 255 255 / .08);
 }
-/* The sidebar and caption share a single glass surface with a gently rounded inside corner. */
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [data-slot="sidebar-container"][data-windows-glass-frame]::before {
+/* The shared frame paints the already-translucent sidebar color in Transparent glass. */
+html[data-glass-clear][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before {
+  background-color: var(--sidebar);
+}
+/* Pinning joins the sidebar and caption on both image and plain glass backdrops. */
+html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame]::before {
   content: "";
   position: absolute;
   /* Keep the corner above the scrolled conversation canvas. */
@@ -6711,9 +6738,10 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [d
   mask:
     linear-gradient(black 0 0) left top / var(--sidebar-width) 100% no-repeat,
     linear-gradient(black 0 0) left top / 100% var(--studio-custom-titlebar-height) no-repeat,
-    radial-gradient(circle at right bottom, transparent 3.5px, black 4px) var(--sidebar-width) var(--studio-custom-titlebar-height) / 4px 4px no-repeat;
+    radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
+      var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat;
 }
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
+html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
   position: relative;
   z-index: 1;
   background: transparent;
@@ -6769,13 +6797,14 @@ html[data-glass="liquid-3d"] .wallpaper-preview[data-wallpaper-preview-outline-o
 }
 
 /* Frost the tab strip and the body, never the section: a backdrop-filter there would make it a
-   stacking context, trapping the tab strip under the macOS drag strip. No pseudo-element: a macOS
+   stacking context, trapping the tab strip under the macOS drag strip. A macOS
    native page cuts its hole only through elements. File views and the overlay's dialog stay solid. */
 html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] {
   background: transparent;
 }
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"]::before,
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) :not([data-windows-browser="web"])[data-slot="browser-panel"] > .browser-chrome,
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-windows-browser]):not([data-browser-document]) > .browser-panel-body {
   background-color: color-mix(in srgb, var(--glass-panel-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -6790,9 +6819,33 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
-html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"]::before,
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) :not([data-windows-browser="web"])[data-slot="browser-panel"] > .browser-chrome,
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-windows-browser]):not([data-browser-document]) > .browser-panel-body {
   background-image: var(--glass-sheen);
+}
+
+
+/* Windows hosts websites in a child WebView2 above the shell. A single glass
+   layer below the caption keeps both browser rows on the same backdrop. */
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"]::before {
+  content: "";
+  position: absolute;
+  inset: var(--studio-custom-titlebar-height, 0px) 0 0;
+  pointer-events: none;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"] > .browser-panel-body,
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"] [data-browser-new-tab] {
+  background-color: transparent;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"] [data-browser-new-tab] {
+  border-top-color: transparent;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"] [data-slot="browser-tab-divider"] {
+  visibility: hidden;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) .chat-artifact-pop-surface:has(> [data-windows-browser]) {
+  border-image: linear-gradient(to bottom, transparent var(--studio-custom-titlebar-height, 0px), var(--panel-edge) var(--studio-custom-titlebar-height, 0px)) 1;
 }
 
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
@@ -7107,11 +7160,13 @@ html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
    shell never scrolls (overflow-hidden), while a dialog that scrolls its own box would carry an absolute
    layer away with its content and lose the blur. Not on WebKit (data-glass-layers), where the layer costs
    about 9% more; no will-change, which made the Style dropdown inside Settings slower to open. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog],
 html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog] {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   isolation: isolate;
 }
+html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog]::before,
 html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog]::before {
   content: "";
   position: absolute;
@@ -7157,8 +7212,8 @@ html[data-glass][data-glass-menus][data-glass-plain]:not(.dark) :is([data-slot$=
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .665), inset 0 -1px 0 color-mix(in srgb, var(--foreground) 8%, transparent), inset 0 6px 10px -8px rgb(255 255 255 / .175), var(--glass-lift, 0 0 #0000) !important;
 }
 }
-/* !important: Sonner injects its base rules at runtime. */
-html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
+/* !important: Sonner injects its base rules at runtime. .toast-surface: the update cards that float like toasts. */
+html[data-glass][data-glass-menus] :is([data-sonner-toast][data-styled="true"], .toast-surface) {
   --accent: var(--glass-hover);
   --muted: var(--glass-hover);
   --secondary: var(--glass-field);
@@ -7167,7 +7222,7 @@ html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent) !important;
 }
-html[data-glass^="liquid"][data-glass-menus] [data-sonner-toast][data-styled="true"] {
+html[data-glass^="liquid"][data-glass-menus] :is([data-sonner-toast][data-styled="true"], .toast-surface) {
   background-image: var(--glass-sheen);
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
@@ -7293,7 +7348,7 @@ html[data-glass] [data-windows-wallpaper-page][data-wallpaper-image][data-wallpa
 /* The pinned sidebar's glass frame, flagged by the root: this page also holds the hidden chat, and
    any :has() on it re-checked the chat on every mutation. */
 [data-windows-wallpaper-page] > [data-slot="page-wallpaper-blur"][data-sidebar-frame] {
-  border-top-left-radius: 4px;
+  border-top-left-radius: var(--radius-md);
 }
 /* A full-height page may extend under the Windows caption. Start its reading
    tint below the controls, even when the content scrolls. */
@@ -7446,12 +7501,12 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
 	background-attachment: fixed;
 }
 
-/* Transparent glass: the plain theme, every surface in its own colour at the glass strength's
-   opacity, with no shadow or blur. Tokens are redefined on #root from the copies taken on html
-   (a token cannot mix itself), so portalled menus and dialogs stay solid. Sonner renders its
-   toaster inside #root, so it re-resolves the same tokens at full opacity. */
+/* Transparent glass: the plain theme on page surfaces, using their own colour at the glass strength's
+   opacity, with no shadow or blur. Re-resolve the palette at each surface root, including
+   Windows desktop portals when glass menus are enabled. Toasts use the opaque palette. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]),
 html[data-glass-clear] #root,
-html[data-glass-clear] #root [data-sonner-toaster] {
+html[data-glass-clear] #root :is([data-sonner-toaster], .toast-surface) {
   --clear-alpha: var(--glass-fill-alpha, 50%);
   --background: color-mix(in srgb, var(--glass-page-bg) var(--clear-alpha), transparent);
   --card: color-mix(in srgb, var(--glass-page-card) var(--clear-alpha), transparent);
@@ -7468,10 +7523,11 @@ html[data-glass-clear] #root [data-sonner-toaster] {
   --color-secondary: var(--secondary);
   --color-sidebar: var(--sidebar);
 }
-html[data-glass-clear] #root [data-sonner-toaster] {
+html[data-glass-clear] #root :is([data-sonner-toaster], .toast-surface) {
   --clear-alpha: 100%;
 }
 /* text-background labels sit on solid action fills, so they keep the opaque colour. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) [class*="text-background"],
 html[data-glass-clear] #root [class*="text-background"] {
   --background: var(--glass-page-bg);
   --color-background: var(--glass-page-bg);
@@ -7483,6 +7539,93 @@ html[data-glass-clear] #root :is(.library-header-row.sticky:not([data-stuck]), [
 /* Sticky labels repaint the sidebar colour, which would double it up. */
 html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
   background-color: transparent;
+}
+/* Selected rows and tabs sit on top of another fill. Use the glass highlight so
+   they stay identifiable over wallpaper, including at minimum glass strength. */
+html.tauri.client-windows[data-glass-clear] #root {
+  --clear-highlight: color-mix(in srgb, var(--foreground) calc(12% * var(--contrast-wash-gain, 1)), transparent);
+  --nav-surface-hover: var(--clear-highlight);
+  --accent: var(--clear-highlight);
+  --color-accent: var(--accent);
+  --color-nav-surface-hover: var(--nav-surface-hover);
+}
+html.tauri.client-windows[data-glass-clear] #root .browser-chrome {
+  --accent: var(--clear-highlight);
+}
+
+/* The docked tab strip and body each paint once, below the Windows caption.
+   Keep the native page and file viewer in charge of their document backgrounds. */
+html.tauri.client-windows[data-glass-clear] .chat-artifact-pop-surface:not(.chat-browser-floating):has(> [data-slot="browser-panel"]) {
+  border-image: linear-gradient(to bottom, transparent var(--studio-custom-titlebar-height), var(--border) var(--studio-custom-titlebar-height)) 1;
+}
+html.tauri.client-windows[data-glass-clear] .chat-browser-floating,
+html.tauri.client-windows[data-glass-clear]:not([data-browser-overlay-open]) [data-slot="browser-panel"] {
+  background-color: transparent;
+}
+html.tauri.client-windows[data-glass-clear]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
+html.tauri.client-windows[data-glass-clear]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
+  background-color: var(--panel-surface);
+}
+html.tauri.client-windows[data-glass-clear]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body > [data-browser-page],
+html.tauri.client-windows[data-glass-clear] [data-slot="chat-settings-panel"] .bg-panel-surface {
+  background-color: transparent;
+}
+
+/* Portals live outside #root. Keep floating text readable over other controls
+   with the same additional tint and light-mode floor as the other glass menus. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {
+  --clear-alpha: min(100%, max(calc(var(--glass-fill-alpha, 50%) + 30%), var(--glass-menu-floor)));
+  --dropdown-lift-surface: var(--popover);
+  --browser-menu-surface: var(--popover);
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"]) {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+/* Sheets and alerts are not blurred (as with Glass, and the motion pause does not track them): dense fill instead. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {
+  --clear-alpha: 96%;
+}
+/* A popup's own blur cannot reach content scrolling under its sticky bars (data-sticky-bar: responsive ones): they take the opaque palette. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) :is(.sticky, [data-sticky-bar]) {
+  --background: var(--glass-page-bg);
+  --card: var(--glass-page-card);
+  --popover: var(--glass-page-popover);
+  --sidebar: var(--glass-page-sidebar);
+  --muted: var(--glass-page-muted);
+  --secondary: var(--glass-page-secondary);
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-sidebar: var(--sidebar);
+  --color-muted: var(--muted);
+  --color-secondary: var(--secondary);
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-settings-dialog] {
+  /* The sidebar and main pane already provide the dialog's fill. */
+  background-color: transparent;
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog]::before {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+/* A fullscreen dialog's close button stays viewport-fixed. Keep its blur on a
+   fixed background layer so neither the button nor the blur scrolls with the body. */
+@media (width < 40rem) {
+  html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"].fixed:not([data-settings-dialog]) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    isolation: isolate;
+  }
+  html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"].fixed:not([data-settings-dialog])::before {
+    content: "";
+    position: fixed;
+    inset: var(--studio-window-chrome-top, 0px) 0 0;
+    z-index: -1;
+    pointer-events: none;
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+  }
 }
 /* In base so this !important outranks layered utilities and unlayered rules alike. */
 @layer base {
@@ -7502,6 +7645,13 @@ html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sideb
   }
 }
 
+/* Software compositing: the translucent Glass Settings pane is not composited-scrolled, so every scroll frame
+   re-rasters it (about 2x the whole Settings scroll cost). Its own layer scrolls it on the compositor instead;
+   text in it loses subpixel antialiasing. The thread viewport is not given one: there it measured no cheaper. */
+html[data-glass][data-glass-motion] [data-settings-main-scroll] {
+  will-change: scroll-position;
+}
+
 /* Glass in motion, only with software compositing (data-glass-motion on <html>, set once by WindowMaterialMount
    when the page has no GPU WebGL renderer; with a GPU nothing here applies and glass looks and moves as before).
    data-glass-moving is set by glass-motion.ts on each surface while something opens, closes or
@@ -7511,17 +7661,17 @@ html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sideb
    closing (data-state="closed") is in motion until it unmounts. Keyed on the surface, never on <html>, so the flag
    restyles only the surface and its own sticky bars. No descendant rule keys on data-state: Chromium would then
    search the subtree of every element whose data-state changes (the sidebar, collapsibles in the chat). */
-html[data-glass][data-glass-motion] [data-glass-moving],
-html[data-glass][data-glass-motion] [data-glass-moving]::before,
-html[data-glass][data-glass-motion] [data-glass-moving] .sticky,
-html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"],
-html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"]::before {
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving],
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving]::before,
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving] .sticky,
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"],
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"]::before {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 /* A transition outranks !important, and Radix content transitions every property (duration-100 with the initial
    transition-property: all), which would fade the blur out, and later back in, over the very frames this saves. */
-html[data-glass][data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"]) {
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"]) {
   transition: none !important;
 }
 html[data-glass][data-glass-motion][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"][data-glass-moving],
@@ -7545,6 +7695,24 @@ html[data-glass][data-glass-motion] [data-slot="dialog-content"][data-glass-movi
 html[data-glass][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface)[data-glass-moving] .sticky {
   background-color: var(--glass-page-popover) !important;
 }
+/* Windows Transparent (data-glass-clear): its menus and dialogs blur too, and the Glass fill variables are not set
+   there, so the paused surface takes the theme's own solid colours and stays readable over sharp content. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface):is([data-glass-moving], [data-slot$="-content"][data-state="closed"]) {
+  /* Glow dropdowns and browser menus paint through layered !important rules that read these variables. */
+  --dropdown-lift-surface: color-mix(in srgb, var(--glass-page-popover) 96%, transparent);
+  --browser-menu-surface: color-mix(in srgb, var(--glass-page-popover) 96%, transparent);
+  background-color: color-mix(in srgb, var(--glass-page-popover) 96%, transparent) !important;
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface)[data-glass-moving] .sticky {
+  background-color: color-mix(in srgb, var(--glass-page-popover) 96%, transparent) !important;
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] :is(.tooltip-compact, .tooltip-rich)[data-glass-moving] {
+  background-color: var(--tooltip-bg) !important;
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] [data-slot="dialog-content"]:is([data-glass-moving], [data-state="closed"]),
+html.tauri.client-windows[data-glass-clear][data-glass-menus][data-glass-motion] [data-slot="dialog-content"][data-glass-moving] .sticky {
+  background-color: color-mix(in srgb, var(--glass-page-bg) 96%, transparent) !important;
+}
 /* Liquid 3D's wide blurred inner glows are painted again with every repaint inside the surface (a Settings pane
    scrolling); while it moves they give way to the 1 px rim, as on the WebKitGTK path. Set on the dialog directly,
    so its large subtree is not restyled; menus pin their shadow in a layer, so there the rim variables change. */
@@ -7565,15 +7733,24 @@ html[data-glass="liquid-3d"][data-glass-menus][data-glass-motion].dark :is([data
 
 /* WebKitGTK only (data-glass-cpu, set by WindowMaterialMount): it runs every backdrop-filter again on
    each composite, on the CPU, so a caret blink, a scrolled line or a menu frame re-blurred every glass
-   surface on screen and glass typing, scrolling and menus cost far more than solid. There only the
-   sidebar keeps its live blur (one static surface over the wallpaper costs little); the rest carry a
-   denser fill, and dialogs and menus an opaque one, so nothing behind them ghosts through. Blurs a
-   component sets itself (Tailwind backdrop-* classes) are not Glass's and stay as they are with Glass off. */
-html[data-glass][data-glass-cpu] *:not([data-slot="sidebar-inner"], [class*="backdrop-"]),
+   surface on screen and glass typing, scrolling and menus cost far more than solid. No Glass surface keeps
+   a live blur there, the sidebar included (its blur alone was most of a Glass scroll frame on a long chat):
+   the panes carry a denser fill, and dialogs and menus an opaque one, so nothing behind them ghosts through.
+   Blurs a component sets itself (Tailwind backdrop-* classes) are not Glass's and stay as they are with Glass off. */
+html[data-glass][data-glass-cpu] *:not([class*="backdrop-"]),
 html[data-glass][data-glass-cpu] *:not([data-windows-glass-frame], [class*="backdrop-"])::before,
 html[data-glass][data-glass-cpu] *:not([class*="backdrop-"])::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+/* Frosted's grain is an SVG feTurbulence tile that WebKitGTK renders again on every paint of the surface
+   (the composer repaints with each scrolled frame): about as much as the rest of a frame. Plain there. */
+html[data-glass="frosted"][data-glass-cpu] :is([data-slot="sidebar-inner"], .unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+  background-image: none !important;
+}
+/* The sidebar without its blur: the fill reaches the 96% cap, so the wallpaper does not show through sharp. */
+html[data-glass][data-glass-cpu] [data-slot="sidebar-inner"] {
+  --glass-pane-floor: 110%;
 }
 html[data-glass][data-glass-cpu] {
   --glass-composer-floor: 110%;
@@ -7589,7 +7766,7 @@ html[data-glass][data-glass-menus][data-glass-cpu] [data-slot="dialog-content"] 
   background-color: var(--glass-page-bg);
 }
 /* Sonner's rule above sets its blur !important at a higher specificity than the universal one. */
-html[data-glass][data-glass-menus][data-glass-cpu] [data-sonner-toast][data-styled="true"] {
+html[data-glass][data-glass-menus][data-glass-cpu] :is([data-sonner-toast][data-styled="true"], .toast-surface) {
   background-color: var(--popover) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;

@@ -665,6 +665,8 @@ export const de = {
     keepsRunning: "Das Schließen beendet die Einrichtung nicht. Das Ergebnis erscheint unter Einstellungen > Sicherheit.",
   },
   composerSettings: {
+    shareDraft: "Entwürfe zwischen Chats teilen",
+    shareDraftDescription: "Einen Entwurf für Chats und Vergleiche verwenden. Standardmäßig aus; jeder Chat behält seinen eigenen Entwurf.",
     title: "Nachrichteneingabe",
     plainText: "Eingabe als Klartext",
     plainTextDescription: "Code, Markdown und Links als wörtlichen Text anzeigen. Ausschalten, um eine formatierte Vorschau zu sehen.",

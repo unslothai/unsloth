@@ -662,6 +662,8 @@ export const en = {
     keepsRunning: "Closing this does not stop the setup. Its result shows in Settings > Security.",
   },
   composerSettings: {
+    shareDraft: "Share drafts across chats",
+    shareDraftDescription: "Use one draft across chats and Compare. Off by default; each chat keeps its own draft.",
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",

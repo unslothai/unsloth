@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Safetensors is preferred, so a cached .pt repo must not re-download its safetensors twin."""
+"""Safetensors is preferred, but a cached .pt whose sha256 matches the Hub's record is reused rather than
+re-downloading its safetensors twin; an unverified one (mismatch, no record, offline) keeps safetensors first."""
 
 from __future__ import annotations
 
+import hashlib
 import types
 
 import huggingface_hub
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
+import core.inference.cached_weight_sha as cws
 import core.inference.diffusion_prequant as pq
 import core.inference.diffusion_te_prequant as tpq
 
@@ -34,6 +37,9 @@ class FakeHub:
         # names a 404 was recorded for, as huggingface_hub's .no_exist markers
         self.absent: set = set()
         self.downloads: list = []
+        # sha256 the Hub records per name; None = no LFS record. Default: the bytes cache() writes.
+        self.hub_sha: dict = {}
+        self.sha_calls: list = []
         for name in cached:
             self.cache(name)
 
@@ -90,6 +96,19 @@ def hub(tmp_path, monkeypatch):
     fake = FakeHub(tmp_path)
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake.try_to_load_from_cache)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake.hf_hub_download)
+
+    def hub_sha256s(repo_id, filenames, **_):
+        fake.sha_calls.append(tuple(filenames))
+        out = {}
+        for name in filenames:
+            sha = fake.hub_sha.get(name, hashlib.sha256(b"x").hexdigest())
+            if sha:
+                out[name] = sha
+        return out
+
+    monkeypatch.setattr(cws, "hub_sha256s", hub_sha256s)
+    monkeypatch.setattr(cws, "_store_path", lambda: tmp_path / "weight_sha256.json")
+    monkeypatch.setattr(cws, "_persisted", None)
     monkeypatch.setattr(
         pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
@@ -679,6 +698,24 @@ def test_cached_own_pickle_offline_never_asks_for_the_twin(hub):
     hub.cache("Model-INT8.pt")
     assert _resolve(_comfy_dit(), local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
     assert hub.downloads == [("Model-INT8.pt", True)]
+
+
+@pytest.mark.parametrize("why", ["sha_mismatch", "no_lfs_record", "reuse_off", "prefer_st"])
+def test_unverified_cached_pickle_does_not_demote_the_hosted_twin(hub, monkeypatch, why):
+    """Only the own safetensors 404s: the hosted twin loads, never the cached pickle the Hub does not vouch for."""
+    hub.cache("Model-INT8.pt")
+    hub.hosted = {COMFY, "Model-INT8.pt"}
+    if why == "sha_mismatch":
+        hub.hub_sha["Model-INT8.pt"] = hashlib.sha256(b"other").hexdigest()
+    elif why == "no_lfs_record":
+        hub.hub_sha["Model-INT8.pt"] = None
+    elif why == "reuse_off":
+        monkeypatch.setenv(cws.ENV_DISABLE, "0")
+    else:
+        monkeypatch.setenv(KILL_SWITCH, "1")
+    assert pq.prefer_cached_pickle_twins(REPO, _comfy_dit().candidate_filenames)[0] == COMFY
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, COMFY)]
+    assert hub.fetched == [COMFY]
 
 
 def test_cached_comfy_twin_stays_first(hub):

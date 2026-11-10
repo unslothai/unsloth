@@ -154,6 +154,7 @@ from .diffusion_conditioning import (
     decode_condition_images,
     edit_takes_extra_images,
     effective_reference_resolution,
+    reference_request_pixels,
     match_source_size,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
@@ -232,6 +233,8 @@ from .diffusion_memory import (
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
+    image_activation_verdict,
+    ACTIVATION_REFUSE,
     raise_on_unified_memory_shortfall,
     scoped_allow_oversized_load,
     UNIFIED_OVERSIZE_REFUSAL_CODE,
@@ -273,6 +276,9 @@ from .diffusion_memory import (
     take_deferred_restore,
     resident_group_mib,
     hook_resident_denoiser,
+    live_reference_shortfall_mib,
+    static_reference_release_mib,
+    load_covered_reference_need_mib,
     measured_request_extra_mib,
     DECODE_LEND_ATTR,
     decode_lend_from_plan,
@@ -319,6 +325,7 @@ from .diffusion_speed import (
     normalize_speed_mode,
     resolve_speed_mode,
     family_render_cudnn_scope,
+    release_rocm_tunableop as _release_rocm_tunableop,
     restore_backend_flags,
     settle_compile_fallback,
     snapshot_backend_flags,
@@ -486,6 +493,13 @@ from .diffusion_comfy_quant import (
     refuse_comfy_quant,
 )
 from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
+from .diffusers_safetensors import (
+    component_safetensors_kwargs,
+    component_weight_state,
+    is_never_read_pickle,
+    pipeline_pickle_files,
+    pipeline_safetensors_kwargs,
+)
 from .diffusion_prequant import (
     PrequantIntoError,
     PrequantSource,
@@ -540,6 +554,7 @@ from .diffusion_transformer_quant import (
     nvfp4_gated_base,
     native_int8_act,
     rdna_auto_w8a8_reason,
+    rdna_explicit_int8_reason,
     native_offload_host,
     native_quant_host,
     native_quant_scheme,
@@ -6961,7 +6976,12 @@ class DiffusionBackend:
                 )
                 # Under the repo it describes: a mirror's commit says nothing about a cached upstream snapshot.
                 _record_revision(revisions_out, listing_repo, info)
-                return [s for s in info.siblings if not _listing_extra(listing_repo, s.rfilename)]
+                skipped = set(pipeline_pickle_files(s.rfilename for s in info.siblings))
+                return [
+                    s
+                    for s in info.siblings
+                    if not _listing_extra(listing_repo, s.rfilename) and s.rfilename not in skipped
+                ]
 
             listing_repo = prefer_ungated_mirror(base_repo, hf_token)
             base_siblings = _base_listing(listing_repo)
@@ -8697,6 +8717,21 @@ class DiffusionBackend:
                         rdna_auto_w8a8,
                     )
                     transformer_quant = TQ_INT8
+                # An explicit int8 request compiles from render 1 when the denoiser stays resident; W8A8 only where the
+                # family's AUTO table measured it faster (weight-only int8 elsewhere).
+                rdna_explicit_int8 = (
+                    rdna_explicit_int8_reason(target, getattr(fam, "name", None))
+                    if rdna_auto_w8a8 is None
+                    and transformer_quant_pinned == TQ_INT8
+                    and kind == "pipeline"
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    and (
+                        speed_mode is None
+                        or normalize_speed_mode(speed_mode) in (SPEED_DEFAULT, SPEED_MAX)
+                    )
+                    and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                    else None
+                )
                 native_scheme = (
                     native_quant_scheme(
                         target,
@@ -9912,7 +9947,14 @@ class DiffusionBackend:
                                     try:
                                         with _converted_shards_pread(dtype, small_host):
                                             pipe = pipeline_cls.from_pretrained(
-                                                _base_local_dir or fetch_base, **pipe_kwargs
+                                                _base_local_dir or fetch_base,
+                                                **pipe_kwargs,
+                                                **pipeline_safetensors_kwargs(
+                                                    _base_local_dir or fetch_base,
+                                                    passed = pipe_kwargs,
+                                                    cache_dir = pipe_kwargs.get("cache_dir"),
+                                                    pipeline_cls = pipeline_cls,
+                                                ),
                                             )
                                     finally:
                                         self._stop_load_prefetch()
@@ -10278,7 +10320,14 @@ class DiffusionBackend:
                                     )
                                 with _converted_shards_pread(dtype, small_host):
                                     pipe = pipeline_cls.from_pretrained(
-                                        _base_local_dir or fetch_base, **pipe_kwargs
+                                        _base_local_dir or fetch_base,
+                                        **pipe_kwargs,
+                                        **pipeline_safetensors_kwargs(
+                                            _base_local_dir or fetch_base,
+                                            passed = pipe_kwargs,
+                                            cache_dir = pipe_kwargs.get("cache_dir"),
+                                            pipeline_cls = pipeline_cls,
+                                        ),
                                     )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
@@ -10442,6 +10491,9 @@ class DiffusionBackend:
                                     plan.offload_policy,
                                 )
                             inplace_decline = None
+                            if rdna_explicit_int8 is not None and not keeps_resident:
+                                # Measured resident only: an offloaded int8 DiT keeps the eager weight-only path.
+                                rdna_explicit_int8 = None
                             if rdna_auto_w8a8 is not None and not keeps_resident:
                                 # Measured resident only: AUTO keeps bf16 when even the int8 plan offloads.
                                 native_scheme = rdna_auto_w8a8 = None
@@ -10501,7 +10553,17 @@ class DiffusionBackend:
                                     {
                                         "offload": plan.offload_policy != OFFLOAD_NONE,
                                         "act_int8": native_scheme == TQ_INT8
-                                        and (native_int8_act(target) or rdna_auto_w8a8 is not None),
+                                        and (
+                                            native_int8_act(target)
+                                            or rdna_auto_w8a8 is not None
+                                            or (
+                                                rdna_explicit_int8 is not None
+                                                and rdna_auto_w8a8_reason(
+                                                    target, getattr(fam, "name", None)
+                                                )
+                                                is not None
+                                            )
+                                        ),
                                     }
                                     if native_scheme is not None
                                     else {}
@@ -10678,14 +10740,14 @@ class DiffusionBackend:
                         )
                         effective_speed = SPEED_DEFAULT
                     if (
-                        rdna_auto_w8a8 is not None
+                        (rdna_auto_w8a8 is not None or rdna_explicit_int8 is not None)
                         and transformer_quant_engaged is not None
                         and speed_mode is None
                         and effective_speed == SPEED_OFF
                         and compile_eligible(target, is_gguf = False, family = fam, probe = False)
                     ):
                         logger.info(
-                            "diffusion.speed: speed_mode=default from render 1 (auto int8 W8A8 on RDNA is "
+                            "diffusion.speed: speed_mode=default from render 1 (int8 on RDNA is "
                             "measured compiled)"
                         )
                         effective_speed = SPEED_DEFAULT
@@ -11177,7 +11239,9 @@ class DiffusionBackend:
                             "measured_runtime_headroom_mib"
                         )
                         if headroom and (
-                            plan.resident_transformer_mib or plan.resident_text_encoder_mib
+                            plan.resident_transformer_mib
+                            or plan.resident_text_encoder_mib
+                            or plan.estimates.get("measured_reference_te_cut_mib")
                         ):
                             pipe._unsloth_measured_reserve = (
                                 int(headroom),
@@ -11195,6 +11259,13 @@ class DiffusionBackend:
                                 bool(streamed_headroom),
                                 # MEASURED_RESERVE_DENOISE_PHASE_INDEX: the blocks sized from the denoise phase
                                 plan.estimates.get("measured_denoise_phase_headroom_mib"),
+                                # MEASURED_RESERVE_REFERENCE_INDEX: the edit the placement priced, if any
+                                (
+                                    int(plan.estimates["measured_reference_phase_mib"]),
+                                    int(plan.estimates["measured_reference_reserve_mib"]),
+                                )
+                                if plan.estimates.get("measured_reference_reserve_mib")
+                                else None,
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
@@ -11599,6 +11670,7 @@ class DiffusionBackend:
                             load_bg_compile.close()
                             load_bg_compile = None
                         restore_backend_flags(backend_flags_before)
+                        _release_rocm_tunableop(pipe)
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
@@ -11957,6 +12029,13 @@ class DiffusionBackend:
             cache_dir = hub_cache_dir(),
             # Dense bf16 transformer is the largest fetch on this path, so API-initiated loads are refused here.
             local_files_only = local_files_only,
+            **component_safetensors_kwargs(
+                fetch_base,
+                "transformer",
+                cache_dir = hub_cache_dir(),
+                model_cls = transformer_cls,
+                local_files_only = local_files_only,
+            ),
         )
         check_cancelled()
         pipe = self._assemble_pipe(
@@ -12444,7 +12523,16 @@ class DiffusionBackend:
             )
         )
         with _converted_shards_pread(dtype, None):
-            pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
+            pipe = pipeline_cls.from_pretrained(
+                base_local_dir or base,
+                **pipe_kwargs,
+                **pipeline_safetensors_kwargs(
+                    base_local_dir or base,
+                    passed = pipe_kwargs,
+                    cache_dir = pipe_kwargs.get("cache_dir"),
+                    pipeline_cls = pipeline_cls,
+                ),
+            )
         check_cancelled()
         pipe.to(device)
         return pipe
@@ -13626,7 +13714,7 @@ class DiffusionBackend:
             cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
             # Force safetensors for untrusted remote repos; if the Hub scan failed open, pickles still load.
             cn_from_pretrained_kwargs: dict[str, Any] = {"cache_dir": hub_cache_dir()}
-            if remote_cn:
+            if remote_cn or component_weight_state(resolved_cn.path) is True:
                 cn_from_pretrained_kwargs["use_safetensors"] = True
             cn_model = getattr(diffusers, model_cls_name).from_pretrained(
                 resolved_cn.path,
@@ -14986,8 +15074,8 @@ class DiffusionBackend:
                     )
                     # unweighted reference pixels: a measured placement prices them from their token count
                     if ref_resolution is not None and not layer_count:
-                        guard_reference_pixels = int(
-                            (1 + len(ref_extra)) * ref_resolution * ref_resolution
+                        guard_reference_pixels = reference_request_pixels(
+                            ref_resolution, len(ref_extra)
                         )
                     if layer_count:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
@@ -15041,6 +15129,56 @@ class DiffusionBackend:
                         guard_capture_gen = cuda_graph.capture_generation(_peak_device_index(state))
                     # groups an earlier oversized request streamed out stay out when this one streams them all too
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
+
+                    def _guard_kwargs() -> dict:
+                        return dict(
+                            # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
+                            device_memory = reclaimable_snapshot_device_memory(guard_target),
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            # The hint the load planned with, so the distilled / edit multipliers match.
+                            family = state.variant_hint,
+                            # Only img2img is bounded by the Resolution control (_fit_within); others need an upload-side fix.
+                            source_driven = source_sized and workflow != "img2img",
+                            condition_pixels = guard_condition_pixels,
+                            vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
+                            vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
+                            quadratic_attention = guard_quadratic,
+                            allow_oversized = allow_oversized,
+                            calibrated_placement = bool(
+                                getattr(state, "calibrated_placement", False)
+                            ),
+                            controlnet = workflow == "controlnet" and control_pil is not None,
+                            logger = logger,
+                        )
+
+                    if extra_mib > 0 and guard_reference_pixels > 0:
+                        reference_need = load_covered_reference_need_mib(
+                            state.pipe,
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            reference_pixels = guard_reference_pixels,
+                            cfg = guard_cfg,
+                            quadratic_attention = guard_quadratic,
+                        )
+                        static_release = (
+                            None
+                            if reference_need is None
+                            else static_reference_release_mib(state.pipe, reference_need)
+                        )
+                        if static_release is not None and extra_mib <= static_release:
+                            short = live_reference_shortfall_mib(
+                                state.pipe, reference_need, guard_target.torch_device
+                            )
+                            # never looser than the activation guard below
+                            if short is not None and short < extra_mib:
+                                fits = image_activation_verdict(
+                                    **{k: v for k, v in _guard_kwargs().items() if k != "logger"}
+                                )
+                                if fits.action != ACTIVATION_REFUSE:
+                                    extra_mib = short
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (
@@ -15056,25 +15194,7 @@ class DiffusionBackend:
                             if restore_resident is None
                             else chained_restore(carried_restore, restore_resident)
                         )
-                    guard_kwargs = dict(
-                        # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
-                        device_memory = reclaimable_snapshot_device_memory(guard_target),
-                        width = guard_width,
-                        height = guard_height,
-                        batch_size = guard_batch,
-                        # The hint the load planned with, so the distilled / edit multipliers match.
-                        family = state.variant_hint,
-                        # Only img2img is bounded by the Resolution control (_fit_within); others need an upload-side fix.
-                        source_driven = source_sized and workflow != "img2img",
-                        condition_pixels = guard_condition_pixels,
-                        vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
-                        vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
-                        quadratic_attention = guard_quadratic,
-                        allow_oversized = allow_oversized,
-                        calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
-                        controlnet = workflow == "controlnet" and control_pil is not None,
-                        logger = logger,
-                    )
+                    guard_kwargs = _guard_kwargs()
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)
@@ -15914,6 +16034,7 @@ class DiffusionBackend:
                 pass
         # Restore process-wide backend flags so the next `off` load is bit-identical; all calls idempotent.
         restore_backend_flags(state.backend_flags_before)
+        _release_rocm_tunableop(state.pipe)
         prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
         if prebuild is not None:
             prebuild.cancel_all()
@@ -16385,6 +16506,8 @@ def _base_file_downloaded(
         # from_single_file(config=repo, subfolder="transformer") always fetches this config. Video keeps
         # the same exception in video.py's snapshot filter.
         return True
+    if is_never_read_pickle(rfilename):
+        return False
     if rfilename.startswith("transformer/"):
         return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
@@ -16432,7 +16555,9 @@ def _pipeline_file_downloaded(rfilename: str) -> bool:
     name = lower.rsplit("/", 1)[1]
     if name.startswith(("openvino_", "flax_")):
         return False
-    if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5", ".ckpt")):
+    if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5")) or is_never_read_pickle(
+        name
+    ):
         return False
     if ".fp16." in name or ".bf16." in name or ".non_ema." in name:
         return False

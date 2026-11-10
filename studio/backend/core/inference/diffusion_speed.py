@@ -192,6 +192,17 @@ def snapshot_backend_flags() -> Optional[dict]:
     return state
 
 
+def release_rocm_tunableop(pipe: Any) -> None:
+    """Unload: drop this pipe's TunableOp claim (process-global, so not in snapshot_backend_flags)."""
+    mod = sys.modules.get(f"{__package__}.diffusion_rocm_tunableop")
+    if mod is None or pipe is None:
+        return
+    try:
+        mod.release(pipe)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def restore_backend_flags(state: Optional[dict]) -> None:
     """Restore the flags captured by ``snapshot_backend_flags``. No-op on None. Each flag is
     restored independently so one failure can't leak the others."""
@@ -515,6 +526,15 @@ def apply_speed_optims(
             _warn(logger, "vae attention chunks", exc)
     # Stability, not speed, so also before the `off` return.
     _enable_miopen_immediate(logger)
+    if getattr(target, "backend", None) == "rocm":
+        try:
+            from . import diffusion_rocm_tunableop as rocm_tunableop
+            if mode == SPEED_OFF:
+                rocm_tunableop.uninstall(pipe)
+            else:
+                rocm_tunableop.install_for_pipe(pipe, getattr(target, "device", None), logger)
+        except Exception as exc:  # noqa: BLE001 - keep torch's default GEMM pick
+            _warn(logger, "rocm tunableop", exc)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:

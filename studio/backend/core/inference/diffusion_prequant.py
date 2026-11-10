@@ -640,7 +640,9 @@ def prefer_cached_pickle_twins(
     log: bool = True,
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
-    """Same-stem cached .pt/.pth moves ahead of its uncached safetensors twin; the twin stays behind it as 404 fallback; PREFER_SAFETENSORS_ENV disables."""
+    """Safetensors stays first, except a same-stem cached .pt/.pth whose sha256 matches the Hub's record moves ahead of
+    its uncached safetensors twin (reused, not re-downloaded); the twin stays behind it as 404 fallback. An unverified
+    cached pickle (offline, no LFS record, mismatch) keeps its place behind the twin. PREFER_SAFETENSORS_ENV disables."""
     import os
 
     out = [n for n in names if n]
@@ -659,13 +661,40 @@ def prefer_cached_pickle_twins(
             except Exception:  # noqa: BLE001 - an unanswerable question is a no
                 return False
 
+        def _verified(name: str) -> bool:
+            from .cached_weight_sha import cached_copy_matches_hub
+
+            if _LOCAL_FILES_ONLY.get():
+                return False  # a load that may not reach the Hub cannot ask it for the hash
+            token = _LOAD_HF_TOKEN.get()
+            for root in roots:
+                hit = _hub_name_cached(repo_id, name, root)
+                if hit is not None and cached_copy_matches_hub(repo_id, name, hit, token = token):
+                    return True
+            return False
+
+        prefer_safetensors = (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        def _reusable(name: str) -> bool:
+            if not _ok(name) or not _cached(name):
+                return False
+            # same pickle trust rule as below
+            if name.lower().endswith(_PICKLE_SUFFIXES):
+                return not prefer_safetensors and _verified(name)
+            return True
+
         # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
             stem = _artifact_stem(comfy)
             twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
             if not twins:
                 continue
-            hit = next((t for t in twins if _ok(t) and _cached(t)), None)
+            hit = next((t for t in twins if _reusable(t)), None)
             if _cached(comfy):
                 if hit is None and _ok(comfy) and out.index(comfy) > out.index(twins[0]):
                     out.remove(comfy)
@@ -689,12 +718,7 @@ def prefer_cached_pickle_twins(
                     hit,
                     comfy,
                 )
-        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if prefer_safetensors:
             return out
 
         for st in [
@@ -711,7 +735,8 @@ def prefer_cached_pickle_twins(
                 ),
                 None,
             )
-            if twin is None or _cached(st):
+            # Only a cached pickle the Hub's sha256 vouches for is reused; unverified, safetensors stays first.
+            if twin is None or _cached(st) or not _verified(twin):
                 continue
             out.remove(twin)
             out.insert(out.index(st), twin)
@@ -723,8 +748,8 @@ def prefer_cached_pickle_twins(
                     import logging
                     sink = logging.getLogger(__name__)
                 sink.info(
-                    "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "
-                    "downloaded (set %s=1 to fetch it instead)",
+                    "diffusion.prequant_cached_pickle: %s: using the cached %s (sha256 matches the Hub); the "
+                    "%s twin is not downloaded (set %s=1 to fetch it instead)",
                     repo_id,
                     twin,
                     st,
@@ -3363,8 +3388,10 @@ def stream_prequantized_module(
     *,
     logger: Any = None,
     label: str = "pre-quantized denoiser",
+    defer_pin: bool = False,
 ) -> Optional[str]:
-    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render."""
+    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render.
+    ``defer_pin``: lazy host copies, no up-front pin (the caller pins what does not end up resident)."""
     if not torchao_group_offload_supported():
         return None
     import inspect
@@ -3416,7 +3443,9 @@ def stream_prequantized_module(
                 kwargs["non_blocking"] = True
             if "record_stream" in params:
                 kwargs["record_stream"] = True
-            if "low_cpu_mem_usage" in params:
+            if "low_cpu_mem_usage" in params and defer_pin:
+                kwargs["low_cpu_mem_usage"] = True
+            elif "low_cpu_mem_usage" in params:
                 from itertools import chain
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
