@@ -76,8 +76,8 @@ def test_the_fixed_reading_passes():
     "short, long_, fails",
     [
         (110, 380, True),
-        (110, 210, False),  # under 2x
-        (60, 190, False),  # over 2x but under 200 ms
+        (110, 260, False),  # under 2.5x
+        (60, 190, False),  # over 2.5x but under 200 ms
     ],
 )
 def test_open_time_rule(short, long_, fails):
