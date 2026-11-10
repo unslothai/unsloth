@@ -1469,8 +1469,9 @@ def discover_image_caption_pairs(
         if not meta_path.is_file():
             continue
         # Skip a bad upload (invalid UTF-8 or non-object JSON) so the instance_prompt fallback still applies.
+        # split("\n"), not splitlines(): JSON keeps U+2028, U+2029 and U+0085 raw inside a string.
         try:
-            meta_lines = meta_path.read_text(encoding = "utf-8").splitlines()
+            meta_lines = meta_path.read_text(encoding = "utf-8").split("\n")
         except (OSError, UnicodeError):
             continue
         for line in meta_lines:

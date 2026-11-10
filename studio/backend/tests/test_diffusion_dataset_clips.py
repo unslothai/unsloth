@@ -399,6 +399,32 @@ def test_the_summary_reads_a_video_keyed_metadata_caption(tmp_path):
     assert len(discover_clip_caption_pairs(folder)) == 2
 
 
+@pytest.mark.parametrize("separator", [" ", " ", "\u0085"])
+def test_a_caption_holding_a_unicode_line_separator_is_not_dropped(tmp_path, separator):
+    """metadata.jsonl rows keep U+2028, U+2029 and U+0085 raw inside the JSON string, so cutting
+    rows with splitlines() split the row mid-string and the caption was skipped without an error."""
+    from core.training.diffusion_h3_clips import discover_clip_caption_pairs
+    from core.training.diffusion_train_common import discover_image_caption_pairs
+    from routes.training import _load_metadata_captions
+
+    folder = tmp_path / "separators"
+    folder.mkdir()
+    _write_png(folder / "a.png")
+    (folder / "b.mp4").write_bytes(_MP4_BYTES)
+    caption = f"line one{separator}line two"
+    rows = [
+        {"file_name": "a.png", "text": caption},
+        {"file_name": "b.mp4", "text": caption},
+    ]
+    (folder / "metadata.jsonl").write_text(
+        "\n".join(json.dumps(row, ensure_ascii = False) for row in rows) + "\n", encoding = "utf-8"
+    )
+
+    assert _load_metadata_captions(folder) == {"a.png": caption, "b.mp4": caption}
+    assert [c for _, c in discover_image_caption_pairs(folder)] == [caption]
+    assert [c for _, c in discover_clip_caption_pairs(folder)] == [caption]
+
+
 def test_start_leaves_an_image_only_folder_alone(tmp_path):
     """No clips, no refusal: the ordinary uncaptioned-folder error still speaks for itself."""
     from routes.training import _clip_dataset_refusal
