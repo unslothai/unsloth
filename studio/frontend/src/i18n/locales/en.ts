@@ -2600,6 +2600,12 @@ export const en = {
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
         noModelLoaded: "No model loaded",
+        recording: "Record API activity",
+        recordingDescription:
+          "Applies to all accounts. When off, new API requests and usage are not recorded. Existing and in-progress entries remain.",
+        recordingDisabledByEnv: "API recording is disabled by the server environment.",
+        recordingLoadError: "Could not load API recording settings.",
+        recordingSaveError: "Could not save API recording settings.",
         autoOpen: "Floating monitor opens automatically",
         autoOpenDescription: "Opens a small panel when API traffic arrives.",
         cpu: "CPU",

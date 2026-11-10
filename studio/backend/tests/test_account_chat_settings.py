@@ -875,3 +875,59 @@ def test_every_ml_warmup_selection_round_trips_without_persisting_dependencies(
     assert client.get("/settings/ml-warmup").json() == expected
     assert run_as(OWNER, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY) == selected
     assert run_as(ALICE, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY, None) is None
+
+
+def test_api_monitor_setting_is_owner_controlled_and_persistent(client, monkeypatch):
+    """Only the owner changes recording; the setting survives initialization and is shared."""
+    from core.inference import api_monitor as monitor_module
+    from core.inference.api_monitor import ApiMonitor
+    from utils import api_monitor_settings
+
+    monitor = ApiMonitor()
+    monkeypatch.setattr(monitor_module, "api_monitor", monitor)
+    monkeypatch.setattr(api_monitor_settings, "api_monitor", monitor)
+    monkeypatch.delenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR", raising = False)
+    owner = {"x-test-account": OWNER.username}
+    assert client.put("/settings/api-monitor", json = {"enabled": False}).status_code == 403
+    response = client.put("/settings/api-monitor", headers = owner, json = {"enabled": False})
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "enabled": False,
+        "effective_enabled": False,
+        "disabled_by_env": False,
+    }
+    assert client.get("/settings/api-monitor").json() == response.json()
+    assert run_as(ALICE, studio_db.get_app_setting, "api_monitor_recording_enabled", None) is None
+    monitor.set_enabled(True)
+    api_monitor_settings.apply_api_monitor_setting()
+    assert not monitor.enabled
+    assert (
+        client.put("/settings/api-monitor", headers = owner, json = {"enabled": "true"}).status_code
+        == 422
+    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR", "1")
+    response = client.put("/settings/api-monitor", headers = owner, json = {"enabled": True})
+    assert response.json() == {"enabled": True, "effective_enabled": False, "disabled_by_env": True}
+
+
+def test_api_monitor_setting_storage_failure_does_not_enable_logging(monkeypatch):
+    """A failed save cannot change live state, and an unreadable setting fails closed."""
+    from core.inference.api_monitor import ApiMonitor
+    from utils import api_monitor_settings
+
+    monitor = ApiMonitor(enabled = False)
+    monkeypatch.setattr(api_monitor_settings, "api_monitor", monitor)
+    monkeypatch.delenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR", raising = False)
+
+    def unavailable(*args, **kwargs):
+        """Simulate an inaccessible settings database."""
+        raise OSError("settings unavailable")
+
+    monkeypatch.setattr(studio_db, "upsert_app_settings", unavailable)
+    with pytest.raises(OSError, match = "settings unavailable"):
+        api_monitor_settings.set_api_monitor_enabled(True)
+    assert not monitor.enabled
+    monkeypatch.setattr(studio_db, "get_app_setting", unavailable)
+    monitor.set_enabled(True)
+    api_monitor_settings.apply_api_monitor_setting()
+    assert not monitor.enabled
