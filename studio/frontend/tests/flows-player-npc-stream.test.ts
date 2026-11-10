@@ -64,11 +64,48 @@ test("a streamed answer that fails or stops early is an error", async () => {
 test("loading a save stops the reply still being written", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(
-    new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
+    new URL(
+      "../src/features/flows/player/world/world-player.tsx",
+      import.meta.url,
+    ),
     "utf8",
   );
   assert.match(src, /signal: run\.signal,\s*onDelta:/);
-  assert.match(src, /loads\.current \+= 1;\s*replyRun\.current\?\.abort\(\);/);
+  assert.match(
+    src,
+    /cancelLiveWork\(loads, messages, \[replyRun, summaryRun, directorRun\]\);\s*queue\.clear\(\);/,
+  );
+});
+
+test("leaving the world stops the pending reply and its follow-up model calls", async () => {
+  const loads = { current: 3 };
+  const messages = { current: 7 };
+  const reply = { current: new AbortController() as AbortController | null };
+  const summary = { current: new AbortController() as AbortController | null };
+  const director = { current: null as AbortController | null };
+  const signals = [reply.current!.signal, summary.current!.signal];
+  const turn = messages.current;
+  const generation = loads.current;
+  L.cancelLiveWork(loads, messages, [reply, summary, director]);
+  assert.ok(signals.every((s) => s.aborted));
+  assert.equal(reply.current, null);
+  assert.equal(summary.current, null);
+  // The reply continuation checks both before it summarises or directs.
+  assert.notEqual(turn, messages.current);
+  assert.notEqual(generation, loads.current);
+
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL(
+      "../src/features/flows/player/world/world-player.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /useEffect\(\s*\(\) => \(\) =>\s*cancelLiveWork\(loads, messages, \[replyRun, summaryRun, directorRun\]\),\s*\[\],\s*\)/,
+  );
 });
 
 test("with no chat model a villager answers offline in their own words", () => {
@@ -78,12 +115,25 @@ test("with no chat model a villager answers offline in their own words", () => {
   ])
     assert.equal(L.isNoChatModelError(msg), true, msg);
   assert.equal(
-    L.isNoChatModelError("Could not load org/m: We couldn't connect to 'https://huggingface.co' to load the files"),
+    L.isNoChatModelError(
+      "Could not load org/m: We couldn't connect to 'https://huggingface.co' to load the files",
+    ),
     true,
   );
   assert.equal(L.isNoChatModelError("The reply was not valid JSON"), false);
-  assert.equal(L.isNoChatModelError("Could not load org/m: CUDA out of memory. Tried to allocate 2.00 GiB"), false);
-  assert.equal(L.offlineLine("Welcome to the village!", 0), "Welcome to the village!");
-  assert.notEqual(L.offlineLine("Welcome to the village!", 1), "Welcome to the village!");
+  assert.equal(
+    L.isNoChatModelError(
+      "Could not load org/m: CUDA out of memory. Tried to allocate 2.00 GiB",
+    ),
+    false,
+  );
+  assert.equal(
+    L.offlineLine("Welcome to the village!", 0),
+    "Welcome to the village!",
+  );
+  assert.notEqual(
+    L.offlineLine("Welcome to the village!", 1),
+    "Welcome to the village!",
+  );
   assert.ok(L.offlineLine("", 0).length > 0);
 });
