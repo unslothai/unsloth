@@ -41,10 +41,18 @@ from core.inference.diffusion_device import (
     auto_cuda_ordinal_for_load,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
+    resolve_selected_cuda_ordinals,
 )
+from core.inference.diffusion_multigpu import (
+    AUTOMATIC_ORDINALS,
+    multigpu_all_enabled,
+    with_load_selection,
+)
+from core.inference.sd_cpp_multigpu import split_for_load
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    sd_cpp_flow_shift_for,
     MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -621,6 +629,18 @@ def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
     if text is None or "--max-vram" not in text:
         return frozenset()
     return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
+
+
+# Older builds register --auto-fit as a bare boolean, so "--auto-fit off" fails as "unknown argument: off".
+_AUTO_FIT_ON_OFF = re.compile(r"--auto-fit\s+on\|off")
+
+
+def _layer_split_supported(binary: Optional[str]) -> bool:
+    """Whether ``binary`` takes a per-device ``--max-vram`` and ``--auto-fit off`` (a two-card block split)."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and "--max-vram" in text and _AUTO_FIT_ON_OFF.search(text) is not None
 
 
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
@@ -2887,6 +2907,7 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    scheduler: Optional[str] = None
     # The base's shipped ``sample_sigmas`` grid, sent as custom sigmas; None keeps sd.cpp's own schedule.
     sample_sigmas: Optional[tuple[float, ...]] = None
     server: Optional[SdCppServer] = None
@@ -2909,25 +2930,37 @@ class _SdState:
     child_env: tuple[tuple[str, str], ...] = ()
     # The user picked the GPU (a gpu_ids pool or UNSLOTH_DIFFUSION_SD_CPP_DEVICE): never moved to CPU behind their back.
     gpu_explicit: bool = False
+    multi_gpu: Optional[dict[str, Any]] = None
+    split_physical_gpu_id: Optional[int] = None
+    vram_budget: Optional[str] = None
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
 
+    def vram_budget_args(self) -> list[str]:
+        return ["--max-vram", self.vram_budget] if self.vram_budget else []
+
     @property
     def placed_ordinal(self) -> Optional[int]:
-        """Torch ordinal of ``physical_gpu_id``; without it card-sharing helpers (upsampler) split over all GPUs."""
-        if self.physical_gpu_id is None or self.off_torch_device is not None:
+        """Torch ordinal of ``physical_gpu_id`` (a split's diffusion card); without it card-sharing helpers (upsampler) split over all GPUs."""
+        physical = (
+            self.physical_gpu_id if self.physical_gpu_id is not None else self.split_physical_gpu_id
+        )
+        if physical is None or self.off_torch_device is not None:
             return None
         try:
             from utils.hardware import get_parent_visible_gpu_ids
             visible = [int(i) for i in get_parent_visible_gpu_ids()]
-            return visible.index(int(self.physical_gpu_id))
+            return visible.index(int(physical))
         except Exception:  # noqa: BLE001
             return None
 
 
 def _offload_with_device_pin_impl(
-    offload: tuple[str, ...] | list[str], binary: Optional[str], ordinal: Optional[int]
+    offload: tuple[str, ...] | list[str],
+    binary: Optional[str],
+    ordinal: Optional[int],
+    split: Any = None,
 ) -> list[str]:
     """``offload`` plus the ``--backend`` pin for whichever build is about to run it."""
     flags = list(offload)
@@ -2938,7 +2971,57 @@ def _offload_with_device_pin_impl(
         # `Vulkan0` is not a physical index; pin by card name instead.
         selected_name, selected_position = physical_card_name(ordinal)
         device_name = sd_cpp_device_named(binary, selected_name, position = selected_position)
+    if split is not None and device_name is not None and int(split.primary) == int(ordinal):
+        second = sd_cpp_device_name_for_ordinal(binary, int(split.secondary))
+        if second is not None and second != device_name:
+            layer = bool(split.layer) and _layer_split_supported(binary)
+            pinned = device_backend_flags(
+                f"{device_name}&{second}" if layer else device_name,
+                flags,
+                te_device = second,
+                vae_device = second if split.vae_on_secondary else None,
+            )
+            if layer:
+                # auto-fit would demand the whole model on each listed card; the budgets size sd.cpp's block cut
+                budgets = ",".join(
+                    f"{name}={int(mib) / 1024:.2f}"
+                    for name, mib in zip((device_name, second), split.budgets_mib)
+                )
+                pinned += ["--auto-fit", "off", "--max-vram", budgets]
+            return [*flags, *pinned]
+        logger.info(
+            "sd_cpp.multigpu: one card (cuda:%s %s)",
+            split.secondary,
+            "has no device name in this build"
+            if second is None
+            else f"resolves to {second} as well",
+        )
     return [*flags, *device_backend_flags(device_name, flags)]
+
+
+def _split_physical_gpu_id(ordinal: int) -> Optional[int]:
+    """Physical id of torch ordinal ``ordinal`` (a split's diffusion card), or None."""
+    try:
+        from utils.hardware import get_parent_visible_gpu_ids
+        visible = [int(i) for i in get_parent_visible_gpu_ids()]
+        return visible[int(ordinal)] if 0 <= int(ordinal) < len(visible) else None
+    except Exception:  # noqa: BLE001 -- unknown keeps the helpers on every card, as before
+        return None
+
+
+def _backend_devices(committed_flags: tuple[str, ...]) -> set[str]:
+    """Every device a committed ``--backend`` assignment names (``diffusion=CUDA0,te=CUDA1`` -> CUDA0, CUDA1)."""
+    out: set[str] = set()
+    for index, flag in enumerate(committed_flags[:-1]):
+        if flag != "--backend":
+            continue
+        for part in str(committed_flags[index + 1]).split(","):
+            _key, sep, value = part.partition("=")
+            for name in (value if sep else part).split("&"):
+                name = name.strip()
+                if name and name.lower() != "cpu":
+                    out.add(name.lower())
+    return out
 
 
 def _resolved_server_physical_gpu_id(
@@ -2946,6 +3029,8 @@ def _resolved_server_physical_gpu_id(
 ) -> Optional[int]:
     """Physical id for a provably single-device resident sd-server."""
     if device != "cuda" or "--offload-to-cpu" in committed_flags:
+        return None
+    if len(_backend_devices(committed_flags)) > 1:
         return None
     try:
         from utils.hardware import get_parent_visible_gpu_ids
@@ -3040,8 +3125,15 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
     )
 
 
+def _request_scheduler(state: Any) -> Optional[str]:
+    """The family's ``--scheduler``; None under custom sigmas (they replace the schedule) or the kill switch."""
+    if getattr(state, "sample_sigmas", None) or not sd_cpp_args_mod.family_scheduler_enabled():
+        return None
+    return getattr(state, "scheduler", None)
+
+
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
-    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
+    """The family's ``--flow-shift``; Krea 2 Raw follows output size, variants apply under the family scheduler."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
         state.gguf_filename,
         getattr(state, "display_repo_id", None),
@@ -3049,6 +3141,14 @@ def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
         state.base_repo,
     ):
         return krea2_sd_cpp_flow_shift(width, height)
+    if _request_scheduler(state) and getattr(state.family, "sd_cpp_flow_shift_variants", ()):
+        # Not base_repo: an unnamed dev GGUF can fall back to the family's schnell base.
+        return sd_cpp_flow_shift_for(
+            state.family,
+            getattr(state, "gguf_filename", None),
+            getattr(state, "repo_id", None),
+            getattr(state, "display_repo_id", None),
+        )
     return state.flow_shift
 
 
@@ -3518,6 +3618,16 @@ class SdCppDiffusionBackend:
         if auto_ordinal:
             # Automatic ranks the torch cards too, after validation, unless sd.cpp runs on one torch cannot see.
             gpu_ordinal = auto_cuda_ordinal_for_load()
+        gpu_ordinals: Any = None
+        if (
+            off_torch is None
+            and multigpu_all_enabled()
+            and resolve_diffusion_device_target().device == "cuda"
+        ):
+            if gpu_ids and len(set(gpu_ids)) > 1:
+                gpu_ordinals = resolve_selected_cuda_ordinals(gpu_ids)
+            elif not gpu_ids:
+                gpu_ordinals = AUTOMATIC_ORDINALS
         self._loading_family = fam
 
         base = resolve_base_repo(fam, base_repo)
@@ -3585,12 +3695,14 @@ class SdCppDiffusionBackend:
                 off_torch = off_torch,
                 _load_token = token,
                 _cancel_event = cancel_event,
+                **({"_gpu_ordinals": gpu_ordinals} if gpu_ordinals else {}),
             ),
             daemon = True,
         ).start()
         return self.status()
 
     @_invalidates_gpu_memory("sd.cpp load")
+    @with_load_selection
     def _run_load(
         self,
         *,
@@ -3793,6 +3905,32 @@ class SdCppDiffusionBackend:
             def _ordinal() -> Optional[int]:
                 return selected_ordinal if device == "cuda" else None
 
+            split_memo: dict[tuple, Any] = {}
+
+            def _split() -> Any:
+                key = (device, _ordinal(), tuple(offload), _running()[1])
+                if key not in split_memo:
+                    split_memo[key] = (
+                        split_for_load(
+                            files,
+                            primary = _ordinal(),
+                            offload = offload,
+                            layer_ok = _layer_split_supported(_running()[1]),
+                            logger = logger,
+                        )
+                        if device == "cuda" and off_torch is None
+                        else None
+                    )
+                return split_memo[key]
+
+            def _split_arg() -> tuple:
+                split = _split()
+                return () if split is None else (split,)
+
+            def _pin_ordinal() -> Optional[int]:
+                split = _split()
+                return int(split.primary) if split is not None else _ordinal()
+
             native_speed = _native_speed_for(speed_mode)
 
             # Teardown and commit run under _generate_lock, taken only now: abort and wait for a generation begun during the download, so no stale image persists.
@@ -3877,12 +4015,12 @@ class SdCppDiffusionBackend:
                     started_ok = False
                     try:
                         server_offload = _offload_with_device_pin_impl(
-                            offload, server_binary, _ordinal()
+                            offload, server_binary, _pin_ordinal(), *_split_arg()
                         )
                         spawn_env = _sd_cpp_spawn_env(
                             off_torch,
                             device,
-                            _ordinal(),
+                            _pin_ordinal(),
                             offload,
                             server_offload,
                             _diffusion_weight_types,
@@ -3959,14 +4097,15 @@ class SdCppDiffusionBackend:
                     _offload_with_device_pin_impl(
                         offload,
                         server_binary if mode == "server" else getattr(engine, "binary", None),
-                        _ordinal(),
+                        _pin_ordinal(),
+                        *_split_arg(),
                     )
                 )
                 # Recomputed for what is committed: a deferred install or the one-shot fallback can move placement.
                 spawn_env = _sd_cpp_spawn_env(
                     off_torch,
                     device,
-                    _ordinal(),
+                    _pin_ordinal(),
                     offload,
                     committed_offload_flags,
                     _diffusion_weight_types,
@@ -3988,6 +4127,7 @@ class SdCppDiffusionBackend:
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
                     flow_shift = fam.sd_cpp_flow_shift,
+                    scheduler = fam.sd_cpp_scheduler,
                     sample_sigmas = sample_sigmas,
                     server = server,
                     mode = mode,
@@ -4011,6 +4151,18 @@ class SdCppDiffusionBackend:
                         else None
                     ),
                     selected_card = self._loading_card,
+                    multi_gpu = (
+                        _split().describe()
+                        if _split() is not None
+                        and len(_backend_devices(committed_offload_flags)) > 1
+                        else None
+                    ),
+                    split_physical_gpu_id = (
+                        _split_physical_gpu_id(_split().primary)
+                        if _split() is not None
+                        and len(_backend_devices(committed_offload_flags)) > 1
+                        else None
+                    ),
                     off_torch_device = off_torch.label if off_torch is not None else None,
                     child_env = tuple(sorted((spawn_env or {}).items())),
                     gpu_explicit = gpu_explicit,
@@ -4897,6 +5049,7 @@ class SdCppDiffusionBackend:
         # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False
         device_losses = 0
+        vram_restarted = False
         hires_payload: Optional[dict] = None
         hires_staged: list[Path] = []
 
@@ -4942,6 +5095,7 @@ class SdCppDiffusionBackend:
                     seed = chunk_seed,
                     batch_count = count,
                     sample_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
@@ -4969,10 +5123,12 @@ class SdCppDiffusionBackend:
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
-                    # fresh device: respawn the same build once. Any other death propagates.
+                    # fresh device: respawn the same build once. A VRAM refusal restarts once under a smaller
+                    # budget. Any other death propagates.
                     exc = first_exc
                     while True:
                         moved_to_cpu = False
+                        vram_budget: Optional[str] = None
                         server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
                         if server is None and output_shows_vulkan_device_lost(str(exc)):
                             device_losses += 1
@@ -4990,10 +5146,17 @@ class SdCppDiffusionBackend:
                                     state, str(exc), cancel
                                 )
                                 device_respawned = server is not None
+                        if server is None and not vram_restarted:
+                            server, vram_budget = self._restart_server_with_vram_headroom(
+                                state, str(exc), cancel
+                            )
+                            vram_restarted = server is not None
                         if server is None:
                             raise exc
                         old_server = state.server
                         state = replace(state, server = server)
+                        if vram_budget is not None:
+                            state = replace(state, vram_budget = vram_budget)
                         if moved_to_cpu:
                             # Placement follows the server: the flags the CPU server got, no Vulkan pin.
                             state = replace(
@@ -5003,6 +5166,8 @@ class SdCppDiffusionBackend:
                                     without_device_backend_flags(state.offload_flags)
                                 ),
                                 physical_gpu_id = None,
+                                multi_gpu = None,
+                                split_physical_gpu_id = None,
                             )
                         self._hand_over_replacement(state, server, old_server)
                         # The old server's stop removed its scratch dir, and the staged adapters with it.
@@ -5155,7 +5320,59 @@ class SdCppDiffusionBackend:
             native_speed = state.native_speed,
             threads = state.threads,
             env = state.spawn_env(),
+            extra_args = state.vram_budget_args(),
         )
+
+    def _restart_server_with_vram_headroom(
+        self, state: _SdState, error_text: str, cancel: threading.Event
+    ) -> tuple[Optional[SdCppServer], Optional[str]]:
+        """Restart sd-server under ``--max-vram`` after sd.cpp refused a render for VRAM; returns the server and its
+        budget, or ``(None, None)``. The budget comes from the first refusing server's plan and is reused: a server
+        restarted while another application held the card planned too little to halve, and keeps refusing."""
+        if not sd_cpp_args_mod.is_vram_refusal_text(error_text):
+            return None, None
+        if state.device == "cpu" or self._cpu_backend_forced:
+            return None, None
+        if state.server is None or cancel.is_set():
+            return None, None
+        binary = state.server.binary
+        # A two-card split already carries per-device budgets, and an older build rejects the flag.
+        if "--max-vram" in state.offload_flags or "--max-vram" not in sd_cpp_graph_cut_options(
+            binary
+        ):
+            return None, None
+        planned = dict(getattr(state.server, "planned_free_vram_mib", None) or {})
+        budget = state.vram_budget or sd_cpp_args_mod.image_vram_retry_budget(
+            planned, _backend_devices(state.offload_flags)
+        )
+        if budget is None or ("=" in budget and not _layer_split_supported(binary)):
+            return None, None
+        if not self._begin_replacement(state):
+            return None, None
+        logger.warning(
+            "sd-server refused the render for VRAM; restarting it with --max-vram %s (half the free VRAM this "
+            "load first planned with; the refusing server planned with, in MiB: %s) and retrying once. "
+            "Details: %s",
+            budget,
+            planned,
+            error_text[:300],
+        )
+        state.server.stop()
+        server = SdCppServer(binary)
+        with self._lock:
+            self._pending_server = server
+        started = self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            offload = state.offload_flags,
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+            extra_args = ["--max-vram", budget],
+        )
+        return started, (budget if started is not None else None)
 
     def _restart_server_on_cpu_backend(
         self,
@@ -5305,6 +5522,7 @@ class SdCppDiffusionBackend:
                     guidance = flux_guidance,
                     seed = seed_i,
                     sampling_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     batch_count = 1,
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,
@@ -5592,6 +5810,12 @@ class SdCppDiffusionBackend:
             "workflows": workflows,
             "conditioning": conditioning,
             **_native_hires_status(state),
+            # not after a restart onto the CPU backend, whose argv has no device pin
+            **(
+                {"multi_gpu": state.multi_gpu}
+                if state.multi_gpu is not None and not self._cpu_backend_forced
+                else {}
+            ),
         }
 
 

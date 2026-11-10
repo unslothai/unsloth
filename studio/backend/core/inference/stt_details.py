@@ -145,8 +145,7 @@ def _split_cjk(token: str) -> list[str]:
 
 
 def punctuate_words(words: list[dict], text: str) -> list[dict]:
-    """Aligned on letters, matches only: the text repeats chunk overlaps. A word takes the text's
-    spelling only when every one of its pieces matched."""
+    """Letters only (text repeats overlaps); a word takes text spelling if all pieces matched."""
     tokens = [unit for token in text.split() for unit in _split_cjk(token)]
     if not words or not tokens:
         return words

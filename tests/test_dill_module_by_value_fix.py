@@ -233,9 +233,8 @@ def test_the_env_switch_turns_it_off(tmp_path):
 
 
 def test_an_ordinary_site_packages_install_is_a_no_op():
-    """dill's behaviour, fingerprints included, has to be identical where it
-    already works. The gate is what guarantees that, so it is asserted against
-    the environment this test suite itself runs in."""
+    """dill's behaviour, fingerprints included, must be identical where it already works, so the
+    gate is asserted against the environment this test suite runs in."""
     from unsloth.import_fixes import _dill_path_pickles_by_value
 
     assert not _dill_path_pickles_by_value("/usr/lib/python3.12/site-packages/pyarrow/__init__.py")
