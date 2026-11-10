@@ -32,6 +32,7 @@ import random
 import re
 import sqlite3
 import shlex
+import posixpath
 import shutil
 import ssl
 import stat
@@ -6681,7 +6682,7 @@ _HERESTRING_TO_INTERPRETER_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
 )
 _HEREDOC_INTERPRETER_RE = re.compile(
-    r"(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)"
+    r"(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)"
 )
 _HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;", "\n"})
 _PYTHON_STDIN_DATA_MODULES = frozenset({"json.tool", "base64"})
@@ -6708,7 +6709,7 @@ _SHELL_LINE_OPERATORS = (
     "\n",
 )
 _HEREDOC_INTERPRETER_MENTION_RE = re.compile(
-    r"(?<![\w.-])(?i:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php)(?![\w-])"
+    r"(?<![\w.-])(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)(?![\w-])"
 )
 _COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
 _HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
@@ -6780,8 +6781,14 @@ def _python_reads_stdin_program(words: list) -> "bool | None":
     for word in words:
         if any(ch in word for ch in "$`*?[{~"):
             return None
-        if word in ("-", "/dev/stdin"):
+        if word == "-" or posixpath.normpath(word) in (
+            "/dev/stdin",
+            "/dev/fd/0",
+            "/proc/self/fd/0",
+        ):
             return True
+        if posixpath.normpath(word).startswith(("/dev/", "/proc/")):
+            return None
         if word == "--check-hash-based-pycs":
             next(words, None)
         elif word.startswith("--"):
@@ -6873,6 +6880,8 @@ def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
             if not terminated and _HEREDOC_INTERPRETER_MENTION_RE.search("\n".join(body)):
                 return True
             command_word = next((w for w in names if not re.match(r"\w+=", w)), "")
+            if mentioned and names[-1:] == ["exec"]:
+                return True
             if mentioned and (
                 not command_word
                 or command_word in _COMPOUND_CLOSERS
