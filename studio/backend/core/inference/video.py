@@ -13949,11 +13949,9 @@ class VideoBackend:
                         h3_pdd_num_inference_steps,
                     )
 
-                    # The H3 scheduler's grid holds the terminal 0, so `steps` model evaluations is a grid of
-                    # steps + 1 (SGLang / ComfyUI / sd.cpp count; a grid of `steps` ran one forward fewer).
+                    # H3 grid includes the terminal 0: `steps` evaluations need steps + 1 points.
                     kwargs["num_inference_steps"] = h3_num_inference_steps(steps)
-                    # A PDD head bank reads each step's (sigma, sigma_next) off this render's video schedule; its
-                    # 8-step partition is distilled for ComfyUI's count, so it keeps steps + 1 under the kill switch.
+                    # PDD bank is distilled for ComfyUI's count, so it keeps steps + 1 even under the kill switch.
                     if bind_h3_pdd_render(pipe, shift, audio_shift):
                         kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
                         request_shape["pdd"] = True

@@ -26,10 +26,7 @@ H3_AUDIO_VAE = "vae/official/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 
-# Measured (Diffusers T2VA, component CPU offload, 960x544..1344x768, 124-345 frames); base is largest component plus overhead; margin = allocator variance.
-# diffusers' H3 scheduler counts sigma grid points with the terminal 0 included (``linspace(1, 0, n)``: n - 1 model
-# evaluations); SGLang, ComfyUI and sd.cpp run n evaluations for n steps, and so does Studio's step count.
-# "0" passes the requested steps through as grid points (one evaluation fewer).
+# diffusers' H3 grid of n points (terminal 0 included) runs n - 1 evaluations; SGLang/ComfyUI/sd.cpp run n. "0" = old grid.
 H3_STEP_EVALUATIONS_ENV = "UNSLOTH_H3_STEP_EVALUATIONS"
 
 
@@ -43,10 +40,10 @@ def h3_step_evaluations_enabled() -> bool:
 
 
 def h3_num_inference_steps(steps: int) -> int:
-    """The diffusers H3 scheduler's grid size for ``steps`` model evaluations."""
     return int(steps) + 1 if h3_step_evaluations_enabled() else int(steps)
 
 
+# Measured (Diffusers T2VA, component CPU offload, 960x544..1344x768, 124-345 frames); base is largest component plus overhead; margin = allocator variance.
 H3_DIFFUSERS_VRAM_BASE_GB = 68.5
 H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08
 

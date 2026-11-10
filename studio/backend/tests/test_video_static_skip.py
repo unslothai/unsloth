@@ -545,7 +545,7 @@ class _H3LoopPipe:
         num_frames = None,
         **kwargs,
     ):
-        # diffusers' MiniMaxH3Scheduler: num_inference_steps grid points, terminal 0 included
+        # H3 grid points include the terminal 0
         for _ in range(int(num_inference_steps or 2) - 1):
             self.outputs.append(self.transformer(timestep = None, return_dict = False))
             self.scheduler.step(object(), 0, object())

@@ -23,7 +23,6 @@ def _scheduler():
 def test_requested_steps_are_model_evaluations(steps):
     sched = _scheduler()
     sched.set_timesteps(h3.h3_num_inference_steps(steps))
-    # one transformer forward per timestep (guidance-distilled: no unconditional pass)
     assert len(sched.timesteps) == steps
     assert float(sched.sigmas[-1]) == 0.0 and float(sched.sigmas[0]) == 1.0
 

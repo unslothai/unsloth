@@ -605,7 +605,7 @@ class _FakeModularPipe:
             "output": output,
             **kwargs,
         }
-        # As diffusers' MiniMaxH3Scheduler: num_inference_steps counts sigma grid points, terminal 0 included.
+        # As diffusers' MiniMaxH3Scheduler: grid points include the terminal 0.
         for _ in range(int(num_inference_steps or 2) - 1):
             self.scheduler.step(object(), 0, object())
         return {"videos": [[object() for _ in range(int(num_frames or 1))]], "audio": None}
@@ -5823,7 +5823,6 @@ def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runt
 
 @pytest.mark.parametrize("steps", [1, 2, 8, 20])
 def test_h3_modular_runs_one_denoiser_evaluation_per_requested_step(fake_runtime, steps):
-    """N requested steps = N model evaluations, as SGLang, ComfyUI and sd.cpp count them (diffusers' grid of N ran N - 1)."""
     backend = VideoBackend()
     pipe = _load_h3_modular(backend)
     backend.generate(prompt = "a fox", steps = steps)
