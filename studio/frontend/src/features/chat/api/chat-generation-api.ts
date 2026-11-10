@@ -373,6 +373,10 @@ export async function cancelChatGenerationRun(
 /** The events stream's own comment. Pinned by a test against the route that emits it. */
 const KEEPALIVE_PREFIX = ": keep-alive";
 
+/** The route sends a keep-alive every 15s, so a stream this quiet is a connection that died without the
+ *  browser hearing of it (a phone back from sleep). Wall clock, so time spent asleep counts. */
+export const CHAT_GENERATION_SILENCE_TIMEOUT_MS = 45_000;
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: SSE framing retains state across reader chunks.
 async function* streamChatGenerationEvents(
   id: string,
@@ -380,6 +384,7 @@ async function* streamChatGenerationEvents(
   signal?: AbortSignal,
   /** A keep-alive is progress only if its stamp MOVED, judged by the caller across reconnects. */
   onActivity?: (keepAliveStamp?: string) => void,
+  silenceTimeoutMs = CHAT_GENERATION_SILENCE_TIMEOUT_MS,
 ): AsyncGenerator<ChatGenerationEvent> {
   const response = await authFetch(
     `/api/inference/chat-runs/${encodeURIComponent(id)}/events?after=${Math.max(0, after)}`,
@@ -391,9 +396,20 @@ async function* streamChatGenerationEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let lastByteAt = Date.now();
+  // Ending the read hands the follower its normal reconnect from the cursor.
+  const silenceWatch = globalThis.setInterval(
+    () => {
+      if (Date.now() - lastByteAt > silenceTimeoutMs) {
+        reader.cancel().catch(() => undefined);
+      }
+    },
+    Math.min(5_000, silenceTimeoutMs),
+  );
   try {
     while (true) {
       const { done, value } = await reader.read();
+      lastByteAt = Date.now();
       buffer += decoder.decode(value, { stream: !done });
       buffer = buffer.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
@@ -422,6 +438,7 @@ async function* streamChatGenerationEvents(
       if (done) return;
     }
   } finally {
+    globalThis.clearInterval(silenceWatch);
     await reader.cancel().catch(() => undefined);
   }
 }
@@ -438,6 +455,7 @@ export async function* followChatGenerationRun(
     signal?: AbortSignal;
     /** Overridable so a test can reach the deadline without waiting out the default. */
     stallTimeoutMs?: number;
+    silenceTimeoutMs?: number;
   } = {},
 ): AsyncGenerator<ChatGenerationRunUpdate> {
   const { replayFrom } = options;
@@ -502,6 +520,7 @@ export async function* followChatGenerationRun(
           cursor,
           signal,
           noteProgress,
+          options.silenceTimeoutMs,
         )) {
           if (event.seq <= cursor) continue;
           cursor = event.seq;
