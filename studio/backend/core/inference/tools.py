@@ -15919,8 +15919,7 @@ def _fetch_url_raw(
             try:
                 queued_at = time.monotonic()
                 with _WEB_PDF_LOCK:
-                    # Time queued behind another read's PDF, or spent installing PDF support on
-                    # first use, is not spent on this read.
+                    # Queueing behind another read's PDF and first-use installs are not spent on this read.
                     ensure_pdf_support()
                     if deadline is not None:
                         deadline += time.monotonic() - queued_at

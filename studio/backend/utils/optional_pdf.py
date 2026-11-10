@@ -101,8 +101,7 @@ def _missing_requirements() -> list[str]:
         except PackageNotFoundError:
             missing.append(f"{requirement.name}{requirement.specifier}")
         else:
-            # pymupdf4llm declares tabulate without a version floor. The download pin is not
-            # a compatibility restriction on a formatter another feature may have loaded.
+            # pymupdf4llm sets no tabulate floor, so any installed tabulate is accepted, not just the pin.
             if (
                 canonicalize_name(requirement.name) != "tabulate"
                 and installed not in requirement.specifier
