@@ -671,3 +671,328 @@ def test_video_stop_cancels_only_its_own_render():
         video_nodes.POLL_S = poll
     cancel = [c for c in calls if c[1] == "/api/inference/video/generate/cancel"]
     assert cancel == [("POST", "/api/inference/video/generate/cancel", {"video_id": "vid1"})]
+
+
+def test_edit_image_falls_back_when_the_family_has_no_instruction_editing():
+    class Ctx:
+        params = {"model": None, "instruction": "make it smile"}
+        inputs = {"image": {"kind": "image", "ref": "image:1"}}
+        flow_params = {}
+        seed = 3
+        calls = []
+
+        async def generate_image(self, **kw):
+            self.calls.append(kw.get("workflow"))
+            if kw.get("workflow") == "edit":
+                raise FlowNodeError(
+                    "Instruction editing is not supported for the 'flux.2-klein' model family."
+                )
+            return [{"kind": "image", "ref": "image:2"}]
+
+        def log(self, *a, **k):
+            pass
+
+    ctx = Ctx()
+    out = asyncio.run(image_nodes.edit(ctx))
+    assert out["image"]["ref"] == "image:2" and ctx.calls == ["edit", "reference"]
+
+
+def test_generate_image_with_only_references_uses_the_reference_workflow():
+    ref = {"kind": "image", "ref": "image:9"}
+
+    class Ctx:
+        params = {p["id"]: p["default"] for p in SPECS_BY_TYPE["image.generate"]["params"]}
+        inputs = {"prompt": "the hero waves", "reference": [ref]}
+        flow_params = {}
+        seed = 5
+        seen = {}
+
+        async def generate_image(self, **kw):
+            self.seen.update(kw)
+            return [{"kind": "image", "ref": "image:10"}]
+
+    ctx = Ctx()
+    asyncio.run(image_nodes.generate(ctx))
+    assert ctx.seen["workflow"] == "reference" and ctx.seen["init_image"] == ref
+    assert ctx.seen["references"] is None and ctx.seen["strength"] is None
+
+
+def test_a_maximum_size_grid_stays_bounded():
+    from core.flows.nodes.image import MAX_GRID_SIDE, compose_grid
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (200, 10, 10)).save(buf, "PNG")
+    out = compose_grid(
+        [buf.getvalue()] * 64,
+        [""] * 64,
+        columns = 8,
+        gap = 24,
+        background = "#111",
+        caption_style = "none",
+        cell = 2048,
+    )
+    assert max(Image.open(io.BytesIO(out)).size) <= MAX_GRID_SIDE
+
+
+def test_a_maximum_size_sprite_sheet_stays_bounded():
+    from core.flows.nodes.image import MAX_GRID_SIDE, sprite_sheet
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (16, 16), (200, 10, 10, 255)).save(buf, "PNG")
+    png, meta = sprite_sheet([buf.getvalue()] * 256, 1024, 16)
+    assert max(Image.open(io.BytesIO(png)).size) <= MAX_GRID_SIDE
+    assert meta["frame_width"] * meta["columns"] <= MAX_GRID_SIDE
+
+
+def test_captions_never_draw_missing_glyphs():
+    from core.flows.nodes.image import _ASCII_PUNCT
+    assert "first \u2014 even\u2026".translate(_ASCII_PUNCT) == "first - even..."
+
+
+def test_an_empty_segmentation_mask_never_leaves_an_invisible_character(monkeypatch):
+    import io
+
+    im = Image.new("RGB", (64, 96), (240, 240, 240))
+    for x in range(20, 44):
+        for y in range(20, 80):
+            im.putpixel((x, y), (180, 60, 40))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    black = io.BytesIO()
+    Image.new("L", (64, 96), 0).save(black, "PNG")
+
+    async def fake_bytes(ctx, media):
+        return buf.getvalue(), "image/png"
+
+    monkeypatch.setattr(_common, "media_bytes", fake_bytes)
+
+    class Ctx:
+        saved = []
+        logs = []
+
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **kw,
+        ):
+            return {"mask": "data:image/png;base64," + base64.b64encode(black.getvalue()).decode()}
+
+        def log(
+            self,
+            message,
+            level = "info",
+        ):
+            self.logs.append(level)
+
+        async def save_asset(
+            self,
+            data,
+            mime,
+            kind = "image",
+            extra = None,
+        ):
+            self.saved.append(data)
+            return {"kind": "image", "ref": f"sha256:{len(self.saved)}"}
+
+    ctx = Ctx()
+    asyncio.run(
+        _common.remove_background(ctx, {"kind": "image", "ref": "image:1"}, "the character")
+    )
+    assert _common._visible(ctx.saved[0])
+    assert "warning" in ctx.logs
+
+
+class _UpscaleCtx:
+    def __init__(self, png: bytes, error: str):
+        self.inputs = {"image": {"kind": "image", "ref": "a" * 64}}
+        self.params = {"factor": "2"}
+        self.seed, self.error, self.png, self.logs, self.saved = 1, error, png, [], []
+
+    async def generate_image(self, **kwargs):
+        raise FlowNodeError(self.error)
+
+    async def media_bytes(self, value):
+        return self.png, "image/png"
+
+    def log(
+        self,
+        message,
+        level = "info",
+    ):
+        self.logs.append((level, message))
+
+    async def save_asset(
+        self,
+        data,
+        mime,
+        kind = None,
+    ):
+        self.saved.append(data)
+        return {"kind": "image", "ref": "b" * 64}
+
+
+@pytest.mark.parametrize(
+    "error, resized",
+    [
+        ("upscale is not supported for the 'flux.2-klein' model family.", True),
+        ("CUDA out of memory", False),
+    ],
+)
+def test_upscale_resizes_only_when_the_loaded_model_cannot_upscale(error, resized):
+    from core.flows.nodes.image import upscale
+
+    ctx = _UpscaleCtx(_png(size = (64, 40)), error)
+    if not resized:
+        with pytest.raises(FlowNodeError):
+            asyncio.run(upscale(ctx))
+        return
+    out = asyncio.run(upscale(ctx))
+    assert out["image"]["kind"] == "image"
+    assert Image.open(io.BytesIO(ctx.saved[0])).size == (128, 80)
+    assert ctx.logs and ctx.logs[0][0] == "warning"
+
+
+def _looped_mask(data: bytes, tolerance: int = 40) -> bytes:
+    """The per-pixel border key chroma_key replaced, as the reference."""
+    from PIL import Image, ImageDraw
+
+    im = Image.open(io.BytesIO(data)).convert("RGBA")
+    w, h = im.size
+    work = im.convert("RGB")
+    mask = Image.new("L", (w, h), 255)
+    marker = (255, 0, 255)
+    for seed in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w // 2, 0), (w // 2, h - 1), (0, h // 2), (w - 1, h // 2)]:  # fmt: skip
+        if work.getpixel(seed) != marker:
+            ImageDraw.floodfill(work, seed, marker, thresh = tolerance)
+    pixels, mpx = work.load(), mask.load()
+    for y in range(h):
+        for x in range(w):
+            if pixels[x, y] == marker:
+                mpx[x, y] = 0
+    return mask.tobytes()
+
+
+def _subject_png() -> bytes:
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGB", (96, 64), (20, 200, 30))
+    draw = ImageDraw.Draw(im)
+    draw.ellipse((30, 12, 70, 52), fill = (200, 40, 40))
+    draw.rectangle((0, 60, 10, 63), fill = (255, 0, 255))
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("scipy", [True, False], ids = ["scipy", "no-scipy"])
+def test_chroma_key_matches_the_per_pixel_key(monkeypatch, scipy):
+    import builtins
+
+    from PIL import Image
+
+    if not scipy:
+        real_import = builtins.__import__
+
+        def no_scipy(name, *args, **kwargs):
+            if name.startswith("scipy"):
+                raise ImportError(name)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_scipy)
+    data = _subject_png()
+    cutout, mask = _common.chroma_key(data)
+    got = Image.open(io.BytesIO(mask))
+    assert got.mode == "L" and got.tobytes() == _looped_mask(data)
+    assert Image.open(io.BytesIO(cutout)).getchannel("A").tobytes() == got.tobytes()
+
+
+def test_chroma_key_matches_on_noisy_borders():
+    import random
+
+    from PIL import Image
+    for seed in range(6):
+        rng = random.Random(seed)
+        im = Image.new("RGB", (40, 30))
+        im.putdata(
+            [
+                tuple(min(255, max(0, 120 + rng.randint(-30, 30) + (x + y) % 7)) for _ in range(3))
+                if rng.random() > 0.15
+                else (255, 0, 255)
+                for y in range(30)
+                for x in range(40)
+            ]
+        )
+        out = io.BytesIO()
+        im.save(out, "PNG")
+        data = out.getvalue()
+        _, mask = _common.chroma_key(data, tolerance = 25)
+        assert Image.open(io.BytesIO(mask)).tobytes() == _looped_mask(data, 25), seed
+
+
+def test_the_scipy_free_flood_finds_the_same_region():
+    import numpy as np
+    from scipy import ndimage
+
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        candidates = rng.random((30, 40)) > 0.35
+        y, x = np.argwhere(candidates)[0]
+        labels, _ = ndimage.label(candidates)
+        expected = labels == labels[y, x]
+        assert (_common._flood_region(candidates, int(x), int(y)) == expected).all()
+
+
+class _ImageCtx:
+    def __init__(self, reads):
+        self.reads = reads
+
+    async def call(
+        self,
+        method,
+        path,
+        json = None,
+        **kwargs,
+    ):
+        if path == "/api/inference/images/generate":
+            return {"images": [{"id": "out1"}]}
+        return {}
+
+    def on_cancel(self, fn):
+        pass
+
+    def progress(self, *args, **kwargs):
+        pass
+
+    def log(
+        self,
+        message,
+        level = "info",
+    ):
+        pass
+
+
+def test_an_inpaint_reads_its_init_image_once(monkeypatch):
+    reads = []
+    png = _subject_png()
+
+    async def fake_media_bytes(ctx, media):
+        reads.append(media["ref"])
+        return png, "image/png"
+
+    async def keep(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(_common, "media_bytes", fake_media_bytes)
+    monkeypatch.setattr(_common, "ensure_model", keep)
+    asyncio.run(
+        _common.generate_image(
+            _ImageCtx(reads),
+            model = None,
+            prompt = "a fox",
+            init_image = {"ref": "image:init"},
+            mask = {"ref": "image:mask"},
+        )
+    )
+    assert sorted(reads) == ["image:init", "image:mask"]

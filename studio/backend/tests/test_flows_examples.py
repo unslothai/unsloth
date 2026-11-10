@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import asyncio
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import pytest
 from core.flows import compiler
-from core.flows.compiler import parse_document
 from core.flows.examples.build_examples import REVIEW_TOPICS, build
 from core.flows.nodes import text as text_nodes
 from core.flows.nodes import transform
@@ -19,7 +17,7 @@ from core.flows.story import compile_story_report, walk_check
 
 from .flows_player_fakes import FakeCtx, run
 
-from ._flows_helpers import make_engine
+from ._flows_helpers import make_engine, run_doc
 
 BUILT = {d["id"]: d for d in build()}
 IDS = sorted(BUILT)
@@ -27,6 +25,15 @@ IDS = sorted(BUILT)
 
 def _example(name: str) -> dict:
     return json.loads(json.dumps(BUILT[name]))
+
+
+def _run_example(name: str, stubs: dict):
+    """Run a built example with the real handlers plus ``stubs``; it must complete."""
+    eng = make_engine({**load_handlers(), **stubs})
+    rs = run(run_doc(eng, _example(name), timeout = 240))
+    failed = {nid: st.error for nid, st in rs.nodes.items() if st.status == "failed"}
+    assert rs.status == "completed", failed
+    return rs
 
 
 def test_the_example_count():
@@ -143,27 +150,6 @@ def _png(
     buf = io.BytesIO()
     Image.new(mode, size, color).save(buf, format = "PNG")
     return buf.getvalue()
-
-
-def _run_example(name: str, stubs: dict):
-    import asyncio
-
-    from core.flows.compiler import parse_document
-    from core.flows.registry import load_handlers
-
-    eng = make_engine({**load_handlers(), **stubs})
-    parsed, errors = parse_document(_example(name))
-    assert not errors, errors
-
-    async def go():
-        rs = await eng.start_run(app = None, flow_id = name, doc = parsed, options = {})
-        await asyncio.wait_for(rs.task, timeout = 240)
-        return rs
-
-    rs = run(go())
-    failed = {nid: s.error for nid, s in rs.nodes.items() if s.status == "failed"}
-    assert rs.status == "completed", failed
-    return rs
 
 
 def test_review_insights_counts_topics_into_a_table_and_chart():
@@ -306,22 +292,6 @@ def test_background_swap_places_the_cutout_on_the_new_scene():
     assert [v["ref"] for v in shown][1:] == [rs.nodes["cut"].outputs["image"]["ref"], placed["ref"]]
 
 
-def _run_example_b(name: str, stubs: dict) -> tuple[Any, dict]:
-    eng = make_engine({**load_handlers(), **stubs})
-    doc = _example(name)
-
-    async def go():
-        parsed, errors = parse_document(doc)
-        assert not errors, errors
-        rs = await eng.start_run(app = None, flow_id = doc["id"], doc = parsed, options = {})
-        await asyncio.wait_for(rs.task, timeout = 30)
-        return rs
-
-    rs = asyncio.run(go())
-    assert rs.status == "completed", {n: s.error for n, s in rs.nodes.items() if s.error}
-    return rs, rs.outputs
-
-
 def _calls(seen: list) -> Callable:
     async def handler(ctx):
         seen.append((ctx.node_id, dict(ctx.params), dict(ctx.inputs)))
@@ -351,7 +321,7 @@ def test_document_audiobook_reads_each_passage_and_joins_them():
         return {"audio": {"kind": "audio", "ref": "audio:book"}}
 
     saved: list = []
-    rs, outputs = _run_example_b(
+    rs = _run_example(
         "document-audiobook",
         {
             "input.file": _a_document,
@@ -361,6 +331,7 @@ def test_document_audiobook_reads_each_passage_and_joins_them():
             "output.library": _calls(saved),
         },
     )
+    outputs = rs.outputs
     assert outputs["passages"][0].startswith("word0 ") and len(outputs["passages"]) == 9
     assert spoken == outputs["passages"][:8]
     assert joined == [[f"audio:{i}" for i in range(1, 9)]]
@@ -389,9 +360,9 @@ def test_resume_tailor_matches_then_writes_from_the_resume():
         made = {"bullets": ["Built daily SQL reports"], "cover_letter": "Dear team, ..."}
         return {"text": json.dumps(made), "json": made}
 
-    _, outputs = _run_example_b(
+    outputs = _run_example(
         "resume-tailor", {"input.file": _a_document, "doc.load": load, "llm.generate": generate}
-    )
+    ).outputs
     assert outputs == {
         "missing skills": ["Tableau", "dbt"],
         "tailored bullets": ["Built daily SQL reports"],
@@ -415,7 +386,8 @@ def test_study_cards_dedupes_questions_and_prints_the_deck():
         seen.append(text_nodes._prompt(ctx, "prompt", "prompt"))
         return {"text": json.dumps({"cards": cards}), "json": {"cards": cards}}
 
-    rs, outputs = _run_example_b("study-cards", {"llm.generate": generate})
+    rs = _run_example("study-cards", {"llm.generate": generate})
+    outputs = rs.outputs
     assert "RuBisCO fixes carbon dioxide" in seen[0]
     assert outputs["cards"] == cards[:2]
     assert outputs["duplicates removed"] == 1
@@ -424,33 +396,11 @@ def test_study_cards_dedupes_questions_and_prints_the_deck():
     )
 
 
-async def _run_example_c(
-    name: str,
-    stubs: dict,
-    params: dict | None = None,
-):
-    import asyncio
-
-    from core.flows.compiler import parse_document
-    from core.flows.registry import load_handlers
-
-    eng = make_engine({**load_handlers(), **stubs})
-    parsed, errors = parse_document(_example(name))
-    assert not errors, errors
-    rs = await eng.start_run(app = None, flow_id = name, doc = parsed, options = {"params": params or {}})
-    await asyncio.wait_for(rs.task, timeout = 240)
-    failed = {nid: s.error for nid, s in rs.nodes.items() if s.status == "failed"}
-    return rs, failed
-
-
 def test_inventory_reconcile_lists_the_discrepancies_with_no_model():
-    import asyncio
-
     doc = _example("inventory-reconcile")
     assert doc["requirements"]["models"] == []
     assert not [n for n in doc["nodes"] if SPECS_BY_TYPE[n["type"]]["lane"] == "gpu"]
-    rs, failed = asyncio.run(_run_example_c("inventory-reconcile", {}))
-    assert rs.status == "completed" and not failed, failed
+    rs = _run_example("inventory-reconcile", {})
     rows = [
         (r["sku"], r["status"], r["difference"], r["value"]) for r in rs.outputs["discrepancies"]
     ]
@@ -470,8 +420,6 @@ def test_inventory_reconcile_lists_the_discrepancies_with_no_model():
 
 
 def test_release_notes_sorts_each_change_and_keeps_breaking_ones_apart():
-    import asyncio
-
     seen: dict = {"extract": [], "generate": []}
 
     async def extract(ctx):
@@ -495,10 +443,7 @@ def test_release_notes_sorts_each_change_and_keeps_breaking_ones_apart():
         seen["generate"].append(ctx.inputs)
         return {"text": "## 2.4.0 notes", "json": None}
 
-    rs, failed = asyncio.run(
-        _run_example_c("release-notes", {"llm.extract": extract, "llm.generate": generate})
-    )
-    assert rs.status == "completed" and not failed, failed
+    rs = _run_example("release-notes", {"llm.extract": extract, "llm.generate": generate})
     changes = next(n for n in _example("release-notes")["nodes"] if n["id"] == "changes")["params"][
         "items"
     ]
@@ -518,8 +463,6 @@ def test_release_notes_sorts_each_change_and_keeps_breaking_ones_apart():
 
 
 def test_localization_kit_translates_every_string_per_language():
-    import asyncio
-
     calls: list = []
 
     async def generate(ctx):
@@ -528,8 +471,7 @@ def test_localization_kit_translates_every_string_per_language():
         language = ctx.inputs["prompt"].split(" into ")[1].rstrip(".")
         return {"text": "", "json": {"strings": dict(strings), "language": language}}
 
-    rs, failed = asyncio.run(_run_example_c("localization-kit", {"llm.generate": generate}))
-    assert rs.status == "completed" and not failed, failed
+    rs = _run_example("localization-kit", {"llm.generate": generate})
     languages = ["Spanish", "German", "Japanese", "Brazilian Portuguese"]
     assert [c[0] for c in calls] == [
         f"Target language: {l}. Translate every UI string in the context into {l}."
@@ -544,7 +486,6 @@ def test_localization_kit_translates_every_string_per_language():
 
 
 def test_campaign_kit_crops_one_image_into_three_captioned_ads():
-    import asyncio
     import io
 
     from core.flows import assets
@@ -572,13 +513,10 @@ def test_campaign_kit_crops_one_image_into_three_captioned_ads():
     async def library(ctx):
         return {"saved": [i["ref"] for i in ctx.inputs["value"][0]]}
 
-    rs, failed = asyncio.run(
-        _run_example_c(
-            "campaign-kit",
-            {"llm.generate": generate, "image.generate": paint, "output.library": library},
-        )
+    rs = _run_example(
+        "campaign-kit",
+        {"llm.generate": generate, "image.generate": paint, "output.library": library},
     )
-    assert rs.status == "completed" and not failed, failed
     assert painted == ["a frosted bottle of cold brew on moss"]
     assert rs.outputs["copy"]["headline"] == "Slow mornings, bottled"
     ads = rs.nodes["ads"].outputs["list"]
@@ -592,3 +530,12 @@ def test_campaign_kit_crops_one_image_into_three_captioned_ads():
     assert len(rs.nodes["save"].outputs["saved"]) == 3
     shown = rs.nodes["show"].outputs["value"]
     assert [v["kind"] for v in shown] == ["image"] * 3
+
+
+def test_example_summaries_are_built_once_and_match():
+    from core.flows.examples import build_examples as examples
+    from routes import flows as routes
+
+    first = routes.list_examples()["examples"]
+    assert first is routes.list_examples()["examples"]
+    assert first == [routes._example_summary(examples.example(i)) for i in examples.example_ids()]

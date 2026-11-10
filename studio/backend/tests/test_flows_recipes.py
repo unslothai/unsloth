@@ -11,10 +11,9 @@ from core.flows.recipe_compile import RecipeCompileError, compile_recipe, normal
 from core.flows.recipe_import import COLUMN_TYPE, import_recipe, column_references
 from core.flows.registry import FlowNodeError
 
-from ._flows_recipe_helpers import LEARNING, RecipeCtx, fast_recipe_poll, saved_recipe_routes  # noqa: F401
+from ._flows_recipe_helpers import LEARNING, RecipeCtx, saved_recipe_routes
 
 # Old names, still imported by test_flows_loop.py.
-_Ctx, _recipe_routes = RecipeCtx, saved_recipe_routes
 
 RECIPES = sorted(LEARNING.glob("*.json"))
 
@@ -288,3 +287,32 @@ def test_a_recipe_group_refuses_a_stdio_server_nested_in_a_tool_profile():
     recipe = {"columns": [], "tool_configs": [{"tool_alias": "files", "mcp_providers": [stdio]}]}
     with pytest.raises(FlowNodeError, match = "fs is a local"):
         data.runnable_recipe(recipe)
+
+
+def test_a_truncated_recipe_is_reported():
+    from core.flows.nodes import data
+
+    class Ctx:
+        logs = []
+
+        def log(
+            self,
+            message,
+            level = "info",
+        ):
+            self.logs.append((level, message))
+
+        async def call(
+            self,
+            method,
+            path,
+            params = None,
+            **kw,
+        ):
+            offset = params["offset"]
+            return {"dataset": [{"i": offset + i} for i in range(500)], "total": 2000}
+
+    ctx = Ctx()
+    rows = asyncio.run(data.recipe_rows(ctx, "job1", limit = 1000))
+    assert len(rows) == 1000
+    assert ctx.logs and ctx.logs[0][0] == "warning" and "2000" in ctx.logs[0][1]

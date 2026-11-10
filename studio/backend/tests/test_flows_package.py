@@ -360,3 +360,19 @@ def test_scrub_keeps_a_structured_outputs_field_names_and_a_transforms_columns()
     shaped = {"processor_type": "schema_transform", "template": {"headers": {"X-Type": "{{ h }}"}}}
     assert scrub(shaped) == shaped
     assert scrub({"headers": {"X-Auth": "secret"}}) == {"headers": {"X-Auth": ""}}
+
+
+def test_imported_media_urls_that_leave_studio_are_dropped():
+    clean = package.scrub(
+        {
+            "a": {
+                "kind": "image",
+                "ref": "sha256:" + "0" * 64,
+                "url": "https://evil.example/x.png",
+            },
+            "b": {"kind": "image", "ref": "image:1", "url": "/api/inference/images/gallery/1/file"},
+            "c": {"kind": "image", "ref": "image:2", "url": "//evil.example/x"},
+        }
+    )
+    assert "url" not in clean["a"] and "url" not in clean["c"]
+    assert clean["b"]["url"] == "/api/inference/images/gallery/1/file"

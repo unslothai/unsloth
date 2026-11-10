@@ -8,20 +8,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from ._flows_helpers import RouteCtx
 
 BACKEND = Path(__file__).resolve().parents[1]
 LEARNING = BACKEND.parent / "frontend" / "src" / "features" / "data-recipes" / "learning-recipes"
 SQL = json.loads((LEARNING / "text-to-sql.json").read_text(encoding = "utf-8"))
-
-
-@pytest.fixture
-def fast_recipe_poll(monkeypatch):
-    """Recipe jobs are polled with no wait between status reads."""
-    from core.flows.nodes import data
-    monkeypatch.setattr(data, "POLL_S", 0)
 
 
 class RecipeCtx(RouteCtx):
@@ -124,6 +116,33 @@ def saved_recipe_routes(job_ids, artifacts):
             return {"status": "completed", "rows": 3, "artifact_path": artifacts.get(job)}
         if path.endswith("/dataset"):
             return {"dataset": [{"q": 1}], "total": 1}
+        raise AssertionError(path)
+
+    return routes
+
+
+class FinetuneCtx(RouteCtx):
+    """A train.finetune ctx fed a recipe dataset (job1)."""
+
+    node_type = "train.finetune"
+    default_inputs = {"dataset": {"kind": "dataset", "source": "recipe", "ref": "job1"}}
+
+
+FINETUNE_ROWS = [{"q": f"q{i}", "a": f"a{i}"} for i in range(20)]
+
+
+def finetune_job_routes(started, rows = FINETUNE_ROWS):
+    """A recipe job of ``rows``, the dataset upload and a /api/train/start that records and refuses."""
+
+    def routes(method, path, params, body):
+        if path.endswith("/jobs/job1/dataset"):
+            off = params["offset"]
+            return {"dataset": rows[off : off + 500], "total": len(rows)}
+        if path == "/api/hub/datasets/upload":
+            return {"stored_path": f"/cache/{len(started)}.jsonl"}
+        if path == "/api/train/start":
+            started.append(body)
+            raise RuntimeError("started")
         raise AssertionError(path)
 
     return routes

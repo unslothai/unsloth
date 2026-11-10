@@ -1585,3 +1585,20 @@ def flows_client(monkeypatch):
     from ._flows_helpers import flows_test_client
     with flows_test_client(monkeypatch) as client:
         yield client
+
+
+@pytest.fixture
+def fast_recipe_poll(monkeypatch):
+    """Flows recipe jobs are polled with no wait between status reads (requested by the recipe test modules)."""
+    from core.flows.nodes import data
+    monkeypatch.setattr(data, "POLL_S", 0)
+
+
+@pytest.fixture
+def no_gpu_lease(monkeypatch):
+    """The GPU arbiter starts with no lease, no owner and no residents (requested by the flows lease tests)."""
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_lease", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_residents", {})

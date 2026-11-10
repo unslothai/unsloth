@@ -20,12 +20,11 @@ from core.flows.recipe_compile import compile_recipe, recipe_graph
 from core.flows.recipe_import import flow_from_recipe
 from core.flows.registry import FlowNodeError
 
-from ._flows_recipe_helpers import (  # noqa: F401
+from ._flows_recipe_helpers import (
     LEARNING,
     SQL,
     RecipeCtx,
     compiled_recipe,
-    fast_recipe_poll,
     group_job_routes,
     recipe_column,
     recipe_flow,

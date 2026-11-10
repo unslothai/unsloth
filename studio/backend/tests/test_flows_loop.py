@@ -394,14 +394,13 @@ def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_pa
     from core.flows.compiler import RECIPE_PARAM
     from core.flows.nodes import data
 
-    from .test_flows_recipe_groups import _compiled, _flow, _routes
-    from .test_flows_recipes import _Ctx
+    from ._flows_recipe_helpers import RecipeCtx, compiled_recipe, group_job_routes, recipe_flow
 
     monkeypatch.setattr(data, "POLL_S", 0)
     seed = tmp_path / "seed.jsonl"
     seed.write_text('{"origin": "fresh"}\n')
     monkeypatch.setattr(data, "local_seed_path", lambda ref: str(seed))
-    routes, _ = _routes(["job1"])
+    routes, _ = group_job_routes(["job1"])
     checked = []
 
     def recording(method, path, params, body):
@@ -409,9 +408,9 @@ def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_pa
             checked.append(copy.deepcopy(body))
         return routes(method, path, params, body)
 
-    ctx = _Ctx(
+    ctx = RecipeCtx(
         recording,
-        params = {RECIPE_PARAM: _compiled(_flow()), "rows": 1},
+        params = {RECIPE_PARAM: compiled_recipe(recipe_flow()), "rows": 1},
         inputs = {"seed": {"kind": "dataset", "source": "local", "ref": "loop-seed"}},
     )
     asyncio.run(data.recipe_group(ctx))
@@ -463,67 +462,42 @@ async def test_a_loop_that_raises_fails_the_run():
     assert "Loop failed" in rs.nodes["loop"].error
 
 
-def test_fine_tune_continues_a_wired_checkpoint_as_an_adapter(monkeypatch):
+@pytest.mark.parametrize(
+    "start, resolved, model_name, adapter",
+    [
+        # A wired checkpoint that names its folder.
+        ({"name": "run1", "output_dir": "/out/run1"}, None, "/out/run1", True),
+        # Fine-tune's own output: a run name and no directory, resolved to its folder.
+        ({"name": "run1"}, ("/out/run1", "LORA"), "/out/run1", True),
+        # A full fine-tune checkpoint continues as a plain model.
+        ({"name": "full1"}, ("/out/full1", None), "/out/full1", False),
+    ],
+    ids = ["wired-folder", "fine-tune-output", "full-finetune"],
+)
+def test_fine_tune_continues_a_wired_checkpoint(monkeypatch, start, resolved, model_name, adapter):
+    from types import SimpleNamespace
+
     from core.flows.nodes import training
 
-    from .test_flows_train_node import _Ctx as TrainCtx, _recipe_routes
+    from ._flows_recipe_helpers import FinetuneCtx, finetune_job_routes
+
+    async def resolve(caller, name):
+        assert name == start["name"]
+        return SimpleNamespace(path = resolved[0], peft_type = resolved[1])
 
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    if resolved is not None:
+        monkeypatch.setattr("studio_mcp.checkpoints.resolve", resolve)
     started = []
-    ctx = TrainCtx(_recipe_routes(started))
-    ctx.inputs["start"] = {
-        "kind": "checkpoint",
-        "name": "run1",
-        "base_model": "unsloth/Qwen3-0.6B",
-        "output_dir": "/out/run1",
-    }
+    ctx = FinetuneCtx(finetune_job_routes(started))
+    ctx.inputs["start"] = {"kind": "checkpoint", "base_model": "unsloth/Qwen3-0.6B", **start}
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
-    assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"
-
-
-def test_fine_tune_continues_the_checkpoint_fine_tune_emits(monkeypatch):
-    # The carried value is Fine-tune's own output: a run name and no directory.
-    from types import SimpleNamespace
-
-    from core.flows.nodes import training
-
-    from .test_flows_train_node import _Ctx as TrainCtx, _recipe_routes
-
-    async def resolve(caller, name):
-        assert name == "run1"
-        return SimpleNamespace(path = "/out/run1", peft_type = "LORA")
-
-    monkeypatch.setattr("studio_mcp.checkpoints.resolve", resolve)
-    started = []
-    ctx = TrainCtx(_recipe_routes(started))
-    ctx.inputs["start"] = {"kind": "checkpoint", "name": "run1", "base_model": "unsloth/Qwen3-0.6B"}
-    with pytest.raises(RuntimeError, match = "started"):
-        asyncio.run(training.finetune(ctx))
-    assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"
-
-
-def test_fine_tune_continues_a_full_finetune_checkpoint_as_a_plain_model(monkeypatch):
-    from types import SimpleNamespace
-
-    from core.flows.nodes import training
-
-    from .test_flows_train_node import _Ctx as TrainCtx, _recipe_routes
-
-    async def resolve(caller, name):
-        return SimpleNamespace(path = "/out/full1", peft_type = None)
-
-    monkeypatch.setattr("studio_mcp.checkpoints.resolve", resolve)
-    started = []
-    ctx = TrainCtx(_recipe_routes(started))
-    ctx.inputs["start"] = {
-        "kind": "checkpoint",
-        "name": "full1",
-        "base_model": "unsloth/Qwen3-0.6B",
-    }
-    with pytest.raises(RuntimeError, match = "started"):
-        asyncio.run(training.finetune(ctx))
-    assert started[0]["model_name"] == "/out/full1" and "model_format" not in started[0]
+    assert started[0]["model_name"] == model_name
+    if adapter:
+        assert started[0]["model_format"] == "adapter"
+    else:
+        assert "model_format" not in started[0]
 
 
 @run_async
@@ -614,11 +588,11 @@ def test_cpt_continuing_a_4bit_checkpoint_still_loads_in_4bit(monkeypatch):
     # model_name is the adapter folder by now; the base it was trained on sets the precision.
     from core.flows.nodes import training
 
-    from .test_flows_train_node import _Ctx as TrainCtx, _recipe_routes
+    from ._flows_recipe_helpers import FinetuneCtx, finetune_job_routes
 
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
     started = []
-    ctx = TrainCtx(_recipe_routes(started))
+    ctx = FinetuneCtx(finetune_job_routes(started))
     ctx.params["training_type"] = "cpt"
     ctx.params["base_model"] = "unsloth/Qwen3-0.6B-bnb-4bit"
     ctx.inputs["start"] = {
@@ -809,16 +783,29 @@ async def test_a_recipe_step_with_no_saved_row_count_is_seeded_for_its_default()
     assert [len(rows) for rows in seen] == [5, 5]
 
 
+@pytest.mark.parametrize(
+    "reported, value, field",
+    [
+        # Benchmark's failures report the column it asked when its own setting is blank.
+        ("prompt_column", "prompt", "column"),
+        (
+            "prompt_column",
+            {"columns": ["prompt"], "join": "lines", "inputs": [], "labels": None},
+            "column",
+        ),
+        ("system_column", "sys", "system"),
+    ],
+    ids = ["prompt-column", "mapped-columns", "system-column"],
+)
 @run_async
-async def test_the_loop_reads_questions_from_the_column_the_score_step_asked():
+async def test_the_loop_knows_test_rows_by_what_benchmark_reports(reported, value, field):
     eng, _, _ = _engine()
     real_bench, real_train = eng.handlers["test.bench"], eng.handlers["train.finetune"]
     excluded = []
 
     async def bench(ctx):
-        # Benchmark's failures report the column it asked when its own setting is blank.
         found = await real_bench(ctx)
-        return {**found, "failures": {"rows": found["failures"], "prompt_column": "prompt"}}
+        return {**found, "failures": {"rows": found["failures"], reported: value}}
 
     async def train(ctx):
         excluded.append(ctx.inputs.get(loop_rounds.EXCLUDE_INPUT))
@@ -827,7 +814,9 @@ async def test_the_loop_reads_questions_from_the_column_the_score_step_asked():
     eng.handlers["test.bench"], eng.handlers["train.finetune"] = bench, train
     rs = await _run(eng, loop_doc(rounds = 2, target = 100))
     assert rs.status == "completed", rs.error
-    assert excluded[1]["column"] == "prompt" and excluded[1]["questions"]
+    assert excluded[1][field] == value
+    if field == "column":
+        assert excluded[1]["questions"]
 
 
 def test_sharegpt_turns_are_read_as_benchmark_asked_them():
@@ -893,27 +882,6 @@ def test_a_scored_question_seeds_even_when_no_column_looks_like_one():
     assert found["failed_reference"] == "billing"
 
 
-@run_async
-async def test_the_loop_knows_test_rows_by_the_mapped_columns_benchmark_reports():
-    eng, _, _ = _engine()
-    real_bench, real_train = eng.handlers["test.bench"], eng.handlers["train.finetune"]
-    spec = {"columns": ["prompt"], "join": "lines", "inputs": [], "labels": None}
-    excluded = []
-
-    async def bench(ctx):
-        found = await real_bench(ctx)
-        return {**found, "failures": {"rows": found["failures"], "prompt_column": spec}}
-
-    async def train(ctx):
-        excluded.append(ctx.inputs.get(loop_rounds.EXCLUDE_INPUT))
-        return await real_train(ctx)
-
-    eng.handlers["test.bench"], eng.handlers["train.finetune"] = bench, train
-    rs = await _run(eng, loop_doc(rounds = 2, target = 100))
-    assert rs.status == "completed", rs.error
-    assert excluded[1]["column"] == spec and excluded[1]["questions"]
-
-
 def test_rows_sharing_a_question_are_told_apart_by_their_system_message():
     rows = [
         {"system": f"Reply with {c}", "prompt": "What label?"} for c in ("RED", "BLUE", "GREEN")
@@ -940,26 +908,6 @@ def test_rows_sharing_a_question_are_told_apart_by_their_system_message():
         )
         == chats[1:]
     )
-
-
-@run_async
-async def test_the_loop_knows_test_rows_by_the_system_column_benchmark_reports():
-    eng, _, _ = _engine()
-    real_bench, real_train = eng.handlers["test.bench"], eng.handlers["train.finetune"]
-    excluded = []
-
-    async def bench(ctx):
-        found = await real_bench(ctx)
-        return {**found, "failures": {"rows": found["failures"], "system_column": "sys"}}
-
-    async def train(ctx):
-        excluded.append(ctx.inputs.get(loop_rounds.EXCLUDE_INPUT))
-        return await real_train(ctx)
-
-    eng.handlers["test.bench"], eng.handlers["train.finetune"] = bench, train
-    rs = await _run(eng, loop_doc(rounds = 2, target = 100))
-    assert rs.status == "completed", rs.error
-    assert excluded[1]["system"] == "sys"
 
 
 def test_several_system_columns_tell_rows_apart():

@@ -10,6 +10,7 @@ from core.flows.story import (
     StoryCompileError,
     compile_story,
     compile_story_report,
+    node_value,
     parse_lines,
     repair_generated,
     repair_live_scene,
@@ -348,3 +349,9 @@ def test_choices_beyond_four_exits_are_reported():
     m, warnings = compile_story_report(doc)
     assert len(m["scenes"][0]["choices"]) == 4
     assert any("'Fifth'" in w for w in warnings)
+
+
+def test_latest_run_output_beats_the_baked_value():
+    d = {"baked": {"g": {"story": "packaged"}}}
+    assert node_value(d, {"g": {"story": "rerolled"}}, "g", "story") == "rerolled"
+    assert node_value(d, {}, "g", "story") == "packaged"

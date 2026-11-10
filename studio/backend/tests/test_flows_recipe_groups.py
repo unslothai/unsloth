@@ -19,13 +19,12 @@ from core.flows.registry import FlowCancelled, FlowNodeError
 from routes import flows as flows_routes
 from storage import data_recipes_db
 
-from ._flows_recipe_helpers import (  # noqa: F401
+from ._flows_recipe_helpers import (
     BACKEND,
     LEARNING,
     SQL,
     RecipeCtx,
     compiled_recipe,
-    fast_recipe_poll,
     group_job_routes,
     recipe_column,
     recipe_flow,
@@ -34,7 +33,6 @@ from ._flows_recipe_helpers import (  # noqa: F401
 from ._flows_helpers import flows_test_client, make_engine, wait_until
 
 # Old names, still imported by test_flows_loop.py.
-_compiled, _flow, _routes = compiled_recipe, recipe_flow, group_job_routes
 
 
 def test_the_backend_learning_recipes_are_the_frontend_files():
