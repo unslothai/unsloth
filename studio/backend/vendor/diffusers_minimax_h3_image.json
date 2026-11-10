@@ -1,0 +1,24 @@
+{
+  "files": {
+    "LICENSE.diffusers": "f9e2070c247517b1ddf65f7b11b393484a18da91a958fd18a97bd0f241c3125c",
+    "diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py": "f2df4e00282ecbc71afcd71da3351f1bc9eadffa876250333c64539869c2108c",
+    "diffusers_minimax_h3_image/transformer_minimax_h3_image.py": "6e9cd1b22fa5e52754788a1b14a78305ae74113696e7057418c64141df474c40"
+  },
+  "license": "Apache-2.0",
+  "package": "diffusers_minimax_h3_image",
+  "patches": {
+    "diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py": {
+      "change": "relative imports rewritten onto the installed diffusers",
+      "upstream_path": "src/diffusers/models/autoencoders/autoencoder_kl_minimax_h3_image.py",
+      "upstream_sha256": "82da645ee07b0c0443aacd64f160c14c3fe928d61d64023e0102ecbe99557ce1"
+    },
+    "diffusers_minimax_h3_image/transformer_minimax_h3_image.py": {
+      "change": "relative imports rewritten onto the installed diffusers; PackedColwiseParallel optional (diffusers < 0.43)",
+      "upstream_path": "src/diffusers/models/transformers/transformer_minimax_h3_image.py",
+      "upstream_sha256": "0928960f80447c5e4db43d61a361ccc4c785021207325aabe65416f8f6f94e62"
+    }
+  },
+  "source": "https://github.com/huggingface/diffusers/pull/15230",
+  "upstream_branch": "huggingface:minimax-h3-image",
+  "upstream_commit": "529403c21a36d03551f09bfd4d432cb64ab6d450"
+}

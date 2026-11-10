@@ -1103,6 +1103,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
 _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
     (
+        # MiniMax-H3-Image carries the "minimax-h3" token of the video family but is an image model (no audio, PDD
+        # heads): it loads on the Images page, never as a video pick.
+        r"(?:^|[/\\])(?=[^/\\]*minimax-?h3-?image)[^/\\]*[/\\]*$",
+        "MiniMax-H3-Image is a text-to-image and image-editing model, not a video model. Load it on the Images "
+        "page instead.",
+    ),
+    (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
         "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
         "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
