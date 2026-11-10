@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 on fp16-only cards: the family keeps float16 behind the residual rescale, its kill switch restores the
-float32 promotion, and the rescale keeps a FLUX.3-shaped model (and the real diffusers class when installed) finite
-and equal to float32 where plain float16 overflows. CPU only."""
+"""FLUX.3 fp16 residual rescale: kill switch, and finite fp32-equal output where plain fp16 overflows. CPU only."""
 
 from __future__ import annotations
 
@@ -238,8 +236,7 @@ def test_residual_guard_is_idempotent_and_removable():
 
 @needs_fp16
 def test_residual_guard_follows_a_wrapped_entry_projection():
-    """A wrapper put in the text projection's slot after install (a LoRA layer) gets the input scale, its inner
-    Linear does not, so the stream is scaled once."""
+    """A LoRA-style wrapper swapped into the entry slot after install scales the stream once."""
 
     class Wrap(nn.Module):
         def __init__(self, base):

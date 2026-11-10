@@ -343,8 +343,7 @@ _FLUX3_FP16_INCOMPATIBLE = (
     "true",
     "yes",
 )
-# fp16-only cards keep FLUX.3 in float16 behind the residual rescale (its text-token residual reaches ~1e7);
-# UNSLOTH_STUDIO_FLUX3_FP16_GUARD=0 restores the float32 promotion.
+# fp16 cards keep FLUX.3 in fp16 via the residual rescale; UNSLOTH_STUDIO_FLUX3_FP16_GUARD=0 promotes to fp32.
 _FLUX3_FP16_GUARD = (
     None
     if (os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16_GUARD") or "").strip().lower()

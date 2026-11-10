@@ -17,8 +17,7 @@ _FP16_MAX = 65504.0
 RECIPES: dict[str, Optional[tuple[float, float]]] = {
     "native": None,
     "rescale_post_norm": (16.0, 128.0),
-    # FLUX.3: the residual stream itself overflows (text tokens reach ~1e7 in float32), so the whole stream runs at
-    # 1/1024: stream inputs, attention inputs and the SwiGLU product are scaled, every LayerNorm eps by 1/1024^2.
+    # FLUX.3 residual reaches ~1e7: whole stream at 1/1024, LayerNorm eps by 1/1024^2.
     "rescale_residual": (1024.0, 1024.0),
 }
 
@@ -230,7 +229,7 @@ def _residual_entries(root: Any) -> Optional[list]:
 
 
 def _install_rescale_residual(root: Any, scale: float) -> int:
-    """Whole residual stream at 1/scale; exact through bias-free projections and scale-invariant LayerNorms."""
+    """Residual stream at 1/scale: exact via bias-free projections, scale-invariant norms, eps / scale^2."""
     if root.__dict__.get(_MARK) is not None:
         return root.__dict__[_MARK][1]
     entries = _residual_entries(root)
@@ -253,8 +252,7 @@ def _install_rescale_residual(root: Any, scale: float) -> int:
         handles.append(act.register_forward_hook(_scale_output_hook(inv)))
     for norm in eps_scaled:
         _scale_eps(norm, inv * inv)
-    # Entry hooks follow whatever module sits in the slot at call time (a LoRA wrapper loaded later included), so
-    # the stream is scaled once, before the projection's output can overflow.
+    # Re-hook whatever sits in the entry slot per call (e.g. a later LoRA wrapper) so the stream is scaled once.
     entry_hooks: dict[int, Any] = {}
 
     def sync_entries(
