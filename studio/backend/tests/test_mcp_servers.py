@@ -2608,6 +2608,25 @@ def test_mcp_tool_search_never_finds_an_app_only_tool(tmp_path, monkeypatch, sea
     assert tools_mod.mcp_tool_spec("mcp__srv1__widget_refresh") is None
 
 
+def test_mcp_tool_search_finds_cjk_descriptions(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(
+        tmp_path,
+        monkeypatch,
+        [
+            _PING,
+            {"name": "refund", "description": "处理退款申请"},
+            {"name": "henkin", "description": "返金を処理します"},
+            {"name": "hwanbul", "description": "환불 처리"},
+        ],
+    )
+    search = tools_mod.mcp_tool_search_specs
+    assert _names(search({"query": "退款"})) == ["mcp__srv1__refund"]
+    assert _names(search({"query": "返金"})) == ["mcp__srv1__henkin"]
+    assert _names(search({"query": "환불"})) == ["mcp__srv1__hwanbul"]
+
+
 def test_mcp_tool_search_finds_an_alias_by_its_raw_name(tmp_path, monkeypatch):
     from core.inference import tools as tools_mod
 

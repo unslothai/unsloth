@@ -12908,12 +12908,15 @@ def _mcp_search_index(specs: list[dict]) -> sqlite3.Connection:
     conn.execute(
         "CREATE VIRTUAL TABLE tool_text USING fts5(description, params, tokenize='porter unicode61')"
     )
+    from storage.rag_db import fts_text  # noqa: PLC0415
+
     conn.executemany(
-        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)", [(i, r[0]) for i, r in enumerate(rows)]
+        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)",
+        [(i, fts_text(r[0])) for i, r in enumerate(rows)],
     )
     conn.executemany(
         "INSERT INTO tool_text(rowid, description, params) VALUES (?, ?, ?)",
-        [(i, r[1], r[2]) for i, r in enumerate(rows)],
+        [(i, fts_text(r[1]), fts_text(r[2])) for i, r in enumerate(rows)],
     )
     _MCP_SEARCH_INDEXES[digest] = conn
     while len(_MCP_SEARCH_INDEXES) > 4:
