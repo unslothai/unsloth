@@ -8,12 +8,12 @@ import type {
   FlowEdge,
   FlowNode,
   NodeCatalog,
-} from "../src/features/flows/types.ts";
+} from "../../src/features/flows/types.ts";
 
 export const catalog = JSON.parse(
   readFileSync(
     fileURLToPath(
-      new URL("./fixtures/flows-catalog.json", import.meta.url),
+      new URL("../fixtures/flows-catalog.json", import.meta.url),
     ),
     "utf8",
   ),
@@ -61,4 +61,12 @@ export function doc(nodes: FlowNode[], edges: FlowEdge[] = []): FlowDocument {
     editor: {},
     meta: {},
   };
+}
+
+/** A `src/features/flows` file read as text, for the few source guards with no behavioural hook. */
+export function readFlowsSrc(relative: string): string {
+  return readFileSync(
+    new URL(`../../src/features/flows/${relative}`, import.meta.url),
+    "utf8",
+  );
 }

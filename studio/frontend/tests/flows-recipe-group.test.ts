@@ -241,7 +241,7 @@ test("the catalog snapshot has the recipe column and Recipe Dataset blocks", () 
 test("deleting a column from the inspector or Ctrl+X takes its {{ reference }} out of its readers", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { removeNodes } = await import("../src/features/flows/recipe/recipe-actions.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
   const prompt = byName(nodes, "sql_prompt");
@@ -263,7 +263,7 @@ test("deleting a column on the canvas is one undo step with its references", asy
   const { removeElementsWithReferences } = await import(
     "../src/features/flows/recipe/recipe-actions.ts"
   );
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
   const prompt = byName(nodes, "sql_prompt");
@@ -286,7 +286,7 @@ test("deleting a column on the canvas is one undo step with its references", asy
 test("deleting reference wires from two recipe frames at once clears both frames' wires", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { disconnectColumns } = await import("../src/features/flows/recipe/recipe-actions.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const a = sqlGroup();
   const b = sqlGroup();
   const other = b.nodes.map((n) => ({ ...n, id: `b_${n.id}`, group: "recipe_b" }));
@@ -325,7 +325,7 @@ async function loadCatalog() {
 test("a Recipe Dataset dropped into a recipe frame joins it, and a second one is refused", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { addNodeConnected } = await import("../src/features/flows/editor/node-factory.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   await loadCatalog();
   const { group, nodes } = sqlGroup();
   const frame = { ...group, rect: [0, 0, 2000, 600] as [number, number, number, number] };
@@ -340,7 +340,7 @@ test("Quick Add of a Recipe Dataset from a dataset output wires that dataset int
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { addNodeConnected } = await import("../src/features/flows/editor/node-factory.ts");
   const { outHandle } = await import("../src/features/flows/editor/connection-rules.ts");
-  const { doc, node } = await import("./flows-editor-fixtures.ts");
+  const { doc, node } = await import("./helpers/flows.ts");
   await loadCatalog();
   useDocStore.getState().load(doc([node("hf", "data.hf_dataset")]));
   const generate = addNodeConnected(
@@ -362,7 +362,7 @@ test("every Recipe Studio column can be added, and its card names the block it i
   const { COLUMN_BLOCKS, columnBlock } = await import(
     "../src/features/flows/recipe/recipe-kinds.ts"
   );
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   assert.deepEqual(
     COLUMN_BLOCKS.filter((b) => b.kind === "validator").map((b) => b.label),
@@ -391,7 +391,7 @@ test("a seed, model preset and provider show as cards; a shared file seed says t
   const { missingSeed } = await import(
     "../src/features/flows/recipe/recipe-group-actions.ts"
   );
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   const shared = {
     ...group,
@@ -419,7 +419,7 @@ test("a starter recipe lands in free space, not on top of what is there", async 
   const { insertStarterRecipe } = await import(
     "../src/features/flows/recipe/recipe-actions.ts"
   );
-  const { doc, node } = await import("./flows-editor-fixtures.ts");
+  const { doc, node } = await import("./helpers/flows.ts");
   useDocStore.getState().load(doc([{ ...node("a", "input.text"), pos: [0, 0] }]));
   const generate = insertStarterRecipe([10, 10], { rows: 5 });
   const graph = useDocStore.getState().graph;
@@ -436,7 +436,7 @@ test("a tool profile added without a server yet stays as a card and can be remov
     "../src/features/flows/recipe/recipe-blocks.ts"
   );
   const { recipeSetup } = await import("../src/features/flows/recipe/recipe-setup.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   useDocStore.getState().load({ ...doc(nodes), groups: [group] });
   addRecipeBlock("recipe", "llm", "tool_config");
@@ -474,7 +474,7 @@ test("Check leaves disabled columns and a disabled Recipe Dataset out, like the 
     "../src/features/flows/recipe/recipe-group-actions.ts"
   );
   const { groupGenerate } = await import("../src/features/flows/recipe/recipe-columns.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
     "http://localhost:8000/v1";
@@ -539,7 +539,7 @@ test("setup links are the flow's own edge type, dashed as references, so they fo
   const { recipeSetup, setupEdges, REFERENCE_EDGE_CLASS } = await import(
     "../src/features/flows/recipe/recipe-setup.ts"
   );
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   const sql = byName(nodes, "sql");
   const folded = nodes.map((n) => (n.id === sql.id ? { ...n, collapsed: true } : n));
@@ -564,7 +564,7 @@ test("setup links are the flow's own edge type, dashed as references, so they fo
 test("a note keeps the size it was given whatever its text; long text scrolls inside", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { RfDeriver } = await import("../src/features/flows/editor/derive-rf.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   useDocStore.getState().load({
     ...doc([]),
     notes: [{ id: "n1", text: "a long note", rect: [0, 0, 320, 200] }],
@@ -612,7 +612,7 @@ test("no two nodes of a recipe group overlap after import, after adding setup bl
   const { setupLayoutNodes, withLaidOutSetup, isSetupId, withSetupPosition, setupLayout } =
     await import("../src/features/flows/recipe/recipe-setup.ts");
   const { computeLayout } = await import("../src/features/flows/editor/layout-core.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   // As the importer lays it out: a 320 x 180 grid, the Recipe Dataset step at the end of row 0,
   // plus a column left in the step's lane from an older layout (the ticket-router report).
@@ -677,7 +677,7 @@ test("a starter recipe and a new column both keep clear of setup cards, even dra
   const { withSetupPosition, setupLayout, CARD_SIZE } = await import(
     "../src/features/flows/recipe/recipe-setup.ts"
   );
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   // Every cell of a two-row frame is full, so a new column needs a new row.
   const extra = { ...nodes[0], id: "extra", params: { column: { ...(nodes[0].params.column as object), name: "extra" } } };
@@ -720,7 +720,7 @@ test("the run dialogs' check leaves disabled columns out, like the frame's Check
     "utf8",
   );
   assert.match(editor, /const checkGroup = checkRecipeGroupDetail;/);
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
     "http://localhost:8000/v1";
@@ -757,7 +757,7 @@ test("a wired seed is what the check goes by, not the group's own empty file see
   const { checkRecipeGroupDetail } = await import(
     "../src/features/flows/recipe/recipe-group-actions.ts"
   );
-  const { doc, node, edge } = await import("./flows-editor-fixtures.ts");
+  const { doc, node, edge } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
     "http://localhost:8000/v1";
@@ -804,7 +804,7 @@ test("a column dropped in a recipe frame's setup-card space stays in the recipe"
 test("a GitHub seed added before a repository is entered keeps a form to enter it", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   const bare = { ...group, config: { ...group.config } };
   delete (bare.config as Record<string, unknown>).seed_config;
@@ -884,7 +884,7 @@ test("renaming a column renames it in the schema transform too", () => {
 
 test("a pasted or duplicated second Recipe Dataset step comes into its recipe switched off", async () => {
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group: small, nodes } = sqlGroup();
   const group = { ...small, rect: [0, 0, 2000, 1000] as [number, number, number, number] };
   const step = { id: "step", type: "recipe.generate", v: 1, pos: [group.rect[0] + 40, group.rect[1] + 60] as [number, number], params: {}, group: group.id };
@@ -918,7 +918,7 @@ test("an edit elsewhere keeps a processor the recipe forms do not show", () => {
 
 test("a column duplicated into its recipe gets the next free name", async () => {
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group: small, nodes } = sqlGroup();
   const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
   useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
@@ -944,7 +944,7 @@ test("a recipe column's toolbar has no Run or Regenerate, and a setup card is fo
 
 test("copies of connected columns read each other, not the columns they were copied from", async () => {
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group: small, nodes } = sqlGroup();
   const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
   useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
@@ -1030,7 +1030,7 @@ test("an edited provider or preset takes what its form says, and a renamed prese
 
 test("a copied subcategory and validator follow the copied columns they name", async () => {
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const column = (id: string, def: Record<string, unknown>, x: number) => ({
     id,
     type: "recipe.column",
@@ -1062,7 +1062,7 @@ test("deleting a column takes its nested and filtered {{ references }} out, and 
   const { disconnectColumns, removeNodes } = await import(
     "../src/features/flows/recipe/recipe-actions.ts"
   );
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   const prompt = byName(nodes, "sql_prompt");
   const sql = byName(nodes, "sql");
@@ -1139,7 +1139,7 @@ test("an edit keeps what its form left alone: a preset's temperature distributio
 test("an open form compares each edit with what it last saved: a toggle back and two renames in a row", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { commitConfigs, viewOf } = await import("../src/features/flows/recipe/recipe-blocks.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   const cfg = group.config as Record<string, unknown>;
   const presets = (cfg.model_configs as Record<string, unknown>[]).map((m) => ({
@@ -1179,7 +1179,7 @@ test("an open form compares each edit with what it last saved: a toggle back and
 
 test("pasted columns are renamed all at once, so one copy's new name is not renamed again", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const rect = [-100, -100, 4000, 1000] as [number, number, number, number];
   const group = { id: "recipe", label: "R", rect, kind: "recipe" as const, config: {}, run: { rows: 5 } };
   const col = (id: string, column: Record<string, unknown>, x: number): FlowNode => ({
@@ -1209,7 +1209,7 @@ test("quoted text in a template reads no column, and deleting a {% %} reader its
   const { removeElementsWithReferences } = await import(
     "../src/features/flows/recipe/recipe-actions.ts"
   );
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const names = new Set(["topic"]);
   const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
   assert.deepEqual(columnReferences({ name: "f", column_type: "expression", expr: '{{ "topic" }}' }, names), []);
@@ -1310,7 +1310,7 @@ test("the starter recipe passes Check as made, writing with Chat's loaded model"
 
 test("recipe blocks pasted outside a recipe frame are left out, and a shared tool server edit reaches every profile", async () => {
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group: small, nodes } = sqlGroup();
   const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
   useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
@@ -1343,7 +1343,7 @@ test("moving a column wire to another column moves the reference, in one undo st
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { reconnectWire } = await import("../src/features/flows/editor/use-wire-reconnect.ts");
   const { inHandle, outHandle } = await import("../src/features/flows/editor/connection-rules.ts");
-  const { catalog, doc } = await import("./flows-editor-fixtures.ts");
+  const { catalog, doc } = await import("./helpers/flows.ts");
   const { useCatalogStore } = await import("../src/features/flows/stores/catalog-store.ts");
   useCatalogStore.getState().setCatalog(catalog);
   const { group, nodes } = sqlGroup();
@@ -1405,7 +1405,7 @@ test("renaming a column renames it in every image context an AI column keeps", (
 test("a recipe block dragged out of its frame stays in its recipe, and the frame grows to hold it", async () => {
   const { ownRecipe, holdRecipeBlocks } = await import("../src/features/flows/editor/recipe-drag.ts");
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   useDocStore.getState().load({
     ...doc([...nodes, { id: "free", type: "input.text", v: 1, params: {}, pos: [0, 0] }], []),
@@ -1424,7 +1424,7 @@ test("a recipe block dragged out of its frame stays in its recipe, and the frame
 
 test("a duplicated column skips names the recipe's setup blocks hold, and a copied reader sees its copied image", async () => {
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group: small, nodes: base } = sqlGroup();
   const presets = (small.config.model_configs as Record<string, unknown>[]).map((m, i) =>
     i === 0 ? { ...m, alias: "domain_2" } : m,
@@ -1485,7 +1485,7 @@ test("a loop's own variable is not a column, inside its loop only", async () => 
 
 test("resizing a recipe frame or grouping its blocks never takes them out of their recipe", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   useDocStore.getState().load({
     ...doc([...nodes, { id: "free", type: "input.text", v: 1, params: {}, pos: [5000, 5000] }] as never, []),
@@ -1645,7 +1645,7 @@ test("a set inside a loop ends with it, and a rename reaches an override's paren
 test("a seed is not added while another block holds the name seed, which every seed opens as", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group, nodes } = sqlGroup();
   const renamed = nodes.map((n) =>
     columnName(n) === "domain"
@@ -1675,7 +1675,7 @@ test("a rename reaches a transform's Jinja but not a quoted key, and a paste ren
   assert.deepEqual(processors[0].template, { text: "{{ area }}", detail: '{{ record["domain"] }}' });
 
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const make = (g: string, value: string): FlowNode[] => [
     { id: `${g}_t`, type: COLUMN_TYPE, v: 1, group: g, pos: [0, g === "a" ? 0 : 400], params: { column: { name: "topic", column_type: "sampler", sampler_type: "category", params: { values: [value] } } } },
     { id: `${g}_q`, type: COLUMN_TYPE, v: 1, group: g, pos: [320, g === "a" ? 0 : 400], params: { column: { name: "question", column_type: "expression", expr: "{{ topic }}", dtype: "str" } } },
@@ -1795,7 +1795,7 @@ test("a duplicated reader gets the wire to the column it reads, and a Jinja test
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
   const { removeNodes } = await import("../src/features/flows/recipe/recipe-actions.ts");
   const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
-  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { doc } = await import("./helpers/flows.ts");
   const { group: small, nodes } = sqlGroup();
   const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
   useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
