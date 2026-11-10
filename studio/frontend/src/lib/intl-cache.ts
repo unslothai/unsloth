@@ -5,9 +5,8 @@
 const dateFormats = new Map<string, Intl.DateTimeFormat>();
 const numberFormats = new Map<string, Intl.NumberFormat>();
 
-// A cached DateTimeFormat keeps the time zone it was built in, while toLocale*String follows the
-// current one, and the OS zone can change while the page is open. Two UTC offsets are a cheap
-// per-call check; the zone name is re-read at most once a second for same-offset zone changes.
+// A cached DateTimeFormat keeps its build-time zone; the OS zone can change while the page is open.
+// Two UTC offsets per call, plus the zone name at most once a second for same-offset changes.
 const JAN = Date.UTC(2026, 0, 1);
 const JUL = Date.UTC(2026, 6, 1);
 let zoneOffsets = "";
