@@ -839,8 +839,7 @@ function proposeToPlayer(b: Board, s: RivalsState, fid: string): RivalsState {
   };
 }
 
-/** Worker assignment: villagers first do what they make (the trade AI's `makesOf`), the rest go to the job
- *  with the highest utility (posture weight x shortage), re-scored after each pick. */
+/** Villagers do what they make first; the rest go to the highest posture weight x shortage, re-scored per pick. */
 export function assignWorkers(
   spec: WorldSpec,
   s: RivalsState,
@@ -1093,7 +1092,6 @@ export function diplomacyRequest(
   };
 }
 
-/** Parse a strategist reply (already validated by the backend) into a plan, or null. */
 export function planOf(raw: unknown): StrategistPlan | null {
   const r = raw as Partial<StrategistPlan> | null;
   if (!r || typeof r !== "object" || !r.posture) return null;
@@ -1113,8 +1111,7 @@ export interface DiplomacyOffer {
   want_amount?: number;
 }
 
-/** A leader's offer as an engine action the player can accept, or null when the engine would refuse it.
- *  `give` is what the leader gives the player. */
+/** A leader's offer as an engine action, or null when refused; `give` is what the leader gives the player. */
 export function offerAction(
   b: Board,
   s: RivalsState,
@@ -1303,9 +1300,7 @@ export function rivalsOf(
 export const RIVALS_CALLS_PER_MINUTE = 12;
 const MAX_REQUEUES = 20;
 
-/** Run one strategist call as a job on the world's background queue, so it shares the villagers' call budget
- *  and stops while the player talks (the queue pauses and aborts it; it is queued again and resumes after).
- *  Resolves with the answer, or null when it fails or `alive()` turns false. */
+/** Strategist call on the background queue (shared budget, paused while the player talks); null on failure. */
 export function queuedCall(
   queue: BackgroundQueue,
   key: string,
@@ -1340,8 +1335,7 @@ export function queuedCall(
   });
 }
 
-/** End the player's day: one strategist call per AI village still in the game, then the
- *  deterministic turn. A failed or missing call keeps that village's current plan. */
+/** One strategist call per AI village, then the turn; a failed call keeps that village's plan. */
 export async function playTurn(
   spec: WorldSpec,
   b: Board,

@@ -458,8 +458,8 @@ class WorldCity(_Strict):
     enabled: bool = True
     funds: int = Field(default = 20000, ge = 0, le = 1_000_000)
     tax: int = Field(default = 7, ge = 0, le = 20)
-    advisor: bool = True  # a monthly advisor report from the chat model
-    petitions: bool = True  # residents file 1-2 petitions a month
+    advisor: bool = True
+    petitions: bool = True
     events: bool = True  # the model may pick one event a month from a fixed menu
 
 
