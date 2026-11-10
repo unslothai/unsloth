@@ -74,7 +74,7 @@ export function useOffloadState(enabled: boolean, intervalMs = 2000): OffloadSta
     const timer = setInterval(() => {
       if (!document.hidden) pollNow();
     }, intervalMs);
-    // Catch up on return only if a tick was skipped, so quick tab switches cost nothing extra.
+    // Refetch on return only if a tick was skipped.
     const onVisibilityChange = () => {
       if (!document.hidden && Date.now() - lastPollAt >= intervalMs) pollNow();
     };

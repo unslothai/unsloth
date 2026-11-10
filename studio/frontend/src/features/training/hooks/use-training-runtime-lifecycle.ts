@@ -356,12 +356,12 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     };
 
-    // Status keeps polling while hidden: it drives the "training finished" notification.
+    // Keeps polling while hidden: drives the "training finished" notification.
     const metricsTimer = setInterval(() => {
       if (document.hidden) return;
       pollMetricsIfActive();
     }, METRICS_POLL_INTERVAL_MS);
-    // Catch up on return only if a tick was skipped, so quick tab switches cost nothing extra.
+    // Refetch on return only if a tick was skipped.
     const onVisibilityChange = () => {
       if (
         !document.hidden &&

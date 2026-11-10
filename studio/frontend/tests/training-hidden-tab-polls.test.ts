@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// While training runs in a hidden tab, the display-only polls (metrics history, offload,
-// hardware, runs list) skip their ticks and refetch once on return; status keeps polling
-// because it drives the "training finished" notification.
+// Hidden tab: display-only polls skip ticks and refetch on return; status keeps polling.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -26,7 +24,6 @@ function stubDocument() {
 
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-/** Runs every effect at once and keeps the cleanups. */
 function stubReact() {
   const cleanups: (() => void)[] = [];
   return {
@@ -91,7 +88,6 @@ test("training metrics skip hidden ticks, refetch on return, status keeps pollin
           return {};
         },
         isAbortError: () => false,
-        // The live stream stays open for the whole test.
         streamTrainingProgress: () => new Promise(() => {}),
       },
       "../lib/training-status-request": {
