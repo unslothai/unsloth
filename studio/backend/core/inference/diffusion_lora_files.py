@@ -419,16 +419,60 @@ def _attach_lokr(pipe: Any, name: str, lokr: dict, family: Optional[str]) -> int
     return len(adapters)
 
 
-def _resolve_kohya_stem(pipe: Any, stem: str, family: Optional[str]) -> str:
+def _anima_unreachable(pipe: Any, paths: list, names: dict) -> set:
+    """Splits whose Anima rename names no registered submodule: ``_lokr_targets`` would raise for each.
+    One batched rename; an output collision returns nothing ruled out (every split is then tried)."""
+    import torch
+
+    try:
+        from diffusers.loaders.lora_conversion_utils import (
+            _convert_non_diffusers_anima_lora_to_diffusers,
+        )
+    except ImportError:
+        return set()
+
+    keys = ["diffusion_model." + _strip(path) + ".x" for path in paths]
+    renamed = list(_convert_non_diffusers_anima_lora_to_diffusers(dict.fromkeys(keys)))
+    if len(renamed) != len(keys):
+        return set()
+    out = set()
+    for path, name in zip(paths, renamed):
+        component, _, sub = name[: -len(".x")].partition(".")
+        if component not in names:
+            root = getattr(pipe, component, None)
+            names[component] = (
+                {n for n, _ in root.named_modules(remove_duplicate = False)}
+                if isinstance(root, torch.nn.Module)
+                else None
+            )
+        known = names[component]
+        if known is not None and sub not in known:
+            out.add(path)
+    return out
+
+
+def _resolve_kohya_stem(
+    pipe: Any,
+    stem: str,
+    family: Optional[str],
+    names: Optional[dict] = None,
+) -> str:
     """The one dotted path, of every way to re-split ``stem``'s underscores, that names a layer of this model."""
     tokens = stem.split("_")
     if len(tokens) > 16:
         raise ValueError(f"LoRA key {stem} names no layer of this model")
+    paths = [
+        tokens[0]
+        + "".join(("." if mask >> i & 1 else "_") + token for i, token in enumerate(tokens[1:]))
+        for mask in range(1 << (len(tokens) - 1))
+    ]
+    skip = (
+        _anima_unreachable(pipe, paths, {} if names is None else names) if family == "anima" else ()
+    )
     found = []
-    for mask in range(1 << (len(tokens) - 1)):
-        path = tokens[0] + "".join(
-            ("." if mask >> i & 1 else "_") + token for i, token in enumerate(tokens[1:])
-        )
+    for path in paths:
+        if path in skip:
+            continue
         try:
             _lokr_targets(pipe, path, family)
         except Exception:  # noqa: BLE001 -- this split names no layer
@@ -442,6 +486,7 @@ def _resolve_kohya_stem(pipe: Any, stem: str, family: Optional[str]) -> str:
 def _dotted_kohya_keys(pipe: Any, state: dict, family: Optional[str]) -> dict:
     out: dict = {}
     paths: dict = {}
+    names: dict = {}
     for key, value in state.items():
         prefix = next((p for p in _KOHYA_PREFIXES if key.startswith(p)), None)
         if prefix is None:
@@ -449,7 +494,7 @@ def _dotted_kohya_keys(pipe: Any, state: dict, family: Optional[str]) -> dict:
             continue
         stem, _, suffix = key[len(prefix) :].partition(".")
         if stem not in paths:
-            paths[stem] = _resolve_kohya_stem(pipe, stem, family)
+            paths[stem] = _resolve_kohya_stem(pipe, stem, family, names)
         out[f"diffusion_model.{paths[stem]}.{suffix}"] = value
     return out
 
