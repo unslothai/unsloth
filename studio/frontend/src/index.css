@@ -1706,6 +1706,19 @@ html[data-contrast-adjust].dark .hub-page :is([class*="bg-background"], [class*=
 		var(--popup-shadow);
 }
 
+/* A dialog is centred by translating it half its own size. WebKit snaps layout positions to whole
+   pixels but not transforms, so one with an odd or fractional height (MCP Servers is 243.125px tall)
+   is drawn between pixel rows and all its text blurs at 1x. Shift by whole device pixels. Keyed on
+   the centring class, so a dialog that sets its own translate (the command palette) is left alone. */
+@supports (translate: 0 round(-50%, 1px)) {
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]).-translate-x-1\/2 {
+		--tw-translate-x: round(-50%, var(--device-px, 1px));
+	}
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]).-translate-y-1\/2 {
+		--tw-translate-y: round(-50%, var(--device-px, 1px));
+	}
+}
+
 html[data-code-font-size] :is(pre, code, kbd, samp),
 html[data-code-font-size] .aui-reasoning-code-lines {
 	font-size: var(--custom-code-font-size) !important;
