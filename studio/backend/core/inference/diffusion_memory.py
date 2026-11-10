@@ -5309,7 +5309,7 @@ def _resident_tensors(group: Any) -> list:
 
 
 def _release_group(group: Any) -> None:
-    # a resident encoder group the load kept no host copy of gets one from its device weights first
+    # resident encoder groups with a dropped host copy get it back first
     rebuild_dropped_host_copy(group)
     onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
     for name, fn in (("onload_", onload_), ("offload_", offload_)):

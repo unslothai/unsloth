@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An image load pins only the text-encoder offload groups that stream; a resident group drops its host copy, and an
-eviction copies it back from the card. CPU only.
-
-Qwen-Image-2.1 int8 on a 24 GB card: all 577 Qwen3-VL groups resident, yet the load pinned 8.7 GiB of host copies
-(RSS 23.1 GB against 14.3 GB with no offload hooks) and waited 1.6-2.0 s for that pin."""
+"""Image load: resident text-encoder groups drop their host copy (saved 8.7 GiB pinned RAM on Qwen-Image-2.1);
+an eviction copies it back from the card."""
 
 from __future__ import annotations
 
@@ -26,8 +23,6 @@ def test_this_tree_is_imported():
 
 
 class _Group:
-    """The parts of a diffusers ModuleGroup the pinner and a release touch."""
-
     def __init__(
         self,
         params,
@@ -39,7 +34,6 @@ class _Group:
         for p in params:
             host = p.data
             if resident and card != "cpu":
-                # the weight object as the card would hold it; its host copy keeps the values
                 p = torch.nn.Parameter(torch.empty_like(host, device = card), requires_grad = False)
             self.cpu_param_dict[p] = host
         self.modules = []
@@ -106,7 +100,6 @@ def test_the_kill_switch_pins_resident_groups_too(pinner, monkeypatch):
 
 
 def test_only_image_encoder_pinners_drop(pinner):
-    # video and denoiser pinners keep their host copies (lazy_resident not asked for)
     resident = _Group([_param(1.0, 2.0)], resident = True)
     pinned = pinner([resident], lazy = False)
     assert len(pinned) == 1 and len(resident.cpu_param_dict) == 1
@@ -130,12 +123,11 @@ def test_tied_partners_drop_together_or_not_at_all():
     assert kept == [a, b] and freed == 0
     b._unsloth_resident = True
     kept, freed = dm.drop_resident_host_copies([a, b])
-    assert kept == [] and freed == host.nbytes  # the shared tensor counted once
+    assert kept == [] and freed == host.nbytes
 
 
 def test_an_eviction_copies_the_device_weights_back_before_streaming(monkeypatch):
     monkeypatch.setattr(dm, "_bump_placement_epoch", lambda: None)
-    # "card" = CPU here: the copy back must be exact and a separate storage
     p = _param(7.0, 8.0)
     group = _Group([p], resident = True, card = "cpu")
     p.data.copy_(torch.tensor([7.0, 8.0]))
@@ -214,7 +206,6 @@ def test_cuda_dropped_encoder_streams_bit_identical_after_an_eviction(monkeypatc
     restore()
     assert all(next(m.parameters()).device.type == "cuda" for m in net)
     assert torch.equal(net(x.cuda()).cpu(), ref)
-    # a second evict / restore reuses the copies: nothing is copied or pinned again
     again = dm.release_resident_groups(pipe, 1024)
     assert [h.data_ptr() for g in groups for h in g.cpu_param_dict.values()] == [
         h.data_ptr() for h in hosts
