@@ -4,7 +4,6 @@
 // A tab return fires visibilitychange and focus back to back: the first one does the read.
 export const WAKE_DEDUPE_MS = 1_000;
 
-/** True when a wake for `key` should run; a repeat within the window is dropped. */
 export function createWakeDedupe(
   windowMs: number = WAKE_DEDUPE_MS,
   now: () => number = Date.now,
