@@ -66,6 +66,17 @@ def test_one_invalid_definition_writes_nothing(client, user_root):
     assert not user_root.exists() or not any(user_root.iterdir())
 
 
+def test_a_failed_write_restores_the_rewards_written_before_it(user_root):
+    rewards.import_reward(_md("a", "type: length\nmax_chars: 1"))
+    # A plain file where "c" goes passes every check, then fails its write.
+    (user_root / "c").write_text("not a folder")
+    data = _zip(("a/REWARD.md", _md("a")), ("b/REWARD.md", _md("b")), ("c/REWARD.md", _md("c")))
+    with pytest.raises(OSError):
+        rewards.import_reward_zip(data, overwrite = True)
+    assert rewards.get_reward("a")["rule"]["max_chars"] == 1
+    assert not (user_root / "b").exists()
+
+
 def test_existing_names_need_explicit_replace(client, user_root):
     rewards.import_reward(_md("a", "type: length\nmax_chars: 1"))
     data = _zip(("a/REWARD.md", _md("a")), ("b/REWARD.md", _md("b")))

@@ -508,7 +508,30 @@ def import_reward_zip(data: bytes, *, overwrite: bool = False) -> list[dict]:
             texts.append(render_reward_markdown(spec))
             if len(texts[-1].encode("utf-8")) > MAX_REWARD_MD_BYTES:
                 raise RewardError(f"'{spec['name']}' is larger than 64 KB once saved.")
-        return [import_reward(text, overwrite = True) for text in texts]
+        # Each write is atomic, but the batch is not: a later failure restores the earlier ones.
+        before = []
+        for spec in specs:
+            target = root / spec["name"]
+            saved = target / "REWARD.md"
+            before.append(
+                (target, target.exists(), saved.read_bytes() if saved.is_file() else None)
+            )
+        imported = []
+        try:
+            for text in texts:
+                imported.append(import_reward(text, overwrite = True))
+        except BaseException:
+            for target, existed, old in before[: len(imported)]:
+                if not existed:
+                    shutil.rmtree(target, ignore_errors = True)
+                elif old is None:
+                    (target / "REWARD.md").unlink(missing_ok = True)
+                else:
+                    tmp = target / f".REWARD.md.{os.getpid()}.restore"
+                    tmp.write_bytes(old)
+                    os.replace(tmp, target / "REWARD.md")
+            raise
+        return imported
 
 
 def delete_reward(name: str) -> None:
