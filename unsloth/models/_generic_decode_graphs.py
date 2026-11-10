@@ -58,11 +58,9 @@ MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "16"))
 _FREE_MARGIN_BYTES = 256 * 1024 * 1024
 # A kept cache longer than this many times the call's own length is not reused (attention reads every slot).
 _KEEP_MAX_RATIO = 2
-# Captures in a row without a replay in between: the step's key changes every step (an argument whose shape or
-# value moves), so every capture costs an eager warm-up plus a recording and is never replayed. The rest of the
-# call decodes eagerly. A healthy call captures at most twice in a row (window filling, then full).
+# Captures in a row without a replay: the key changes every step, so the rest of the call decodes eagerly.
+# A healthy call captures at most twice in a row (window filling, then full).
 _MAX_UNREPLAYED_CAPTURES = 4
-# Per-call plan decisions by reason (tests, benchmarks).
 PLANS = collections.Counter()
 EAGER_REDOS = 0
 _OOM_WARNED = False
@@ -656,7 +654,6 @@ class _State:
     def __init__(self):
         self.graphs = collections.OrderedDict()
         self.pool = None
-        # A model split over cards: the other cards' indices and their MemPools for the graphs.
         self.others = ()
         self.mempools = {}
         self.side = {}
@@ -689,7 +686,6 @@ class _State:
         self.owner = None
         self.kept_calls = 0
         self.active = False
-        # This call: captures since the last replay, and the reason it stopped capturing (None: it did not).
         self.unreplayed = 0
         self.call_stop = None
 
@@ -890,7 +886,6 @@ class reuse_kept_cache:
             PLANS["reused kept cache"] += 1
         else:
             if state.kept is not None:
-                # A new cache: the kept graphs address the old one.
                 state.clear()
             cache = self.prepare(*args, **kwargs)
         model.__dict__["_unsloth_generic_call_cache"] = cache
@@ -936,7 +931,6 @@ def stats(model):
         "max_captures_per_key": max(state.key_captures.values(), default = 0),
         "capture_errors": list(state.capture_errors),
         "check": dict(state.check),
-        # Other cards of a model split over cards that the graphs run on.
         "other_devices": list(state.others),
     }
 
@@ -1061,10 +1055,8 @@ def _window_state(cache):
 
 
 # transformers 5.x rolls a full static sliding window by one slot per one-token step and indexes the last slot
-# with `torch.tensor([-1], device=...)`: a host-to-device copy, which a CUDA graph capture refuses ("Cannot copy
-# between CPU and CUDA tensors during CUDA graph capture"), so every step past the window stayed eager. While a
-# step is warmed up and recorded, that branch runs with the same ops on an index tensor made outside the
-# capture (identical rows; the first replay is still compared bitwise with the eager step).
+# with `torch.tensor([-1], device=...)`: a host-to-device copy a CUDA graph capture refuses. While a step is
+# warmed up and recorded, that branch runs the same ops on an index tensor made outside the capture.
 _ROLL_INDEX = {}
 
 
@@ -1495,12 +1487,9 @@ def _fingerprint(model, state = None):
 # Forward derives positions from `cache_position[0] == 0` (host sync) without position_ids (4.x Qwen3-VL).
 _MROPE_MODEL_TYPES = ("qwen3_vl", "qwen3_vl_moe")
 
-# Per-token type ids a trainer passes to generate() (TRL's GRPO forwards the processor's mm_token_type_ids /
-# token_type_ids) can reach every decode step at full length, one column longer per step, so every step had a
-# new graph key and nothing replayed. The multimodal forwards that take them (Gemma 3 / 4) read them only to
-# build the attention masks, which they skip when the step's masks come prebuilt (a dict per layer type, as
-# prepare_inputs_for_generation builds over a StaticCache); transformers itself slices them to the step's
-# tokens. With prebuilt masks the graphed step gets the last q_len columns.
+# Type ids a trainer passes to generate() (TRL's GRPO: mm_token_type_ids / token_type_ids) reach every decode
+# step at full length, a new graph key per step. Gemma 3 / 4 read them only to build masks, skipped when the
+# masks come prebuilt (a dict per layer type), so with prebuilt masks the step gets the last q_len columns.
 _TYPE_ID_ARGS = ("token_type_ids", "mm_token_type_ids")
 
 
@@ -1546,8 +1535,8 @@ def _mrope_positions(model, kwargs):
 
 
 # Multimodal decoders whose forward zeroes placeholder ids with a boolean index (`ids[mask] = 0`, a host sync a
-# capture cannot hold): the decode step's embeddings are looked up outside the graph instead, with the same ops on
-# the same ids, so the graph and the eager step see identical inputs_embeds. Model type -> placeholder token ids.
+# capture cannot hold): the step's embeddings are looked up outside the graph with the same ops. Model type ->
+# placeholder token ids.
 _PLACEHOLDER_EMBED_MODEL_TYPES = {
     "muse_glimmer": ("image_token_id", "video_token_id"),
     "muse_spark": ("image_token_id", "video_token_id", "audio_token_id"),
@@ -1679,7 +1668,6 @@ def decode_step(
         and ids.device.index is not None
         and device.index != ids.device.index
     ):
-        # Inputs on another card than the weights (an accelerate hook moves them every step): not one device.
         return _refusal(state, "inputs on another device")
     index = ids.device.index
     if index is not None and index != _BACKEND.current_device():
@@ -1691,7 +1679,6 @@ def decode_step(
     if state.recheck or state.optimizer_steps != K._OPTIMIZER_STEPS:
         fingerprint = _fingerprint(model, state)
         if fingerprint is None:
-            # Ineligible until the next generate() call re-checks.
             state.invalidate()
             state.recheck = False
             state.optimizer_steps = K._OPTIMIZER_STEPS
@@ -1714,7 +1701,6 @@ def decode_step(
         try:
             spec.append((name, _spec(value, leaves, cache)))
         except _Refuse as error:
-            # The argument's name makes a refusal in a GPU log self-explanatory.
             return _refusal(state, f"{error} ({name})")
     spec = tuple(spec)
     if not torch.is_inference_mode_enabled() and any(leaf.is_inference() for leaf in leaves):
@@ -1754,7 +1740,6 @@ def decode_step(
         if entry is None:
             if state.call_stop is None and state.unreplayed >= _MAX_UNREPLAYED_CAPTURES:
                 state.call_stop = "graph key changes every step"
-                # Its graphs were never replayed: free them (and their pool) for the eager rest of the call.
                 sig = state.cache_sig
                 state.clear()
                 state.cache_sig = sig
@@ -1859,7 +1844,6 @@ def _capture(state, key, forward, kwargs, leaves, cache):
             _BACKEND.on_streams(side) if side else contextlib.nullcontext(),
             _graphable_rolls(),
         ):
-            # Warm-up: JIT, cuBLAS workspaces and lazy caches built outside the capture.
             outputs = forward(**static_kwargs)
             stream.synchronize()
             reason = _host_state_reason(before, _host_state(cache), 1)
@@ -1883,7 +1867,6 @@ def _capture(state, key, forward, kwargs, leaves, cache):
                 _restore((after[0], []))
     except Exception as error:
         if graph is None:
-            # The eager step itself failed: as without graphs.
             raise
         if isinstance(error, torch.cuda.OutOfMemoryError):
             # Out of memory while recording: free every graph of this call and decode the rest of it eagerly.
