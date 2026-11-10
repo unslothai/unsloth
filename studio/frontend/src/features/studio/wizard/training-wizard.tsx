@@ -5,6 +5,7 @@ import { NewBadge } from "@/components/new-badge";
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
 import { SectionBox, SectionField } from "@/components/section-box";
 import { SegmentedTabsList } from "@/components/segmented-tabs";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -30,18 +31,19 @@ import {
   useTrainingConfigStore,
   effectiveTrainingObjective,
 } from "@/features/training";
-import { useT } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import { ChipIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
-  AiBrain01Icon,
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
   Award01Icon,
   BubbleChatEditIcon,
   Database02Icon,
-  Edit03Icon,
 } from "@hugeicons/core-free-icons";
-import type { ReactNode } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { type ReactNode, useRef } from "react";
 import { DatasetPanel } from "../sections/dataset-section";
 import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
@@ -53,6 +55,11 @@ import { RlDatasetRoles } from "../sections/rl/rl-dataset-roles";
 import { RlParamsSection } from "../sections/rl/rl-params-section";
 import { ConfigActions } from "./config-actions";
 import type { ParamMode } from "./training-param-mode";
+import {
+  type TrainingStep,
+  resolveTrainingStep,
+  trainingSteps,
+} from "./training-steps";
 
 function ParamModeToggle({
   mode,
@@ -359,19 +366,41 @@ function ModelPanel() {
   );
 }
 
+const STEP_TITLES = {
+  model: "studio.wizard.modelTitle",
+  dataset: "studio.wizard.datasetTitle",
+  prompt: "rl.prompt.title",
+  rewards: "rl.rewards.title",
+  parameters: "studio.wizard.paramsTitle",
+} as const satisfies Record<TrainingStep, TranslationKey>;
+
 export function TrainingWizard({
   paramMode,
   onParamModeChange,
+  step,
+  onStepChange,
 }: {
   paramMode: ParamMode;
   onParamModeChange: (next: ParamMode) => void;
+  step: TrainingStep;
+  onStepChange: (next: TrainingStep) => void;
 }) {
   const t = useT();
   const objective = useTrainingConfigStore((s) =>
     effectiveTrainingObjective(s),
   );
-  return (
-    <div className="flex flex-col gap-6">
+  const steps = trainingSteps(objective);
+  const active = resolveTrainingStep(step, objective);
+  const index = steps.indexOf(active);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const goTo = (next: TrainingStep) => {
+    onStepChange(next);
+    rootRef.current?.scrollIntoView({ block: "start" });
+  };
+
+  const panels: Record<TrainingStep, ReactNode> = {
+    model: (
       <SectionBox
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}
@@ -380,7 +409,8 @@ export function TrainingWizard({
       >
         <ModelPanel />
       </SectionBox>
-
+    ),
+    dataset: (
       <SectionBox
         title={t("studio.wizard.datasetTitle")}
         description={t("studio.wizard.datasetDescription")}
@@ -396,31 +426,30 @@ export function TrainingWizard({
           </div>
         )}
       </SectionBox>
-
-      {objective === "grpo" && (
-        <SectionBox
-          title={t("rl.prompt.title")}
-          titleBadge={<NewBadge />}
-          description={t("rl.prompt.description")}
-          icon={BubbleChatEditIcon}
-          chipTint="var(--chart-1)"
-        >
-          <PromptFormatSection />
-        </SectionBox>
-      )}
-
-      {objective === "grpo" && (
-        <SectionBox
-          title={t("rl.rewards.title")}
-          titleBadge={<NewBadge />}
-          description={t("rl.rewards.description")}
-          icon={Award01Icon}
-          chipTint="var(--chart-1)"
-        >
-          <RewardsSection />
-        </SectionBox>
-      )}
-
+    ),
+    prompt: (
+      <SectionBox
+        title={t("rl.prompt.title")}
+        titleBadge={<NewBadge />}
+        description={t("rl.prompt.description")}
+        icon={BubbleChatEditIcon}
+        chipTint="var(--chart-1)"
+      >
+        <PromptFormatSection />
+      </SectionBox>
+    ),
+    rewards: (
+      <SectionBox
+        title={t("rl.rewards.title")}
+        titleBadge={<NewBadge />}
+        description={t("rl.rewards.description")}
+        icon={Award01Icon}
+        chipTint="var(--chart-1)"
+      >
+        <RewardsSection />
+      </SectionBox>
+    ),
+    parameters: (
       <SectionBox
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
@@ -438,15 +467,81 @@ export function TrainingWizard({
           </div>
         )}
       </SectionBox>
+    ),
+  };
 
-      <SectionBox
-        title={t("studio.wizard.configTitle")}
-        description={t("studio.wizard.configDescription")}
-        icon={Edit03Icon}
-        chipTint="var(--chart-1)"
-      >
+  return (
+    <div ref={rootRef} className="flex scroll-mt-6 flex-col gap-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <nav aria-label={t("studio.wizard.stepsLabel")}>
+          <ol className="flex flex-wrap items-center gap-1">
+            {steps.map((item, position) => (
+              <li key={item}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-current={item === active ? "step" : undefined}
+                  className={cn(
+                    "gap-2 px-2",
+                    item === active
+                      ? "bg-muted font-semibold text-foreground"
+                      : "text-muted-foreground",
+                  )}
+                  onClick={() => goTo(item)}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "flex size-5 items-center justify-center rounded-full text-ui-11 tabular-nums",
+                      item === active
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted",
+                    )}
+                  >
+                    {position + 1}
+                  </span>
+                  {t(STEP_TITLES[item])}
+                </Button>
+              </li>
+            ))}
+          </ol>
+        </nav>
         <ConfigActions />
-      </SectionBox>
+      </div>
+
+      {/* Hidden, not unmounted: drafts and test results survive moving between steps. */}
+      {steps.map((item) => (
+        <div key={item} hidden={item !== active} className="min-w-0">
+          {panels[item]}
+        </div>
+      ))}
+
+      <div className="flex items-center justify-between gap-3">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={index === 0}
+          onClick={() => goTo(steps[index - 1])}
+        >
+          <HugeiconsIcon
+            icon={ArrowLeft01Icon}
+            className="size-4 rtl:rotate-180"
+          />
+          {t("studio.wizard.back")}
+        </Button>
+        {index < steps.length - 1 && (
+          <Button type="button" onClick={() => goTo(steps[index + 1])}>
+            {t("studio.wizard.next", {
+              step: t(STEP_TITLES[steps[index + 1]]),
+            })}
+            <HugeiconsIcon
+              icon={ArrowRight01Icon}
+              className="size-4 rtl:rotate-180"
+            />
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
