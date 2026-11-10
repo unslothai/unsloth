@@ -95,8 +95,9 @@ tests/test_systemone.py`, which compares the fast path against `laya.Agent.predi
 
 ## diffusers MiniMax-H3-Image models (Apache-2.0)
 
-- Upstream: https://github.com/huggingface/diffusers/pull/15230 (branch `huggingface:minimax-h3-image`)
-- Commit: `529403c21a36d03551f09bfd4d432cb64ab6d450` (recorded in `diffusers_minimax_h3_image.json`)
+- Upstream: https://github.com/huggingface/diffusers/pull/15230, merged into diffusers `main`
+- Commit: `875373ac7f5856071e345a3e394c74efccc6b9e6` (the merge; recorded in `diffusers_minimax_h3_image.json`). Both
+  files are byte-identical to the PR head `529403c21a36d03551f09bfd4d432cb64ab6d450` they were first vendored from.
 - Files: `diffusers_minimax_h3_image/transformer_minimax_h3_image.py` (`MiniMaxH3ImageTransformer2DModel`) and
   `diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py` (`AutoencoderKLMiniMaxH3Image`), from
   `src/diffusers/models/` of that commit, with their Apache-2.0 headers.

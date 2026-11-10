@@ -18,7 +18,8 @@
       "upstream_sha256": "0928960f80447c5e4db43d61a361ccc4c785021207325aabe65416f8f6f94e62"
     }
   },
-  "source": "https://github.com/huggingface/diffusers/pull/15230",
-  "upstream_branch": "huggingface:minimax-h3-image",
-  "upstream_commit": "529403c21a36d03551f09bfd4d432cb64ab6d450"
+  "pr_head_commit": "529403c21a36d03551f09bfd4d432cb64ab6d450",
+  "source": "https://github.com/huggingface/diffusers/pull/15230 (merged)",
+  "upstream_branch": "huggingface:main",
+  "upstream_commit": "875373ac7f5856071e345a3e394c74efccc6b9e6"
 }
