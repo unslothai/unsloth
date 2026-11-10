@@ -353,6 +353,41 @@ test("diplomacy offers become engine actions only when the engine would do them"
   assert.equal(R.offerAction(B, war, "oak", big), null);
 });
 
+test("a pending alliance deal is refused once the leader targets the player", () => {
+  const s = fresh();
+  const deal = R.offerAction(B, s, "oak", { kind: "ally" });
+  assert.ok(deal);
+  const kept = R.takeDeal(B, s, "oak", deal);
+  assert.ok(kept.ok);
+  assert.equal(R.relationOf(kept.state, "us", "oak"), "ally");
+  // A day passes with the deal unaccepted and oak turns on the player.
+  const hostile = R.applyPlan(B, s, "oak", plan(MILITARY, "us"));
+  const r = R.takeDeal(B, hostile, "oak", deal);
+  assert.equal(r.ok, false);
+  assert.equal(r.state, hostile);
+  assert.equal(R.relationOf(r.state, "us", "oak"), "peace");
+});
+
+test("an alliance the leader offered is withdrawn once it targets the player", () => {
+  let s = R.applyPlan(
+    B,
+    fresh(),
+    "oak",
+    plan({ economy: 0.2, expansion: 0.1, military: 0.1, diplomacy: 0.6 }),
+  );
+  s = R.runManagers(B, s, "oak");
+  const offer = s.offers.find((o) => o.from === "oak");
+  assert.ok(offer && offer.action.kind === "ally");
+  const hostile = R.applyPlan(B, s, "oak", plan(MILITARY, "us"));
+  const r = R.acceptOffer(B, hostile, offer.id);
+  assert.equal(r.ok, false);
+  assert.equal(R.relationOf(r.state, "us", "oak"), "peace");
+  assert.equal(
+    r.state.offers.some((o) => o.id === offer.id),
+    false,
+  );
+});
+
 test("AI proposals to the player run through the same gate when accepted", () => {
   let s = R.applyPlan(
     B,

@@ -1146,6 +1146,25 @@ export function offerAction(
   return blocked(b, probe, pid, a) ? null : a;
 }
 
+/** Run a deal agreed in talks, refusing an alliance the leader's current target now rules out. */
+export function takeDeal(
+  b: Board,
+  s: RivalsState,
+  fid: string,
+  a: RivalAction,
+): ActResult {
+  const pid = b.player;
+  if (!pid) return { state: s, ok: false, why: "you have no village" };
+  // The deal may predate a day's planning that turned this leader against the player.
+  if (a.kind === "ally" && s.factions[fid]?.target === pid)
+    return {
+      state: s,
+      ok: false,
+      why: `${nameOf(b, fid)} no longer wants an alliance`,
+    };
+  return act(b, s, pid, a);
+}
+
 export function describe(b: Board, a: RivalAction): string {
   switch (a.kind) {
     case "build":
@@ -1169,6 +1188,13 @@ export function acceptOffer(b: Board, s: RivalsState, id: number): ActResult {
   const o = s.offers.find((x) => x.id === id);
   if (!o) return { state: s, ok: false, why: "that offer is gone" };
   const rest = { ...s, offers: s.offers.filter((x) => x.id !== id) };
+  // Offers outlive the day they were made; a leader now set against the player withdraws an alliance.
+  if (o.action.kind === "ally" && s.factions[o.from]?.target === o.to)
+    return {
+      state: rest,
+      ok: false,
+      why: `${nameOf(b, o.from)} no longer wants an alliance`,
+    };
   const r = act(b, rest, o.to, { ...o.action, with: o.from } as RivalAction);
   return r.ok ? r : { ...r, state: rest };
 }
