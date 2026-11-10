@@ -320,6 +320,41 @@ export function titleCheckpoint(
     : "";
 }
 
+/** Stamp on the newest assistant turn, even when a trailing user message is last (#17332). */
+export function latestAnsweredCheckpoint(
+  messages: readonly MessageRecord[],
+): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== "assistant") continue;
+    const stamped = answeringCheckpoint(message.metadata?.custom);
+    if (stamped) return stamped;
+  }
+  return "";
+}
+
+/**
+ * Explicit "Regenerate title": same routing as {@link titleCheckpoint}, but when the branch never
+ * stamped a local model and the selection is external, ask that connection instead of falling
+ * straight to the heuristic (unstamped remote chats, #17332). Still refuses to send a locally
+ * answered chat to a selected external provider (#13274).
+ */
+export function regenerateTitleCheckpoint(
+  answeredWith: string,
+  activeCheckpoint: string,
+  messages: readonly MessageRecord[],
+): string {
+  const primary = titleCheckpoint(answeredWith, activeCheckpoint);
+  if (primary) return primary;
+  if (parseExternalModelId(activeCheckpoint) === null) return "";
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const stamped = answeringCheckpoint(message.metadata?.custom);
+    if (stamped && parseExternalModelId(stamped) === null) return "";
+  }
+  return activeCheckpoint;
+}
+
 const VERBATIM_EFFORT_PROVIDER_TYPES = new Set(["openai", "openai_codex"]);
 
 type TitleReasoningFields = Pick<
