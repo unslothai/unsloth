@@ -6317,6 +6317,7 @@ export function ImagesPage({
             baseChoice={trainBaseChoice}
             onBaseChoiceChange={setTrainBaseChoice}
             onFamiliesChange={setTrainFamilies}
+            savedPresets={true}
           />
         </div>
       )}

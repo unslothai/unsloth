@@ -28,8 +28,7 @@ def _nvidia_host(monkeypatch):
 
 
 def test_torch_fallback_ids_keep_the_explicit_order(monkeypatch):
-    # No nvidia-smi: the picker listed torch ordinals in FASTEST_FIRST order, so pinning PCI
-    # order would hand the worker a different card.
+    # No nvidia-smi: torch ordinals list FASTEST_FIRST, so PCI order would pick another card.
     monkeypatch.setattr(hw, "_unmasked_ids_are_smi_rows", lambda: False)
     with patch.dict(os.environ, {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"}, clear = True):
         hw.apply_gpu_ids([1], backend = DeviceType.CUDA.value)
@@ -109,8 +108,7 @@ _MISMATCHED = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "0,
 
 
 def test_numeric_mask_under_fastest_first_ranks_the_cards_the_ids_select(monkeypatch):
-    # The 16 GB load fits only the 4090, mask entry 0 under FASTEST_FIRST. Ranking the
-    # SMI rows picked entry 1, which the worker resolves to the 3060.
+    # Under FASTEST_FIRST entry 0 is the 4090 that fits; SMI-row ranking picks the 3060.
     _host(monkeypatch)
     assert _auto(_MISMATCHED) == [0]
 

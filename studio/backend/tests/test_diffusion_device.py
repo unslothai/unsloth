@@ -414,8 +414,7 @@ def test_force_float32_rope_tolerates_non_module_components():
 
 
 def test_the_video_loader_demotes_rope():
-    # Guards that the call site exists and is unconditional (the helper no-ops on float64 devices);
-    # checked via AST so `and` / ternary guards are caught too.
+    # Call must be unconditional (helper no-ops on float64); AST catches and/ternary guards.
     import ast
     from pathlib import Path
 
@@ -749,8 +748,7 @@ def test_the_capability_probe_asks_about_the_selected_card(monkeypatch):
     assert dd.resolve_diffusion_device_target(ordinal = 1).dtype == BF16
     assert seen == [1]
 
-    # No selection probes with NO argument: a stub or older build that takes none would
-    # otherwise raise into the fp16 fallback.
+    # Never probe with no argument: a stub or older build would raise into the fp16 fallback.
     seen.clear()
     assert dd.resolve_diffusion_device_target().dtype == FP16
     assert seen == [_NOTHING]

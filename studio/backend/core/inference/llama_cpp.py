@@ -8001,6 +8001,17 @@ def _info_once_per_load(msg: str, *args) -> None:
 # "Probed, no usable answer", kept apart from None = "not probed yet".
 _MISSING = object()
 
+
+def _apple_wired_headroom_bytes_for_load() -> Optional[int]:
+    """One placement asks several times (sysctl + ioreg each); an armed load reuses the first reading."""
+    memo = _load_probe_memo_get("apple_wired", None)
+    if memo is not None:
+        return None if memo is _MISSING else memo
+    wired = _apple_wired_headroom_bytes()
+    _load_probe_memo_put("apple_wired", None, _MISSING if wired is None else wired)
+    return wired
+
+
 # Display reads only (/api/system would spawn the probe per poll); a GPU memory event or fresh_reads() skips it.
 _VULKAN_INVENTORY_TTL_S = 30.0
 _vulkan_inventory_lock = threading.Lock()
@@ -8660,6 +8671,8 @@ class LlamaCppBackend:
         self._mmproj_accepts_image: bool = True
         # Set in _kill_process (monotonic); load_model reads it to decide whether to wait for VRAM reclaim.
         self._last_kill_monotonic: float = 0.0
+        # {GPU: (free MiB, child's weights MiB)} read just before the last kill.
+        self._last_kill_vram_baseline: Optional[dict[int, tuple[int, float]]] = None
         self._planned_vram_mib: dict[int, int] = {}
         self._pending_plan_mib: dict[int, int] = {}
 
@@ -13940,12 +13953,12 @@ class LlamaCppBackend:
     @staticmethod
     def _apple_metal_wired_ceiling_bytes() -> int:
         """Wired GPU memory a Metal load may still take, system-wide; 0 if unknown or used up."""
-        return _apple_wired_headroom_bytes() or 0
+        return _apple_wired_headroom_bytes_for_load() or 0
 
     @staticmethod
     def _apple_metal_wired_headroom_bytes() -> Optional[int]:
         """The same headroom, but None when unknown, so 0 means used up."""
-        return _apple_wired_headroom_bytes()
+        return _apple_wired_headroom_bytes_for_load()
 
     @staticmethod
     def _metal_fit_target_floor_mib() -> float:
@@ -16431,14 +16444,65 @@ class LlamaCppBackend:
     # Skip the wait when the last kill is older than this; the driver has already reclaimed it.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
 
+    # Weights under this on a GPU cannot be told from noise in its free-VRAM figure.
+    _VRAM_RELEASE_MIN_HELD_MIB: float = 512.0
+    # Windows (WDDM) reports a dead child's VRAM as free after it exits. A bound, not a measurement.
+    _VRAM_RELEASE_WAIT_S: float = 10.0
+
+    @staticmethod
+    def _free_vram_counts_only_this_process() -> bool:
+        """Windows ROCm free VRAM excludes other processes; checks torch too, as IS_ROCM is set late."""
+        if sys.platform != "win32":
+            return False
+        from utils.hardware import rocm_windows_free_is_untrusted
+
+        if rocm_windows_free_is_untrusted():
+            return True
+        torch = sys.modules.get("torch")
+        return torch is not None and LlamaCppBackend._torch_is_rocm(torch)
+
+    def _vram_baseline_before_kill(self) -> Optional[dict[int, tuple[int, float]]]:
+        """{GPU: (free MiB, child's weights MiB)} while the child lives; None if any GPU's reading
+        does not count those weights as used (cannot show their release) or on Windows ROCm."""
+        try:
+            if self._free_vram_counts_only_this_process():
+                return None
+            held = {
+                idx: float(gb) * 1024.0
+                for idx, gb in (self.reclaimable_gpu_memory_gb() or {}).items()
+                if float(gb) * 1024.0 >= self._VRAM_RELEASE_MIN_HELD_MIB
+            }
+            if not held:
+                return None
+            from utils.hardware import gpu_query
+
+            with gpu_query.fresh_reads():
+                readings = {
+                    i: (free, total) for i, free, total in LlamaCppBackend._get_gpu_memory()
+                }
+            # Again: the read itself may be what imported torch.
+            if self._free_vram_counts_only_this_process():
+                return None
+            baseline: dict[int, tuple[int, float]] = {}
+            for idx, held_mib in held.items():
+                free, total = readings.get(idx, (0, 0))
+                if total <= 0 or total - free < held_mib / 2.0:
+                    return None
+                baseline[idx] = (int(free), held_mib)
+            return baseline
+        except Exception:
+            return None
+
     @staticmethod
     def _wait_for_vram_settle(
         max_wait: float = 2.0,
         interval: float = 0.25,
         tolerance_mib: int = 256,
         since_kill: float = 0.0,
+        baseline: Optional[dict[int, tuple[int, float]]] = None,
     ) -> None:
-        """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi."""
+        """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi.
+        With ``baseline``, samples count only once the child's VRAM shows freed (up to ``_VRAM_RELEASE_WAIT_S``)."""
         now = time.monotonic()
         if since_kill <= 0.0:
             return
@@ -16458,18 +16522,40 @@ class LlamaCppBackend:
             except Exception:
                 return None
 
+        def _released(sample) -> bool:
+            # Per GPU; half the weights, since another tenant may take some of the freed memory.
+            free = dict(sample)
+            return all(
+                free.get(idx, before) - before >= held / 2.0
+                for idx, (before, held) in baseline.items()
+            )
+
         prev = _probe_or_none()
         if prev is None or not prev:
             return
+        # A GPU the probe no longer lists cannot be tracked.
+        awaiting_release = (
+            bool(baseline) and set(baseline) <= {idx for idx, _free in prev} and not _released(prev)
+        )
+        if awaiting_release:
+            deadline = now + max(max_wait, LlamaCppBackend._VRAM_RELEASE_WAIT_S)
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return
+                break
             # Clip the nap so a near-zero ``max_wait`` is respected.
             time.sleep(min(interval, remaining))
+            if awaiting_release and time.monotonic() >= deadline:
+                break
             curr = _probe_or_none()
             if curr is None or not curr or len(curr) != len(prev):
                 return
+            if awaiting_release:
+                if _released(curr):
+                    awaiting_release = False
+                    deadline = time.monotonic() + max_wait
+                prev = curr
+                continue
             prev_map = dict(prev)
             stable = True
             for idx, free in curr:
@@ -16485,6 +16571,13 @@ class LlamaCppBackend:
             if stable:
                 return
             prev = curr
+        if awaiting_release:
+            logger.warning(
+                "Free VRAM did not rise within %.1f s of stopping the previous llama-server "
+                "(it held about %.0f MiB); the GPU fit that follows uses the reported figure.",
+                max(max_wait, LlamaCppBackend._VRAM_RELEASE_WAIT_S),
+                sum(held for _before, held in baseline.values()),
+            )
 
     # Free-VRAM fraction at which Unsloth pins the GPU instead of deferring to --fit on.
     # Guards fragmentation and per-device context; 0.90 sent 91-94% fits to CPU offload.
@@ -24304,7 +24397,10 @@ class LlamaCppBackend:
                 self._vram_fraction_launched = None
                 # Outside the lock, as for llama-server: the Auto layer fit reads free VRAM,
                 # which a just-killed runner still holds until the driver reclaims it.
-                self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+                self._wait_for_vram_settle(
+                    since_kill = self._last_kill_monotonic,
+                    baseline = getattr(self, "_last_kill_vram_baseline", None),
+                )
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
@@ -24340,7 +24436,10 @@ class LlamaCppBackend:
             self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside self._lock so /unload, /cancel, /status aren't blocked.
-            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+            self._wait_for_vram_settle(
+                since_kill = self._last_kill_monotonic,
+                baseline = getattr(self, "_last_kill_vram_baseline", None),
+            )
 
             # ── Phase 3: start llama-server (under lock) ──────────────
             with self._lock:
@@ -26852,6 +26951,8 @@ class LlamaCppBackend:
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: cap here, or the context stays native and over-commits
                         # unified memory.
+                        # After the download: the wired checks below share one reading for this load.
+                        _arm_load_probe_memo()
                         # llama.cpp's --fit is blind to Unsloth's own footprint and the wired limit.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # With --fit off (argv or LLAMA_ARG_FIT env) nothing reduces what we emit, so hand over the floor the llama.cpp fitter itself would reduce to.
@@ -34568,6 +34669,9 @@ class LlamaCppBackend:
         """Read both before terminate: getpgid fails once the leader is reaped and children reparent on exit; the visual server must be named while the link exists"""
         self._stop_mtp_crash_watchdog()
         self._reset_effective_parallel_slots()
+        if self._process is not None:
+            # While the child still holds its VRAM and its GPU ids; a shutdown has no load to plan for.
+            self._last_kill_vram_baseline = None if teardown else self._vram_baseline_before_kill()
         # _process may be a test stand-in lacking terminate(); skip signalling, fall through to finally.
         self._diffusion_requested_ngl = None
         self._child_gpu_physical_ids = None
