@@ -102,6 +102,7 @@ import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
 import type { SettingsMenuAction } from "../app-menu-chords";
+import { listenEditMenu } from "../edit-menu";
 import { hasAppMenus, useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
@@ -588,6 +589,7 @@ function RootLayout() {
   useShortcut("newStandaloneChat", () => startNewChat({ standalone: true }), {
     enabled: routeShortcutEnabled,
   });
+  useEffect(() => (hasAppMenus ? listenEditMenu() : undefined), []);
 
   const pathLeasesSupported = useNativePathLeasesSupported();
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
