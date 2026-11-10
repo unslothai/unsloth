@@ -892,7 +892,6 @@ def _rocm_guard_common_sdpa(
     dtype: Any,
     logger: Any = None,
 ) -> None:
-    """Process-wide SDPA switches keep only the fused kernels ``primary`` and ``cards`` share."""
     with contextlib.suppress(Exception):
         from .diffusion_attention import guard_rocm_fused_sdpa_cards
         engaged = dict.fromkeys(int(o) for o in (primary, *cards))
