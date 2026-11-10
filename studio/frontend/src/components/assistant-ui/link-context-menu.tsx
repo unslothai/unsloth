@@ -118,6 +118,13 @@ export function loadSandboxFile(sessionId: string, file: string): Promise<Blob> 
   });
 }
 
+export function loadBackendFile(path: string): Promise<Blob> {
+  return authFetch(path).then((response) => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.blob();
+  });
+}
+
 export function FileContextMenu({
   file,
   children,

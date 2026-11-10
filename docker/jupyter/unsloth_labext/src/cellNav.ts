@@ -9,9 +9,8 @@ import { CodeMirrorEditor } from '@jupyterlab/codemirror';
 import { INotebookTracker } from '@jupyterlab/notebook';
 
 /**
- * Colab-style cell navigation: at a cell boundary, move to the next cell and align
- * its TOP to the viewport. JupyterLab centers tall cells instead, dropping the view
- * mid-output, and no setting changes that.
+ * Colab-style navigation: at a cell boundary, move to the next cell and align its top to the
+ * viewport, since JupyterLab centers tall cells and no setting changes that.
  */
 const cellNavPlugin: JupyterFrontEndPlugin<void> = {
   id: 'unsloth-jupyterlab:cell-nav',

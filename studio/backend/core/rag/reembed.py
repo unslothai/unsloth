@@ -62,8 +62,7 @@ class _Job:
 
 
 def _stale_documents(conn, identity: str) -> list[dict]:
-    """Completed, searchable documents whose vectors another embedder wrote; files before
-    archived conversation turns, newest first."""
+    """Completed documents with chunks whose vectors another embedder wrote, newest first."""
     # Chunks, not num_chunks, which archived conversation turns leave at 0.
     rows = conn.execute(
         "SELECT id, scope, embedding_model FROM documents d WHERE status='completed' "
@@ -92,10 +91,6 @@ def stale_counts() -> dict:
     return {"documents": len(rows) - archived, "archived": archived}
 
 
-# Chunks were sized with the previous model's tokenizer.
-_clip = embeddings.clip_to_limit
-
-
 def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
     conn = rag_db.get_connection()
     try:
@@ -106,12 +101,9 @@ def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
         conn.close()
     # Per document: an ST failure can hand the model to llama-server, whose tokenizer and limit differ.
     count, limit = embeddings.token_counter(model), embeddings.max_tokens(model)
-    texts = []
-    clipped = 0
-    for row in rows:
-        text, was_clipped = _clip(row["text"], count, limit)
-        texts.append(text)
-        clipped += was_clipped
+    clips = embeddings.clip_many_to_limit([row["text"] for row in rows], count, limit)
+    texts = [text for text, _ in clips]
+    clipped = sum(cut for _, cut in clips)
 
     def on_progress(done: int, total: int) -> None:
         if job.stop.is_set() or account_is_retired():

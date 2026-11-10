@@ -330,8 +330,7 @@ def test_finalize_after_escalation_clears_state(monkeypatch):
 
 
 def test_finalize_after_escalation_preserves_output_dir(monkeypatch):
-    # A save-stop that already emitted "complete" has the checkpoint dir; run history must
-    # record it even if the watchdog wins the finalize race against the pump.
+    # A save-stop that emitted complete keeps its output dir even if the watchdog wins.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
@@ -671,8 +670,7 @@ def test_flush_pins_to_passed_run_id(monkeypatch):
 
 
 def test_finalize_uses_snapshot_run_id_across_new_run(monkeypatch):
-    # If a new /start changes current_job_id after the finalize claim but before the DB
-    # writes, finish_run must still target the run captured under the lock.
+    # A new /start can change current_job_id; finish_run must still target the snapshot run.
     recs = _install_fake_db(monkeypatch)
     b = TrainingBackend()
     b.current_job_id = "job_x"
@@ -858,8 +856,7 @@ def test_escalation_defers_when_row_cannot_be_created_here(monkeypatch):
 
 
 def test_escalation_creates_row_then_finalizes_when_start_create_failed(monkeypatch):
-    # A wedged worker's pump can never finalize, so the escalation creates the row and
-    # finalizes by id itself.
+    # A wedged pump never finalizes, so escalation creates the row and finalizes it by id.
     recs = _install_fake_db(monkeypatch)
     b = TrainingBackend()
     b.current_job_id = "job_s"
@@ -1271,8 +1268,7 @@ def test_recoverable_stall_does_not_arm_the_watchdog(monkeypatch):
 
 
 def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
-    # Arming no-ops since the stop watchdog already watches; without a terminal signal
-    # it would sit out the full 600s save backstop.
+    # Arming no-ops under the stop watchdog; a terminal error must release it, not wait 600s.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
     b, calls = _shared_setup_3(monkeypatch)
 

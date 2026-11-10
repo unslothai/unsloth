@@ -85,8 +85,7 @@ def _patch_installer_popen(
     captured_kwargs = None,
     spawned = None,
 ):
-    """Patches Popen for the installer only, delegating the rest so the pid identity lookup keeps
-    working."""
+    """Patch Popen only for the installer; other calls pass through so the pid lookup works."""
 
     def _popen(cmd, **kw):
         if spawned is not None:
