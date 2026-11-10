@@ -847,6 +847,23 @@ class TestRocmEntrypoint:
         assert rc == 0 and ran, err
         assert (tmp_path / "ran").read_text().strip() == "unset"
         assert "gfx1031 has no kernels" in err and "also apply to gfx1100" in err, err
+        assert "-> RDNA 2" not in err and "than gfx1030: 10.3.0" in err, err
+
+    def test_an_igpu_spoofs_only_on_an_apu_only_host(self, tmp_path):
+        """Studio skips a kernel-less gfx1036 iGPU beside a usable card by itself; spoofing
+        it would make it selectable. Alone, it is run as gfx1030 like a gfx1031."""
+        for name, gtvs, want in [
+            ("beside-gfx1100", ("100306", "110000"), "unset"),
+            ("beside-gfx1030", ("100306", "100300"), "unset"),
+            ("alone", ("100306",), "10.3.0"),
+        ]:
+            d = tmp_path / name
+            d.mkdir()
+            kw = self._gfx103x_host(d, *gtvs)
+            rc, ran, err = _entrypoint(d, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(d / "topo")}, **kw)
+            assert rc == 0 and ran, (name, err)
+            assert (d / "ran").read_text().strip() == want, (name, err)
+            assert ("has no kernels" in err) == (want == "10.3.0"), (name, err)
 
     def test_a_per_arch_image_on_a_generic_card_points_at_the_generic_image(self, tmp_path):
         """Dockerfile.rocm refuses ROCM_GFX outside the per-arch families, so the advice

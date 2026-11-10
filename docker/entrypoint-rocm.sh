@@ -151,14 +151,14 @@ else
     rocm-smi --showid 2>/dev/null | grep 'GPU\[' | head -4 >&2
 fi
 
-# RDNA 2 cards other than gfx1030 on the generic image: its wheels carry gfx1030 kernels only,
-# so the first kernel launch segfaults. ROCm runs these cards as gfx1030 (install.sh routes the
-# same set to AMD's gfx103X-all wheels). Read from the KFD topology, which the override cannot
-# spoof; only when every AMD GPU is in that set, so a mixed host is not misreported, and only
-# when torch lacks the card's arch but has gfx1030. gfx1033 is not in the set: check 4 refuses
-# it. A value the user set is kept.
+# Generic wheels carry gfx1030 but not its RDNA 2 siblings, which segfault on the first kernel
+# unless run as gfx1030 (#17147). KFD, not torch: the override cannot spoof it. Never on a mixed
+# host (a global override misreports the other cards) or for gfx1033, which check 4 refuses.
+# A gfx1035/gfx1036 iGPU decides only on an APU-only host: beside a usable card Studio skips it.
 if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DEV_PATH" == "kfd" ]]; then
+    _gfx_all=()
     _gfx103x=()
+    _gfx_igpu=()
     _gfx_other=()
     for _props in "${UNSLOTH_KFD_TOPOLOGY:-/sys/class/kfd/kfd/topology/nodes}"/*/properties; do
         [[ -r "$_props" ]] || continue
@@ -172,12 +172,17 @@ if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DE
         done < "$_props"
         [[ "$_vendor" == "4098" && "$_gtv" =~ ^[0-9]+$ && "$_gtv" -gt 0 ]] || continue
         _gfx="$(printf 'gfx%d%d%x' $((_gtv / 10000 % 100)) $((_gtv / 100 % 100)) $((_gtv % 100)))"
+        _gfx_all+=("$_gfx")
         case "$_gfx" in
             gfx1030) ;;
-            gfx1031|gfx1032|gfx1034|gfx1035|gfx1036) _gfx103x+=("$_gfx") ;;
+            gfx1031|gfx1032|gfx1034) _gfx103x+=("$_gfx") ;;
+            gfx1035|gfx1036) _gfx_igpu+=("$_gfx") ;;
             *) _gfx_other+=("$_gfx") ;;
         esac
     done
+    if [[ ${#_gfx103x[@]} -eq 0 && ${#_gfx_igpu[@]} -eq ${#_gfx_all[@]} ]]; then
+        _gfx103x=("${_gfx_igpu[@]}")
+    fi
     if [[ ${#_gfx103x[@]} -gt 0 ]]; then
         _wheel_archs=" $(python - 2>/dev/null <<'PY' || true
 import torch
@@ -194,8 +199,8 @@ PY
                 note "${_missing[*]} has no kernels in this image's torch, which carries gfx1030: running it as"
                 note "gfx1030 (HSA_OVERRIDE_GFX_VERSION=10.3.0). Set HSA_OVERRIDE_GFX_VERSION yourself to change this."
             else
-                warn "${_missing[*]} has no kernels in this image's torch and will crash on its first kernel;"
-                warn "not setting HSA_OVERRIDE_GFX_VERSION=10.3.0 for it, because it would also apply to ${_gfx_other[*]}."
+                warn "${_missing[*]} has no kernels in this image's torch; not setting HSA_OVERRIDE_GFX_VERSION=10.3.0"
+                warn "for it, because it would also apply to ${_gfx_other[*]}."
             fi
         fi
     fi
@@ -395,7 +400,7 @@ for i in range(torch.cuda.device_count()):
         print("        fixes the generic rocm index lacks. Build that image with:")
         print(f"          ROCM_GFX={arch} bash docker/build.sh --rocm")
         print("        This generic image may still work; if training crashes, that is the fix.")
-    elif fam:
+    elif fam and arch in (set(getattr(torch.cuda, "get_arch_list", list)()) or {arch}):
         print(f"  -> {fam}")
     else:
         print(f"  NOTE: {arch} is not in the list of arches these wheels are built for.")
