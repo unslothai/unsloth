@@ -27,8 +27,6 @@ PORT = int(os.environ.get("SMOKE_PORT", "5432"))
 BASE = f"http://127.0.0.1:{PORT}/smoke-flows-player.html"
 SHOTS = Path(os.environ.get("FLOWS_SHOTS", "outputs/flows"))
 VIEW = {"width": 1400, "height": 1300}
-# Relative layout: R, C and I zones (3x3) on top, a road under them, the plant below the I zone, wired up
-# through a road crossing.
 W, H = 9, 8
 ZONES = [("R", 1, 1), ("C", 4, 1), ("I", 7, 1)]
 ROAD = [(x, 3) for x in range(0, 9)]

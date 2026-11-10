@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Flows players end to end against a mock backend (studio/frontend/smoke-flows-player.html).
-
-Story: begin, read, pick choices, save, and reach the ending the compiled Lantern Picnic example promises.
-World: start the Phaser village, walk to Old Tom, start his quest, pick up the rod, return it and see the
-quest complete. World 3D: the same quest in the first-person three.js view, keyboard walking and turning, and
-the map / 3D toggle keeping the player where they stand. Screenshots go to $FLOWS_SHOTS (default ./outputs/flows)."""
+"""Flows players (story, world, world 3D) end to end against a mock backend (smoke-flows-player.html)."""
 
 from __future__ import annotations
 
@@ -573,7 +568,6 @@ def play_rivals(page: Page) -> None:
         "document.querySelector('[data-testid=rivals-day]')?.innerText.includes('Day 3')"
     )
     page.keyboard.press("Escape")
-    # And the 3D view shows the same game.
     page.click("[data-testid=world-view-toggle]")
     page.wait_for_timeout(2500)
     assert "Day 3" in day(), day()

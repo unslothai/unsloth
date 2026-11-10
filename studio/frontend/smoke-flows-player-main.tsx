@@ -207,8 +207,7 @@ const course = (spec: WorldSpec): WorldProp3d[] => {
       solid: true,
     }));
 };
-// `?verbs=1`: a keep near the spawn, a chest holding the key to a locked door, a lever on a second door
-// and a hostile brute standing still, for use / melee / dash / throw.
+// `?verbs=1`: chest + locked door, lever door and a static brute, for use / melee / dash / throw.
 const keep = (spec: WorldSpec): WorldSpec => {
   const m = generateMap(spec);
   const s = m.spawn;
