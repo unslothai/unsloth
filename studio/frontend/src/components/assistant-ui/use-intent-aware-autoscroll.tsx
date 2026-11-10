@@ -3,6 +3,7 @@
 
 "use client";
 
+import { ROW_DISTANT_ATTRIBUTE } from "@/components/assistant-ui/distant-rows";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useAui, useAuiEvent } from "@assistant-ui/react";
 import {
@@ -47,12 +48,8 @@ type AutoScrollContextValue = {
   /** Detach as if scrolled up: composer growth must not let observer pins shove the chat up. */
   detachFromBottom: () => void;
   /**
-   * `deltaPx` of content was inserted ABOVE the viewport; shift by it so the
-   * user keeps looking at the same thing. Progressive mounting (see
-   * progressive-mount-controller) is the only caller and calls on EVERY
-   * widening commit, zero included, since a zero correction still resyncs the
-   * intent bookkeeping below. A method rather than a scrollTop write at the
-   * inserting commit because this hook owns scrollTop.
+   * Called on every widening commit, zero included, since this hook owns scrollTop and resyncs
+   * intent.
    */
   adjustForContentInsertedAbove: (deltaPx: number) => boolean;
   notifyContentResized: () => void;
@@ -186,6 +183,10 @@ export function useIntentAwareAutoScroll(): {
       let scrollKeyAt = Number.NEGATIVE_INFINITY;
       let pointerHeld = false;
       let insertionRemainder = 0;
+      // distant-rows.ts skipped or released a row since the last scroll event. Chromium can clamp
+      // scrollTop while it swaps the row's size, and the scroll event then reads an unchanged
+      // scrollHeight: without this a long chat opening at its bottom read as a scroll up.
+      let rowsToggledSinceScroll = false;
 
       const distanceFromBottom = (): number => {
         if (el.scrollHeight <= el.clientHeight) {
@@ -205,9 +206,8 @@ export function useIntentAwareAutoScroll(): {
         el.toggleAttribute("data-aui-following", on);
       };
 
-      // Room to scroll upward. Guards wheel/touch detach: a gesture on a viewport with nothing
-      // above can't express intent to leave the bottom and must not flip userDetachedRef, else
-      // later streaming skips extendFollow and auto-follow stays dead for the session.
+      // Upward wheel/touch detaches only with room above, else auto-follow stays dead for the
+      // session.
       const canScrollUp = (): boolean => el.scrollTop > 0;
 
       // An inner scroller with room above consumes the upward delta, so it must not detach.
@@ -520,7 +520,7 @@ export function useIntentAwareAutoScroll(): {
           // behind it, is a clamp (something below shrank as a new row landed), not the user.
           const clamped =
             lastDistanceFromBottom <= AT_BOTTOM_THRESHOLD_PX &&
-            scrollHeight !== lastScrollHeight &&
+            (scrollHeight !== lastScrollHeight || rowsToggledSinceScroll) &&
             !keyed &&
             !pointerHeld;
           if (
@@ -537,6 +537,7 @@ export function useIntentAwareAutoScroll(): {
           }
         }
 
+        rowsToggledSinceScroll = false;
         lastScrollTop = scrollTop;
         lastClientWidth = clientWidth;
         lastClientHeight = clientHeight;
@@ -604,7 +605,10 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
-      const onMutation = (): void => {
+      const onMutation = (records: MutationRecord[]): void => {
+        if (records.some((record) => record.attributeName === ROW_DISTANT_ATTRIBUTE)) {
+          rowsToggledSinceScroll = true;
+        }
         if (el.ownerDocument.hidden) {
           onLayoutChange();
           return;
@@ -649,6 +653,7 @@ export function useIntentAwareAutoScroll(): {
           "aria-hidden",
           "aria-expanded",
           "data-state",
+          ROW_DISTANT_ATTRIBUTE,
         ],
       });
       el.addEventListener("wheel", onWheel, { passive: true });
@@ -661,9 +666,8 @@ export function useIntentAwareAutoScroll(): {
       el.addEventListener("pointerdown", onPointerDown, { passive: true });
       el.ownerDocument.addEventListener("pointerup", onPointerUp, true);
       el.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
-      // ResizeObserver covers window resizes. visualViewport.resize is the
-      // only signal for iOS software-keyboard changes, where the visual
-      // viewport shrinks without the element's clientHeight changing.
+      // visualViewport resize is the only signal for iOS keyboard changes, where clientHeight stays
+      // put.
       window.visualViewport?.addEventListener("resize", onViewportResize);
 
       const unsubscribePreferences = useChatPreferencesStore.subscribe(

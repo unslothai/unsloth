@@ -787,12 +787,8 @@ def test_setup_ps1_status_labels(tmp_path, name, status, output, label):
     "name, status, output", FAILURE_CASES, ids = [case[0] for case in FAILURE_CASES]
 )
 def test_setup_sh_never_reports_success_for_a_non_zero_exit(tmp_path, name, status, output):
-    """Success TEXT on a failed run must not become a success LABEL.
-
-    The installer writes its progress log and its error to the same stream, so a run that
-    got as far as printing either token and then died is exactly the shape that would turn
-    a broken dictation runtime into a green line if the grep ran before the exit check.
-    """
+    """Success text printed before a non-zero exit must not become a success label; progress and
+    errors share one stream, so the exit check must come before the grep."""
     result = _run_bash(_sh_whisper_script(tmp_path, status, output))
     assert result.returncode == 0, result
     label = _steps(result.stdout).get("whisper.cpp")
@@ -822,11 +818,8 @@ def test_setup_ps1_never_reports_success_for_a_non_zero_exit(tmp_path, name, sta
     "name, status, output, label", STATUS_CASES, ids = [case[0] for case in STATUS_CASES]
 )
 def test_both_shells_agree_on_the_label(tmp_path, name, status, output, label):
-    """Windows and POSIX must tell the user the same thing.
-
-    Asserting each side against a constant leaves them free to drift apart via the
-    constant; comparing the two measured labels is what makes "mirrored" a measurement.
-    """
+    """Windows and POSIX must show the same label; comparing the two shells' labels directly, not
+    each against a constant, stops them drifting apart."""
     sh = _run_bash(_sh_whisper_script(tmp_path, status, output))
     ps = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, status, output))
     assert sh.returncode == 0 and ps.returncode == 0, (sh, ps.stdout, ps.stderr)
@@ -917,12 +910,8 @@ _LLAMA_KEEP_LOG = (
 
 @requires_bash
 def test_setup_sh_reports_each_component_separately(tmp_path):
-    """llama keeps its install while whisper's update fails: two labels, no cross-talk.
-
-    Both blocks read from their own log file and their own status variable, and llama's
-    keep arm must not leak into whisper's line (or the reverse) just because the same
-    token appears in the same setup run.
-    """
+    """llama's keep arm and whisper's failure must yield two separate labels; each block reads its
+    own log file and status variable, so there is no cross-talk."""
     llama_log = tmp_path / "prebuilt.log"
     llama_log.write_text(_LLAMA_KEEP_LOG + "\n", encoding = "utf-8")
     whisper_log = tmp_path / "whisper.log"
@@ -983,12 +972,8 @@ def test_setup_ps1_reports_each_component_separately(tmp_path):
 
 @requires_bash
 def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, monkeypatch, capsys):
-    """End to end: the real installer log, fed to the real setup.sh block.
-
-    Every other test in this file asserts one half. This one runs the installer offline over
-    an intact install, takes whatever it printed, and hands it to the shipped shell block --
-    so a reworded log line shows up as the wrong user-facing label, not as a passing test.
-    """
+    """Runs the installer offline and feeds its real log to the shipped setup.sh block, so a
+    reworded log line shows up as a wrong label, not a pass."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
     _inject(monkeypatch, "offline")

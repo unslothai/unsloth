@@ -210,9 +210,8 @@ def test_a_pypi_torch_gets_no_accelerator_note(patched_torch, monkeypatch, torch
 
 
 def test_an_unattributable_access_keeps_torchs_own_error(patched_torch, monkeypatch):
-    """sys._getframe is CPython-only and raises an audit event, so a hardened
-    interpreter can refuse it. hasattr() swallows only AttributeError, so rethrowing
-    the frame-lookup failure would break an ordinary feature probe."""
+    """sys._getframe is CPython-only and audited, so a hardened interpreter can refuse it; hasattr()
+    swallows only AttributeError, so rethrowing would break feature probes."""
 
     def _refuse(_depth):
         raise RuntimeError("frame inspection is not allowed here")
@@ -551,8 +550,7 @@ def test_a_public_triton_still_gets_the_plain_reinstall_line(monkeypatch, tmp_pa
 
 
 def test_python_313_and_later_do_not_pay_for_the_probe(monkeypatch, tmp_path):
-    """CPython stopped requiring the macro in 3.13, so the shim is fine there and
-    the file is never read."""
+    """CPython stopped requiring the macro in 3.13, so the shim is fine there and the file is never read."""
     spec, _ = _fake_triton(tmp_path, _UNGUARDED_SHIM)
     monkeypatch.setattr(sys, "version_info", (3, 13, 1))
 
@@ -977,9 +975,8 @@ def test_a_rename_leftover_is_settled_by_what_torch_requires(monkeypatch, tmp_pa
 
 
 def test_the_declared_requirement_is_read_by_distribution_name(monkeypatch):
-    """The names are compared PEP 503 normalised, so an underscore spelling in torch's
-    own metadata still matches the dist-info name, and a non-Triton requirement is not
-    collected."""
+    """Names are compared PEP 503 normalised, so an underscore spelling in torch's own metadata
+    still matches the dist-info name; non-Triton requirements are not collected."""
     import importlib.metadata as metadata
 
     monkeypatch.setattr(
