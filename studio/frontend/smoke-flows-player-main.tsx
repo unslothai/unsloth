@@ -1,0 +1,630 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// Harness for tests/studio/playwright_flows_player.py against a mock backend (`?flow=story` / `?flow=world`).
+
+/* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
+import { FlowPlayerPage } from "@/features/flows/player/flow-player-page";
+import type {
+  PlayerApi,
+  SessionRecord,
+} from "@/features/flows/player/player-api";
+import type { WorldGameHandle } from "@/features/flows/player/world/phaser-game";
+import { generateMap, isSolid } from "@/features/flows/player/world/procgen";
+import type {
+  MediaValue,
+  ModelAsset,
+  StoryManifest,
+  WorldProp3d,
+  WorldSpec,
+} from "@/features/flows/types";
+/* eslint-enable no-restricted-imports */
+import { createRoot } from "react-dom/client";
+
+import "@/index.css";
+import picnicJson from "./tests/fixtures/flows-lantern-picnic.story.json?raw";
+
+const picnic = JSON.parse(picnicJson) as StoryManifest;
+
+const params = new URLSearchParams(location.search);
+const kind = params.get("flow") === "world" ? "world" : "story";
+const time = params.get("time");
+
+const WORLD: WorldSpec = {
+  title: "Mossy Hollow",
+  seed: 2024,
+  width: 40,
+  height: 30,
+  tile_size: 32,
+  biome: "meadow",
+  tileset: {},
+  player: { name: "Pip" },
+  npcs: [
+    {
+      id: "fern",
+      name: "Grandma Fern",
+      persona: "village elder",
+      greeting: "Ah, a new face! Have you eaten?",
+      wander: false,
+    },
+    {
+      id: "tom",
+      name: "Old Tom",
+      persona: "grumpy fisher",
+      greeting: "Hmph. Lost my lucky rod.",
+      sprite: { kind: "image", ref: "flowasset:tom", mime: "image/png" },
+    },
+    { id: "bea", name: "Bea", persona: "baker", greeting: "Fresh bread!" },
+  ],
+  items: [
+    { id: "rod", name: "Lucky Rod", description: "Smells of the pond." },
+    { id: "bell", name: "Golden Bell", description: "It rings like laughter." },
+    { id: "pie", name: "Berry Pie", description: "Still warm." },
+  ],
+  quests: [
+    {
+      id: "rod_q",
+      title: "The Lucky Rod",
+      description: "Find Old Tom's rod.",
+      giver: "tom",
+      requires_item: "rod",
+      reward_text: "Tom smiles, almost.",
+    },
+  ],
+  regions: [
+    {
+      id: "pond",
+      name: "Lily Pond",
+      x: 2,
+      y: 2,
+      w: 12,
+      h: 10,
+      on_enter_text: "Frogs go quiet.",
+    },
+  ],
+  vars: { reputation: 0 },
+  intro_text:
+    "The Lantern Festival starts tonight, but the golden bell is missing.",
+  entry_points: { npc_reply: "reply" },
+  ...(params.get("render") === "3d" ? { render: "3d" as const } : {}),
+  ...(time === "dawn" || time === "day" || time === "dusk" || time === "night"
+    ? { view3d: { time_of_day: time } }
+    : {}),
+};
+
+const LIVELY: WorldSpec = {
+  ...WORLD,
+  autonomy: {
+    trade: true,
+    homes: true,
+    quests: true,
+    rivals: true,
+    enemies: true,
+  },
+  npcs: [
+    ...WORLD.npcs,
+    { id: "ada", name: "Ada", persona: "carpenter", greeting: "Need planks?" },
+    {
+      id: "bo",
+      name: "Bo",
+      persona: "stone mason",
+      greeting: "Solid as rock.",
+    },
+    {
+      id: "grim",
+      name: "Grim",
+      persona: "a sour drifter",
+      greeting: "What do you want?",
+      role: "hostile",
+    },
+  ],
+  regions: [
+    ...WORLD.regions,
+    {
+      id: "cottage",
+      name: "Rose Cottage",
+      x: 30,
+      y: 3,
+      w: 5,
+      h: 4,
+      on_enter_text: "",
+    },
+    {
+      id: "square",
+      name: "Town Square",
+      x: 16,
+      y: 20,
+      w: 7,
+      h: 5,
+      on_enter_text: "",
+    },
+  ],
+};
+const RIVALS: WorldSpec = {
+  ...LIVELY,
+  autonomy: null,
+  rivals: {
+    factions: [
+      {
+        id: "pond",
+        name: "Pondfolk",
+        player: true,
+        region: "pond",
+        leader: "fern",
+      },
+      { id: "rose", name: "Rose Hold", region: "cottage", leader: "ada" },
+      { id: "square", name: "Square Guild", region: "square", leader: "bo" },
+    ],
+    max_turns: 20,
+  },
+};
+const AUTONOMOUS = params.get("rivals")
+  ? RIVALS
+  : params.get("autonomy")
+    ? LIVELY
+    : WORLD;
+// `&sim=1`: the daily-life simulation (clock, needs) over the named regions.
+const LIVED: WorldSpec = params.get("sim")
+  ? {
+      ...AUTONOMOUS,
+      simulation: {
+        enabled: true,
+        minutes_per_second: 2,
+        start_minute: 480,
+        places: AUTONOMOUS.regions.map(({ id, name, x, y, w, h }) => ({
+          id,
+          name,
+          x,
+          y,
+          w,
+          h,
+        })),
+        chat_cooldown_min: 120,
+        calls_per_minute: 4,
+      },
+    }
+  : AUTONOMOUS;
+const streamed = params.get("stream") === "1";
+const gameplay = params.get("action");
+const course = (spec: WorldSpec): WorldProp3d[] => {
+  const m = generateMap(spec);
+  const s = m.spawn;
+  const spots: [number, number, WorldProp3d["kind"]][] = [
+    [3, 0, "crate"],
+    [-3, 0, "rock"],
+    [0, 3, "fence"],
+    [0, -4, "house"],
+  ];
+  return spots
+    .filter(([dx, dy]) => !isSolid(m, s.x + dx, s.y + dy))
+    .map(([dx, dy, kind]) => ({
+      id: `course-${kind}`,
+      kind,
+      x: s.x + dx + 0.5,
+      y: s.y + dy + 0.5,
+      rot: 0,
+      scale: 1,
+      solid: true,
+    }));
+};
+// `?verbs=1`: a keep near the spawn, a chest holding the key to a locked door, a lever on a second door
+// and a hostile brute standing still, for use / melee / dash / throw.
+const keep = (spec: WorldSpec): WorldSpec => {
+  const m = generateMap(spec);
+  const s = m.spawn;
+  const free = (dx: number, dy: number) => !isSolid(m, s.x + dx, s.y + dy);
+  const at = (dx: number, dy: number) => ({
+    x: s.x + dx + 0.5,
+    y: s.y + dy + 0.5,
+  });
+  const props: WorldProp3d[] = [];
+  const add = (dx: number, dy: number, p: Omit<WorldProp3d, "x" | "y">) => {
+    if (free(dx, dy)) props.push({ ...p, ...at(dx, dy) });
+  };
+  add(3, 0, { id: "chest-1", kind: "chest", contents: ["key"], solid: true });
+  add(0, -3, { id: "door-1", kind: "door", locked_by: "key", solid: true });
+  add(-3, -3, { id: "door-2", kind: "door", solid: true });
+  add(-3, 0, {
+    id: "lever-1",
+    kind: "lever",
+    targets: ["door-2"],
+    solid: false,
+  });
+  return {
+    ...spec,
+    items: [
+      ...spec.items,
+      { id: "key", name: "Brass key", description: "Opens the keep." },
+    ],
+    npcs: [
+      ...spec.npcs,
+      {
+        id: "brute",
+        name: "Brute",
+        persona: "a camp raider",
+        greeting: "Grr.",
+        role: "hostile",
+        wander: false,
+        x: s.x + 2,
+        y: s.y + 3,
+      },
+    ],
+    props3d: props,
+  };
+};
+// `?ai=v2`: hostile AI v2 with a row of houses south of the spawn to hide behind and a brute guarding beyond it.
+const hideout = (spec: WorldSpec): WorldSpec => {
+  const m = generateMap(spec);
+  const s = m.spawn;
+  const props: WorldProp3d[] = [];
+  for (let dx = -6; dx <= 3; dx++)
+    if (!isSolid(m, s.x + dx, s.y + 2))
+      props.push({
+        id: `wall-${dx + 6}`,
+        kind: "house",
+        x: s.x + dx + 0.5,
+        y: s.y + 2.5,
+        solid: true,
+      });
+  return {
+    ...spec,
+    npcs: [
+      ...spec.npcs,
+      {
+        id: "brute",
+        name: "Brute",
+        persona: "a camp raider",
+        greeting: "Grr.",
+        role: "hostile",
+        wander: false,
+        x: s.x,
+        y: s.y + 5,
+      },
+    ],
+    props3d: props,
+  };
+};
+const verbs = params.get("verbs") === "1";
+const ai = params.get("ai") === "v2";
+const ACTED: WorldSpec = ai ? hideout(LIVED) : verbs ? keep(LIVED) : LIVED;
+// `&clutter=N`: N non-solid props spread over open tiles, to load the renderers.
+const clutter = (spec: WorldSpec, n: number): WorldProp3d[] => {
+  const m = generateMap(spec);
+  const kinds: WorldProp3d["kind"][] = [
+    "crate",
+    "rock",
+    "fence",
+    "lamp",
+    "bench",
+    "tree",
+    "well",
+    "stall",
+  ];
+  const out: WorldProp3d[] = [];
+  for (let i = 0; out.length < n && i < m.width * m.height; i++) {
+    const k = (i * 7919) % (m.width * m.height);
+    const x = k % m.width;
+    const y = Math.floor(k / m.width);
+    if (isSolid(m, x, y) || (x === m.spawn.x && y === m.spawn.y)) continue;
+    out.push({
+      id: `clutter-${out.length}`,
+      kind: kinds[out.length % kinds.length],
+      x: x + 0.5,
+      y: y + 0.5,
+      rot: (out.length * 37) % 360,
+      scale: 1,
+      solid: false,
+    });
+  }
+  return out;
+};
+const PLAYED_BASE: WorldSpec =
+  gameplay === "action" || gameplay === "shooter"
+    ? {
+        ...ACTED,
+        action: {
+          movement: true,
+          shooter: gameplay === "shooter",
+          ...(verbs ? { verbs: true } : {}),
+          ...(ai ? { ai: "v2" as const } : {}),
+        },
+        ...(params.get("course") ? { props3d: course(LIVED) } : {}),
+      }
+    : params.get("course")
+      ? { ...ACTED, props3d: course(LIVED) }
+      : ACTED;
+if (verbs || ai)
+  (window as unknown as { __flowsWorldPerf?: unknown }).__flowsWorldPerf = {
+    frame: [],
+    sim: [],
+  };
+const PLAYED: WorldSpec = params.get("clutter")
+  ? {
+      ...PLAYED_BASE,
+      props3d: [
+        ...(PLAYED_BASE.props3d ?? []),
+        ...clutter(PLAYED_BASE, Number(params.get("clutter"))),
+      ],
+    }
+  : PLAYED_BASE;
+// `?city=1`: Mayor mode on the same village.
+const SERVED: WorldSpec = params.get("city")
+  ? { ...PLAYED, city: { funds: 20000 } }
+  : PLAYED;
+const PROPS_KEY = "flows-smoke-props3d";
+const MODELS_KEY = "flows-smoke-models";
+const savedProps = (): WorldProp3d[] | null => {
+  const raw = sessionStorage.getItem(PROPS_KEY);
+  return raw ? (JSON.parse(raw) as WorldProp3d[]) : null;
+};
+const models = (): Record<string, string> =>
+  JSON.parse(sessionStorage.getItem(MODELS_KEY) || "{}");
+if (params.get("props") === "reset") {
+  sessionStorage.removeItem(PROPS_KEY);
+  sessionStorage.removeItem(MODELS_KEY);
+}
+
+const sessions = new Map<string, SessionRecord>();
+const calls: { entry: string; inputs: Record<string, unknown> }[] = [];
+
+async function spriteBlob(): Promise<Blob> {
+  const c = document.createElement("canvas");
+  c.width = 96;
+  c.height = 128;
+  const ctx = c.getContext("2d") as CanvasRenderingContext2D;
+  ctx.fillStyle = "#3b82f6";
+  ctx.beginPath();
+  ctx.roundRect(18, 52, 60, 70, 18);
+  ctx.fill();
+  ctx.fillStyle = "#fde68a";
+  ctx.beginPath();
+  ctx.arc(48, 38, 30, 0, Math.PI * 2);
+  ctx.fill();
+  return new Promise((resolve) =>
+    c.toBlob((b) => resolve(b as Blob), "image/png"),
+  );
+}
+
+const mock: PlayerApi = {
+  async flowInfo(id) {
+    return {
+      id,
+      name: kind === "story" ? "Lantern Picnic" : "Mossy Hollow",
+      kind,
+    };
+  },
+  async story() {
+    return picnic;
+  },
+  async world() {
+    const props = savedProps();
+    return props ? { ...SERVED, props3d: props } : SERVED;
+  },
+  async saveWorldProps(_flowId, props) {
+    sessionStorage.setItem(PROPS_KEY, JSON.stringify(props));
+  },
+  async uploadModel(file, name) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    const ref = `flowasset:${name.replace(/[^a-z0-9]/gi, "")}`;
+    sessionStorage.setItem(
+      MODELS_KEY,
+      JSON.stringify({ ...models(), [ref]: btoa(bin) }),
+    );
+    return { kind: "model", ref, mime: "model/gltf-binary" } as ModelAsset;
+  },
+  async invoke(_flowId, entry, inputs, opts) {
+    calls.push({ entry, inputs });
+    await new Promise((r) => setTimeout(r, 300));
+    const task = (inputs.state as { task?: string; faction?: string }).task;
+    if (task === "rivals_strategist") {
+      const fid = (inputs.state as { faction: string }).faction;
+      const plan =
+        fid === "rose"
+          ? {
+              posture: {
+                economy: 0.2,
+                expansion: 0.2,
+                military: 0.5,
+                diplomacy: 0.1,
+              },
+              target: "square",
+              goals: ["arm the hold", "take the square"],
+              say: "Rose Hold will not wait.",
+            }
+          : {
+              posture: {
+                economy: 0.4,
+                expansion: 0.2,
+                military: 0.1,
+                diplomacy: 0.3,
+              },
+              target: null,
+              goals: ["trade", "grow"],
+            };
+      return { outputs: { reply: { plan } } };
+    }
+    if (task === "rivals_diplomacy")
+      return {
+        outputs: {
+          reply: {
+            text: "Two wood for two of your bread, neighbour.",
+            offer: {
+              kind: "trade",
+              give: "wood",
+              give_amount: 2,
+              want: "food",
+              want_amount: 2,
+            },
+          },
+        },
+      };
+    const ask = inputs.state as { task?: string; focus?: { x: number; y: number } };
+    if (ask?.task === "describe_place" && ask.focus) {
+      // What the backend solver returns for "a small market square with a well", around the camera's focus.
+      const { x, y } = ask.focus;
+      const at = (kind: string, dx: number, dy: number, rot = 0) => ({
+        kind,
+        x: x + dx + 0.5,
+        y: y + dy + 0.5,
+        rot,
+        solid: kind !== "bench",
+      });
+      return {
+        outputs: {
+          reply: {
+            place: {
+              props3d: [
+                at("well", 0, 0),
+                at("stall", -2, -1),
+                at("stall", 2, -1),
+                at("bench", -1, 2, 180),
+                at("bench", 1, 2, 180),
+              ],
+            },
+          },
+        },
+      };
+    }
+    const said = (inputs.state as { player_message?: string }).player_message;
+    if (streamed && opts?.onDelta && said) {
+      // `&stream=1`: a long reply streamed in small tokens, like a local model.
+      const text = `${"The pond was quiet this morning and the fish were not biting at all. ".repeat(8)}`;
+      for (let i = 0; i < text.length; i += 4) {
+        opts.onDelta(text.slice(i, i + 4));
+        await new Promise((r) => setTimeout(r, 12));
+      }
+      return { outputs: { reply: { text } } };
+    }
+    const state = inputs.state as {
+      npc_id: string;
+      inventory: string[];
+      player_message: string;
+      goods?: { id: string }[];
+      task?: string;
+      city?: {
+        month: number;
+        total_pop: number;
+        demand_r: number;
+        residents: { id: string; zone: string; land_value: number }[];
+      };
+    };
+    if (state.task === "mayor" && state.city) {
+      const d = state.city;
+      const who = d.residents[0];
+      return {
+        outputs: {
+          reply: {
+            mayor: {
+              advice: `Month ${d.month} report: population ${d.total_pop}, residential demand ${d.demand_r}.`,
+              petitions: who
+                ? [
+                    {
+                      citizen: who.id,
+                      zone: who.zone,
+                      metric: "land_value",
+                      value: who.land_value,
+                      text: `Land value at home is ${who.land_value}; a park would help.`,
+                    },
+                  ]
+                : [],
+              event: null,
+              name: null,
+            },
+          },
+        },
+      };
+    }
+    if (state.goods?.length && /buy|sell|have/.test(state.player_message)) {
+      return {
+        outputs: {
+          reply: {
+            text: "Take a look at what I have.",
+            offer_trade: state.goods[0].id,
+          },
+        },
+      };
+    }
+    if (state.npc_id === "tom" && state.inventory.includes("rod")) {
+      return {
+        outputs: {
+          reply: {
+            text: "My lucky rod! You found it!",
+            complete_quest: "rod_q",
+            take_item: "rod",
+          },
+        },
+      };
+    }
+    return {
+      outputs: {
+        reply: { text: `(${state.npc_id}) You said: ${state.player_message}` },
+      },
+    };
+  },
+  async listSessions() {
+    return [...sessions.values()];
+  },
+  async loadSession(_f, slot) {
+    return sessions.get(slot) ?? null;
+  },
+  async saveSession(_f, slot, state, label) {
+    sessions.set(slot, {
+      slot,
+      state: JSON.parse(JSON.stringify(state)),
+      label,
+    });
+  },
+  async reroll() {
+    await new Promise((r) => setTimeout(r, 200));
+  },
+  async mediaBlob(m: MediaValue) {
+    const glb = models()[m.ref];
+    if (glb)
+      return new Blob([Uint8Array.from(atob(glb), (c) => c.charCodeAt(0))], {
+        type: "model/gltf-binary",
+      });
+    return spriteBlob();
+  },
+};
+
+declare global {
+  interface Window {
+    __flowsPlayerSmoke?: {
+      calls: typeof calls;
+      sessions: typeof sessions;
+      exited: number;
+      map: ReturnType<typeof generateMap>;
+      props: WorldProp3d[];
+      world: WorldGameHandle | null;
+    };
+  }
+}
+window.__flowsPlayerSmoke = {
+  calls,
+  sessions,
+  exited: 0,
+  map: generateMap(SERVED),
+  props: SERVED.props3d ?? [],
+  world: null,
+};
+
+const root = document.getElementById("root");
+if (root) {
+  createRoot(root).render(
+    <div style={{ position: "fixed", inset: 0 }}>
+      <FlowPlayerPage
+        flowId={`smoke-${kind}`}
+        api={mock}
+        onWorldReady={(g) => {
+          if (window.__flowsPlayerSmoke) window.__flowsPlayerSmoke.world = g;
+        }}
+        onExit={() => {
+          if (window.__flowsPlayerSmoke) window.__flowsPlayerSmoke.exited += 1;
+        }}
+      />
+      <div id="smoke-ready" />
+    </div>,
+  );
+}
