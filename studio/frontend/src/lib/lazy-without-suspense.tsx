@@ -23,8 +23,11 @@ export function lazyWithoutSuspense<P extends object>(
   function Deferred(props: P) {
     const [, rerender] = useReducer((count: number) => count + 1, 0);
     const [failure, setFailure] = useState<{ error: unknown } | null>(null);
+    const Component = loader.current();
+    const renderedLoaded = Component !== null;
     useEffect(() => {
-      if (loader.current()) return;
+      // A load that finished between this render and the effect still re-renders: load() resolves at once.
+      if (renderedLoaded) return;
       let live = true;
       loader.load().then(
         () => {
@@ -37,9 +40,8 @@ export function lazyWithoutSuspense<P extends object>(
       return () => {
         live = false;
       };
-    }, []);
+    }, [renderedLoaded]);
     if (failure) throw failure.error;
-    const Component = loader.current();
     return Component ? <Component {...props} /> : null;
   }
 
