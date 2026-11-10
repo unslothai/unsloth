@@ -4179,6 +4179,27 @@ def denoise_phase_residency_enabled() -> bool:
     return not _env_off(DENOISE_PHASE_RESIDENCY_ENV)
 
 
+# Streamed int8 denoiser on the default tier, 1024^2, window excluded: (denoise MiB, tiled decode MiB), no margin.
+# FLUX.3 Klein, Colab L4 at 6 GiB with 3.8 GiB of blocks resident: first render 308 above the render's start (steady
+# 201), whole render 904 with the window freed. The resident eager table (901 / 2437 untiled) left ~2 GiB of the
+# budget unallocated. "0" = the resident table.
+STREAMED_PHASE_SEED_ENV = "UNSLOTH_DIFFUSION_STREAMED_PHASE_SEED"
+_MEASURED_STREAMED_PHASE_MIB: dict[str, tuple[int, int]] = {
+    "flux.3-klein": (308, 904),
+}
+
+
+def _streamed_phase_seed(
+    family: Optional[str], speed_mode: Optional[str], quant: Optional[str], tiled: bool
+) -> Optional[tuple[int, int]]:
+    """``(denoise, decode)`` seed for a streamed placement where one was measured (int8, default tier, tiled VAE)."""
+    if _env_off(STREAMED_PHASE_SEED_ENV) or not tiled or str(speed_mode or "") != "default":
+        return None
+    if "int8" not in str(quant or "").split("|", 1)[0].lower():
+        return None
+    return _MEASURED_STREAMED_PHASE_MIB.get(str(family or "").lower())
+
+
 def _top_level_group_mib(pipe: Any) -> Optional[int]:
     """MiB of the largest denoiser's weights outside its block stacks (``ModuleList`` / ``Sequential`` children):
     block-level group offload keeps them in one top-level group that is onloaded for the whole forward when it is not
@@ -4247,6 +4268,9 @@ def _denoise_phase_reserve(
             and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
         ):
             row = phases[1 if speed_mode == "max" else 0]
+            streamed = _streamed_phase_seed(family, speed_mode, quant, tiled)
+            if streamed is not None:
+                row = (row[0], streamed[0], row[2], streamed[1], row[4])
             denoise = int(math.ceil(row[_PHASE_DENOISE_COLUMN] * _MEASURED_PEAK_MARGIN))
             decode = int(row[_PHASE_TILED_DECODE_COLUMN if tiled else _PHASE_UNTILED_DECODE_COLUMN])
         if quant is not None:

@@ -3,7 +3,12 @@
 
 """Run each image VAE decode in one expandable allocator segment (Linux CUDA, native allocator): its growing
 activations and cuDNN workspaces otherwise each map a new fixed segment (SDXL 1024^2: 11.3 -> 10.1 GiB reserved).
-UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off."""
+UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off.
+
+A placement whose resident blocks were sized from the denoise phase runs in expandable segments for the whole load
+(``engage_streamed``): its encode / prefetch window / decode churn otherwise left ~1.9 GiB cached in fixed segments
+(FLUX.3 Klein int8, L4 at 6 GiB: 5.3 GiB reserved for 3.4 GiB allocated), so the guards streamed resident blocks out
+and pinned them back every render. UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE=0 turns it off."""
 
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ from typing import Any, Iterator, Optional
 from .rocm_bf16 import is_rocm_torch
 
 DECODE_EXPANDABLE_ENV = "UNSLOTH_DIFFUSION_DECODE_EXPANDABLE"
+STREAMED_EXPANDABLE_ENV = "UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE"
 ENABLED_ATTR = "_unsloth_decode_expandable"
 _ALLOC_CONF_VARS = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")
 
@@ -23,7 +29,9 @@ _lock = threading.Lock()
 _depth = 0
 _usable: Optional[bool] = None
 _restore: Optional[str] = None
-STATS = {"engaged": 0, "skipped": 0}
+# settings to put back when the streamed placement's load goes; None = not engaged by it
+_streamed: Optional[str] = None
+STATS = {"engaged": 0, "skipped": 0, "streamed": 0}
 
 
 def _env_off() -> bool:
@@ -177,6 +185,59 @@ def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
                     _restore = None
 
 
+def streamed_enabled() -> bool:
+    return os.environ.get(STREAMED_EXPANDABLE_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def engage_streamed() -> bool:
+    """Switch the allocator to expandable segments until ``release_streamed`` (Linux CUDA, native allocator, nothing
+    else configured). True when this call or an earlier one engaged it."""
+    global _usable, _streamed
+    if not streamed_enabled():
+        return False
+    torch = _torch()
+    if torch is None or _busy(torch):
+        return False
+    with _lock:
+        if _streamed is not None:
+            return True
+        if _usable is None:
+            _usable = _decide(torch)
+        if not _usable or _depth > 0:
+            return False
+        live = _live_settings(torch)
+        if live is None:
+            return False
+        try:
+            _setter(torch)("expandable_segments:True")
+        except Exception:  # noqa: BLE001 - refused: never retry
+            _usable = False
+            return False
+        _streamed = live
+        STATS["streamed"] += 1
+    return True
+
+
+def release_streamed() -> bool:
+    """Put back what ``engage_streamed`` replaced. True when something was put back."""
+    global _usable, _streamed
+    torch = _torch()
+    with _lock:
+        if _streamed is None or torch is None or _depth > 0:
+            return False
+        try:
+            _put_back(torch, _streamed)
+        except Exception:  # noqa: BLE001
+            _usable = False
+        _streamed = None
+    return True
+
+
 def enable(vae: Any) -> bool:
     if vae is None or _env_off():
         return False
@@ -187,4 +248,14 @@ def enable(vae: Any) -> bool:
     return True
 
 
-__all__ = ["DECODE_EXPANDABLE_ENV", "ENABLED_ATTR", "STATS", "enable", "expandable_decode"]
+__all__ = [
+    "DECODE_EXPANDABLE_ENV",
+    "ENABLED_ATTR",
+    "STATS",
+    "STREAMED_EXPANDABLE_ENV",
+    "enable",
+    "engage_streamed",
+    "expandable_decode",
+    "release_streamed",
+    "streamed_enabled",
+]

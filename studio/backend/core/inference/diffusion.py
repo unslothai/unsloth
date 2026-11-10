@@ -2581,6 +2581,30 @@ def _step_cache_dropped_by_layer_split(pipe: Any) -> bool:
     return transformer is not None and not getattr(transformer, "_unsloth_step_cache", None)
 
 
+def _engage_streamed_expandable(pipe: Any) -> bool:
+    """Blocks sized from the denoise phase: run the load in expandable allocator segments (diffusion_decode_segments)."""
+    try:
+        from .diffusion_decode_segments import engage_streamed
+        from .diffusion_memory import _phase_placement
+        if not _phase_placement(pipe) or not engage_streamed():
+            return False
+    except Exception as exc:  # noqa: BLE001 - fixed segments, as before
+        logger.debug("diffusion.memory: expandable segments not engaged (%s)", exc)
+        return False
+    logger.info(
+        "diffusion.memory: the denoise-phase placement runs in expandable allocator segments"
+    )
+    return True
+
+
+def _release_streamed_expandable() -> None:
+    try:
+        from .diffusion_decode_segments import release_streamed
+        release_streamed()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
     """A layer split replaced the one-card plan whose partial residency the measured reserve priced. Left in place, a
     conditioned request past it would give the split denoiser on-demand offload hooks onto the primary
@@ -11346,6 +11370,7 @@ class DiffusionBackend:
                             )
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
+                    _engage_streamed_expandable(pipe)
                     # Placed, not yet compiled or captured: a later LoRA weight / subset change then writes in place.
                     pinned_scales = _pin_baked_lora_scales(pipe, target.device)
                     if pinned_scales:
@@ -16034,6 +16059,7 @@ class DiffusionBackend:
                 pass
         # Restore process-wide backend flags so the next `off` load is bit-identical; all calls idempotent.
         restore_backend_flags(state.backend_flags_before)
+        _release_streamed_expandable()
         _release_rocm_tunableop(state.pipe)
         prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
         if prebuild is not None:
