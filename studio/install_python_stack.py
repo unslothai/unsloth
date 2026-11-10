@@ -1437,26 +1437,11 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
 # These arches install ROCm wheels but compute wrong answers, so they stay on CPU torch (as install.sh).
 _ROCM_MISCOMPUTING_GFX: "frozenset[str]" = frozenset({"gfx1033"})  # Van Gogh (Steam Deck)
 
-# bnb <= 0.49.2 NaNs at decode shape on every AMD GPU; these prerelease wheels carry the fix and
-# PyPI 0.50.0 is the first release with it, so the fallback is safe.
-_BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
-    "x86_64": (
-        "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
-        "download/continuous-release_main/"
-        "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl"
-    ),
-    "aarch64": (
-        "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
-        "download/continuous-release_main/"
-        "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
-    ),
-    # The Windows ROCm wheel ships libbitsandbytes_rocm{VER}.dll; BNB_ROCM_VERSION must match.
-    "win_amd64": (
-        "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
-        "download/continuous-release_main/"
-        "bitsandbytes-1.33.7.preview-py3-none-win_amd64.whl"
-    ),
-}
+# bnb <= 0.49.2 NaNs at decode shape on every AMD GPU; PyPI 0.50.0 is the first release with the
+# fix, so ROCm installs take PyPI. Empty on purpose: bnb's continuous-release_main is rebuilt on
+# every bnb commit under the same file names, so a wheel listed here must be an immutable copy
+# pinned with #sha256=.
+_BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {}
 # Keep in step with the amd extra in pyproject.toml and the install.sh fallback.
 _BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>=0.50.0"
 
