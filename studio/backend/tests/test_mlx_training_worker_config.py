@@ -921,7 +921,9 @@ def test_mlx_audio_dataset_formats_both_splits_as_audio_rows(image_col):
         "custom_format_mapping": None,
         "_send": lambda *_a, **_kw: None,
         "vision_image_size": None,
-        "_mlx_audio_rows": lambda ds, processor, mapping, *column: formatted.append((ds, *column))
+        "_mlx_audio_rows": lambda ds, processor, mapping, *column, **_kw: formatted.append(
+            (ds, *column)
+        )
         or ([ds], image_col),
         "_adapt_for_mlx_vlm": lambda rows, **_kw: adapted.append(rows) or [*rows, "lifted"],
         "format_and_template_dataset": lambda *_a, **_kw: pytest.fail(
@@ -1060,7 +1062,7 @@ def test_mlx_blank_audio_eval_split_disables_eval_not_training():
     namespace = {
         "is_dataset_audio": True,
         "_send": lambda kind, **kw: events.append((kind, kw)),
-        "_mlx_audio_rows": lambda ds, *a: (ds, None),
+        "_mlx_audio_rows": lambda ds, *a, **kw: (ds, None),
         "tokenizer": None,
         "custom_format_mapping": None,
         "dataset": [{"messages": []}],

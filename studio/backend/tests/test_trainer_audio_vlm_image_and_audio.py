@@ -68,6 +68,9 @@ class _NoAudioCast:
         kwargs.pop("num_proc", None)
         return _NoAudioCast(self._ds.map(fn, **kwargs))
 
+    def filter(self, fn, **kwargs):
+        return _NoAudioCast(self._ds.filter(fn, **kwargs))
+
     def __getattr__(self, name):
         return getattr(self._ds, name)
 
