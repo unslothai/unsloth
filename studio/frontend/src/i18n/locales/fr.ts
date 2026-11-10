@@ -3080,11 +3080,11 @@ export const fr = {
       showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
       showReplyTimesKeywords:
         "horodatage heure date quand terminé réponse message timestamp time clock date reply",
-      showGenerationDetails: "Infos détaillées de vitesse et de chargement",
+      showGenerationDetails: "Infos détaillées de vitesse",
       showGenerationDetailsDescription:
-        "Ajoute aux indicateurs en direct la vitesse de lecture du prompt, le nombre de tokens et l'acceptation des brouillons, et indique où les couches du modèle ont été chargées.",
+        "Ajoute aux indicateurs en direct la vitesse de lecture du prompt, le nombre de tokens et l'acceptation des brouillons.",
       showGenerationDetailsKeywords:
-        "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "détails vitesse jetons statistiques verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Statistiques de vitesse et de contexte",
       generationStatsUpdatesDescription:
         "En temps réel compte les tokens par seconde et l'utilisation du contexte pendant la diffusion d'une réponse. À la fin les met à jour quand chaque réponse se termine.",
@@ -5775,6 +5775,9 @@ export const fr = {
       inSharedMemory: "{amount} en mémoire partagée",
       inVram: "{amount} en VRAM",
       inRam: "{amount} en RAM",
+      partlyOnCpu: "En partie sur le CPU",
+      onCpu: "Sur le CPU",
+      shortfallHint: "La génération est plus lente qu'avec tout le modèle sur le GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

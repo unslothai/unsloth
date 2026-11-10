@@ -3292,11 +3292,11 @@ export const id = {
         "Tampilkan kapan setiap balasan selesai, di bawah balasan.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message waktu jam tanggal balasan pesan",
-      showGenerationDetails: "Info kecepatan dan pemuatan terperinci",
+      showGenerationDetails: "Info kecepatan terperinci",
       showGenerationDetailsDescription:
-        "Menambahkan kecepatan membaca prompt, jumlah token, dan penerimaan draf ke tampilan langsung, serta menunjukkan tempat lapisan model dimuat.",
+        "Menambahkan kecepatan membaca prompt, jumlah token, dan penerimaan draf ke tampilan langsung.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts statistik kecepatan lapisan",
+        "verbose developer stats speed tok/s prefill decode statistik kecepatan",
       generationStatsUpdates: "Statistik kecepatan dan konteks",
       generationStatsUpdatesDescription:
         "Waktu nyata menghitung token per detik dan penggunaan konteks saat balasan sedang dialirkan. Setelah selesai memperbaruinya saat setiap balasan selesai.",
@@ -6101,6 +6101,9 @@ export const id = {
       inSharedMemory: "{amount} di memori bersama",
       inVram: "{amount} di VRAM",
       inRam: "{amount} di RAM",
+      partlyOnCpu: "Sebagian di CPU",
+      onCpu: "Di CPU",
+      shortfallHint: "Generasi lebih lambat dibanding jika seluruh model ada di GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

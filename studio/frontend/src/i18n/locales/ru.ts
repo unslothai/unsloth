@@ -3056,11 +3056,11 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
-      showGenerationDetails: "Подробности о скорости и загрузке",
+      showGenerationDetails: "Подробности о скорости",
       showGenerationDetailsDescription:
-        "Добавляет к живым показателям скорость чтения запроса, число токенов и принятие черновиков, а также показывает, куда загружены слои модели.",
+        "Добавляет к живым показателям скорость чтения запроса, число токенов и принятие черновиков.",
       showGenerationDetailsKeywords:
-        "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "подробности скорость токены статистика verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Статистика скорости и контекста",
       generationStatsUpdatesDescription:
         "В реальном времени считает токены в секунду и использование контекста, пока ответ передаётся. По завершении обновляет их, когда каждый ответ закончен.",
@@ -5719,6 +5719,9 @@ export const ru = {
       inSharedMemory: "{amount} в общей памяти",
       inVram: "{amount} в VRAM",
       inRam: "{amount} в RAM",
+      partlyOnCpu: "Частично на CPU",
+      onCpu: "На CPU",
+      shortfallHint: "Генерация идёт медленнее, чем когда вся модель на GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

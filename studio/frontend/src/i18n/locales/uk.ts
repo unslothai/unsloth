@@ -3318,11 +3318,11 @@ export const uk = {
         "Показувати під кожною відповіддю, коли її завершено.",
       showReplyTimesKeywords:
         "позначка часу час годинник дата година коли завершено надійшло відповідь повідомлення timestamp",
-      showGenerationDetails: "Докладна інформація про швидкість і завантаження",
+      showGenerationDetails: "Докладна інформація про швидкість",
       showGenerationDetailsDescription:
-        "Додає до живих показників швидкість читання запиту, кількість токенів і прийняття чернеток, а також показує, куди завантажено шари моделі.",
+        "Додає до живих показників швидкість читання запиту, кількість токенів і прийняття чернеток.",
       showGenerationDetailsKeywords:
-        "докладно розробник статистика швидкість tok/s prefill decode шари вивантаження offload vram експерти",
+        "докладно розробник статистика швидкість tok/s prefill decode",
       generationStatsUpdates: "Статистика швидкості й контексту",
       generationStatsUpdatesDescription:
         "У реальному часі рахує токени за секунду й використання контексту, поки відповідь передається. Після завершення оновлює їх, коли кожна відповідь закінчена.",
@@ -6144,6 +6144,9 @@ export const uk = {
       inSharedMemory: "{amount} у спільній пам’яті",
       inVram: "{amount} у VRAM",
       inRam: "{amount} у RAM",
+      partlyOnCpu: "Частково на CPU",
+      onCpu: "На CPU",
+      shortfallHint: "Генерація повільніша, ніж коли вся модель на GPU.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
