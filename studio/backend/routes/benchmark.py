@@ -61,7 +61,6 @@ from core.benchmark import (
 from core.benchmark.recipe_heldout import RECIPE_HELDOUT_TASK_ID
 
 
-# ── Curated benchmark tasks ──────────────────────────
 _CURATED_TASKS: list[BenchmarkTaskInfo] = [
     BenchmarkTaskInfo(
         id = RECIPE_HELDOUT_TASK_ID,
@@ -229,8 +228,6 @@ except ImportError:
 router = APIRouter()
 logger = get_logger(__name__)
 
-# Warm the task cache in the background at startup so the first /tasks
-# request doesn't pay the cost of building the full lm_eval task index.
 threading.Thread(target = _get_task_cache, daemon = True).start()
 
 
@@ -267,22 +264,16 @@ async def get_task_config(task_id: str, current_subject: str = Depends(get_curre
         if idx is None:
             return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
 
-        # task_index entries may be dicts or Entry objects — handle both
         yaml_path = idx.get("yaml_path") if hasattr(idx, "get") else getattr(idx, "yaml_path", None)
         if not yaml_path or yaml_path == -1:
             return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
 
-        # Read the raw YAML — num_fewshot is null if absent (user can customize)
-        # or 0 if explicitly disabled (slider hidden).
-        # lm_eval YAMLs use !function tags; register a no-op constructor for them.
         yaml.add_constructor("!function", lambda loader, node: None, Loader = yaml.FullLoader)
         with open(yaml_path, encoding = "utf-8") as f:
             cfg = yaml.full_load(f)
         if not isinstance(cfg, dict):
             return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
         nf = cfg.get("num_fewshot")
-        # lm_eval treats null as "no default" (user can still set it),
-        # and 0 as "explicitly disabled"
         if nf is None:
             num_fewshot: int | None = None
         else:
@@ -652,7 +643,6 @@ async def get_benchmark_status(current_subject: str = Depends(get_current_subjec
     try:
         backend = get_benchmark_backend()
         if _run_hidden_from(backend, current_account()):
-            # Busy-ness stays visible so Run reports the 409, nothing else does.
             return BenchmarkStatusResponse(is_benchmark_active = backend.is_active())
         return BenchmarkStatusResponse(
             is_benchmark_active = backend.is_active(),
@@ -701,7 +691,6 @@ async def stream_benchmark_logs(
     backend = get_benchmark_backend()
     viewer = current_account()
 
-    # Resume cursor: explicit `since` wins, then Last-Event-ID on reconnect.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:
@@ -712,7 +701,6 @@ async def stream_benchmark_logs(
     if since is not None:
         cursor = max(0, int(since))
     elif backend.is_active():
-        # First connect mid-run: replay the whole current run.
         cursor = backend.get_run_start_seq()
     else:
         # First connect while idle — e.g. the stream opens just before the
@@ -722,7 +710,6 @@ async def stream_benchmark_logs(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         nonlocal cursor
-        # Reconnect after 3 seconds if the connection drops.
         yield "retry: 3000\n\n"
 
         last_yield = time.monotonic()
@@ -762,7 +749,6 @@ async def stream_benchmark_logs(
                         )
                         last_yield = now
 
-                # Surface lm_eval tqdm progress as a dedicated SSE event.
                 progress = _live_progress(backend)
                 if (
                     progress is not None
@@ -774,7 +760,6 @@ async def stream_benchmark_logs(
 
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
-            # Client disconnected mid-yield: end cleanly so StreamingResponse finalizes.
             return
         except Exception as exc:
             logger.error("Benchmark log stream failed: %s", exc, exc_info = True)
@@ -850,7 +835,6 @@ async def delete_benchmark_run(run_id: str, current_subject: str = Depends(get_c
         if run is None:
             raise HTTPException(status_code = 404, detail = "Benchmark run not found")
 
-        # Remove results.json directory if it exists
         output_path = run.get("output_path")
         if output_path and os.path.isdir(output_path):
             try:
@@ -1016,7 +1000,6 @@ async def export_benchmark_runs(
                 "results": results_json,
             }
             if not host_paths_visible(via_api_key):
-                # results.json repeats the model path throughout its configs.
                 entry = _redact_eval_run(entry, via_api_key = via_api_key)
                 entry["results"] = None
             exported.append(entry)

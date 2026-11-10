@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The live run card, drawn like Config sweeps' so both tabs read the same while a run is on.
 
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";

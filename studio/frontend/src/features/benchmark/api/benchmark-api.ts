@@ -68,7 +68,6 @@ export interface BenchmarkTaskInfo {
   name: string;
   description?: string;
   task_type?: string;
-  /** "recipe" tasks run from the Flows Benchmark node, which supplies their rows. */
   runner?: "lm_eval" | "recipe";
 }
 
@@ -76,14 +75,12 @@ export interface BenchmarkTasksResponse {
   tasks: BenchmarkTaskInfo[];
 }
 
-/** Fetch available benchmark tasks. */
 export async function fetchBenchmarkTasks(): Promise<BenchmarkTasksResponse> {
   const response = await authFetch("/api/benchmarks/evals/tasks");
   const data = await parseJson<BenchmarkTasksResponse>(response);
   return { ...data, tasks: data.tasks.filter((t) => t.runner !== "recipe") };
 }
 
-/** Fetch training checkpoints (hits /api/models/checkpoints — not a benchmark endpoint). */
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   const response = await authFetch("/api/models/checkpoints");
   return parseJson<CheckpointListResponse>(response);
@@ -136,7 +133,6 @@ export interface BenchmarkLogEntry {
   ts: number | null;
 }
 
-// ── Benchmark Results (past runs) ─────────────────────
 
 export interface BenchmarkRunMetric {
   name: string;
@@ -192,7 +188,6 @@ export async function deleteBenchmarkRun(runId: string): Promise<BenchmarkOperat
   return parseJson<BenchmarkOperationResponse>(response);
 }
 
-// ── Benchmark Export ─────────────────────────────────
 
 export async function exportBenchmarkRuns(runIds: string[]): Promise<void> {
   const response = await authFetch("/api/benchmarks/evals/export", {
@@ -212,7 +207,6 @@ export async function exportBenchmarkRuns(runIds: string[]): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-// ── Benchmark Graph ─────────────────────────────────
 
 export interface BenchmarkGraphParams {
   runIds: string[];
@@ -250,7 +244,6 @@ export interface BenchmarkLogEvent {
   id: number | null;
   entry?: BenchmarkLogEntry;
   error?: string;
-  /** Present on `heartbeat` events — mirrors the backend's run-active flag. */
   active?: boolean;
 }
 
@@ -337,13 +330,9 @@ export async function streamBenchmarkLogs(options: {
               const payload = JSON.parse(parsed.data) as { active?: boolean };
               if (typeof payload.active === "boolean") active = payload.active;
             } catch {
-              // no active flag available — ignore
             }
             options.onEvent({ event: "heartbeat", id: parsed.id, active });
           } else if (parsed.event === "progress") {
-            // tqdm progress arrives as a dedicated (unsequenced) SSE event; the store's
-            // progress bar consumes it as a "progress"-stream log entry, which the log
-            // console filters out of its stdout/stderr view.
             options.onEvent({
               event: "log",
               id: null,
@@ -355,15 +344,12 @@ export async function streamBenchmarkLogs(options: {
             });
           } else if (parsed.event === "complete") {
             options.onEvent({ event: "complete", id: parsed.id });
-            // The stream is long-lived and stays open across runs — do NOT
-            // close on complete; the run's phase is driven by /status polling.
           } else if (parsed.event === "error") {
             let errorMessage = "Benchmark log stream error";
             try {
               const payload = JSON.parse(parsed.data) as { error?: string };
               if (payload.error) errorMessage = payload.error;
             } catch {
-              // fall through with default message
             }
             options.onEvent({
               event: "error",
@@ -385,7 +371,6 @@ export async function streamBenchmarkLogs(options: {
     try {
       await reader.cancel();
     } catch {
-      // already closed
     }
   }
 }

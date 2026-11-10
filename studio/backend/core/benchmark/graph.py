@@ -14,7 +14,6 @@ import matplotlib.ticker as mticker
 import numpy as np
 
 
-# ── Theme dicts (passed to plt.style.context) ─────────
 _DARK_THEME: dict[str, Any] = {
     "figure.facecolor": "#181818",
     "axes.facecolor": "#212121",
@@ -54,7 +53,6 @@ _LIGHT_THEME: dict[str, Any] = {
 _DARK_THEMES = {"dark", "unsloth-dark"}
 _LIGHT_THEMES = {"light"}
 
-# Color palettes for bars/lines (used when theme doesn't set prop_cycle)
 _DARK_PALETTE = [
     "#22c55e",
     "#3b82f6",
@@ -93,7 +91,6 @@ def _resolve_palette(theme: str, n: int) -> list[str]:
     if theme in _DARK_THEMES or theme in _LIGHT_THEMES:
         palette = _get_palette(theme)
         return [palette[i % len(palette)] for i in range(n)]
-    # For ggplot, bmh, seaborn, etc — read from current rcParams color cycle
     prop_cycle = plt.rcParams.get("axes.prop_cycle")
     if hasattr(prop_cycle, "by_key"):
         colors = prop_cycle.by_key().get("color", _DARK_PALETTE)
@@ -163,7 +160,6 @@ def _resolve_theme_context(theme: str):
         return [_DARK_THEME]
     if theme in _LIGHT_THEMES:
         return [_LIGHT_THEME]
-    # Built-in matplotlib style or custom string — pass through
     return [theme]
 
 
@@ -295,7 +291,6 @@ def _grouped_bar_chart_inner(
     """Grouped bar: tasks on x-axis, models as grouped bars within each task."""
     fig, ax = plt.subplots(figsize = (width, height))
 
-    # Build task → model → score mapping
     task_model: dict[str, dict[str, float]] = {}
     for r in runs:
         task = r.get("task", "???")
@@ -347,7 +342,6 @@ def _radar_chart_inner(
     runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
     """Radar: tasks as axes, each model as its own ring."""
-    # Build task → model → score mapping
     task_model: dict[str, dict[str, float]] = {}
     for r in runs:
         task = r.get("task", "???")

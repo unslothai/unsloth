@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The sweep being set up, the one running, and the runs on record. The runner lives here
-// rather than in the page, so a sweep keeps going while the user is in chat. Runs are
-// saved to studio.db as they go; only the setup sheet stays in localStorage.
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -63,17 +60,13 @@ interface LiveRun {
 
 interface BenchmarksState {
   config: BenchConfig;
-  /** Variant labels switched off for the next run. */
   disabled: string[];
-  /** Newest first, from studio.db. */
   runs: BenchRunSummary[];
   runsLoaded: boolean;
-  /** Full runs already fetched, by id. */
   loaded: Record<string, BenchRun>;
   selectedRunId: string | null;
   live: LiveRun | null;
   error: string | null;
-  /** The run whose winner is being handed to chat, while the reload is in flight. */
   applying: string | null;
   setConfig: (patch: Partial<BenchConfig>) => void;
   chooseKind: (kind: BenchKind) => void;
@@ -107,7 +100,6 @@ function makeSaver(): {
       try {
         await saveBenchRun(next);
       } catch {
-        // The final save reports; a missed mid-run save is caught by the next one.
       }
     }
   };
@@ -213,7 +205,6 @@ export const useBenchmarksStore = create<BenchmarksState>()(
       },
       start: async () => {
         if (get().live) return;
-        // Each row reloads the model under a running eval and would skew both.
         const evals = useBenchmarkRuntimeStore.getState();
         if (evals.isRunning || evals.backendActive) {
           set({ error: "An eval is running. Stop it or let it finish first." });
@@ -283,7 +274,6 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           set((s) => {
             if (!s.live) return s;
             const run = fn(s.live.run);
-            // Saved as it goes, so a crash mid-sweep keeps the rows that finished.
             if (run.id !== "pending" && run.results.length) save.save(run);
             return { live: { run, progress: progress ?? s.live.progress } };
           });
@@ -291,8 +281,6 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           const measured = await runBenchmark(
             effective,
             {
-              // Copy results: the runner keeps pushing into its own array and also emits
-              // onResult, so sharing the reference would count the first sample twice.
               onStart: (run) =>
                 patchLive(() => ({ ...run, results: [...run.results] })),
               onOutcome: (o) =>
@@ -320,8 +308,6 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           const run: BenchRun = outside
             ? { ...measured, meta: { ...measured.meta, outsideRequests: outside } }
             : measured;
-          // Keep the run when it measured rows, or when it only produced failure/skip
-          // diagnostics, so those reasons survive in History. A bare cancel is dropped.
           const worthSaving =
             run.results.length > 0 ||
             run.outcomes.some(

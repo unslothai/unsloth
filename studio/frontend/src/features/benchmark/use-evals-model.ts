@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Model selection for the Evals tab. It lives here, not in BenchmarkPage, because the
-// picker sits in the page header next to the tabs — the same slot the config-sweep
-// picker uses — and BenchmarksPage renders that header. Everything the evals run flow
-// needs (pick, download watch, selected source/variant) hangs off this one object.
 
 import { useChatModelRuntime, useChatRuntimeStore } from "@/features/chat";
 import type {
@@ -18,11 +14,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ModelCheckpoints, fetchCheckpoints } from "./api/benchmark-api";
 
 export interface EvalsModel {
-  /** On-device models for the picker: local dirs, HF cache, custom folders. */
   models: ModelOption[];
-  /** Fine-tuned checkpoints, the picker's LoRA section. */
   loraModels: LoraModelOption[];
-  /** First failure from the two lists, if either could not load. */
   modelsError: string | null;
   loadingModels: boolean;
 
@@ -38,17 +31,13 @@ export interface EvalsModel {
   selectedModelIsDownloaded: boolean | null;
   downloadingForBenchmark: boolean;
 
-  /** Chat's runtime load in flight (truthy while a pick is loading), or null. */
   loadingModel: { id: string; displayName: string } | null;
-  /** The checkpoint chat currently has resident, i.e. what "Loaded" means here. */
   residentModel: string | null;
-  /** Loaded GGUF quant of the resident model. */
   activeGgufVariant: string | null;
 
   pick: (value: string, meta: ModelSelectorChangeMeta) => void;
   setDownloadingForBenchmark: (v: boolean) => void;
   setSelectedModelIsDownloaded: (v: boolean | null) => void;
-  /** Swap the benchmark-download watcher; null drops it. */
   setDownloadWatch: (unsubscribe: (() => void) | null) => void;
   clearDownloadWatch: () => void;
 }
@@ -80,8 +69,6 @@ export function useEvalsModel(): EvalsModel {
   const inferenceParams = useChatRuntimeStore((s) => s.params);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
 
-  // Follow chat's runtime: a model loaded elsewhere (chat, Hub) becomes the pick, and
-  // an unloaded runtime clears it.
   useEffect(() => {
     if (
       inferenceParams.checkpoint &&
@@ -229,7 +216,6 @@ export function useEvalsModel(): EvalsModel {
       setSelectedGgufVariant(meta.ggufVariant ?? null);
       setSelectedModelIsDownloaded(meta.isDownloaded ?? null);
       setDownloadingForBenchmark(false);
-      // Another quant of the loaded repo is another model to load.
       const otherQuant =
         !!meta.ggufVariant &&
         meta.ggufVariant.toLowerCase() !== (activeGgufVariant ?? "").toLowerCase();

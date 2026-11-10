@@ -25,7 +25,6 @@ test("history and scoreboard load on mount, mid-run included, and again when a r
     const src = read(file);
     assert.match(src, /\(s\) => s\.phase === "running" \|\| s\.phase === "starting",/, file);
     assert.match(src, /\}, \[(fetchRuns, )?running\]\);/, file);
-    // A mid-run mount must still fetch: no early return on the running phase.
     assert.doesNotMatch(src, /if \(phase === "running" \|\| phase === "starting"\) return;/, file);
   }
 });

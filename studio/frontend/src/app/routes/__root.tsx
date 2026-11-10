@@ -245,7 +245,6 @@ const FlowPlayerPage = lazy(() =>
 
 const FLOW_PLAY_ROUTE = /^\/flows\/([^/]+)\/play\/?$/;
 
-// Global Evals driver, same job as useExportRuntimeLifecycle; lazy so its API and store stay out of the startup bundle.
 const BenchmarkRuntimeLifecycle = lazy(
   () => import("@/features/benchmark/benchmark-runtime-lifecycle"),
 );
@@ -366,7 +365,6 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/change-password",
   "/export",
   "/api-monitor",
-  // Inference only: a sweep reloads the chat model, which chat-only hosts run like any other.
   "/benchmarks",
 ]);
 

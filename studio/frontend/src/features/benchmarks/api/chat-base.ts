@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat's Run Settings are the source of truth: every sweep row loads what the sheet
-// shows, changed only in the field that row varies.
 
 import {
   type InferenceStatusResponse,
@@ -29,7 +27,6 @@ function orAuto(v: number | null | undefined): string {
   return v === null || v === undefined ? "auto" : String(v);
 }
 
-/** The sheet's values in its own words and order. */
 export function chatSettings(s: ChatState): BaseSetting[] {
   const spec = s.speculativeType ?? "auto";
   const rows: BaseSetting[] = [
@@ -165,7 +162,6 @@ export function useChatSettings(): BaseSetting[] {
   });
 }
 
-/** The load chat would send for the loaded model with its sheet as it stands now. */
 export interface ChatSampling {
   temperature: number;
   top_p: number;
@@ -175,7 +171,6 @@ export interface ChatSampling {
   presence_penalty: number;
 }
 
-/** Chat's sampling, sent with every benchmark generation: MTP acceptance moves with it. */
 export function chatSampling(s: ChatState): ChatSampling {
   const p = s.params;
   return {
@@ -212,7 +207,6 @@ export function chatBaseLoad(
     gpu_layers: s.gpuLayers,
     n_cpu_moe: s.nCpuMoe,
   };
-  // Omitted when blank, as chat does: a null counts as set and strips inherited values.
   if (s.nBatch != null) base.n_batch = s.nBatch;
   if (s.nUbatch != null) base.n_ubatch = s.nUbatch;
   if (s.loadMode != null) base.load_mode = s.loadMode;

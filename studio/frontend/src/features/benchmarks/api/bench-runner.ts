@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Runs a sweep against this Studio: per variant, reload the loaded GGUF with the
-// variant's overrides, then stream timed completions and keep llama-server's own
-// timings. Everything goes through the public load / status / chat routes.
 
 import { authFetch } from "@/features/auth";
 import {
@@ -34,22 +31,17 @@ import {
 } from "../lib/bench-math";
 
 export interface RunnerEvents {
-  /** The run as it will be saved, before its first row: model, settings and machine known. */
   onStart: (run: BenchRun) => void;
   onOutcome: (outcome: VariantOutcome) => void;
   onResult: (result: RunResult) => void;
   onProgress: (text: string) => void;
-  /** Chat's model could not be put back after the sweep; the finished run is still kept. */
   onRestoreError?: (message: string) => void;
-  /** False once another runner holds the lease: its loads own the server, so skip the restore. */
   ownsServer?: () => boolean;
-  /** Sent with every generation so the server can tell the sweep's own traffic from anyone else's. */
   leaseHolder?: string;
 }
 
 export class BenchSetupError extends Error {}
 
-/** While a sweep holds the server, the backend only takes loads that carry its lease. */
 function leaseHeaders(holder?: string): Record<string, string> {
   return holder ? { "X-Unsloth-Bench-Lease": holder } : {};
 }
@@ -125,14 +117,10 @@ interface Completion {
   timings: Record<string, unknown>;
 }
 
-/** A load or a generation past its limit, or a row too slow to be anything but out of memory. */
 class RowLimitError extends Error {}
 
-// A row that ran out of VRAM spills to system RAM and crawls rather than failing, and on
-// Windows that spill takes the desktop with it. These limits turn that into a skipped row.
 const LOAD_LIMIT_MS = 8 * 60_000;
 const MIN_GEN_LIMIT_MS = 90_000;
-/** Below this, or below a fifth of the fastest row so far, a row is spilling, not running. */
 const FLOOR_TPS = 2;
 const FLOOR_FRACTION = 0.2;
 
@@ -150,7 +138,6 @@ async function readVramUsedGb(signal: AbortSignal): Promise<number | null> {
 }
 
 function genLimitMs(maxTokens: number): number {
-  // Room for 4 tok/s plus a slow prompt; anything slower is caught by the floor anyway.
   return Math.max(MIN_GEN_LIMIT_MS, (maxTokens / 4) * 1000 + 30_000);
 }
 
@@ -227,11 +214,8 @@ async function streamOnce(
   let buffer = "";
   let ttftMs: number | null = null;
   let clientTokens = 0;
-  // The exact server-side count from the terminal include_usage chunk; a delta counter
-  // undercounts because one SSE chunk can carry more than one token.
   let usageTokens: number | null = null;
   let timings: Record<string, unknown> = {};
-  // A stream cut before [DONE] or a finish_reason measured only a prefix.
   let finished = false;
   for (;;) {
     const { done, value } = await reader.read();
@@ -306,23 +290,14 @@ export async function runBenchmark(
   events: RunnerEvents,
   signal: AbortSignal,
 ): Promise<BenchRun> {
-  // Chat settings hydrate asynchronously at app mount; on a cold load of /benchmarks the model
-  // status can make Run ready first, so wait for them before the chatBaseLoad snapshot below,
-  // or the sweep and the restore would run on the store's pre-hydration defaults.
   await useChatRuntimeStore.getState().hydratePersistedSettings();
   let status = await getInferenceStatus(signal);
-  // Chat's model before the sweep; a run that names its own model still restores this one.
   const original = status;
-  // Snapshot the original load now: chatBaseLoad reads the live chat store, and if the user
-  // goes back to Chat mid-run its status polling adopts each variant's settings, so recomputing
-  // it at restore time would put the original model back with the last variant's KV/context/etc.
   const originalLoad = chatBaseLoad(original);
   const prompts = promptsFor(config.promptSet, config.customPrompt);
   if (prompts.length === 0)
     throw new BenchSetupError("The custom prompt is empty.");
 
-  // The initial model swap and setup live inside the restore scope below: a Stop during that
-  // first load must still put chat back on its own model, not leave it on the benchmark target.
   let run: BenchRun | null = null;
   let swapped = false;
   const setOutcome = (o: VariantOutcome) => {
@@ -332,23 +307,17 @@ export async function runBenchmark(
   };
 
   let fastest = 0;
-  // Once a context size runs out of memory, every larger one will too.
   let failedContext: number | null = null;
-  // Same for offload: a placement that ran out means every hungrier one will.
   let failedDemand: number | null = null;
-  // Offload rows are meant to differ a lot in speed; only the absolute floor applies.
   const relativeFloor = config.sweep !== "offload";
-  // Only a context sweep can rule out larger contexts; offload rows all share one context.
   const contextSweep = config.sweep === "context";
   try {
-    // A run can name a model of its own; it loads with chat's settings so the base is the same.
     if (
       config.tuneModel &&
       (config.tuneModel !== status.active_model ||
         (config.tuneVariant ?? null) !== (status.gguf_variant ?? null))
     ) {
       events.onProgress(`Loading ${config.tuneModel}`);
-      // Set before the load: an aborted swap may already have switched the server, so restore covers it.
       swapped = true;
       await loadModel(
         {
@@ -357,7 +326,6 @@ export async function runBenchmark(
             active_model: config.tuneModel,
             gguf_variant: config.tuneVariant ?? null,
           }),
-          // chatBaseLoad falls back to chat's quant, which belongs to another model here.
           gguf_variant: config.tuneVariant ?? null,
           force_reload: true,
         },
@@ -452,7 +420,6 @@ export async function runBenchmark(
         });
         continue;
       }
-      // VRAM after the load, so offload rows can show what each placement costs.
       const vram = await readVramUsedGb(signal);
       const servedInfo = {
         ...servedSubset(served),
@@ -465,7 +432,6 @@ export async function runBenchmark(
       });
       const total = config.warmup + config.repetitions;
       let rowFailure: string | null = null;
-      // Only a genuine memory/limit/floor failure should skip the hungrier rows after it.
       let rowFailureLimited = false;
       // A soft speed-floor stop, not a real OOM: an offload row with experts in RAM runs
       // slow by design, so it must not skip the hungrier placements that would fit and run fast.
@@ -478,8 +444,6 @@ export async function runBenchmark(
             ? `${variant.label} · warm-up ${rep + 1}/${config.warmup}`
             : `${variant.label} · run ${rep + 1 - config.warmup}/${config.repetitions}`,
         );
-        // Rotate within a variant, but start every variant on the same prompt so a
-        // throughput gap reflects the setting, not a different prompt subset.
         const promptIndex = config.rotatePrompts ? rep % prompts.length : 0;
         let c: Completion;
         try {
@@ -588,8 +552,6 @@ export async function runBenchmark(
       events.ownsServer?.() !== false
     ) {
       events.onProgress("Restoring your original settings");
-      // Restore the model chat had open, not the one a tuneModel run swapped in.
-      // Keep the finished run, but tell the user if chat was left on the benchmark model.
       await restore(original, originalLoad, events.leaseHolder).catch((err) =>
         events.onRestoreError?.(
           err instanceof Error ? err.message : String(err),
@@ -597,12 +559,10 @@ export async function runBenchmark(
       );
     }
   }
-  // A Stop during setup, before any row: reject as a cancel, the restore above already ran.
   if (!run) throw abortError();
   return run;
 }
 
-/** Put the model back the way chat had it before the sweep. */
 async function restore(
   before: InferenceStatusResponse,
   base: ReturnType<typeof chatBaseLoad>,

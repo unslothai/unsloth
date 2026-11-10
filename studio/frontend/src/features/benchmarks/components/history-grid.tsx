@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Saved runs as Train's history cards: what was swept, on what, what won and by how much.
 
 import {
   AlertDialog,
@@ -54,7 +53,6 @@ interface Scored {
   isBase: boolean;
 }
 
-/** Rows fastest first with the baseline kept apart, from the list's per-row means. */
 function scoreRun(run: BenchRunSummary): {
   rows: Scored[];
   best: Scored | null;
@@ -72,26 +70,21 @@ function scoreRun(run: BenchRunSummary): {
       isBase: label === run.config.baseline,
     }))
     .sort((a, b) => b.tps - a.tps);
-  // Only a row that ran every rep can win the card or set the speedup; one that errored or was
-  // cancelled after a measured rep keeps its samples in `rows` for the chart but is not ranked.
   const done = new Set(
     run.outcomes.filter((o) => o.state === "done").map((o) => o.label),
   );
   const ranked = rows.filter((r) => done.has(r.label));
   const base = ranked.find((r) => r.isBase) ?? null;
   const challenger = ranked.find((r) => !r.isBase) ?? null;
-  // Fastest row overall wins the card, which can be the baseline (an offload sweep's Studio fit).
   const best =
     base && (!challenger || base.tps >= challenger.tps)
       ? base
       : (challenger ?? base);
-  // The best challenger measured against the baseline, below 1× when nothing beat it.
   const speedup =
     challenger && base && base.tps > 0 ? challenger.tps / base.tps : null;
   return { rows, best, base, speedup };
 }
 
-/** Every row as a bar, fastest left, the baseline muted: the chart's shape at a glance. */
 function MiniBars({ rows }: { rows: Scored[] }): ReactElement | null {
   const colors = useFamilyColors();
   if (rows.length < 2) return null;

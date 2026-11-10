@@ -18,7 +18,6 @@ test("after its own run ends, the tab follows a run started elsewhere", async ()
   assert.equal(store.getState().phase, "success");
   assert.equal(store.getState().ownsRun, false);
 
-  // A Flow or another tab starts the next run: this tab shows it, with none of the last run's state.
   store.getState().applyBackendStatus({ is_benchmark_active: true, last_op_seq: 2 });
   const attached = store.getState();
   assert.equal(attached.phase, "running");
@@ -26,7 +25,6 @@ test("after its own run ends, the tab follows a run started elsewhere", async ()
   assert.equal(attached.task, null);
   assert.equal(attached.result, null);
 
-  // Stop reaches it, and its end is picked up.
   await store.getState().requestCancel();
   assert.deepEqual(calls, ["run", "cancel"]);
   store

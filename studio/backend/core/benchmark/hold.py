@@ -16,7 +16,6 @@ _scorings = 0
 # A scoring outliving this would be a hung worker; the hold is let go when the worker ends anyway.
 SCORING_LEASE_S = 6 * 3600
 LOAD_PATHS = ("/api/inference/load", "/api/inference/unload")
-# Called under the lock before a scoring starts; one raises to refuse it (a Config sweep's lease).
 start_guards: list = []
 
 

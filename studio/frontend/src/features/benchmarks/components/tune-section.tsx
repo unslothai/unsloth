@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Auto-tune's verdict: the setting it picked, and the button that hands it to chat.
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -20,7 +19,6 @@ import {
 import { useBenchmarksStore } from "../stores/benchmarks-store";
 import { useFamilyColors } from "./family-colors";
 
-/** The verdict card above a finished auto-tune run. */
 export function TuneVerdictCard({
   run,
 }: {
@@ -31,8 +29,6 @@ export function TuneVerdictCard({
   const live = useBenchmarksStore((s) => s.live);
   const colors = useFamilyColors();
   const verdict = useMemo(() => {
-    // Only rows that ran to the end can be handed to chat: a row that measured a sample
-    // then errored on a later rep leaves that sample in aggregate, so drop it here.
     const done = new Set(
       run.outcomes.filter((o) => o.state === "done").map((o) => o.label),
     );
@@ -48,8 +44,6 @@ export function TuneVerdictCard({
     (v) => v.label === verdict.pick.label,
   );
   const color = colors[variant ? familyOf(variant.load) : "other"];
-  // A cancelled run still gets a finishedAt in the runner's finally block, so gate the
-  // verdict and Apply on every row having reached an end, matching the history grid.
   const finished = run.finishedAt !== null && ranToEnd(run);
   const busy = applying === run.id;
   const args = variant?.load.llama_extra_args ?? [];

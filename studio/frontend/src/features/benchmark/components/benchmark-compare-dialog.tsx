@@ -106,7 +106,6 @@ export function CompareDialog({
             setLoadingProgress({ loaded: i + 1, total: selectedRuns.length });
           }
         } catch {
-          // Skip failed loads
         }
       }
 
@@ -126,7 +125,6 @@ export function CompareDialog({
     .map((r) => details.get(r.id))
     .filter((d): d is BenchmarkRunDetail => d != null);
 
-  // Collect all metric names across all runs
   const allMetricNames =
     loadedDetails.length > 0
       ? [

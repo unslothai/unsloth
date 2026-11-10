@@ -5,9 +5,6 @@ import { useEffect, useState } from "react";
 
 const FIT_GAP = 24;
 
-/** Caps an element's height to what's left of its scroll area below its top, so a card
- * ends above the window's edge and scrolls inside instead. Re-measures on scroll, resize
- * and layout shifts above it; pair with a max-height transition for the grow and shrink. */
 export function useFitToViewport(
   min = 320,
 ): [(el: HTMLElement | null) => void, number | null] {
@@ -36,7 +33,6 @@ export function useFitToViewport(
     const target: HTMLElement | Window = scroller ?? window;
     target.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("resize", measure);
-    // Cards appearing above (the live run card, a notice) move this one's top.
     const shifts = new ResizeObserver(measure);
     shifts.observe(scroller?.firstElementChild ?? document.body);
     return () => {

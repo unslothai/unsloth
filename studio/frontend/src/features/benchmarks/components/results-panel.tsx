@@ -124,7 +124,6 @@ function ResultsTable({
   vram,
 }: {
   rows: AggRow[];
-  /** VRAM in use after each row's load, when it was read. */
   vram: Record<string, number>;
 }): ReactElement {
   const colors = useFamilyColors();
@@ -207,7 +206,6 @@ const CARD = BENCH_CARD;
 
 const TOP_ROWS = 8;
 
-/** The fastest few plus the baseline: the chart answers "what wins" without a scroll. */
 function visibleRows(rows: AggRow[], expanded: boolean): AggRow[] {
   if (expanded || rows.length <= TOP_ROWS + 1) return rows;
   const base = rows.find((r) => r.isBaseline);
@@ -286,7 +284,6 @@ const LIVE_STATUS: Partial<Record<VariantState, string>> = {
   running: "Measuring…",
 };
 
-/** Its own component, so the once-a-second tick repaints one span and not the chart. */
 function Elapsed({ since }: { since: number }): ReactElement {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -328,9 +325,6 @@ export function RunResults({
     () => depthSeries(rows, run.config.variants),
     [rows, run],
   );
-  // Only a row that ran every rep can win the Fastest card or set the speed-up; one that
-  // errored or was cancelled after a measured rep keeps its samples in the chart but is not
-  // ranked. Matches history-grid and tune-section.
   const done = new Set(
     run.outcomes.filter((o) => o.state === "done").map((o) => o.label),
   );
@@ -352,7 +346,6 @@ export function RunResults({
       "_",
     );
 
-  // In a live run the queue is the chart: rows still to come sit under the measured ones.
   const measured = new Set(rows.map((r) => r.label));
   const pending: PendingRow[] = live
     ? run.outcomes

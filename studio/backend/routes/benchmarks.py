@@ -20,10 +20,8 @@ router = APIRouter()
 
 MAX_RESULTS = 20_000
 MAX_RUNS_LISTED = 200
-# A runner renews well inside this, so a closed tab frees the GPU within a minute.
 LEASE_TTL_SECONDS = 45
 
-# The scoring hold's lock: a sweep's start and a scoring's start see each other atomically.
 _lease_lock = hold._lock
 _lease: Optional[dict[str, Any]] = None
 
@@ -141,7 +139,6 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
     now = time.monotonic()
     with _lease_lock:
         if lease.kind == "sweep" and hold._scorings:
-            # A sweep reloads the server between rows: under a running eval it would swap the model.
             raise HTTPException(
                 status_code = 409,
                 detail = {
@@ -256,7 +253,6 @@ class BenchmarkTrafficMiddleware:
                 ),
                 None,
             )
-            # Uncredentialed calls go on to the route's own 401.
             if (
                 path in LOAD_PATHS
                 and _carries_bearer_credentials(scope, path)
@@ -276,7 +272,6 @@ class BenchmarkTrafficMiddleware:
         await self.app(scope, receive, send)
 
 
-# Replaced, not appended, so a reimport of this module leaves one guard.
 hold.start_guards[:] = [
     g for g in hold.start_guards if getattr(g, "__module__", None) != __name__
 ] + [_refuse_under_sweep]

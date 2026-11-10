@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The setup side panel and the model strip, built from the pieces Train and the Hub use:
-// Train's field labels and Selects, the Hub's stat pills, the shared Checkbox and Input.
 
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -53,7 +51,6 @@ import { BenchModelPicker } from "./bench-model-picker";
 import { useFamilyColors } from "./family-colors";
 import { useFitToViewport } from "./use-fit-to-viewport";
 
-/** The Hub toolbar pill: icon, bold value, quiet label. */
 export function StatPill({
   icon,
   value,
@@ -81,7 +78,6 @@ export function StatPill({
   );
 }
 
-/** Train's field: small-caps label with an info hint, then the control. */
 export function Field({
   label,
   hint,
@@ -109,8 +105,6 @@ export function Field({
   );
 }
 
-/** A number box that clamps when you leave it, not on every keystroke, so clearing it to
- * type a new value doesn't snap to the minimum. */
 export function CountInput({
   value,
   min,
@@ -149,7 +143,6 @@ export function CountInput({
   );
 }
 
-/** Filled for on, a ring for off. The colour is the family's, so it doubles as the legend. */
 function Dot({
   color,
   filled,
@@ -170,7 +163,6 @@ function Dot({
   );
 }
 
-/** The family prefix is already on the group header, so the row drops it. */
 function shortLabel(label: string, family: Family): string {
   const prefix = `${FAMILY_LABEL[family]} \u00b7 `;
   return label.startsWith(prefix) ? label.slice(prefix.length) : label;
@@ -222,7 +214,6 @@ function VariantRow({
         title={isBase ? "Baseline" : "Make this the baseline"}
         className={cn(
           "grid size-6 shrink-0 place-items-center rounded-full transition-colors",
-          // The chart already labels the baseline, so the star only shows on hover.
           "text-transparent group-hover:text-muted-foreground/60 hover:!text-foreground focus-visible:text-foreground",
         )}
       >
@@ -243,7 +234,6 @@ const KIND_OPTIONS = [
 
 const PROMPT_SEP = "\n---\n";
 
-/** Your own prompts, one field each. Stored as the --- separated text the runner reads. */
 function PromptListEditor({
   value,
   onChange,
@@ -251,7 +241,6 @@ function PromptListEditor({
   value: string;
   onChange: (v: string) => void;
 }): ReactElement {
-  // [ \t] not \s: a newline typed at the end of a prompt must stay part of it.
   const list = value.split(/\r?\n[ \t]*---[ \t]*\r?\n/);
   const items = list.length ? list : [""];
   const write = (next: string[]) => onChange(next.join(PROMPT_SEP));
@@ -309,9 +298,6 @@ function PromptListEditor({
   );
 }
 
-/** Chat's own model picker, on-device GGUFs and their quants. Picking one other than the
- * loaded model makes the run load it first, with chat's Run Settings. Backed by the sweeps
- * store; the dropdown itself is the shared BenchModelPicker the Evals page uses too. */
 export function SweepsModelPicker({
   status,
   locked,
@@ -322,7 +308,6 @@ export function SweepsModelPicker({
   const config = useBenchmarksStore((s) => s.config);
   const setConfig = useBenchmarksStore((s) => s.setConfig);
   const models = useChatRuntimeStore((s) => s.models);
-  // Benchmarks load through llama-server, so only GGUFs are offered.
   const pickable = useMemo(
     () =>
       models
@@ -393,7 +378,6 @@ export function SetupPanel({
     }
     return out;
   }, [config.variants]);
-  // Collapsed by default: 22 rows of detail is not what you open the page for.
   const [opened, setOpened] = useState<Family[]>([]);
   const [fitRef, fitHeight] = useFitToViewport();
   const prompts = [
@@ -495,7 +479,6 @@ export function SetupPanel({
                   }
                 />
               ));
-              // One family (an offload or KV sweep) is just a list; a lone row keeps its full name.
               if (g.rows.length === 1 || groups.length === 1) return rows;
               const activeHere = g.rows.filter(
                 (v) => !disabled.includes(v.label),

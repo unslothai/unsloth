@@ -98,7 +98,6 @@ export function GraphDialog({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
 
-  // Keep orderedIds in sync with selectedRuns
   useMemo(() => {
     setOrderedIds((prev) => {
       const selected = new Set(selectedRuns.map((r) => r.id));
@@ -117,7 +116,6 @@ export function GraphDialog({
       .filter((r): r is BenchmarkRunSummary => r != null);
   }, [orderedIds, selectedRuns]);
 
-  // Collect available metrics, with "Accuracy" always first
   const availableMetrics = useMemo(() => {
     const metrics: { label: string; value: string }[] = [
       { label: t("benchmark.graph.accuracy"), value: "__accuracy__" },
@@ -135,8 +133,6 @@ export function GraphDialog({
   }, [selectedRuns, t]);
 
   const [pickedMetric, setSelectedMetric] = useState("__accuracy__");
-  // The dialog stays mounted across selections; a metric the current runs lack
-  // would chart every bar as 0, so fall back to accuracy.
   const selectedMetric = availableMetrics.some((m) => m.value === pickedMetric)
     ? pickedMetric
     : "__accuracy__";

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Presets, prompts and the numbers behind the chart. Kept free of React and of `@/`
-// imports so node --test can load it directly.
 
-/** Load overrides one variant applies on top of the model's current load. */
 export interface VariantLoad {
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
@@ -19,7 +16,6 @@ export interface VariantLoad {
   llama_extra_args?: string[] | null;
 }
 
-/** What the offload sweep scales its rows by: the model's block and MoE layer counts. */
 export interface ModelShape {
   layers: number | null;
   moeLayers: number | null;
@@ -40,7 +36,6 @@ export type SweepKind =
   | "parallel"
   | "offload"
   | "tune";
-/** The sweep picker's presets. Auto-tune is its own card, not a preset. */
 export const SWEEP_KINDS: SweepKind[] = [
   "spec",
   "draft",
@@ -122,7 +117,6 @@ export function familyOf(load: VariantLoad): Family {
   return "other";
 }
 
-/** Studio's spellings folded to one, so a requested mode can be checked against the served one. */
 export function canonicalSpec(raw: string | null | undefined): string {
   const s = String(raw ?? "")
     .toLowerCase()
@@ -143,8 +137,6 @@ export function canonicalSpec(raw: string | null | undefined): string {
   return s;
 }
 
-// llama.cpp's ngram-mod drafter as two one-variable sweeps, so a winning rung names its knob:
-// the floor sweep holds the key at stock 24, the key sweep holds the floor at 8.
 export const NGRAM_N_MAX = 64;
 export interface NgramStep {
   match: number;
@@ -185,7 +177,6 @@ const OFF: Variant = {
   load: { speculative_type: "off", spec_draft_n_max: null },
 };
 
-/** The presets behind the sweep picker. Labels double as row identities. */
 export function sweepVariants(
   kind: SweepKind,
   maxContext?: number | null,
@@ -318,14 +309,8 @@ export function sweepVariants(
   }
 }
 
-/** Context every offload row loads at: Studio's own offload cap, so the auto row compares. */
 export const OFFLOAD_CONTEXT = 8192;
 
-/**
- * Studio's fit, then manual placements from the least VRAM to the most, so the first out of
- * memory row lets the runner skip the rest. MoE models move expert layers (n_cpu_moe, which the
- * backend clamps and offsets past dense layers); dense ones step GPU layers.
- */
 export function offloadVariants(shape?: ModelShape | null): Variant[] {
   const ctx = OFFLOAD_CONTEXT;
   const auto: Variant = {
@@ -351,7 +336,6 @@ export function offloadVariants(shape?: ModelShape | null): Variant[] {
       { label: "All on GPU", load: manual(999, 0) },
     ];
   }
-  // Unknown shape: the backend clamps, so fixed counts still read sensibly.
   const counts = moe
     ? [...new Set([0.75, 0.5, 0.25].map((f) => Math.round(moe * f)))].filter(
         (n) => n > 0 && n < moe,
@@ -371,13 +355,11 @@ export function offloadVariants(shape?: ModelShape | null): Variant[] {
   ];
 }
 
-/** How much VRAM a manual row asks for, higher is more: the runner's skip-after-OOM order. */
 export function offloadDemand(load: VariantLoad): number | null {
   if (load.gpu_memory_mode !== "manual") return null;
   return (load.gpu_layers ?? 999) * 1000 - (load.n_cpu_moe ?? 0);
 }
 
-/** How much a setting asks of the machine: the tie-break when two rows run alike. */
 function complexity(v: Variant | undefined): number {
   if (!v) return 99;
   const family = familyOf(v.load);
@@ -399,16 +381,12 @@ function complexity(v: Variant | undefined): number {
 }
 
 export interface TuneVerdict {
-  /** The row auto-tune hands to chat. */
   pick: AggRow;
-  /** The raw fastest row, when the pick gave it up for a simpler setting inside the margin. */
   fastest: AggRow | null;
   off: AggRow | null;
-  /** Percent over speculation off, or null without an off row. */
   gain: number | null;
 }
 
-/** Within 3% of the fastest, the simpler setting wins: the difference is noise, the extra work is not. */
 export const TUNE_MARGIN = 0.03;
 
 export function tuneVerdict(
@@ -434,7 +412,6 @@ export function tuneVerdict(
   };
 }
 
-/** Powers of two from 4K up to the model's window, capped at five rows. */
 export function contextSteps(maxContext?: number | null): number[] {
   const top = maxContext && maxContext > 0 ? maxContext : 32768;
   const out: number[] = [];
@@ -450,7 +427,6 @@ export function fmtTokens(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-/** Which row is the natural baseline for a preset, when it has one. */
 export function defaultBaseline(variants: Variant[]): string | null {
   const auto = variants.find((v) => v.load.gpu_memory_mode === "auto");
   if (auto) return auto.label;
@@ -458,24 +434,18 @@ export function defaultBaseline(variants: Variant[]): string | null {
   return off?.label ?? variants[0]?.label ?? null;
 }
 
-// --- load planning ------------------------------------------------------------
 
-/** The slice of a load request the planner touches; the rest passes through untouched. */
 export interface LoadPayload extends VariantLoad {
   model_path: string;
   force_reload?: boolean;
 }
 
-/** The slice of /api/inference/status a served-config check reads. */
 export interface ServedStatus {
   speculative_type?: string | null;
   spec_fallback_reason?: string | null;
   cache_type_kv?: string | null;
-  /** Slots the server actually serves after load_model's clamps. */
   parallel_slots?: number | null;
-  /** A virtualised Mac GPU: every load is rewritten to run on the CPU. */
   gpu_placement_paravirtual?: boolean | null;
-  /** The context window the server runs, after any fit clamp. */
   context_length?: number | null;
 }
 
@@ -485,7 +455,6 @@ const NGRAM_FLAGS = [
   "--spec-ngram-mod-n-max",
 ];
 
-// The backend's fallback codes, in words a user can act on.
 const FALLBACK_REASON: Record<string, string> = {
   binary_no_mtp: "this llama.cpp build has no MTP support",
   binary_outdated: "the installed llama.cpp is too old for this mode",
@@ -500,7 +469,6 @@ export function describeFallback(code: string): string {
   return FALLBACK_REASON[code] ?? code.replace(/_/g, " ");
 }
 
-/** The user's own extra args, minus any ngram tuning an earlier variant left behind. */
 export function userExtraArgs(
   args: readonly string[] | null | undefined,
 ): string[] {
@@ -518,11 +486,6 @@ export function userExtraArgs(
   return out;
 }
 
-// Offload flags an inherited extra arg could carry (llama_server_args._OFFLOAD_SHADOWING_FLAGS).
-// The value flags last-wins-promote into the manual layer count on /load, so an offload row's
-// requested placement would be silently replaced by the chat model's pass-through -ngl.
-// Arity matches the backend (llama_server_args._BOOLEAN_SHADOWING_FLAGS): -cmoe/--cpu-moe are
-// switches, -fit/--fit take on|off.
 const OFFLOAD_VALUE_FLAGS = [
   "-ngl",
   "--gpu-layers",
@@ -534,7 +497,6 @@ const OFFLOAD_VALUE_FLAGS = [
 ];
 const OFFLOAD_BOOL_FLAGS = ["-cmoe", "--cpu-moe"];
 
-/** Drop inherited GPU-offload flags: the offload sweep owns placement, so its rows set it themselves. */
 function stripOffloadArgs(args: readonly string[] | null | undefined): string[] {
   const out: string[] = [];
   const list = args ?? [];
@@ -551,10 +513,6 @@ function stripOffloadArgs(args: readonly string[] | null | undefined): string[] 
   return out;
 }
 
-// Draft-depth flags a spec sweep owns through spec_draft_n_max. An inherited copy in chat's
-// pass-through args would last-wins-override the depth each row asks for: the backend keeps
-// explicit extras and appends them after its managed --draft-max / --spec-draft-n-max, so every
-// depth row would run at the inherited value. Legacy and post-rename spellings, both take a value.
 const SPEC_DEPTH_FLAGS = [
   "--draft-max",
   "--draft-min",
@@ -562,7 +520,6 @@ const SPEC_DEPTH_FLAGS = [
   "--spec-draft-n-min",
 ];
 
-/** Drop inherited draft-depth flags: a spec sweep's rows set the depth themselves. */
 function stripSpecDepthArgs(args: readonly string[] | null | undefined): string[] {
   const out: string[] = [];
   const list = args ?? [];
@@ -578,15 +535,9 @@ function stripSpecDepthArgs(args: readonly string[] | null | undefined): string[
   return out;
 }
 
-// Mode-owning flags a spec / auto-tune sweep owns through speculative_type. The loader treats
-// extras carrying --spec-type / --spec-default as owning the mode and returns before emitting the
-// row's requested mode (llama_cpp._build_speculative_flags), so a forced row would be skipped as a
-// mismatch and the Auto row silently measured under chat's override. --spec-type takes a value;
-// --spec-default is a bare flag.
 const SPEC_MODE_VALUE_FLAGS = ["--spec-type"];
 const SPEC_MODE_BOOL_FLAGS = ["--spec-default"];
 
-/** Drop inherited speculative-mode flags: a spec or auto-tune row sets the mode itself. */
 function stripSpecModeArgs(args: readonly string[] | null | undefined): string[] {
   const out: string[] = [];
   const list = args ?? [];
@@ -603,12 +554,8 @@ function stripSpecModeArgs(args: readonly string[] | null | undefined): string[]
   return out;
 }
 
-// Context flags the context sweep owns through max_seq_length. An inherited -c / --ctx-size in
-// chat's pass-through args would last-wins-override each row's window: parse_ctx_override reads the
-// extras (llama_server_args.parse_ctx_override), so every context row would run at the inherited size.
 const CONTEXT_FLAGS = ["-c", "--ctx-size"];
 
-/** Drop inherited context flags: the context sweep's rows set max_seq_length themselves. */
 function stripContextArgs(args: readonly string[] | null | undefined): string[] {
   const out: string[] = [];
   const list = args ?? [];
@@ -624,13 +571,8 @@ function stripContextArgs(args: readonly string[] | null | undefined): string[] 
   return out;
 }
 
-// Slot count the parallel sweep owns through n_parallel. An inherited copy in chat's
-// pass-through args would last-wins-override the count each row asks for: the backend keeps
-// explicit extras and appends them after its managed --parallel, so every slot row would run
-// the inherited value and servedMismatch (which reads the managed count) can't catch it.
 const PARALLEL_FLAGS = ["-np", "--parallel"];
 
-/** Drop inherited parallel-slot flags: the parallel sweep's rows set the count themselves. */
 function stripParallelArgs(args: readonly string[] | null | undefined): string[] {
   const out: string[] = [];
   const list = args ?? [];
@@ -668,26 +610,18 @@ export function variantLoad<T extends LoadPayload>(
   return {
     ...base,
     ...rest,
-    // Always explicit: omitted, Studio re-applies the model's stored args, which after
-    // an ngram row would carry that row's tuning into the next one.
     llama_extra_args: [...baseArgs, ...(extra ?? [])],
-    // A fresh server per row: timings include the load, and no drafter cache carries over.
     force_reload: true,
   };
 }
 
-/** Why a load did not give this row what it asked for, or null when it did. */
 export function servedMismatch(
   variant: Variant,
   st: ServedStatus,
 ): string | null {
-  // Every manual placement collapses to gpu_layers=0 there, so the rows would chart one CPU
-  // config under many GPU labels.
   if (variant.load.gpu_memory_mode === "manual" && st.gpu_placement_paravirtual)
     return "this Mac's GPU is virtualised, so every load runs on the CPU";
   const want = variant.load.speculative_type;
-  // Only rows that pick a forced mode can be let down by a fallback; the Auto row asks Studio to
-  // choose, so its fallback (ngram, speculation off) is the Studio-default config we mean to measure.
   if (
     want !== undefined &&
     want !== null &&
@@ -707,8 +641,6 @@ export function servedMismatch(
   ) {
     return `The server ran KV ${st.cache_type_kv} instead of ${variant.load.cache_type_kv}`;
   }
-  // A build without --kv-unified clamps multi-slot loads back to one, so a 2- or 4-slot row
-  // would measure the same one-slot server; skip it instead of charting it as its own config.
   const wantSlots = variant.load.n_parallel;
   if (
     wantSlots != null &&
@@ -718,7 +650,6 @@ export function servedMismatch(
   ) {
     return `The server ran ${st.parallel_slots} parallel slot${st.parallel_slots === 1 ? "" : "s"} instead of ${wantSlots}`;
   }
-  // A load can clamp the context to what fits, so a row would chart a smaller window under its label.
   const wantCtx = variant.load.max_seq_length;
   if (
     wantCtx != null &&
@@ -731,7 +662,6 @@ export function servedMismatch(
   return null;
 }
 
-// --- prompts -----------------------------------------------------------------
 
 export interface PromptSet {
   id: string;
@@ -740,8 +670,6 @@ export interface PromptSet {
   prompts: string[];
 }
 
-// Several prompts per set so measured runs can rotate: llama.cpp's ngram cache learns a
-// repeated answer, and one prompt sent N times measures copying, not drafting.
 export const PROMPT_SETS: PromptSet[] = [
   {
     id: "chat",
@@ -796,26 +724,21 @@ export function promptsFor(setId: string, custom: string): string[] {
   );
 }
 
-// --- results -------------------------------------------------------------------
 
 export interface RunResult {
   variant: string;
-  /** 0-based, warm-ups included. */
   rep: number;
   warmup: boolean;
   promptIndex: number;
-  /** Server decode rate (llama-server timings.predicted_per_second). */
   tps: number | null;
   promptTps: number | null;
   promptTokens: number | null;
   genTokens: number | null;
   ttftMs: number | null;
   wallMs: number;
-  /** Client-side decode rate, the stand-in when the server sent no timings. */
   clientTps: number | null;
   draftN: number | null;
   draftAccepted: number | null;
-  /** Set on the first run after a load. */
   loadMs: number | null;
   at: number;
 }
@@ -826,9 +749,7 @@ export type VariantState =
 export interface VariantOutcome {
   label: string;
   state: VariantState;
-  /** Why a row was skipped or failed, in the user's words where we can. */
   reason?: string;
-  /** What Studio actually served after the load. */
   served?: Record<string, unknown>;
 }
 
@@ -836,23 +757,18 @@ export interface RunMeta {
   gpu?: string | null;
   vramGb?: number | null;
   backend?: string | null;
-  /** The GPU runtime torch was built against, e.g. "ROCm 7.1" or "CUDA 12.8". */
   runtime?: string | null;
   llamaTag?: string | null;
   studioVersion?: string | null;
-  /** platform.platform(): "Windows-11-10.0.26200", "Linux-6.8...", "macOS-15.3-arm64". */
   os?: string | null;
   cpuThreads?: number | null;
   ramGb?: number | null;
-  /** Other generations the server took while this sweep held it; they share its slots and GPU. */
   outsideRequests?: number | null;
 }
 
 export interface BenchConfig {
   sweep: SweepKind;
-  /** The model to benchmark when it is not the one chat has loaded (any kind of run). */
   tuneModel?: string | null;
-  /** Its GGUF quant, from the model picker. */
   tuneVariant?: string | null;
   variants: Variant[];
   baseline: string | null;
@@ -867,9 +783,7 @@ export interface BenchConfig {
   restoreAfter: boolean;
 }
 
-/** One Run Settings value from chat, as the page and the export print it. */
 export interface BaseSetting {
-  /** The load field it feeds, so a sweep that varies it can say so. */
   field: string;
   label: string;
   value: string;
@@ -885,7 +799,6 @@ export interface BenchRun {
   context: number | null;
   config: BenchConfig;
   meta: RunMeta;
-  /** Chat's Run Settings when the sweep started: every row loads these plus its own overrides. */
   base?: BaseSetting[];
   outcomes: VariantOutcome[];
   results: RunResult[];
@@ -898,13 +811,11 @@ export interface AggRow {
   min: number;
   max: number;
   n: number;
-  /** Percent over the baseline mean; null for the baseline itself or without one. */
   pct: number | null;
   isBaseline: boolean;
   ttftMs: number | null;
   loadMs: number | null;
   acceptRate: number | null;
-  /** The first measured run, which the ngram cache has not seen yet. */
   first: number | null;
   clientOnly: boolean;
 }
@@ -917,11 +828,6 @@ function finite(x: number | null): x is number {
   return x !== null && Number.isFinite(x);
 }
 
-/**
- * One row per variant with a measured (non-warm-up) run, fastest first and the baseline
- * last. Throughput is the server's own rate; the client rate stands in only when a run
- * came back without timings, and the row says so.
- */
 export function aggregate(
   results: RunResult[],
   variants: Variant[],
@@ -939,8 +845,6 @@ export function aggregate(
   for (const [label, list] of byLabel) {
     list.sort((a, b) => a.rep - b.rep);
     const server = list.map((r) => r.tps).filter(finite);
-    // Fall back to the client rate per completion, not per row, so one run that came back
-    // without server timings doesn't drop out of the mean, range and sample count.
     const rates = list.map((r) => r.tps ?? r.clientTps).filter(finite);
     if (!rates.length) continue;
     const drafts = list.reduce((a, r) => a + (r.draftN ?? 0), 0);
@@ -978,7 +882,6 @@ export function aggregate(
   return rows;
 }
 
-/** The one sentence under the chart title. */
 export function headline(rows: AggRow[]): string | undefined {
   const base = rows.find((r) => r.isBaseline);
   const others = rows.filter((r) => !r.isBaseline);
@@ -1002,12 +905,10 @@ export interface Highlights {
 export function highlights(rows: AggRow[]): Highlights {
   const baseline = rows.find((r) => r.isBaseline) ?? null;
   const others = rows.filter((r) => !r.isBaseline);
-  // The fastest row overall, which can be the baseline (an offload sweep's Studio fit).
   const best =
     baseline && (!others[0] || baseline.mean >= others[0].mean)
       ? baseline
       : (others[0] ?? null);
-  // The best challenger against the baseline, below 1 when nothing beat it.
   const speedup =
     others[0] && baseline && baseline.mean > 0
       ? others[0].mean / baseline.mean
@@ -1021,10 +922,6 @@ export function highlights(rows: AggRow[]): Highlights {
   return { best, baseline, speedup, bestAccept };
 }
 
-/**
- * Rows whose measured runs climb steadily, the ngram-cache signature: the steady state
- * is more than 1.5× the first measured run.
- */
 export function rampingRows(rows: AggRow[]): AggRow[] {
   return rows.filter(
     (r) =>
@@ -1046,7 +943,6 @@ export interface RunSeries {
   points: RunPoint[];
 }
 
-/** Every run of every variant in order, for the run-by-run chart. */
 export function runSeries(
   results: RunResult[],
   variants: Variant[],
@@ -1080,7 +976,6 @@ export interface DepthSeries {
   points: DepthPoint[];
 }
 
-/** Throughput against draft depth, one line per family. Rows with no depth are left out. */
 export function depthSeries(
   rows: AggRow[],
   variants: Variant[],
@@ -1090,8 +985,6 @@ export function depthSeries(
     const load = variants.find((v) => v.label === r.label)?.load;
     const n = load?.spec_draft_n_max;
     if (r.family === "off" || typeof n !== "number") continue;
-    // Tuned ngram and draft-cache variants share a depth with the plain row; the depth line
-    // keeps plain rows only, so it doesn't stack several measurements at one x.
     if (load?.llama_extra_args?.length || load?.spec_draft_cache_type) continue;
     const list = byFamily.get(r.family) ?? [];
     list.push({ n, mean: r.mean, min: r.min, max: r.max, label: r.label });
@@ -1106,7 +999,6 @@ export function depthSeries(
   return out;
 }
 
-// --- formatting ----------------------------------------------------------------
 
 export function fmtRate(x: number): string {
   return `${x >= 100 ? x.toFixed(0) : x.toFixed(1)} tok/s`;
@@ -1129,18 +1021,15 @@ export function modelShort(path: string | null | undefined): string {
   return tail.replace(/-GGUF$/i, "").replace(/\.gguf$/i, "");
 }
 
-/** The load fields a sweep changes from row to row. */
 export function variedFields(variants: Variant[]): Set<string> {
   const pinned = pinnedFields(variants);
   const out = new Set<string>();
   for (const v of variants)
     for (const k of Object.keys(v.load)) if (!pinned.has(k)) out.add(k);
-  // The drafting pair moves together: a mode row resets the depth too.
   if (out.has("speculative_type")) out.add("spec_draft_n_max");
   return out;
 }
 
-/** Fields every row sets to the same value (the offload sweep's context), by value. */
 export function pinnedFields(variants: Variant[]): Map<string, string> {
   const out = new Map<string, string>();
   if (variants.length < 2) return out;
@@ -1156,7 +1045,6 @@ export function pinnedFields(variants: Variant[]): Map<string, string> {
   return out;
 }
 
-/** Chat's settings as one footer line; the ones this sweep varies read "varied". */
 export function baseLine(
   base: BaseSetting[] | undefined,
   variants: Variant[],
@@ -1182,7 +1070,6 @@ const BACKEND_NAME: Record<string, string> = {
   sycl: "SYCL",
 };
 
-/** The context rows ran at: a sweep's pinned value, "varied", or what chat had loaded. */
 export function ctxNote(run: Pick<BenchRun, "config" | "context">): string {
   if (variedFields(run.config.variants).has("max_seq_length")) return "ctx varied";
   const pinned = pinnedFields(run.config.variants).get("max_seq_length");
@@ -1190,19 +1077,16 @@ export function ctxNote(run: Pick<BenchRun, "config" | "context">): string {
   return run.context ? `ctx ${fmtTokens(run.context)}` : "";
 }
 
-/** Every queued row ran to an end (measured, skipped or failed); false when a Stop cut it short. */
 export function ranToEnd(run: Pick<BenchRun, "outcomes">): boolean {
   return run.outcomes.every(
     (o) => o.state === "done" || o.state === "skipped" || o.state === "error",
   );
 }
 
-/** A row's name mid-sentence: "1.9× speculation off", but "1.2× Auto fit". */
 export function inSentence(label: string): string {
   return label.startsWith("Speculation ") ? label.toLowerCase() : label;
 }
 
-/** What ran, where and on which build: the chart's footer and the export's provenance. */
 export function footerLines(run: BenchRun): string[] {
   const c = run.config;
   const what = [
@@ -1239,7 +1123,6 @@ export function footerLines(run: BenchRun): string[] {
   ].filter(Boolean);
 }
 
-/** "Windows-11-10.0.26200" reads as "Windows 11 (10.0.26200)"; Linux keeps its kernel, macOS its version. */
 export function osShort(os: string | null | undefined): string {
   if (!os) return "";
   const win = /^Windows-(\d+)-([\d.]+)/.exec(os);

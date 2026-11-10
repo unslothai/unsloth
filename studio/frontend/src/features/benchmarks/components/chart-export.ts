@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The rendered chart as a standalone SVG or PNG. Its colours are already literal.
 
 export function svgToString(svg: SVGSVGElement): string {
   const clone = svg.cloneNode(true) as SVGSVGElement;

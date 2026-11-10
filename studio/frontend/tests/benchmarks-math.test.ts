@@ -290,7 +290,6 @@ test("offload rows scale to the MoE layer count and run from the least VRAM to t
     ],
   );
   assert.equal(rows[0].load.gpu_memory_mode, "auto");
-  // Every row pins the same context, so auto and manual compare.
   assert.ok(rows.every((r) => r.load.max_seq_length === 8192));
   const demands = rows.slice(1).map((r) => offloadDemand(r.load) ?? -1);
   assert.deepEqual([...demands].sort((a, b) => a - b), demands);
@@ -374,6 +373,5 @@ test("a context row served with a smaller window is skipped, not charted at its 
   );
   assert.equal(servedMismatch(ctx128k, { context_length: 131072 }), null);
   assert.equal(servedMismatch(ctx128k, {}), null);
-  // 0 asks Studio to pick, so whatever it serves is the row.
   assert.equal(servedMismatch({ label: "auto", load: { max_seq_length: 0 } }, { context_length: 8192 }), null);
 });

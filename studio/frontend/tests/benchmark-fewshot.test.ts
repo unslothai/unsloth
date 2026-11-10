@@ -8,14 +8,10 @@ import { test } from "node:test";
 import { fewshotParam } from "../src/features/benchmark/lib/fewshot.ts";
 
 test("an explicit zero-shot pick is sent as 0, not as the task default", () => {
-  // GSM8K defaults to 5; the user set 0.
   assert.equal(fewshotParam(true, true, true, 0), 0);
-  // The field shows the task's default: sending it asks for the same run.
   assert.equal(fewshotParam(true, true, false, 5), 5);
-  // Neither known nor picked: the task's own default.
   assert.equal(fewshotParam(true, false, false, 0), null);
   assert.equal(fewshotParam(true, false, true, 3), 3);
-  // A task that takes no examples.
   assert.equal(fewshotParam(false, true, true, 4), null);
 });
 

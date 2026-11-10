@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The results chart in three shapes over the same runs:
-//   bars   one bar per setting, mean with a min–max whisker
-//   runs   each setting's runs in order, which is where a warming cache shows
-//   depth  throughput against draft depth, one line per speculative family
-// The SVG carries literal colours, so Download SVG / PNG saves what is on screen.
 
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/features/settings";
@@ -26,7 +21,6 @@ export type ChartKind = "bars" | "runs" | "depth";
 
 let probe: CanvasRenderingContext2D | null | undefined;
 
-/** Any CSS colour folded to #rrggbb, since many SVG viewers can't paint oklch(). */
 function toPortableColor(value: string): string {
   if (typeof document === "undefined") return value;
   if (probe === undefined) {
@@ -48,7 +42,6 @@ function toPortableColor(value: string): string {
 }
 
 function useInk(): { ink: string; muted: string; grid: string; card: string } {
-  // Subscribing re-renders on a theme flip, which is when the tokens change.
   useTheme();
   const style = getComputedStyle(document.documentElement);
   const read = (n: string, fallback: string) =>
@@ -109,7 +102,6 @@ function tickText(t: number): string {
   return Number.isInteger(t) ? String(t) : t.toFixed(1);
 }
 
-/** A bar anchored flat at the baseline with only its data end rounded. */
 function barPath(
   x0: number,
   x1: number,
@@ -121,7 +113,6 @@ function barPath(
   return `M${x0},${y} H${x1 - rr} a${rr},${rr} 0 0 1 ${rr},${rr} V${y + h - rr} a${rr},${rr} 0 0 1 -${rr},${rr} H${x0} Z`;
 }
 
-/** Push overlapping end labels apart, keeping their order. */
 function spreadLabels(
   ys: number[],
   gap: number,
@@ -147,7 +138,6 @@ function clip(s: string, n: number): string {
 export interface PendingRow {
   label: string;
   family: Family;
-  /** "Queued", "Loading", "Measuring 2/3" */
   status: string;
   active: boolean;
 }
@@ -178,9 +168,7 @@ export const BenchChart = memo(function BenchChart({
   subtitle?: string;
   footer: string[];
   svgRef?: RefObject<SVGSVGElement | null>;
-  /** Rows still to come in a live run, drawn as placeholders under the measured ones. */
   pending?: PendingRow[];
-  /** On screen: no title, subtitle or fine print. The page around it already says them. */
   bare?: boolean;
 }): ReactElement {
   const palette = useFamilyColors();

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Scores at a glance: the latest run of each model on each task, as bars on one 0-100 scale,
-// so two models on the same benchmark read side by side. The full list stays in history.
 
 import { BENCH_CARD } from "@/features/benchmarks/components/bench-ui";
 import { useTheme } from "@/features/settings";
@@ -109,7 +107,6 @@ export function EvalScoreboard(): ReactElement | null {
   );
   const [runs, setRuns] = useState<BenchmarkRunSummary[]>([]);
 
-  // On mount (even mid-run, e.g. after a reload) and again when a run ends, which lands in the list.
   useEffect(() => {
     let cancelled = false;
     void listBenchmarkRuns()
@@ -126,7 +123,6 @@ export function EvalScoreboard(): ReactElement | null {
     const newestFirst = [...runs].sort((a, b) =>
       b.created_at.localeCompare(a.created_at),
     );
-    // The full id is the model's identity: two folders both named `adapter` are two models.
     const models: string[] = [];
     for (const r of [...newestFirst].reverse()) {
       if (!models.includes(r.model)) models.push(r.model);

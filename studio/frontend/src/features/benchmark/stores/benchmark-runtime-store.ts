@@ -89,7 +89,6 @@ export interface BenchmarkProgress {
   pct: number;
   current: number;
   total: number;
-  /** Formatted by the backend's ``tqdm.format_interval`` — null before a rate is known. */
   elapsed: string | null;
   eta: string | null;
 }
@@ -98,7 +97,6 @@ interface BenchmarkRuntimeState {
   phase: BenchmarkPhase;
   isRunning: boolean;
   ownsRun: boolean;
-  /** Task of the run this tab started; null for a run it only attached to. */
   task: string | null;
   logLines: BenchmarkLogEntry[];
   lastSeq: number | null;
@@ -199,7 +197,6 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
     set((state) => {
       const base = { hasHydrated: true, backendActive: status.is_benchmark_active };
       if (status.is_benchmark_active && !state.isRunning && !state.ownsRun) {
-        // A run started elsewhere (a Flow, another tab): none of the last run's state is its own.
         return {
           ...base,
           isRunning: true,
@@ -254,13 +251,10 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
     try {
       await cancelBenchmark();
     } catch {
-      // the stream/status poll will observe the terminal state instead
     }
   },
 
   run: async (checkpointPath, modelSource, task, extraParams) => {
-    // A Config sweep reloads the server between rows; scoring under it is meaningless.
-    // Loaded on use: this store is on the startup path, the sweeps store is not.
     const { useBenchmarksStore } = await import(
       "@/features/benchmarks/stores/benchmarks-store"
     );
@@ -316,7 +310,6 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
         }
         return;
       }
-      // A run stopped mid-way answers 200 with success=false.
       if (res.success === false) {
         if (res.details?.cancelled) throw new BenchmarkCanceledError();
         throw new Error(res.message || "Benchmark failed");

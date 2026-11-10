@@ -4,8 +4,6 @@
 import { useTheme } from "@/features/settings";
 import type { Family } from "../lib/bench-math";
 
-// Validated categorical order (adjacent-pair CVD ΔE ≥ 8 in both modes), one slot per
-// family and fixed: a mode keeps its colour whichever rows a run has. Off is the neutral.
 const SERIES: Record<"light" | "dark", Record<Family, string>> = {
   light: {
     mtp: "#2a78d6",
@@ -34,7 +32,6 @@ export function useFamilyColors(): Record<Family, string> {
   return SERIES[resolved === "dark" ? "dark" : "light"];
 }
 
-/** Accent washes read at half strength on a white card; at full they turn muddy. */
 export function useAccentWash(): (color: string, strength?: number) => string {
   const { resolved } = useTheme();
   const scale = resolved === "dark" ? 1 : 0.45;

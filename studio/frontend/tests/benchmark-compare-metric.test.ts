@@ -13,7 +13,6 @@ test("Compare leads with the run's headline metric, as history does", () => {
     { name: "acc_norm,none", score: 0.3 },
   ];
   assert.equal(pickPrimaryMetric(metrics, "acc_norm,none")?.name, "acc_norm,none");
-  // No headline known: the first accuracy-like metric, as before.
   assert.equal(pickPrimaryMetric(metrics)?.name, "acc,none");
   const dialog = readFileSync(
     new URL("../src/features/benchmark/components/benchmark-compare-dialog.tsx", import.meta.url),

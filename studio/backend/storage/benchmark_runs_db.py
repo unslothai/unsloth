@@ -31,7 +31,6 @@ RESULT_COLUMNS = (
     "at",
 )
 
-# The wire shape is the frontend's camelCase; the table keeps snake_case like its siblings.
 _RESULT_KEYS = {
     "variant": "variant",
     "rep": "rep",
@@ -160,9 +159,6 @@ def list_runs(limit: int = 100) -> list[dict[str, Any]]:
         counts: dict[str, int] = {}
         means: dict[str, dict[str, float]] = {}
         run_ids = [row["id"] for row in rows]
-        # Server rate per completion, the client rate when a completion lacks one, as the page
-        # aggregates it: the fallback is per run, not per row. Scoped to the listed runs so the
-        # scan does not grow with every run ever stored.
         placeholders = ",".join("?" for _ in run_ids)
         for run_id, variant, n, rate in (
             conn.execute(

@@ -84,7 +84,6 @@ function formatMetricValue(m: BenchmarkRunMetric): string {
   return m.score.toFixed(m.score < 1 ? 4 : 1);
 }
 
-// Same units as the score beside it: points on a 0-100 score, else 4 significant digits.
 function formatStderr(m: BenchmarkRunMetric): string | null {
   const err = m.stderr != null ? Number.parseFloat(m.stderr) : Number.NaN;
   if (!Number.isFinite(err)) return null;
@@ -642,7 +641,6 @@ export function BenchmarkHistoryPanel() {
     }
   }, [t]);
 
-  // On mount (even mid-run) and again when a run ends, which lands in the list.
   const running = useBenchmarkRuntimeStore(
     (s) => s.phase === "running" || s.phase === "starting",
   );
@@ -679,7 +677,6 @@ export function BenchmarkHistoryPanel() {
           setSelectedRun(null);
         }
       } catch {
-        // ignore
       }
       setDeleteTarget(null);
     },
@@ -692,7 +689,6 @@ export function BenchmarkHistoryPanel() {
       try {
         await deleteBenchmarkRun(id);
       } catch {
-        // ignore individual failures
       }
     }
     setRuns((prev) => prev.filter((r) => !selectedIds.has(r.id)));
@@ -727,7 +723,6 @@ export function BenchmarkHistoryPanel() {
         const d = await getBenchmarkRunDetail(id);
         details.push(d);
       } catch {
-        // skip
       }
     }
     setCompareDetails(details);

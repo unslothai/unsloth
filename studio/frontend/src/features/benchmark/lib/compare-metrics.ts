@@ -20,8 +20,6 @@ export function isDisplayMetric(m: { name: string }): boolean {
   return true;
 }
 
-/** The run's headline metric (its `default_metric`, as history and the Flows node show it), else
- * the first accuracy-like one. */
 export function pickPrimaryMetric<M extends { name: string }>(
   metrics: M[],
   headline?: string | null,

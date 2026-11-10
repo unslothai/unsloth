@@ -12,19 +12,6 @@ import { useBenchmarkRuntimeStore } from "../stores/benchmark-runtime-store";
 const STATUS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 600;
 
-/**
- * Global benchmark runtime driver, mounted once at the app root. It:
- *   - hydrates `is_benchmark_active` from the backend on mount / reload,
- *   - opens a single long-lived SSE stream to `/api/benchmarks/evals/logs/stream`
- *     that replays the current run from the start and then tails live log
- *     lines, keeping the connection open until the panel closes, and
- *   - auto-reconnects the stream (resuming at the last received seq) if the
- *     connection drops while a run is in flight.
- *
- * The run POST itself blocks until the benchmark finishes, so this stream is
- * the only live log transport while a run is active; the `/status` poll below
- * drives phase transitions (running -> success / error / canceled).
- */
 export function useBenchmarkRuntimeLifecycle(): void {
   useEffect(() => {
     let disposed = false;
@@ -82,7 +69,6 @@ export function useBenchmarkRuntimeLifecycle(): void {
           },
         });
       } catch {
-        // fetch-level failure: fall through to the reconnect below.
       } finally {
         openingStream = false;
         if (streamController === controller) {
@@ -111,7 +97,6 @@ export function useBenchmarkRuntimeLifecycle(): void {
           void ensureStream();
         }
       } catch {
-        // ignore transient status failures
       }
     };
 

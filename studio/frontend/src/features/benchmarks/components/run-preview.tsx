@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Train's run preview card: what Run will load and send, then the button.
 
 import { Button } from "@/components/ui/button";
 import {
@@ -52,7 +51,6 @@ function MetaRow({
   );
 }
 
-/** Every Run Settings value chat will load with, the swept ones marked. */
 export function SettingsPopover({
   settings,
   varied,

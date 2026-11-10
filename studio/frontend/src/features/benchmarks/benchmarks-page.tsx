@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Benchmarks: sweep load settings on the loaded GGUF and chart what each one does to
-// throughput, draft acceptance and load time on this machine. Setup, results and a
-// Train-style run preview on one tab; saved runs on History.
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -102,12 +99,9 @@ function useLlamaBackend(): Backend {
 
 const gb = (n: number) => (n >= 10 ? Math.round(n) : Math.round(n * 10) / 10);
 
-/** GPUs, VRAM, RAM, CPU and llama.cpp backend. Polls while idle; a run holds the last
- * reading so the probe doesn't compete with what's being measured. */
 function MachinePills({ polling }: { polling: boolean }): ReactElement {
   const sys = useSystemInfo({ pollMs: polling ? 5000 : 0 });
   const backend = useLlamaBackend();
-  // llama.cpp's device list, which differs from torch's when it runs on Vulkan.
   const gpu = sys.inference_gpu?.available ? sys.inference_gpu : sys.gpu;
   const display = gpuMemoryDisplay(gpu);
   const devices = display.sharedOnly
@@ -138,7 +132,6 @@ function MachinePills({ polling }: { polling: boolean }): ReactElement {
     )
     .join("\n");
 
-  // One pill; the rest of the machine sits in its hover, and the run's fine print keeps it all.
   const machine = [
     perDevice,
     ramTotal > 0 ? `RAM: ${gb(ramUsed)} / ${gb(ramTotal)} GB` : "",
@@ -177,7 +170,6 @@ function MachinePills({ polling }: { polling: boolean }): ReactElement {
   );
 }
 
-/** One quiet line over a finished run: which run this is, and whether the setup has moved on. */
 function ShownRunNote({
   run,
   latest,
@@ -222,7 +214,6 @@ function ShownRunNote({
 
 type BenchTab = "benchmark" | "quality" | "history";
 
-/** Train's sub-nav: underlined text tabs on the header rule. */
 function BenchSubNav({
   value,
   runCount,
@@ -281,8 +272,6 @@ function BenchSubNav({
   );
 }
 
-/** Layer counts (offload sweep) and context window (context sweep): the loaded model's from
- * status, a picked one's from its GGUF header. */
 function useModelShape(
   status: InferenceStatusResponse | null,
   model: string | null,
@@ -316,8 +305,6 @@ function useModelShape(
             contextLength: m.contextLength,
           });
       })
-      // A rejected header would otherwise leave the rows pending forever and Run stuck
-      // disabled; record it so the preview can surface it and offer a retry.
       .catch((err) =>
         cancelled
           ? undefined
@@ -332,8 +319,6 @@ function useModelShape(
     return {
       shape: p?.shape ?? null,
       contextLength: p?.contextLength ?? null,
-      // Keep Run blocked while the header is missing so the sweep can't build on the wrong
-      // shape; an error stops the wait so the retry control shows instead of a dead spinner.
       pending: !p && !error,
       error: p ? null : error,
       retry,
@@ -384,13 +369,11 @@ export function BenchmarksPage(): ReactElement {
     config.tuneModel ?? null,
     config.tuneVariant ?? null,
   );
-  // A picked model sweeps its own context window; while its header loads, fall back to chat's.
   const residentContext =
     status?.max_context_length ?? status?.native_context_length ?? null;
   const maxContext = config.tuneModel
     ? (pickedContext ?? residentContext)
     : residentContext;
-  // The offload rows are scaled to the model, so a new model or a late shape rebuilds them.
   const shapeKey = shape ? `${shape.layers}/${shape.moeLayers}` : "";
   const offloadSweep = config.sweep === "offload";
   useEffect(() => {
@@ -398,7 +381,6 @@ export function BenchmarksPage(): ReactElement {
       choosePreset("offload", maxContext, shape);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the shape's value
   }, [offloadSweep, shapeKey]);
-  // Context rows are scaled to the model's window, so a new model or a late header rebuilds them.
   const contextSweep = config.sweep === "context";
   useEffect(() => {
     if (contextSweep && !live && maxContext)
@@ -406,11 +388,8 @@ export function BenchmarksPage(): ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the resolved window
   }, [contextSweep, maxContext]);
   const [tab, setTab] = useState<BenchTab>("benchmark");
-  // The Evals tab's model pick lives up here because its picker sits in this header,
-  // in the same slot the config-sweep picker uses.
   const evals = useEvalsModel();
   const resultsRef = useRef<HTMLDivElement | null>(null);
-  // Switching tabs keeps the scroll, and below 72rem the chart sits above the preview, so bring it up.
   const showResults = useCallback(() => {
     setTab("benchmark");
     window.requestAnimationFrame(() =>
@@ -422,14 +401,12 @@ export function BenchmarksPage(): ReactElement {
     if (!runsLoaded) void refreshRuns();
   }, [runsLoaded, refreshRuns]);
 
-  // The newest run stands in until one is picked; its measurements are fetched on demand.
   const shownId = selectedRunId ?? runs[0]?.id ?? null;
   useEffect(() => {
     if (shownId && !loaded[shownId]) void selectRun(shownId);
   }, [shownId, loaded, selectRun]);
   const shown = live ? live.run : shownId ? (loaded[shownId] ?? null) : null;
   const latestId = runs[0]?.id ?? null;
-  // What Run would measure now, named when it isn't what the chart shows.
   const nextModel = modelShort(config.tuneModel ?? status?.active_model ?? "");
   const changed =
     !shown || live
@@ -440,12 +417,7 @@ export function BenchmarksPage(): ReactElement {
           ? nextModel
           : null;
 
-  // Offload and context rows are scaled to the picked model; block Run until its header
-  // resolves so the sweep can't start on the resident model's shape or window.
   const rowsPending = pickedPending && (offloadSweep || contextSweep);
-  // A picked model whose header resolved without a context window would otherwise fall back
-  // to the resident model's window (maxContext above), building the context rows for the
-  // wrong model. Block Run and offer a retry instead.
   const pickedContextMissing =
     Boolean(config.tuneModel) &&
     contextSweep &&

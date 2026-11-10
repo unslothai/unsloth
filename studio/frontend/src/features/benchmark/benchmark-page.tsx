@@ -40,23 +40,17 @@ import {
 } from "./stores/benchmark-runtime-store";
 import { useChatRuntimeStore } from "@/features/chat";
 
-/** The Evals tab of the Benchmarks page: lm-eval tasks on a picked model. The model
- * itself is picked in the header pill next to the tabs (EvalsModelPicker), so the
- * selection state arrives via the `evals` bundle BenchmarksPage owns. */
 export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
   const t = useT();
   const hfToken = useHfTokenStore((s) => s.token);
 
   const [batchSize, setBatchSize] = useState(0); // 0 = auto
   const [numFewshot, setNumFewshot] = useState(0);
-  // The user set the few-shot count for this task, so the task's default does not replace it.
   const fewshotPickedRef = useRef(false);
   const [maxTokens, setMaxTokens] = useState(32768);
 
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
 
-  // A pick made in the header pill closes a stale run panel: the results below it
-  // belong to the model that was picked before.
   const pickedModelRef = useRef<string | null>(evals.selectedModel);
   useEffect(() => {
     if (pickedModelRef.current !== evals.selectedModel) {
@@ -71,7 +65,6 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
   const [taskConfig, setTaskConfig] = useState<BenchmarkTaskConfig | null>(null);
   const fewshotSupported = taskConfig?.num_fewshot !== 0;
 
-  // Fetch task config when selected task changes
   useEffect(() => {
     let cancelled = false;
     setTaskConfig(null);
@@ -80,7 +73,6 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
       .then((cfg) => {
         if (!cancelled) {
           setTaskConfig(cfg);
-          // The task's own default, 0 included: a count kept from the last task would be sent as a pick.
           if (!fewshotPickedRef.current) setNumFewshot(cfg.num_fewshot ?? 0);
         }
       })
@@ -111,7 +103,6 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
         }
       })
       .catch(() => {
-        // silently ignore — the dropdown will just be empty
       })
       .finally(() => {
         if (!cancelled) setLoadingTasks(false);
@@ -123,7 +114,6 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
 
   const debouncedTaskSearch = useDebouncedValue(taskSearch, 150);
 
-  // Pre-compute lowercased lookup and curated/non-curated split (stable across searches)
   const taskIndex = useMemo(() => {
     const curated = new Set([
       "mmlu", "mmlu_pro", "gpqa_main_cot_zeroshot", "hellaswag",
@@ -162,7 +152,6 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
         contains.push(id);
       }
     }
-    // Also search curated tasks
     for (const id of taskIndex.curatedIds) {
       const lowerId = id.toLowerCase();
       const matchesAll = words.every((w) => lowerId.includes(w));

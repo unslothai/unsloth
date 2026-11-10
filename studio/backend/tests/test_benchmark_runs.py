@@ -108,7 +108,6 @@ def test_list_is_newest_first_without_results_and_counts_measured_runs_only():
     runs = db.list_runs()
     assert [r["id"] for r in runs] == ["newer", "older"]
     assert "results" not in runs[0]
-    # One warm-up and one measured run were saved; only the measured one counts.
     assert runs[1]["resultCount"] == 1
 
 
@@ -125,7 +124,6 @@ def test_list_carries_each_rows_measured_mean():
     )
     [run] = db.list_runs()
     assert run["resultCount"] == 3
-    # The warm-up's 5.0 stays out of the mean.
     assert run["rowMeans"] == {"Speculation off": 31.0, "MTP 3": 42.0}
 
 
@@ -181,7 +179,6 @@ def test_api_key_caller_gets_host_paths_redacted_ui_caller_does_not():
     assert listed[0]["config"]["tuneModel"].startswith("ref:")
     one = api.get("/api/benchmarks/runs/run-1").json()
     assert one["model"].startswith("ref:")
-    # The sweep config's other fields survive the redaction untouched.
     assert one["config"]["sweep"] == "draft"
 
 
@@ -198,12 +195,10 @@ def test_a_second_runner_is_refused_until_the_first_lets_go(monkeypatch):
     first = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
     second = {"holder": "tab-bbbbbbbb", "kind": "sweep"}
     assert client.post("/api/benchmarks/lease", json = first).status_code == 200
-    # Renewing your own lease is fine; anyone else is told what holds it.
     assert client.post("/api/benchmarks/lease", json = first).status_code == 200
     refused = client.post("/api/benchmarks/lease", json = second)
     assert refused.status_code == 409
     assert refused.json()["detail"]["error"] == "benchmark_running"
-    # Only the holder can release it.
     client.delete("/api/benchmarks/lease", params = {"holder": second["holder"]})
     assert client.post("/api/benchmarks/lease", json = second).status_code == 409
     client.delete("/api/benchmarks/lease", params = {"holder": first["holder"]})
@@ -238,7 +233,6 @@ def test_other_traffic_during_a_sweep_is_counted_on_its_lease(monkeypatch):
     client.post("/v1/chat/completions", headers = {"X-Unsloth-Bench-Lease": mine["holder"]})
     client.post("/v1/chat/completions")
     client.post("/v1/chat/completions", headers = {"X-Unsloth-Bench-Lease": "tab-bbbbbbbb"})
-    # Renewing keeps the count; a new holder starts from zero.
     assert client.post("/api/benchmarks/lease", json = mine).json()["outside"] == 2
     client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
     other = {"holder": "tab-cccccccc", "kind": "sweep"}
@@ -270,13 +264,11 @@ def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
         TestClient(app).post("/api/inference/load").status_code == 200
     )  # the route's auth decides
     client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
-    # Only sweeps fence loads: llama-bench and Evals manage the server themselves.
     client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"})
     assert client.post("/api/inference/load").status_code == 200
 
 
 def test_a_held_out_scoring_refuses_loads_until_it_ends(monkeypatch):
-    # It scores whatever model is loaded, so a swap mid-run would answer later rows with another one.
     monkeypatch.setattr(benchmarks_routes, "_lease", None)
     app = FastAPI()
     app.post("/api/inference/load")(lambda: {"ok": True})
@@ -311,7 +303,6 @@ def test_a_held_out_scoring_refuses_every_load_path_a_chat_switch_included():
 
     from routes import inference
 
-    # A chat request naming another model switches through _load_model_impl, not the load route.
     with hold.scoring_hold():
         with pytest.raises(HTTPException) as refused:
             asyncio.run(inference._load_model_impl(object(), None, "unsloth"))
@@ -349,7 +340,6 @@ def test_an_eval_cannot_start_under_a_running_sweep(monkeypatch):
     with pytest.raises(benchmarks_routes.SweepRunningError):
         with hold.scoring_hold():
             pass
-    # The sweep keeps the server: its own loads and its renewal still go through.
     own = {"X-Unsloth-Bench-Lease": sweep["holder"]}
     assert client.post("/api/inference/load", headers = own).status_code == 200
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
