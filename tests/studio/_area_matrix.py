@@ -74,12 +74,12 @@ TIME_LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_RATIO", 
 # LONG_THREAD_AREAS_LENGTH_TIME_BLOCKING=0 to report only.
 LENGTH_TIME_BLOCKING = os.environ.get("LONG_THREAD_AREAS_LENGTH_TIME_BLOCKING", "1") == "1"
 TIME_LENGTH_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_FLOOR_MS", "50"))
-# Main-thread CPU also has to grow by this much. Message-level actions (tool / reasoning toggles, message
-# menu and click) and a few sidebar surfaces read 2.3-2.6x after rechecks on 2-core GitHub runners (4 gate
-# runs: worst +137 ms), so a ratio alone has no margin there; a feature adding real per-interaction work
-# over the thread (the synthetic menu-open walk: about +1 s) is far above it.
+# Main-thread CPU also has to grow by this much. On 2-core GitHub runners (10 gate runs, rechecked) message-level
+# actions and a few sidebar surfaces read 2.3-2.9x, up to +175 ms (sidebar_toggle 119 -> 294, tools_menu
+# 99 -> 269), so a ratio alone has no margin there; a feature adding real per-interaction work over the
+# thread (the synthetic menu-open walk: about +1 s) is far above this.
 TIME_LENGTH_CPU_FLOOR_MS = float(
-    os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_CPU_FLOOR_MS", "200")
+    os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_CPU_FLOOR_MS", "250")
 )
 TIME_BASE_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_BASE_FLOOR_MS", "20"))
 MAX_RATIO = float(os.environ.get("LONG_THREAD_AREAS_MAX_RATIO", "4.0"))

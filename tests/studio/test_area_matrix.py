@@ -675,7 +675,7 @@ def test_cpu_length_growth_needs_the_cpu_floor_as_well_as_the_ratio(length_block
             if v["kind"] == "length" and v["metric"] in ("main_ms", "paint_ms")
         }
 
-    assert am.length_floor_ms("main_ms") == am.TIME_LENGTH_CPU_FLOOR_MS == 200
+    assert am.length_floor_ms("main_ms") == am.TIME_LENGTH_CPU_FLOOR_MS == 250
     assert am.length_floor_ms("paint_ms") == am.TIME_LENGTH_FLOOR_MS == 50
     assert rows(51, 132) == {"main_ms": False, "paint_ms": True}
     # The synthetic per-message walk on a menu open: about +1 s at 200 turns.
