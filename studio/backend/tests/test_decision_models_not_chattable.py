@@ -24,6 +24,7 @@ if "structlog" not in sys.modules:
 
 import routes.inference as inference_route
 import routes.models as models_route
+from utils.account_context import AccountContext, arun_as, run_as
 from utils.hidden_models import is_hidden_model
 
 CLEF_GGUF = "ggml-org/Clef-Flash-GGUF"
@@ -106,6 +107,7 @@ def _cache_repo(hub, repo_id, files):
         blob = repo / "blobs" / f"blob{index}"
         blob.write_bytes(data)
         (snapshot / name).symlink_to(f"../../blobs/blob{index}")
+    return snapshot
 
 
 def test_model_hub_and_train_keep_decision_api_downloads_as_non_chat_rows(tmp_path):
@@ -184,6 +186,7 @@ def test_a_chat_model_still_loads(monkeypatch, model_path):
 # Decision models that are not built-in repos: Studio's own decision runs, a downloaded one in outputs, a
 # third-party one in the HF cache. Only their files say what they are.
 THIRD_PARTY_CLEF = "someone/clef-finetune"
+ALICE = AccountContext("a" * 32, "alice")
 _QWEN3_CONFIG = b'{"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}'
 CHAT_FILES = {"config.json": _QWEN3_CONFIG, "model.safetensors": b"\x00" * 4096}
 CLEF_FILES = {
@@ -210,6 +213,25 @@ def _write(folder, files):
         (folder / name).parent.mkdir(parents = True, exist_ok = True)
         (folder / name).write_bytes(data)
     return folder
+
+
+class _LoadStarted(Exception):
+    """The load got past _load_model_impl's checks."""
+
+
+def _patch_load_past_the_checks(monkeypatch):
+    """load_model_gated and _load_model_impl run for real; the first load step after the impl's checks raises."""
+    real_tracked_impl = inference_route._run_tracked_load_model_impl
+    _patch_load(monkeypatch)
+    monkeypatch.setattr(inference_route, "_run_tracked_load_model_impl", real_tracked_impl)
+    started = []
+
+    def _start(model_ref):
+        started.append(model_ref)
+        raise _LoadStarted(model_ref)
+
+    monkeypatch.setattr(inference_route, "_repo_is_in_the_hub_cache", _start)
+    return started
 
 
 def test_decision_runs_in_outputs_are_flagged_in_the_fine_tune_list():
@@ -246,18 +268,19 @@ def test_only_a_chat_fine_tune_in_outputs_loads_as_chat(monkeypatch, files, refu
     from utils.paths import outputs_root
 
     folder = _write(outputs_root() / "run", files)
-    loaded = _patch_load(monkeypatch)
+    started = _patch_load_past_the_checks(monkeypatch)
     request = inference_route.LoadRequest(model_path = str(folder))
 
     if not refused:
-        asyncio.run(inference_route.load_model_gated(request, object(), "test"))
-        assert loaded == [str(folder)]
+        with pytest.raises(_LoadStarted):
+            asyncio.run(inference_route.load_model_gated(request, object(), "test"))
+        assert started == [str(folder)]
         return
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.load_model_gated(request, object(), "test"))
     assert exc.value.status_code == 400
     assert "Decision API" in exc.value.detail
-    assert loaded == []
+    assert started == []
 
 
 def test_a_cached_third_party_decision_repo_is_a_non_chat_row(tmp_path):
@@ -297,7 +320,7 @@ def test_loading_a_cached_third_party_decision_repo_as_chat_is_refused(monkeypat
     _cache_repo(tmp_path, THIRD_PARTY_CLEF, CLEF_FILES)
     _cache_repo(tmp_path, "unsloth/Qwen3-0.6B", CHAT_FILES)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    loaded = _patch_load(monkeypatch)
+    started = _patch_load_past_the_checks(monkeypatch)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
@@ -305,12 +328,140 @@ def test_loading_a_cached_third_party_decision_repo_as_chat_is_refused(monkeypat
                 inference_route.LoadRequest(model_path = THIRD_PARTY_CLEF), object(), "test"
             )
         )
-    asyncio.run(
-        inference_route.load_model_gated(
-            inference_route.LoadRequest(model_path = "unsloth/Qwen3-0.6B"), object(), "test"
+    # Auto-switch and preview call the impl directly.
+    with pytest.raises(HTTPException) as direct:
+        asyncio.run(
+            inference_route._load_model_impl(
+                inference_route.LoadRequest(model_path = THIRD_PARTY_CLEF), None, "test"
+            )
         )
+    with pytest.raises(_LoadStarted):
+        asyncio.run(
+            inference_route.load_model_gated(
+                inference_route.LoadRequest(model_path = "unsloth/Qwen3-0.6B"), object(), "test"
+            )
+        )
+
+    assert exc.value.status_code == direct.value.status_code == 400
+    assert "Decision API" in exc.value.detail
+    assert started == ["unsloth/Qwen3-0.6B"]
+
+
+def test_a_managed_account_without_a_token_cannot_load_a_cached_decision_repo_as_chat(
+    monkeypatch, tmp_path
+):
+    from hub.services.models import account_access
+
+    _cache_repo(tmp_path, THIRD_PARTY_CLEF, CLEF_FILES)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    checked = []
+    monkeypatch.setattr(
+        account_access, "require_model_access", lambda reference, *a, **k: checked.append(reference)
+    )
+    started = _patch_load_past_the_checks(monkeypatch)
+    request = inference_route.LoadRequest(model_path = THIRD_PARTY_CLEF)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(arun_as(ALICE, inference_route._load_model_impl(request, None, "alice")))
+
+    # The access check runs first; its token is the anonymous sentinel, which alone would not read the cache.
+    assert checked == [THIRD_PARTY_CLEF]
+    assert exc.value.status_code == 400
+    assert started == []
+
+
+def test_a_layout_check_that_raises_never_fails_a_load(monkeypatch, tmp_path):
+    # Path.is_file() raises PermissionError or ENAMETOOLONG for some paths; the load goes on and reports its own error.
+    from utils.models import model_config
+
+    folder = _write(tmp_path / "run", CHAT_FILES)
+    checked = []
+
+    def _raises(model_name, *_args, **_kwargs):
+        checked.append(model_name)
+        raise PermissionError(13, "Permission denied", model_name)
+
+    monkeypatch.setattr(model_config, "is_decision_model", _raises)
+    started = _patch_load_past_the_checks(monkeypatch)
+
+    with pytest.raises(_LoadStarted):
+        asyncio.run(
+            inference_route.load_model_gated(
+                inference_route.LoadRequest(model_path = str(folder)), object(), "test"
+            )
+        )
+
+    assert checked == [str(folder)]
+    assert started == [str(folder)]
+
+
+def test_a_fifo_named_config_json_in_the_cache_does_not_block_the_hidden_model_list(
+    monkeypatch, tmp_path
+):
+    """read_text() on a FIFO with no writer blocks forever, and the chat picker waits on this list."""
+    import os
+    import threading
+
+    from huggingface_hub import scan_cache_dir
+
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no mkfifo on this platform")
+    _cache_repo(tmp_path, THIRD_PARTY_CLEF, CLEF_FILES)
+    odd_repo = _cache_repo(tmp_path, "someone/odd-repo", {"model.safetensors": b"\x00" * 16})
+    fifo = odd_repo / "config.json"
+    os.mkfifo(fifo)
+    scans = [scan_cache_dir(tmp_path)]
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: scans)
+    result = {}
+    worker = threading.Thread(
+        target = lambda: result.update(ids = models_route.hidden_model_matchers()[1]), daemon = True
     )
 
-    assert exc.value.status_code == 400
-    assert "Decision API" in exc.value.detail
-    assert loaded == ["unsloth/Qwen3-0.6B"]
+    worker.start()
+    worker.join(10)
+    blocked = worker.is_alive()
+    if blocked:
+        try:  # a writer's EOF lets the blocked read return
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError:
+            pass
+        worker.join(10)
+
+    assert not blocked
+    assert THIRD_PARTY_CLEF in result["ids"]
+    assert "someone/odd-repo" not in result["ids"]
+
+
+def test_a_managed_account_is_not_told_which_decision_repos_the_shared_cache_holds(
+    monkeypatch, tmp_path
+):
+    from huggingface_hub import scan_cache_dir
+
+    _cache_repo(tmp_path, THIRD_PARTY_CLEF, CLEF_FILES)
+    scans = [scan_cache_dir(tmp_path)]
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: scans)
+
+    owner_ids = models_route.hidden_model_matchers()[1]
+    managed_ids = run_as(ALICE, lambda: models_route.hidden_model_matchers()[1])
+
+    assert THIRD_PARTY_CLEF in owner_ids
+    assert THIRD_PARTY_CLEF not in managed_ids
+    # The built-in ids name no one's cache, so every account still gets them.
+    assert "cloudflare/clef-flash" in managed_ids
+
+
+def test_auto_switch_and_v1_models_do_not_serve_a_cached_clef(monkeypatch, tmp_path):
+    from core.inference import local_model_resolver as resolver
+
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+
+    def servable(repo_id, files):
+        snapshot = _cache_repo(tmp_path, repo_id, files)
+        info = SimpleNamespace(
+            id = repo_id, model_id = repo_id, display_name = None, path = str(snapshot), partial = False
+        )
+        return resolver.local_servable_model(info)
+
+    # Its backbone config says Qwen3ForCausalLM, which alone reads as a chat model.
+    assert servable(THIRD_PARTY_CLEF, CLEF_FILES) is None
+    assert servable("unsloth/Qwen3-0.6B", CHAT_FILES) is not None

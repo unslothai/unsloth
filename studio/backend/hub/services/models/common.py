@@ -311,12 +311,17 @@ def _read_local_json_object(path: Path) -> dict:
         return {}
 
 
-def _is_decision_folder(path: str | Path) -> bool:
-    """A Decision API model folder (Clef or Laya). Never raises, so one odd config.json cannot fail a scan."""
+def _is_decision_folder(path: str | Path, hf_token: Optional[str] = None) -> bool:
+    """A Decision API model (Clef or Laya) by its files: a folder, or a repo id's cached snapshot. Never raises, so
+    one odd folder cannot fail a scan or a load."""
     from utils.models.model_config import is_decision_model
     try:
-        return is_decision_model(str(path), local_files_only = True)
-    except Exception:  # noqa: BLE001 -- inconclusive is not a decision model
+        # The d1 marker test reads config.json, and that read blocks forever on a FIFO.
+        config = Path(path) / "config.json"
+        if config.exists() and not config.is_file():
+            return False
+        return is_decision_model(str(path), hf_token, local_files_only = True)
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
         return False
 
 
