@@ -896,3 +896,32 @@ def test_the_h3_video_release_and_its_folders_stay_video(tmp_path):
     )
     assert not vf.is_minimax_h3_image_folder(str(root))
     assert vf.detect_video_family(str(root)).name == "minimax-h3"
+
+
+def test_the_hosted_files_conditioning_path_runs_dense(h3i, monkeypatch):
+    import torch
+
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_quant_pad import is_quantized_linear
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+
+    torch.manual_seed(0)
+    model = torch.nn.Module()
+    model.context_embedder = torch.nn.Linear(256, 64)
+    model.token_refiner = torch.nn.Module()
+    model.token_refiner.refiner_blocks = torch.nn.ModuleList([torch.nn.Linear(256, 256)])
+    model.transformer_blocks = torch.nn.ModuleList([torch.nn.Linear(256, 256)])
+    model.to(torch.bfloat16)
+    quantize_(model, _make_quant_config("int8"))
+    want = model.context_embedder.weight.dequantize().to(torch.bfloat16)
+    monkeypatch.setenv(h3i.QUANT_CONDITIONING_ENV, "1")
+    assert h3i.densify_conditioning_path(model) == 0
+    monkeypatch.delenv(h3i.QUANT_CONDITIONING_ENV)
+    assert h3i.densify_conditioning_path(model) == 2
+    assert not is_quantized_linear(model.context_embedder)
+    assert not is_quantized_linear(model.token_refiner.refiner_blocks[0])
+    assert torch.equal(model.context_embedder.weight, want)
+    # The denoiser blocks keep their quantized weights.
+    assert is_quantized_linear(model.transformer_blocks[0])

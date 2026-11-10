@@ -1941,6 +1941,39 @@ def native_config_transformer_class() -> Any:
     return MiniMaxH3ImageNativeConfigTransformer
 
 
+# The hosted files also quantize the text-conditioning path (context_embedder and the two token_refiner blocks), which
+# the on-the-fly path keeps bf16: per-row dynamic activation quantization of the prompt embeddings moves the
+# conditioning every block reads. "1" keeps them quantized (A/B only).
+QUANT_CONDITIONING_ENV = "UNSLOTH_H3_IMAGE_QUANT_CONDITIONING"
+CONDITIONING_PREFIXES = ("context_embedder", "token_refiner.")
+
+
+def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
+    """Replace the quantized weights of the text-conditioning Linears with their dequantized copies (bf16), so the
+    prompt embeddings are never activation-quantized. Rotated (ConvRot) Linears keep rotating the activation: the
+    dequantized weight is the rotated one, so the product is unchanged. Returns the count."""
+    import torch
+
+    from .diffusion_quant_pad import is_quantized_linear
+
+    if os.environ.get(QUANT_CONDITIONING_ENV, "").strip() == "1":
+        return 0
+    dtype = dtype or torch.bfloat16
+    count = 0
+    for name, module in transformer.named_modules():
+        if not name.startswith(CONDITIONING_PREFIXES) or not isinstance(module, torch.nn.Linear):
+            continue
+        if not is_quantized_linear(module):
+            continue
+        weight = module.weight
+        dense = weight.dequantize() if hasattr(weight, "dequantize") else None
+        if dense is None:
+            continue
+        module.weight = torch.nn.Parameter(dense.to(dtype), requires_grad = False)
+        count += 1
+    return count
+
+
 def hosted_prequant_available(
     repo: str,
     filename: Optional[str],
@@ -2406,7 +2439,17 @@ def load_minimax_h3_image_pipeline(
         if transformer is not None:
             for block in transformer.transformer_blocks:
                 wrap_row_multiple(block, QUANT_LINEAR_SUFFIXES)
-            stats = {"layout": "hosted_prequant", "quantized_linears": 0, "bytes_read": 0}
+            densified = densify_conditioning_path(transformer, dtype)
+            logger.info(
+                "diffusion.minimax_h3_image: hosted DiT, text-conditioning path kept dense (%d Linears)",
+                densified,
+            )
+            stats = {
+                "layout": "hosted_prequant",
+                "quantized_linears": 0,
+                "bytes_read": 0,
+                "dense_conditioning_linears": densified,
+            }
     if transformer is None:
         root = _hub_files(
             repo_id,
