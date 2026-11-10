@@ -1377,10 +1377,22 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     """Nonce-free policies are memoized on every input the build reads (env, saved-only set, Colab)."""
     if script_nonce:
         return _build_csp_uncached(script_nonce, docs = docs)
-    from utils.hub_settings import SOURCE_ENV, saved_only_endpoints
+    key = _csp_key(docs)
+    policy = _CSP_CACHE.get(key)
+    if policy is None:
+        policy = _build_csp_uncached(None, docs = docs)
+        # A settings save in a worker thread can land mid-build; keep only a policy built from the key's inputs.
+        if _csp_key(docs) == key:
+            if len(_CSP_CACHE) >= 64:
+                _CSP_CACHE.clear()
+            _CSP_CACHE[key] = policy
+    return policy
 
+
+def _csp_key(docs: bool) -> tuple:
+    from utils.hub_settings import SOURCE_ENV, saved_only_endpoints
     environ = os.environ
-    key = (
+    return (
         docs,
         _IS_COLAB,
         environ.get("HF_ENDPOINT"),
@@ -1388,13 +1400,6 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
         environ.get(SOURCE_ENV),
         saved_only_endpoints(),
     )
-    policy = _CSP_CACHE.get(key)
-    if policy is None:
-        policy = _build_csp_uncached(None, docs = docs)
-        if len(_CSP_CACHE) >= 64:
-            _CSP_CACHE.clear()
-        _CSP_CACHE[key] = policy
-    return policy
 
 
 def _build_csp_uncached(script_nonce: "str | None" = None, *, docs: bool = False) -> str:

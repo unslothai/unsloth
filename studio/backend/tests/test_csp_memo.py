@@ -55,3 +55,19 @@ def test_nonce_policies_are_never_kept(monkeypatch, main_module):
     assert "'nonce-BBB'" in main_module._build_csp("BBB")
     assert len(calls) == 2
     assert main_module._CSP_CACHE == {}
+
+
+def test_a_settings_save_during_the_build_is_not_cached_under_the_old_key(monkeypatch, main_module):
+    original = main_module._build_csp_uncached
+
+    def build_while_a_save_lands(*args, **kwargs):
+        policy = original(*args, **kwargs)
+        monkeypatch.setenv("HF_ENDPOINT", "https://mirror.example.com")
+        return policy
+
+    monkeypatch.setattr(main_module, "_build_csp_uncached", build_while_a_save_lands)
+    main_module._build_csp()
+    monkeypatch.setattr(main_module, "_build_csp_uncached", original)
+    monkeypatch.delenv("HF_ENDPOINT")
+    assert main_module._CSP_CACHE == {}
+    assert main_module._build_csp() == original()
