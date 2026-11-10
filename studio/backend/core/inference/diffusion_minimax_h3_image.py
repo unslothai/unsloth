@@ -1099,7 +1099,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             for streamer in list(self._unsloth_h3_streamers):
                 if getattr(streamer, "_unsloth_role", None) == "text_encoder":
                     streamer.remove()
+                    streamer._host.clear()
                     self._unsloth_h3_streamers.remove(streamer)
+            free_module_storage(module)
             del module
             gc.collect()
             _empty_cache()
@@ -1112,8 +1114,12 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             streamer._host.clear()
         self._unsloth_h3_streamers.clear()
         self._unsloth_h3_te_loader = None
+        owned = getattr(self, "_unsloth_h3_owned", ())
         for name in ("transformer", "text_encoder", "vae"):
-            if getattr(self, name, None) is not None:
+            module = getattr(self, name, None)
+            if module is not None:
+                if name in owned:
+                    free_module_storage(module)
                 setattr(self, name, None)
         gc.collect()
         _empty_cache()
@@ -1459,6 +1465,39 @@ def _module_dtype(module: Any, skip_fp32: bool = False) -> Any:
         # torchao subclass weights report their logical dtype
         return p.dtype
     return torch.float32
+
+
+def _free_tensor_storage(tensor: Any) -> bool:
+    """Swap ``tensor`` in place for an empty one, so its storage goes even while some other object still holds the
+    tensor (plain tensors through ``.data``, torchao subclasses through ``swap_tensors``)."""
+    import torch
+
+    empty = torch.empty(0, dtype = tensor.dtype)
+    try:
+        if type(tensor) in (torch.Tensor, torch.nn.Parameter) and type(tensor.data) is torch.Tensor:
+            tensor.data = empty
+            return True
+        replacement = (
+            torch.nn.Parameter(empty, requires_grad = False)
+            if isinstance(tensor, torch.nn.Parameter) or type(tensor) is not torch.Tensor
+            else empty
+        )
+        torch.utils.swap_tensors(tensor, replacement)
+        return True
+    except Exception:  # noqa: BLE001 - teardown is best effort; dropping the module still frees an unshared tensor
+        return False
+
+
+def free_module_storage(module: Any) -> int:
+    """Empty every parameter and buffer of a component this pipeline owns, in place: an unload must not depend on
+    every outside reference (a retained frame, a cached closure) having let go of the module first."""
+    freed = 0
+    for sub in module.modules():
+        for table in (sub._parameters, sub._buffers):
+            for tensor in list(table.values()):
+                if tensor is not None and tensor.numel():
+                    freed += int(_free_tensor_storage(tensor))
+    return freed
 
 
 def _empty_cache() -> None:
@@ -2221,6 +2260,12 @@ def load_minimax_h3_image_pipeline(
     import torch
 
     t0 = time.perf_counter()
+    # What release() may empty in place: never a component the caller handed in.
+    owned = (
+        {"vae"}
+        | ({"transformer"} if transformer is None else set())
+        | ({"text_encoder"} if text_encoder is None else set())
+    )
     check = check_cancelled or (lambda: None)
     dtype = dtype or torch.bfloat16
     device = torch.device(device)
@@ -2347,6 +2392,7 @@ def load_minimax_h3_image_pipeline(
     )
     pipe._unsloth_h3_plan = plan
     pipe._unsloth_h3_device = str(device)
+    pipe._unsloth_h3_owned = frozenset(owned)
     if text_encoder is None:
         # Low-host tier: load the encoder for each prompt, free it after.
         def _te_loader() -> Any:

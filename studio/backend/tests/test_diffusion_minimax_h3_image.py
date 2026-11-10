@@ -627,7 +627,10 @@ def test_release_drops_components_and_hooks(h3i, release):
     root, _ref, te = release
     import copy
 
-    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = copy.deepcopy(te))
+    supplied = copy.deepcopy(te)
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = supplied)
+    assert p._unsloth_h3_owned == {"transformer", "vae"}
+    held_dit, held_vae = p.transformer, p.vae  # an outside reference that outlives the unload
     blocks = p.transformer.transformer_blocks
     p._unsloth_h3_streamers.append(h3i.ModuleListStreamer(blocks, "cpu", resident = 0))
     assert any(b._forward_pre_hooks for b in blocks)
@@ -635,6 +638,32 @@ def test_release_drops_components_and_hooks(h3i, release):
     assert p.transformer is None and p.text_encoder is None and p.vae is None
     assert not any(b._forward_pre_hooks for b in blocks)
     assert torch.is_tensor(next(blocks[0].parameters()))
+    # Owned components are emptied in place even while held; a supplied encoder is the caller's and stays intact.
+    assert all(t.numel() == 0 for t in [*held_dit.parameters(), *held_vae.parameters()])
+    assert all(
+        a.numel() and torch.equal(a, b) for a, b in zip(supplied.parameters(), te.parameters())
+    )
+
+
+def test_freeing_storage_reaches_quantized_weights(h3i):
+    import gc
+    import weakref
+
+    import torch
+
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+
+    block = torch.nn.Sequential(torch.nn.Linear(256, 64)).to(torch.bfloat16)
+    quantize_(block, _make_quant_config("int8"))
+    weight = block[0].weight
+    inner = [weakref.ref(getattr(weight, n)) for n in weight.__tensor_flatten__()[0]]
+    assert h3i.free_module_storage(block) == 2
+    gc.collect()
+    assert weight.numel() == 0 and block[0].bias.numel() == 0
+    assert all(ref() is None for ref in inner)
 
 
 def test_int8_linears_pad_rows_to_the_supported_multiple_exactly(h3i):
