@@ -303,3 +303,42 @@ def test_a_larger_reference_resolution_is_priced_past_the_default_placement(q21)
 def test_generate_prices_the_reference_with_the_shared_helper():
     src = (pathlib.Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert "guard_reference_pixels = reference_request_pixels(" in src
+
+
+def _static_release(pipe, plan):
+    pipe._unsloth_measured_reserve = _reserve(plan)
+    need = dm.load_covered_reference_need_mib(
+        pipe, width = 1024, height = 1024, batch_size = 1, reference_pixels = REF, cfg = False
+    )
+    return dm.static_reference_release_mib(pipe, need)
+
+
+def test_the_live_trim_applies_when_the_token_estimate_set_the_release(q21):
+    plan = _refine(q21, _plan(13407, 16376))
+    assert _static_release(q21, plan) == _edit_extra(q21, plan) > 0
+
+
+def test_a_learned_edit_peak_keeps_the_planned_release_whole(q21, monkeypatch):
+    # a learned edit peak above the token estimate raises the planned release; the live trim must not undercut it
+    plan = _refine(q21, _plan(13407, 16376))
+    static = _static_release(q21, plan)
+    q21._unsloth_peak_identity = ("qwen-image-2.1", "int8", "default")
+    real = dm.measured_image_runtime_mib
+
+    def learned(
+        family,
+        speed_mode,
+        quant = None,
+        **kw,
+    ):
+        if quant and "edit" in str(quant):
+            return 12000
+        return real(family, speed_mode, quant = quant, **kw)
+
+    monkeypatch.setattr(dm, "measured_image_runtime_mib", learned)
+    assert _edit_extra(q21, plan) > static
+    src = (pathlib.Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    trim = src[src.index("reference_need = load_covered_reference_need_mib(") :]
+    trim = trim[: trim.index("extra_mib = short")]
+    assert "static_reference_release_mib(state.pipe, reference_need)" in trim
+    assert "extra_mib <= static_release" in trim

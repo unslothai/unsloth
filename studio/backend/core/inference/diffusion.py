@@ -277,6 +277,7 @@ from .diffusion_memory import (
     resident_group_mib,
     hook_resident_denoiser,
     live_reference_shortfall_mib,
+    static_reference_release_mib,
     load_covered_reference_need_mib,
     measured_request_extra_mib,
     DECODE_LEND_ATTR,
@@ -15162,7 +15163,13 @@ class DiffusionBackend:
                             cfg = guard_cfg,
                             quadratic_attention = guard_quadratic,
                         )
-                        if reference_need is not None:
+                        static_release = (
+                            None
+                            if reference_need is None
+                            else static_reference_release_mib(state.pipe, reference_need)
+                        )
+                        # a learned or tier peak raised the planned release past the token estimate: keep it whole
+                        if static_release is not None and extra_mib <= static_release:
                             short = live_reference_shortfall_mib(
                                 state.pipe, reference_need, guard_target.torch_device
                             )

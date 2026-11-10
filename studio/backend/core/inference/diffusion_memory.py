@@ -6323,6 +6323,17 @@ def load_covered_reference_need_mib(
     )
 
 
+def static_reference_release_mib(pipe: Any, need_mib: int) -> Optional[int]:
+    """The release ``measured_request_extra_mib`` derives from ``need_mib`` alone (no learned or tier peak), or None."""
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None)
+    if not reserve or len(reserve) <= MEASURED_RESERVE_REFERENCE_INDEX:
+        return None
+    covered = reserve[MEASURED_RESERVE_REFERENCE_INDEX]
+    if not covered:
+        return None
+    return max(0, int(need_mib) - max(int(reserve[0]), int(covered[1])))
+
+
 def live_reference_shortfall_mib(
     pipe: Any,
     need_mib: int,
