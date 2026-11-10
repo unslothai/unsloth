@@ -84,6 +84,11 @@ async def finetune(ctx: NodeContext) -> dict:
     if not isinstance(dataset, dict) or dataset.get("kind") != "dataset":
         raise FlowNodeError("Fine-tune needs a dataset")
     params = ctx.params
+    # A flow saved with GRPO, DPO or ORPO would otherwise train SFT on a dataset shaped for another objective.
+    if str(params.get("objective") or "sft") != "sft":
+        raise FlowNodeError(
+            "This Fine-tune block was set to GRPO, DPO or ORPO, which Flows does not train; set it up again for SFT"
+        )
     config: dict[str, Any] = {
         "model_name": str(params.get("base_model") or "").strip(),
         "format_type": str(params.get("format_type") or "auto"),
