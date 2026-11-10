@@ -630,12 +630,16 @@ def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
     return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
 
 
+# Older builds register --auto-fit as a bare boolean, so "--auto-fit off" fails as "unknown argument: off".
+_AUTO_FIT_ON_OFF = re.compile(r"--auto-fit\s+on\|off")
+
+
 def _layer_split_supported(binary: Optional[str]) -> bool:
     """Whether ``binary`` takes a per-device ``--max-vram`` and ``--auto-fit off`` (a two-card block split)."""
     if not binary:
         return False
     text = _sd_cpp_probe_output(binary, "--help")
-    return text is not None and "--max-vram" in text and "--auto-fit" in text
+    return text is not None and "--max-vram" in text and _AUTO_FIT_ON_OFF.search(text) is not None
 
 
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
