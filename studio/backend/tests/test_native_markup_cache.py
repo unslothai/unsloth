@@ -29,7 +29,8 @@ class _Tok:
     def get_vocab(self):
         return {token: i for i, token in enumerate(self.vocab)}
 
-    def __len__(self):
+    @property
+    def vocab_size(self):
         return len(self.vocab)
 
 
