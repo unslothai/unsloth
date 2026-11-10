@@ -39083,7 +39083,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
             body["input"] = inputs
             resp = await upstream.post(body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
-    # A full parse holds the GIL ~1 s for wide batches even in a thread: the monitor alone reads only the tail's usage.
+    # A full parse holds the GIL even in a thread; the monitor alone needs only the tail's usage.
     data = None
     if resp.status_code == 200 and monitor_id and dimensions is None:
         usage = _embedding_tail_usage(resp.content)

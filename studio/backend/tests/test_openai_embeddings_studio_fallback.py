@@ -1755,7 +1755,6 @@ def test_gguf_proxy_parses_once_off_the_loop_for_monitor_and_dimensions(studio_e
     request = _Request({"input": "alpha", "dimensions": 4})
     request.state.skip_api_monitor = False
     if upstream.startswith(b"{not"):
-        # Unparseable 200: dimensions cannot be confirmed, the monitor is skipped, as before.
         assert _http_error_for(request).status_code == 400
         assert seen == [] and monitor.calls[0][0] == "fail"
     else:
@@ -1812,10 +1811,8 @@ _ROWS = [{"embedding": [0.25] * 4, "index": 0, "object": "embedding"}]
 @pytest.mark.parametrize(
     "upstream, full_parses",
     [
-        # llama-server's sorted keys: usage is read from the tail, the rows are never parsed.
         (json.dumps({"data": _ROWS, "model": "m", "object": "list", "usage": _USAGE}), 0),
         (json.dumps({"data": _ROWS, "model": '"usage": {}', "usage": _USAGE}, indent = 2), 0),
-        # Anything else falls back to the one full parse.
         (json.dumps({"usage": _USAGE, "data": _ROWS}), 1),
         (json.dumps({"data": _ROWS, "x": {"usage": _USAGE}}), 1),
         (json.dumps({"data": _ROWS}), 1),
