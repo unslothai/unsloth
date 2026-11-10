@@ -334,7 +334,7 @@ _QWENIMAGE_RDNA_AUTO_W8A8 = (
     "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
     "LPIPS 0.014"
 )
-# FLUX.3 renders black in float16, so fp16-only cards run it in float32; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
+# FLUX.3 renders black in plain float16; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
 _FLUX3_FP16_INCOMPATIBLE = (
     os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16") or ""
 ).strip().lower() not in (
@@ -342,6 +342,13 @@ _FLUX3_FP16_INCOMPATIBLE = (
     "on",
     "true",
     "yes",
+)
+# fp16 cards keep FLUX.3 in fp16 via the residual rescale; UNSLOTH_STUDIO_FLUX3_FP16_GUARD=0 promotes to fp32.
+_FLUX3_FP16_GUARD = (
+    None
+    if (os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16_GUARD") or "").strip().lower()
+    in ("0", "off", "false", "no")
+    else "rescale_residual"
 )
 # FLUX.3 Klein transformer-quant keep-list, every scheme (FamilyProfile.quant_exclude_tokens).
 _FLUX3_QUANT_KEEP = (
@@ -652,6 +659,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.3-klein-base",
         comfy_shift_node = "flux",
         fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
+        fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
@@ -711,6 +719,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.3-klein",
         comfy_shift_node = "flux",
         fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
+        fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
