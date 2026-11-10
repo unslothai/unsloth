@@ -320,7 +320,7 @@ function CardResizer({
   );
 }
 
-function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
+function FlowNodeViewImpl({ id, width }: NodeProps<RfNode>) {
   const [resizing, setResizing] = useState(false);
   const node = useDocStore((s) => s.graph.nodes[id]);
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
@@ -332,13 +332,15 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
   const lowDetail = useStore(lowDetailSelector);
   const cardRef = useRef<HTMLDivElement>(null);
   const [contentMin, setContentMin] = useState(0);
-  // Re-measured each render: an error or a new field row grows the floor without resizing the card.
+  // Re-measured when the content or the width changes: an error or a new field row grows the floor
+  // without resizing the card. Not on a drag frame or a selection, which would force a layout.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the deps are what the card's content reads
   useLayoutEffect(() => {
     const card = cardRef.current;
     if (!card) return;
     const next = cardContentMinHeight(card);
     if (next !== contentMin) setContentMin(next);
-  });
+  }, [node, spec, category, runtime, lowDetail, resizing, width, contentMin]);
   if (!node) return null;
   if (!spec) {
     return (

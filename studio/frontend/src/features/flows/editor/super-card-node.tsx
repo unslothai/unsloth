@@ -13,7 +13,7 @@ import {
   useStore,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import { memo, useCallback, useEffect, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
@@ -64,6 +64,13 @@ function SuperCardViewImpl({ id, data }: NodeProps<RfNode>) {
     useShallow((s) => rollUpStatus(memberIds.map((id) => s.nodes[id]?.status))),
   );
   const lowDetail = useStore(lowDetailSelector);
+  const open = useCallback(
+    (event: { stopPropagation: () => void }) => {
+      event.stopPropagation();
+      setSuperCardOpen(cardId, true);
+    },
+    [cardId],
+  );
   const steps = memberIds.length;
   const progress =
     rollup.status === "running" && rollup.total > 1
@@ -79,10 +86,7 @@ function SuperCardViewImpl({ id, data }: NodeProps<RfNode>) {
       lowDetail={lowDetail}
       className="w-72"
       data-super-card={cardId}
-      onDoubleClick={(event) => {
-        event.stopPropagation();
-        setSuperCardOpen(cardId, true);
-      }}
+      onDoubleClick={open}
     >
       <NodeCardHeader
         icon={Layers01Icon}
@@ -101,10 +105,7 @@ function SuperCardViewImpl({ id, data }: NodeProps<RfNode>) {
           title="Open (double-click)"
           aria-label="Open super card"
           data-testid="super-card-open"
-          onClick={(event) => {
-            event.stopPropagation();
-            setSuperCardOpen(cardId, true);
-          }}
+          onClick={open}
         >
           <HugeiconsIcon icon={ArrowExpand01Icon} size={12} />
         </Button>
@@ -329,11 +330,22 @@ export function useSuperCardView(
   const specs = useCatalogStore((s) => s.specs);
   const portColors = useCatalogStore((s) => s.catalog?.port_colors);
   const cards = useMemo(() => readSuperCards(editor, graph), [editor, graph]);
-  return useMemo(
-    () =>
-      applySuperCards(nodes, edges, graph, cards, specs, portColors, selected, (id) =>
-        sizes.get(id),
-      ),
-    [nodes, edges, graph, cards, specs, portColors, selected, sizes],
-  );
+  const previous = useRef<Map<string, RfNode>>(new Map());
+  return useMemo(() => {
+    const view = applySuperCards(
+      nodes,
+      edges,
+      graph,
+      cards,
+      specs,
+      portColors,
+      selected,
+      (id) => sizes.get(id),
+      previous.current,
+    );
+    previous.current = new Map(
+      view.nodes.flatMap((n) => (n.type === "flowSuperCard" ? [[n.id, n]] : [])),
+    );
+    return view;
+  }, [nodes, edges, graph, cards, specs, portColors, selected, sizes]);
 }

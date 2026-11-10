@@ -14,6 +14,7 @@ import {
 import type { LayoutRequest, LayoutResult } from "./layout-core";
 import type { PortRowSpec } from "./node-card";
 import { rerouteSize } from "./reroutes";
+import { sameValue } from "./same-value";
 import {
   foldedGroups,
   readSuperCards,
@@ -311,6 +312,7 @@ export function applySuperCards(
   selected: ReadonlySet<string> = new Set(),
   measuredOf: (id: string) => { width: number; height: number } | undefined = () =>
     undefined,
+  previous?: ReadonlyMap<string, RfNode>,
 ): { nodes: RfNode[]; edges: RfEdge[] } {
   const closed = cards.filter((c) => !c.open);
   if (!closed.length) return { nodes, edges };
@@ -478,21 +480,22 @@ export function applySuperCards(
       inputs: sorted(inputs.get(card.id)),
       outputs: sorted(outputs.get(card.id)),
     };
-    return [
-      {
-        id: SUPER_PREFIX + card.id,
-        type: "flowSuperCard",
-        position: { x: box.x, y: box.y },
-        data: data as unknown as RfNode["data"],
-        selected: selected.has(SUPER_PREFIX + card.id),
-        dragHandle: ".flow-node-drag",
-        // A card rebuilt on every drag or selection keeps its measurement, or React Flow hides it
-        // to measure again and the card and its wires blink.
-        ...(measuredOf(SUPER_PREFIX + card.id)
-          ? { measured: measuredOf(SUPER_PREFIX + card.id) }
-          : {}),
-      },
-    ];
+    const node: RfNode = {
+      id: SUPER_PREFIX + card.id,
+      type: "flowSuperCard",
+      position: { x: box.x, y: box.y },
+      data: data as unknown as RfNode["data"],
+      selected: selected.has(SUPER_PREFIX + card.id),
+      dragHandle: ".flow-node-drag",
+      // A card rebuilt on every drag or selection keeps its measurement, or React Flow hides it
+      // to measure again and the card and its wires blink.
+      ...(measuredOf(SUPER_PREFIX + card.id)
+        ? { measured: measuredOf(SUPER_PREFIX + card.id) }
+        : {}),
+    };
+    // The same card as last time stays the same object, so neither React Flow nor the card re-renders.
+    const before = previous?.get(node.id);
+    return [before && sameValue(before, node) ? before : node];
   });
   return {
     nodes: [...nodes.filter((n) => !owner.has(n.id)), ...cardNodes],

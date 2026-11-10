@@ -3,6 +3,7 @@
 
 import type { InternalNode } from "@xyflow/react";
 import type { RfEdge, RfNode } from "./derive-rf";
+import { sameValue } from "./same-value";
 import { wiresToReroute } from "./wire-live";
 import { isWireObstacle } from "./wire-obstacles";
 import type { WireEdgeInput, WireRect, WireRoute, WireSide } from "./wire-router";
@@ -101,24 +102,6 @@ export function buildRequest(
 /** The wires drawn as bus lines: the toolbar's style unless a wire is pinned to one. */
 export function busEdges(edges: RfEdge[], global: "bus" | "curved"): RfEdge[] {
   return edges.filter((edge) => (edge.data?.wireStyle ?? global) === "bus");
-}
-
-function sameValue(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (!(a && b && typeof a === "object" && typeof b === "object")) return false;
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  const ka = Object.keys(a);
-  const kb = Object.keys(b);
-  if (ka.length !== kb.length) return false;
-  for (const key of ka)
-    if (
-      !sameValue(
-        (a as Record<string, unknown>)[key],
-        (b as Record<string, unknown>)[key],
-      )
-    )
-      return false;
-  return true;
 }
 
 /** Same scope and the same cards, frames and wires: a full pass would give the same routes. */
