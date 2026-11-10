@@ -3274,6 +3274,47 @@ def _h3_residency_budget_bytes(
         return 0
 
 
+def _h3_resident_pin_deferral(
+    fam: Any, denoiser: Any, device: str, *, te_streamed: bool, te_scheme: Optional[str]
+) -> Optional[int]:
+    """Denoiser bytes if the initial fit is predicted to hold it whole (so pins can be deferred), else None."""
+    try:
+        from .video_minimax_h3_residency import (
+            h3_defer_resident_pin_enabled,
+            h3_dit_resident_enabled,
+            h3_resident_unpin_enabled,
+        )
+
+        if denoiser is None or not str(device).startswith("cuda"):
+            return None
+        if not (
+            h3_defer_resident_pin_enabled()
+            and h3_dit_resident_enabled()
+            and h3_resident_unpin_enabled()
+        ):
+            return None
+        from itertools import chain
+
+        from .diffusion_prequant import tensor_payload_bytes
+
+        total = sum(
+            tensor_payload_bytes(t) for t in chain(denoiser.parameters(), denoiser.buffers())
+        )
+        big_w, big_h = max(fam.resolution_presets, key = lambda wh: wh[0] * wh[1])
+        budget = _h3_residency_budget_bytes(
+            types.SimpleNamespace(resident_bytes = lambda: 0),
+            device,
+            width = big_w,
+            height = big_h,
+            frames = fam.default_num_frames,
+            te_streamed = te_streamed,
+            te_scheme = te_scheme,
+        )
+        return int(total) if 0 < total <= budget else None
+    except Exception:  # noqa: BLE001 -- unpredictable: pin up front
+        return None
+
+
 def _h3_placement_tier(
     *,
     quantised: bool,
@@ -12253,8 +12294,25 @@ class VideoBackend:
                             ),
                             logger = logger,
                         )
+                    pin_deferred_bytes = (
+                        _h3_resident_pin_deferral(
+                            fam,
+                            denoiser,
+                            device,
+                            te_streamed = bool(te_streamed),
+                            te_scheme = text_encoder_quant_engaged,
+                        )
+                        if stream
+                        else None
+                    )
                     placed = (
-                        stream_prequantized_module(manager, denoiser, device, logger = logger)
+                        stream_prequantized_module(
+                            manager,
+                            denoiser,
+                            device,
+                            logger = logger,
+                            **({"defer_pin": True} if pin_deferred_bytes is not None else {}),
+                        )
                         if stream
                         else None
                     )
@@ -12286,6 +12344,9 @@ class VideoBackend:
                             h3_dit_resident_enabled,
                         )
 
+                        pin_deferred = False
+                        pin_deferred_budget = 0
+
                         if denoiser_streamed in ("stream", "stream_lazy"):
                             from .video_minimax_h3_residency import pin_streamed_top_level_group
 
@@ -12294,6 +12355,37 @@ class VideoBackend:
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_top_group: %s", exc)
                             block_pinner = None
+                            if (
+                                pin_deferred_bytes is not None
+                                and denoiser_streamed == "stream_lazy"
+                            ):
+                                from .video_minimax_h3_residency import defer_resident_block_pins
+                                try:
+                                    residency = H3Residency(denoiser, device, logger = logger)
+                                    big_w, big_h = max(
+                                        fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
+                                    )
+                                    pin_deferred_budget = _h3_residency_budget_bytes(
+                                        residency,
+                                        device,
+                                        width = big_w,
+                                        height = big_h,
+                                        frames = fam.default_num_frames,
+                                        te_streamed = bool(te_streamed),
+                                        te_scheme = text_encoder_quant_engaged,
+                                    )
+                                    pin_deferred = defer_resident_block_pins(
+                                        residency, pin_deferred_budget, logger = logger
+                                    )
+                                except Exception as exc:  # noqa: BLE001 -- pin as the lazy path does
+                                    logger.warning("video.h3_block_pin: %s", exc)
+                                    pin_deferred = False
+                                if pin_deferred:
+                                    # every block is promoted and released by the fit below
+                                    denoiser_streamed = "stream"
+                                    denoiser_single_host_copy = True
+                                else:
+                                    residency = None
                             if denoiser_streamed == "stream_lazy":
                                 from .video_minimax_h3_residency import (
                                     defer_streamed_block_pins,
@@ -12339,7 +12431,8 @@ class VideoBackend:
                             "stream_lazy",
                         ):
                             try:
-                                residency = H3Residency(denoiser, device, logger = logger)
+                                if not pin_deferred:
+                                    residency = H3Residency(denoiser, device, logger = logger)
                                 if residency.usable:
                                     from .video_minimax_h3_te import yield_h3_te_resident
 
@@ -12360,7 +12453,9 @@ class VideoBackend:
                                         fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
                                     )
                                     residency.fit(
-                                        _h3_residency_budget_bytes(
+                                        pin_deferred_budget
+                                        if pin_deferred
+                                        else _h3_residency_budget_bytes(
                                             residency,
                                             device,
                                             width = big_w,
@@ -12382,6 +12477,12 @@ class VideoBackend:
                                     from .video_minimax_h3_residency import release_all
                                     release_all(residency, logger = logger)
                                 residency = None
+                        if pin_deferred:
+                            from .video_minimax_h3_residency import pin_deferred_block_groups
+                            try:
+                                pin_deferred_block_groups(denoiser, logger = logger)
+                            except Exception as exc:  # noqa: BLE001 -- they pin on each onload
+                                logger.warning("video.h3_block_pin: %s", exc)
                     else:
                         denoiser_pinned = pin_prequantized_module(
                             manager, denoiser, device, logger = logger
