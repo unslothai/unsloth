@@ -89,12 +89,15 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
     return _usable_addresses(found, ip_version)
 
 
-def detect_host_only_addresses(ip_version: int = 4) -> list[str]:
+def detect_host_only_addresses(ip_version: int = 4, carrier: bool = True) -> list[str]:
     """Addresses on virtual switches (libvirt, Docker, ...) that detection skips: offered for an explicit
-    choice, e.g. serving VMs on virbr0 (#17017), never bound by Automatic."""
+    choice, e.g. serving VMs on virbr0 (#17017), never bound by Automatic. ``carrier=False`` adds
+    bridges no guest is attached to yet, whose assigned address still binds."""
     if _wsl_networking_mode() not in (None, "mirrored"):
         return []
-    return _usable_addresses(_interface_addresses(ip_version, host_only = True), ip_version)
+    return _usable_addresses(
+        _interface_addresses(ip_version, host_only = True, carrier = carrier), ip_version
+    )
 
 
 def _usable_addresses(found, ip_version: int) -> list[str]:
@@ -161,7 +164,11 @@ def _is_host_only_interface(name: str) -> bool:
     )
 
 
-def _interface_addresses(ip_version: int = 4, host_only: bool = False) -> list[str]:
+def _interface_addresses(
+    ip_version: int = 4,
+    host_only: bool = False,
+    carrier: bool = True,
+) -> list[str]:
     """Up interfaces, or every virtual switch when ``host_only``. Without psutil, hostname lookup is a
     last resort: it misses hosts whose name maps to 127.0.1.1."""
     try:
@@ -188,8 +195,7 @@ def _interface_addresses(ip_version: int = 4, host_only: bool = False) -> list[s
             if _is_host_only_interface(name) != host_only:
                 continue
             interface = stats.get(name)
-            # a bridge has no carrier until a guest attaches, yet its assigned address still binds
-            if not host_only and interface is not None and not interface.isup:
+            if carrier and interface is not None and not interface.isup:
                 continue
             addresses.extend(e.address for e in entries if e.family == family)
         return addresses
@@ -292,7 +298,10 @@ def start_lan_listener(
 
         candidates = detect_lan_addresses()
         if selected_addresses is not None:
-            candidates += [a for a in detect_host_only_addresses() if a not in candidates]
+            # a saved virbr0 must bind at launch, before any VM has started
+            candidates += [
+                a for a in detect_host_only_addresses(carrier = False) if a not in candidates
+            ]
         if not candidates:
             _error = "no_lan_address"
             raise RuntimeError(_error)

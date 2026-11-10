@@ -57,7 +57,7 @@ def _start(selected):
 
 def test_bridge_is_host_only_and_not_detected(interfaces):
     assert _BRIDGE not in lan_access.detect_lan_addresses()
-    assert lan_access.detect_host_only_addresses() == [_BRIDGE, "192.168.100.1"]
+    assert lan_access.detect_host_only_addresses() == [_BRIDGE]
 
 
 def test_a_chosen_bridge_address_is_bound(interfaces, binds):
@@ -70,8 +70,8 @@ def test_automatic_never_binds_the_bridge(interfaces, binds):
     assert _NIC in binds and _BRIDGE not in binds
 
 
-def test_a_bridge_without_a_guest_yet_is_still_offered(interfaces, binds):
-    assert "192.168.100.1" in lan_access.detect_host_only_addresses()
+def test_a_saved_bridge_without_a_guest_yet_still_binds(interfaces, binds):
+    assert "192.168.100.1" not in lan_access.detect_host_only_addresses()
     assert _start(("192.168.100.1",)) == "bind_failed"
     assert binds == ["192.168.100.1"]
 
