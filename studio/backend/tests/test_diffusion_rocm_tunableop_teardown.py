@@ -189,3 +189,17 @@ def test_install_waits_for_a_release_in_progress(fake):
         assert rt.is_active() and fake.enabled and rt._STATE["owners"]
     finally:
         rt._STATE["owners"] = set(rt._STATE["owners"])
+
+
+def test_a_failed_load_that_drops_its_pipe_releases_the_claim(fake):
+    import gc
+
+    class Pipe:  # weakref-able, like a diffusers pipeline
+        def __init__(self):
+            self.transformer = nn.Linear(4, 4)
+
+    pipe = Pipe()
+    assert rt.install_for_pipe(pipe) and fake.enabled
+    del pipe  # a cancelled video load drops the unpublished pipe without release()
+    gc.collect()
+    assert not rt.is_active() and not fake.enabled and not rt._STATE["owners"]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import weakref
 from pathlib import Path
 from typing import Any, Optional
 
@@ -359,8 +360,31 @@ def _claim(pipe: Any) -> None:
             setattr(pipe, _OWNER_ATTR, token)
         except Exception:  # noqa: BLE001 - untaggable: never released, stays on as before
             return
+        root = pipe
+        while "_pipe" in getattr(
+            root, "__dict__", {}
+        ):  # a view: the claim lives on the pipe it wraps
+            root = root.__dict__["_pipe"]
+        try:
+            # A load that fails or is cancelled drops the pipe without release(); collecting it ends the claim.
+            weakref.finalize(root, _drop, token)
+        except TypeError:
+            pass
     with _LOCK:
         _STATE["owners"].add(token)
+
+
+def _drop(token: object) -> None:
+    with _LOCK:
+        if token not in _STATE["owners"]:
+            return
+        _STATE["owners"].discard(token)
+        if _STATE["active"] and not _STATE["owners"]:
+            try:
+                import torch
+                _restore(torch.cuda.tunable)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def release(pipe: Any) -> None:
