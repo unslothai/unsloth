@@ -5,7 +5,7 @@ import { createRoute } from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
-// RootLayout keeps the player mounted (like Images/Video) so a game keeps its state off-tab; this route owns the URL + auth gate.
+// RootLayout renders the player while this route is active; this route owns the URL and the auth gate.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/flows/$flowId/play",
