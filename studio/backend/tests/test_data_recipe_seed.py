@@ -1895,7 +1895,6 @@ def test_document_extraction_threads_are_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(seed_route.to_thread, "run_sync", run_sync)
 
     assert _run_upload(seed_route, "notes.txt", b"hello").status == "ok"
-    # Only extraction is bounded; the upload's file reads/writes also hop to a thread, unbounded.
     assert [limiter for limiter in seen if limiter is not None] == [
         seed_route._document_extraction_limiter
     ]

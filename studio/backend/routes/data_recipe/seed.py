@@ -1366,7 +1366,6 @@ async def upload_unstructured_file(
                 file, block_dir, native_path_lease
             )
     finally:
-        # Released with no waiter: drop it so the dict holds only blocks with an upload in flight.
         if not lock.locked() and not lock.statistics().tasks_waiting:
             _BLOCK_UPLOAD_LOCKS.pop(block_id, None)
     ext = Path(original_filename).suffix.lower()
