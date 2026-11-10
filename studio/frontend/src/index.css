@@ -2186,6 +2186,20 @@ html[data-chat-font] .aui-root {
 		z-index: 49;
 		pointer-events: auto;
 	}
+	/* Firefox only: the cover is always there and the lock only flips its pointer-events. Adding it per
+	   open made Firefox lay out the thread root's flex column again, measuring every message (about
+	   250 ms per modal open and close at 150 turns, 20 ms at 1 turn). Inert when unlocked: no paint,
+	   pointer-events: none. Not for WebKit: a permanent cover made the Glass browser pane open there
+	   about 60 ms slower at 150 turns. */
+	@supports (-moz-appearance: none) {
+		.aui-thread-root::after {
+			content: "";
+			position: absolute;
+			inset: 0;
+			z-index: 49;
+			pointer-events: none;
+		}
+	}
 	/* The side pane (browser, research) sets its own pointer-events: auto once shown, so it never
 	   inherited the lock and its scrollers (file view, page) took wheel and touch under a modal menu.
 	   The same cover over it blocks them as react-remove-scroll's document listeners did, without a
