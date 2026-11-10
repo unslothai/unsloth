@@ -70,3 +70,73 @@ export function readFlowsSrc(relative: string): string {
     "utf8",
   );
 }
+
+/** A story manifest fixture from tests/fixtures (`flows-<name>.story.json`). */
+export function storyFixture<T = import("../../src/features/flows/types.ts").StoryManifest>(
+  name: string,
+): T {
+  return JSON.parse(
+    readFileSync(
+      new URL(`../fixtures/flows-${name}.story.json`, import.meta.url),
+      "utf8",
+    ),
+  ) as T;
+}
+
+/** Drains pending promise callbacks without a timer: enough turns for a few chained `.then`s. */
+export async function flushMicrotasks(turns = 20): Promise<void> {
+  for (let i = 0; i < turns; i++) await Promise.resolve();
+}
+
+/** A bundled Data Recipes learning recipe (`src/features/data-recipes/learning-recipes/<name>`). */
+export type LearningRecipe = {
+  recipe: Record<string, unknown> & { columns: Record<string, unknown>[] };
+  ui?: Record<string, unknown>;
+};
+
+export function learningRecipe(name: string): LearningRecipe {
+  return JSON.parse(
+    readFileSync(
+      new URL(`../../src/features/data-recipes/learning-recipes/${name}`, import.meta.url),
+      "utf8",
+    ),
+  ) as LearningRecipe;
+}
+
+/** A recipe payload as a Flows recipe group (id "recipe") and its `recipe.column` nodes. */
+export function recipeGroup(payload: LearningRecipe, label = "Recipe") {
+  const { columns, ...config } = structuredClone(payload.recipe);
+  const nodes: FlowNode[] = columns.map((column, i) => ({
+    id: `recipe_col_${i + 1}`,
+    type: "recipe.column",
+    v: 1,
+    params: { column },
+    pos: [i * 320, 0],
+    label: String(column.name),
+    group: "recipe",
+  }));
+  const group = {
+    id: "recipe",
+    label,
+    rect: [0, 0, 100, 100] as [number, number, number, number],
+    kind: "recipe" as const,
+    config,
+    run: { rows: 5 },
+  };
+  return { group, nodes };
+}
+
+/** The three-card chain Text -> Generate -> Preview (ids a, b, c; edges e1, e2). */
+export function chainDoc(): FlowDocument {
+  return doc(
+    [
+      node("a", "input.text"),
+      node("b", "llm.generate", [300, 0]),
+      node("c", "output.preview", [600, 0]),
+    ],
+    [
+      edge("e1", "a", "text", "b", "prompt"),
+      edge("e2", "b", "text", "c", "value"),
+    ],
+  );
+}
