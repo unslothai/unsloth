@@ -26,14 +26,10 @@ type Node = {
 };
 
 const reads = { position: 0 };
+const IDLE_PASS = { full: 1, partial: 0, skipped: 0 };
 function card(id: string, x: number, y: number, selected = false): Node {
   const node: Node = {
-    id,
-    type: "flowNode",
-    position: { x, y },
-    measured: { width: 220, height: 120 },
-    hidden: false,
-    selected,
+    id, type: "flowNode", position: { x, y }, measured: { width: 220, height: 120 }, hidden: false, selected,
     internals: { positionAbsolute: { x, y } },
   };
   // Counts every read of a card's position: the per-update cost of noticing a change.
@@ -51,12 +47,7 @@ function graph(count: number) {
     lookup.set(`n${i}`, card(`n${i}`, (i % 6) * 400, Math.floor(i / 6) * 300));
   const edges = () =>
     Array.from({ length: count - 1 }, (_, i) => ({
-      id: `e${i}`,
-      source: `n${i}`,
-      target: `n${i + 1}`,
-      sourceHandle: "out:text",
-      targetHandle: "in:value",
-      data: {},
+      id: `e${i}`, source: `n${i}`, target: `n${i + 1}`, sourceHandle: "out:text", targetHandle: "in:value", data: {},
     }));
   return { lookup, edges };
 }
@@ -71,10 +62,7 @@ function canvas(count: number) {
       const result = routeWires(request.rects, request.edges, { hopRadius: 4 }, undefined, request.zones);
       done({ routes: [...result.routes.values()], partial: request.partial });
     },
-    nextFrame: (run) => {
-      frames.push(run);
-      return true;
-    },
+    nextFrame: (run) => frames.push(run) > 0,
     apply: () => {},
   });
   const versionOf = routingVersion();
@@ -89,30 +77,28 @@ function canvas(count: number) {
   const frame = () => {
     for (const run of frames.splice(0)) run();
   };
-  const moveTo = (id: string, x: number, y: number) =>
-    state.nodeLookup.set(id, card(id, x, y, true));
-  return {
-    state,
-    scheduler,
-    update,
-    frame,
-    moveTo,
-    edges,
-    setMoving: (ids: string[] | null) => {
-      moving = ids ? new Set(ids) : null;
-    },
+  const moveTo = (id: string, x: number, y: number) => state.nodeLookup.set(id, card(id, x, y, true));
+  const setMoving = (ids: string[] | null) => {
+    moving = ids ? new Set(ids) : null;
   };
+  /** One drag frame: React re-renders twice, then the frame queue runs. */
+  const dragFrame = () => {
+    update();
+    update();
+    frame();
+  };
+  return { state, scheduler, update, frame, moveTo, edges, setMoving, dragFrame };
 }
 
 test("a pan reads no card and runs no routing pass", () => {
   const c = canvas(30);
   c.update();
-  assert.deepEqual(c.scheduler.stats, { full: 1, partial: 0, skipped: 0 });
+  assert.deepEqual(c.scheduler.stats, IDLE_PASS);
   reads.position = 0;
   // A pan only moves the viewport: the store updates, the lookup's cards stay the same objects.
   for (let k = 0; k < 60; k += 1) c.update();
   assert.equal(reads.position, 0);
-  assert.deepEqual(c.scheduler.stats, { full: 1, partial: 0, skipped: 0 });
+  assert.deepEqual(c.scheduler.stats, IDLE_PASS);
 });
 
 test("a drag runs one windowed pass per frame and one full pass on release", () => {
@@ -126,9 +112,7 @@ test("a drag runs one windowed pass per frame and one full pass on release", () 
   c.setMoving(["n7"]);
   for (let k = 1; k <= 20; k += 1) {
     c.moveTo("n7", 400 + k * 5, 300 + k * 3);
-    c.update();
-    c.update();
-    c.frame();
+    c.dragFrame();
   }
   assert.equal(c.scheduler.stats.partial, 20);
   // Release, then the drop's doc commit re-derives the same edges.
@@ -155,8 +139,9 @@ test("a full pass after a drag's partial passes is never skipped", () => {
 
 test("routing passes reuse one set of grid buffers", () => {
   const { lookup, edges } = graph(30);
-  const rects = [...lookup.values()].map((n) => ({ id: n.id, x: n.position.x, y: n.position.y, width: 220, height: 120 }));
-  const wires = edges().map((e) => ({ id: e.id, source: e.source, target: e.target, sourceSide: "right" as const, targetSide: "left" as const, net: e.source }));
+  const rects = [...lookup.values()].map((n) => ({ id: n.id, ...n.position, width: 220, height: 120 }));
+  const side = { sourceSide: "right" as const, targetSide: "left" as const };
+  const wires = edges().map((e) => ({ id: e.id, source: e.source, target: e.target, ...side, net: e.source }));
   routeWires(rects, wires);
   const before = { ...wireGridStats };
   for (let k = 0; k < 5; k += 1) routeWires(rects, wires);
@@ -175,7 +160,7 @@ test("no routing pass until every visible card has its size; a hidden one does n
   assert.deepEqual(c.scheduler.stats, { full: 0, partial: 0, skipped: 0 });
   unmeasured("n2", true);
   c.update();
-  assert.deepEqual(c.scheduler.stats, { full: 1, partial: 0, skipped: 0 });
+  assert.deepEqual(c.scheduler.stats, IDLE_PASS);
 });
 
 test("dragging a note or a frame on its own sends no pass, not even a partial one", () => {
@@ -186,5 +171,5 @@ test("dragging a note or a frame on its own sends no pass, not even a partial on
     c.update();
     c.frame();
   }
-  assert.deepEqual(c.scheduler.stats, { full: 1, partial: 0, skipped: 0 });
+  assert.deepEqual(c.scheduler.stats, IDLE_PASS);
 });

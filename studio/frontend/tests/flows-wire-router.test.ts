@@ -18,35 +18,17 @@ type EdgeIn = Parameters<typeof routeWires>[1][number];
 type Route = ReturnType<typeof routeWires>["routes"] extends Map<string, infer R> ? R : never;
 type Point = { x: number; y: number };
 
-const card = (id: string, x: number, y: number, width = 220, height = 120): Rect => ({
-  id,
-  x,
-  y,
-  width,
-  height,
-});
+const card = (id: string, x: number, y: number, width = 220, height = 120): Rect => ({ id, x, y, width, height });
 
 const wire = (
   source: string,
   target: string,
   sourceSide: EdgeIn["sourceSide"] = "right",
   targetSide: EdgeIn["targetSide"] = "left",
-): EdgeIn => ({
-  id: `${source}->${target}`,
-  source,
-  target,
-  sourceSide,
-  targetSide,
-  net: `${source}:${sourceSide}`,
-});
+): EdgeIn => ({ id: `${source}->${target}`, source, target, sourceSide, targetSide, net: `${source}:${sourceSide}` });
 
-function segments(points: Point[]): Array<[Point, Point]> {
-  const out: Array<[Point, Point]> = [];
-  for (let k = 0; k + 1 < points.length; k += 1) {
-    out.push([points[k], points[k + 1]]);
-  }
-  return out;
-}
+const segments = (points: Point[]): Array<[Point, Point]> =>
+  points.slice(1).map((b, k) => [points[k], b]);
 
 function hitsInterior(a: Point, b: Point, rect: Rect): boolean {
   return (
@@ -57,6 +39,19 @@ function hitsInterior(a: Point, b: Point, rect: Rect): boolean {
   );
 }
 
+/** Asserts no segment of `edgeId`'s route passes under any of `rects`. */
+function assertAvoids(routes: Map<string, Route>, edgeId: string, rects: Rect[], what = edgeId): void {
+  for (const [a, b] of segments((routes.get(edgeId) as Route).points))
+    for (const rect of rects) assert.ok(!hitsInterior(a, b, rect), `${what} passes under ${rect.id}`);
+}
+
+/** Routes `edges` among `rects` (and group `frames`) and asserts every wire follows the rules. */
+function routeClean(rects: Rect[], edges: EdgeIn[], frames?: Rect[]): Map<string, Route> {
+  const { routes } = routeWires(rects, edges, {}, undefined, frames);
+  assertWireRules(rects, edges, routes);
+  return routes;
+}
+
 function assertWireRules(rects: Rect[], edges: EdgeIn[], routes: Map<string, Route>): void {
   const byId = new Map(rects.map((rect) => [rect.id, rect] as const));
   for (const edge of edges) {
@@ -64,15 +59,9 @@ function assertWireRules(rects: Rect[], edges: EdgeIn[], routes: Map<string, Rou
     assert.ok(route, `${edge.id} has a route`);
     assert.equal(route.blocked, false, `${edge.id} found a clean path`);
     const points = route.points;
-    for (const [a, b] of segments(points)) {
-      assert.ok(
-        Math.abs(a.x - b.x) < 0.01 || Math.abs(a.y - b.y) < 0.01,
-        `${edge.id} is orthogonal`,
-      );
-      for (const rect of rects) {
-        assert.ok(!hitsInterior(a, b, rect), `${edge.id} passes under ${rect.id}`);
-      }
-    }
+    for (const [a, b] of segments(points))
+      assert.ok(Math.abs(a.x - b.x) < 0.01 || Math.abs(a.y - b.y) < 0.01, `${edge.id} is orthogonal`);
+    assertAvoids(routes, edge.id, rects);
     const source = byId.get(edge.source) as Rect;
     const target = byId.get(edge.target) as Rect;
     assert.deepEqual(points[0], wirePortPoint(source, edge.sourceSide));
@@ -94,24 +83,14 @@ function assertWireRules(rects: Rect[], edges: EdgeIn[], routes: Map<string, Rou
 }
 
 function assertNoSharedLanes(edges: EdgeIn[], routes: Map<string, Route>): void {
-  type Seg = {
-    net: string;
-    vertical: boolean;
-    coord: number;
-    lo: number;
-    hi: number;
-    id: string;
-    port: Point;
-  };
+  type Seg = { net: string; vertical: boolean; coord: number; lo: number; hi: number; id: string; port: Point };
   const all: Seg[] = [];
   const ports = new Map<string, Point>();
   for (const edge of edges) {
     const points = (routes.get(edge.id) as Route).points;
     const end = points[points.length - 1];
     const key = `${edge.target}:${edge.targetSide}`;
-    if (!ports.has(key)) {
-      ports.set(key, end);
-    }
+    if (!ports.has(key)) ports.set(key, end);
     const port = ports.get(key) as Point;
     for (const [a, b] of segments(points)) {
       const vertical = Math.abs(a.x - b.x) < 0.01;
@@ -131,13 +110,10 @@ function assertNoSharedLanes(edges: EdgeIn[], routes: Map<string, Route>): void 
       const a = all[i];
       const b = all[j];
       // One output fanning out, or several wires into one input, is a bundle, not two lanes.
-      if (a.net === b.net || a.port === b.port || a.vertical !== b.vertical) {
-        continue;
-      }
+      if (a.net === b.net || a.port === b.port || a.vertical !== b.vertical) continue;
       const sameLine = Math.abs(a.coord - b.coord) < 0.5;
       const overlap = Math.min(a.hi, b.hi) - Math.max(a.lo, b.lo);
-      // Lane nudging can leave two unrelated corners a few pixels apart on one line; anything
-      // longer than one lane gap would read as a shared wire.
+      // Two unrelated corners a few px apart on one line are fine; more than one lane gap is shared.
       assert.ok(!(sameLine && overlap > 6), `${a.id} and ${b.id} share a lane`);
     }
   }
@@ -145,67 +121,44 @@ function assertNoSharedLanes(edges: EdgeIn[], routes: Map<string, Route>): void 
 
 test("a wire goes around a card in its way instead of under it", () => {
   const rects = [card("a", 0, 0), card("blocker", 320, -20, 220, 160), card("b", 640, 0)];
-  const edges = [wire("a", "b")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
+  const routes = routeClean(rects, [wire("a", "b")]);
   assert.ok((routes.get("a->b") as Route).points.length > 2, "the path bends around the blocker");
 });
 
 test("outputs leave right or bottom and inputs enter top or left", () => {
   const rects = [card("a", 0, 0), card("b", 400, 300), card("c", 0, 400)];
-  const edges = [wire("a", "b", "bottom", "top"), wire("a", "c", "right", "left"), wire("c", "b", "right", "top")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
+  routeClean(rects, [wire("a", "b", "bottom", "top"), wire("a", "c", "right", "left"), wire("c", "b", "right", "top")]);
 });
 
 test("a port squeezed next to another card still finds a clean way out", () => {
   // The model card ends 28px from the LLM card's input, so the input stub sits in its clearance band.
   const rects = [card("model", 0, -100, 260, 184), card("llm", 288, 0), card("src", -600, 300)];
-  const edges = [wire("src", "llm"), wire("model", "llm", "bottom", "top")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
+  routeClean(rects, [wire("src", "llm"), wire("model", "llm", "bottom", "top")]);
 });
 
 test("a card dropped over a port does not cut its wire off", () => {
   const rects = [card("a", 0, 0), card("cover", 180, 20, 220, 120), card("b", 700, 0), card("wall", 450, -200, 100, 500)];
   const edges = [wire("a", "b")];
   const { routes } = routeWires(rects, edges);
-  const route = routes.get("a->b") as Route;
-  assert.equal(route.blocked, false, "the wire still routes");
-  for (const [a, b] of segments(route.points)) {
-    for (const rect of rects.filter((r) => r.id !== "cover")) {
-      assert.ok(!hitsInterior(a, b, rect), `passes under ${rect.id}`);
-    }
-  }
+  assert.equal((routes.get("a->b") as Route).blocked, false, "the wire still routes");
+  assertAvoids(routes, "a->b", rects.filter((r) => r.id !== "cover"));
 });
 
 test("a feedback wire runs backwards around the graph without breaking the side rules", () => {
   const rects = [card("gen", 0, 0), card("judge", 400, 0), card("bench", 800, 0)];
-  const edges = [wire("gen", "judge"), wire("judge", "bench"), wire("bench", "gen")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
+  routeClean(rects, [wire("gen", "judge"), wire("judge", "bench"), wire("bench", "gen")]);
 });
 
 test("wires from different outputs that share a corridor get separate lanes", () => {
-  const rects = [
-    card("s1", 0, 0),
-    card("s2", 0, 200),
-    card("s3", 0, 400),
-    card("t1", 700, 400),
-    card("t2", 700, 200),
-    card("t3", 700, 0),
-  ];
+  const rects = [card("s1", 0, 0), card("s2", 0, 200), card("s3", 0, 400)];
+  rects.push(card("t1", 700, 400), card("t2", 700, 200), card("t3", 700, 0));
   const edges = [wire("s1", "t1"), wire("s2", "t2"), wire("s3", "t3")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
-  assertNoSharedLanes(edges, routes);
+  assertNoSharedLanes(edges, routeClean(rects, edges));
 });
 
 test("a crossing draws a hop arc and never looks like a junction", () => {
   const rects = [card("top", 0, 0), card("bottom", 0, 400), card("a", 600, 0), card("b", 600, 400)];
-  const edges = [wire("top", "b"), wire("bottom", "a")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
+  const routes = routeClean(rects, [wire("top", "b"), wire("bottom", "a")]);
   const hops = [...routes.values()].flatMap((route) => route.hops);
   assert.equal(hops.length, 1, "exactly one crossing gets a hop");
   assert.equal([...routes.values()].flatMap((route) => route.junctions).length, 0);
@@ -215,9 +168,7 @@ test("a crossing draws a hop arc and never looks like a junction", () => {
 
 test("one output feeding two inputs shares a trunk and marks the fan-out with a junction", () => {
   const rects = [card("src", 0, 200), card("t1", 600, 0), card("t2", 600, 400)];
-  const edges = [wire("src", "t1"), wire("src", "t2")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
+  const routes = routeClean(rects, [wire("src", "t1"), wire("src", "t2")]);
   const junctions = [...routes.values()].flatMap((route) => route.junctions);
   assert.equal(junctions.length, 1);
   assert.ok(junctions[0].x > 220, "the junction sits on the wire, past the port");
@@ -257,9 +208,7 @@ function bigRecipe(columns: number, rows: number): { rects: Rect[]; edges: EdgeI
         const tc = Math.min(columns - 1, c + 1 + Math.floor(rand() * 2));
         const tr = Math.floor(rand() * rows);
         const target = `n${tc}-${tr}`;
-        if (used.has(target)) {
-          continue;
-        }
+        if (used.has(target)) continue;
         used.add(target);
         edges.push(wire(`n${c}-${r}`, target));
       }
@@ -289,12 +238,8 @@ test("a 50-card recipe routes cleanly, and a drop searches only the wires near t
 test("a wire stays out of a group frame it has no end in, and runs freely inside its own", () => {
   const rects = [card("a", 0, 0), card("b", 940, 0), card("in1", 360, 260), card("in2", 640, 260)];
   const frame = { id: "g", x: 320, y: -120, width: 560, height: 560 };
-  const edges = [wire("a", "b"), wire("in1", "in2")];
-  const { routes } = routeWires(rects, edges, {}, undefined, [frame]);
-  assertWireRules(rects, edges, routes);
-  for (const [a, b] of segments((routes.get("a->b") as Route).points)) {
-    assert.ok(!hitsInterior(a, b, frame), "a->b goes around the frame");
-  }
+  const routes = routeClean(rects, [wire("a", "b"), wire("in1", "in2")], [frame]);
+  assertAvoids(routes, "a->b", [frame], "a->b, which should go around the frame,");
   assert.equal((routes.get("in1->in2") as Route).points.length, 2, "in1->in2 stays straight inside");
 });
 
@@ -304,11 +249,8 @@ test("a wire leaving a group crosses only its own frame", () => {
   const other = { id: "other", x: 760, y: -200, width: 280, height: 800 };
   const edges = [wire("inner", "out")];
   const { routes } = routeWires(rects, edges, {}, undefined, [own, other]);
-  const route = routes.get("inner->out") as Route;
-  assert.equal(route.blocked, false);
-  for (const [a, b] of segments(route.points)) {
-    assert.ok(!hitsInterior(a, b, other), "goes around the other frame");
-  }
+  assert.equal((routes.get("inner->out") as Route).blocked, false);
+  assertAvoids(routes, "inner->out", [other]);
 });
 
 test("past the cell budget each wire routes on a local grid and still avoids cards", () => {
@@ -319,12 +261,7 @@ test("past the cell budget each wire routes on a local grid and still avoids car
 });
 
 test("the path rounds every bend and keeps hops on the straight part", () => {
-  const points = [
-    { x: 0, y: 0 },
-    { x: 100, y: 0 },
-    { x: 100, y: 60 },
-    { x: 200, y: 60 },
-  ];
+  const points = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 60 }, { x: 200, y: 60 }];
   const square = buildWirePath(points, [], 4, 0);
   assert.equal(square, "M 0 0 L 100 0 L 100 60 L 200 60");
   const round = buildWirePath(points, [{ x: 50, y: 0 }], 4, 10);
@@ -333,17 +270,7 @@ test("the path rounds every bend and keeps hops on the straight part", () => {
     "M 0 0 L 46 0 A 4 4 0 0 1 54 0 L 90 0 Q 100 0 100 10 L 100 50 Q 100 60 110 60 L 200 60",
   );
   // A short leg caps the radius at half its length.
-  const tight = buildWirePath(
-    [
-      { x: 0, y: 0 },
-      { x: 50, y: 0 },
-      { x: 50, y: 8 },
-      { x: 100, y: 8 },
-    ],
-    [],
-    4,
-    10,
-  );
+  const tight = buildWirePath([{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 50, y: 8 }, { x: 100, y: 8 }], [], 4, 10);
   assert.match(tight, /Q 50 0 50 4 L 50 4 Q 50 8 54 8/);
 });
 
@@ -379,17 +306,10 @@ test("Comic Strip Machine: wires into a loop frame take the short way, not a lap
   assert.ok(length("ref->draw") < 600, `ref->draw is ${length("ref->draw")} px`);
   assert.ok(length("each->page") < 800, `each->page is ${length("each->page")} px`);
   for (const edge of edges) {
-    const route = routes.get(edge.id) as Route;
-    assert.equal(route.blocked, false);
-    for (const [a, b] of segments(route.points)) {
-      for (const rect of rects) {
-        assert.ok(!hitsInterior(a, b, rect), `${edge.id} passes under ${rect.id}`);
-      }
-    }
+    assert.equal((routes.get(edge.id) as Route).blocked, false);
+    assertAvoids(routes, edge.id, rects);
   }
-  for (const [a, b] of segments((routes.get("captions->page") as Route).points)) {
-    assert.ok(!hitsInterior(a, b, frame), "captions->page goes round the loop frame");
-  }
+  assertAvoids(routes, "captions->page", [frame], "captions->page, which should go round the loop frame,");
 });
 
 function gapTo(a: Point, b: Point, rect: Rect): number {
@@ -419,13 +339,8 @@ test("no wire runs closer than the hard clearance to a card, its own included pa
       segments(points).forEach(([a, b], k, all) => {
         const portLeg = k === 0 || k === all.length - 1;
         for (const rect of rects) {
-          if (portLeg && (rect.id === edge.source || rect.id === edge.target)) {
-            continue;
-          }
-          assert.ok(
-            gapTo(a, b, rect) >= hard - 0.5,
-            `${edge.id} runs ${gapTo(a, b, rect)} px from ${rect.id}`,
-          );
+          if (portLeg && (rect.id === edge.source || rect.id === edge.target)) continue;
+          assert.ok(gapTo(a, b, rect) >= hard - 0.5, `${edge.id} runs ${gapTo(a, b, rect)} px from ${rect.id}`);
         }
       });
       // The port legs go straight out at least the clearance before turning.
@@ -438,17 +353,10 @@ test("no wire runs closer than the hard clearance to a card, its own included pa
 });
 
 test("wires crossing the same gap share it as parallel lanes, centred between the columns", () => {
-  const rects = [
-    card("s1", 0, 0, 220, 100),
-    card("s2", 0, 140, 220, 100),
-    card("s3", 0, 280, 220, 100),
-    card("t1", 420, 600, 220, 100),
-    card("t2", 420, 740, 220, 100),
-    card("t3", 420, 880, 220, 100),
-  ];
+  const rects = ["s1", "s2", "s3"].map((id, k) => card(id, 0, k * 140, 220, 100));
+  rects.push(...["t1", "t2", "t3"].map((id, k) => card(id, 420, 600 + k * 140, 220, 100)));
   const edges = [wire("s1", "t1"), wire("s2", "t2"), wire("s3", "t3")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
+  const routes = routeClean(rects, edges);
   const runs = edges.map((edge) => {
     const vertical = segments((routes.get(edge.id) as Route).points).find(
       ([a, b]) => Math.abs(a.x - b.x) < 0.01 && a.x > 220 && a.x < 420,
@@ -482,8 +390,7 @@ function assertFanIn(edges: EdgeIn[], routes: Map<string, Route>, target: Rect):
     }
     const [q0, q1] = route.points.slice(-2);
     assert.deepEqual(q1, port);
-    // One shared leg in: every wire is on the port's line by the merge point (a wire already on
-    // that line just runs straight through it).
+    // One shared leg in: every wire is on the port's line by the merge point (or already on it).
     assert.ok(q0.y === port.y && q0.x <= merge.x, `${route.id} joins at the merge point, then one leg in`);
     for (const [a, b] of segments(route.points.slice(0, -1))) {
       assert.ok(Math.max(a.x, b.x) <= merge.x + 0.01, `${route.id} squeezes in past the merge point`);
@@ -493,37 +400,24 @@ function assertFanIn(edges: EdgeIn[], routes: Map<string, Route>, target: Rect):
   assert.deepEqual([...dots], [`${merge.x}:${merge.y}`], "one junction, at the merge point");
 }
 
+// Poster studio's Make List: one wire straight in, one from above-left, one from below-left.
+const posterRects = () => [
+  card("image", 0, 0, 240, 160),
+  card("make", 420, 0, 240, 160),
+  card("above", -500, -400),
+  card("below", -500, 500),
+];
+const posterEdges = () => [wire("image", "make"), wire("above", "make"), wire("below", "make")];
+
 test("wires into one input join one lane a fixed distance out, with one junction and no hops", () => {
-  // Poster studio's Make List: one wire straight in, one from above-left, one from below-left.
-  const rects = [
-    card("image", 0, 0, 240, 160),
-    card("make", 420, 0, 240, 160),
-    card("above", -500, -400),
-    card("below", -500, 500),
-  ];
-  const edges = [wire("image", "make"), wire("above", "make"), wire("below", "make")];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
-  assertFanIn(edges, routes, rects[1]);
+  const [rects, edges] = [posterRects(), posterEdges()];
+  assertFanIn(edges, routeClean(rects, edges), rects[1]);
 });
 
 test("a wire into a different input still hops the fan-in it crosses", () => {
-  const rects = [
-    card("image", 0, 0, 240, 160),
-    card("make", 420, 0, 240, 160),
-    card("above", -500, -400),
-    card("below", -500, 500),
-    card("cross", -500, 250),
-    card("other", 900, -400),
-  ];
-  const edges = [
-    wire("image", "make"),
-    wire("above", "make"),
-    wire("below", "make"),
-    wire("cross", "other"),
-  ];
-  const { routes } = routeWires(rects, edges);
-  assertWireRules(rects, edges, routes);
+  const rects = [...posterRects(), card("cross", -500, 250), card("other", 900, -400)];
+  const edges = [...posterEdges(), wire("cross", "other")];
+  const routes = routeClean(rects, edges);
   assertFanIn(edges, routes, rects[1]);
   const crossing = routes.get("cross->other") as Route;
   const fanIn = edges.filter((e) => e.target === "make").map((e) => routes.get(e.id) as Route);
@@ -536,18 +430,11 @@ test("a wire into a different input still hops the fan-in it crosses", () => {
 test("unrelated wires never meet end to end on one line, so neither reads as the other's start", () => {
   // Dataset Forge: Checkpoint fans out to Chat and Export Model, and a Text card under Fine-tune
   // feeds Chat's prompt from the same height as Export Model's input.
-  const rects = [
-    card("tune", 1280, 190, 260, 200),
-    card("ask", 1280, 418, 260, 120),
-    card("test", 1600, 190, 260, 180),
-    card("gguf", 1920, 418, 260, 160),
-  ];
+  const rects = [card("tune", 1280, 190, 260, 200), card("ask", 1280, 418, 260, 120)];
+  rects.push(card("test", 1600, 190, 260, 180), card("gguf", 1920, 418, 260, 160));
   const at = (source: string, target: string, sourceOffset: number, targetOffset: number): EdgeIn => ({
     ...wire(source, target),
-    sourceOffset,
-    targetOffset,
-    net: `${source}:out`,
-    sink: `${target}:${targetOffset}`,
+    sourceOffset, targetOffset, net: `${source}:out`, sink: `${target}:${targetOffset}`,
   });
   const edges = [at("tune", "test", 60, 50), at("tune", "gguf", 60, 60), at("ask", "test", 60, 80)];
   const { routes } = routeWires(rects, edges);
@@ -573,11 +460,8 @@ test("unrelated wires never meet end to end on one line, so neither reads as the
 function previewRow(rows: Array<[string, number, number, number]>, images = true) {
   const rects = rows.map(([id, x, y, height]) => card(id, x, y, 260, height));
   const port = (source: string, target: string, handle: string, from: number): EdgeIn => ({
+    ...wire(source, target),
     id: `${source}:${handle}->${target}`,
-    source,
-    target,
-    sourceSide: "right",
-    targetSide: "left",
     sourceOffset: from,
     targetOffset: 65,
     net: `${source}:${handle}`,
@@ -604,9 +488,7 @@ test("a wire into the next card in a row goes around the card between, not under
   for (const edge of edges) {
     const route = routes.get(edge.id) as Route;
     assert.equal(route.blocked, false, `${edge.id} routes`);
-    for (const [a, b] of segments(route.points)) {
-      assert.ok(edge.target === "mid" || !hitsInterior(a, b, mid), `${edge.id} passes under mid`);
-    }
+    if (edge.target !== "mid") assertAvoids(routes, edge.id, [mid]);
   }
 });
 
