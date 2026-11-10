@@ -4556,8 +4556,7 @@ function Install-UnslothStudio {
         return $code
     }
 
-    # uv reuses a damaged unpacked wheel from its cache on every run, --refresh included (#17375);
-    # `uv cache clean <name>` drops it so the next run unpacks a fresh download.
+    # uv reuses a damaged cached wheel on every run, --refresh included (#17375).
     function Repair-UvDamagedWheels {
         param([string]$Output, [hashtable]$Cleaned)
         $names = @(foreach ($m in [regex]::Matches("$Output", '(?m)Failed to install: \S+ \(([A-Za-z0-9][A-Za-z0-9._-]*)(?:==| @ )[^\r\n]*\r?\n\s*(?:cause|Caused by): The wheel is invalid')) {
@@ -4566,7 +4565,7 @@ function Install-UnslothStudio {
         })
         if (-not $names) { return $false }
         substep "clearing damaged uv cache entries for $($names -join ', ')..." "Yellow"
-        # Bounded: a uv process elsewhere holding the cache lock must not stall the install.
+        # Another uv process may hold the cache lock.
         $prevLock = $env:UV_LOCK_TIMEOUT
         if (-not $prevLock) { $env:UV_LOCK_TIMEOUT = "60" }
         $prevEap = $ErrorActionPreference

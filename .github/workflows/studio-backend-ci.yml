@@ -573,7 +573,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # test_uv_damaged_cache_repair.sh drives a real uv.
       - run: pip install uv
 
       - name: Shell installer tests

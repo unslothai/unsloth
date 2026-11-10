@@ -282,7 +282,6 @@ jobs:
       - name: Intel registry fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
-      # Real uv on a damaged cache; 5.1 is what the one-line installer runs under.
       - name: uv damaged cache repair tests
         shell: pwsh
         run: |

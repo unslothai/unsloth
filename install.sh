@@ -342,8 +342,7 @@ _run_install_cmd_once() {
     return $_rc
 }
 
-# uv reuses a damaged unpacked wheel from its cache on every run, --refresh included (#17375):
-# prints the packages uv called invalid wheels, for `uv cache clean`.
+# uv reuses a damaged cached wheel on every run, --refresh included (#17375).
 _uv_damaged_wheels() {
     [ -f "$1" ] || return 0
     awk '
@@ -355,7 +354,6 @@ _uv_damaged_wheels() {
         }' "$1"
 }
 
-# Clears the damaged packages not cleared yet in this retry loop; fails when there are none.
 _repair_uv_damaged_wheels() {
     _rudw_new=""
     for _rudw_n in ${_ric_damaged:-}; do
@@ -367,7 +365,7 @@ _repair_uv_damaged_wheels() {
     done
     [ -n "$_rudw_new" ] || return 1
     substep "clearing damaged uv cache entries for$_rudw_new..." "$C_WARN"
-    # Bounded: a uv process elsewhere holding the cache lock must not stall the install.
+    # Another uv process may hold the cache lock.
     # shellcheck disable=SC2086
     UV_LOCK_TIMEOUT=${UV_LOCK_TIMEOUT:-60} uv cache clean $_rudw_new >/dev/null 2>&1
 }
