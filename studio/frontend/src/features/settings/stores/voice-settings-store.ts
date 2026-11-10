@@ -6,6 +6,10 @@ import { isAudioCppFolderId } from "../../audio/audio-cpp-catalog";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
+  DEFAULT_STT_CONTEXT_LENGTH,
+  normalizeSttContextLength,
+} from "./stt-context";
+import {
   DEFAULT_STT_MODEL,
   type DefaultSttModel,
   STT_MODELS,
@@ -17,6 +21,7 @@ import {
 import { syncSttDevicePreference } from "../api/stt-device";
 
 export * from "./stt-model-catalog";
+export * from "./stt-context";
 
 // Adapters read these at call time, so changes apply without reloading the chat runtime.
 
@@ -77,6 +82,9 @@ export function isSttModelLanguageCompatible(
 
 export type DictationEngine = "browser" | "model" | "custom";
 
+/** "model" attaches a clip for an audio-input model, else falls back to "asr". */
+export type MicTarget = "asr" | "model";
+
 /** Mirrors the backend `SttLoadRequest.device`; "gpu" is not offered since it adds nothing. */
 export type SttDevice = "auto" | "cpu";
 
@@ -102,6 +110,9 @@ export interface VoiceSettingsState {
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
 
+  micTarget: MicTarget;
+  setMicTarget: (value: MicTarget) => void;
+
   /** STT model used when dictationEngine is "model". */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
@@ -113,6 +124,10 @@ export interface VoiceSettingsState {
   /** "cpu" keeps the model in system RAM; loads and transcriptions apply the current value. */
   sttDevice: SttDevice;
   setSttDevice: (value: SttDevice) => void;
+
+  /** Qwen3-ASR context: zero fits each recording; a positive value is a fixed limit. */
+  sttContextLength: number;
+  setSttContextLength: (value: number) => void;
 
   sttProviderId: string;
   setSttProviderId: (value: string) => void;
@@ -217,6 +232,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       dictationEngine: isTauri ? "model" : "browser",
       setDictationEngine: (dictationEngine) => set({ dictationEngine }),
 
+      micTarget: "asr",
+      setMicTarget: (micTarget) => set({ micTarget }),
+
       sttModel: DEFAULT_STT_MODEL,
       setSttModel: (value) =>
         set((state) => {
@@ -243,6 +261,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         // Server default for cold /v1/audio/transcriptions loads (#15280).
         syncSttDevicePreference(sttDevice);
       },
+
+      sttContextLength: DEFAULT_STT_CONTEXT_LENGTH,
+      setSttContextLength: (value) =>
+        set({ sttContextLength: normalizeSttContextLength(value) }),
 
       sttProviderId: "",
       setSttProviderId: (sttProviderId) => set({ sttProviderId }),
@@ -384,12 +406,14 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ...current,
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
+          micTarget: saved?.micTarget === "model" ? "model" : "asr",
           sttModel,
           sttGgufVariant:
             sttModel === savedSttModel
               ? asString(saved?.sttGgufVariant, "")
               : "",
           sttDevice: normalizeSttDevice(saved?.sttDevice),
+          sttContextLength: normalizeSttContextLength(saved?.sttContextLength),
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,

@@ -969,16 +969,20 @@ def comfy_int8_backend(
     base_repo: Optional[str] = None,
     *,
     offload: bool = False,
+    lora: bool = False,
 ) -> Optional[str]:
-    """int8 runtime: torchao when resident, native under offload, None to dequantise to bf16."""
+    """int8 runtime: torchao when resident, native under offload (or as storage, ``int8_storage_scheme``, where neither
+    runs; never under a LoRA), None to dequantise to bf16."""
     if (os.environ.get(COMFY_INT8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
         from .diffusion_transformer_quant import (
             TQ_INT8,
+            int8_storage_scheme,
             native_quant_scheme,
             select_transformer_quant_scheme,
         )
+
         if native_quant_scheme(target, TQ_INT8, family = family, offload = offload) == TQ_INT8:
             return "native"
         if not offload and (
@@ -986,6 +990,8 @@ def comfy_int8_backend(
             == TQ_INT8
         ):
             return "torchao"
+        if not lora and int8_storage_scheme(target, family, offload = offload) == TQ_INT8:
+            return "native"
     except Exception:  # noqa: BLE001 -- an unanswerable probe takes the exact dense path
         pass
     return None

@@ -205,16 +205,21 @@ def test_builtin_specs_cover_every_former_install_site():
         "qwenimage_real_rope",
         "zimage_fused",
         "qwenimage21_fused",
+        "qwenimage21_dense_fused",
+        "flux_convrot_fused",
         "moss_fused",
     }
     # the former hand-kept teardown list is now a registry group
     assert {s.name for s in ap.specs(group = ap.GROUP_FUSED_DIT)} == {
         "flux2_rope",
         "flux3_rope",
+        "flux3_fp16_attn",
         "rocm_fused",
         "qwenimage_real_rope",
         "zimage_fused",
         "qwenimage21_fused",
+        "qwenimage21_dense_fused",
+        "flux_convrot_fused",
         "moss_fused",
     }
     # every spec answers its module's existing kill switch name
@@ -222,12 +227,15 @@ def test_builtin_specs_cover_every_former_install_site():
     assert envs["arch_fusions"] == "UNSLOTH_DIFFUSION_ARCH_PATCHES"
     assert envs["wan_fused"] == "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
     assert envs["zimage_fused"] == "UNSLOTH_DIFFUSION_ZIMAGE_FUSED"
+    assert envs["flux_convrot_fused"] == "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED"
     # order inside the regional compile: Q2.1 real RoPE before the int8 swap, the rest after it
     assert [s.name for s in ap.specs(ap.STAGE_PRE_INT8)] == ["qwenimage21_real_rope"]
     assert [s.name for s in ap.specs(ap.STAGE_PRE_COMPILE)] == [
         "qwenimage_real_rope",
         "zimage_fused",
         "qwenimage21_fused",
+        "qwenimage21_dense_fused",
+        "flux_convrot_fused",
         "moss_fused",
     ]
 

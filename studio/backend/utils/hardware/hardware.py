@@ -329,7 +329,9 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     # Windows AMD: amd-smi is opt-in, but the DirectX registry records every adapter's dedicated memory.
     if platform.system() == "Windows":
         # The registry outlives the hardware, so a record only RE-LABELS an adapter the live WMI scan also returned, never adds one (setup.ps1 has the same rule).
-        _live = _windows_live_adapter_names()
+        # The PowerShell WMI scan costs ~1 s, so run it once, and only when a vendor has records.
+        _live_unset = object()
+        _live = _live_unset
         for _vendor, _vendor_id in (
             ("amd", _AMD_PCI_VENDOR_ID),
             # Same registry, one more vendor id: an Arc host whose XPU wheel became a CPU one.
@@ -346,6 +348,8 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                 continue
             if not records:
                 continue
+            if _live is _live_unset:
+                _live = _windows_live_adapter_names()
             if _live is None:
                 # The live scan could not answer, so contribute nothing and say so.
                 unanswered.add(_vendor)
@@ -2024,9 +2028,8 @@ def _amd_permission_hint_for_mismatch(
     detail: Optional[str], vendors: "Optional[set[str]]" = None
 ) -> tuple[Optional[str], bool]:
     """``(node_hint, wheel_targets_amd)`` for a torch mismatch: the closed AMD device node sentence when it applies, and whether the wheel is a ROCm one it fully explains."""
-    # No reinstall changes group membership (#10466), so a closed node is not a mismatch.
-    # Recording AMD is necessary but not sufficient: a hybrid host on CUDA torch records
-    # both vendors, and there the verdict is about the NVIDIA card.
+    # No reinstall changes group membership (issue 10466), so a closed node is not a mismatch;
+    # recording AMD is necessary, not sufficient, as a hybrid CUDA host records both vendors.
     if vendors is None:
         vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
     # Worth MENTIONING is about the hardware; REPLACES the reinstall advice is about the
@@ -2166,8 +2169,7 @@ def export_capability() -> dict:
     # get_device() ran detect_hardware(), so IS_ROCM (hip field OR "rocm" tag) is settled.
     _windows_rocm = sys.platform == "win32" and IS_ROCM
     try:
-        # Metadata only: a torchao below 0.15 (older torch <= 2.8 installs) hides the formats
-        # everywhere, since transformers' TorchAoConfig refuses it.
+        # Metadata only: torchao < 0.15 hides the formats everywhere; TorchAoConfig refuses it.
         from core._torchao_stub import torchao_export_loadable
         torchao_export_supported = torchao_export_loadable()
     except Exception:
@@ -2487,10 +2489,8 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
 
 
 def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
-    """Physical indices of NVIDIA cards with MIG instances or MIG mode on (an instance-less one has no
-    CUDA device, so its row is no ordinal either), or None when discovery is unknown (a listing failed or
-    came back empty, unlike a confirmed set with no MIG card). Shares nvidia's caches, so a failed
-    listing backs off instead of re-running nvidia-smi per call."""
+    """Physical indices of NVIDIA cards with MIG instances or MIG mode on, None when discovery is
+    unknown (failed or empty listing); shares nvidia's caches so failures back off."""
     try:
         from . import nvidia
 
@@ -3624,6 +3624,125 @@ def _engine_instance_luid(instance_name: str) -> Optional[int]:
     return _parse_adapter_luid(instance_name[head:])
 
 
+_rocm_win_counter_lock = threading.Lock()
+# (completed_at, gpu_memory_events generation, spawn seconds, {key: stdout})
+_rocm_win_counter_cache: dict[str, tuple[float, int, float, dict[tuple[str, str], str]]] = {}
+_ROCM_WIN_COUNTER_SPACING = 4.0
+_ROCM_WIN_COUNTER_MAX_AGE_S = 10.0
+# Empty combined reading (localized names, hung PowerShell): each counter runs its own call until this retry.
+_ROCM_WIN_COUNTER_EMPTY_RETRY_S = 60.0
+_ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("vram", "Dedicated Usage"): (
+        "D",
+        "\\GPU Adapter Memory(*)\\Dedicated Usage",
+        "[int64]$_.CookedValue",
+    ),
+    ("vram", "Shared Usage"): (
+        "S",
+        "\\GPU Adapter Memory(*)\\Shared Usage",
+        "[int64]$_.CookedValue",
+    ),
+    ("util", "3D"): (
+        "U",
+        "\\GPU Engine(*engtype_3D*)\\Utilization Percentage",
+        "$_.CookedValue",
+    ),
+}
+
+
+def _rocm_windows_combined_counter_ps() -> str:
+    paths = ",".join(f"'{path}'" for _, path, _ in _ROCM_WIN_DISPLAY_COUNTERS.values())
+    branches = "else".join(
+        f"if($p.EndsWith('{path[path.rindex(chr(92)):].lower()}'))"
+        f"{{'{tag}|{{0}}|{{1}}' -f $_.InstanceName,{value}}}"
+        for tag, path, value in _ROCM_WIN_DISPLAY_COUNTERS.values()
+    )
+    return (
+        f"$s=(Get-Counter -Counter {paths} -ErrorAction SilentlyContinue).CounterSamples;"
+        f"if($s){{$s|ForEach-Object{{$p=$_.Path.ToLower();{branches}}}}}"
+        "else{'__NONE__'}"
+    )
+
+
+def _rocm_windows_split_combined(stdout: str) -> dict[tuple[str, str], str]:
+    by_tag: dict[str, list[str]] = {}
+    for line in stdout.splitlines():
+        tag, sep, rest = line.strip().partition("|")
+        if sep:
+            by_tag.setdefault(tag, []).append(rest)
+    return {
+        key: "\n".join(by_tag[tag]) + "\n"
+        for key, (tag, _, _) in _ROCM_WIN_DISPLAY_COUNTERS.items()
+        if by_tag.get(tag)
+    }
+
+
+def _rocm_windows_counter_stdout(key: tuple[str, str], ps: str) -> Optional[str]:
+    """stdout of ``ps`` or None. Display reads share one combined Get-Counter, kept max(TTL, 4x spawn time) until a GPU memory event; misses fall back to ``ps``, failures are never served."""
+    try:
+        from utils import gpu_memory_events
+        from utils.hardware import gpu_query
+
+        use_cache = gpu_query.display_cache_allowed() and key in _ROCM_WIN_DISPLAY_COUNTERS
+        ttl = gpu_query.ttl_for(gpu_query.DISPLAY)
+    except Exception:
+        use_cache = False
+    if use_cache and ttl > 0:
+        stdout = None
+        try:
+            with _rocm_win_counter_lock:
+                cached = _rocm_win_counter_cache.get("display")
+                generation = gpu_memory_events.generation()
+                if (
+                    cached is None
+                    or cached[1] != generation
+                    or (
+                        time.monotonic() - cached[0]
+                        >= (
+                            min(
+                                _ROCM_WIN_COUNTER_MAX_AGE_S,
+                                max(ttl, _ROCM_WIN_COUNTER_SPACING * cached[2]),
+                            )
+                            if cached[3]
+                            else _ROCM_WIN_COUNTER_EMPTY_RETRY_S
+                        )
+                    )
+                ):
+                    _rocm_win_counter_cache.pop("display", None)
+                    started = time.monotonic()
+                    try:
+                        combined = _rocm_windows_counter_stdout_uncached(
+                            _rocm_windows_combined_counter_ps()
+                        )
+                    except Exception:
+                        combined = None
+                    done = time.monotonic()
+                    readings = _rocm_windows_split_combined(combined) if combined else {}
+                    cached = (done, generation, done - started, readings)
+                    _rocm_win_counter_cache["display"] = cached
+                if cached is not None:
+                    stdout = cached[3].get(key)
+        except Exception:
+            stdout = None
+        if stdout is not None:
+            return stdout
+    return _rocm_windows_counter_stdout_uncached(ps)
+
+
+def _rocm_windows_counter_stdout_uncached(ps: str) -> Optional[str]:
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 5,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return r.stdout
+
+
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
     """AMD GPU compute utilization via Windows Performance Counters (3D engine nodes). ``luid`` narrows the sum to one adapter's engines, matched here rather than in the counter path so tests can reach it."""
     if platform.system() != "Windows":
@@ -3635,19 +3754,12 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
             "else{'__NONE__'}"
         )
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        stdout = _rocm_windows_counter_stdout(("util", "3D"), ps)
+        if stdout is None:
             return None
         total = 0.0
         matched = False
-        for line in r.stdout.splitlines():
+        for line in stdout.splitlines():
             line = line.strip()
             if not line or line == "__NONE__" or "|" not in line:
                 continue
@@ -3812,18 +3924,11 @@ def _rocm_windows_perf_counter_vram_by_adapter(
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,[int64]$_.CookedValue}}"
             "else{'__NONE__'}"
         )
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        stdout = _rocm_windows_counter_stdout(("vram", counter), ps)
+        if stdout is None:
             return None
         adapters: list[tuple[str, float]] = []
-        for line in r.stdout.splitlines():
+        for line in stdout.splitlines():
             line = line.strip()
             if not line or line == "__NONE__" or "|" not in line:
                 continue
@@ -4994,8 +5099,7 @@ def _cgroup_available_memory_gb() -> Optional[float]:
 
 
 def _host_memory_used_gb() -> Optional[float]:
-    """Host memory in use, or None. On one shared pool this is not an approximation of
-    the GPU's used half, it is the same measurement."""
+    """Host memory in use, or None; on a shared pool it is the GPU's used figure exactly."""
     try:
         import psutil
         vm = psutil.virtual_memory()
@@ -6412,8 +6516,7 @@ def estimate_required_model_memory_gb(
                     vram_config.optimizer,
                 )
                 breakdown.gradients += compute_gradient_bytes(extra_params)
-        # Text-diffusion objectives that run [noisy ; clean] or a second self-conditioning pass hold
-        # about twice an autoregressive model's activations.
+        # Text diffusion on [noisy ; clean] or self-conditioning holds about 2x AR activations.
         from utils.models.diffusion_lm import ACTIVATION_FACTOR, diffusion_lm_profile
 
         diffusion_profile = diffusion_lm_profile(
@@ -6750,9 +6853,8 @@ def auto_select_gpu_ids(
     elif parent_visible_spec.get("index_kind") != "cuda_device" and _mask_names_cuda_ordinals(
         parent_visible_spec
     ):
-        # The display keeps the CLI rows; ranking needs the cards the worker will get. Torch already
-        # reports a MIG slice's own memory, and these rows carry mask ids, not the physical rows the
-        # MIG correction keys on, so it must not run on them.
+        # Display keeps CLI rows; ranking needs the worker's cards. These rows carry mask ids, not
+        # the physical rows the MIG correction keys on, so it must not run on them.
         utilization = {
             "mig_corrected": True,
             "devices": [
@@ -6930,9 +7032,8 @@ def prepare_gpu_selection(
 
 
 def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    """Replace a MIG card's whole-card nvidia-smi memory with the slice CUDA exposes
-    for it (NVML), or drop the reading when no slice reading exists so the ranking
-    skips it. Devices on cards without MIG instances are returned unchanged."""
+    """Swaps a MIG card's whole-card nvidia-smi memory for the slice CUDA exposes (NVML), or drops
+    the reading when none exists so ranking skips it; other devices pass unchanged."""
     if IS_ROCM or not devices or get_device() != DeviceType.CUDA:
         return devices
     try:
@@ -7129,10 +7230,9 @@ def _vulkan_inference_device(row: Dict[str, Any], apply_igpu_host_reserve_mib) -
 def get_mixed_vulkan_inference_gpu_info(
     cuda_info: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """``cuda_info`` plus the Vulkan devices a llama.cpp build shipping both CUDA and Vulkan also
-    runs on (an AMD card beside NVIDIA ones), or None when it has none. llama.cpp skips a Vulkan
-    device whose PCI id a CUDA one already holds; a probe without ids falls back to the name.
-    Without a CUDA torch, ``cuda_info`` is not CUDA's and the nvidia-smi rows stand in for it."""
+    """Returns cuda_info plus the Vulkan devices a CUDA+Vulkan llama.cpp build also runs on, or
+    None; llama.cpp skips a Vulkan device whose PCI id a CUDA device holds; with no ids it falls
+    back to the name; without CUDA torch, nvidia-smi rows stand in for cuda_info."""
     try:
         from core.inference.llama_cpp import (
             LlamaCppBackend,

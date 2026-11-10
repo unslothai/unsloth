@@ -139,9 +139,7 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
 
 
 def parse_mcp_config(config: object) -> tuple[list[ParsedMcpEntry], list[str]]:
-    """Parse a Claude-Desktop/Cursor/Cline/VS Code config. Accepts the
-    ``mcpServers`` key (primary) or ``servers`` (VS Code alias). Returns
-    ``(entries, errors)``; a bad entry adds an error rather than raising."""
+    """Accepts the mcpServers key or the servers VS Code alias; bad entries are reported, not raised."""
     if not isinstance(config, dict):
         return [], ["Config must be a JSON object."]
     servers_key = "mcpServers" if "mcpServers" in config else "servers"

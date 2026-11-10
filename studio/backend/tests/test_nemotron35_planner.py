@@ -118,8 +118,7 @@ def test_nemotron_layout_leaves_the_nextn_block_out_of_the_trunk():
 
 
 def test_per_layer_kv_heads_on_other_archs_still_abstain():
-    """Only Nemotron-H's array is interpreted; any other arch still raises here, which
-    layout_from_gguf turns into an abstention, exactly as before."""
+    """Other archs still raise, and layout_from_gguf turns that into an abstention."""
     from core.inference.offload_layout import _layout_from_reader
 
     fields = _nemotron_fields(arch = "jamba")
@@ -300,9 +299,7 @@ _DFLASH_MEASURED_COMPUTE_MIB = {
 
 @pytest.mark.parametrize("drafter", sorted(_DFLASH_MEASURED_COMPUTE_MIB))
 def test_dflash_compute_reserve_covers_the_measurement_without_double_counting(drafter):
-    """The separate _MTP_DRAFT_COMPUTE_BYTES floor rides beside the DFlash floor, so the two
-    together must cover the measurement, but charging the full measurement again on top of it
-    (572 MiB) priced Bolt + LiLiCorr 224 MiB over what llama.cpp allocates."""
+    """Floors together must cover the 572 MiB measurement; charging it again overpriced Bolt + LiLiCorr."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     reserve = (

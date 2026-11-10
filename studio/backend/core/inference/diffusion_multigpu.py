@@ -17,7 +17,7 @@ import time
 import types
 import weakref
 from collections import OrderedDict
-from typing import Any, Callable, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 MULTIGPU_ENV = "UNSLOTH_DIFFUSION_MULTIGPU"
 CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL"
@@ -50,6 +50,23 @@ def multigpu_mode() -> str:
     if raw == "force":
         return "force"
     return "auto"
+
+
+MULTIGPU_ALL_ENV = "UNSLOTH_DIFFUSION_MULTIGPU_ALL"
+
+
+def multigpu_all_enabled() -> bool:
+    """Multi-GPU paths for the remaining families and formats; ``0`` keeps the one-card choices."""
+    if multigpu_mode() == "off":
+        return False
+    return (os.environ.get(MULTIGPU_ALL_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+        "disable",
+        "disabled",
+    )
 
 
 UNET_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET"
@@ -924,8 +941,11 @@ def refine_plan_for_multigpu(
     pipe: Any,
     plan: Any,
     logger: Any = None,
+    *,
+    card_reserve_mib: Optional[Mapping[int, int]] = None,
 ) -> Any:
     """Post-load: an offloading plan becomes a resident split when the LOADED components can be shared by the cards.
+    ``card_reserve_mib`` (ordinal -> MiB): memory a sidecar process holds on a card, uncounted by the loaded sizes.
 
     No-op without a selection, for explicit offload modes, a plan already resident (unless forced) or split, unified memory
     or an unknown budget. When no component assignment fits, a layer split (diffusion_layer_split_plan) is tried before
@@ -1001,7 +1021,13 @@ def refine_plan_for_multigpu(
     secondary = best_secondary(selection, mode = mode)
     if secondary is None:
         return one_card_plan("no second card")
-    sec_limit = secondary_resident_limit_mib(secondary, mode)
+    reserve = {int(o): max(0, int(m)) for o, m in (card_reserve_mib or {}).items()}
+
+    def card_limit(ordinal: int) -> Optional[int]:
+        limit = secondary_resident_limit_mib(ordinal, mode)
+        return None if limit is None else int(limit) - reserve.get(int(ordinal), 0)
+
+    sec_limit = card_limit(secondary)
     if sec_limit is None:
         return one_card_plan(f"free memory of cuda:{secondary} is unknown")
     from .diffusion_memory import _fast_device_budget_mib
@@ -1014,11 +1040,9 @@ def refine_plan_for_multigpu(
     from .diffusion_memory import plan_keeps_transformer_resident
 
     if mode != "fast" and plan.offload_policy != "none" and plan_keeps_transformer_resident(plan):
-        # The one-card plan already holds the denoiser resident against the full budget and streams only the
-        # encoders: moving companions off leaves the primary holding no more than that, so the 85% margin would
-        # refuse a split that is lighter than the plan it replaces (the text encoder then streamed from host memory
-        # beside an idle second card).
+        # Denoiser stays resident on one card, so the 85% margin must not refuse a lighter split.
         primary_limit = max(int(primary_limit), int(budget))
+    primary_limit = int(primary_limit) - reserve.get(primary, 0)
     measured_headroom = plan.estimates.get("measured_runtime_headroom_mib")
     flat_headroom = (
         plan.estimates.get("calibrated_headroom_mib")
@@ -1054,7 +1078,7 @@ def refine_plan_for_multigpu(
             selection = selection,
             sizes = sizes,
             primary_limit_mib = int(primary_limit),
-            secondary_limit_mib = lambda o: secondary_resident_limit_mib(o, mode),
+            secondary_limit_mib = card_limit,
             headroom_mib = headroom,
             overhead_mib = overhead,
             logger = logger,
@@ -1109,6 +1133,7 @@ def refine_plan_for_multigpu(
     if layer_force:
         return layer_split_or_plan()
     move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger)
+    encoders_limit = encoder_card_limit_mib(secondary)
     trials = component_assignment_trials(
         sizes,
         headroom_mib = headroom,
@@ -1116,7 +1141,9 @@ def refine_plan_for_multigpu(
         primary_limit_mib = int(primary_limit),
         secondary_limit_mib = int(sec_limit),
         move_denoisers = move_denoisers,
-        encoders_only_limit_mib = encoder_card_limit_mib(secondary),
+        encoders_only_limit_mib = (
+            None if encoders_limit is None else int(encoders_limit) - reserve.get(int(secondary), 0)
+        ),
     )
     winner = next((t for t in trials if t.fits), None)
     moved = winner.moved if winner is not None else None
@@ -1852,9 +1879,7 @@ def _portable(fn: Any, depth: int = 0) -> bool:
     return True
 
 
-# Where a hook shared by a replica may come from. Studio's own hooks keep their per-call state on the module (mirrored
-# by _mirror_hook_state); a foreign hook may keep it in a module global that both threads would then race on, and that
-# cannot be seen from the function, so it declines the replica.
+# Foreign hooks may keep state in a module global that replica threads race on, so they decline.
 _TRUSTED_HOOK_MODULES = ("core.inference.", "studio.backend.core.inference.")
 
 
@@ -1989,6 +2014,8 @@ def _copy_module(module: Any, device: Any) -> Any:
             continue
         memo[id(buffer)] = buffer.detach().to(device)
         keep.append(buffer)
+    from .diffusion_qwenimage21_dense_fused import is_replica_record, rebuild_replica
+
     for sub in module.modules():
         offload_keys = set(_offload_attr_keys(sub))
         for key, value in sub.__dict__.items():
@@ -1996,6 +2023,7 @@ def _copy_module(module: Any, device: Any) -> Any:
                 isinstance(value, CfgParallelRouter)
                 or key in offload_keys
                 or key in _SOURCE_ONLY_ATTRS
+                or is_replica_record(key, value)
             ):
                 # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
                 # source-only cache holds source-card tensors
@@ -2006,9 +2034,8 @@ def _copy_module(module: Any, device: Any) -> Any:
                     memo[id(hook)] = _DROP
         # Per-step precision state (the NVFP4 W4A16 protect schedule) is advanced by the source's scheduler: the copy
         # must read the same controller, or the two CFG branches of one step run different GEMMs.
-        for value in sub.__dict__.values():
-            if type(value).__name__ in _SHARED_STATE_TYPES:
-                memo[id(value)] = value
+        for value in _shared_state_values(sub):
+            memo[id(value)] = value
     guard = module.__dict__.get("_unsloth_compile_guard")
     if guard is not None:
         memo[id(guard)] = _DROP
@@ -2034,6 +2061,16 @@ def _copy_module(module: Any, device: Any) -> Any:
                     del hooks[hook_id]
                     for other in _ROOT_HOOK_DICTS:
                         sub.__dict__.get(other, {}).pop(hook_id, None)
+    # Release the copies before re-fusing on the replica's card, else each replaced allocation stays alive.
+    memo.clear()
+    del keep
+    param = copied = new = buffer = (
+        None  # the copy loop's last parameter, still referenced by these names
+    )
+    try:
+        rebuild_replica(module, replica)
+    except Exception:  # noqa: BLE001 - the replica keeps the stock projections
+        pass
     if isinstance(router, CfgParallelRouter) and router.had_override:
         _rebind_root_forward(router.orig_forward, module, replica)
     # The source's own __call__ runs its root hooks around every branch; the copy must not run them a second time.
@@ -2071,6 +2108,10 @@ _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
 _SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
+
+
+def _shared_state_values(sub: Any) -> list:
+    return [value for value in sub.__dict__.values() if type(value).__name__ in _SHARED_STATE_TYPES]
 
 
 def _rewrap_compiled(source: Any, replica: Any) -> None:
@@ -2189,6 +2230,15 @@ def _latent_arg(args: tuple, kwargs: dict) -> Any:
         value = kwargs.get(key)
         if isinstance(value, torch.Tensor):
             return value
+    # Cosmos 3: ``vision_tokens=[t]``, a new list each call around the same tensor
+    vision = kwargs.get("vision_tokens")
+    if (
+        isinstance(vision, (list, tuple))
+        and len(vision) == 1
+        and isinstance(vision[0], torch.Tensor)
+        and multigpu_all_enabled()
+    ):
+        return vision[0]
     for value in args:
         if isinstance(value, torch.Tensor):
             return value
@@ -2658,6 +2708,25 @@ def _call_signature(args: tuple, kwargs: dict) -> tuple:
     )
 
 
+def _shared_states(pairs: list) -> tuple:
+    found: dict = {}
+    for pair in pairs:
+        for sub in pair:
+            for value in _shared_state_values(sub):
+                found.setdefault(id(value), value)
+    return tuple(found.values())
+
+
+def _shared_state_key(states: tuple) -> tuple:
+    key = []
+    for state in states:
+        try:
+            key.append(state.compile_key())
+        except Exception:  # noqa: BLE001 - an unreadable state is never warm
+            key.append(object())
+    return tuple(key)
+
+
 def _note_warm(seen: set, sig: tuple) -> None:
     if len(seen) >= 256:
         seen.clear()
@@ -2758,6 +2827,8 @@ class CfgParallelRouter:
         self.probe_index: dict = {}
         self.probed_this_render = False
         self.pairs: list = []
+        # Shared per-step states' compile guards join every warm-call signature.
+        self.shared_states: tuple = ()
         # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
         self.warm_replica: set = set()
@@ -2801,6 +2872,7 @@ class CfgParallelRouter:
         self.kv_mirrors.clear()
         self.kv_declined.clear()
         self.pairs = []
+        self.shared_states = ()
         self.warm_primary.clear()
         self.warm_replica.clear()
         self.prefetched.clear()
@@ -2844,12 +2916,16 @@ class CfgParallelRouter:
         self.exclusion_refused = False
         return False
 
+    def _signature(self, args: tuple, kwargs: dict) -> tuple:
+        """``_call_signature`` plus guarded model state: an NVFP4 protect flip recompiles under seen args."""
+        return (*_call_signature(args, kwargs), _shared_state_key(self.shared_states))
+
     def _primary(self, *args: Any, **kwargs: Any) -> Any:
         inner = self.inner
         return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
 
     def _primary_noting(self, sig: Optional[tuple], args: tuple, kwargs: dict) -> Any:
-        sig = _call_signature(args, kwargs) if sig is None else sig
+        sig = self._signature(args, kwargs) if sig is None else sig
         job = self._pair_job
         if sig not in self.warm_primary and job is not None:
             job["event"].wait()  # may compile: not while the replica runs
@@ -2888,7 +2964,7 @@ class CfgParallelRouter:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 self._prefetch(args, kwargs)
-                sig = _call_signature(args, kwargs)
+                sig = self._signature(args, kwargs)
                 self._launch_prediction(latent, sig)
         if (
             self.branch == 0
@@ -2954,11 +3030,11 @@ class CfgParallelRouter:
     def _batch_split(self, latent: Any, args: tuple, kwargs: dict) -> Any:
         """A step without guidance branches (a distilled model, or both branches batched into one call) whose batch is
         even: the first half runs on the source, the second on the replica at the same time. Only for denoiser classes
-        whose every batched input is known (``_DIT_BATCH_SPLIT_KWARGS``); anything else, an odd batch, or the kill
-        switch keeps the call whole. None = not split (the caller runs it whole)."""
+        whose every batched input is known (``_DIT_BATCH_SPLIT_KWARGS`` / ``_ALL``); anything else, an odd
+        batch, or the kill switch keeps the call whole. None = not split (the caller runs it whole)."""
         torch = _torch()
         module = self.module_ref()
-        allowed = _DIT_BATCH_SPLIT_KWARGS.get(type(module).__name__) if module is not None else None
+        allowed, joins_all = _batch_split_kwargs(module)
         if allowed is None or _batch_split_disabled() or torch.compiler.is_compiling():
             return None
         if getattr(module, "_compiled_call_impl", None) is not None:
@@ -2973,7 +3049,7 @@ class CfgParallelRouter:
         )
         if extra:
             return self._skip_split(f"unknown inputs {extra}")
-        if kwargs.get("joint_attention_kwargs"):
+        if kwargs.get("joint_attention_kwargs") or (joins_all and kwargs.get("attention_kwargs")):
             return self._skip_split("attention kwargs")
         if self._split_scaled is None:
             from .diffusion_cfg_batch import per_call_scaled
@@ -2999,9 +3075,16 @@ class CfgParallelRouter:
         first, second = res
         if second is None:
             second = self._primary(*a1, **k1)
+        if joins_all:
+            try:
+                joined = _join_outputs(first, second)
+            except TypeError as exc:
+                return self._skip_split(f"unjoinable output ({exc})")
+        else:
+            joined = None
         self.stats["primary_calls"] += 1
         self.stats["batch_splits"] += 1
-        return _join_batch(first, second)
+        return joined if joins_all else _join_batch(first, second)
 
     def _skip_split(self, reason: str) -> None:
         self.stats["batch_split_skip"] = reason
@@ -3039,7 +3122,7 @@ class CfgParallelRouter:
             return None
         self.prefetched.clear()
         hook_state = _mirror_hook_state(self.pairs)
-        sig = _call_signature(args, kwargs)
+        sig = self._signature(args, kwargs)
         try:
             r_args = self._to_replica(args)
             r_kwargs = self._to_replica(kwargs)
@@ -3133,7 +3216,7 @@ class CfgParallelRouter:
             return
         if (
             sig not in self.warm_primary
-            or _call_signature(p_args, p_kwargs) not in self.warm_replica
+            or self._signature(p_args, p_kwargs) not in self.warm_replica
         ):
             return  # a side may compile: the odd branch runs unpredicted, after the primary one
         try:
@@ -3143,9 +3226,7 @@ class CfgParallelRouter:
             self._note_refusal(exc)
             return
         torch = _torch()
-        # What the replica consumes, kept per tensor: at the real call the sources are compared bitwise against it, so
-        # an in-place edit between launch and the odd branch (same object, new values) rejects the prediction.
-        # Version counters cannot do this: inference tensors do not track one.
+        # Bitwise-compared snapshots catch in-place edits; version counters miss inference tensors.
         snapshots = []
         for (_path, src), (_rpath, used) in zip(
             _leaves((p_args, p_kwargs)), _leaves((r_args, r_kwargs))
@@ -3285,6 +3366,7 @@ class CfgParallelRouter:
                 self.replica = self.replica_factory()
             self.probed_this_render = True
             self.pairs = list(zip(module.modules(), self.replica.modules()))
+            self.shared_states = _shared_states(self.pairs)
             self.worker = _ReplicaWorker(self.secondary)
             weakref.finalize(self, self.worker.close)
             self.stats["replica_build_s"] = round(time.perf_counter() - t0, 3)
@@ -3410,7 +3492,7 @@ class CfgParallelRouter:
         # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
         self.prefetched.clear()
         _mirror_hook_state(self.pairs)
-        sig = _call_signature(args, kwargs)
+        sig = self._signature(args, kwargs)
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica
@@ -3575,7 +3657,125 @@ _DIT_BATCH_SPLIT_KWARGS = {
         }
     ),
 }
+# Every tensor input is per sample on dim 0 or unbatched (ids / masks); LTX-2 returns (video, audio), both joined.
+# Left out: HiDream (its llama states are layers x batch, batched on dim 1), MOSS-Image (positional inputs), Anima
+# (Studio's wrapper renders one image per call, so no batch reaches the denoiser), FLUX.3 /
+# Qwen-Image 2.1 (a per-branch prefix KV cache object), and an attention_kwargs that is not empty.
+_DIT_BATCH_SPLIT_KWARGS_ALL = {
+    "LTX2VideoTransformer3DModel": frozenset(
+        {
+            "hidden_states",
+            "audio_hidden_states",
+            "encoder_hidden_states",
+            "audio_encoder_hidden_states",
+            "timestep",
+            "audio_timestep",
+            "sigma",
+            "audio_sigma",
+            "encoder_attention_mask",
+            "audio_encoder_attention_mask",
+            "num_frames",
+            "height",
+            "width",
+            "fps",
+            "audio_num_frames",
+            "video_coords",
+            "audio_coords",
+            "isolate_modalities",
+            "use_cross_timestep",
+            "attention_kwargs",
+            "return_dict",
+        }
+    ),
+    "ChromaTransformer2DModel": frozenset(
+        {
+            "hidden_states",
+            "encoder_hidden_states",
+            "timestep",
+            "img_ids",
+            "txt_ids",
+            "attention_mask",
+            "joint_attention_kwargs",
+            "return_dict",
+        }
+    ),
+    "QwenImageTransformer2DModel": frozenset(
+        {
+            "hidden_states",
+            "encoder_hidden_states",
+            "encoder_hidden_states_mask",
+            "timestep",
+            "img_shapes",
+            "guidance",
+            "attention_kwargs",
+            "return_dict",
+        }
+    ),
+    "HunyuanImageTransformer2DModel": frozenset(
+        {
+            "hidden_states",
+            "timestep",
+            "timestep_r",
+            "encoder_hidden_states",
+            "encoder_attention_mask",
+            "encoder_hidden_states_2",
+            "encoder_attention_mask_2",
+            "guidance",
+            "attention_kwargs",
+            "return_dict",
+        }
+    ),
+    "Krea2Transformer2DModel": frozenset(
+        {
+            "hidden_states",
+            "encoder_hidden_states",
+            "timestep",
+            "position_ids",
+            "encoder_attention_mask",
+            "attention_kwargs",
+            "return_dict",
+        }
+    ),
+}
 BATCH_SPLIT_ENV = "UNSLOTH_DIFFUSION_BATCH_SPLIT"
+
+
+def _batch_split_kwargs(module: Any) -> tuple[Optional[frozenset], bool]:
+    """(the inputs a batch split of ``module`` may carry, or None; whether every output tensor is joined)."""
+    name = type(module).__name__ if module is not None else None
+    allowed = _DIT_BATCH_SPLIT_KWARGS.get(name)
+    if allowed is not None:
+        return allowed, False
+    if name in _DIT_BATCH_SPLIT_KWARGS_ALL and multigpu_all_enabled():
+        return _DIT_BATCH_SPLIT_KWARGS_ALL[name], True
+    return None, False
+
+
+def _join_outputs(
+    a: Any,
+    b: Any,
+    depth: int = 0,
+) -> Any:
+    """Join two halves' outputs on dim 0: every tensor of a tuple / list / output dict."""
+    torch = _torch()
+    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+        return torch.cat([a, b.to(a.device)], dim = 0)
+    if (
+        depth < 4
+        and isinstance(a, (tuple, list))
+        and isinstance(b, (tuple, list))
+        and len(a) == len(b)
+    ):
+        joined = [_join_outputs(x, y, depth + 1) for x, y in zip(a, b)]
+        return tuple(joined) if isinstance(a, tuple) else joined
+    if depth < 4 and isinstance(a, dict) and isinstance(b, dict) and a.keys() == b.keys():
+        return type(a)(**{k: _join_outputs(a[k], b[k], depth + 1) for k in a})
+    if a is None and b is None:
+        return None
+    sample_a, sample_b = getattr(a, "sample", None), getattr(b, "sample", None)
+    if isinstance(sample_a, torch.Tensor) and isinstance(sample_b, torch.Tensor):
+        return type(a)(sample = torch.cat([sample_a, sample_b.to(sample_a.device)], dim = 0))
+    raise TypeError(f"unexpected denoiser output {type(a).__name__}")
 
 
 def _batch_split_disabled() -> bool:

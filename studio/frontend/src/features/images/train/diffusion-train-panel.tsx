@@ -118,6 +118,11 @@ import {
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
+import {
+  MediaGenerationPresetControl,
+  type TrainingPresetParams,
+  useMediaGenerationPresets,
+} from "@/features/generation-presets";
 
 // Fallback list for an older backend whose /info reports none, in popularity order.
 type FamilyPreset = {
@@ -353,6 +358,41 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
   return merged;
 }
 
+function TrainingPresetControl({
+  defaultParams,
+  currentParams,
+  applyParams,
+  readyRef,
+}: {
+  defaultParams: TrainingPresetParams;
+  currentParams: TrainingPresetParams;
+  applyParams: (params: TrainingPresetParams) => TrainingPresetParams;
+  readyRef: { current: boolean };
+}) {
+  const presets = useMediaGenerationPresets({
+    kind: "training",
+    defaultParams,
+    currentParams,
+    applyParams,
+    restoreWorkingParams: false,
+  });
+  useEffect(() => {
+    readyRef.current = presets.presetsReady;
+  }, [presets.presetsReady, readyRef]);
+  return (
+    <MediaGenerationPresetControl
+      kind="training"
+      presets={presets.presets}
+      activePreset={presets.activePreset}
+      ready={presets.presetsReady}
+      hasUnsavedChanges={presets.hasUnsavedChanges}
+      onSelect={presets.selectPreset}
+      onSave={presets.savePreset}
+      onDelete={presets.deletePreset}
+    />
+  );
+}
+
 // Kept mounted with the page so a long run survives tab switches; polling is gated on `active`.
 export function DiffusionTrainPanel({
   active,
@@ -365,6 +405,7 @@ export function DiffusionTrainPanel({
   baseChoice,
   onBaseChoiceChange,
   onFamiliesChange,
+  savedPresets = false,
 }: {
   active: boolean;
   loadedFamily?: string | null;
@@ -374,6 +415,8 @@ export function DiffusionTrainPanel({
   baseChoice: string;
   onBaseChoiceChange: (repo: string) => void;
   onFamiliesChange?: (families: FamilyPreset[]) => void;
+  // One owner per store: Video keeps its own Train panel mounted, and two would race the saved selection.
+  savedPresets?: boolean;
   onTrainingComplete?: () => void;
   onDeploy?: (args: {
     baseRepo: string;
@@ -607,8 +650,11 @@ export function DiffusionTrainPanel({
     }
   }, [loadedFamily, families]);
 
+  // A restored preset can name a family only /info reports; seeding the fallback would drop its base.
+  const familyPending =
+    family?.name !== familyName && (infoLoadState === "idle" || infoLoadState === "loading");
   useEffect(() => {
-    if (!family) return;
+    if (!family || familyPending) return;
     // Compare by name: an info refresh yields a new object but is not a family change.
     if (seededBaseFamily.current !== family.name) {
       seededBaseFamily.current = family.name;
@@ -642,7 +688,7 @@ export function DiffusionTrainPanel({
           : "auto",
       );
     }
-  }, [family, loadedBaseRepo, reportedFamily]);
+  }, [family, familyPending, loadedBaseRepo, reportedFamily]);
 
   // Reset to bf16 on a DiT family, or an fp16 left from SDXL is rejected.
   useEffect(() => {
@@ -665,6 +711,188 @@ export function DiffusionTrainPanel({
       setBasePrecision("auto");
     }
   }, [basePrequantized, basePrecision]);
+
+  const recommendedBasePrecision = reportedFamily?.recommended_precision;
+  const defaultPresetParams = useMemo<TrainingPresetParams>(
+    () => ({
+      familyName,
+      baseChoice: effectiveBase,
+      customBase,
+      durationUnit: "steps",
+      steps: 500,
+      epochs: 10,
+      learningRate: family?.defaults.lr ?? 0.0001,
+      rank: family?.defaults.rank ?? 16,
+      resolution: family?.defaults.resolution ?? 768,
+      batchSize: 1,
+      gradAccum: 1,
+      seed: 42,
+      saveSteps: 0,
+      sampleEvery: 0,
+      saveTotalLimit: 2,
+      lrScheduler: family?.defaults.lrScheduler ?? "constant",
+      lrWarmupSteps: family?.defaults.lrWarmupSteps ?? 0,
+      gradCheckpoint: true,
+      bucketing: true,
+      randomFlip: false,
+      cfgDropout: 0,
+      loraDropout: 0,
+      flowShiftMode: "default",
+      flowShift: 3,
+      precision: "bf16",
+      basePrecision:
+        recommendedBasePrecision === "nf4" ||
+        recommendedBasePrecision === "bf16" ||
+        recommendedBasePrecision === "int8" ||
+        recommendedBasePrecision === "fp8"
+          ? recommendedBasePrecision
+          : "auto",
+      compileTransformer: "auto",
+    }),
+    [familyName, effectiveBase, customBase, family, recommendedBasePrecision],
+  );
+  const currentPresetParams = useMemo<TrainingPresetParams>(
+    () => ({
+      familyName,
+      baseChoice: effectiveBase,
+      customBase,
+      durationUnit,
+      steps,
+      epochs,
+      learningRate,
+      rank,
+      resolution,
+      batchSize,
+      gradAccum,
+      seed,
+      saveSteps,
+      sampleEvery,
+      saveTotalLimit,
+      lrScheduler,
+      lrWarmupSteps,
+      gradCheckpoint,
+      bucketing,
+      randomFlip,
+      cfgDropout,
+      loraDropout,
+      flowShiftMode,
+      flowShift,
+      precision,
+      basePrecision,
+      compileTransformer,
+    }),
+    [
+      familyName,
+      effectiveBase,
+      customBase,
+      durationUnit,
+      steps,
+      epochs,
+      learningRate,
+      rank,
+      resolution,
+      batchSize,
+      gradAccum,
+      seed,
+      saveSteps,
+      sampleEvery,
+      saveTotalLimit,
+      lrScheduler,
+      lrWarmupSteps,
+      gradCheckpoint,
+      bucketing,
+      randomFlip,
+      cfgDropout,
+      loraDropout,
+      flowShiftMode,
+      flowShift,
+      precision,
+      basePrecision,
+      compileTransformer,
+    ],
+  );
+  const presetsReadyRef = useRef(false);
+  // Not every control sets a dirty ref (family, toggles), so any edit before presets settle counts.
+  const editedBeforePresets = useRef(false);
+  const trainRailRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Listens on the scroller natively: its opening tag must carry only className (rail clamp).
+    const root = trainRailRef.current?.parentElement;
+    if (!root) {
+      return;
+    }
+    const noteFormEdit = (event: Event) => {
+      if (presetsReadyRef.current || !(event.target instanceof Element)) {
+        return;
+      }
+      const control = event.target.closest(
+        "input, textarea, button, [role=combobox], [role=switch], [role=radio]",
+      );
+      if (control && !control.closest("[data-testid=training-generation-presets]")) {
+        editedBeforePresets.current = true;
+      }
+    };
+    root.addEventListener("pointerdown", noteFormEdit, true);
+    root.addEventListener("keydown", noteFormEdit, true);
+    return () => {
+      root.removeEventListener("pointerdown", noteFormEdit, true);
+      root.removeEventListener("keydown", noteFormEdit, true);
+    };
+  }, []);
+  const applyPresetParams = useCallback(
+    (params: TrainingPresetParams) => {
+      const userEdited =
+        editedBeforePresets.current ||
+        settingsDirty.current ||
+        lrScheduleDirty.current ||
+        precisionDirty.current ||
+        baseDirty.current;
+      // The stored preset can land seconds after mount; fields edited by then are newer.
+      if (!presetsReadyRef.current && userEdited) {
+        return params;
+      }
+      // Default re-seeds from the family as a fresh page does; a named preset owns every field.
+      const owned = params !== defaultPresetParams;
+      settingsDirty.current = owned;
+      lrScheduleDirty.current = owned;
+      precisionDirty.current = owned;
+      if (owned) {
+        // Neither a loaded model nor the family re-seed may replace the preset's base.
+        seededFromLoaded.current = true;
+        seededBaseFamily.current = params.familyName;
+        baseDirty.current = true;
+      }
+      setFamilyName(params.familyName);
+      setBaseChoice(params.baseChoice);
+      setCustomBase(params.customBase);
+      setDurationUnit(params.durationUnit);
+      setSteps(params.steps);
+      setEpochs(params.epochs);
+      setLearningRate(params.learningRate);
+      setRank(params.rank);
+      setResolution(params.resolution);
+      setBatchSize(params.batchSize);
+      setGradAccum(params.gradAccum);
+      setSeed(params.seed);
+      setSaveSteps(params.saveSteps);
+      setSampleEvery(params.sampleEvery);
+      setSaveTotalLimit(params.saveTotalLimit);
+      setLrScheduler(params.lrScheduler);
+      setLrWarmupSteps(params.lrWarmupSteps);
+      setGradCheckpoint(params.gradCheckpoint);
+      setBucketing(params.bucketing);
+      setRandomFlip(params.randomFlip);
+      setCfgDropout(params.cfgDropout);
+      setLoraDropout(params.loraDropout);
+      setFlowShiftMode(params.flowShiftMode);
+      setFlowShift(params.flowShift);
+      setPrecision(params.precision);
+      setBasePrecision(params.basePrecision);
+      setCompileTransformer(params.compileTransformer);
+      return params;
+    },
+    [defaultPresetParams, setFamilyName, setBaseChoice],
+  );
 
   const poll = useCallback(async () => {
     try {
@@ -1635,7 +1863,7 @@ export function DiffusionTrainPanel({
   // row pan the page sideways on a phone.
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
-      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 max-sm:pl-5 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width,13rem)+--spacing(8)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div ref={trainRailRef} className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 max-sm:pl-5 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width,13rem)+--spacing(8)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
@@ -1644,17 +1872,27 @@ export function DiffusionTrainPanel({
             settingsFadeClass,
           )}
         >
-          <div className="mb-1 grid gap-1.5">
-            <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
-              <HugeiconsIcon
-                icon={TestTubeOutlineIcon}
-                className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
+          <div className="mb-1 flex items-start justify-between gap-3">
+            <div className="grid min-w-0 gap-1.5">
+              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
+                <HugeiconsIcon
+                  icon={TestTubeOutlineIcon}
+                  className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
+                />
+                Train a LoRA
+              </h2>
+              <p className="text-xs leading-snug text-muted-foreground">
+                Teach a model a new style or subject.
+              </p>
+            </div>
+            {savedPresets ? (
+              <TrainingPresetControl
+                defaultParams={defaultPresetParams}
+                currentParams={currentPresetParams}
+                applyParams={applyPresetParams}
+                readyRef={presetsReadyRef}
               />
-              Train a LoRA
-            </h2>
-            <p className="text-xs leading-snug text-muted-foreground">
-              Teach a model a new style or subject.
-            </p>
+            ) : null}
           </div>
 
           <div className={fieldClass}>
