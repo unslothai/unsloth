@@ -15,7 +15,7 @@ already finished. Each run reaches Studio as its own internal API key, revoked w
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
 import contextlib
 import contextvars
 import base64
@@ -52,6 +52,7 @@ MAX_CALL_DEPTH = 3
 MEMORY_EVENTS = 4000
 FINISHED_RUNS_KEPT = 64
 CACHE_PRUNE_EVERY = 64
+PLANS_KEPT = 32
 
 MODEL_SLOT = {
     "chat": "llm",
@@ -239,6 +240,7 @@ class RunState:
     approvals: dict = field(default_factory = dict)
     marks: dict[str, float] = field(default_factory = dict)
     background: bool = False
+    load_keys: dict[tuple, Optional[str]] = field(default_factory = dict, repr = False)
 
     def node(self, node_id: str) -> NodeState:
         state = self.nodes.get(node_id)
@@ -819,6 +821,7 @@ class FlowEngine:
         self._spare_keys: dict[tuple, asyncio.Task] = {}
         self._revoking: set[asyncio.Task] = set()
         self._cache_puts = 0
+        self._plans: OrderedDict[tuple, Plan] = OrderedDict()
 
     async def take_key(self, account: AccountContext) -> tuple[str, Optional[int]]:
         slot = (account.account_id, account.username)
@@ -914,7 +917,8 @@ class FlowEngine:
         run_origin = _origin(account, origin)
         options["origin"] = run_origin["kind"]
         run_id = uuid.uuid4().hex
-        flows_db.create_run(run_id, flow_id, _stored_options(options))
+        await asyncio.to_thread(flows_db.create_run, run_id, flow_id, _stored_options(options))
+        approvals = await asyncio.to_thread(flows_db.get_capabilities, flow_id)
         rs = RunState(
             id = run_id,
             flow_id = flow_id,
@@ -924,7 +928,7 @@ class FlowEngine:
             options = options,
             app = app,
             origin = run_origin,
-            approvals = flows_db.get_capabilities(flow_id),
+            approvals = approvals,
         )
         rs.hf_token = hf_token
         for nid in plan.order:
@@ -944,16 +948,22 @@ class FlowEngine:
     async def cancel(self, run_id: str) -> Optional[str]:
         rs = self.live(run_id)
         if rs is None:
-            stored = flows_db.get_run(run_id)
+            stored = await asyncio.to_thread(flows_db.get_run, run_id)
             return stored["status"] if stored else None
         if rs.status in ("completed", "failed", "cancelled", "interrupted"):
             return rs.status
         if not rs.cancel_event.is_set():
             rs.cancel_event.set()
-            flows_db.update_run(run_id, cancel_requested = True, status = "cancelling")
             rs.status = "cancelling"
             rs.emit("run.cancelling")
+            # The hooks are taken before anything yields: a node that sees the cancel drops its own.
+            stored = asyncio.ensure_future(
+                asyncio.to_thread(
+                    flows_db.update_run, run_id, cancel_requested = True, status = "cancelling"
+                )
+            )
             await self._fire_cancel_hooks(rs)
+            await stored
         return rs.status
 
     def subscribe(self, rs: RunState) -> asyncio.Queue:
@@ -978,12 +988,14 @@ class FlowEngine:
         events: Optional[asyncio.Queue] = None,
         timing: Optional[dict] = None,
         background: bool = False,
+        revision: Optional[int] = None,
     ) -> dict:
         """Run one entrypoint node (and what it needs, cache first) now and return its outputs.
         ``events`` receives the run's events as they happen, text deltas included, for a streamed answer.
-        ``timing`` is filled with where the time went (milliseconds): see timing_of()."""
+        ``timing`` is filled with where the time went (milliseconds): see timing_of().
+        ``revision`` (the stored flow's updatedAt) lets repeated calls reuse one compiled plan."""
         started = time.monotonic()
-        plan, spec = self._entry(doc, entry)
+        plan, spec = self._entry(doc, entry, flow_id, revision)
         account = current_account()
         rs = RunState(
             id = "invoke-" + uuid.uuid4().hex,
@@ -995,7 +1007,7 @@ class FlowEngine:
             persist = False,
             app = app,
             origin = _origin(account, origin),
-            approvals = flows_db.get_capabilities(flow_id),
+            approvals = await asyncio.to_thread(flows_db.get_capabilities, flow_id),
         )
         rs.hf_token = hf_token
         rs.marks["start"] = started
@@ -1063,8 +1075,27 @@ class FlowEngine:
         self._revoking.add(task)
         task.add_done_callback(self._revoking.discard)
 
-    def _entry(self, doc: dict, entry: str) -> tuple[Any, dict]:
-        plan = compile_flow(doc)
+    def _plan(self, doc: dict, flow_id: str, revision: Optional[int]) -> Plan:
+        if revision is None:
+            return compile_flow(doc)
+        key = (current_account().account_id, flow_id, revision)
+        plan = self._plans.get(key)
+        if plan is None:
+            plan = self._plans[key] = compile_flow(doc)
+            while len(self._plans) > PLANS_KEPT:
+                self._plans.popitem(last = False)
+        else:
+            self._plans.move_to_end(key)
+        return plan
+
+    def _entry(
+        self,
+        doc: dict,
+        entry: str,
+        flow_id: str = "",
+        revision: Optional[int] = None,
+    ) -> tuple[Any, dict]:
+        plan = self._plan(doc, flow_id, revision)
         spec = plan.specs.get(entry)
         if spec is None or entry not in plan.executable:
             raise FlowNodeError(f"No runnable node {entry!r} in this flow")
@@ -1082,10 +1113,11 @@ class FlowEngine:
         doc: dict,
         entry: str,
         hf_token: Optional[str] = None,
+        revision: Optional[int] = None,
     ) -> bool:
         """Load the model an entry point answers with, so a player's first call does not wait for it.
         Calls for the same entry share one load; True once the model is resident (or the entry needs none)."""
-        plan, spec = self._entry(doc, entry)
+        plan, spec = self._entry(doc, entry, flow_id, revision)
         model_kind = spec.get("model_kind")
         if not model_kind:
             return True
@@ -1224,7 +1256,9 @@ class FlowEngine:
             rs.caller = flow_caller.make_caller(token, rs.account, rs.app, rs.hf_token)
             rs.key_id = key_id
             rs.status = "running"
-            flows_db.update_run(rs.id, status = "running", started_at = flows_db.now_ms())
+            await asyncio.to_thread(
+                flows_db.update_run, rs.id, status = "running", started_at = flows_db.now_ms()
+            )
             await self._seed_resident(rs)
             rs.emit("run.started", data = {"order": rs.plan.order})
             targets = rs.options.get("target_nodes") or []
@@ -1287,7 +1321,8 @@ class FlowEngine:
             await self._unload_after_run(rs)
             await asyncio.to_thread(self.revoke_key, rs.key_id)
             rs.finished_at = time.monotonic()
-            flows_db.update_run(
+            await asyncio.to_thread(
+                flows_db.update_run,
                 rs.id,
                 status = rs.status,
                 outputs = rs.outputs,
@@ -1478,7 +1513,7 @@ class FlowEngine:
             return False
         if not rs.plan.specs[nid]["cacheable"]:
             return True
-        return bool((rs.plan.ancestors([nid]) - {nid}) & rs.fresh)
+        return not rs.fresh.isdisjoint(rs.plan.upstream(nid))
 
     def _prefetchable(self, rs: RunState, nid: str) -> bool:
         """Loads the node would make anyway, with the default settings: not adapters, ControlNet or a vision swap."""
@@ -1506,7 +1541,7 @@ class FlowEngine:
             return
         plan = rs.plan
         running_ids = set(running.values())
-        owners = {o for o in plan.owner.values() if o is not None}
+        owners = plan.owners
         pending_set = set(pending)
         if any(plan.specs[n]["lane"] == "gpu" and self._uses_loaded(plan, n) for n in pending):
             return
@@ -1705,22 +1740,23 @@ class FlowEngine:
         variants = getattr(rs, "resident_variant", None) or {}
 
         # Cards with their own load settings group by them too, so same-settings cards run back to back.
-        loads: dict[str, Optional[str]] = {}
+        # Kept for the run: saved settings are read from storage, and only the resident model changes the answer.
+        loads = getattr(rs, "load_keys", None)
+        if loads is None:
+            loads = {}
 
         def load_of(nid: str) -> Optional[str]:
-            if nid not in loads:
-                params = plan.nodes[nid].get("params") or {}
-                slot, repo = model_of(nid)
-                loads[nid] = (
-                    options_hash(
-                        model_settings.card_load_kwargs(
-                            params, None if repo else rs.resident.get(slot), variants.get(slot)
-                        )
-                    )
-                    if model_settings.LOAD in params or params.get(model_settings.USE_SAVED)
-                    else None
+            params = plan.nodes[nid].get("params") or {}
+            if not (model_settings.LOAD in params or params.get(model_settings.USE_SAVED)):
+                return None
+            slot, repo = model_of(nid)
+            resident = None if repo else rs.resident.get(slot)
+            key = (nid, resident, variants.get(slot))
+            if key not in loads:
+                loads[key] = options_hash(
+                    model_settings.card_load_kwargs(params, resident, variants.get(slot))
                 )
-            return loads[nid]
+            return loads[key]
 
         def loaded_with(slot: str, repo: str) -> Optional[str]:
             found = loaded_options(slot)
@@ -1907,7 +1943,7 @@ class FlowEngine:
                 hit = (
                     pending[1]
                     if pending is not None
-                    else flows_db.cache_get(key, touch = not rs.persist)
+                    else await asyncio.to_thread(flows_db.cache_get, key, not rs.persist)
                 )
                 if hit is not None and pending is None and rs.persist:
                     rs._unsaved_touch.add(key)
@@ -2617,7 +2653,7 @@ class FlowEngine:
             except Exception as exc:
                 rs.emit("node.log", nid, {"level": "warning", "message": f"Could not bake: {exc}"})
         for _ in range(3):
-            stored = flows_db.get_flow(rs.flow_id)
+            stored = await asyncio.to_thread(flows_db.get_flow, rs.flow_id)
             if stored is None:
                 return
             doc = stored["doc"]
@@ -2628,7 +2664,7 @@ class FlowEngine:
                 *(a for a in refs.values() if a["id"] not in known),
             ]
             try:
-                flows_db.save_flow(doc, stored["updatedAt"])
+                await asyncio.to_thread(flows_db.save_flow, doc, stored["updatedAt"])
                 rs.emit(
                     "node.log",
                     None,
@@ -2655,7 +2691,7 @@ class FlowEngine:
                 data, mime = await _common.media_bytes(ctx, value)
                 digest, mime = await asyncio.to_thread(asset_store.store, data, mime)
             else:
-                got = asset_store.read(digest)
+                got = await asyncio.to_thread(asset_store.read, digest)
                 if got is None:
                     return value
                 data, mime = got
@@ -2676,7 +2712,7 @@ class FlowEngine:
             value.get("ref"), str
         ):
             digest = asset_store.parse_ref(value["ref"])
-            got = asset_store.read(digest) if digest else None
+            got = await asyncio.to_thread(asset_store.read, digest) if digest else None
             if got is not None:
                 refs[digest] = {
                     "id": f"sha256:{digest}",

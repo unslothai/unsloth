@@ -152,7 +152,7 @@ async def fire(
     """Start a triggered run as the owner; returns its id, or None when it was skipped (logged)."""
     from core.flows.engine import get_engine
 
-    record = flows_db.get_flow(flow_id)
+    record = await asyncio.to_thread(flows_db.get_flow, flow_id)
     if record is None:
         return None
     if not any(
@@ -163,7 +163,8 @@ async def fire(
     ):
         logger.info("flows: trigger %s/%s skipped: it is off in the saved flow", flow_id, node_id)
         return None
-    if not capabilities.is_approved(flows_db.get_capabilities(flow_id), "trigger", "trigger"):
+    approved = await asyncio.to_thread(flows_db.get_capabilities, flow_id)
+    if not capabilities.is_approved(approved, "trigger", "trigger"):
         logger.info(
             "flows: trigger %s/%s skipped: triggers are not approved for this flow",
             flow_id,
@@ -175,7 +176,7 @@ async def fire(
             "flows: trigger %s/%s skipped: its last triggered run is still going", flow_id, node_id
         )
         if at_ms is not None:
-            flows_db.mark_trigger_fired(flow_id, node_id, at_ms)
+            await asyncio.to_thread(flows_db.mark_trigger_fired, flow_id, node_id, at_ms)
         return None
     rs = await get_engine().start_run(
         app = app,
@@ -184,7 +185,9 @@ async def fire(
         options = {"params": {"__trigger": {node_id: payload}}},
         origin = "trigger",
     )
-    flows_db.mark_trigger_fired(flow_id, node_id, at_ms or flows_db.now_ms())
+    await asyncio.to_thread(
+        flows_db.mark_trigger_fired, flow_id, node_id, at_ms or flows_db.now_ms()
+    )
     return rs.id
 
 
@@ -200,7 +203,7 @@ class Scheduler:
     ) -> list[str]:
         now = now or datetime.now(timezone.utc).astimezone()
         started = []
-        for row in flows_db.list_triggers():
+        for row in await asyncio.to_thread(flows_db.list_triggers):
             if row["kind"] != "schedule":
                 continue
             since = max(row["last_fired_at"] or 0, self.started_ms)

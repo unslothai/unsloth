@@ -12,6 +12,8 @@ failures into the next round and is not a dependency either, so the data edges s
 
 from __future__ import annotations
 
+import functools
+import heapq
 import json
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
@@ -156,6 +158,9 @@ class Plan:
     warnings: list[dict] = field(default_factory = list)
     # Loop node id -> its feeds-the-next-round edge.
     feedback: dict[str, dict] = field(default_factory = dict)
+    _upstream: dict[str, frozenset[str]] = field(
+        default_factory = dict, init = False, repr = False, compare = False
+    )
 
     def top_level(self) -> list[str]:
         return [n for n in self.order if self.owner.get(n) is None]
@@ -163,6 +168,18 @@ class Plan:
     def body_order(self, for_each_id: str) -> list[str]:
         members = set(self.bodies.get(for_each_id, ()))
         return [n for n in self.order if n in members]
+
+    def upstream(self, nid: str) -> frozenset[str]:
+        """``ancestors([nid])`` without ``nid`` itself, worked out once per node."""
+        found = self._upstream.get(nid)
+        if found is None:
+            found = self._upstream[nid] = frozenset(self.ancestors([nid]) - {nid})
+        return found
+
+    @functools.cached_property
+    def owners(self) -> frozenset[str]:
+        """Every For Each or Loop that owns a node."""
+        return frozenset(o for o in self.owner.values() if o is not None)
 
     def ancestors(self, targets: Iterable[str]) -> set[str]:
         """Every node ``targets`` need, including whole For Each bodies (and their owners) they touch."""
@@ -696,22 +713,24 @@ def _topo(
                 if src != cursor and not _within(src, cursor, owner) and src != nid:
                     deps[cursor].add(src)
             cursor = owner.get(cursor)
-    position = {nid: i for i, nid in enumerate(nodes)}
-    remaining = {nid: set(d) for nid, d in deps.items()}
-    ready = sorted((n for n, d in remaining.items() if not d), key = position.__getitem__)
-    order: list[str] = []
-    dependents: dict[str, set[str]] = {nid: set() for nid in nodes}
+    # Kahn's algorithm, always taking the earliest-placed ready node: the document order breaks ties.
+    names = list(nodes)
+    position = {nid: i for i, nid in enumerate(names)}
+    remaining = {nid: len(d) for nid, d in deps.items()}
+    dependents: dict[str, list[str]] = {nid: [] for nid in nodes}
     for nid, d in deps.items():
         for src in d:
-            dependents.setdefault(src, set()).add(nid)
+            dependents.setdefault(src, []).append(nid)
+    ready = [position[n] for n, count in remaining.items() if not count]
+    heapq.heapify(ready)
+    order: list[str] = []
     while ready:
-        nid = ready.pop(0)
+        nid = names[heapq.heappop(ready)]
         order.append(nid)
-        for nxt in sorted(dependents.get(nid, ()), key = position.__getitem__):
-            remaining[nxt].discard(nid)
-            if not remaining[nxt] and nxt not in order and nxt not in ready:
-                ready.append(nxt)
-        ready.sort(key = position.__getitem__)
+        for nxt in dependents.get(nid, ()):
+            remaining[nxt] -= 1
+            if not remaining[nxt]:
+                heapq.heappush(ready, position[nxt])
     if len(order) != len(nodes):
         return None
     return order
