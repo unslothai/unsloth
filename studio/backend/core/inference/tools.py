@@ -6687,6 +6687,8 @@ _HEREDOC_INTERPRETER_RE = re.compile(
 _HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;", "\n"})
 _PYTHON_STDIN_DATA_MODULES = frozenset({"json.tool", "base64"})
 _SHELL_LINE_OPERATORS = (
+    "&>>",
+    "&>",
     "<<-",
     "<<<",
     "&&",

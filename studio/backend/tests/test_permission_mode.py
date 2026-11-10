@@ -1180,6 +1180,8 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("python.exe - <<'PY'\nprint(1)\nPY", False),
         ("if cat <<'EOF'; then :; fi\npython3 completed successfully\nEOF", False),
         ("grep exec <<'EOF'\nINFO python3 exec completed successfully\nEOF", False),
+        ("python3 - &>>run.log <<'PY'\nprint(1)\nPY", False),
+        ("python3 - &>run.log <<'PY'\nimport shutil; shutil.rmtree('build')\nPY", True),
         ("printf '%s\\n' '$(python3 - <<PY)'", False),
         ("matches=\"$(grep 'python3.*<<' script.sh)\"", False),
         ("x=`python3 - <<PY`\nimport shutil; shutil.rmtree('build')\nPY", True),
