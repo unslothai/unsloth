@@ -356,6 +356,48 @@ def _guard_peft_torchao_dispatcher(original):
 
 _PEFT_LORA_DISPATCH_MODULE = "peft.tuners.lora.model"
 _PEFT_TORCHAO_GUARD_SENTINEL = "__unsloth_studio_peft_torchao_guard__"
+_PEFT_TORCHAO_LAYER_MODULE = "peft.tuners.lora.torchao"
+_PEFT_TORCHAO_MERGE_CALLBACK = "get_apply_tensor_subclass"
+# "0" keeps peft 0.19's required TorchaoLoraLinear(get_apply_tensor_subclass=...) keyword.
+_PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV = "UNSLOTH_STUDIO_PEFT_TORCHAO_OPTIONAL_CALLBACK"
+
+
+def _make_peft_torchao_merge_callback_optional():
+    """peft 0.19 requires TorchaoLoraLinear's requantisation callback, found only on a transformers hf_quantizer, so a
+    LoRA on torchao weights built any other way raised at injection; backport peft 0.20's None default."""
+    if (os.environ.get(_PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return False
+    module = sys.modules.get(_PEFT_TORCHAO_LAYER_MODULE)
+    layer = getattr(module, "TorchaoLoraLinear", None) if module is not None else None
+    original = getattr(layer, "__init__", None) if isinstance(layer, type) else None
+    if original is None or getattr(original, "__unsloth_patched__", False):
+        return False
+    try:
+        parameter = inspect.signature(original).parameters.get(_PEFT_TORCHAO_MERGE_CALLBACK)
+    except (TypeError, ValueError):
+        return False
+    if (
+        parameter is None
+        or parameter.kind is not parameter.KEYWORD_ONLY
+        or parameter.default is not parameter.empty
+    ):
+        return (
+            False  # peft <= 0.18 dispatches only its own torchao tensors; >= 0.20 has the default
+        )
+
+    @functools.wraps(original)
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault(_PEFT_TORCHAO_MERGE_CALLBACK, None)
+        original(self, *args, **kwargs)
+
+    __init__.__unsloth_patched__ = True
+    layer.__init__ = __init__
+    return True
 
 
 def _patch_peft_torchao_dispatchers():
@@ -410,6 +452,10 @@ class _PeftLoraDispatchLoader(importlib.abc.Loader):
             _patch_peft_torchao_dispatchers()
         except Exception:
             pass
+        try:
+            _make_peft_torchao_merge_callback_optional()
+        except Exception:
+            pass
 
     def __getattr__(self, attribute):
         return getattr(self._loader, attribute)
@@ -457,6 +503,10 @@ def install_peft_torchao_dispatch_guard():
     except Exception:
         return None
     if _PEFT_LORA_DISPATCH_MODULE in sys.modules:
+        try:
+            _make_peft_torchao_merge_callback_optional()
+        except Exception:
+            pass
         try:
             return _patch_peft_torchao_dispatchers()
         except Exception:

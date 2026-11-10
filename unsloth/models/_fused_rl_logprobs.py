@@ -70,9 +70,13 @@ def fused_head(model):
     head = _unsloth_gkd_dense_head(model)
     if head is None:
         return None, None, "output head is not a dense nn.Linear"
-    # The kernel reads weight / bias directly: a hooked head is not F.linear(h, W, b).
+    # The kernel reads weight / bias directly: a hooked head (its own or torch's global module hooks) is not
+    # F.linear(h, W, b).
+    from .dpo import _global_module_hooks
+
     if (
-        hasattr(head, "_hf_hook")
+        _global_module_hooks()
+        or hasattr(head, "_hf_hook")
         or "forward" in vars(head)
         or head._forward_hooks
         or head._forward_pre_hooks
@@ -114,9 +118,8 @@ def score_hidden_states(
     entropy = False,
     head_info = None,
 ):
-    """``(logps, entropy | None)`` from ``tensor`` when it is the final hidden states of ``model``, else None (the
-    forward ignored the flag and ``tensor`` is real logits). Entropy is detached, as every caller logs it under
-    ``no_grad``; rows outside ``mask`` are 0."""
+    """Returns (logps, entropy or None) from the final hidden states, else None; entropy is detached
+    since callers log it under no_grad; rows outside mask are 0"""
     from .rl_replacements import _unsloth_pref_returns_hidden_states
 
     head, transforms, _ = head_info if head_info is not None else fused_head(model)
@@ -281,9 +284,7 @@ def ppo_score(
     temperature,
     entropy = False,
 ):
-    """``(logps, entropy | None)`` for PPO from ``tensor = output.logits[:, context_length - 1 : -1]``, or None when
-    the route is off or the forward returned real logits (TRL's lines then run on them unchanged). ``model`` is the
-    PolicyAndValueWrapper (its policy head scores) or a standalone reference policy."""
+    """PPO logps and entropy from the hidden states; None when the route is off or real logits came back."""
     if route is None:
         return None
     model = _ppo_policy(route, model)

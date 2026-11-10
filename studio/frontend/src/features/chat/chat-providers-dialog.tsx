@@ -375,6 +375,9 @@ export function ChatProvidersSettings({
 
   const chooseProviderType = (value: string) => {
     if (editingProviderId) return;
+    if (!(isOpenCodeProviderType(providerType) && isOpenCodeProviderType(value))) {
+      setApiKey("");
+    }
     setProviderType(value);
     setReasoningConfig(null);
     setAvailableModels([]);

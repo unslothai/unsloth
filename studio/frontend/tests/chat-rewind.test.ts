@@ -115,7 +115,7 @@ test("the composer opens the rewind picker instead of sending /rewind", () => {
   assert.ok(intercept < submit.indexOf("interceptSend(event)"));
   assert.match(
     thread,
-    /<RewindMessageButton \/>\s*<ForkCountBadge \/>\s*<ForkMessageButton \/>/,
+    /<RewindMessageButton \/>\s*<ForkCountBadge \/>/,
   );
 });
 

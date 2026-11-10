@@ -220,6 +220,9 @@ def test_a_policy_resolves_for_the_bases_it_was_solved_on_and_no_others():
     assert resolve_policy("qwen-image", "unsloth/Qwen-Image-2512") is QWEN2512_M120_ATTN8
     assert resolve_policy("qwen-image-2.1", "Qwen/Qwen-Image-2.1") is QWEN21_R020
     assert resolve_policy("qwen-image-2.1", "unsloth/Qwen-Image-2.1") is QWEN21_R020
+    assert resolve_policy("qwen-image-2.1", "Qwen/Qwen-Image-2.1-Turbo") is QWEN21_R020
+    assert resolve_policy("qwen-image-2.1", "unsloth/Qwen-Image-2.1-Turbo-FP8") is QWEN21_R020
+    assert resolve_policy("qwen-image", "Qwen/Qwen-Image-2.1-Turbo") is None
     assert resolve_policy("qwen-image", "Qwen/Qwen-Image-2.1") is None
     assert resolve_policy("qwen-image-2.1", "Qwen/Qwen-Image-2512") is None
     assert resolve_policy("z-image", "unsloth/Z-Image-Turbo") is ZIMG_RG76

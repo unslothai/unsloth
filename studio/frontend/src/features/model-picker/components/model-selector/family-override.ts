@@ -23,6 +23,8 @@ const LABELS: Readonly<Record<string, string>> = {
   "hidream-i1": "HiDream-I1",
   "ideogram-4": "Ideogram 4",
   "moss-image": "MOSS-Image",
+  chroma: "Chroma",
+  anima: "Anima",
   sdxl: "SDXL",
   "minimax-h3": "MiniMax-H3",
   "ltx-2": "LTX-2",

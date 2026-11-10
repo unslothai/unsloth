@@ -35,7 +35,7 @@ const IMAGE_GEN_TAGS = new Set([
   "image-text-to-image",
   "inpainting",
 ]);
-// Only tags the Video page can run; video-to-video is absent (backend takes reference images).
+// Only tags the Video page can run; video-to-video is absent (Nano's continuation is gated on status).
 const VIDEO_GEN_TAGS = new Set([
   "text-to-video",
   "image-to-video",

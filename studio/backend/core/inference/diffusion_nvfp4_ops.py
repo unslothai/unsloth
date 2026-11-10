@@ -269,6 +269,9 @@ def e2m1_lut(device: Any):
     """The signed e2m1 decode table on ``device``, memoised so it is never first allocated during capture."""
     import torch
 
+    # Traced: a graph constant. Reading the memo would guard on it, and its first insert would recompile the caller.
+    if torch.compiler.is_compiling():
+        return torch.tensor(_E2M1_LUT, device = device, dtype = torch.float32)
     key = (str(device.type), device.index)
     table = _LUT_CACHE.get(key)
     if table is None:

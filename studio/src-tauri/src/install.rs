@@ -646,11 +646,10 @@ fn spawn_script(
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // install.sh / install.ps1 reject inherited custom roots under --tauri, so
-    // scrub them and pass only the desktop's chosen root, with its flag.
-    // Applied by hand here, the one managed spawn outside
-    // apply_managed_cli_context: the Python setup.sh starts reads whatever is
-    // exported, even though setup.sh assigns UNSLOTH_HOME itself.
+    // install.sh and install.ps1 reject inherited custom roots under --tauri, so scrub them and
+    // pass only the chosen root with its flag; this hand-applied spawn sits outside
+    // apply_managed_cli_context, and setup.sh reads whatever is exported even though it assigns
+    // UNSLOTH_HOME.
     for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
     }
@@ -1305,9 +1304,8 @@ pub fn install_system_packages(
         }
     }
 
-    // install.sh reports Debian package names. Do not pass them to dnf,
-    // zypper, or pacman where names differ; show an explicit support boundary
-    // instead of offering an elevation flow that is likely to fail.
+    // install.sh reports Debian package names, so do not pass them to dnf, zypper or pacman where
+    // names differ; show a support boundary instead of an elevation flow likely to fail.
     if !Path::new(APT_GET).exists() {
         let msg = "Automatic system package installation is supported on apt-based Linux distributions (Ubuntu/Debian) only. Install the missing dependencies with your package manager and retry."
             .to_string();
