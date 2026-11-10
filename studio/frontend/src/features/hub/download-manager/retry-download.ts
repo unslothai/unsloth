@@ -19,6 +19,7 @@ type RetrySubject = Pick<
   | "checkpoint"
   | "downloadDir"
   | "external"
+  | "state"
 >;
 
 /** Only Hub-started rows: engine / STT and training rows belong to the flows that started them. */
@@ -41,6 +42,9 @@ export function retryRequestFor(job: RetrySubject): DownloadRequest {
     ...(job.presentation ? { presentation: job.presentation } : {}),
     ...(job.scopedFiles ? { files: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
-    ...(job.downloadDir !== undefined ? { downloadDir: job.downloadDir } : {}),
+    // Same rule as withDownloadDir: only a cancel pins its folder; a failure may have been the folder.
+    ...(job.state === "cancelled" && job.downloadDir !== undefined
+      ? { downloadDir: job.downloadDir }
+      : {}),
   };
 }

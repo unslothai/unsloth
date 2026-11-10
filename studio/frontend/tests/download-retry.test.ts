@@ -44,11 +44,16 @@ test("a scoped row retries with scope_id and its files, a plain variant without"
   assert.equal(scoped.checkpoint, false);
 
   const gguf = retryRequestFor(
-    job({ variant: "Q4_K_M", downloadDir: "/models" }),
+    job({ variant: "Q4_K_M", state: "cancelled", downloadDir: "/models" }),
   );
   assert.equal(gguf.scopeId, undefined);
   assert.equal(gguf.variant, "Q4_K_M");
   assert.equal(gguf.downloadDir, "/models");
+  // A failed start re-resolves the current folder, which may be the fix.
+  const failed = retryRequestFor(
+    job({ variant: "Q4_K_M", state: "error", downloadDir: "/missing" }),
+  );
+  assert.equal("downloadDir" in failed, false);
 });
 
 test("rows owned by other flows are not retryable from the panel", () => {
