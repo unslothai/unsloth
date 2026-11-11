@@ -44,7 +44,11 @@ def _extract_source():
     raise AssertionError("get_ollama_eos_tokens not found in chat_templates.py")
 
 
-def _run(seed, tokens = _TOKENS, bos = _BOS):
+def _run(
+    seed,
+    tokens = _TOKENS,
+    bos = _BOS,
+):
     environment = dict(os.environ, PYTHONHASHSEED = str(seed))
     completed = subprocess.run(
         [
@@ -81,10 +85,15 @@ def test_ollama_eos_tokens_keep_short_tokens_whole():
     # collapsing it rewrote the whole list and shipped zero usable stops.
     for seed in range(8):
         assert _run(seed, ["<pad>", "<eos>", "<eot>", "<s>"], "<pad>") == [
-            "<eos>", "<eot>", "<s>",
+            "<eos>",
+            "<eot>",
+            "<s>",
         ]
         assert _run(seed, ["<pad>", "</a>", "</b>", "</c>", "<eos>"], "<pad>") == [
-            "</a>", "</b>", "</c>", "<eos>",
+            "</a>",
+            "</b>",
+            "</c>",
+            "<eos>",
         ]
 
 
@@ -93,7 +102,10 @@ def test_ollama_eos_tokens_keep_unrelated_characters():
     # "abc" plus a stop of "e", which ends generation at the first e it meets.
     for seed in range(8):
         assert _run(seed, ["<pad>", "eop", "ezz", "abc", "def"], "<pad>") == [
-            "abc", "def", "eop", "ezz",
+            "abc",
+            "def",
+            "eop",
+            "ezz",
         ]
 
 
