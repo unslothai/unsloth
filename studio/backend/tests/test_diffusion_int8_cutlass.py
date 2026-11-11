@@ -19,7 +19,7 @@ from core.inference import diffusion_int8_gemm as g8
 
 torch = pytest.importorskip("torch")
 
-_BUILD = Path(__file__).resolve().parents[2] / "kernels" / "int8_gemm" / "build.py"
+_BUILD = Path(__file__).resolve().parents[2] / "native_kernels" / "int8_gemm" / "build.py"
 # read before the autouse fixture clears it, for the GPU tests at the bottom
 _REAL_LIB = os.environ.get(cut.CUTLASS_LIB_ENV)
 
@@ -425,3 +425,9 @@ def test_a_later_load_plans_only_its_new_shapes(monkeypatch):
     assert set(g8._cutlass_plan(0, [a], True)) == {key_a}
     assert set(g8._cutlass_plan(0, [a, b], True)) == {key_a, key_b}
     assert g8._CUT_PLAN[0][key_b] == {512: 2, 4096: 2} and not races
+
+
+def test_the_kernel_sources_do_not_shadow_the_kernels_package():
+    # CI and Studio put studio/ on sys.path, where a studio/kernels folder imports as the HF ``kernels`` package.
+    studio = Path(__file__).resolve().parents[2]
+    assert _BUILD.is_file() and not (studio / "kernels").exists()

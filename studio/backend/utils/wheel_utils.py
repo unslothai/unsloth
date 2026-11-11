@@ -169,7 +169,7 @@ MAMBA_SSM_PURE_VERSION = "2.3.2.post1"
 MAMBA_SSM_PURE_WHEEL = f"mamba_ssm-{MAMBA_SSM_PURE_VERSION}-py3-none-any.whl"
 
 
-# studio/kernels/int8_gemm: C ABI + static cudart, so one py3-none wheel per platform fits every torch and CUDA 12/13.
+# studio/native_kernels/int8_gemm: C ABI + static cudart, so one py3-none wheel per platform fits every torch and CUDA 12/13.
 I8GEMM_DISTRIBUTION = "unsloth-studio-i8gemm"
 I8GEMM_VERSION = "1.0.0"
 _I8GEMM_PLATFORMS = {"linux_x86_64": "manylinux_2_28_x86_64", "win_amd64": "win_amd64"}

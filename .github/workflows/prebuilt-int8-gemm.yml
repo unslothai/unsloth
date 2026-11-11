@@ -1,4 +1,4 @@
-# Prebuilt int8 GEMM for Unsloth Studio's INT8 ConvRot diffusion path (studio/kernels/int8_gemm).
+# Prebuilt int8 GEMM for Unsloth Studio's INT8 ConvRot diffusion path (studio/native_kernels/int8_gemm).
 # C ABI + static cudart: one py3-none wheel per platform for every torch and CUDA 12/13 driver (built with 12.8).
 # Dispatch only; `publish: false` builds, tests and signs; publishing shares prebuilt-cuda-wheels.yml's tag.
 name: Prebuilt int8 GEMM
@@ -51,7 +51,7 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: |
-            studio/kernels/int8_gemm
+            studio/native_kernels/int8_gemm
             studio/backend/core/inference/diffusion_int8_cutlass.py
           sparse-checkout-cone-mode: false
 
@@ -77,9 +77,9 @@ jobs:
             dnf -y -q install dnf-plugins-core
             dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
             dnf -y -q install cuda-nvcc-12-8 cuda-cudart-devel-12-8 cuda-crt-12-8
-            /opt/python/cp312-cp312/bin/python studio/kernels/int8_gemm/build.py \
+            /opt/python/cp312-cp312/bin/python studio/native_kernels/int8_gemm/build.py \
               --cutlass cutlass --out build --nvcc /usr/local/cuda-12.8/bin/nvcc --jobs "$(nproc)"
-            /opt/python/cp312-cp312/bin/python studio/kernels/int8_gemm/make_wheel.py \
+            /opt/python/cp312-cp312/bin/python studio/native_kernels/int8_gemm/make_wheel.py \
               --lib build/libunsloth_i8gemm.so --platform manylinux_2_28_x86_64 --out dist --cutlass-sha "$CUTLASS_SHA"
           '
 
@@ -120,9 +120,9 @@ jobs:
           cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && set" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2]) }
           }
-          python studio/kernels/int8_gemm/build.py --cutlass cutlass --out build --nvcc C:\cuda\bin\nvcc.exe --jobs $env:NUMBER_OF_PROCESSORS
+          python studio/native_kernels/int8_gemm/build.py --cutlass cutlass --out build --nvcc C:\cuda\bin\nvcc.exe --jobs $env:NUMBER_OF_PROCESSORS
           if ($LASTEXITCODE -ne 0) { throw "build exited $LASTEXITCODE" }
-          python studio/kernels/int8_gemm/make_wheel.py --lib build/unsloth_i8gemm.dll --platform win_amd64 --out dist --cutlass-sha $env:CUTLASS_SHA
+          python studio/native_kernels/int8_gemm/make_wheel.py --lib build/unsloth_i8gemm.dll --platform win_amd64 --out dist --cutlass-sha $env:CUTLASS_SHA
           if ($LASTEXITCODE -ne 0) { throw "make_wheel exited $LASTEXITCODE" }
 
       # No GPU: the library must still load and report its ABI and tile tables.
