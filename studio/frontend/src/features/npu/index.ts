@@ -13,7 +13,11 @@ export {
   npuRowsFor,
   npuSizeLabel,
 } from "./api";
-export { NpuGpuHint, NpuRuntimeVersions, NpuSetupNotice } from "./npu-setup-notice";
+export {
+  NpuGpuHint,
+  NpuRuntimeVersions,
+  NpuSetupNotice,
+} from "./npu-setup-notice";
 export {
   type NpuCatalog,
   type NpuPickerSource,

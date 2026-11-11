@@ -92,9 +92,9 @@ import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { pickNativeModelFolder } from "@/features/native-intents";
 import {
   type NpuCatalog,
+  NpuGpuHint,
   type NpuModel,
   type NpuPickerSource,
-  NpuGpuHint,
   NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,

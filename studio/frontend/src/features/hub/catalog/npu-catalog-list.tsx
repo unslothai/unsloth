@@ -4,9 +4,9 @@
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  NpuGpuHint,
   type NpuModel,
   type NpuPickerSource,
-  NpuGpuHint,
   NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
