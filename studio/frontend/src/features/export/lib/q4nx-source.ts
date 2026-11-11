@@ -59,14 +59,20 @@ export type Q4nxArchFit =
   | { status: "unsupported" | "unknown"; note: string };
 
 // The converter finds no qwen2vl architecture name, so a Qwen2-VL basename falls to the dense qwen2 prefix.
-const QWEN2_VL_NAME = /(^|[/\\])qwen2[-_]?vl/i;
+const QWEN2_VL_NAME = /(^|[\s/\\._-])qwen2[-_]?vl/i;
 
-/** `name` is the repo id or file path, used to refuse models the converter would misroute. */
+/** `name` is the repo id or file path, used to refuse models the converter would misroute, even when the architecture is unknown. */
 export function q4nxArchFit(
   architecture: string | null | undefined,
   name?: string | null,
 ): Q4nxArchFit {
   const arch = architecture?.trim().toLowerCase();
+  if ((!arch || arch === "qwen2vl") && QWEN2_VL_NAME.test(name ?? "")) {
+    return {
+      status: "unsupported",
+      note: "The Q4NX converter does not support Qwen2-VL. Only Qwen2.5-VL converts.",
+    };
+  }
   if (!arch) {
     return {
       status: "unknown",
@@ -77,12 +83,6 @@ export function q4nxArchFit(
     return {
       status: "unsupported",
       note: `The Q4NX converter does not support the ${arch} architecture.`,
-    };
-  }
-  if (arch === "qwen2vl" && QWEN2_VL_NAME.test(name ?? "")) {
-    return {
-      status: "unsupported",
-      note: "The Q4NX converter does not support Qwen2-VL. Only Qwen2.5-VL converts.",
     };
   }
   return { status: "supported", note: Q4NX_ARCHITECTURES[arch] };

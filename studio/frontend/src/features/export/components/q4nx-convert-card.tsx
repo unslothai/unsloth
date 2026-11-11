@@ -351,6 +351,13 @@ export function Q4nxConvertCard() {
         : "";
   const effectiveBase = baseModel ?? autoBase;
 
+  const selectedVariant =
+    variantList.find((v) => v.filename === filename) ?? null;
+  const ggufPath =
+    source === "local" && localRow
+      ? localGgufPath(localRow.path, localSingleFile ? null : selectedVariant)
+      : null;
+
   const archFit =
     source === "hub" && repoId
       ? q4nxArchFit(
@@ -358,15 +365,8 @@ export function Q4nxConvertCard() {
           repoId,
         )
       : localRow
-        ? q4nxArchFit(null)
+        ? q4nxArchFit(null, `${localRow.id} ${ggufPath ?? localRow.path}`)
         : null;
-
-  const selectedVariant =
-    variantList.find((v) => v.filename === filename) ?? null;
-  const ggufPath =
-    source === "local" && localRow
-      ? localGgufPath(localRow.path, localSingleFile ? null : selectedVariant)
-      : null;
   const sourceReady =
     source === "hub" ? !!(repoId && selectedVariant) : !!ggufPath;
   const canConvert =

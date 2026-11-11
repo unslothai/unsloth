@@ -75,6 +75,17 @@ test("qwen2vl is Qwen2.5-VL only; a Qwen2-VL name is refused", () => {
     assert.equal(fit.status, "unsupported", name);
     assert.match(fit.note, /Qwen2-VL/);
   }
+  // Local files have no architecture before conversion, so the name alone decides.
+  for (const name of [
+    "/models/Qwen2-VL-2B-Instruct-Q4_0.gguf",
+    "unsloth/Qwen2-VL-7B-Instruct-GGUF /hf/models--unsloth--Qwen2-VL-7B-Instruct-GGUF/snapshots/abc/x.gguf",
+  ]) {
+    assert.equal(q4nxArchFit(null, name).status, "unsupported", name);
+  }
+  assert.equal(
+    q4nxArchFit(null, "/models/Qwen2.5-VL-7B-Instruct-Q4_0.gguf").status,
+    "unknown",
+  );
   // Only qwen2vl GGUFs are checked by name; a dense Qwen2 repo is untouched.
   assert.equal(q4nxArchFit("qwen2", "Qwen/Qwen2-VL-ish").status, "supported");
 });
