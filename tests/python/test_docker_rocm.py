@@ -432,24 +432,44 @@ class TestBuildShRocm:
         assert "needs.prepare.outputs.stable == 'true'" in body
         assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
 
-    def test_release_aliases_do_not_move_on_scheduled_nightly_builds(self):
-        """The mutable release aliases must not be retagged by the scheduled main build."""
+    @pytest.mark.parametrize(
+        "ref, stable, expected",
+        [
+            ("refs/heads/main", "true", {"nightly", "nightly-studio"}),
+            ("refs/tags/v0.1.916-beta", "true", {"latest", "studio"}),
+            ("refs/heads/main", "false", set()),
+            ("refs/tags/v0.1.916-beta", "false", set()),
+            ("refs/heads/other", "true", set()),
+        ],
+    )
+    def test_release_and_nightly_aliases_move_on_their_own_events(self, ref, stable, expected):
+        # unslothai/unsloth#17470: the weekly main build moved :latest and :studio too.
         import yaml
 
-        workflow = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
-
-        def tag_lines(job):
-            meta = next(s for s in workflow["jobs"][job]["steps"] if s.get("id") == "meta")
-            return [line.strip() for line in meta["with"]["tags"].splitlines() if line.strip()]
-
-        base = tag_lines("tag")
-        studio = tag_lines("tag-studio")
-        for lines, stable_alias in ((base, "latest"), (studio, "studio")):
-            stable = next(line for line in lines if f"type=raw,value={stable_alias}," in line)
-            assert "startsWith(github.ref, 'refs/tags/v')" in stable
-            scheduled = next(line for line in lines if "type=schedule" in line)
-            assert "nightly" in scheduled
-            assert f"type=raw,value={stable_alias}," not in scheduled
+        jobs = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))["jobs"]
+        context = {
+            "github.event.repository.default_branch": "'main'",
+            "github.ref": repr(ref),
+            "needs.prepare.outputs.stable": repr(stable),
+        }
+        moved = set()
+        for job in ("tag", "tag-studio"):
+            meta = next(s for s in jobs[job]["steps"] if s.get("id") == "meta")
+            # metadata-action's default latest=auto adds :latest to every v* push.
+            assert meta["with"].get("flavor") == "latest=false", job
+            for line in meta["with"]["tags"].splitlines():
+                m = re.fullmatch(r"\s*type=raw,value=([\w-]+),enable=\$\{\{(.*)\}\}\s*", line)
+                if not m or m.group(1) not in {"latest", "studio", "nightly", "nightly-studio"}:
+                    continue
+                expr = re.sub(
+                    r"format\('refs/heads/\{0\}', ([\w.]+)\)", r"'refs/heads/' + \1", m.group(2)
+                )
+                expr = re.sub(r"startsWith\(([\w.]+), ('[^']*')\)", r"\1.startswith(\2)", expr)
+                for name, value in context.items():
+                    expr = expr.replace(name, value)
+                if eval(expr.replace("&&", " and ").replace("||", " or ")):
+                    moved.add(m.group(1))
+        assert moved == expected
 
 
 class TestTheUserFacingDocsCoverWsl:
