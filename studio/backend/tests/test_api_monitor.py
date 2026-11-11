@@ -476,12 +476,12 @@ def test_api_monitor_settings_endpoint_toggles_recording(monkeypatch):
     app.dependency_overrides = {get_current_subject: lambda: "test-user"}
     client = TestClient(app)
 
-    response = client.post("/monitor/settings", json={"enabled": False})
+    response = client.post("/monitor/settings", json = {"enabled": False})
     assert response.status_code == 200
     assert response.json() == {"logging_enabled": False}
     assert monitor.enabled is False
 
-    response = client.post("/monitor/settings", json={"enabled": True})
+    response = client.post("/monitor/settings", json = {"enabled": True})
     assert response.status_code == 200
     assert response.json() == {"logging_enabled": True}
     assert monitor.enabled is True
