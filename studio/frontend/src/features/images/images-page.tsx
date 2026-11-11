@@ -127,6 +127,7 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { type StripDropCue, useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaApiButton } from "@/components/media-api-button";
+import { adjacentGalleryId } from "./gallery-keyboard-navigation";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
 import {
@@ -1711,11 +1712,18 @@ const GalleryStripTile = memo(function GalleryStripTile({
           const tiles = strip
             ? [...strip.querySelectorAll<HTMLElement>("[data-reorder-id]")]
             : [];
-          const index = tiles.findIndex((tile) => tile.dataset.reorderId === id);
-          const next = index + (event.key === "ArrowLeft" ? -1 : 1);
-          const nextTile = next >= 0 && next < tiles.length ? tiles[next] : null;
-          const nextId = nextTile?.dataset.reorderId;
-          if (nextId) {
+          const ids = tiles.flatMap((tile) =>
+            tile.dataset.reorderId ? [tile.dataset.reorderId] : [],
+          );
+          const nextId = adjacentGalleryId(
+            ids,
+            id,
+            event.key === "ArrowLeft" ? "previous" : "next",
+          );
+          const nextTile = nextId
+            ? tiles.find((tile) => tile.dataset.reorderId === nextId)
+            : null;
+          if (nextId && nextTile) {
             event.preventDefault();
             actions.get().select(nextId);
             nextTile.querySelector<HTMLButtonElement>("button")?.focus();
