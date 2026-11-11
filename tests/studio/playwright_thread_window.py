@@ -11,14 +11,19 @@ holds every row mounted). Structure only, never a timing:
      aria-posinset), so assistive technology does not count only what is mounted.
   2. The scroll range is the fully mounted thread's, within EXTENT_TOLERANCE, before a single row
      above the fold has rendered.
-  3. Wheeling to the top never shows an empty viewport, passes every message once, and ends on
-     the first one.
+  3. Wheeling to the top, the window catches up with the reader after every step, passes every
+     message once, and ends on the first one.
   4. A reader at rest is not moved by the window settling behind them.
   5. A jump (a dragged scrollbar) lands on mounted rows.
-  6. Copying a selection that runs over unmounted rows carries the whole conversation, the same
+  6. A row the reader is working in stays mounted, with its focus, wherever they jump to, apart
+     from the window and without the rows between; it is let go once they leave it.
+  7. Copying a selection that runs over unmounted rows carries the whole conversation, the same
      text the fully mounted thread selects, and the window comes back once the selection is gone.
-  7. A thread hidden behind another route mounts nothing while it has no boxes to measure.
-  8. A reply streamed into the windowed thread lands at the tail with the reader following it.
+  8. A thread hidden behind another route mounts nothing while it has no boxes to measure, and a
+     full mount it was in the middle of does not count as pending for the threads on screen.
+  9. A reply streamed into the windowed thread lands at the tail with the reader following it.
+ 10. Mounting everything (select all) goes in passes bounded by height, so very long replies do
+     not land thirty-two to a commit.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ import os
 import sys
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -54,6 +60,17 @@ WHEEL_PX = 700
 WHEEL_GAP_MS = 40
 # Rows are separated by gaps, so a covered viewport is not rows from edge to edge.
 MIN_COVERAGE = 0.5
+# How long the window may take to catch up with one wheel step before it counts as lost. Not a
+# pace: a shared CI runner serving unminified modules takes whole frames for a commit.
+CATCH_UP_MS = 30_000
+# Very long replies, for the full mount: a few thousand px each.
+TALL_MESSAGES = 60
+TALL_SEED = {"agent": {"rounds": 12, "compactionEvery": 10, "sources": True, "rich": True}}
+# thread-window.ts FILL_BUDGET_PX and progressive-mount-controller.ts CHUNK_MESSAGES. The budget
+# is spent on estimated heights, so a pass may come out somewhat over it once rendered.
+FILL_BUDGET_PX = 20_000
+FILL_BUDGET_SLACK = 1.5
+FILL_CHUNK_ROWS = 32
 
 STATE = """() => {
   const api = window.__threadWeight;
@@ -93,6 +110,17 @@ RECORD = """() => {
   requestAnimationFrame(tick);
 }"""
 
+# Rows over at least `min` of the viewport: the window is where the reader is.
+COVERED = """(min) => {
+  const box = window.__threadWeight.viewport().getBoundingClientRect();
+  let covered = 0;
+  for (const row of document.querySelectorAll('[data-role]')) {
+    const at = row.getBoundingClientRect();
+    covered += Math.max(0, Math.min(at.bottom, box.bottom) - Math.max(at.top, box.top));
+  }
+  return covered / box.height >= min;
+}"""
+
 STOP_RECORD = """() => {
   const record = window.__windowRecord;
   record.live = false;
@@ -115,6 +143,64 @@ REST = """async (frames) => {
     offsets.push(now ? now.getBoundingClientRect().top - fold : null);
   }
   return offsets;
+}"""
+
+# Focus a control in the first row the reader can see, and mark its node: a row that was unmounted
+# and mounted again has a new node, which the mark is not on.
+PIN = """() => {
+  const viewport = window.__threadWeight.viewport();
+  const fold = viewport.getBoundingClientRect().top;
+  for (const row of document.querySelectorAll('[data-role]')) {
+    if (row.getBoundingClientRect().bottom <= fold + 1) continue;
+    const control = row.querySelector('button, [tabindex]');
+    if (!control) continue;
+    control.focus({ preventScroll: true });
+    if (document.activeElement !== control) continue;
+    control.setAttribute('data-pin-probe', '');
+    return { position: Number(row.getAttribute('aria-posinset')), scrollTop: viewport.scrollTop };
+  }
+  return null;
+}"""
+
+PINNED = """() => {
+  const probe = document.querySelector('[data-pin-probe]');
+  const row = probe?.closest('[data-role]') ?? null;
+  return {
+    mounted: probe !== null,
+    focused: probe !== null && document.activeElement === probe,
+    position: row ? Number(row.getAttribute('aria-posinset')) : null,
+    gaps: document.querySelectorAll('[data-thread-spacer="gap"]').length,
+  };
+}"""
+
+JUMP = """(top) => {
+  const viewport = window.__threadWeight.viewport();
+  viewport.scrollTo({ top: top < 0 ? viewport.scrollHeight : top, behavior: 'instant' });
+}"""
+
+# One entry per commit that added rows: how many, and how tall they came out.
+WATCH_PASSES = """() => {
+  const viewport = window.__threadWeight.viewport();
+  const passes = [];
+  window.__fillPasses = passes;
+  new MutationObserver((records) => {
+    let rows = 0;
+    let px = 0;
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (node.nodeType !== 1 || !node.matches('[data-role]')) continue;
+        rows += 1;
+        px += node.getBoundingClientRect().height;
+      }
+    }
+    if (rows > 0) passes.push({ rows, px: Math.round(px) });
+  }).observe(viewport, { childList: true });
+}"""
+
+SELECT_ALL = """() => {
+  document.body.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true, cancelable: true }),
+  );
 }"""
 
 SELECT_THREAD = """() => {
@@ -155,6 +241,7 @@ def open_thread(
     *,
     windowed: bool,
     stream: bool = False,
+    seed: dict = SEED,
 ):
     page = context.new_page()
     errors: list[str] = []
@@ -166,7 +253,7 @@ def open_thread(
     )
     page.goto(f"{BASE}/smoke-thread-weight.html?{query}", wait_until = "load")
     page.wait_for_function("() => window.__threadWeight !== undefined", timeout = 120_000)
-    page.evaluate("([n, o]) => window.__threadWeight.seed(n, o)", [messages, SEED])
+    page.evaluate("([n, o]) => window.__threadWeight.seed(n, o)", [messages, seed])
     page.wait_for_function(
         "(n) => window.__threadWeight.threadLength() >= n", arg = messages, timeout = 120_000
     )
@@ -192,14 +279,27 @@ def settle(page) -> dict:
     raise AssertionError(f"the thread never settled: {last}")
 
 
-def check_ordinals(state: dict, label: str) -> None:
+def check_ordinals(
+    state: dict,
+    label: str,
+    pinned: int | None = None,
+) -> None:
+    """The mounted rows are one run of consecutive messages, plus `pinned` when it is outside it."""
     positions = state["positions"]
     assert state["sizes"] == [str(state["length"])], (
         f"{label}: rows must all publish the thread's length {state['length']} as aria-setsize, "
         f"got {state['sizes']}"
     )
-    assert positions == list(
-        range(positions[0], positions[0] + len(positions))
+    assert positions == sorted(positions), f"{label}: rows are out of order: {positions}"
+    if pinned is not None:
+        assert pinned in positions, f"{label}: the pinned row {pinned} is not mounted: {positions}"
+        run = [position for position in positions if position != pinned]
+        if run and (pinned == run[0] - 1 or pinned == run[-1] + 1):
+            run = positions
+    else:
+        run = positions
+    assert run == list(
+        range(run[0], run[0] + len(run))
     ), f"{label}: mounted rows are not consecutive messages: {positions}"
 
 
@@ -251,7 +351,7 @@ def check_engine(playwright, engine: str) -> None:
             f"{full['scrollHeight']}px: {drift:.1%} apart, {EXTENT_TOLERANCE:.0%} allowed"
         )
 
-        # 3. Wheeling to the top never shows an empty viewport and passes every message.
+        # 3. Wheeling to the top, the window keeps up and passes every message.
         box = page.locator(".aui-thread-viewport").bounding_box()
         page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
         page.evaluate(RECORD)
@@ -259,6 +359,13 @@ def check_engine(playwright, engine: str) -> None:
         for step in range(6_000):
             page.mouse.wheel(0, -WHEEL_PX)
             page.wait_for_timeout(WHEEL_GAP_MS)
+            try:
+                page.wait_for_function(COVERED, arg = MIN_COVERAGE, timeout = CATCH_UP_MS)
+            except PlaywrightTimeoutError:
+                raise AssertionError(
+                    f"rows cover under {MIN_COVERAGE:.0%} of the viewport {CATCH_UP_MS}ms after "
+                    f"wheel step {step}: the window lost the reader"
+                ) from None
             if step == 60 and not rest_checked:
                 # 4. A reader at rest is not moved by the window settling behind them.
                 rest_checked = True
@@ -277,13 +384,11 @@ def check_engine(playwright, engine: str) -> None:
         page.wait_for_timeout(600)
         record = page.evaluate(STOP_RECORD)
         top = page.evaluate(STATE)
+        # The least coverage on any one frame is how far the window fell behind in passing. It
+        # is reported and not asserted: it is this machine's speed, not the window's structure.
         info(
-            f"{engine}: wheel to top, {record['frames']} frames, least coverage "
+            f"{engine}: wheel to top, {record['frames']} frames, least coverage on a frame "
             f"{record['minCoverage']:.0%}, {len(record['seen'])} of {LARGE} messages passed"
-        )
-        assert record["minCoverage"] >= MIN_COVERAGE, (
-            f"a frame showed rows over only {record['minCoverage']:.0%} of the viewport while "
-            f"scrolling: the window fell behind the reader"
         )
         missing = sorted(set(range(1, LARGE + 1)) - set(record["seen"]))
         assert not missing, f"messages never mounted on the way up: {missing[:20]}"
@@ -310,7 +415,53 @@ def check_engine(playwright, engine: str) -> None:
         assert landed and landed[0] is not None, "a jump to the middle left the viewport empty"
         assert 1 < middle["positions"][0] and middle["positions"][-1] < LARGE, middle["positions"]
 
-        # 6. A copy over unmounted rows carries the whole conversation.
+        # 6. A row the reader is working in survives every jump, apart from the window.
+        pin = page.evaluate(PIN)
+        assert pin, "no mounted row has a control to focus"
+        bound = small["mounted"] + 2 * ROW_SLACK + 1
+        for label, target in (("the top", 0), ("the end", -1)):
+            page.evaluate(JUMP, target)
+            state = settle(page)
+            held = page.evaluate(PINNED)
+            assert held["mounted"] and held["focused"], (
+                f"a jump to {label} unmounted the row the reader had focus in "
+                f"(message {pin['position']}): {held}, rows {state['positions']}"
+            )
+            check_ordinals(state, f"pinned, at {label}", pinned = pin["position"])
+            assert held["gaps"] >= 1, f"the pinned row has no spacer of its own at {label}: {held}"
+            assert state["mounted"] <= bound, (
+                f"{state['mounted']} rows mounted at {label} with one pinned: the window "
+                f"stretched to the pinned row instead of leaving it where it is"
+            )
+            drift = abs(state["scrollHeight"] - full["scrollHeight"]) / full["scrollHeight"]
+            assert drift <= EXTENT_TOLERANCE, (
+                f"the scroll range is {drift:.1%} off the mounted thread at {label}: the "
+                f"spacers around the pinned row do not stand in for the rows left out"
+            )
+        info(
+            f"{engine}: message {pin['position']} kept its focus across jumps to both ends, "
+            f"{state['mounted']} rows mounted"
+        )
+        # Back onto it: the window takes the row in, without moving its node.
+        page.evaluate(JUMP, pin["scrollTop"])
+        state = settle(page)
+        held = page.evaluate(PINNED)
+        assert (
+            held["mounted"] and held["focused"] and held["gaps"] == 0
+        ), f"coming back to the pinned row lost it: {held}, rows {state['positions']}"
+        check_ordinals(state, "back on the pinned row")
+        # Let go: the row unmounts once the reader is elsewhere and no longer in it.
+        page.evaluate(JUMP, 0)
+        settle(page)
+        page.evaluate("() => document.activeElement?.blur()")
+        page.wait_for_function(
+            "() => document.querySelector('[data-pin-probe]') === null", timeout = 30_000
+        )
+        check_ordinals(settle(page), "after the pin is let go")
+        page.evaluate(JUMP, pin["scrollTop"])
+        settle(page)
+
+        # 7. A copy over unmounted rows carries the whole conversation.
         page.evaluate(SELECT_THREAD)
         copied = page.evaluate(COPY)
         info(
@@ -334,7 +485,7 @@ def check_engine(playwright, engine: str) -> None:
         assert not errors, errors
         page.close()
 
-        # 7. A hidden thread stays as it is.
+        # 8. A hidden thread stays as it is, and holds nothing else up.
         page, errors = open_thread(context, LARGE, windowed = True)
         shown = page.evaluate(STATE)
         page.evaluate(
@@ -356,10 +507,41 @@ def check_engine(playwright, engine: str) -> None:
             f"the thread came back changed: rows {back['positions']}, scroll range "
             f"{shown['scrollHeight']} -> {back['scrollHeight']}"
         )
+        # A reader asks for every row (the find bar), and the thread is hidden part way through.
+        page.evaluate("() => document.documentElement.setAttribute('data-find-bar-open', '')")
+        page.wait_for_function(
+            "(n) => document.querySelectorAll('[data-role]').length > n",
+            arg = back["mounted"],
+            timeout = 30_000,
+        )
+        assert page.evaluate(
+            "() => window.__threadWeight.pendingMounts()"
+        ), "a full mount under way on a visible thread must count as pending"
+        page.evaluate(
+            "() => { document.querySelector('[data-smoke=\"thread\"]').style.display = 'none'; }"
+        )
+        page.wait_for_timeout(500)
+        part = page.evaluate("() => document.querySelectorAll('[data-role]').length")
+        assert part < LARGE, f"the full mount finished before the thread was hidden ({part} rows)"
+        assert not page.evaluate("() => window.__threadWeight.pendingMounts()"), (
+            f"a hidden thread stopped {part} rows into a full mount still counts as pending: "
+            f"the turn rail of every visible thread waits on it"
+        )
+        page.evaluate("() => document.documentElement.removeAttribute('data-find-bar-open')")
+        page.evaluate(
+            "() => { document.querySelector('[data-smoke=\"thread\"]').style.display = 'flex'; }"
+        )
+        # Nobody is waiting for the rest of it any more, so the window comes back.
+        page.wait_for_function(
+            "(n) => document.querySelectorAll('[data-role]').length <= n",
+            arg = small["mounted"] + 2 * ROW_SLACK,
+            timeout = 30_000,
+        )
+        check_ordinals(settle(page), "after the abandoned full mount")
         assert not errors, errors
         page.close()
 
-        # 8. A streamed reply lands at the tail with the reader following it.
+        # 9. A streamed reply lands at the tail with the reader following it.
         page, errors = open_thread(context, LARGE, windowed = True, stream = True)
         page.evaluate("() => window.__threadWeight.send('go')")
         page.wait_for_function("() => window.__threadWeight.isRunning()", timeout = 60_000)
@@ -376,6 +558,34 @@ def check_engine(playwright, engine: str) -> None:
         assert (
             sent["mounted"] <= small["mounted"] + 2 * ROW_SLACK
         ), f"{sent['mounted']} rows mounted after a reply"
+        assert not errors, errors
+        page.close()
+
+        # 10. A full mount goes in passes bounded by height.
+        page, errors = open_thread(context, TALL_MESSAGES, windowed = True, seed = TALL_SEED)
+        tall = page.evaluate(STATE)
+        assert (
+            tall["mounted"] < TALL_MESSAGES
+        ), f"the tall thread is not windowed: {tall['mounted']}"
+        page.evaluate(WATCH_PASSES)
+        page.evaluate(SELECT_ALL)
+        page.wait_for_function(
+            "(n) => document.querySelectorAll('[data-role]').length >= n",
+            arg = TALL_MESSAGES,
+            timeout = 120_000,
+        )
+        passes = page.evaluate("() => window.__fillPasses")
+        tallest = max(passes, key = lambda entry: entry["px"])
+        info(
+            f"{engine}: select all mounted {TALL_MESSAGES} long replies in {len(passes)} passes, "
+            f"the largest {tallest['rows']} rows and {tallest['px']}px"
+        )
+        for entry in passes:
+            assert entry["rows"] <= 2 * FILL_CHUNK_ROWS, f"a pass mounted {entry['rows']} rows"
+            assert entry["rows"] == 1 or entry["px"] <= FILL_BUDGET_PX * FILL_BUDGET_SLACK, (
+                f"one pass of the full mount added {entry['rows']} rows, {entry['px']}px of them: "
+                f"the height budget ({FILL_BUDGET_PX}px) is not bounding it"
+            )
         assert not errors, errors
         page.close()
         info(f"{engine}: ok " + json.dumps({"small": small["mounted"], "large": opened["mounted"]}))

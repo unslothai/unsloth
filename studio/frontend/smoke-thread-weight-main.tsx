@@ -4,7 +4,10 @@
 // Harness for tests/studio/playwright_thread_weight.py: the real Thread and real markdown bodies,
 // seeded via thread.import on a local runtime (only it backs export/import used by delete).
 
-import { holdProgressiveMounts } from "@/components/assistant-ui/progressive-messages";
+import {
+  hasPendingProgressiveMounts,
+  holdProgressiveMounts,
+} from "@/components/assistant-ui/progressive-messages";
 import { Thread } from "@/components/assistant-ui/thread";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -294,6 +297,10 @@ function ThreadWeightApi({
       /** The conversation's length, where messageCount() is how much of it is mounted. */
       threadLength(): number {
         return aui.thread().getState().messages.length;
+      },
+      /** What the turn rail waits on before it renders: a full mount still under way. */
+      pendingMounts(): boolean {
+        return hasPendingProgressiveMounts();
       },
       counts(): {
         messages: number;

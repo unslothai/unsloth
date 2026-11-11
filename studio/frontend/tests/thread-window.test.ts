@@ -12,12 +12,14 @@ import {
   type MountedRow,
   type RowMeta,
   type RowWindow,
+  FILL_BUDGET_PX,
   RowHeights,
   WINDOW_KEEP_PX,
   WINDOW_MIN_ROWS,
   WINDOW_MIN_TOTAL_PX,
   WINDOW_REACH_PX,
   absorbShift,
+  followCount,
   initialRowWindow,
   messageWeight,
   planEngage,
@@ -25,6 +27,9 @@ import {
   planSlide,
   sameWindow,
   spacerHeights,
+  spacerRows,
+  threadSlots,
+  withPins,
 } from "../src/components/assistant-ui/thread-window.ts";
 
 const VIEW = 800;
@@ -56,8 +61,7 @@ function slide(
     count: 1000,
     rows,
     viewHeight: VIEW,
-    topSpacerTop: (rows[0]?.top ?? 0) - win.start * 500,
-    bottomSpacerTop: rows[rows.length - 1]?.bottom ?? 0,
+    threadTop: (rows[0]?.top ?? 0) - win.start * 500,
     slack: 0,
     heightOf: () => 500,
     maxStep: 4,
@@ -235,16 +239,76 @@ test("nothing unmounts while trimming is held", () => {
   assert.ok(sameWindow(next, win), "a selection or a held pointer keeps every mounted row");
 });
 
-test("a pinned row stops the trim on its side", () => {
-  const win = { start: 100, end: 140 };
-  const rows = stack(win, -10_000, 500);
-  const free = slide(win, rows);
-  const pinnedAbove = slide(win, rows, { pinned: (index) => index === 104 });
-  assert.equal(pinnedAbove.start, 104, "rows before the pinned one still go");
-  assert.equal(pinnedAbove.end, free.end);
-  const pinnedBelow = slide(win, rows, { pinned: (index) => index === 139 });
-  assert.equal(pinnedBelow.end, 140);
-  assert.equal(pinnedBelow.start, free.start);
+test("a pinned row is held apart from the window, not by stretching the window to it", () => {
+  // Rows the next window leaves out but the reader is working in: before it, inside it, after it.
+  const win = withPins({ start: 300, end: 310 }, [104, 305, 599, 600], 600);
+  assert.deepEqual(win, { start: 300, end: 310, pins: [104, 599] });
+  // No pin leaves a plain window, so it compares equal to one that never had any.
+  assert.deepEqual(withPins({ start: 300, end: 310, pins: [104] }, [], 600), { start: 300, end: 310 });
+  assert.ok(!sameWindow(win, { start: 300, end: 310 }));
+  assert.ok(!sameWindow(win, { start: 300, end: 310, pins: [104, 598] }));
+  assert.ok(sameWindow(win, { start: 300, end: 310, pins: [104, 599] }));
+});
+
+test("the thread is laid out as rows and the spacers standing in for the rest", () => {
+  const names = (win: RowWindow | null, count: number) =>
+    threadSlots(win, count).map((slot) =>
+      slot.kind === "row" ? slot.index : `${slot.name}[${slot.from},${slot.to})`,
+    );
+  assert.deepEqual(names({ start: 3, end: 5 }, 8), ["top[0,3)", 3, 4, "bottom[5,8)"]);
+  // A full mount keeps its two spacers, so the nodes survive the window closing and re-opening.
+  assert.deepEqual(names(null, 3), ["top[0,0)", 0, 1, 2, "bottom[3,3)"]);
+  // Pins on both sides: each is a row of its own, and the spacers against the window stop at
+  // the nearest one.
+  assert.deepEqual(names({ start: 10, end: 12, pins: [2, 6, 15, 19] }, 20), [
+    "gap[0,2)", 2, "gap[3,6)", 6, "top[7,10)", 10, 11, "bottom[12,15)", 15, "gap[16,19)", 19,
+    "gap[20,20)",
+  ]);
+  // Every row of the thread is in exactly one slot, in order.
+  const covered: number[] = [];
+  for (const slot of threadSlots({ start: 10, end: 12, pins: [2, 6, 15, 19] }, 20)) {
+    if (slot.kind === "row") covered.push(slot.index);
+    else for (let index = slot.from; index < slot.to; index += 1) covered.push(index);
+  }
+  assert.deepEqual(covered, Array.from({ length: 20 }, (_, index) => index));
+  // A window clamped to a thread that shrank, and a pin past its end.
+  assert.deepEqual(names({ start: 2, end: 9, pins: [7] }, 4), ["top[0,2)", 2, 3, "bottom[4,4)"]);
+});
+
+test("the spacers against the window stop at a pinned row", () => {
+  const heights = new RowHeights();
+  const metas = Array.from({ length: 20 }, (_, index) => meta(index));
+  metas.forEach((row, index) => heights.measure(row, 100 + index));
+  const win = { start: 10, end: 12, pins: [2, 6, 15, 19] };
+  assert.deepEqual(spacerRows(win, 20), { topFrom: 7, bottomTo: 15 });
+  assert.deepEqual(spacerHeights(heights, metas, win), {
+    top: 107 + 108 + 109,
+    bottom: 112 + 113 + 114,
+  });
+  assert.deepEqual(spacerRows({ start: 10, end: 12 }, 20), { topFrom: 0, bottomTo: 20 });
+  // A window that starts right after a pin has a leading spacer standing for no rows.
+  assert.deepEqual(spacerRows({ start: 7, end: 12, pins: [6] }, 20), { topFrom: 7, bottomTo: 20 });
+});
+
+test("a window follows a thread that grows at its tail and is clamped to one that shrinks", () => {
+  const tail = { start: 590, end: 600 };
+  assert.deepEqual(followCount(tail, 600, 602), { start: 590, end: 602 });
+  // A reader further up is left where they are, on the same object.
+  const middle = { start: 300, end: 310 };
+  assert.equal(followCount(middle, 600, 602), middle);
+  assert.deepEqual(followCount(tail, 600, 595), { start: 590, end: 595 });
+  assert.equal(followCount(tail, 600, 590), null);
+  // Pins come along: one the tail grew over is the window's now, one past the end is gone.
+  assert.deepEqual(followCount({ start: 300, end: 310, pins: [100, 599] }, 600, 598), {
+    start: 300,
+    end: 310,
+    pins: [100],
+  });
+  assert.deepEqual(followCount({ start: 590, end: 600, pins: [100] }, 600, 601), {
+    start: 590,
+    end: 601,
+    pins: [100],
+  });
 });
 
 test("a jump above the window re-opens it on the row the offset lands on", () => {
@@ -252,7 +316,7 @@ test("a jump above the window re-opens it on the row the offset lands on", () =>
   // The viewport now sits 20 rows (10,000px) above the first mounted row.
   const firstTop = 10_000 + VIEW;
   const rows = stack(win, firstTop, 500);
-  const next = slide(win, rows, { topSpacerTop: firstTop - 500 * 500 });
+  const next = slide(win, rows, { threadTop: firstTop - 500 * 500 });
   // Offset into the spacer: (500 rows * 500px) - 10,800px = row 478.4.
   assert.equal(next.start, 478);
   assert.ok(next.end > next.start && next.end <= next.start + 5);
@@ -262,19 +326,26 @@ test("a jump above the window re-opens it on the row the offset lands on", () =>
 test("a jump below the window walks the rows after it", () => {
   const win = { start: 100, end: 110 };
   const rows = stack(win, -5000 - 20_000, 500);
-  const bottomSpacerTop = rows[rows.length - 1].bottom;
-  const next = slide(win, rows, { bottomSpacerTop });
+  const next = slide(win, rows);
   // The viewport top is 20,000px into the trailing spacer: 40 rows on.
   assert.equal(next.start, 150);
+});
+
+test("a jump drops every row of the old window: holding one is the caller's pin, not a stretch", () => {
+  const win = { start: 100, end: 110, pins: [40] };
+  const next = slide(win, stack(win, -5000 - 20_000, 500));
+  assert.equal(next.start, 150);
+  assert.ok(next.end <= 150 + 5, "the window does not reach back for the rows it left");
+  assert.equal(next.pins, undefined);
 });
 
 test("a jump accounts for what the leading spacer carries beyond its rows", () => {
   const win = { start: 500, end: 510 };
   const firstTop = 10_000 + VIEW;
-  const plain = slide(win, stack(win, firstTop, 500), { topSpacerTop: firstTop - 500 * 500 });
+  const plain = slide(win, stack(win, firstTop, 500), { threadTop: firstTop - 500 * 500 });
   // 1000px of slack: the same viewport offset is two rows earlier in the thread.
   const slack = slide(win, stack(win, firstTop, 500), {
-    topSpacerTop: firstTop - 500 * 500 - 1000,
+    threadTop: firstTop - 500 * 500 - 1000,
     slack: 1000,
   });
   assert.equal(slack.start, plain.start);
@@ -329,6 +400,39 @@ test("a full mount widens both ways and ends unrestricted", () => {
     win = next;
     steps += 1;
     assert.ok(steps < 100, "a full mount must finish");
+  }
+});
+
+test("a full mount pass is bounded by estimated height, not only by rows", () => {
+  const win = { start: 100, end: 110 };
+  // Short messages: the row cap is what bounds the pass, as before.
+  assert.deepEqual(planFill(win, 1000, 32, () => 200), { start: 68, end: 142 });
+  // Very long replies: the budget stops the pass after a few rows, split between both sides.
+  const tall = planFill(win, 1000, 32, () => 6000);
+  assert.deepEqual(tall, { start: 98, end: 111 });
+  assert.ok((win.start - 98 + (111 - win.end)) * 6000 <= FILL_BUDGET_PX);
+  // A row taller than the whole budget still mounts, one a pass: a full mount must finish.
+  assert.deepEqual(planFill(win, 1000, 32, () => FILL_BUDGET_PX * 3), { start: 99, end: 110 });
+  // Messages that render nothing cost nothing and do not count as the row a pass must add.
+  const sparse = planFill(win, 1000, 32, (index) => (index % 2 ? 0 : FILL_BUDGET_PX * 3));
+  assert.deepEqual(sparse, { start: 99, end: 111 }, "row 99 renders nothing; row 110 is the pass");
+  // One side exhausted: the other takes the whole budget.
+  assert.deepEqual(planFill({ start: 0, end: 10 }, 1000, 32, () => 5000), { start: 0, end: 14 });
+  let current: RowWindow | null = { start: 598, end: 600 };
+  let passes = 0;
+  while (current != null) {
+    const before: RowWindow = current;
+    current = planFill(before, 600, 32, (index) => 500 + (index % 7) * 4000);
+    if (current != null) {
+      let added = 0;
+      for (let index = current.start; index < before.start; index += 1) added += 500 + (index % 7) * 4000;
+      for (let index = before.end; index < current.end; index += 1) added += 500 + (index % 7) * 4000;
+      const rows = before.start - current.start + (current.end - before.end);
+      assert.ok(rows >= 1, "every pass adds a row");
+      assert.ok(added <= FILL_BUDGET_PX || rows === 1, `a pass added ${added}px over ${rows} rows`);
+    }
+    passes += 1;
+    assert.ok(passes < 1000, "a full mount must finish");
   }
 });
 

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Sliding mount window glue; the window maths is in thread-window.ts. Only the rows near the
-// reader are mounted and two spacers stand in for the rest, so a thread's cost follows what is on
+// reader are mounted and spacers stand in for the rest, so a thread's cost follows what is on
 // screen, not its length. One shared propless slot element lets React skip unchanged rows; a
 // components object would re-render every row.
 
@@ -15,6 +15,7 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -38,6 +39,7 @@ import {
   RowHeights,
   WINDOW_REACH_PX,
   absorbShift,
+  followCount,
   initialRowWindow,
   messageWeight,
   planEngage,
@@ -45,6 +47,9 @@ import {
   planSlide,
   sameWindow,
   spacerHeights,
+  spacerRows,
+  threadSlots,
+  withPins,
 } from "@/components/assistant-ui/thread-window";
 import {
   type ThreadMessageRole,
@@ -70,6 +75,7 @@ const SETTLE_RETRY_MS = 350;
 const HOLD_RECHECK_MS = 1000;
 const FIND_FLAG = "data-find-bar-open";
 const ROW_SELECTOR = "[data-role][data-message-id]";
+const SPACER_ATTRIBUTE = "data-thread-spacer";
 const PINNED_CONTENT = "textarea, [contenteditable=true]";
 
 /** Module-level: consumers are imperative DOM readers, and a thread can mount twice (Compare). */
@@ -145,7 +151,7 @@ export async function completeProgressiveMounts(
 }
 
 /** True only while a full mount is in progress; a settled window withholds rows without being
- *  pending. */
+ *  pending, and so does a hidden thread, whose full mount waits until it is shown. */
 export function hasPendingProgressiveMounts(): boolean {
   for (const entry of activeWindows) if (entry.filling()) return true;
   return false;
@@ -246,13 +252,6 @@ type HeldAnchor = {
   rowSample: AnchorSample | null;
 };
 
-/** Px from the viewport top up to the first mounted row's top; prepends land above it. */
-function frontierAbove(viewport: HTMLElement | null): number | null {
-  const first = viewport?.querySelector("[data-role][data-message-id]");
-  if (!viewport || !first) return null;
-  return viewport.getBoundingClientRect().top - first.getBoundingClientRect().top;
-}
-
 type ThreadMessage = {
   id?: string;
   role?: ThreadMessageRole;
@@ -316,66 +315,80 @@ function heightsFor(key: string | undefined): RowHeights {
 }
 
 type Measured = {
+  /** Every mounted row in document order, the window's and the pinned ones outside it. */
   rows: MountedRow[];
-  elements: Map<number, HTMLElement>;
-  topSpacerTop: number;
-  bottomSpacerTop: number;
+  /** Top of the thread's first spacer, in px from the viewport's top edge. */
+  threadTop: number;
 };
 
-/** One pass of layout reads over the mounted rows, which also records each row's height: its top
- *  to the next row's top, so margins between rows are counted. */
-function measureRows(
-  viewport: HTMLElement,
-  top: HTMLElement | null,
-  bottom: HTMLElement | null,
-  lookup: Metas,
-  heights: RowHeights,
-): Measured {
-  const origin = viewport.getBoundingClientRect().top;
-  const rows: MountedRow[] = [];
-  const elements = new Map<number, HTMLElement>();
-  for (const child of viewport.children) {
-    if (!(child instanceof HTMLElement) || !child.matches(ROW_SELECTOR)) continue;
-    const index = lookup.index.get(child.getAttribute("data-message-id") ?? "");
-    if (index === undefined) continue;
-    const box = child.getBoundingClientRect();
-    rows.push({ index, top: box.top - origin, bottom: box.bottom - origin });
-    elements.set(index, child);
-  }
-  const bottomSpacerTop = bottom ? bottom.getBoundingClientRect().top - origin : null;
-  for (let at = 0; at < rows.length; at += 1) {
-    const nextTop =
-      at + 1 < rows.length ? rows[at + 1].top : (bottomSpacerTop ?? rows[at].bottom);
-    heights.measure(lookup.metas[rows[at].index], Math.max(0, nextTop - rows[at].top));
-  }
-  return {
-    rows,
-    elements,
-    topSpacerTop: top ? top.getBoundingClientRect().top - origin : 0,
-    bottomSpacerTop: bottomSpacerTop ?? 0,
-  };
+function rowIndex(child: Element, lookup: Metas): number | undefined {
+  if (!child.matches(ROW_SELECTOR)) return undefined;
+  return lookup.index.get(child.getAttribute("data-message-id") ?? "");
 }
 
-/** A row the reader is working in keeps its state: focus, an open edit, media that is playing. */
-function isPinned(row: HTMLElement | undefined): boolean {
-  if (!row) return false;
+/** One pass of layout reads over the thread, which also records each row's height: its top to
+ *  the top of what follows it (a row or a spacer), so margins between rows are counted. */
+function measureRows(viewport: HTMLElement, lookup: Metas, heights: RowHeights): Measured {
+  const origin = viewport.getBoundingClientRect().top;
+  const rows: MountedRow[] = [];
+  let threadTop: number | null = null;
+  let open: MountedRow | null = null;
+  for (const child of viewport.children) {
+    const index = rowIndex(child, lookup);
+    if (index === undefined && !child.hasAttribute(SPACER_ATTRIBUTE)) continue;
+    const box = child.getBoundingClientRect();
+    const top = box.top - origin;
+    threadTop ??= top;
+    if (open) heights.measure(lookup.metas[open.index], Math.max(0, top - open.top));
+    open = null;
+    if (index === undefined) continue;
+    open = { index, top, bottom: box.bottom - origin };
+    rows.push(open);
+  }
+  if (open) heights.measure(lookup.metas[open.index], Math.max(0, open.bottom - open.top));
+  return { rows, threadTop: threadTop ?? 0 };
+}
+
+/** A selection reaching into the thread keeps its rows: unmounting one would cut the range. */
+function heldSelection(viewport: HTMLElement): Range | null {
+  const selection = document.getSelection();
+  if (selection === null || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  return range.intersectsNode(viewport) ? range : null;
+}
+
+/** A row the reader is working in keeps its state: focus, an open edit, media that is playing,
+ *  the text they selected. */
+function isPinned(row: Element, selection: Range | null): boolean {
   if (row.contains(document.activeElement)) return true;
   if (row.querySelector(PINNED_CONTENT) !== null) return true;
+  if (selection?.intersectsNode(row)) return true;
   for (const media of row.querySelectorAll<HTMLMediaElement>("video, audio")) {
     if (!media.paused) return true;
   }
   return false;
 }
 
-/** A selection reaching into the thread keeps its rows: unmounting one would cut the range. */
-function selectionHeld(viewport: HTMLElement): boolean {
-  const selection = document.getSelection();
-  return (
-    selection !== null &&
-    !selection.isCollapsed &&
-    selection.rangeCount > 0 &&
-    selection.getRangeAt(0).intersectsNode(viewport)
-  );
+/**
+ * `next` holding on to the mounted rows it would leave out while the reader is working in them.
+ * They stay mounted where they are, apart from the window, so a scrollbar drag to the other end
+ * of the thread does not take an unsaved edit with it and does not mount what lies between.
+ * `tail` is the row of a reply being written, whose effects run the stream.
+ */
+function keepPinned(
+  viewport: HTMLElement,
+  lookup: Metas,
+  next: RowWindow,
+  tail: number | null,
+): RowWindow {
+  const selection = heldSelection(viewport);
+  const pins: number[] = [];
+  for (const child of viewport.children) {
+    const index = rowIndex(child, lookup);
+    if (index === undefined || (index >= next.start && index < next.end)) continue;
+    if (index === tail || isPinned(child, selection)) pins.push(index);
+  }
+  return withPins(next, pins, lookup.metas.length);
 }
 
 /**
@@ -410,7 +423,7 @@ function useThreadWindow(
   viewportRef: RefObject<HTMLElement | null>,
   topRef: RefObject<HTMLDivElement | null>,
   bottomRef: RefObject<HTMLDivElement | null>,
-): RowWindow | null {
+): { win: RowWindow | null; gapHeight: (from: number, to: number) => number } {
   const aui = useAui();
   const adjustScroll = useAdjustForContentInsertedAbove();
 
@@ -468,10 +481,8 @@ function useThreadWindow(
       // History arrives after mount: open on the commit that first brings rows in.
       setWin(open());
     } else if (win != null) {
-      // A window that reached the tail follows it; one past a shorter thread is clamped.
-      if (win.end >= previousCount && count > win.end) setWin({ start: win.start, end: count });
-      else if (win.start >= count) setWin(null);
-      else if (win.end > count) setWin({ start: win.start, end: count });
+      const followed = followCount(win, previousCount, count);
+      if (followed !== win) setWin(followed);
     }
   }
 
@@ -531,7 +542,7 @@ function useThreadWindow(
     (viewport: HTMLElement, current: RowWindow, lookup: Metas) => {
       const top = topRef.current;
       window.clearTimeout(settleTimerRef.current);
-      if (!top || current.start <= 0) {
+      if (!top || current.start <= spacerRows(current, lookup.metas.length).topFrom) {
         restoreScrollAnchoring(viewport);
         return;
       }
@@ -565,12 +576,16 @@ function useThreadWindow(
     if (!viewport || pendingRef.current) return;
     // Another route keeps the chat page alive but hidden. Nothing has a box there: every row
     // would measure zero and the window would walk the whole thread looking for its reach. The
-    // resize observer steps again when the viewport is shown.
-    if (viewport.clientHeight === 0) return;
+    // resize observer steps again when the viewport is shown. A reader waiting for every row is
+    // let go: it cannot read rows that have no boxes, and it would wait for as long as this hides.
+    if (viewport.clientHeight === 0) {
+      flushWaiters();
+      return;
+    }
     const lookup = readMetas();
     const total = lookup.metas.length;
     const current = winRef.current;
-    const measured = measureRows(viewport, topRef.current, bottomRef.current, lookup, heights);
+    const measured = measureRows(viewport, lookup, heights);
     // Also here: a row can replace its root (an edit opening) without the window committing.
     ordinals(viewport, lookup);
 
@@ -581,11 +596,14 @@ function useThreadWindow(
     if (readerHolds) modeRef.current = "fill";
     else if (
       modeRef.current === "fill" &&
-      current == null &&
+      // A full mount still under way is dropped too once nobody is waiting for it (find closed).
+      (current == null || waitersRef.current.length === 0) &&
       performance.now() >= releaseAtRef.current
     ) {
       modeRef.current = "slide";
     }
+    // The reply being written keeps its row: its effects run the stream.
+    const tail = aui.thread().getState().isRunning === true ? total - 1 : null;
 
     if (current == null) {
       if (waitersRef.current.length > 0) {
@@ -595,7 +613,7 @@ function useThreadWindow(
       }
       const next = planEngage(measured.rows, total, viewport.clientHeight);
       const held =
-        modeRef.current === "fill" || selectionHeld(viewport) || inputPointerHeld();
+        modeRef.current === "fill" || heldSelection(viewport) !== null || inputPointerHeld();
       if (next == null || held) {
         restoreScrollAnchoring(viewport);
         // A reader's hold wakes the window when it ends. The others end silently (the release
@@ -606,10 +624,14 @@ function useThreadWindow(
         }
         return;
       }
-      commit(next, true);
+      commit(keepPinned(viewport, lookup, next, tail), true);
       return;
     }
 
+    const inWindow = measured.rows.filter(
+      (row) => row.index >= current.start && row.index < current.end,
+    );
+    const heightOf = (index: number) => heights.heightOf(lookup.metas[index]);
     let next: RowWindow | null;
     if (modeRef.current === "fill") {
       // A commit also interrupts native wheel momentum, so a full mount waits for a quiet moment.
@@ -617,37 +639,35 @@ function useThreadWindow(
         schedule();
         return;
       }
+      // Px from the viewport top up to the window's first row; prepends land above it.
+      const frontier = inWindow.length > 0 ? -inWindow[0].top : null;
       const chunk = WEBKIT_GTK
         ? (chunkRef.current = nextMountChunk(
-            chunkRef.current, frontierAbove(viewport), FILL_CHUNK, WINDOW_REACH_PX))
+            chunkRef.current, frontier, FILL_CHUNK, WINDOW_REACH_PX))
         : FILL_CHUNK;
-      next = planFill(current, total, chunk);
+      next = planFill(current, total, chunk, heightOf);
     } else {
       chunkRef.current = 0;
-      const running = aui.thread().getState().isRunning === true;
       next = planSlide({
         win: current,
         count: total,
-        rows: measured.rows,
+        rows: inWindow,
         viewHeight: viewport.clientHeight,
-        topSpacerTop: measured.topSpacerTop,
-        bottomSpacerTop: measured.bottomSpacerTop,
+        threadTop: measured.threadTop,
         slack: slackRef.current,
-        heightOf: (index) => heights.heightOf(lookup.metas[index]),
+        heightOf,
         maxStep: SLIDE_STEP,
-        trim: !selectionHeld(viewport) && !inputPointerHeld(),
-        // The reply being written keeps its row: its effects run the stream.
-        pinned: (index) =>
-          (running && index === total - 1) || isPinned(measured.elements.get(index)),
+        trim: heldSelection(viewport) === null && !inputPointerHeld(),
       });
     }
+    if (next != null) next = keepPinned(viewport, lookup, next, tail);
     if (sameWindow(next, current)) {
       settle(viewport, current, lookup);
       return;
     }
     const trimOnly = next != null && next.start >= current.start && next.end <= current.end;
     commit(next, WEBKIT_GTK || trimOnly);
-  }, [aui, commit, flushWaiters, heights, ordinals, readMetas, schedule, settle, viewportRef, topRef, bottomRef]);
+  }, [aui, commit, flushWaiters, heights, ordinals, readMetas, schedule, settle, viewportRef]);
   useLayoutEffect(() => {
     stepRef.current = step;
   }, [step]);
@@ -658,6 +678,23 @@ function useThreadWindow(
     modeRef.current = "slide";
     slackRef.current = 0;
   }, [resetKey]);
+
+  // The leading spacer stands for no rows: the window starts at the first row, or at a pin.
+  const atFirstRow = win == null || win.start <= spacerRows(win, count).topFrom;
+
+  // The spacers get their heights before any layout effect runs. A commit that moves the window
+  // across a pinned row creates a spacer node (their keys follow the pins), which has no height
+  // yet; a row whose own layout effect reads layout would see a thread a few rows long, and the
+  // browser would clamp scrollTop to it (seen: 191,305 to 3,214). The refs are not attached yet.
+  useInsertionEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const spacer = (name: string) =>
+      viewport.querySelector<HTMLElement>(`:scope > [${SPACER_ATTRIBUTE}="${name}"]`);
+    const leading = atFirstRow ? 0 : Math.max(0, spacers.top + slackRef.current);
+    spacer("top")?.style.setProperty("height", `${leading}px`);
+    spacer("bottom")?.style.setProperty("height", `${spacers.bottom}px`);
+  }, [atFirstRow, spacers, viewportRef]);
 
   // Runs in the commit that changed the window, before paint: size the spacers, then put the
   // reader's anchor back where it was.
@@ -671,7 +708,6 @@ function useThreadWindow(
     const top = topRef.current;
     const bottom = bottomRef.current;
     if (!viewport || !top || !bottom) return;
-    const atFirstRow = win == null || win.start <= 0;
     let spacer = atFirstRow ? 0 : Math.max(0, spacers.top + slackRef.current);
     top.style.height = `${spacer}px`;
     bottom.style.height = `${spacers.bottom}px`;
@@ -701,11 +737,19 @@ function useThreadWindow(
     ordinals(viewport, readMetas());
     if (committed) for (const listener of rowListeners) listener();
     schedule();
-  }, [win, spacers, adjustScroll, ordinals, readMetas, schedule, viewportRef, topRef, bottomRef]);
+  }, [win, atFirstRow, spacers, adjustScroll, ordinals, readMetas, schedule, viewportRef, topRef, bottomRef]);
+
+  /** Behind another route: no boxes, so no step runs and a full mount cannot make progress. */
+  const hidden = useCallback(() => viewportRef.current?.clientHeight === 0, [viewportRef]);
 
   const complete = useCallback(
     () =>
       new Promise<void>((resolve) => {
+        // Nothing can read a hidden thread's rows, and a waiter here would never be resolved.
+        if (hidden()) {
+          resolve();
+          return;
+        }
         modeRef.current = "fill";
         releaseAtRef.current = performance.now() + FILL_RELEASE_MS;
         if (winRef.current == null) {
@@ -715,7 +759,7 @@ function useThreadWindow(
         waitersRef.current.push(resolve);
         schedule();
       }),
-    [schedule],
+    [hidden, schedule],
   );
 
   const reveal = useCallback(
@@ -724,25 +768,43 @@ function useThreadWindow(
       const index = lookup.index.get(messageId);
       if (index === undefined) return false;
       const current = winRef.current;
-      if (current == null || (index >= current.start && index < current.end)) return true;
+      const viewport = viewportRef.current;
+      if (
+        current == null ||
+        !viewport ||
+        (index >= current.start && index < current.end) ||
+        current.pins?.includes(index)
+      ) {
+        return true;
+      }
+      const total = lookup.metas.length;
+      const tail = aui.thread().getState().isRunning === true ? total - 1 : null;
+      const next = keepPinned(
+        viewport,
+        lookup,
+        { start: index, end: Math.min(total, index + SLIDE_STEP) },
+        tail,
+      );
       // No anchor: the caller scrolls to the row, so there is no reading position to keep.
-      viewportRef.current?.style.setProperty("overflow-anchor", "none");
+      viewport.style.setProperty("overflow-anchor", "none");
       anchorRef.current = null;
       pendingRef.current = true;
-      flushSync(() =>
-        setWin({ start: index, end: Math.min(lookup.metas.length, index + SLIDE_STEP) }),
-      );
+      flushSync(() => {
+        setWin(next);
+      });
       return true;
     },
-    [readMetas, viewportRef],
+    [aui, readMetas, viewportRef],
   );
 
   useLayoutEffect(() => {
     const entry: ActiveWindow = {
       complete,
       reveal,
-      withholding: () => winRef.current != null,
-      filling: () => modeRef.current === "fill" && winRef.current != null,
+      // A hidden thread is neither: it mounts nothing until it is shown, and a reader waiting on
+      // it (the turn rail of a Compare pane, find) would wait for as long as it stays hidden.
+      withholding: () => winRef.current != null && !hidden(),
+      filling: () => modeRef.current === "fill" && winRef.current != null && !hidden(),
       wake: schedule,
       viewportRef,
     };
@@ -750,7 +812,7 @@ function useThreadWindow(
     return () => {
       activeWindows.delete(entry);
     };
-  }, [complete, reveal, schedule, viewportRef]);
+  }, [complete, hidden, reveal, schedule, viewportRef]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -793,7 +855,10 @@ function useThreadWindow(
         spacer !== null && spacer.offsetHeight > 0 && selection.containsNode(spacer, true);
       const fromTop = standsIn(top);
       const toBottom = standsIn(bottom);
-      if (!fromTop && !toBottom) return;
+      const acrossGap = [
+        ...viewport.querySelectorAll<HTMLElement>(`:scope > [${SPACER_ATTRIBUTE}="gap"]`),
+      ].some(standsIn);
+      if (!fromTop && !toBottom && !acrossGap) return;
       modeRef.current = "fill";
       releaseAtRef.current = performance.now() + FILL_RELEASE_MS;
       commit(null, true);
@@ -817,6 +882,8 @@ function useThreadWindow(
       selection.addRange(range);
     };
     viewport.addEventListener("scroll", schedule, { passive: true });
+    // A pinned row is let go once the reader has left it.
+    viewport.addEventListener("focusout", schedule);
     document.addEventListener("copy", onCopy, true);
     document.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("beforeprint", beforePrint);
@@ -828,6 +895,7 @@ function useThreadWindow(
       flags.disconnect();
       resize.disconnect();
       viewport.removeEventListener("scroll", schedule);
+      viewport.removeEventListener("focusout", schedule);
       document.removeEventListener("copy", onCopy, true);
       document.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("beforeprint", beforePrint);
@@ -842,7 +910,20 @@ function useThreadWindow(
   // Settle waiters on unmount, or a DOM capture racing a thread switch waits forever.
   useEffect(() => flushWaiters, [flushWaiters]);
 
-  return win;
+  /** Estimated height of rows `[from, to)`, for a spacer between pinned rows. */
+  const gapHeight = useCallback(
+    (from: number, to: number): number => {
+      const { metas: rows } = readMetas();
+      let height = 0;
+      for (let index = from; index < Math.min(to, rows.length); index += 1) {
+        height += heights.heightOf(rows[index]);
+      }
+      return height;
+    },
+    [readMetas, heights],
+  );
+
+  return { win, gapHeight };
 }
 
 /** Drop-in for `ThreadPrimitive.Messages` that mounts only the rows near the reader. */
@@ -855,31 +936,45 @@ export const ProgressiveMessages: FC<{
     const count = useAuiState(({ thread }) => thread.messages.length);
     const topRef = useRef<HTMLDivElement>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
-    const win = useThreadWindow(count, resetKey, viewportRef, topRef, bottomRef);
+    const { win, gapHeight } = useThreadWindow(count, resetKey, viewportRef, topRef, bottomRef);
     const aui = useAui();
     const gate = useMemo(() => createRowNotificationGate(aui), [aui]);
 
     return useMemo(() => {
       if (count === 0) return null;
-      const first = win == null ? 0 : Math.max(0, Math.min(win.start, count));
-      const last = win == null ? count : Math.max(first, Math.min(win.end, count));
       const message = renderMessage();
-      const rows: ReactElement[] = [];
-      for (let index = first; index < last; index += 1) {
-        rows.push(
-          <AuiProvider key={index} value={gate.row(index)}>
-            <MessageByIndexProvider index={index}>{message}</MessageByIndexProvider>
-          </AuiProvider>,
+      // A spacer is keyed by where it sits among the rows, so no commit ever has to move a row
+      // past one: moving a row's node would take its focus and stop its media.
+      return threadSlots(win, count).map((slot) => {
+        if (slot.kind === "row") {
+          const index = slot.index;
+          return (
+            <AuiProvider key={index} value={gate.row(index)}>
+              <MessageByIndexProvider index={index}>{message}</MessageByIndexProvider>
+            </AuiProvider>
+          );
+        }
+        // The heights of these two are written in the window's layout effect, never by React: it
+        // also moves them to hold the reader's anchor, and a re-render must not put the old
+        // value back.
+        if (slot.name === "top") {
+          const key = slot.from === 0 ? "top" : `top:${slot.from}`;
+          return <div key={key} ref={topRef} data-thread-spacer="top" aria-hidden="true" style={{ flexShrink: 0 }} />;
+        }
+        if (slot.name === "bottom") {
+          const key = slot.to === count ? "bottom" : `bottom:${slot.to}`;
+          return <div key={key} ref={bottomRef} data-thread-spacer="bottom" aria-hidden="true" style={{ flexShrink: 0 }} />;
+        }
+        return (
+          <div
+            key={`gap:${slot.from}`}
+            data-thread-spacer="gap"
+            aria-hidden="true"
+            style={{ flexShrink: 0, height: gapHeight(slot.from, slot.to) }}
+          />
         );
-      }
-      // Heights are written in the window's layout effect, never by React: it also moves them to
-      // hold the reader's anchor, and a re-render must not put the old value back.
-      return <>
-        <div ref={topRef} data-thread-spacer="top" aria-hidden="true" style={{ flexShrink: 0 }} />
-        {rows}
-        <div ref={bottomRef} data-thread-spacer="bottom" aria-hidden="true" style={{ flexShrink: 0 }} />
-      </>;
-    }, [count, win, renderMessage, gate]);
+      });
+    }, [count, win, renderMessage, gate, gapHeight]);
   },
   (prev, next) =>
     prev.resetKey === next.resetKey &&
