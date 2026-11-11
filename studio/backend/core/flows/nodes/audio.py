@@ -94,21 +94,39 @@ def _ext(mime: str) -> str:
 
 MAX_GAP_MS = 10_000
 MAX_OUTPUT_BYTES = 1024**3
+TOO_LONG = "The joined audio would be over 1 GB; join fewer or shorter clips"
+
+
+def _pcm_bytes(data: bytes) -> int:
+    """A WAV clip's sample bytes from its header alone; 0 if it is not a WAV (concat_wav says so)."""
+    try:
+        with wave.open(io.BytesIO(data)) as wav:
+            return wav.getnframes() * wav.getnchannels() * wav.getsampwidth()
+    except (wave.Error, EOFError):
+        return 0
 
 
 def concat_wav(clips: list[bytes], gap_ms: int) -> bytes:
     params = None
     frames: list[bytes] = []
+    total = 0
+    gap_bytes = 0
     for i, data in enumerate(clips):
         try:
             with wave.open(io.BytesIO(data)) as wav:
                 current = (wav.getnchannels(), wav.getsampwidth(), wav.getframerate())
                 if params is None:
                     params = current
+                    gap = min(max(0, gap_ms), MAX_GAP_MS)
+                    gap_bytes = int(current[2] * gap / 1000) * current[0] * current[1]
                 elif current != params:
                     raise FlowNodeError(
                         f"Clip {i + 1} has another sample rate or channel layout; generate the clips with one model"
                     )
+                # Checked from the header before decoding, so an oversized join stops early.
+                total += wav.getnframes() * current[0] * current[1] + (gap_bytes if i else 0)
+                if total > MAX_OUTPUT_BYTES:
+                    raise FlowNodeError(TOO_LONG)
                 frames.append(wav.readframes(wav.getnframes()))
         except wave.Error:
             raise FlowNodeError(
@@ -120,7 +138,7 @@ def concat_wav(clips: list[bytes], gap_ms: int) -> bytes:
     # 8-bit WAV is unsigned: silence is 0x80.
     silence = (b"\x80" if width == 1 else b"\x00") * (int(rate * gap_ms / 1000) * channels * width)
     if sum(len(f) for f in frames) + len(silence) * max(0, len(frames) - 1) > MAX_OUTPUT_BYTES:
-        raise FlowNodeError("The joined audio would be over 1 GB; join fewer or shorter clips")
+        raise FlowNodeError(TOO_LONG)
     out = io.BytesIO()
     with wave.open(out, "wb") as wav:
         wav.setnchannels(channels)
@@ -140,7 +158,14 @@ async def concat(ctx: NodeContext) -> dict:
         raise FlowNodeError("No clips to join")
     if len(clips_in) > 500:
         raise FlowNodeError("Join Audio takes at most 500 clips")
-    clips = [(await media_bytes(ctx, c))[0] for c in clips_in]
+    clips: list[bytes] = []
+    total = 0
+    for c in clips_in:
+        data = (await media_bytes(ctx, c))[0]
+        total += _pcm_bytes(data)
+        if total > MAX_OUTPUT_BYTES:
+            raise FlowNodeError(TOO_LONG)
+        clips.append(data)
     data = await asyncio.to_thread(concat_wav, clips, int(ctx.params.get("gap_ms") or 0))
     with wave.open(io.BytesIO(data)) as wav:
         duration = wav.getnframes() / float(wav.getframerate())
