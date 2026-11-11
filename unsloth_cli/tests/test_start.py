@@ -7626,6 +7626,30 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
     assert hermes_config.read_text() == before
 
 
+def test_write_hermes_config_keeps_user_fields_on_the_provider(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    start.write_hermes_config(BASE, MODEL, hermes_config, {"temperature": 0.2})
+    config = yaml.safe_load(hermes_config.read_text())
+    config["providers"]["unsloth-studio"]["api_key"] = "${MY_STATIC_KEY}"
+    config["providers"]["unsloth-studio"]["base_url"] = "http://stale:1/v1"
+    hermes_config.write_text(yaml.safe_dump(config, sort_keys = False))
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert yaml.safe_load(hermes_config.read_text())["providers"]["unsloth-studio"] == {
+        "base_url": f"{BASE}/v1",
+        "api_mode": "openai",
+        "key_env": "UNSLOTH_API_KEY",
+        "api_key": "${MY_STATIC_KEY}",
+    }
+
+
+def test_write_hermes_config_replaces_a_non_mapping_provider(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    hermes_config.write_text(yaml.safe_dump({"providers": {"unsloth-studio": "broken"}}))
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    provider = yaml.safe_load(hermes_config.read_text())["providers"]["unsloth-studio"]
+    assert provider["key_env"] == "UNSLOTH_API_KEY"
+
+
 def test_write_hermes_config_preserves_non_mapping_file(hermes_config, capsys):
     pytest.importorskip("yaml")
     original = "- just\n- a\n- list\n"

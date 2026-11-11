@@ -284,7 +284,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   composerOutline: null,
   elementOutline: null,
   pointerCursors: false,
-  reduceMotion: "off",
+  reduceMotion: "on",
   fontSmoothing: true,
   codeLineNumbers: false,
   codeWordWrap: false,
@@ -494,9 +494,9 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     elementOutline: sanitizePercent(source.elementOutline),
     pointerCursors: source.pointerCursors === true,
     reduceMotion:
-      source.reduceMotion === "on" || source.reduceMotion === "system"
+      source.reduceMotion === "off" || source.reduceMotion === "system"
         ? source.reduceMotion
-        : "off",
+        : "on",
     fontSmoothing: source.fontSmoothing !== false,
     codeLineNumbers: source.codeLineNumbers === true,
     codeWordWrap: source.codeWordWrap === true,

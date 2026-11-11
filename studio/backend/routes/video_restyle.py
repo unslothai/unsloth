@@ -87,6 +87,9 @@ async def preview_restyle(request: Request, current_subject: str = Depends(get_c
 async def start_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
+    # Receive the upload before reserving: a reservation holds the GPU, so a slow or stalled body
+    # must not keep every model load and training start refused while it trickles in.
+    upload = await _read_upload(request)
     try:
         reservation = video_restyle.runner.reserve(current_account_id())
     except RestyleBusy as exc:
@@ -95,7 +98,7 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
     # a cancelled request must not free a reservation that start() is still about to use.
     lease = {"route": True}
     try:
-        return await _start_reserved(request, reservation, lease)
+        return await _start_reserved(upload, reservation, lease)
     finally:
         if lease["route"]:
             video_restyle.runner.release(reservation)
@@ -172,8 +175,8 @@ def _take_the_gpu(mode: Optional[str] = None) -> None:
         gpu_arbiter.restyle_handoff.reset(handoff)
 
 
-async def _start_reserved(request: Request, reservation: str, lease: dict):
-    fields, files = await _read_upload(request)
+async def _start_reserved(upload: tuple, reservation: str, lease: dict):
+    fields, files = upload
     seed: Optional[int] = None
     if fields.get("seed"):
         try:
