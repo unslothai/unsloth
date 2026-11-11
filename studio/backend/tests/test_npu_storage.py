@@ -222,22 +222,56 @@ def test_a_folder_still_downloading_is_not_deleted(npu_home, monkeypatch):
     assert npu_home.deleted == ["qwen3-4b-FLM"]
 
 
-def test_no_pull_can_start_while_a_storage_delete_runs(npu_home, monkeypatch):
+def test_a_pull_asked_for_during_a_storage_delete_is_refused_without_waiting(npu_home, monkeypatch):
     import asyncio
+    import threading
 
     import routes.npu as npu_routes
 
     monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: npu_home)
-    held = []
+    monkeypatch.setattr(npu_routes, "_downloads", {})
+    started = []
+
+    class _Npu:
+        def download(self, model_id):
+            started.append(model_id)
+            return iter(())
+
+    def start(model_id):
+        # A thread with a timeout: a delete holding _downloads_lock would hang this, not fail it.
+        outcome = []
+
+        def _run():
+            try:
+                npu_routes._start_download(_Npu(), model_id)
+                outcome.append("started")
+            except NpuError as exc:
+                outcome.append(str(exc))
+
+        worker = threading.Thread(target = _run, daemon = True)
+        worker.start()
+        worker.join(timeout = 5)
+        return outcome[0] if outcome else "blocked"
+
+    seen = []
     delete = npu_home.delete
 
     def watched(model_id):
-        # _start_download takes this lock to register a pull, so it waits out the delete.
-        held.append(npu_routes._downloads_lock.locked())
+        seen.append((start("qwen3-4b-FLM"), start("qwen3-0.6b-FLM")))
         delete(model_id)
 
     npu_home.delete = watched
     asyncio.run(npu_routes.delete_npu_checkpoint("qwen3:4b"))
+    # Only the model being deleted is held back.
+    assert seen == [("qwen3-4b-FLM is being deleted. Download it again once that finishes.", "started")]
+    assert npu_routes._deleting == []
+
+    npu_routes._downloads.clear()
+    seen.clear()
     purge_cache("npu_models")
-    assert held == [True, True, True]
-    assert not npu_routes._downloads_lock.locked()
+    # Clear holds back every model.
+    assert seen and all(pair[0].endswith("is being deleted. Download it again once that finishes.")
+                        and pair[1].endswith("is being deleted. Download it again once that finishes.")
+                        for pair in seen)
+    assert npu_routes._deleting == []
+    assert start("qwen3-4b-FLM") == "started"

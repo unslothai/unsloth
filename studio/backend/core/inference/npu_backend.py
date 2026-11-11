@@ -11,9 +11,10 @@ import logging
 import subprocess
 import sys
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, ContextManager, Iterator, Optional
 
 from core.inference.flm_files import (
     FlmDownloadError,
@@ -68,6 +69,10 @@ DRIVER_HELP_URL = {
 
 class NpuError(RuntimeError):
     """An NPU operation failed; the message is safe to show the user."""
+
+
+class NpuBusy(NpuError):
+    """A delete and a pull of the same model would write the same folder."""
 
 
 class NpuLoadCancelled(NpuError):
@@ -746,9 +751,10 @@ class LemonadeNpuBackend:
     def delete_checkpoint(
         self,
         checkpoint: str,
-        downloading: Callable[[str], bool] = lambda model_id: False,
+        reserve: Callable[[list[str]], ContextManager[Any]] = lambda model_ids: nullcontext(),
     ) -> str:
-        """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id."""
+        """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id.
+        reserve(model_ids) keeps pulls of those ids out of the folder until the delete ends."""
         try:
             model_ids = [
                 str(row.get("id"))
@@ -759,12 +765,9 @@ class LemonadeNpuBackend:
             raise NpuError(str(exc)) from exc
         if not model_ids:
             raise NpuError(f"Lemonade has no FastFlowLM model for {checkpoint}.")
-        # A pull writes into the same folder, and delete does not wait for it.
-        busy = [model_id for model_id in model_ids if downloading(model_id)]
-        if busy:
-            raise NpuError(f"Cancel the download of {busy[0]} before deleting it.")
-        for model_id in model_ids:
-            self.delete(model_id)
+        with reserve(model_ids):
+            for model_id in model_ids:
+                self.delete(model_id)
         return model_ids[0]
 
     def delete_downloaded(self) -> tuple[int, list[str]]:

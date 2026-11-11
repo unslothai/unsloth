@@ -408,19 +408,20 @@ def _purge_npu_models() -> PurgeOutcome:
     """Through lemond, never rmtree: it keeps its own record of which models are downloaded."""
     from contextlib import nullcontext
 
-    from core.inference.npu_backend import get_npu_backend
+    from core.inference.npu_backend import NpuBusy, get_npu_backend
 
     try:
         from routes.npu import downloads_held
     except ImportError as exc:
         logger.debug(f"Could not read the NPU downloads: {exc}")
-        downloads_held = lambda: nullcontext(lambda: False)  # noqa: E731
+        downloads_held = nullcontext
     roots = _npu_model_dirs()
     before = sum(_measure_root(root)[0] for root in roots)
-    with downloads_held() as running:
-        if running():
-            return PurgeOutcome(errors = [_PURGE_BUSY])
-        deleted, errors = get_npu_backend().delete_downloaded()
+    try:
+        with downloads_held():
+            deleted, errors = get_npu_backend().delete_downloaded()
+    except NpuBusy:
+        return PurgeOutcome(errors = [_PURGE_BUSY])
     after = sum(_measure_root(root)[0] for root in roots)
     return PurgeOutcome(freed_bytes = max(0, before - after), removed_entries = deleted, errors = errors)
 

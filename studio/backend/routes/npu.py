@@ -9,7 +9,7 @@ import asyncio
 import json
 import threading
 from contextlib import contextmanager
-from typing import Optional
+from typing import Iterable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -17,7 +17,7 @@ from starlette.concurrency import iterate_in_threadpool
 
 from auth import policy
 from auth.authentication import get_current_subject
-from core.inference.npu_backend import NpuError, get_npu_backend
+from core.inference.npu_backend import NpuBusy, NpuError, get_npu_backend
 from hub.services.models import account_access
 from loggers import get_logger
 
@@ -83,22 +83,30 @@ _downloads: dict[str, _Download] = {}
 _downloads_lock = threading.Lock()
 
 
+# Each running delete's model ids; None reserves every model (Storage's Clear).
+_deleting: list[Optional[frozenset[str]]] = []
+
+
 @contextmanager
-def downloads_held():
-    """Blocks new pulls while a delete runs, so none can start between the check and the delete.
-    Yields running(model_id=None): whether that model, or any, is still pulling."""
-
-    def running(model_id: Optional[str] = None) -> bool:
-        jobs = _downloads.values() if model_id is None else [_downloads.get(model_id)]
-        return any(job is not None and not job.finished for job in jobs)
-
+def downloads_held(model_ids: Optional[Iterable[str]] = None):
+    """Keeps new pulls of model_ids (every model when None) out while a delete runs. The lock
+    is held only to check and mark, so a pull asked for meanwhile is refused, not blocked.
+    Raises NpuBusy if one of them is already pulling."""
+    ids = None if model_ids is None else frozenset(model_ids)
     with _downloads_lock:
-        yield running
+        for model_id, job in _downloads.items():
+            if not job.finished and (ids is None or model_id in ids):
+                raise NpuBusy(f"Cancel the download of {model_id} before deleting it.")
+        _deleting.append(ids)
+    try:
+        yield
+    finally:
+        with _downloads_lock:
+            _deleting.remove(ids)
 
 
 def _delete_checkpoint(checkpoint: str) -> str:
-    with downloads_held() as running:
-        return get_npu_backend().delete_checkpoint(checkpoint, running)
+    return get_npu_backend().delete_checkpoint(checkpoint, downloads_held)
 
 
 def _forget_storage_size() -> None:
@@ -113,6 +121,8 @@ def _start_download(npu, model_id: str) -> _Download:
         job = _downloads.get(model_id)
         if job is not None and not job.finished:
             return job
+        if any(ids is None or model_id in ids for ids in _deleting):
+            raise NpuBusy(f"{model_id} is being deleted. Download it again once that finishes.")
         job = _Download()
         _downloads[model_id] = job
 
@@ -200,7 +210,11 @@ async def download_npu_model(model_id: str):
 
     Disconnecting stops progress updates, not the download.
     """
-    return _event_stream(_start_download(get_npu_backend(), model_id))
+    try:
+        job = _start_download(get_npu_backend(), model_id)
+    except NpuBusy as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from None
+    return _event_stream(job)
 
 
 @router.get("/models/{model_id}/download", dependencies = [Depends(_require_installation_owner)])
