@@ -3876,6 +3876,8 @@ export function HubModelPicker({
   externalModels = [],
   value,
   valueLoaded,
+  searchQuery,
+  onSearchQueryChange,
   onSelect: onSelectProp,
   resolveDownloadFootprint,
   onFoldersChange,
@@ -3911,6 +3913,9 @@ export function HubModelPicker({
   value?: string;
   /** Whether `value` is resident; false keeps it from being stamped as a load. */
   valueLoaded?: boolean;
+  /** Controlled search text lets the parent retain the query across picker remounts. */
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
@@ -4012,7 +4017,9 @@ export function HubModelPicker({
   const [listScrolled, setListScrolled] = useState(false);
   const [listMoreBelow, setListMoreBelow] = useState(false);
   const hfToken = useHfTokenStore((s) => s.token);
-  const [query, setQuery] = useState("");
+  const [internalQuery, setInternalQuery] = useState("");
+  const query = searchQuery ?? internalQuery;
+  const setQuery = onSearchQueryChange ?? setInternalQuery;
   const debouncedQuery = useDebouncedValue(query);
   const loadedIdSet = useMemo(
     () => new Set(isChatPicker ? loadedModels.map((m) => m.id.toLowerCase()) : []),

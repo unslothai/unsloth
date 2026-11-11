@@ -366,6 +366,8 @@ function ModelSelectorContent({
   externalModels,
   value,
   loaded,
+  searchQuery,
+  onSearchQueryChange,
   activeGgufVariant,
   activeModelConfig,
   activeLoadedContextLength,
@@ -401,6 +403,8 @@ function ModelSelectorContent({
   externalModels: ExternalModelOption[];
   value?: string;
   loaded?: boolean;
+  searchQuery: string;
+  onSearchQueryChange: (query: string) => void;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
   activeLoadedContextLength?: number | null;
@@ -720,6 +724,8 @@ function ModelSelectorContent({
               externalModels={externalModels}
               value={value}
               valueLoaded={loaded}
+              searchQuery={searchQuery}
+              onSearchQueryChange={onSearchQueryChange}
               onSelect={handlePick}
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
@@ -819,6 +825,9 @@ export function ModelSelector({
   const navigate = useNavigate();
   const t = useT();
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
+  // Keep the Hub query at the selector level because Radix unmounts the popover
+  // content when it closes after a model is selected.
+  const [hubSearchQuery, setHubSearchQuery] = useState("");
 
   const selected = value ?? uncontrolled;
   // The chat model can be evicted by an image or video load while the pick survives.
@@ -998,6 +1007,8 @@ export function ModelSelector({
         externalModels={externalModels}
         value={selected}
         loaded={loaded}
+        searchQuery={hubSearchQuery}
+        onSearchQueryChange={setHubSearchQuery}
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
         activeLoadedContextLength={activeLoadedContextLength}
