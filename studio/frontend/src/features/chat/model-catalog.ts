@@ -255,9 +255,8 @@ export function setProviderModelCatalog(
   notifyCatalogChange();
 }
 
-// Kept out of LIVE_CATALOG (it would shadow snapshot reasoning and feed compaction) and never
-// persisted: a window from an earlier page load may belong to a server since restarted, and the
-// Max Tokens clamp only lowers, so a stale value would stick.
+// Not LIVE_CATALOG (would shadow snapshot reasoning, feed compaction); not persisted: a restarted
+// server's stale window would stick, since the Max Tokens clamp only lowers.
 const servedWindows = new Map<string, { endpoint: string; windows: Record<string, number> }>();
 
 /** Replaces a connection's windows with what its server lists now. */

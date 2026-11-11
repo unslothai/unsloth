@@ -315,7 +315,6 @@ test("a self-hosted server's listed window sets the default cap and bounds the o
   assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", 4096, "conn-a"), 4096);
   assert.equal(getGroundedExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", null, "conn-a"), 8192);
   assert.equal(externalMaxOutputTokensNeedsConnectionCap("vllm", "Qwen/Qwen3-8B", "conn-a"), false);
-  // Two connections serving one model id keep their own windows.
   assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", null, "conn-b"), 65536);
   // A hosted context length is not an output bound, and only served-window providers read one.
   assert.equal(getExternalMaxOutputTokens("vllm", "no-window", null, "conn-a"), EXTERNAL_MAX_OUTPUT_TOKENS);
@@ -475,7 +474,6 @@ test("saving a connection with a new Base URL forgets the old server's windows",
   assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-move"), 8192);
   useExternalProvidersStore.getState().setProviders([row("http://new/v1")]);
   assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-move"), EXTERNAL_MAX_OUTPUT_TOKENS);
-  // The same rule holds when another tab saved the move.
   assert.match(
     readSrc("features/chat/stores/external-providers-store.ts"),
     /const providers = loadExternalProviders\(\);\s*forgetMovedConnections\(/,
