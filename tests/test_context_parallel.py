@@ -1578,7 +1578,7 @@ def test_ulysses_seq_len_rope_uses_the_whole_sequence(monkeypatch, rope):
     if rope == "dynamic":
         config = LlamaConfig(
             max_position_embeddings = 16,
-            rope_parameters = {"rope_type": "dynamic", "rope_theta": 10000.0, "factor": 2.0},
+            rope_scaling = {"rope_type": "dynamic", "factor": 2.0},
             **small,
         )
         model = LlamaForCausalLM(config)
@@ -1587,18 +1587,14 @@ def test_ulysses_seq_len_rope_uses_the_whole_sequence(monkeypatch, rope):
         config = Phi3Config(
             max_position_embeddings = 64,
             original_max_position_embeddings = 16,
-            rope_parameters = {
-                "rope_type": "longrope",
-                "rope_theta": 10000.0,
-                "short_factor": [1.0] * 4,
-                "long_factor": factors,
-                "original_max_position_embeddings": 16,
-            },
+            rope_scaling = {"type": "longrope", "short_factor": [1.0] * 4, "long_factor": factors},
             pad_token_id = 0,
             **small,
         )
         model = Phi3ForCausalLM(config)
     rotary = model.model.rotary_emb
+    # rope_scaling: the form transformers 4.57 reads and 5.x converts, so neither corner falls back to default.
+    assert rotary.rope_type == rope
     x = torch.ones(1, 32, 8)
     full = torch.arange(32)[None]
     # A copy: dynamic NTK caches the frequencies it last computed.
