@@ -1244,3 +1244,76 @@ def test_every_backend_loader_installs_the_prompt_cache():
                 "prompt_cache.install" in calls
             ), f"{node.name} commits a load without the prompt cache"
     assert {"load_pipeline", "_load_h3_image_locked"} <= set(loaders), loaders
+
+
+# -- INT8 attention from the checkpoint ------------------------------------------------------------------------------
+
+
+def test_a_declared_int8_attention_maps_to_sage():
+    from core.inference import diffusion_attention as da
+
+    assert da.checkpoint_attention_backend("int8") == "sage"
+    assert da.checkpoint_attention_backend(" INT8 ") == "sage"
+    assert da.checkpoint_attention_backend("fp4") is None
+    assert da.checkpoint_attention_backend(None) is None
+
+
+def test_int8_attention_follows_the_checkpoint_and_the_switch(h3i, monkeypatch):
+    import types
+
+    t = types.SimpleNamespace()
+    monkeypatch.delenv(h3i.INT8_ATTENTION_ENV, raising = False)
+    assert h3i.checkpoint_attention_wanted(t, "int8") == "sage"
+    assert h3i.checkpoint_attention_wanted(t, "fp8") is None
+    assert h3i.checkpoint_attention_wanted(t, None) is None
+    setattr(t, h3i.CHECKPOINT_ATTENTION_ATTR, "int8")
+    assert h3i.checkpoint_attention_wanted(t, "fp8") == "sage"
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "0")
+    assert h3i.checkpoint_attention_wanted(t, "int8") is None
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
+    assert h3i.checkpoint_attention_wanted(types.SimpleNamespace(), None) == "sage"
+
+
+def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, monkeypatch):
+    from core.inference import diffusion_attention as da
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    blocks = {id(m) for b in p.transformer.transformer_blocks for m in b.modules()}
+    before = {id(m): m.processor._attention_backend for m in mods}
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") == "sage"
+    for m in mods:
+        want = "sage" if id(m) in blocks else before[id(m)]
+        assert m.processor._attention_backend == want
+    assert any(id(m) not in blocks for m in mods)  # the token refiner keeps its backend
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None  # once
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    # a probe that refuses: everything as it was
+    monkeypatch.setattr(
+        da, "apply_attention_backend", lambda *a, **k: fake_apply(a[0], None) and None
+    )
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    assert h3i.install_checkpoint_attention(p, "cpu", scheme = "int8") is None
+
+
+def test_hosted_metadata_attention_is_recorded(h3i):
+    import types
+
+    t = types.SimpleNamespace()
+    h3i.h3_image_prepare_prequant_model()(t, {"attention": "INT8"})
+    assert getattr(t, h3i.CHECKPOINT_ATTENTION_ATTR) == "int8"

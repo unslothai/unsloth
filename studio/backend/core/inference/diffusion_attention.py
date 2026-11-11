@@ -4058,3 +4058,15 @@ def install_hunyuan_attention_trim(
     if engaged and logger is not None:
         logger.info("diffusion.attention: hunyuan padded-text trim engaged")
     return engaged
+
+
+# Attention a checkpoint declares for its DiT blocks (e.g. "int8"), mapped to the Studio backend of the same
+# arithmetic class. That backend still has to pass its own probe on the card where it engages.
+CHECKPOINT_ATTENTION_BACKENDS = {"int8": "sage"}
+
+
+def checkpoint_attention_backend(declared: Any) -> Optional[str]:
+    """The Studio backend for a declared attention kind ("int8", case-insensitive), or None (unset or unknown)."""
+    if not isinstance(declared, str):
+        return None
+    return CHECKPOINT_ATTENTION_BACKENDS.get(declared.strip().lower())

@@ -1930,6 +1930,10 @@ def h3_image_prepare_prequant_model(logger_: Any = None) -> Callable:
     def _prepare(transformer: Any, metadata: Optional[dict]) -> None:
         import torch
 
+        declared = metadata.get("attention") if isinstance(metadata, dict) else None
+        if isinstance(declared, str) and declared.strip():
+            setattr(transformer, CHECKPOINT_ATTENTION_ATTR, declared.strip().lower())
+
         from .video_minimax_h3_adaln import apply_h3_adaln_curve, is_curve_checkpoint
 
         if is_curve_checkpoint(metadata):
@@ -2465,6 +2469,113 @@ def _place_streamed_dit(
     return streamer
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# INT8 attention as the checkpoint asks for it.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# "0": native attention on every block; "1": INT8 attention (Studio's probe-gated SageAttention) on the DiT blocks
+# whatever the DiT scheme; unset: as the checkpoint declares.
+INT8_ATTENTION_ENV = "UNSLOTH_H3_IMAGE_INT8_ATTENTION"
+# Where a checkpoint's declared attention is recorded (a hosted file's ``attention`` metadata).
+CHECKPOINT_ATTENTION_ATTR = "_unsloth_checkpoint_attention"
+# MiniMax-H3-Image's INT8 DiT checkpoint runs INT8 attention on its 50 DiT blocks (not the token refiner), so a DiT at
+# this scheme declares it unless its file says otherwise.
+SCHEME_ATTENTION = {"int8": "int8"}
+ATTENTION_SAVED_ATTR = "_unsloth_h3_attention_saved"
+_LOG = logger
+
+
+def checkpoint_attention_wanted(transformer: Any, scheme: Optional[str]) -> Optional[str]:
+    """The backend the checkpoint (or the env switch) asks the DiT blocks to run: "sage" or None."""
+    from .diffusion_attention import checkpoint_attention_backend
+
+    raw = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return None
+    if raw in ("1", "on", "true", "yes"):
+        return "sage"
+    declared = getattr(transformer, CHECKPOINT_ATTENTION_ATTR, None)
+    if not declared:
+        declared = SCHEME_ATTENTION.get(scheme or "")
+    return checkpoint_attention_backend(declared)
+
+
+def _attention_processors(module: Any) -> list:
+    return [
+        m for m in module.modules() if hasattr(getattr(m, "processor", None), "_attention_backend")
+    ]
+
+
+def install_checkpoint_attention(
+    pipe: Any,
+    device: Any,
+    *,
+    scheme: Optional[str] = None,
+    logger: Any = None,
+) -> Optional[str]:
+    """Route the DiT blocks' attention to the backend the checkpoint declares (INT8: Studio's SageAttention, which
+    has to pass its accuracy probe on this card first); the token refiner keeps its backend. Returns the engaged
+    backend, or None with every processor as it was. ``remove_checkpoint_attention`` undoes it."""
+    import torch
+
+    log = logger if logger is not None else _LOG
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or getattr(pipe, ATTENTION_SAVED_ATTR, None):
+        return None
+    want = checkpoint_attention_wanted(transformer, scheme)
+    dev = torch.device(device)
+    if want is None or dev.type != "cuda":
+        return None
+    from .diffusion_attention import ATTENTION_BACKEND_ATTR, apply_attention_backend
+
+    modules = _attention_processors(transformer)
+    saved = {m: m.processor._attention_backend for m in modules}
+    tag = getattr(transformer, ATTENTION_BACKEND_ATTR, None)
+
+    def restore(only: Any = None) -> None:
+        for m, backend in saved.items():
+            if only is None or m in only:
+                m.processor._attention_backend = backend
+
+    dtype = _module_dtype(transformer, skip_fp32 = True)
+    target = types.SimpleNamespace(device = dev.type, dtype = dtype, torch_device = str(dev))
+    try:
+        engaged = apply_attention_backend(pipe, want, logger = log, target = target)
+    except Exception as exc:  # noqa: BLE001 - native attention stays
+        engaged = None
+        log.warning("diffusion.minimax_h3_image: INT8 attention unavailable (%s)", exc)
+    if not engaged or "sage" not in str(engaged):
+        restore()
+        setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
+        return None
+    blocks = {id(m) for b in getattr(transformer, "transformer_blocks", ()) for m in b.modules()}
+    restore(only = [m for m in modules if id(m) not in blocks])
+    setattr(pipe, ATTENTION_SAVED_ATTR, (saved, tag))
+    log.info(
+        "diffusion.minimax_h3_image: INT8 attention (%s) on %d DiT blocks, as the checkpoint declares",
+        engaged,
+        sum(1 for m in modules if id(m) in blocks),
+    )
+    return engaged
+
+
+def remove_checkpoint_attention(pipe: Any) -> int:
+    """Every attention processor back to the backend it had before ``install_checkpoint_attention``."""
+    entry = getattr(pipe, ATTENTION_SAVED_ATTR, None)
+    if not entry:
+        return 0
+    from .diffusion_attention import ATTENTION_BACKEND_ATTR
+
+    saved, tag = entry
+    for m, backend in saved.items():
+        m.processor._attention_backend = backend
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is not None:
+        setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
+    setattr(pipe, ATTENTION_SAVED_ATTR, None)
+    return len(saved)
+
+
 def _place_text_encoder(
     pipe: Any,
     encoder: Any,
@@ -2759,6 +2870,9 @@ def load_minimax_h3_image_pipeline(
     from .diffusion_minimax_h3_image_speed import install_h3_image_speed
 
     speed_levers = install_h3_image_speed(pipe, plan, device, logger)
+    int8_attention = install_checkpoint_attention(pipe, device, scheme = scheme, logger = logger)
+    if int8_attention:
+        speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)
     report = H3ImageLoadReport(
         scheme = scheme,
         scheme_reason = scheme_reason,
