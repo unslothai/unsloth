@@ -82,6 +82,7 @@ def _files(tmp_path: Path, config) -> FlmModelFiles:
 QWEN35_9B = ("qwen3.5-9b-FLM", "qwen3.5:9b", 7.6)
 QWEN36_35B = ("qwen3.6-moe-35b-a3b-FLM", "qwen3.6-moe:35b-a3b", 20.6)
 QWEN38_27B = ("qwen3.8-mtp-27b-FLM", "qwen3.8-mtp:27b", 16.8)
+QWEN38_DFLASH2 = ("qwen3.8-dflash2-27b-FLM", "qwen3.8-dflash2:27b", 18.1)
 
 
 @pytest.mark.parametrize(
@@ -164,9 +165,10 @@ def test_unreadable_ram_keeps_8192(tmp_path, free_ram, monkeypatch):
 
 
 @pytest.mark.parametrize("free_gib", [23.9, 200.0])
-def test_the_qwen38_engine_cap_holds(tmp_path, free_ram, free_gib):
+@pytest.mark.parametrize("entry", [QWEN38_27B, QWEN38_DFLASH2])
+def test_the_qwen38_engine_cap_holds(tmp_path, free_ram, free_gib, entry):
     free_ram["mib"] = int(free_gib * _GIB)
-    model = _model(*QWEN38_27B, 262144)
+    model = _model(*entry, 262144)
     assert model.max_context_length == 8192
     files = _files(tmp_path, _QWEN38_27B)
     assert nc.plan_context(model, files, None).context_length == 8192

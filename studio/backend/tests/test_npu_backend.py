@@ -341,6 +341,7 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
 )
 def test_a_runtime_limit_caps_whatever_lemond_reports(reported, expected):
     assert nb._max_context_length("qwen3.8-mtp:27b", reported) == expected
+    assert nb._max_context_length("qwen3.8-dflash2:27b", reported) == expected
     assert nb._max_context_length("qwen3:0.6b", reported) == (reported or None)
 
 

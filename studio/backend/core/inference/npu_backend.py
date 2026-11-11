@@ -46,7 +46,8 @@ _VALIDATED_MARKER = "npu_validated.json"
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 # Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
 # limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
-_FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
+# DFlash2 shares the 27B xclbin and fails the same way: https://github.com/ROCm/FastFlowLM/issues/1001
+_FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192, "qwen3.8-dflash2:27b": 8192}
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
