@@ -188,6 +188,8 @@ export function TtsRailFields({
   audioOptionValues,
   handleAudioOptionChange,
   handleAudioOptionsReset,
+  modelName,
+  onChooseModel,
   inputs,
   claimedOptions,
 }: Pick<
@@ -221,12 +223,35 @@ export function TtsRailFields({
     advancedOpen: boolean;
     inputs?: ReactNode;
     claimedOptions?: ReadonlySet<string>;
+    modelName?: string | null;
+    onChooseModel?: () => void;
   }) {
   const audioOptionSpecs = claimedOptions?.size
     ? allAudioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name))
     : allAudioOptionSpecs;
   return (
     <>
+      {onChooseModel ? (
+        <div className="grid gap-1.5">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-ui-13 font-medium text-foreground">
+              Audio model
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy !== null}
+              onClick={onChooseModel}
+            >
+              {modelName ? "Change model" : "Choose a model"}
+            </Button>
+          </div>
+          <p className="truncate text-ui-11p5 leading-snug text-muted-foreground">
+            {modelName ?? "Choose an audio model before generating."}
+          </p>
+        </div>
+      ) : null}
       {/* Field inlined: its label needs a form control, and PillTabs is a tablist. */}
       <div className="grid gap-1.5">
         <span className="text-ui-13 font-medium text-foreground">

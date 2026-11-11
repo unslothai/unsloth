@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="700" viewBox="0 0 1100 700">
+  <rect width="1100" height="700" fill="#f7f7f5"/>
+  <text x="42" y="60" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#202124">Audio · Text to Speech</text>
+  <rect x="42" y="88" width="820" height="500" rx="16" fill="#fff" stroke="#deded8"/>
+  <text x="66" y="132" font-family="Arial, sans-serif" font-size="14" fill="#77776f">Select audio model</text>
+  <rect x="66" y="148" width="420" height="42" rx="8" fill="#fff" stroke="#deded8"/>
+  <text x="84" y="175" font-family="Arial, sans-serif" font-size="14" fill="#202124">Choose a model…</text>
+  <text x="66" y="238" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202124">Load model into</text>
+  <rect x="66" y="256" width="220" height="38" rx="8" fill="#eeeef0"/>
+  <text x="88" y="280" font-family="Arial, sans-serif" font-size="13" fill="#202124">GPU when available</text>
+  <rect x="66" y="316" width="772" height="140" rx="10" fill="#fbfbfa" stroke="#deded8"/>
+  <text x="86" y="354" font-family="Arial, sans-serif" font-size="14" fill="#a04b36">Model selection is easy to miss.</text>
+  <text x="86" y="384" font-family="Arial, sans-serif" font-size="12" fill="#77776f">The required model picker is separated from the load controls.</text>
+</svg>

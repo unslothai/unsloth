@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="700" viewBox="0 0 1100 700">
+  <rect width="1100" height="700" fill="#f7f7f5"/>
+  <text x="42" y="60" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#202124">Audio · Text to Speech</text>
+  <rect x="42" y="88" width="820" height="500" rx="16" fill="#fff" stroke="#deded8"/>
+  <rect x="66" y="112" width="772" height="78" rx="10" fill="#fff" stroke="#deded8"/>
+  <text x="86" y="144" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202124">Audio model</text>
+  <text x="86" y="169" font-family="Arial, sans-serif" font-size="12" fill="#77776f">Qwen3-TTS-12Hz-1.7B-Base</text>
+  <rect x="696" y="132" width="120" height="34" rx="8" fill="#fff" stroke="#b8b8b2"/>
+  <text x="716" y="154" font-family="Arial, sans-serif" font-size="12" fill="#202124">Change model</text>
+  <text x="66" y="238" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202124">Load model into</text>
+  <rect x="66" y="256" width="220" height="38" rx="8" fill="#eeeef0"/>
+  <text x="88" y="280" font-family="Arial, sans-serif" font-size="13" fill="#202124">GPU when available</text>
+  <rect x="66" y="316" width="772" height="140" rx="10" fill="#fbfbfa" stroke="#deded8"/>
+  <text x="86" y="354" font-family="Arial, sans-serif" font-size="14" fill="#39734b">Choose or change the model from the setup rail.</text>
+  <text x="86" y="384" font-family="Arial, sans-serif" font-size="12" fill="#77776f">The required first step now sits directly above the load destination.</text>
+</svg>

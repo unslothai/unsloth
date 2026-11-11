@@ -1775,6 +1775,10 @@ export function AudioPage({
         ? lastPageModel
         : (speakLoaded.id ?? undefined)
       : (transcribeRepo ?? undefined);
+  const selectedAudioModelName = selectorValue
+    ? (selectorModels.find((model) => model.id === selectorValue)?.name ??
+      audioModelLabel(selectorValue))
+    : null;
 
   const capabilityLine =
     mode === "speak"
@@ -2082,6 +2086,8 @@ export function AudioPage({
                     audioOptionValues,
                     handleAudioOptionChange,
                     handleAudioOptionsReset,
+                    modelName: selectedAudioModelName,
+                    onChooseModel: openSelector,
                   };
                   return ttsWorkflow === "music" ? (
                     <AudioActiveProvider value={active}>
