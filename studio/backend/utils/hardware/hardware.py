@@ -3837,7 +3837,6 @@ def npu_load_percent() -> Optional[float]:
         with _npu_load_lock:
             if _npu_hardware is None:
                 from utils.hardware.npu import detect_amd_npu
-
                 _npu_hardware = detect_amd_npu()
             if not _npu_hardware.get("supported"):
                 return None
