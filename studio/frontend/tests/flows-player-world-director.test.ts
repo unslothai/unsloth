@@ -293,6 +293,33 @@ test("the player keeps the map from the generated world and adds through the gam
 	assert.match(src, /for \(const n of specRef\.current\.npcs\)/);
 });
 
+test("director additions and autonomy place against the live edited map", () => {
+	// Simulate an editor that walls off where the first placement landed.
+	const first = D.applyPatch(SPEC, map, finished(), PATCH, occupied());
+	assert.ok(first);
+	const edited = { ...map, blocked: new Uint8Array(map.width * map.height) };
+	for (const p of [...first.npcs, ...first.items])
+		edited.blocked[p.y * map.width + p.x] = 1;
+	const out = D.applyPatch(SPEC, edited, finished(), PATCH, occupied());
+	assert.ok(out);
+	for (const p of [...out.npcs, ...out.items])
+		assert.equal(P.isSolid(edited, p.x, p.y), false);
+	const src = readFileSync(
+		new URL(
+			"../src/features/flows/player/world/world-player.tsx",
+			import.meta.url,
+		),
+		"utf8",
+	);
+	assert.match(
+		src,
+		/worldRef\.current\?\.tiles === map\.tiles \? worldRef\.current : map/,
+	);
+	assert.match(src, /applyPatch\(\s*specRef\.current,\s*liveMap\(\),/);
+	assert.match(src, /const here = liveMap\(\);[\s\S]{0,200}map: here,/);
+	assert.doesNotMatch(src, /applyPatch\(specRef\.current, map,/);
+});
+
 test("a villager the director adds gets the world's life fields", () => {
 	const lived = {
 		...SPEC,
