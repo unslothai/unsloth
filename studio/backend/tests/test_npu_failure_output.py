@@ -115,8 +115,12 @@ def test_a_failed_load_logs_lemonades_output_and_names_its_reason(tmp_path, monk
     assert "started on port" not in logged
 
 
-def test_a_failure_lemonade_only_summarizes_points_at_the_log(tmp_path, monkeypatch, log):
+@pytest.mark.parametrize("has_log", [True, False])
+def test_a_failure_lemonade_only_summarizes_points_at_the_log(tmp_path, monkeypatch, log, has_log):
     server = _server(tmp_path)
+    if has_log:
+        server.log_dir = tmp_path / "logs" / "lemonade"
+        server._open_log_file(4242)
     summary = f"Failed to load {_MODEL} model!"
 
     def answer(path):
@@ -130,7 +134,8 @@ def test_a_failure_lemonade_only_summarizes_points_at_the_log(tmp_path, monkeypa
         backend.load(_MODEL, 32768)
 
     assert summary in str(raised.value)
-    assert "Logs" in str(raised.value)
+    # No file means nothing on the Logs page to point at.
+    assert ("Logs" in str(raised.value)) == has_log
     assert any(f"Failed to load model: {summary}" in warning for warning in log.warnings)
 
 
@@ -224,7 +229,7 @@ def test_the_lemonade_log_says_what_was_asked_and_how_it_ended(tmp_path, monkeyp
     with pytest.raises(nb.NpuError):
         backend.load(_MODEL, 32768)
 
-    first = (tmp_path / "logs" / "lemonade" / "lemonade-").parent
+    first = tmp_path / "logs" / "lemonade"
     texts = {p.name: p.read_text(encoding = "utf-8") for p in first.glob("lemonade-*.log")}
     assert any(
         "(Unsloth Studio) Starting Lemonade: lemond --port 4242" in t for t in texts.values()
@@ -234,3 +239,49 @@ def test_the_lemonade_log_says_what_was_asked_and_how_it_ended(tmp_path, monkeyp
     assert "(Unsloth Studio) Request failed: " + summary in current
     assert "exit code 1" in current
     assert log.fields["lemonade_log"] == server.log_path.name
+
+
+def test_a_failed_spawn_closes_the_log_file(tmp_path, monkeypatch):
+    from core.inference import lemonade_server as ls
+
+    server = LemonadeServer(
+        tmp_path / "lemond",
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+        log_dir = tmp_path / "logs" / "lemonade",
+    )
+    opened = []
+    real_open = server._open_log_file
+    monkeypatch.setattr(
+        server, "_open_log_file", lambda *a: opened.append(real_open(*a)) or opened[-1]
+    )
+
+    def boom(spawn):
+        raise OSError("no lemond")
+
+    monkeypatch.setattr(ls, "spawn_on_lifetime_thread", boom)
+    with pytest.raises(OSError):
+        server._start_once(5)
+    assert opened and opened[0].closed
+    assert server._log_file is None
+
+
+def test_overlapping_requests_get_no_reason_pinned_on_them(tmp_path, log):
+    server = _server(tmp_path)
+    first = server.open_window()
+    second = server.open_window()
+    _prints(server, _line("Error", "WrappedServer", "FastFlowLM process has terminated"))
+    for window in (first, second):
+        message = nb._explain(server, window, "boom")
+        assert "terminated" not in message
+    assert log.fields["overlapped_another_request"] is True
+
+
+def test_a_window_alone_still_gets_its_reason(tmp_path, log):
+    server = _server(tmp_path)
+    server.open_window()  # dropped at once, like a finished request
+    window = server.open_window()
+    _prints(server, _line("Error", "WrappedServer", "FastFlowLM process has terminated"))
+    assert "terminated" in nb._explain(server, window, "boom")
+    assert log.fields["overlapped_another_request"] is False

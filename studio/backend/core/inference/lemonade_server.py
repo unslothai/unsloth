@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import time
+import weakref
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional
@@ -72,6 +73,14 @@ def _kill_with_the_parent() -> None:
     ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, signal.SIGKILL)
 
 
+class OutputWindow:
+    __slots__ = ("start", "shared", "__weakref__")
+
+    def __init__(self, start: int) -> None:
+        self.start = start
+        self.shared = False
+
+
 class LemonadeServer:
     def __init__(
         self,
@@ -97,6 +106,8 @@ class LemonadeServer:
         self._tail: deque[str] = deque(maxlen = 200)
         # Never reset, so a mark taken before a restart still counts the new lines.
         self._lines_seen = 0
+        self._tail_lock = threading.Lock()
+        self._windows: weakref.WeakSet[OutputWindow] = weakref.WeakSet()
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         # stop() sets it without the lock, which start() holds while waiting for readiness.
@@ -118,7 +129,21 @@ class LemonadeServer:
         return "\n".join(list(self._tail)[-lines:])
 
     def output_mark(self) -> int:
-        return self._lines_seen
+        with self._tail_lock:
+            return self._lines_seen
+
+    def open_window(self) -> "OutputWindow":
+        """A mark for one request. lemond's lines carry no request id, so a window that overlaps
+        another request's is ``shared`` and its output can't be pinned on either. Released when
+        the caller drops it."""
+        with self._tail_lock:
+            window = OutputWindow(self._lines_seen)
+            others = list(self._windows)
+            for other in others:
+                other.shared = True
+            window.shared = bool(others)
+            self._windows.add(window)
+        return window
 
     def output_since(
         self,
@@ -141,8 +166,11 @@ class LemonadeServer:
             # Nothing yet means the drain may still be behind: keep waiting to the deadline.
             elif seen > mark and time.monotonic() - changed >= quiet_for:
                 break
-        count = min(self._lines_seen - mark, lines)
-        return list(self._tail)[-count:] if count > 0 else []
+        # One snapshot: a line drained between the two reads would shift the window.
+        with self._tail_lock:
+            tail = list(self._tail)
+            count = min(self._lines_seen - mark, lines)
+        return tail[-count:] if count > 0 else []
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -220,7 +248,8 @@ class LemonadeServer:
             "disabled",
         ]
         logger.info("Starting Lemonade: %s", " ".join(cmd))
-        self._tail.clear()
+        with self._tail_lock:
+            self._tail.clear()
         log_file = self._open_log_file(port, cmd)
 
         def _spawn() -> subprocess.Popen:
@@ -238,15 +267,20 @@ class LemonadeServer:
                 **child_popen_kwargs(_kill_with_the_parent),
             )
 
-        proc = spawn_on_lifetime_thread(_spawn)
-        adopt_pid(proc.pid)
-        self._process = proc
-        self.port = port
-        self.api_key = api_key
-        # Shutdown may have swept children before this process was adopted.
-        if is_process_shutting_down():
-            self._kill_locked()
-            raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
+        try:
+            proc = spawn_on_lifetime_thread(_spawn)
+            adopt_pid(proc.pid)
+            self._process = proc
+            self.port = port
+            self.api_key = api_key
+            # Shutdown may have swept children before this process was adopted.
+            if is_process_shutting_down():
+                self._kill_locked()
+                raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
+        except BaseException:
+            # No drain thread will close it.
+            self._close_log_file(log_file)
+            raise
         self._drain_thread = threading.Thread(
             target = self._drain, args = (proc, log_file), daemon = True, name = "lemond-drain"
         )
@@ -311,20 +345,25 @@ class LemonadeServer:
             for raw in proc.stdout:
                 line = raw.rstrip()
                 if line:
-                    self._tail.append(line)
-                    self._lines_seen += 1
+                    with self._tail_lock:
+                        self._tail.append(line)
+                        self._lines_seen += 1
                     logger.debug("[lemond] %s", line)
                     if log_file is not None:
                         self._write_log(line, log_file)
         except Exception:  # noqa: BLE001 -- the pipe closes at teardown
             pass
         finally:
-            if log_file is not None:
-                with self._log_lock:
-                    # A restart may already have opened the next file; only close this one.
-                    if self._log_file is log_file:
-                        self._log_file = None
-                    log_file.close()
+            self._close_log_file(log_file)
+
+    def _close_log_file(self, log_file) -> None:
+        if log_file is None:
+            return
+        with self._log_lock:
+            # A restart may already have opened the next file; only close this one.
+            if self._log_file is log_file:
+                self._log_file = None
+            log_file.close()
 
     def _wait_ready(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout

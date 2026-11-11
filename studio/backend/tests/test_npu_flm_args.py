@@ -104,6 +104,9 @@ class _Server:
     def note(self, message):
         pass
 
+    def open_window(self):
+        return None
+
     def output_mark(self):
         return 0
 
