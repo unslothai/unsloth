@@ -49,6 +49,7 @@ import {
   newCombat,
   placePickups,
   propBox,
+  restoreSpot,
   respawn,
   shoot,
   takePickup,
@@ -743,21 +744,38 @@ export function createWorld3d(
       map.blocked = blockedCells(map, closedProps(map.props, propState));
   };
   if (usable.length) doorTiles();
-  const spawn = start && !isSolid(map, start.x, start.y) ? start : map.spawn;
-  const me = { x: spawn.x + 0.5, y: spawn.y + 0.5 };
-
   const action = spec.action?.movement === true;
-  const shooter = action && spec.action?.shooter === true;
-  const verbs = action && spec.action?.verbs === true;
-  const vs = newVerbs();
+  const saved = (bridge.action ?? {}) as { combat?: unknown; pose?: unknown };
+  const poseZ = (saved.pose as { z?: number } | undefined)?.z;
+  const ground = (x: number, y: number) => heightAt(terrain, x, y);
   const wallTile = (x: number, y: number) =>
     x < 0 ||
     y < 0 ||
     x >= map.width ||
     y >= map.height ||
     SOLID.has(kindAt(map, x, y));
+  const restored = restoreSpot(
+    start,
+    map.spawn,
+    typeof poseZ === "number" && Number.isFinite(poseZ) ? poseZ : null,
+    (x, y) => !isSolid(map, x, y),
+    action
+      ? buildActionWorld(
+          map.width,
+          map.height,
+          ground,
+          wallTile,
+          closedProps(map.props ?? [], propState),
+        )
+      : null,
+  );
+  const spawn = restored.at;
+  const me = { x: spawn.x + 0.5, y: spawn.y + 0.5 };
+
+  const shooter = action && spec.action?.shooter === true;
+  const verbs = action && spec.action?.verbs === true;
+  const vs = newVerbs();
   const collide = (z: number): ActionWorld => {
-    const ground = (x: number, y: number) => heightAt(terrain, x, y);
     const all = closedProps(map.props ?? [], propState);
     const over = new Set(
       all
@@ -779,12 +797,7 @@ export function createWorld3d(
       all.filter((p) => !over.has(p.id)),
     );
   };
-  const saved = (bridge.action ?? {}) as { combat?: unknown; pose?: unknown };
-  const poseZ = (saved.pose as { z?: number } | undefined)?.z;
-  const feet = Math.max(
-    heightAt(terrain, me.x, me.y),
-    typeof poseZ === "number" && Number.isFinite(poseZ) ? poseZ : -Infinity,
-  );
+  const feet = Math.max(heightAt(terrain, me.x, me.y), restored.z ?? -Infinity);
   let aw: ActionWorld | null = action ? collide(feet) : null;
   let body: Body | null = aw ? newBody(aw, me.x, me.y) : null;
   if (body) body.z = Math.max(body.z, feet);

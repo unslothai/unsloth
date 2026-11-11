@@ -401,3 +401,21 @@ test("a door the player's capsule reaches into from the next tile cannot be clos
   );
   assert.match(player, /occupied: \(p\) =>\s*g\.blocksProp\?\.\(p\) === true/);
 });
+
+test("an action save standing on a crate restores on the crate; a rejected save drops to spawn at ground", () => {
+  const w = world([crate(6.5, 5.5)]);
+  const tileBlocked = (x: number, y: number) => !(x === 6 && y === 5);
+  const spawn = { x: 1, y: 1 };
+  const on = A.restoreSpot({ x: 6, y: 5 }, spawn, 0.51, tileBlocked, w);
+  assert.deepEqual(on, { at: { x: 6, y: 5 }, z: 0.51 });
+  // Inside the crate at ground height, or with no saved height: spawn, and the saved z is not carried there.
+  assert.deepEqual(A.restoreSpot({ x: 6, y: 5 }, spawn, 0, tileBlocked, w), { at: spawn, z: null });
+  assert.deepEqual(A.restoreSpot({ x: 6, y: 5 }, spawn, null, tileBlocked, w), { at: spawn, z: null });
+  assert.deepEqual(A.restoreSpot({ x: 6, y: 5 }, spawn, 0.51, tileBlocked, null), { at: spawn, z: null });
+  assert.deepEqual(A.restoreSpot(null, spawn, 0.51, tileBlocked, w), { at: spawn, z: null });
+  // A wall tile is never free, whatever the height.
+  const walled = world([], (x, y) => x === 6 && y === 5);
+  assert.equal(A.capsuleFree(walled, 6.5, 5.5, 0.51), false);
+  // Free ground tiles keep the old behaviour.
+  assert.deepEqual(A.restoreSpot({ x: 3, y: 3 }, spawn, 0, () => true, w), { at: { x: 3, y: 3 }, z: 0 });
+});
