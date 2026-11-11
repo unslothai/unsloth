@@ -2557,9 +2557,30 @@ def load_minimax_h3_image_pipeline(
         "local_files_only": local_files_only,
     }
     engaged_te = te_scheme if text_encoder is None else "supplied"
-    if text_encoder is None and (root / "text_encoder" / "config.json").is_file():
+
+    def _encoder_fits(te_gb: float, what: str) -> None:
+        # Raises (VRAM or host) before an encoder larger than the planned one is materialised.
+        again = replan_for_encoder(plan, te_gb, plan_args)
+        # With no accelerator budget the planner skips its host checks, and the host holds everything.
+        cpu_short = (
+            plan.vram_gb is None
+            and plan.host_gb is not None
+            and plan.host_gb < plan.dit_gb + te_gb + 1.0
+        )
+        if cpu_short or not again.te_kept_on_host:
+            raise RuntimeError(
+                f"MiniMax-H3-Image: {what} ({te_gb:.1f} GB) does not fit this machine's "
+                f"{plan.host_gb:.1f} GB of free system memory beside the model."
+            )
+
+    local_te = root / "text_encoder"
+    if text_encoder is None and (local_te / "config.json").is_file():
         # A local folder that carries its own encoder reads it there; a Hub snapshot never fetches that folder.
+        local_gb = sum(f.stat().st_size for f in local_te.glob("*.safetensors")) / 1e9
+        if local_gb > plan.te_gb + 1.0:
+            _encoder_fits(local_gb, "the text encoder in this model folder")
         import transformers
+
         text_encoder = transformers.Qwen3VLForConditionalGeneration.from_pretrained(
             str(root / "text_encoder"), torch_dtype = dtype, low_cpu_mem_usage = True
         ).eval()
@@ -2567,21 +2588,11 @@ def load_minimax_h3_image_pipeline(
     if text_encoder is None and plan.te_kept_on_host:
 
         def _bf16_fits() -> None:
-            # Raises (VRAM or host) before the 66.7 GB fallback is materialised; a plan that fits is used below.
-            again = replan_for_encoder(plan, H3_IMAGE_TE_BF16_GB, plan_args)
-            # With no accelerator budget the planner skips its host checks, and the host holds everything.
-            cpu_short = (
-                plan.vram_gb is None
-                and plan.host_gb is not None
-                and plan.host_gb < plan.dit_gb + H3_IMAGE_TE_BF16_GB + 1.0
+            _encoder_fits(
+                H3_IMAGE_TE_BF16_GB,
+                "Studio's hosted int8 text encoder could not be loaded (check the network or the Hugging Face "
+                "cache), and the bf16 encoder it would fall back to",
             )
-            if cpu_short or not again.te_kept_on_host:
-                raise RuntimeError(
-                    f"MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the "
-                    f"{H3_IMAGE_TE_BF16_GB:.1f} GB bf16 encoder it would fall back to does not fit this machine's "
-                    f"{plan.host_gb:.1f} GB of free system memory beside the model. Check the network or the "
-                    f"Hugging Face cache and load the model again."
-                )
 
         text_encoder, engaged_te = load_h3_image_text_encoder(
             te_scheme, fallback_check = _bf16_fits, **te_kwargs

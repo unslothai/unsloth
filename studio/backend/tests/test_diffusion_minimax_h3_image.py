@@ -1039,6 +1039,30 @@ def test_the_bf16_fallback_is_refused_before_it_allocates_when_the_host_cannot_h
     assert calls == []
 
 
+def test_a_local_dense_encoder_is_refused_before_it_allocates_when_the_host_cannot_hold_it(
+    h3i, release, tmp_path, monkeypatch
+):
+    import transformers
+
+    root, _ref, _te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    folder = rel / "text_encoder"
+    folder.mkdir(exist_ok = True)
+    (folder / "config.json").write_text("{}")
+    with open(folder / "model.safetensors", "wb") as f:  # sparse: 66 GB on paper, no disk used
+        f.truncate(66 * 10**9)
+    calls = []
+    monkeypatch.setattr(
+        transformers.Qwen3VLForConditionalGeneration,
+        "from_pretrained",
+        lambda *a, **k: calls.append(a),
+    )
+    monkeypatch.setenv(h3i.HOST_BUDGET_ENV, "40")
+    with pytest.raises(RuntimeError, match = "free system memory"):
+        h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert calls == []
+
+
 def test_the_per_prompt_encoder_refuses_the_bf16_fallback_before_it_allocates(h3i, monkeypatch):
     calls = _no_hosted_int8(monkeypatch)
 
