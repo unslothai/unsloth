@@ -29813,6 +29813,11 @@ async def _proxy_to_external_provider(
                     ),
                 }
             )
+
+    async def _tool_result_window() -> Optional[int]:
+        served = await client.served_context_window(model)
+        return min(served, payload.context_window or served) if served else None
+
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
     _external_context_fitter = None
@@ -29941,6 +29946,8 @@ async def _proxy_to_external_provider(
                         provider_type, _supports_vision, model, _pinfo
                     ),
                     promoted_image_parts = tuple(_external_promoted_parts),
+                    served_window = _tool_result_window if managed is None else None,
+                    max_tokens = _external_max_tokens,
                 ),
                 policy = ToolLoopPolicy(
                     tools = external_studio_tools,

@@ -1,0 +1,187 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A tool result on a connection is sized to the window its server reports."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+
+import pytest
+
+from core.inference import studio_tool_loop as loop_mod
+from core.inference import tools
+from core.inference.context_window import estimate_messages_tokens_conservative
+from core.inference.studio_tool_loop import (
+    ToolLoopPolicy,
+    ToolLoopRun,
+    stream_with_studio_tools,
+)
+
+
+_DONE = "data: [DONE]"
+_LONG = "\n".join(f"row {i}: the order shipped on time" for i in range(500))
+
+WEB = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+}
+
+
+def _sse(delta = None, finish = None) -> str:
+    choice: dict = {"index": 0, "delta": delta if delta is not None else {}}
+    if finish is not None:
+        choice["finish_reason"] = finish
+    return "data: " + json.dumps({"choices": [choice]})
+
+
+def _call_turn(*call_ids):
+    return [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": call_id,
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": call_id}),
+                        },
+                    }
+                    for index, call_id in enumerate(call_ids)
+                ]
+            }
+        ),
+        _sse(finish = "tool_calls"),
+        _DONE,
+    ]
+
+
+_ANSWER_TURN = [_sse({"content": "done"}), _sse(finish = "stop"), _DONE]
+
+
+class FakeTransport:
+    heals_text_tool_calls = True
+
+    def __init__(self, turns):
+        self.turns = [list(turn) for turn in turns]
+        self.requests: list[list[dict]] = []
+
+    def stream(self, *, messages, tools, tool_choice, cancel_event):
+        self.requests.append([dict(message) for message in messages])
+        assert len(self.requests) <= 5, "loop never terminated"
+        lines = self.turns.pop(0) if self.turns else [_DONE]
+
+        async def _gen():
+            for line in lines:
+                yield line
+
+        return _gen()
+
+
+@pytest.fixture(autouse = True)
+def _long_search_results(monkeypatch):
+    monkeypatch.setattr(tools, "_web_search", lambda *a, **k: _LONG)
+    monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: None)
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+
+
+def _serves(window):
+    async def _read():
+        return window
+
+    return _read
+
+
+def _forwarded(turns, **run_kwargs):
+    transport = turns if isinstance(turns, FakeTransport) else FakeTransport(turns)
+
+    async def _collect():
+        agen = stream_with_studio_tools(
+            transport,
+            run = ToolLoopRun(
+                messages = [{"role": "user", "content": "which orders shipped?"}],
+                session_id = "s1",
+                thread_id = "t1",
+                **run_kwargs,
+            ),
+            policy = ToolLoopPolicy(
+                tools = [WEB],
+                max_calls = 25,
+                timeout = 300,
+                permission_mode = "off",
+                confirm_calls = False,
+                bypass_permissions = False,
+                rag_scope = None,
+            ),
+            cancel_event = threading.Event(),
+        )
+        async for _ in agen:
+            pass
+
+    asyncio.run(asyncio.wait_for(_collect(), timeout = 30.0))
+    return transport.requests[-1]
+
+
+def _results(messages):
+    return [message["content"] for message in messages if message.get("role") == "tool"]
+
+
+def test_a_long_result_is_trimmed_to_the_served_window():
+    messages = _forwarded([_call_turn("c1"), _ANSWER_TURN], served_window = _serves(4096))
+
+    (result,) = _results(messages)
+    assert len(result) < len(_LONG)
+    assert result.startswith(_LONG[:200])
+    assert f"{len(_LONG)} chars total" in result
+    assert estimate_messages_tokens_conservative(messages) < 4096
+
+
+def test_a_digit_heavy_result_fits_at_one_token_a_character(monkeypatch):
+    digits = str(list(range(4000)))
+    monkeypatch.setattr(tools, "_web_search", lambda *a, **k: digits)
+
+    messages = _forwarded([_call_turn("c1"), _ANSWER_TURN], served_window = _serves(8192))
+
+    (result,) = _results(messages)
+    rest = [message for message in messages if message.get("role") != "tool"]
+    assert len(result) + estimate_messages_tokens_conservative(rest) < 8192
+
+
+def test_parallel_results_share_the_served_window():
+    messages = _forwarded([_call_turn("c1", "c2", "c3"), _ANSWER_TURN], served_window = _serves(4096))
+
+    results = _results(messages)
+    assert len(results) == 3
+    assert all(len(result) < len(_LONG) for result in results)
+    assert estimate_messages_tokens_conservative(messages) < 4096
+
+
+def test_a_window_reported_after_the_first_turn_still_sizes_the_result():
+    transport = FakeTransport([_call_turn("c1"), _ANSWER_TURN])
+
+    async def _loaded_by_the_first_turn():
+        return 4096 if transport.requests else None
+
+    messages = _forwarded(transport, served_window = _loaded_by_the_first_turn)
+
+    (result,) = _results(messages)
+    assert len(result) < len(_LONG)
+
+
+@pytest.mark.parametrize("run_kwargs", [{}, {"served_window": _serves(None)}])
+def test_a_result_is_forwarded_whole_when_the_window_is_unknown(run_kwargs):
+    messages = _forwarded([_call_turn("c1"), _ANSWER_TURN], **run_kwargs)
+
+    assert _results(messages) == [_LONG]
