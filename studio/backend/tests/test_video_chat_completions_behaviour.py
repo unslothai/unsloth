@@ -932,24 +932,26 @@ def test_the_clip_count_includes_the_legacy_field():
 
 def test_a_clip_still_over_the_forward_budget_after_transcoding_is_refused(monkeypatch):
     """shrink_video_for_llama returns the original on failure; past 100 MB llama-server 413s it blind."""
-    import asyncio
-
-    from fastapi import HTTPException
-
     limit = inference_route._LLAMA_VIDEO_FORWARD_B64_CHARS
     returned = {}
     monkeypatch.setattr(
         inference_route, "shrink_video_for_llama", lambda clip, cap, **_: returned["clip"]
     )
+    failed = []
+    monkeypatch.setattr(
+        inference_route.api_monitor, "fail", lambda mid, detail: failed.append(detail)
+    )
 
     returned["clip"] = "A" * limit
-    assert asyncio.run(inference_route._shrink_clip_for_llama("QUJD", None)) == returned["clip"]
+    with _client(monkeypatch, _VideoGguf()) as client:
+        assert client.post("/v1/chat/completions", json = _part_body(_DATA_URI)).status_code == 200
 
     returned["clip"] = "A" * (limit + 1)
-    with pytest.raises(HTTPException) as err:
-        asyncio.run(inference_route._shrink_clip_for_llama("QUJD", None))
-    assert err.value.status_code == 413
-    assert "Trim it" in err.value.detail
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(_DATA_URI))
+    assert response.status_code == 413
+    assert "Trim it" in response.json()["detail"]
+    assert any("Trim it" in d for d in failed), "the monitor entry must be finalized"
 
 
 def test_the_forward_budget_covers_every_clip_in_the_request_together(monkeypatch):

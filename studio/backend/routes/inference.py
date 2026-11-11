@@ -27892,9 +27892,6 @@ async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
         raise HTTPException(
             status_code = 400, detail = "Could not process the provided video file."
         ) from None
-    # The helper hands back the original on failure; llama-server would 413 it with no reason given.
-    if len(shrunk) > _LLAMA_VIDEO_FORWARD_B64_CHARS:
-        raise HTTPException(status_code = 413, detail = _VIDEO_OVER_FORWARD_BUDGET)
     return shrunk
 
 
@@ -32435,7 +32432,10 @@ async def produce_openai_chat_completions(
                 raise _reject(*video_rejection)
             if payload.video_base64:
                 video_b64, _ = _video_b64_rejection(payload.video_base64)
-                video_b64 = await _shrink_clip_for_llama(video_b64, llama_backend)
+                try:
+                    video_b64 = await _shrink_clip_for_llama(video_b64, llama_backend)
+                except HTTPException as e:
+                    raise _reject(e.status_code, e.detail) from None
 
         # The loop's image cap counts the whole conversation, so seed it with replayed parts.
         _gguf_replayed_image_parts: list = []
@@ -32451,9 +32451,12 @@ async def produce_openai_chat_completions(
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
         if video_b64:
             _inject_video_part(gguf_messages, video_b64)
-        await _shrink_video_parts(gguf_messages, llama_backend)
+        try:
+            await _shrink_video_parts(gguf_messages, llama_backend)
+        except HTTPException as e:
+            raise _reject(e.status_code, e.detail) from None
         _translate_video_parts(gguf_messages)
-        # The budget bounds the whole llama-server body, so several clips count together.
+        # A failed transcode hands back the original, so this also catches one clip still over budget.
         if _forwarded_video_chars(gguf_messages) > _LLAMA_VIDEO_FORWARD_B64_CHARS:
             raise _reject(413, _VIDEO_OVER_FORWARD_BUDGET)
 
