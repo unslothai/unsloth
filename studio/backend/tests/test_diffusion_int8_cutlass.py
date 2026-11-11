@@ -20,6 +20,8 @@ from core.inference import diffusion_int8_gemm as g8
 torch = pytest.importorskip("torch")
 
 _BUILD = Path(__file__).resolve().parents[2] / "kernels" / "int8_gemm" / "build.py"
+# read before the autouse fixture clears it, for the GPU tests at the bottom
+_REAL_LIB = os.environ.get(cut.CUTLASS_LIB_ENV)
 
 
 @pytest.fixture(autouse = True)
@@ -29,6 +31,7 @@ def _clean(monkeypatch):
     cut.library.cache_clear()
     cut.tiles.cache_clear()
     cut._PROBED.clear()
+    cut._LOAD_ERROR[0] = None
     g8._CUT_PLAN.clear()
     g8._CUT_FAMILY.clear()
     yield
@@ -283,13 +286,21 @@ def test_python_kinds_match_the_library_kinds():
 # ------------------------------------------------------------------------------------------------- GPU (needs the lib)
 
 _GPU = pytest.mark.skipif(
-    not (torch.cuda.is_available() and os.environ.get(cut.CUTLASS_LIB_ENV)),
+    not (torch.cuda.is_available() and _REAL_LIB),
     reason = "needs CUDA and UNSLOTH_DIFFUSION_INT8_CUTLASS_LIB",
 )
 
 
+@pytest.fixture
+def real_lib(monkeypatch):
+    monkeypatch.setenv(cut.CUTLASS_LIB_ENV, _REAL_LIB)
+    cut.library.cache_clear()
+    cut.tiles.cache_clear()
+    cut._PROBED.clear()
+
+
 @_GPU
-def test_library_probe_and_bit_exact_launch():
+def test_library_probe_and_bit_exact_launch(real_lib):
     cap = torch.cuda.get_device_capability(0)
     fam = cut.family(cap)
     if fam is None:
@@ -317,7 +328,7 @@ def test_library_probe_and_bit_exact_launch():
 
 
 @_GPU
-def test_launch_records_into_a_cuda_graph():
+def test_launch_records_into_a_cuda_graph(real_lib):
     fam = cut.family(torch.cuda.get_device_capability(0))
     if fam is None or not cut.probed_tiles(0):
         pytest.skip("no probed tile")
