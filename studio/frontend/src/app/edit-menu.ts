@@ -22,7 +22,6 @@ const TEXT_INPUTS = new Set([
   "number",
 ]);
 
-/** Whether the native text undo applies, as it did under the stock Edit menu. */
 export function editsText(el: Focused): boolean {
   if (!el) return false;
   if (el.isContentEditable) return true;
@@ -33,7 +32,6 @@ export function editsText(el: Focused): boolean {
   return false;
 }
 
-/** The keydown the page would have seen had the menu not taken it. */
 export function editMenuKey(action: EditMenuAction): KeyboardEventInit {
   return {
     key: "z",

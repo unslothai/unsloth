@@ -282,8 +282,7 @@ fn route_history(app: &tauri::AppHandle, action: &str) {
     }
 }
 
-/// Main thread: send `undo:`/`redo:` to the key view and return whether it took it; with
-/// `outside_main_only`, only when key focus is outside the main webview.
+/// Main thread only. Returns whether the key view took `undo:`/`redo:`.
 #[cfg(target_os = "macos")]
 fn native_history(
     window: &tauri::Window,
@@ -322,8 +321,7 @@ fn native_history(
     unsafe { responder.tryToPerform_with(action, None) }
 }
 
-/// The renderer cannot reach a field inside a sandboxed iframe, so the main webview's key view
-/// gets AppKit `undo:`/`redo:`, which WebKit sends to that frame. No-op off macOS.
+/// For sandboxed iframes the renderer cannot reach: WebKit forwards AppKit `undo:` to the frame.
 #[tauri::command]
 pub fn native_edit_history(app: tauri::AppHandle, redo: bool) {
     #[cfg(target_os = "macos")]
