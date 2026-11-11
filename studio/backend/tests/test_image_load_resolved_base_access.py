@@ -159,6 +159,13 @@ def test_download_plan_of_a_gated_repo_uses_the_accounts_token(client, hub):
     assert account_access._grant_key(GATED_GGUF["model_path"], "model") in hub
 
 
+def test_load_of_a_gated_repo_uses_the_accounts_token(client, hub):
+    assert client.post("/api/inference/images/load", json = GATED_GGUF).status_code == 404
+    resp = client.post("/api/inference/images/load", json = {**GATED_GGUF, "hf_token": "hf_reader"})
+    assert resp.status_code == 200, resp.text
+    assert account_access._grant_key(GATED_GGUF["model_path"], "model") in hub
+
+
 def test_download_plan_with_a_token_that_cannot_read_the_repo_stays_not_found(client, hub):
     resp = client.post(
         "/api/inference/images/download-plan", json = {**GATED_GGUF, "hf_token": "hf_other"}

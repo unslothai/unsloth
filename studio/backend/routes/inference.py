@@ -23249,7 +23249,9 @@ async def audio_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+        await asyncio.to_thread(
+            account_access.require_model_access, request.model_path, hf_token = request.hf_token
+        )
     from core.inference.native_audio import native_audio_download_plan
     from utils.native_path_leases import redact_native_paths
 
@@ -48268,14 +48270,7 @@ async def diffusion_download_plan(
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     if account_access.managed_account():
-        await asyncio.to_thread(
-            account_access.require_model_access, request.model_path, hf_token = request.hf_token
-        )
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(
-                account_access.require_model_access, request.base_repo, hf_token = request.hf_token
-            )
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -48564,10 +48559,7 @@ async def load_diffusion_model_gated(
         await asyncio.to_thread(account_access.require_media_references, request)
     account_access.require_idle_other_accounts()
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}

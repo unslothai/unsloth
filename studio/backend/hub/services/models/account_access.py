@@ -1028,6 +1028,12 @@ def _grant_with_token(reference, repo_type: str, hf_token) -> bool:
     return model_visible(reference, repo_type = repo_type)
 
 
+def require_media_model_access(request) -> None:
+    require_model_access(request.model_path, hf_token = request.hf_token)
+    if request.base_repo:
+        require_model_access(request.base_repo, hf_token = request.hf_token)
+
+
 def require_model_allowed(reference) -> None:
     """The allowlist alone, for routes that fetch a Hub model without the visibility gate."""
     if not isinstance(reference, str) or model_allowlist() is None:
