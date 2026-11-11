@@ -47,6 +47,7 @@ import {
   packsDirectly,
   q4nxArchFit,
   q4nxBaseModel,
+  q4nxQuantLabel,
   sortQ4nxVariants,
 } from "../lib/q4nx-source";
 
@@ -572,7 +573,7 @@ export function Q4nxConvertCard() {
             )}
             {selectedVariant && !packsDirectly(selectedVariant.quant) && (
               <p className="text-xs text-muted-foreground">
-                {selectedVariant.quant} is dequantized and rounded again to
+                {q4nxQuantLabel(selectedVariant.quant)} is dequantized and rounded again to
                 4-bit, so it loses some quality. Q4_0, Q4_1 and Q4_K_M pack
                 directly.
               </p>

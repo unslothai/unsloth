@@ -9,6 +9,7 @@ import {
   packsDirectly,
   q4nxArchFit,
   q4nxBaseModel,
+  q4nxQuantLabel,
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
@@ -114,5 +115,33 @@ test("a local .gguf row is the file; a folder row needs the picked variant", () 
   assert.equal(
     localGgufPath("C:\\models\\qwen", { filename: "m-Q4_0.gguf" }),
     "C:\\models\\qwen\\m-Q4_0.gguf",
+  );
+});
+
+test("an HF cache repo folder lists path-qualified variants that still resolve and rank", () => {
+  // Backend answer for a models--org--repo row: filename and quant carry snapshots/<sha>/.
+  const snap = "snapshots/50968a4468ef4233ed78cd7c3de230dd1d61a56b";
+  const variants = [
+    { filename: `${snap}/Qwen3-0.6B-UD-Q4_K_XL.gguf`, quant: `${snap}/Qwen3-0.6B-UD-Q4_K_XL` },
+    { filename: `${snap}/Qwen3-0.6B-Q4_1.gguf`, quant: `${snap}/Qwen3-0.6B-Q4_1` },
+  ];
+  assert.equal(packsDirectly(variants[1].quant), true);
+  assert.equal(packsDirectly(variants[0].quant), false);
+  assert.equal(packsDirectly("IQ4_0"), false);
+  assert.equal(q4nxQuantLabel(variants[1].quant), "Qwen3-0.6B-Q4_1");
+  const [first] = sortQ4nxVariants(variants);
+  assert.equal(first.filename, variants[1].filename);
+  assert.equal(
+    localGgufPath("L:\\hub\\models--unsloth--Qwen3-0.6B-GGUF", first),
+    `L:\\hub\\models--unsloth--Qwen3-0.6B-GGUF\\${snap}/Qwen3-0.6B-Q4_1.gguf`,
+  );
+  // A snapshot row (non-active cache) and a custom folder list plain filenames.
+  assert.equal(
+    localGgufPath(`/cache/models--o--r/${snap}`, { filename: "m-Q4_0.gguf" }),
+    `/cache/models--o--r/${snap}/m-Q4_0.gguf`,
+  );
+  assert.equal(
+    localGgufPath("/data/custom/qwen", { filename: "sub/m-Q4_0.gguf" }),
+    "/data/custom/qwen/sub/m-Q4_0.gguf",
   );
 });

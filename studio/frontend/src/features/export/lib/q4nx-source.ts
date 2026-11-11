@@ -28,16 +28,27 @@ export interface Q4nxVariant {
   quant: string;
 }
 
+/** The quant's last path segment: a listed HF cache folder keys its variants by path (`snapshots/<sha>/m-Q4_1`). */
+export function q4nxQuantLabel(quant: string): string {
+  return quant.trim().split(/[\\/]/).pop() ?? "";
+}
+
+// Matches the bare token or a stem ending in it ("Qwen3-0.6B-Q4_1"), not "IQ4_0" or "UD-Q4_K_XL".
+function directRank(quant: string): number {
+  const label = q4nxQuantLabel(quant).toLowerCase();
+  const i = DIRECT_QUANTS.findIndex(
+    (q) => label === q || ["-", "_", "."].some((sep) => label.endsWith(sep + q)),
+  );
+  return i === -1 ? DIRECT_QUANTS.length : i;
+}
+
 export function packsDirectly(quant: string): boolean {
-  return DIRECT_QUANTS.includes(quant.trim().toLowerCase());
+  return directRank(quant) < DIRECT_QUANTS.length;
 }
 
 /** Directly packed quants first (backend order), then the rest; the first one is the default pick. */
 export function sortQ4nxVariants<T extends Q4nxVariant>(variants: T[]): T[] {
-  const rank = (v: T) => {
-    const i = DIRECT_QUANTS.indexOf(v.quant.trim().toLowerCase());
-    return i === -1 ? DIRECT_QUANTS.length : i;
-  };
+  const rank = (v: T) => directRank(v.quant);
   return variants
     .map((variant, index) => ({ variant, index }))
     .sort((a, b) => rank(a.variant) - rank(b.variant) || a.index - b.index)
