@@ -300,8 +300,9 @@ def policy_metadata(
     assignment: Mapping,
     *,
     activation_scales_baked: bool = False,
-    gptq: bool = False,
+    refined: bool = False,
 ) -> dict:
+    from .diffusion_nvfp4_gate import REFINED_FIELD
     counts = Counter(assignment.values())
     return {
         NVFP4_POLICY_KEY: {
@@ -313,7 +314,7 @@ def policy_metadata(
                 fqn for fqn, precision in assignment.items() if precision == PRECISION_NVFP4
             ),
             "activation_scales_baked": bool(activation_scales_baked),
-            "gptq": bool(gptq),
+            REFINED_FIELD: bool(refined),
         }
     }
 

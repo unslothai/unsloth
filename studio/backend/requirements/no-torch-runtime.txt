@@ -94,12 +94,9 @@ tokenizers>=0.22.0,<=0.23.0
 transformers==5.5.0; python_version >= "3.10"
 transformers==4.57.6; python_version < "3.10"
 trl>=0.18.2,!=0.19.0,<=1.15.0
-# Matches extras-no-deps.txt rather than the newest release: that file installs
-# --no-deps too and runs after this one, so whatever it names wins. Pinning a
-# higher version here would record a number no install ever ends up with. Bump
-# both together. 5.2 requires >=3.10, so 3.9 keeps the newest release it can take,
-# which is what a bare entry resolved to here before.
-sentence-transformers==5.2.0; python_version >= "3.10"
+# Bump with extras-no-deps.txt: it also installs --no-deps and runs after this file, so its pin wins.
+# 5.2 requires >=3.10; 3.9 keeps 5.1.2, its newest release.
+sentence-transformers==5.2.3; python_version >= "3.10"
 sentence-transformers==5.1.2; python_version < "3.10"
 cut_cross_entropy==25.1.1
 # Apple Silicon stays below 13 with the MLX image engine: mflux imports PIL._typing, which

@@ -861,6 +861,11 @@ def _finish(
         _ALIASES.pop(old.alias, None)
 
 
+def _account_still_active(account: AccountContext) -> bool:
+    from core.training.account_jobs import job_accounts
+    return account.is_owner or any(live.account_id == account.account_id for live in job_accounts())
+
+
 async def _start_queued(entry: _Queued) -> bool:
     from routes import training as training_routes
 
@@ -870,6 +875,13 @@ async def _start_queued(entry: _Queued) -> bool:
         if _training_busy():
             return False
         group = _batch_for(entry)
+        # A queued start outlives its request: an account disabled or deleted since then starts nothing.
+        for member in group:
+            if not await asyncio.to_thread(_account_still_active, member.account):
+                _finish(member, "cancelled")
+        group = [member for member in group if member.status == "queued"]
+        if entry.status != "queued":
+            return True
         if len(group) > 1 and await arun_as(entry.account, _trains_alone(entry.request)):
             group = [entry]
         # A cancel that landed while the model probe ran has already returned "cancelled": never start it.

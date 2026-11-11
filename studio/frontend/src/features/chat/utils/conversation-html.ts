@@ -7,14 +7,16 @@ import {
   roleLabel,
 } from "./conversation-markdown.ts";
 
-export const CONVERSATION_HTML_FORMAT = "html";
-export const CONVERSATION_HTML_LABEL = "HTML";
-export const CONVERSATION_HTML_EXTENSION = "html";
-export const CONVERSATION_HTML_MIME_TYPE = "text/html";
-export const CONVERSATION_PDF_FORMAT = "pdf";
-export const CONVERSATION_PDF_LABEL = "PDF";
-export const CONVERSATION_PDF_EXTENSION = "pdf";
-export const CONVERSATION_PDF_MIME_TYPE = "application/pdf";
+export {
+  CONVERSATION_HTML_EXTENSION,
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_HTML_MIME_TYPE,
+  CONVERSATION_PDF_EXTENSION,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+  CONVERSATION_PDF_MIME_TYPE,
+} from "./conversation-html-format.ts";
 
 export type NamedConversationHtml = {
   readonly title: string;

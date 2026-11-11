@@ -37,6 +37,7 @@ from core.inference.stt_sidecar import (
     SttContextSizeError,
     SttIncompleteTranscriptionError,
     SttLoadCancelledError,
+    SttAudioDecodeError,
     SttModelBusyError,
     SttModelIdError,
     SttModelNotDownloadedError,
@@ -1175,6 +1176,9 @@ class MtmdSttSidecar:
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
+        # llama-server aborts (mtmd GGML_ASSERT) on a one-sample clip.
+        if len(decoded_audio) < _TARGET_SAMPLE_RATE // 1000:
+            raise SttAudioDecodeError("Audio is too short (min 1 ms).")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         self.load(

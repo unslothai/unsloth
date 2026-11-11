@@ -893,6 +893,22 @@ def convert_to_vlm_format(
     return converted_list
 
 
+# A real video container never starts like this. A playlist / manifest saved as clip.mp4 would make
+# FFmpeg open the URLs inside it itself, outside the guarded remote-media fetch.
+_PLAYLIST_HEADS = (b"#EXTM3U", b"<", b"ffconcat", b"\xef\xbb\xbf", b" ", b"\t", b"\r", b"\n")
+
+
+def _refuse_hub_playlist(local_path, name):
+    try:
+        with open(local_path, "rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return local_path  # unreadable: the decoder reports it
+    if head.startswith(_PLAYLIST_HEADS):
+        raise ValueError(f"Video '{name}' is a playlist or text document, not a video file.")
+    return local_path
+
+
 class _HubClips:
     """Repo-relative clip names of a Hub dataset, resolved by download the way bare image filenames are."""
 
@@ -944,7 +960,7 @@ class _HubClips:
                 return None
             # Offline: an exact repo path may still be in the cache.
             try:
-                return hf_hub_download(
+                cached = hf_hub_download(
                     self.repo,
                     path,
                     repo_type = "dataset",
@@ -954,17 +970,21 @@ class _HubClips:
                 )
             except Exception:  # noqa: BLE001 -- not cached: the path stays local
                 return None
+            return _refuse_hub_playlist(cached, path)
         if isinstance(self.files[path], list):
             raise ValueError(
                 f"Video '{path}' matches several files in {self.repo} ({', '.join(self.files[path])}); "
                 "use the repo-relative path."
             )
-        return hf_hub_download(
-            self.repo,
-            self.files[path],
-            repo_type = "dataset",
-            revision = self.revision,
-            cache_dir = active_hf_hub_cache(),
+        return _refuse_hub_playlist(
+            hf_hub_download(
+                self.repo,
+                self.files[path],
+                repo_type = "dataset",
+                revision = self.revision,
+                cache_dir = active_hf_hub_cache(),
+            ),
+            path,
         )
 
 
