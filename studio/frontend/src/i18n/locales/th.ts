@@ -3156,11 +3156,11 @@ export const th = {
       showReplyTimesDescription: "แสดงเวลาที่การตอบกลับแต่ละครั้งเสร็จสิ้นไว้ใต้การตอบกลับ",
       showReplyTimesKeywords:
         "เวลา นาฬิกา วันที่ ชั่วโมง เมื่อใด เสร็จ มาถึง ตอบกลับ คำตอบ ข้อความ timestamp time clock date reply response message",
-      showGenerationDetails: "ข้อมูลความเร็วและการโหลดแบบละเอียด",
+      showGenerationDetails: "ข้อมูลความเร็วแบบละเอียด",
       showGenerationDetailsDescription:
-        "เพิ่มความเร็วการอ่านพรอมต์ จำนวนโทเค็น และอัตราการยอมรับร่างลงในการแสดงผลสด และแสดงว่าเลเยอร์ของโมเดลโหลดไว้ที่ใด",
+        "เพิ่มความเร็วการอ่านพรอมต์ จำนวนโทเค็น และอัตราการยอมรับร่างลงในการแสดงผลสด",
       showGenerationDetailsKeywords:
-        "ละเอียด นักพัฒนา สถิติ ความเร็ว เลเยอร์ verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "ละเอียด นักพัฒนา สถิติ ความเร็ว verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "สถิติความเร็วและบริบท",
       generationStatsUpdatesDescription:
         "แบบเรียลไทม์จะนับโทเค็นต่อวินาทีและการใช้บริบทระหว่างที่คำตอบกำลังสตรีม แบบเมื่อเสร็จจะอัปเดตเมื่อแต่ละคำตอบจบ",

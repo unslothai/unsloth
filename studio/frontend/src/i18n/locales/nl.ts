@@ -3333,11 +3333,11 @@ export const nl = {
         "Onder elk antwoord tonen wanneer het klaar was.",
       showReplyTimesKeywords:
         "tijdstempel tijd klok datum uur wanneer voltooid aangekomen antwoord reactie bericht timestamp time",
-      showGenerationDetails: "Gedetailleerde snelheids- en laadinfo",
+      showGenerationDetails: "Gedetailleerde snelheidsinfo",
       showGenerationDetailsDescription:
-        "Voegt promptleessnelheid, tokenaantallen en conceptacceptatie toe aan de live weergaven en toont waar de lagen van een model zijn geladen.",
+        "Voegt promptleessnelheid, tokenaantallen en conceptacceptatie toe aan de live weergaven.",
       showGenerationDetailsKeywords:
-        "uitgebreid ontwikkelaar statistieken snelheid tok/s prefill decode lagen offload vram experts verbose developer stats speed layers",
+        "uitgebreid ontwikkelaar statistieken snelheid tok/s prefill decode verbose developer stats speed",
       generationStatsUpdates: "Snelheids- en contextstatistieken",
       generationStatsUpdatesDescription:
         "Realtime telt tokens per seconde en contextgebruik terwijl een antwoord wordt gestreamd. Na afloop werkt ze bij zodra elk antwoord klaar is.",

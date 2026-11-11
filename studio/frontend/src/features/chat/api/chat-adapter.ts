@@ -479,6 +479,7 @@ import {
 } from "@/lib/evicted-toast";
 import {
   type OffloadCounts,
+  expertSpillNote,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
@@ -3482,6 +3483,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cpuFallbackReason,
       mmprojFallbackReason,
       offloadWarning(offloadCounts ?? {}),
+      expertSpillNote(offloadCounts ?? {}),
     );
     const options = {
       description: notice.description,

@@ -3291,11 +3291,11 @@ export const vi = {
         "Hiển thị thời điểm mỗi câu trả lời hoàn tất, bên dưới câu trả lời.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message dấu thời gian giờ ngày hoàn tất trả lời tin nhắn",
-      showGenerationDetails: "Thông tin chi tiết về tốc độ và tải",
+      showGenerationDetails: "Thông tin chi tiết về tốc độ",
       showGenerationDetailsDescription:
-        "Thêm tốc độ đọc lời nhắc, số token và tỷ lệ chấp nhận bản nháp vào chỉ số trực tiếp, và cho biết các lớp của mô hình được tải ở đâu.",
+        "Thêm tốc độ đọc lời nhắc, số token và tỷ lệ chấp nhận bản nháp vào chỉ số trực tiếp.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts chi tiết nhà phát triển thống kê tốc độ lớp",
+        "verbose developer stats speed tok/s prefill decode chi tiết nhà phát triển thống kê tốc độ",
       generationStatsUpdates: "Thống kê tốc độ và ngữ cảnh",
       generationStatsUpdatesDescription:
         "Thời gian thực đếm token mỗi giây và mức dùng ngữ cảnh trong khi phản hồi đang truyền. Khi xong cập nhật chúng khi mỗi phản hồi kết thúc.",

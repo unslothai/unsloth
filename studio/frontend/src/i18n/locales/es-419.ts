@@ -3337,11 +3337,11 @@ export const es419 = {
         "Muestra debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora reloj fecha cuándo terminó llegó respuesta mensaje timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Información detallada de velocidad y carga",
+      showGenerationDetails: "Información detallada de velocidad",
       showGenerationDetailsDescription:
-        "Agrega a las lecturas en vivo la velocidad de lectura del prompt, el conteo de tokens y la aceptación de borradores, y muestra dónde se cargaron las capas del modelo.",
+        "Agrega a las lecturas en vivo la velocidad de lectura del prompt, el conteo de tokens y la aceptación de borradores.",
       showGenerationDetailsKeywords:
-        "detallado desarrollador estadísticas velocidad capas trasladar expertos verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "detallado desarrollador estadísticas velocidad verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Estadísticas de velocidad y contexto",
       generationStatsUpdatesDescription:
         "En tiempo real cuenta los tokens por segundo y el uso del contexto mientras se transmite una respuesta. Al terminar los actualiza cuando termina cada respuesta.",
