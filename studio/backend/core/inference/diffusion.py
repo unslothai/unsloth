@@ -6341,10 +6341,8 @@ class DiffusionBackend:
         hf_token: Optional[str],
         failures_out: Optional[list] = None,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
-        """The encoder a MiniMax-H3-Image load opens for this raw request: the hosted int8 file, or the H3 repo's bf16
-        ``text_encoder/``. Always keyed ``text_encoder``, so the image repo's bundled bf16 copy is never staged. A
-        source that cannot be listed, or lists no encoder, stages nothing and is reported in ``failures_out``: the
-        plan is then partial, and the load fetches the encoder inline."""
+        """The encoder a MiniMax-H3-Image load opens: the hosted int8 file, or the H3 repo's bf16 ``text_encoder/``,
+        never the image repo's bundled copy. An unlistable source stages nothing and is reported in ``failures_out``."""
         from .diffusion_minimax_h3_image import H3_IMAGE_TEXT_ENCODER_REPO, h3_image_te_scheme
         from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
 
@@ -6386,8 +6384,7 @@ class DiffusionBackend:
         failures_out: Optional[list] = None,
     ) -> Optional[str]:
         """The hosted DiT scheme a MiniMax-H3-Image load would take on the selected card, or None for the bf16 shards.
-        A scheme it cannot settle stages the bf16 shards and is reported in ``failures_out``, since the load may pick
-        the hosted file instead."""
+        An unsettled scheme stages the bf16 shards and is reported in ``failures_out``."""
         try:
             from .diffusion_minimax_h3_image import QUANT_SCHEMES, planned_dit_scheme
             with diffusion_device_scope(gpu_ordinal):
@@ -7310,7 +7307,6 @@ class DiffusionBackend:
             and getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME
             and not Path(repo_id).expanduser().exists()
         )
-        # Declared before the encoder and prequant lookups so a source either one cannot list marks the plan partial.
         plan_failures: list = []
         te_files = (
             self._h3_image_te_plan_files(text_encoder_quant, hf_token, plan_failures)

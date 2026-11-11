@@ -106,8 +106,8 @@ PDD_HEADS_FILE = "pdd_fused_heads.safetensors"
 PDD_CONFIG_FILE = "pdd_config.json"
 DIFFUSERS_TRANSFORMER_SUBFOLDER = "transformer_diffusers"
 DIFFUSERS_VAE_SUBFOLDER = "vae_diffusers"
-# What a Hub load reads from the image repo besides the DiT shards: the native layout model_index.json names. The repo
-# also carries a converted *_diffusers/ copy of the DiT and VAE and the H3 text encoder, none of which a Hub load opens.
+# What a Hub load reads from the image repo besides the DiT shards; the converted *_diffusers/ copy and the bundled
+# text encoder are never opened.
 H3_IMAGE_BASE_PATTERNS = (
     "model_index.json",
     PDD_CONFIG_FILE,
@@ -2815,8 +2815,7 @@ def load_minimax_h3_image_pipeline(
             )
 
     local_te = root / "text_encoder"
-    # A local folder's own encoder only. A Hub snapshot can hold the repo's bundled bf16 copy (66.7 GB, fetched by an
-    # older plan or a full download); taking it there would replace the int8 encoder the plan sized.
+    # A local folder's own encoder only: a Hub snapshot can hold the bundled bf16 copy, which the plan did not size.
     if (
         text_encoder is None
         and os.path.isdir(str(repo_id))
