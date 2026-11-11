@@ -113,6 +113,9 @@ ADALN_TABLE_ENV = "UNSLOTH_H3_IMAGE_ADALN_TABLE"
 PLACEMENT_ENV = "UNSLOTH_H3_IMAGE_PLACEMENT"
 VRAM_BUDGET_ENV = "UNSLOTH_H3_IMAGE_VRAM_GB"
 HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
+# "0": streamed DiT blocks / encoder layers move from pageable host memory on the compute stream (ModuleListStreamer)
+# instead of the shared pinned, event-fenced prefetch streamer (diffusion_offload_prefetch.stream_module_list).
+PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
 
 QUANT_SCHEMES = ("int8", "fp8")
 # ConvRot group: the one the H3 video denoiser and its hosted encoder use (divides 5376, 7168 and 14336).
@@ -785,6 +788,8 @@ class H3ImagePlan:
     # False: the encoder is loaded for each encode and freed after (host RAM cannot hold it beside the DiT)
     te_kept_on_host: bool = True
     reasons: list = field(default_factory = list)
+    # host RAM (GB) the plan holds once placed: host-side DiT blocks + the encoder + 4 GB; None without a host budget
+    host_need_gb: Optional[float] = None
 
     def as_dict(self) -> dict:
         return {
@@ -799,6 +804,19 @@ class H3ImagePlan:
             "te_kept_on_host": self.te_kept_on_host,
             "reasons": list(self.reasons),
         }
+
+
+def pinned_stream_enabled() -> bool:
+    return not _env_off(PINNED_STREAM_ENV)
+
+
+def stream_inflight() -> int:
+    """Streamed members on the device at once: the running one plus the prefetched ones."""
+    if not pinned_stream_enabled():
+        return 1
+    from .diffusion_offload_prefetch import LIST_STREAM_DEPTH
+
+    return 1 + LIST_STREAM_DEPTH
 
 
 def activation_gb(
@@ -842,6 +860,7 @@ def plan_placement(
     num_blocks: int = 50,
     te_layers: int = 50,
     forced: Optional[str] = None,
+    inflight: int = 1,
 ) -> H3ImagePlan:
     """Pure: VRAM and host budgets (GB, None = unknown/CPU) -> placement, best first:
 
@@ -851,7 +870,8 @@ def plan_placement(
     - sequential: one big component on the card at a time (a DiT larger than the encoder room);
     - stream: DiT blocks stream past the ones that fit, the encoder streams every layer (L4 24 GB).
 
-    Host: the encoder is kept only when it fits beside the DiT, else it loads per prompt and is freed after."""
+    Host: the encoder is kept only when it fits beside the DiT, else it loads per prompt and is freed after.
+    ``inflight``: streamed members on the device at once (2 with the prefetch streamer: one runs, one copies)."""
     reasons = []
     act = activation_gb(width, height, references)
     margin = 1.5
@@ -870,6 +890,7 @@ def plan_placement(
         return plan
     layer_gb = max(te_gb - TE_TOP_GB, 0.1) / max(1, te_layers)
     block_gb = max(dit_gb - DIT_TOP_GB, 0.1) / max(1, num_blocks)
+    inflight = max(1, int(inflight))
     if forced in PLACEMENTS:
         choice = forced
         reasons.append(f"placement forced to {forced} by {PLACEMENT_ENV}")
@@ -878,7 +899,7 @@ def plan_placement(
         reasons.append(
             f"DiT + encoder + VAE ({dit_gb + te_gb + vae_gb:.1f} GB) fit {vram_gb:.1f} GB"
         )
-    elif dit_gb + vae_gb + act + margin + TE_TOP_GB + layer_gb <= vram_gb:
+    elif dit_gb + vae_gb + act + margin + TE_TOP_GB + layer_gb * inflight <= vram_gb:
         choice = PLACE_DIT_RESIDENT
         reasons.append(
             f"DiT + VAE ({dit_gb + vae_gb:.1f} GB) stay on {vram_gb:.1f} GB; the encoder streams"
@@ -893,11 +914,14 @@ def plan_placement(
         reasons.append(f"DiT {dit_gb:.1f} GB + working set exceeds {vram_gb:.1f} GB: blocks stream")
     plan.placement = choice
     if choice == PLACE_DIT_RESIDENT:
-        spare = vram_gb - dit_gb - vae_gb - act - margin - TE_TOP_GB - layer_gb
+        spare = vram_gb - dit_gb - vae_gb - act - margin - TE_TOP_GB - layer_gb * inflight
         plan.te_resident_layers = max(0, min(te_layers, int(spare / layer_gb)))
         reasons.append(f"{plan.te_resident_layers}/{te_layers} encoder layers stay on the device")
     elif choice == PLACE_STREAM:
         spare = vram_gb - act - margin - vae_gb - DIT_TOP_GB - TE_TOP_GB - block_gb
+        spare -= (inflight - 1) * max(
+            block_gb, layer_gb
+        )  # the prefetched DiT block / encoder layer
         plan.dit_resident_blocks = max(0, min(num_blocks, int(spare / block_gb)))
         # The resident blocks hold their room through the encode, so every encoder layer streams.
         plan.te_resident_layers = 0
@@ -912,6 +936,7 @@ def plan_placement(
             PLACE_STREAM: block_gb * (num_blocks - int(plan.dit_resident_blocks or 0)),
         }[choice]
         need = dit_host + te_gb + 4.0
+        plan.host_need_gb = need
         plan.te_kept_on_host = host_gb >= need
         # Loading per prompt only frees the encoder between prompts: each load still holds it whole beside the
         # host-side DiT blocks, so a host below that peak would be OOM-killed on the first prompt.
@@ -1193,6 +1218,15 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
     def _encode(self, prompt: str, vision_images: Optional[list]) -> tuple:
         return self.encode_prompt(prompt, vision_images)
 
+    def _streamer_stats(self) -> dict:
+        """Per role: pinned prefetch counters (copies, prefetched, missed), or {"pageable": n} for the stock one."""
+        out = {}
+        for streamer in self._unsloth_h3_streamers:
+            role = getattr(streamer, "_unsloth_role", "?")
+            read = getattr(streamer, "stats", None)
+            out[role] = read() if callable(read) else {"pageable": int(streamer.streamed)}
+        return out
+
     def _prompt_cache_hits(self) -> int:
         cache = getattr(self, "_unsloth_prompt_cache", None)
         stats = getattr(cache, "stats", None)
@@ -1432,6 +1466,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         images = self._decode(final, height, width, output_type)
         stats["decode_s"] = time.perf_counter() - t2
         stats["total_s"] = time.perf_counter() - t0
+        stats["streamers"] = self._streamer_stats()
         self._unsloth_h3_last_stats = stats
         return images
 
@@ -2332,21 +2367,115 @@ def load_h3_image_text_encoder(
     return encoder, None
 
 
+def pin_room_bytes(plan: H3ImagePlan, pinned: Sequence[Any] = ()) -> Optional[int]:
+    """Host bytes the plan leaves for pinned copies: its host budget less what it already holds (host-side DiT
+    blocks, the encoder, 4 GB) less what ``pinned`` streamers already locked. Pinned copies are counted on top of the
+    pageable ones they replace (those may be file-backed pages that stay cached), so a host the plan fits still
+    fits with every pin. None without a host budget (only the free-RAM budget then applies)."""
+    if plan.host_gb is None or plan.host_need_gb is None:
+        return None
+    room = int((float(plan.host_gb) - float(plan.host_need_gb)) * 1e9)
+    room -= sum(int(getattr(s, "pinned_bytes", 0) or 0) for s in pinned if s is not None)
+    return max(0, room)
+
+
+def make_list_streamer(
+    owner: Any,
+    members: Any,
+    device: Any,
+    resident: int,
+    role: str,
+    *,
+    pinned: bool = True,
+    reserve_bytes: int = 0,
+    max_pin_bytes: Optional[int] = None,
+) -> Any:
+    """A streamer for ``members[resident:]`` (children of ``owner``): the shared pinned, event-fenced prefetch
+    streamer where it applies and fits ``max_pin_bytes`` (``pin_room_bytes``), else the pageable
+    ``ModuleListStreamer``."""
+    streamer = None
+    if pinned and pinned_stream_enabled():
+        from .diffusion_offload_prefetch import stream_module_list
+        streamer = stream_module_list(
+            owner,
+            members,
+            device,
+            resident,
+            logger = logger,
+            reserve_bytes = reserve_bytes,
+            max_pin_bytes = max_pin_bytes,
+        )
+    if streamer is None:
+        streamer = ModuleListStreamer(members, device, resident)
+    streamer._unsloth_role = role
+    return streamer
+
+
+def stream_list(
+    pipe: Any,
+    owner: Any,
+    members: Any,
+    device: Any,
+    resident: int,
+    role: str,
+    *,
+    pinned: bool = True,
+    reserve_bytes: int = 0,
+    max_pin_bytes: Optional[int] = None,
+) -> Any:
+    """``make_list_streamer``, registered on the pipe by role."""
+    streamer = make_list_streamer(
+        owner,
+        members,
+        device,
+        resident,
+        role,
+        pinned = pinned,
+        reserve_bytes = reserve_bytes,
+        max_pin_bytes = max_pin_bytes,
+    )
+    pipe._unsloth_h3_streamers.append(streamer)
+    return streamer
+
+
 def _place_streamed_dit(
-    transformer: Any, vae: Any, device: Any, plan: H3ImagePlan
-) -> ModuleListStreamer:
+    transformer: Any,
+    vae: Any,
+    device: Any,
+    plan: H3ImagePlan,
+    pinned_already: Sequence[Any] = (),
+) -> Any:
+    """Placed before the encoder loads, so the DiT blocks (streamed every step) get the host pin budget first."""
     vae.to(device)
     for name, child in transformer.named_children():
         if name != "transformer_blocks":
             child.to(device)
     resident = int(plan.dit_resident_blocks or 0)
-    streamer = ModuleListStreamer(transformer.transformer_blocks, device, resident)
-    streamer._unsloth_role = "transformer"
+    streamer = make_list_streamer(
+        transformer,
+        transformer.transformer_blocks,
+        device,
+        resident,
+        "transformer",
+        max_pin_bytes = pin_room_bytes(plan, pinned_already),
+    )
     streamer._unsloth_resident = resident
     return streamer
 
 
-def _place_text_encoder(pipe: Any, encoder: Any, plan: H3ImagePlan, device: Any) -> Any:
+def _place_text_encoder(
+    pipe: Any,
+    encoder: Any,
+    plan: H3ImagePlan,
+    device: Any,
+    *,
+    per_prompt: bool = False,
+    reserve_bytes: int = 0,
+    pinned_already: Sequence[Any] = (),
+) -> Any:
+    """``per_prompt``: the low-host tier loads the encoder for each prompt and frees it after, so pinning its layers
+    would cost a 27 GB host-to-pinned copy per prompt: those stream from pageable memory. ``pinned_already``: the
+    streamers whose pins count against the plan's host room first (the DiT, placed before the encoder)."""
     if encoder is None:
         return None
     if plan.placement == PLACE_RESIDENT:
@@ -2359,9 +2488,17 @@ def _place_text_encoder(pipe: Any, encoder: Any, plan: H3ImagePlan, device: Any)
         for name, child in encoder.model.language_model.named_children():
             if name != "layers":
                 child.to(device)
-        streamer = ModuleListStreamer(layers, device, int(plan.te_resident_layers or 0))
-        streamer._unsloth_role = "text_encoder"
-        pipe._unsloth_h3_streamers.append(streamer)
+        stream_list(
+            pipe,
+            encoder.model.language_model,
+            layers,
+            device,
+            int(plan.te_resident_layers or 0),
+            "text_encoder",
+            pinned = not per_prompt,
+            reserve_bytes = reserve_bytes,
+            max_pin_bytes = pin_room_bytes(plan, pinned_already),
+        )
     return encoder
 
 
@@ -2436,6 +2573,7 @@ def load_minimax_h3_image_pipeline(
         "width": plan_width,
         "height": plan_height,
         "forced": (os.environ.get(PLACEMENT_ENV) or "").strip().lower() or None,
+        "inflight": stream_inflight() if device.type == "cuda" else 1,
     }
     plan = plan_placement(
         te_gb = te_gb_for(te_scheme) if text_encoder is None else _module_gb(text_encoder),
@@ -2592,11 +2730,12 @@ def load_minimax_h3_image_pipeline(
                     "for each prompt because host memory is short). Check the network or the Hugging Face cache "
                     "and load the model again."
                 )
-            return _place_text_encoder(pipe, encoder, plan, device)
+            return _place_text_encoder(pipe, encoder, plan, device, per_prompt = True)
 
         pipe._unsloth_h3_te_loader = _te_loader
     else:
-        _place_text_encoder(pipe, text_encoder, plan, device)
+        # The streamed DiT was placed (and pinned) before the encoder loaded, so it already holds its pin budget.
+        _place_text_encoder(pipe, text_encoder, plan, device, pinned_already = [early_streamer])
     if plan.placement != PLACE_SEQUENTIAL:
         vae.to(device)
     if plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
@@ -2608,7 +2747,9 @@ def load_minimax_h3_image_pipeline(
         if early_streamer is None or early_streamer._unsloth_resident != resident:
             if early_streamer is not None:
                 early_streamer.remove()
-            early_streamer = _place_streamed_dit(transformer, vae, device, plan)
+            early_streamer = _place_streamed_dit(
+                transformer, vae, device, plan, pinned_already = pipe._unsloth_h3_streamers
+            )
         pipe._unsloth_h3_streamers.append(early_streamer)
         early_streamer = None
     if early_streamer is not None:
