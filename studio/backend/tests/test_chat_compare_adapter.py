@@ -54,7 +54,11 @@ def _tokenizer():
     tokenizer = Tokenizer(models.WordLevel(vocab, unk_token = "[UNK]"))
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object = tokenizer, unk_token = "[UNK]", eos_token = "<eos>", pad_token = "<pad>"
+        tokenizer_object = tokenizer,
+        unk_token = "[UNK]",
+        eos_token = "<eos>",
+        pad_token = "<pad>",
+        model_input_names = ["input_ids", "attention_mask"],
     )
     tokenizer.chat_template = "{% for m in messages %}{{ m.content + ' ' }}{% endfor %}"
     return tokenizer
@@ -68,7 +72,7 @@ def _lora_backend():
     try:
         from core.inference.inference import InferenceBackend
     except (ImportError, RuntimeError) as exc:
-        pytest.skip(f"full inference backend unavailable ({type(exc).__name__}: {exc})")
+        pytest.skip(reason = f"full inference backend unavailable ({type(exc).__name__}: {exc})")
 
     class _Lora(torch.nn.Module):
         def __init__(self, model):
@@ -146,3 +150,26 @@ def test_compare_panes_keep_their_own_adapter_state():
         _reply(backend, use_adapter = use_adapter)
 
     assert model.ran_without_lora == [True, False, True, False]
+
+
+def test_a_failed_base_pane_reply_still_turns_the_lora_back_on():
+    backend, model = _lora_backend()
+    model.generate = MagicMock(side_effect = RuntimeError("boom"))
+
+    with pytest.raises(Exception):
+        _reply(backend, use_adapter = False)
+
+    assert model.base_model.disabled is False
+
+
+def test_a_base_pane_transcription_turns_the_lora_back_on():
+    backend, model = _lora_backend()
+    seen = []
+    backend.models[MODEL]["whisper_pipeline"] = lambda _: seen.append(
+        model.base_model.disabled
+    ) or {"text": "hi"}
+
+    list(backend.generate_whisper_response([0.0], use_adapter = False))
+
+    assert seen == [True]
+    assert model.base_model.disabled is False

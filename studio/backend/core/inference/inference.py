@@ -1797,14 +1797,13 @@ class InferenceBackend:
 
     @contextlib.contextmanager
     def _adapter_scope(self, use_adapter: Optional[Union[bool, str]]):
-        if use_adapter is not None:
-            self._apply_adapter_state(use_adapter)
+        """Must hold _generation_lock. A base-model (False) request re-enables the LoRA on exit: plain requests keep the adapter state."""
         try:
+            self._apply_adapter_state(use_adapter)
             yield
         finally:
-            # Plain requests keep the adapter state, so turn the LoRA back on.
             model = (self.models.get(self.active_model_name) or {}).get("model")
-            if use_adapter is False and isinstance(model, (PeftModel, PeftModelForCausalLM)):
+            if use_adapter is False and isinstance(model, PeftModel):
                 model.base_model.enable_adapter_layers()
 
     def generate_with_adapter_control(
@@ -2998,14 +2997,8 @@ class InferenceBackend:
             for index, clip in enumerate(clips):
                 if cancel_event is not None and cancel_event.is_set():
                     return
-                with self._generation_lock:
-                    self._apply_adapter_state(use_adapter)
-                    try:
-                        result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
-                    finally:
-                        # Plain requests keep the adapter state, so turn the LoRA back on.
-                        if use_adapter is False and isinstance(model_info.get("model"), PeftModel):
-                            model_info["model"].base_model.enable_adapter_layers()
+                with self._generation_lock, self._adapter_scope(use_adapter):
+                    result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
 
                 text = result.get("text", "") if isinstance(result, dict) else str(result)
                 if text:
