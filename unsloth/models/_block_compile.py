@@ -26,6 +26,16 @@ _COMPILE_OPTIONS = {
 }
 
 
+def _strict_dynamo():
+    """Dynamo with suppress_errors off; some torch builds (AMD's ROCm torch 2.11) have no such flag."""
+    config = torch._dynamo.config
+    return (
+        config.patch(suppress_errors = False)
+        if hasattr(config, "suppress_errors")
+        else contextlib.nullcontext()
+    )
+
+
 def _cudagraph_mode():
     """UNSLOTH_BLOCK_CUDAGRAPHS: "1" always on, unset or "auto" decided per run (see _auto_observe),
     anything else off (before auto, every value but "1" meant off)."""
@@ -1672,7 +1682,7 @@ def _wrap(
             return run(self, hidden_states, args, kwargs, mode)
         while True:
             try:
-                with torch._dynamo.config.patch(suppress_errors = False):
+                with _strict_dynamo():
                     out = run(self, hidden_states, args, kwargs, mode)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
                 return out
