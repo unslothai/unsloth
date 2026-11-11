@@ -66,7 +66,6 @@ test("a research stream that goes silent without closing is dropped and resumed"
               controller.close();
               return;
             }
-            // A phone back from sleep: the socket is gone, but the browser was never told.
             controller.enqueue(
               encoder.encode(frame(1, "report.updated", { delta: 1 })),
             );

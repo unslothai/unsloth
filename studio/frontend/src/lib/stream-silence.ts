@@ -5,7 +5,6 @@
  *  hearing of it (a phone back from sleep). Wall clock, so time spent asleep counts. */
 export const STREAM_SILENCE_TIMEOUT_MS = 45_000;
 
-/** Cancels `reader` after `timeoutMs` without a resolved read; the read then ends and the follower reconnects. */
 export function watchStreamSilence(
   reader: ReadableStreamDefaultReader<unknown>,
   timeoutMs = STREAM_SILENCE_TIMEOUT_MS,

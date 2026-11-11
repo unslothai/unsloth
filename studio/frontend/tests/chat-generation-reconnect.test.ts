@@ -170,7 +170,6 @@ test("a stream that goes silent without closing is dropped and resumed from the 
           frame(3, "run.completed", { status: "completed" }, run("completed", 3)),
         ]);
       }
-      // A phone back from sleep: the socket is gone, but the browser was never told.
       return new Response(
         new ReadableStream({
           start(controller) {
