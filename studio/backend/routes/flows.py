@@ -1273,6 +1273,8 @@ async def export_flow(
             }
             doc = {**doc, "baked": {**(doc.get("baked") or {}), **latest}}
         data, filename, media_type = await package.export_flow(doc, mode, read_media)
+    except package.PackageError as exc:
+        raise HTTPException(status_code = 413, detail = str(exc))
     finally:
         if key_id is not None:
             await asyncio.to_thread(flow_caller.revoke_run_key, key_id)

@@ -376,3 +376,21 @@ def test_imported_media_urls_that_leave_studio_are_dropped():
     )
     assert "url" not in clean["a"] and "url" not in clean["c"]
     assert clean["b"]["url"] == "/api/inference/images/gallery/1/file"
+
+
+@run_async
+async def test_export_stops_before_the_package_outgrows_the_import_limit(monkeypatch):
+    blobs = {f"image:{i}": bytes([i]) * 1000 for i in range(3)}
+    d = doc(
+        [
+            node(f"i{i}", "input.image", asset = {"kind": "image", "ref": f"image:{i}", "url": "/x"})
+            for i in range(3)
+        ]
+    )
+
+    async def read_media(media):
+        return blobs[media["ref"]], "image/png"
+
+    monkeypatch.setattr(package.schema, "MAX_PACKAGE_BYTES", 2500)
+    with pytest.raises(PackageError, match = "larger than"):
+        await package.export_flow(d, "package", read_media)

@@ -162,6 +162,22 @@ def _is_data_asset(value: Any) -> bool:
     )
 
 
+def _collect(files: dict[str, tuple[bytes, str]], digest: str, data: bytes, mime: str) -> None:
+    """Add an asset, stopping before the package grows past what an import accepts."""
+    if digest in files:
+        return
+    if len(data) > schema.MAX_ASSET_BYTES:
+        raise PackageError(
+            f"An asset is larger than {schema.MAX_ASSET_BYTES // (1024 * 1024)} MB; it cannot be packaged"
+        )
+    total = len(data) + sum(len(d) for d, _ in files.values())
+    if total > schema.MAX_PACKAGE_BYTES:
+        raise PackageError(
+            f"The package would be larger than {schema.MAX_PACKAGE_BYTES // (1024 * 1024)} MB"
+        )
+    files[digest] = (data, mime)
+
+
 async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes, str]]) -> Any:
     if isinstance(value, list):
         return [await _embed(v, read_media, files) for v in value]
@@ -178,7 +194,7 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
             data, mime = await read_media(value)
             mime = asset_store.sniff_mime(data) or mime
             digest = hashlib.sha256(data).hexdigest()
-        files[digest] = (data, mime)
+        _collect(files, digest, data, mime)
         embedded = {k: v for k, v in value.items() if k not in ("url",)}
         embedded["ref"] = f"sha256:{digest}"
         embedded["url"] = asset_store.url_for(digest)
@@ -201,7 +217,7 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
             value = {**value, "ref": f"sha256:{digest}"}
             if "url" in value:
                 value["url"] = asset_store.url_for(digest)
-        files[digest] = (data, mime)
+        _collect(files, digest, data, mime)
         return value
     return {k: await _embed(v, read_media, files) for k, v in value.items()}
 
