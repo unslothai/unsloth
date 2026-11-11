@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { getFullAccessAllowed } from "@/features/auth/login-client";
+import { getFullAccessAllowed, subscribeLoginMode } from "@/features/auth/login-client";
 import { fullAccessRestorable } from "@/lib/account-transition";
 import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "@/features/auth/session-events";
 import {
@@ -2002,6 +2002,31 @@ function rememberFullAccess(on: boolean, codeDeclined = false): void {
 
 function rememberFullAccessCodeOff(off: boolean): void {
   writeStorageValue(CHAT_FULL_ACCESS_CODE_OFF_KEY, off ? "true" : "false");
+}
+
+/** "Reset all preferences" clears the saved Full access on the server too, before its reload. */
+export function forgetSavedFullAccess(): Promise<void> {
+  rememberFullAccess(false);
+  return flushPendingChatSettings();
+}
+
+let fullAccessResetSubscribed = false;
+
+/** Other accounts or a restricted install appearing while Studio runs reset Full access too, so the
+ *  saved copy is cleared then rather than only at the next settings load. */
+function subscribeFullAccessReset(): void {
+  if (fullAccessResetSubscribed) return;
+  fullAccessResetSubscribed = true;
+  subscribeLoginMode(() => {
+    const state = useChatRuntimeStore.getState();
+    if (
+      !getFullAccessAllowed() &&
+      state.permissionMode === "full" &&
+      state.chatFullAccessPreviousMode === null
+    ) {
+      rememberFullAccess(false);
+    }
+  });
 }
 
 const INITIAL_FULL_ACCESS = loadFullAccess();
@@ -4454,6 +4479,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
+    subscribeFullAccessReset();
     if (get().settingsHydrated) {
       return;
     }

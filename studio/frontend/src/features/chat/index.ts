@@ -63,6 +63,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export {
+  forgetSavedFullAccess,
   syncKeepModelsLoaded,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";

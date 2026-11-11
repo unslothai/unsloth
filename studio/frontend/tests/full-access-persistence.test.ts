@@ -40,6 +40,24 @@ function assertAppFullAccess(state: Awaited<ReturnType<typeof restart>>["state"]
   assert.equal(state().chatFullAccessPreviousMode, null);
 }
 
+// First: every store module hydrated in this process listens for the login mode.
+test("other accounts appearing while Studio runs clear the saved copy too", async () => {
+  resetStorage();
+  const { state, flushPendingChatSettings } = await restart("live-multi");
+  await state().hydratePersistedSettings();
+  state().setPermissionMode("full");
+  await flushPendingChatSettings();
+  settingsHttp.puts.length = 0;
+  try {
+    setLoginMode("multi");
+    assert.equal(browser.store.get(FLAG), "false");
+    await flushPendingChatSettings();
+    assert.ok(settingsHttp.puts.some((put) => put.fullAccess === false));
+  } finally {
+    setLoginMode("single", true);
+  }
+});
+
 test("Full access picked in settings is restored after a restart", async () => {
   resetStorage("off");
   const first = await restart("full-pick");
@@ -186,4 +204,15 @@ test("an install with other accounts neither saves nor restores Full access", as
   } finally {
     setLoginMode("single", true);
   }
+});
+
+test("resetting preferences clears the saved copy on the server", async () => {
+  resetStorage();
+  const { state, forgetSavedFullAccess } = await restart("reset-prefs");
+  await state().hydratePersistedSettings();
+  state().setPermissionMode("full");
+  settingsHttp.puts.length = 0;
+  await forgetSavedFullAccess();
+  assert.ok(settingsHttp.puts.some((put) => put.fullAccess === false));
+  assert.equal(browser.store.get(FLAG), "false");
 });
