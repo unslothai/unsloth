@@ -670,6 +670,37 @@ def check_engine(playwright, engine: str) -> None:
         assert before != after, f"a block's word wrap reset to {after} when its row came back"
         assert not errors, errors
         page.close()
+
+        # 14. A bound Fork Chat chord still forks at the tip once the last row has left.
+        context.add_init_script(
+            "localStorage.setItem('unsloth_keyboard_shortcuts', "
+            "JSON.stringify({forkChat: {primary: 'Mod+Alt+Shift+KeyY'}}))"
+        )
+        page, errors = open_thread(context, LARGE, windowed = True)
+        last = page.evaluate(
+            "() => window.__threadWeight.lastAssistantMessage().getAttribute('data-message-id')"
+        )
+        box = page.locator(".aui-thread-viewport").bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        for _ in range(400):
+            page.mouse.wheel(0, -WHEEL_PX)
+            page.wait_for_timeout(30)
+            if page.evaluate("() => document.querySelector('.aui-thread-viewport').scrollTop <= 0"):
+                break
+        settle(page)
+        assert page.locator(f'[data-message-id="{last}"]').count() == 0, "the last row never left"
+        page.keyboard.press("ControlOrMeta+Alt+Shift+KeyY")
+        page.wait_for_timeout(1000)
+        forks = [
+            json.loads(write["body"] or "{}")
+            for write in page.evaluate("() => window.__threadWeight.apiWrites()")
+            if write["url"].endswith("/fork")
+        ]
+        info(f"{engine}: the fork chord at the top posts {forks!r}")
+        assert [fork.get("messageId") for fork in forks] == [
+            last
+        ], f"the fork chord posted {forks!r} with the last row unmounted, not one fork of {last}"
+        page.close()
         info(f"{engine}: ok " + json.dumps({"small": small["mounted"], "large": opened["mounted"]}))
     finally:
         browser.close()

@@ -36,9 +36,13 @@ import { watchModalPointerLock } from "./src/lib/modal-pointer-lock";
 // Answer ForkCountBadge GETs in-page: a Playwright-side answer would add a CDP round trip per
 // assistant message inside the timed region.
 const realFetch = window.fetch.bind(window);
+const apiWrites: { url: string; body: string | null }[] = [];
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : (input as Request).url ?? String(input);
   if (url.includes("/api/")) {
+    if (init?.method && init.method !== "GET") {
+      apiWrites.push({ url, body: typeof init.body === "string" ? init.body : null });
+    }
     return Promise.resolve(
       new Response("{}", {
         status: 200,
@@ -359,6 +363,10 @@ function ThreadWeightApi({
       },
       viewport(): HTMLElement | null {
         return document.querySelector<HTMLElement>(".aui-thread-viewport");
+      },
+      /** Non-GET /api/ calls the stub above answered. */
+      apiWrites(): { url: string; body: string | null }[] {
+        return apiWrites;
       },
       composer(): HTMLTextAreaElement | null {
         return document.querySelector<HTMLTextAreaElement>(

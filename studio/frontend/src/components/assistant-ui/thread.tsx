@@ -2362,6 +2362,7 @@ export const Thread: FC<{
             resetKey={runtimeThreadId}
             viewportRef={viewportElRef}
           />
+          <ForkChatShortcut />
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -8647,10 +8648,6 @@ const AssistantMessage: FC = () => {
         <AssistantActionBar />
       </div>
       </WindowedMessageBody>
-      {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
-      <MessagePrimitive.If last={true}>
-        <ForkChatShortcut />
-      </MessagePrimitive.If>
 
       {/* Trailing stop so Shift+Tab enters the action bar; the root's onFocus mounts it. */}
       <span
@@ -8702,10 +8699,9 @@ const ForkCountBadge: FC = () => {
   );
 };
 
-const useForkMessageAction = () => {
+const useForkMessageAction = (messageId: string | undefined) => {
   const aui = useAui();
   const navigate = useNavigate();
-  const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const pending = useForkInFlight((s) => s.forking);
   const setPending = useForkInFlight((s) => s.setForking);
@@ -8713,6 +8709,7 @@ const useForkMessageAction = () => {
   const handleFork = async () => {
     // Read the store, not the render: two handlers can run in one tick.
     if (useForkInFlight.getState().forking) return;
+    if (!messageId) return;
     const remoteId = aui.threadListItem().getState().remoteId;
     if (!remoteId) {
       toast.error("Cannot fork an unsaved chat");
@@ -8757,9 +8754,11 @@ const useForkMessageAction = () => {
   };
 };
 
-/** The fork chord's registration, mounted once under `If last`: autohidden action bars drop it. */
+/** The fork chord's registration, mounted once per thread outside the rows: the window unmounts
+ *  the last row when the reader scrolls away, and autohidden action bars drop theirs. */
 const ForkChatShortcut: FC = () => {
-  const { forkMessage, forkDisabled } = useForkMessageAction();
+  const lastId = useAuiState(({ thread }) => thread.messages.at(-1)?.id);
+  const { forkMessage, forkDisabled } = useForkMessageAction(lastId);
   const chatActive = useChatActive();
   // Compare mounts a thread per pane and the chord goes to whichever registered first.
   const inComparePane = useInComparePane();
@@ -8770,13 +8769,14 @@ const ForkChatShortcut: FC = () => {
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       void forkMessage();
     },
-    { enabled: chatActive && !inComparePane && !forkDisabled },
+    { enabled: lastId !== undefined && chatActive && !inComparePane && !forkDisabled },
   );
   return null;
 };
 
 const ForkMessageButton: FC = () => {
-  const { forkMessage, forkDisabled } = useForkMessageAction();
+  const messageId = useAuiState(({ message }) => message.id);
+  const { forkMessage, forkDisabled } = useForkMessageAction(messageId);
 
   return (
     <TooltipIconButton
@@ -9352,9 +9352,6 @@ const UserMessage: FC = () => {
         </UserMessageFooter>
       </div>
       </WindowedMessageBody>
-      <MessagePrimitive.If last={true}>
-        <ForkChatShortcut />
-      </MessagePrimitive.If>
       {/* Reverse traversal reaches a trailing stop before the root. Focusing it
           mounts the autohidden controls, so the next Shift+Tab enters its controls
           instead of skipping the action bar and leaving the message. */}
@@ -9395,7 +9392,8 @@ const UserActionBar: FC = () => {
 const UserMoreMenu: FC = () => {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const collisionPadding = useWindowChromeCollisionPadding(undefined);
-  const { forkMessage, forkDisabled } = useForkMessageAction();
+  const messageId = useAuiState(({ message }) => message.id);
+  const { forkMessage, forkDisabled } = useForkMessageAction(messageId);
   return (
     // Non-modal: see AssistantActionBar.
     <ActionBarMorePrimitive.Root modal={false}>
