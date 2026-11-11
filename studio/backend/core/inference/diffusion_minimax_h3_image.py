@@ -1057,7 +1057,12 @@ def torch_no_grad(fn: Callable) -> Callable:
 
 
 def _pipeline_base() -> Any:
-    from diffusers import DiffusionPipeline
+    try:
+        from diffusers import DiffusionPipeline
+    except (
+        ImportError
+    ):  # diffusers missing: the module still imports (planner, family tables); loading raises
+        return object
     return DiffusionPipeline
 
 
