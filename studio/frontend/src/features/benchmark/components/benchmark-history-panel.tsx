@@ -50,6 +50,7 @@ import {
   getBenchmarkRunDetail,
   listBenchmarkRuns,
 } from "../api/benchmark-api";
+import { formatMetricValue, isRatioScore } from "../lib/compare-metrics";
 import { GraphDialog } from "./benchmark-graph-dialog";
 import { useBenchmarkRuntimeStore } from "../stores/benchmark-runtime-store";
 
@@ -74,20 +75,10 @@ function isDisplayMetric(m: { name: string }): boolean {
   return true;
 }
 
-function formatMetricValue(m: BenchmarkRunMetric): string {
-  if (m.score >= 0 && m.score <= 1) {
-    return (m.score * 100).toFixed(1);
-  }
-  if (Number.isInteger(m.score)) {
-    return String(m.score);
-  }
-  return m.score.toFixed(m.score < 1 ? 4 : 1);
-}
-
 function formatStderr(m: BenchmarkRunMetric): string | null {
   const err = m.stderr != null ? Number.parseFloat(m.stderr) : Number.NaN;
   if (!Number.isFinite(err)) return null;
-  return m.score >= 0 && m.score <= 1 ? (err * 100).toFixed(1) : String(Number(err.toPrecision(4)));
+  return isRatioScore(m) ? (err * 100).toFixed(1) : String(Number(err.toPrecision(4)));
 }
 
 function getDefaultScore(run: BenchmarkRunSummary): number | null {
@@ -247,7 +238,7 @@ function RunCard({
                 className="text-ui-10 font-mono"
               >
                 {m.name}: {formatMetricValue(m)}
-                {m.score >= 0 && m.score <= 1 ? "%" : ""}
+                {isRatioScore(m) ? "%" : ""}
               </Badge>
             ))}
         </div>
@@ -424,7 +415,7 @@ function RunDetailView({
                   <span className="text-muted-foreground/70">{m.name}:</span>
                   <span className={scoreColor(m.score)}>
                     {formatMetricValue(m)}
-                    {m.score >= 0 && m.score <= 1 ? "%" : ""}
+                    {isRatioScore(m) ? "%" : ""}
                   </span>
                   {formatStderr(m) && (
                     <span className="text-muted-foreground/50">
@@ -537,7 +528,7 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
               <span className="text-muted-foreground/70">{m.name}:</span>
               <span className={scoreColor(m.score)}>
                 {formatMetricValue(m)}
-                {m.score >= 0 && m.score <= 1 ? "%" : ""}
+                {isRatioScore(m) ? "%" : ""}
               </span>
               {formatStderr(m) && (
                 <span className="text-muted-foreground/50">±{formatStderr(m)}</span>

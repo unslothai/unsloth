@@ -50,4 +50,7 @@ test("compare table and graph run list use the shared unit-aware formatter", () 
   const graph = read("benchmark-graph-dialog.tsx");
   assert.doesNotMatch(graph, /function formatMetricValue/);
   assert.match(graph, /formatMetricWithUnit\(metric\)/);
+  const history = read("benchmark-history-panel.tsx");
+  assert.doesNotMatch(history, /function formatMetricValue/);
+  assert.doesNotMatch(history, /m\.score >= 0 && m\.score <= 1 \? "%"/);
 });
