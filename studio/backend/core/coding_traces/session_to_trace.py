@@ -54,6 +54,9 @@ _STOP_LABELS = {
 # resolveSystemPromptVariables in frontend/src/features/chat/api/chat-adapter.ts.
 _PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
 
+# fromThreadMessageLike in @assistant-ui/core keeps only these assistant images.
+_DATA_IMAGE = re.compile(r"data:image/(png|jpeg|jpg|gif|webp);base64,.*", re.DOTALL)
+
 
 def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
@@ -151,20 +154,37 @@ def _branch(
     if dropped:
         note = f"Left out {dropped} saved message(s) not on the selected branch"
         warnings.append(TraceWarning("other_branches_dropped", note))
-    return chain
+    return _legacy_load(chain, messages)
+
+
+def _legacy_load(chain: list[dict], messages: list[dict]) -> list[dict]:
+    """With no parentId on any row, the UI loads through fromArray, whose fromThreadMessageLike
+    drops blank text and reasoning and non-data-URL images from assistant turns."""
+    if any(m.get("parentId") is not None for m in messages):
+        return chain  # repository.import keeps every part
+    return [
+        {**m, "content": [p for p in m["content"] if not _legacy_dropped(p)]}
+        if m.get("role") != "user" and isinstance(m.get("content"), list)
+        else m
+        for m in chain
+    ]
+
+
+def _legacy_dropped(part: object) -> bool:
+    kind = part.get("type") if isinstance(part, dict) else None
+    if kind in ("text", "reasoning"):
+        return not str(part.get("text") or "").strip()
+    return kind == "image" and not _DATA_IMAGE.fullmatch(str(part.get("image") or ""))
 
 
 def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessage]:
     out: list[TraceMessage] = []
     call_ids: set[str] = set()
-    imaged: list[TraceMessage] = []
     for message in chain:
         start = len(out)
         kept = _convert_row(message, out, call_ids, warnings)
         _clear_stopped_reasoning(message, out[start:], kept)
-        # The UI still sends a user turn whose only content is an image (hasReplayContent).
-        imaged += [m for m in kept if m.role == "user"]
-    return _replayable(out, imaged)
+    return _replayable(out)
 
 
 def _convert_row(
@@ -314,19 +334,15 @@ def _clear_stopped_reasoning(
                 m.reasoning = ""  # shouldReplayAssistantReasoning: the text check is untrimmed
 
 
-def _replayable(out: list[TraceMessage], imaged: list[TraceMessage]) -> list[TraceMessage]:
+def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
     for m in out:
         if m.role == "assistant":
             m.text = _sanitised_assistant_text(m.text)
-    # hasReplayContent trims assistant text; a user's text is sent as it is.
+    # toOpenAIMessages sends every user turn, even an empty one; hasReplayContent trims the rest.
     return [
         m
         for m in out
-        if (m.text.strip() if m.role == "assistant" else m.text)
-        or m.reasoning
-        or m.tool_calls
-        or m.role == "tool"
-        or any(m is i for i in imaged)
+        if m.role in ("user", "tool") or m.text.strip() or m.reasoning or m.tool_calls
     ]
 
 
@@ -513,11 +529,11 @@ def session_to_trace(
     chain = _branch(messages, head_id, warnings)
     for message in chain:
         content = message.get("content")
-        if isinstance(content, str) and content:
-            note = "Dropped string content; the UI loads it as an empty text part"
-            warnings.append(TraceWarning("string_content_dropped", note, message["id"]))
+        if content and not isinstance(content, list):
+            note = "Dropped content that is not a list; the UI loads it as an empty text part"
+            warnings.append(TraceWarning("non_list_content_dropped", note, message["id"]))
     trace_messages = _convert(_prune(chain), warnings)
-    if not trace_messages:
+    if not any(m.role != "user" or m.text for m in trace_messages):
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")
     if not any(m.role == "user" for m in trace_messages):
         warnings.append(TraceWarning("no_user_message", "The branch has no user message"))

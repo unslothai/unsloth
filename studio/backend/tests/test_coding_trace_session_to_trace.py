@@ -421,7 +421,7 @@ def test_user_attachments_are_model_input():
     assert _codes(trace).count("unsupported_part") == 1
 
 
-def test_image_only_user_turn_stays_and_string_content_warns_once():
+def test_empty_user_turns_stay_and_string_content_warns_once():
     rows = [
         _row("u1", "user", _text("hi"), None, 1),
         _row("a1", "assistant", _text("ok"), "u1", 2),
@@ -435,8 +435,9 @@ def test_image_only_user_turn_stays_and_string_content_warns_once():
         ("assistant", "ok"),
         ("user", ""),
         ("assistant", "a cat"),
+        ("user", ""),
     ]
-    assert _codes(trace) == ["string_content_dropped", "unsupported_part"]
+    assert _codes(trace) == ["non_list_content_dropped", "unsupported_part"]
 
 
 @pytest.mark.parametrize("content", ["hello", {"type": "text", "text": "hello"}, None])
@@ -444,7 +445,42 @@ def test_user_content_that_is_not_a_list_sends_only_attachments(content):
     row = _row("u", "user", content, None, 1, attachments = [{"content": _text("ATT")}])
     trace = session_to_trace({"id": "t"}, [row])
     assert [m.text for m in trace.messages] == ["\nATT"]
-    assert _codes(trace) == (["string_content_dropped"] if content == "hello" else [])
+    assert _codes(trace) == (["non_list_content_dropped"] if content else [])
+
+
+def test_audio_only_user_turn_stays_between_replies():
+    audio = [{"type": "file", "content": [{"type": "audio", "audio": "x"}]}]
+    rows = [
+        _row("u1", "user", _text("hi"), None, 1),
+        _row("a1", "assistant", _text("ok"), "u1", 2),
+        _row("u2", "user", _text(""), "a1", 3, attachments = audio),
+        _row("a2", "assistant", _text("heard"), "u2", 4),
+    ]
+    trace = session_to_trace({"id": "t"}, rows)
+    assert _shape(trace) == [
+        ("user", "hi"),
+        ("assistant", "ok"),
+        ("user", ""),
+        ("assistant", "heard"),
+    ]
+
+
+@pytest.mark.parametrize("parent", [None, "u1"])
+def test_legacy_threads_drop_blank_assistant_parts(parent):
+    blank = [{"type": "reasoning", "text": " "}, {"type": "image", "image": "https://x/y.png"}]
+    joined = _text("A") + _text("  ") + _text("B")
+    rows = [
+        _row("u1", "user", _text("hi"), None, 1),
+        _row("a1", "assistant", blank, "u1" if parent else None, 2),
+        _row("u2", "user", _text("again"), "a1" if parent else None, 3),
+        _row("a2", "assistant", joined, "u2" if parent else None, 4),
+    ]
+    trace = session_to_trace({"id": "t"}, rows)
+    # fromArray (no parentId anywhere) drops the blank parts, so a1 is abandoned with u1.
+    expected = [("user", "again"), ("assistant", "A\nB")]
+    if parent:
+        expected = [("user", "hi"), ("assistant", ""), ("user", "again"), ("assistant", "A\n  \nB")]
+    assert _shape(trace) == expected
 
 
 def test_infinite_args_text_falls_back_to_args():
