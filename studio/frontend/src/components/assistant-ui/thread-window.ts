@@ -1,29 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Sliding mount window for a long thread: only rows near the reader are mounted, and spacers
-// sized from measured heights (or an estimate until a row has rendered once) stand in for the
-// rest. Pure: the DOM reads and the React commit live in progressive-messages.tsx.
+// Sliding mount window maths; the DOM and React glue is progressive-messages.tsx.
 
-/**
- * Rows `[start, end)` are mounted. So are `pins`: rows outside that range the reader is still
- * working in (focus, an open edit, playing media), which stay mounted where they are however far
- * the window moves. Ascending.
- */
+/** `pins` (ascending): rows outside `[start, end)` the reader is working in, kept where they are. */
 export type RowWindow = { start: number; end: number; pins?: readonly number[] };
 
-/** Rows are mounted this far past each viewport edge. */
 export const WINDOW_REACH_PX = 2000;
-/** A mounted row unmounts once it is this far past a viewport edge; the gap to REACH is hysteresis. */
+/** Unmount distance; the gap to REACH is hysteresis. */
 export const WINDOW_KEEP_PX = 4000;
-/** Rows a thread opens with at most; the first step sizes the window by pixels. */
 export const WINDOW_INITIAL_ROWS = 16;
-/**
- * A thread is windowed once it is this tall, whatever its message count: an agent chat is often
- * a few turns of very long replies. Under it the whole thread mounts, as a short chat always has.
- */
+/** By height, not count: an agent chat is often a few turns of very long replies. */
 export const WINDOW_MIN_TOTAL_PX = 40_000;
-/** With fewer messages there is no row to leave out worth the bookkeeping. */
 export const WINDOW_MIN_ROWS = 8;
 
 export const worthWindowing = (count: number, totalPx: number): boolean =>
@@ -32,30 +20,25 @@ export const worthWindowing = (count: number, totalPx: number): boolean =>
 export type RowMeta = {
   id: string;
   role: string;
-  /** Lines the message is expected to render; only its proportion to height matters. */
+  /** Expected rendered lines; only its proportion to height matters. */
   weight: number;
-  /** False for a message that renders no row (system prompts, a prompt being edited elsewhere). */
   renders: boolean;
 };
 
-/** Height of a row before its first line: padding, the action bar, the gap to the next row. */
+/** Padding, action bar and gap: a row's height before its first line. */
 const BASE_PX: Record<string, number> = { user: 96, assistant: 72 };
 const DEFAULT_BASE_PX = 72;
-/** What a line adds until a row has been measured: prose line height at the default size. */
 const PRIOR_PX_PER_LINE = 24;
-/** Lines the prior counts for, so the first measured rows outweigh it. */
 const PRIOR_LINES = 8;
 const MIN_ROW_PX = 24;
-/** A source line wraps at about this many characters in the chat column. */
 const CHARS_PER_LINE = 90;
-/** A tool call or reasoning block renders collapsed: a header of about two lines. */
+/** Tool calls and reasoning render collapsed. */
 const COLLAPSED_PART_LINES = 2;
 const MEDIA_PART_LINES = 12;
 
 type Part = { type?: string; text?: string };
 
-/** Lines a text renders: one per source line, more where a long one wraps. Counting lines and
- *  not characters is what keeps code (many short lines) from being estimated as a paragraph. */
+/** Lines, not characters: code (many short lines) must not be estimated as a paragraph. */
 function textLines(text: string): number {
   let lines = 0;
   let from = 0;
@@ -68,8 +51,6 @@ function textLines(text: string): number {
   }
 }
 
-/** Proportional to how tall the message renders: the lines of its text, plus a fixed share per
- *  tool call or reasoning block (both render collapsed) and per image. Sources are inline badges. */
 export function messageWeight(content: readonly Part[] | undefined): number {
   if (!content) return 0;
   let weight = 0;
@@ -84,15 +65,12 @@ export function messageWeight(content: readonly Part[] | undefined): number {
 type Density = { lines: number; px: number };
 
 /**
- * Heights by message id. A row that has rendered keeps the height it had when last measured; one
- * that has not is estimated as a base plus its lines times the px a line has taken in the rows
- * measured so far (per role), starting from a prior. A ratio of sums and not a fitted line: the
- * rows measured first are the few at the tail, often alike, and a line through them is undefined.
+ * Measured heights by message id; an unmeasured row is estimated from px per line seen so far per
+ * role. A ratio of sums, not a fitted line: the first rows measured are alike, so a fit is undefined.
  */
 export class RowHeights {
   private measured = new Map<string, number>();
   private densities = new Map<string, Density>();
-  /** What each measured row added to its role's density, so a re-measure replaces it. */
   private counted = new Map<string, { role: string; lines: number; px: number }>();
   private width = 0;
 
@@ -142,7 +120,6 @@ export class RowHeights {
   }
 }
 
-/** `win` holding `pins` (ascending): those inside the thread and outside `[start, end)`. */
 export function withPins(win: RowWindow, pins: readonly number[], count: number): RowWindow {
   const kept = pins.filter(
     (index) => index >= 0 && index < count && (index < win.start || index >= win.end),
@@ -152,16 +129,12 @@ export function withPins(win: RowWindow, pins: readonly number[], count: number)
     : { start: win.start, end: win.end };
 }
 
-/**
- * A stretch of the thread as it is laid out: a mounted row, or a spacer standing in for rows
- * `[from, to)`. The `top` and `bottom` spacers sit against the window; a `gap` separates pinned
- * rows from each other and from the ends of the thread.
- */
+/** A mounted row, or a spacer for rows `[from, to)`; a `gap` spacer separates pinned rows. */
 export type ThreadSlot =
   | { kind: "row"; index: number }
   | { kind: "spacer"; name: "top" | "bottom" | "gap"; from: number; to: number };
 
-/** The thread in document order. A full mount still has its two spacers, standing in for nothing. */
+/** Document order. A full mount still has its two (empty) spacers. */
 export function threadSlots(win: RowWindow | null, count: number): ThreadSlot[] {
   const start = win == null ? 0 : Math.max(0, Math.min(win.start, count));
   const end = win == null ? count : Math.max(start, Math.min(win.end, count));
@@ -190,8 +163,7 @@ export function threadSlots(win: RowWindow | null, count: number): ThreadSlot[] 
   return slots;
 }
 
-/** The rows the spacers against the window stand for: `[topFrom, start)` and `[end, bottomTo)`.
- *  The whole thread on either side, unless a pinned row is mounted there. */
+/** `[topFrom, start)` and `[end, bottomTo)`: up to the nearest pin on each side. */
 export function spacerRows(win: RowWindow, count: number): { topFrom: number; bottomTo: number } {
   const start = Math.max(0, Math.min(win.start, count));
   const end = Math.max(start, Math.min(win.end, count));
@@ -204,7 +176,6 @@ export function spacerRows(win: RowWindow, count: number): { topFrom: number; bo
   return { topFrom, bottomTo };
 }
 
-/** Heights of the rows the spacers before and after the window stand for. */
 export function spacerHeights(
   heights: RowHeights,
   metas: readonly RowMeta[],
@@ -222,8 +193,7 @@ export function spacerHeights(
   return { top, bottom };
 }
 
-/** The window after the thread's length changed: one that reached the tail follows it, and one
- *  past a shorter thread is clamped (null when nothing of it is left). */
+/** A window at the tail follows it; one past a shorter thread is clamped (null if nothing is left). */
 export function followCount(win: RowWindow, previous: number, count: number): RowWindow | null {
   if (win.start >= count) return null;
   const end = win.end >= previous || win.end > count ? count : win.end;
@@ -231,7 +201,6 @@ export function followCount(win: RowWindow, previous: number, count: number): Ro
   return sameWindow(next, win) ? win : next;
 }
 
-/** The window a thread opens with: enough of the tail to cover the reach, by estimated height. */
 export function initialRowWindow(
   count: number,
   heightOf: (index: number) => number,
@@ -254,34 +223,27 @@ export function initialRowWindow(
   return { start, end: count };
 }
 
-/** A mounted row's box, in px from the viewport's top edge. */
+/** Px from the viewport's top edge. */
 export type MountedRow = { index: number; top: number; bottom: number };
 
 export type SlideInput = {
   win: RowWindow;
   count: number;
-  /** The window's mounted rows in document order (not its pins). */
+  /** Not its pins. */
   rows: readonly MountedRow[];
   viewHeight: number;
-  /** Top of the thread (its first spacer), in px from the viewport's top edge. */
   threadTop: number;
-  /** Px the leading spacer carries beyond its rows' heights (see the glue's slack). */
+  /** Px the leading spacer carries beyond its rows' heights. */
   slack: number;
   heightOf: (index: number) => number;
-  /** Rows mounted per commit at most; a commit is paid on the main thread. */
   maxStep: number;
-  /** False keeps every mounted row (a selection, a held pointer). */
   trim: boolean;
   reach?: number;
   keep?: number;
 };
 
-/**
- * The window the reader's position asks for: extend towards whichever edge is within reach of the
- * viewport, drop rows past the keep distance, and re-centre when the viewport sits in a spacer
- * (a scrollbar drag or a jump outran the window). Pins are the caller's: the rows this leaves
- * out are unmounted unless the caller pins them.
- */
+/** Extend toward an edge within reach, drop rows past keep, re-centre when the viewport is in a
+ *  spacer. Pins are the caller's. */
 export function planSlide(input: SlideInput): RowWindow {
   const { win, count, rows, viewHeight, heightOf, maxStep } = input;
   const reach = input.reach ?? WINDOW_REACH_PX;
@@ -293,9 +255,8 @@ export function planSlide(input: SlideInput): RowWindow {
   const last = rows[rows.length - 1];
 
   if (first && last) {
-    // The viewport left the mounted rows behind by more than the keep distance: nothing mounted
-    // is worth keeping, so open a fresh window at the row the offset lands on. Walked from the
-    // first row by the heights the spacers are sized from, which is where the row will be put.
+    // A jump outran the window: open a fresh one where the offset lands, walked by the heights
+    // the spacers are sized from.
     const above = first.top - viewHeight;
     const below = -last.bottom;
     if (above > keep || below > keep) {
@@ -364,16 +325,10 @@ export function planSlide(input: SlideInput): RowWindow {
   return { start, end };
 }
 
-/** Estimated height one pass of a full mount adds at most: about what a commit can lay out
- *  without holding input for long, however few rows that is. */
 export const FILL_BUDGET_PX = 20_000;
 
-/**
- * Widen both ways, a row at a time on alternate sides, by up to `chunk` rows each way and
- * `budgetPx` of estimated height in all, but always by one row; null once the window covers the
- * thread. The budget is what bounds a pass over very long replies, where `chunk` of them is
- * seconds of layout; short messages still go `chunk` at a time.
- */
+/** Widen both ways by up to `chunk` rows each and `budgetPx` in all (one row at least), so a pass
+ *  over very long replies is not seconds of layout. Null once the window covers the thread. */
 export function planFill(
   win: RowWindow,
   count: number,
@@ -408,10 +363,7 @@ export function planFill(
   return { start, end };
 }
 
-/**
- * The window to re-open over a fully mounted thread, or null when the thread is short or too
- * little would unmount to be worth a commit.
- */
+/** Null when the thread is short or too little would unmount to be worth a commit. */
 export function planEngage(
   rows: readonly MountedRow[],
   count: number,
@@ -449,7 +401,6 @@ function samePins(a: readonly number[] = [], b: readonly number[] = []): boolean
   return a.length === b.length && a.every((pin, at) => pin === b[at]);
 }
 
-/** Rows a tail window may grow by to reach the prompt it answers. */
 export const TAIL_TURN_MAX_ROWS = 4;
 
 /** A tail window also holds the last prompt: a reply taller than the keep distance would drop it. */
@@ -467,11 +418,7 @@ export const sameWindow = (a: RowWindow | null, b: RowWindow | null): boolean =>
   a === b ||
   (a != null && b != null && a.start === b.start && a.end === b.end && samePins(a.pins, b.pins));
 
-/**
- * Where the leading spacer must end up so the reader's anchor does not move: the spacer takes the
- * shift, and only what it cannot take (it would go negative, or the window reached the first row
- * and it must be zero) is left for a scroll correction.
- */
+/** The leading spacer takes an anchor shift; only what it cannot take is left for scrollTop. */
 export function absorbShift(
   spacerPx: number,
   shiftPx: number,
