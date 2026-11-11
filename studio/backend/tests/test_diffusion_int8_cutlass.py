@@ -34,6 +34,8 @@ def _clean(monkeypatch):
     cut._LOAD_ERROR[0] = None
     g8._CUT_PLAN.clear()
     g8._CUT_FAMILY.clear()
+    g8._CUT_RACES.clear()
+    g8._CUT_DONE.clear()
     yield
     monkeypatch.undo()
     cut.library.cache_clear()
@@ -394,3 +396,32 @@ def test_launch_records_into_a_cuda_graph(real_lib):
     assert torch.equal(
         y.view(torch.int16), cut.reference(a, w, xs, ws, None, out).view(torch.int16)
     )
+
+
+def test_a_later_load_plans_only_its_new_shapes(monkeypatch):
+    class _W:
+        def __init__(self, n, k):
+            self.qdata = torch.zeros(n, k, dtype = torch.int8)
+            self.scale = torch.ones(n, 1, dtype = torch.bfloat16)
+
+    def _rec(n, k):
+        return (torch.nn.Linear(k, n, bias = False), ("v2", None, None, _W(n, k)))
+
+    a, b = _rec(64, 32), _rec(128, 64)
+    key_a = g8._cut_key(64, 32, torch.float32, torch.bfloat16, False)
+    key_b = g8._cut_key(128, 64, torch.float32, torch.bfloat16, False)
+    table = {"ck": {repr(key_a): {"512": 1, "4096": 1}, repr(key_b): {"512": 2, "4096": 2}}}
+    monkeypatch.setattr(g8, "cutlass_wanted", lambda cap: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 0))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(cut, "probed_tiles", lambda index: (1, 2))
+    monkeypatch.setattr(g8, "_cut_cache_key", lambda index: "ck")
+    monkeypatch.setattr(g8, "_cut_cache_read", lambda: table)
+    monkeypatch.setattr(g8, "_cut_cache_write", lambda t: None)
+    monkeypatch.setattr(g8, "_xs_dtype", lambda *a_: torch.float32)
+    races = []
+    monkeypatch.setattr(cut, "race", lambda *a_, **k_: races.append(a_) or {"tile": None})
+
+    assert set(g8._cutlass_plan(0, [a], True)) == {key_a}
+    assert set(g8._cutlass_plan(0, [a, b], True)) == {key_a, key_b}
+    assert g8._CUT_PLAN[0][key_b] == {512: 2, 4096: 2} and not races

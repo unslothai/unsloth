@@ -524,6 +524,8 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
 _CUT_PLAN: dict = {}
 _CUT_FAMILY: dict = {}
 _CUT_RACES: dict = {}
+# index -> every shape key already planned (winners and losers), so a later load races only new shapes
+_CUT_DONE: dict = {}
 _CUT_LARGE_M = 1024
 _CUT_CACHE_NAME = "diffusion_int8_cutlass_race.json"
 _CUT_CACHE_MAX = 512
@@ -691,10 +693,9 @@ def _cutlass_plan(
             return {}
     except Exception:  # noqa: BLE001
         return {}
-    if index in _CUT_PLAN:
-        return _CUT_PLAN[index]
-    plan: dict = {}
-    races: dict = {}
+    done = _CUT_DONE.setdefault(index, set())
+    plan: dict = dict(_CUT_PLAN.get(index) or {})
+    races: dict = dict(_CUT_RACES.get(index) or {})
     try:
         if not cut.probed_tiles(index):
             _CUT_PLAN[index] = {}
@@ -720,8 +721,9 @@ def _cutlass_plan(
                 xs_dt = _xs_dtype(kind, weight, k, dev, act)
                 seen[("xs", kind, k)] = xs_dt
             key = _cut_key(n, k, xs_dt, ws.dtype, bias is not None)
-            if key in plan:
+            if key in plan or key in done:
                 continue
+            done.add(key)
             skey = repr(key)
             hit = cached.get(skey)
             if isinstance(hit, dict) and all(
@@ -762,7 +764,7 @@ def _cutlass_plan(
             logger.info(
                 "diffusion.int8_gemm: prebuilt CUTLASS race failed on cuda:%d (%s)", index, exc
             )
-        plan = {}
+        plan = dict(_CUT_PLAN.get(index) or {})
     plan = {k_: v for k_, v in plan.items() if any(t is not None for t in v.values())}
     _CUT_PLAN[index] = plan
     _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
