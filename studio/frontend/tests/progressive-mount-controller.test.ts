@@ -74,6 +74,31 @@ test("scroll keys, touch momentum, and composer input outside the viewport pause
   assert.equal(activity.blocked(false), false);
 });
 
+test("a stream's own autoscroll does not hold a full mount off, only the reader's momentum does", () => {
+  const viewport = new EventTarget();
+  let time = 1000;
+  const activity = watchProgressiveScroll(viewport, () => time);
+  const send = (type: string) => viewport.dispatchEvent(new Event(type));
+  // Inside the opening pause, scrolls with no input behind them (the autoscroll) do not renew it.
+  for (let at = 0; at < 10; at += 1) {
+    time += 100;
+    send("scroll");
+  }
+  assert.equal(activity.blocked(false), false);
+  // A fling: momentum scrolls keep the pause going for as long as they run, input or not.
+  send("touchmove");
+  for (let at = 0; at < 20; at += 1) {
+    time += 100;
+    send("scroll");
+    assert.equal(activity.blocked(false), true);
+  }
+  // Past the momentum allowance, scrolling alone lets the full mount go on.
+  time += 1100;
+  send("scroll");
+  time += 301;
+  assert.equal(activity.blocked(false), false);
+});
+
 const sample = (viewportOffset: number, scrollTop: number, maxScrollTop = 1_000_000) => ({
   viewportOffset,
   scrollTop,

@@ -118,7 +118,7 @@ test("rows the reader is working in are not unmounted", () => {
   assert.match(pinned, /row\.contains\(document\.activeElement\)/);
   assert.match(pinned, /row\.querySelector\(PINNED_CONTENT\)/);
   assert.match(pinned, /if \(!media\.paused\) return true;/);
-  assert.match(GLUE, /const PINNED_CONTENT = "textarea, \[contenteditable=true\]";/);
+  assert.match(GLUE, /const PINNED_CONTENT = "textarea, \[contenteditable=true\], iframe";/);
   assert.match(pinned, /if \(selection\?\.intersectsNode\(row\)\) return true;/);
   // A selection reaching into the thread, or a held pointer, holds every mounted row.
   assert.match(GLUE, /trim: \(trim = heldSelection\(viewport\) === null && !inputPointerHeld\(\)\),/);

@@ -73,7 +73,8 @@ const FIND_FLAG = "data-find-bar-open";
 // Not `[data-role]`: a prompt being edited renders as an EditComposer, which has no role.
 const ROW_SELECTOR = "[data-message-id]";
 const SPACER_ATTRIBUTE = "data-thread-spacer";
-const PINNED_CONTENT = "textarea, [contenteditable=true]";
+// An iframe (an inline MCP app) holds state and a bridge port a remount would lose.
+const PINNED_CONTENT = "textarea, [contenteditable=true], iframe";
 
 /** Module-level: consumers are imperative DOM readers, and a thread can mount twice (Compare). */
 interface ActiveWindow {

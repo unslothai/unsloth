@@ -8,24 +8,31 @@
 export const CHUNK_MESSAGES = 32;
 
 /** Leave native scrolling and its momentum alone before changing the scroll range. */
+/** How long scrolling may run on after the reader's last input (touch momentum lasts seconds). */
+const MOMENTUM_MS = 3000;
+
 export function watchProgressiveScroll(
   viewport: EventTarget,
   now: () => number = () => performance.now(),
 ) {
   // Let the initial tail paint before starting background work.
   let resumeAt = now() + 300;
+  let inputAt = Number.NEGATIVE_INFINITY;
   const pause = () => { resumeAt = now() + 300; };
-  const onScroll = () => { if (now() < resumeAt) pause(); };
+  const onInput = () => { inputAt = now(); pause(); };
+  // A scroll extends a pause only near the reader's input (momentum runs on after a fling);
+  // the autoscroll following a stream would otherwise hold a full mount off until it ends.
+  const onScroll = () => { if (now() < resumeAt && now() - inputAt < MOMENTUM_MS) pause(); };
   const onKey = (event: Event) => {
     const key = event as KeyboardEvent;
     if (key.defaultPrevented || !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(key.key)) return;
     const target = key.target as HTMLElement | null;
     if (target?.isContentEditable || target?.closest?.("input, textarea, select")) return;
-    pause();
+    onInput();
   };
-  const listeners = { wheel: pause, touchmove: pause, keydown: onKey, scroll: onScroll };
+  const listeners = { wheel: onInput, touchmove: onInput, keydown: onKey, scroll: onScroll };
   const inputTarget = (viewport as HTMLElement).ownerDocument ?? viewport;
-  inputTarget.addEventListener("pointerdown", pause, { capture: true, passive: true });
+  inputTarget.addEventListener("pointerdown", onInput, { capture: true, passive: true });
   inputTarget.addEventListener("beforeinput", pause, { capture: true, passive: true });
   inputTarget.addEventListener("compositionupdate", pause, { capture: true, passive: true });
   for (const [type, listener] of Object.entries(listeners)) {
@@ -37,7 +44,7 @@ export function watchProgressiveScroll(
       return now() < resumeAt;
     },
     dispose() {
-      inputTarget.removeEventListener("pointerdown", pause, { capture: true });
+      inputTarget.removeEventListener("pointerdown", onInput, { capture: true });
       inputTarget.removeEventListener("beforeinput", pause, { capture: true });
       inputTarget.removeEventListener("compositionupdate", pause, { capture: true });
       for (const [type, listener] of Object.entries(listeners)) {

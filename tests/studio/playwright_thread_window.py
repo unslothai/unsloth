@@ -28,6 +28,7 @@ holds every row mounted). Structure only, never a timing:
      `data-role`) keeps its editor, focus and draft across jumps to both ends.
  12. The leading spacer carries the KaTeX equation numbers of the rows it stands for, so the
      page-wide numbering of the mounted rows is the fully mounted thread's.
+ 13. A code block's own word wrap survives its row being unmounted and mounted again.
 """
 
 from __future__ import annotations
@@ -645,6 +646,25 @@ def check_engine(playwright, engine: str) -> None:
             f"the leading spacer counts {spacer['increment']!r} for rows that render {expected} "
             f"numbered equations: equation numbers below it shift with the window"
         )
+
+        # 13. A block's wrap choice outlives its row.
+        page, errors = open_thread(context, LARGE, windowed = True, seed = numbered)
+        row = page.evaluate(
+            "() => window.__threadWeight.lastAssistantMessage().getAttribute('data-message-id')"
+        )
+        wrap = f'[data-message-id="{row}"] button[aria-label="Enable word wrap"], [data-message-id="{row}"] button[aria-label="Disable word wrap"]'
+        before = page.locator(wrap).first.get_attribute("aria-pressed")
+        page.locator(wrap).first.click()
+        page.evaluate("() => window.__threadWeight.composer()?.focus()")
+        for top in (0, -1):
+            page.evaluate(JUMP, top)
+            settle(page)
+            if top == 0:
+                assert page.locator(f'[data-message-id="{row}"]').count() == 0, "the row never left"
+        after = page.locator(wrap).first.get_attribute("aria-pressed")
+        assert before != after, f"a block's word wrap reset to {after} when its row came back"
+        assert not errors, errors
+        page.close()
         info(f"{engine}: ok " + json.dumps({"small": small["mounted"], "large": opened["mounted"]}))
     finally:
         browser.close()
