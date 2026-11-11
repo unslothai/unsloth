@@ -231,6 +231,11 @@ def test_a_changed_flm_setting_is_a_different_load(monkeypatch, resident, fields
     npu = _route_npu(_TEXT, resident_flm_args = resident)
     response = _load(monkeypatch, npu, **fields)
     assert response.status == expected
+    # The load response reports the settings the resident load runs with, as status does.
+    assert {
+        field: getattr(response, field)
+        for field in ("npu_power_mode", "npu_prefill_chunk_len", "npu_img_pre_resize")
+    } == flm_args_status(npu._loaded.flm_args)
     if expected == "loaded":
         assert npu.loads[-1][1] == build_flm_args(
             power_mode = fields.get("npu_power_mode"),

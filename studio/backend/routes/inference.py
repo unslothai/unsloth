@@ -18845,7 +18845,9 @@ async def _managed_engine_options(request, config, hf_token) -> dict:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
-def _npu_load_response(resident, status: str) -> LoadResponse:
+def _npu_load_response(resident, status: str, flm_args: Optional[str]) -> LoadResponse:
+    from core.inference.npu_flm_args import flm_args_status
+
     model = resident.model
     return LoadResponse(
         status = status,
@@ -18855,6 +18857,7 @@ def _npu_load_response(resident, status: str) -> LoadResponse:
         is_vision = model.vision,
         inference = load_inference_config(model.id),
         context_length = resident.context_length,
+        **flm_args_status(flm_args),
         max_context_length = model.max_context_length,
         native_context_length = model.max_context_length,
         context_length_enforced = True,
@@ -18941,7 +18944,7 @@ async def _load_npu_model(
         and _npu_flm_args(request, resident.model, requested_ctx) == _npu_loaded_flm_args(npu)
     ):
         account_access.join_resident("chat")
-        return _npu_load_response(resident, "already_loaded")
+        return _npu_load_response(resident, "already_loaded", _npu_loaded_flm_args(npu))
     try:
         model = await asyncio.to_thread(npu.loadable_model, model_id)
     except NpuError as exc:
@@ -19023,7 +19026,7 @@ async def _load_npu_model(
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     account_access.publish_resident("chat", request.model_path)
     api_monitor.record_lifecycle(event = "load", model = request.model_path)
-    return _npu_load_response(resident, "loaded")
+    return _npu_load_response(resident, "loaded", _npu_loaded_flm_args(npu))
 
 
 async def _load_model_impl(
