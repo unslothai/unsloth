@@ -55,7 +55,6 @@ from core.flows.world import (
     validate_chat,
     validate_director,
     validate_npc_reply,
-    talk_summary,
     world_schema,
 )
 
