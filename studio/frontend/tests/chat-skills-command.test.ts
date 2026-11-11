@@ -33,7 +33,6 @@ test("the composer opens the Skills dialog instead of sending /skills", () => {
   const intercept = submit.search(
     /!hasAttachments &&\s*!hasPendingAudio &&\s*isSkillsCommand\(composerText\)/,
   );
-  // Ahead of the model and queue gates, so it works with no model loaded and is never sent.
   assert.ok(intercept > 0);
   assert.ok(intercept < submit.indexOf("if (disabled || shouldBlockSend())"));
   assert.ok(intercept < submit.indexOf("interceptSend(event)"));
