@@ -71,7 +71,7 @@ def client_ip(request) -> str:
             cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
             if cf:
                 return cf
-        if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+        if names_a_forwarded_client(request):
             return f"relayed:{peer}"
     return peer or "_unknown"
 
