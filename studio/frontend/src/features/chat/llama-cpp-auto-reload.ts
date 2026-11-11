@@ -59,7 +59,8 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
         apiKey: provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id),
       });
       const live = autoReloadConnections().find((p) => p.id === provider.id);
-      if (!stopped && live && endpoint(live) === endpoint(provider)) {
+      // A restarting server lists nothing; keep the last known windows like the catalog below.
+      if (!stopped && listed.length > 0 && live && endpoint(live) === endpoint(provider)) {
         learnServedContextWindows(provider.id, listed, provider.baseUrl);
       }
       const catalog = [...new Set(listed.map((m) => m.id.trim()).filter(Boolean))];

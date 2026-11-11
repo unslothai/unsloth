@@ -333,6 +333,11 @@ test("a saved self-hosted connection learns its window without opening its edito
     readSrc("features/chat/llama-cpp-auto-reload.ts"),
     /learnServedContextWindows\(provider\.id, listed, provider\.baseUrl\)/,
   );
+  // A restarting llama-server lists nothing for a poll; that must not erase the known windows.
+  assert.match(
+    readSrc("features/chat/llama-cpp-auto-reload.ts"),
+    /listed\.length > 0 && live && endpoint\(live\) === endpoint\(provider\)/,
+  );
 });
 
 test("the run settings learner lists a saved vLLM connection once per endpoint and learns its window", async () => {
