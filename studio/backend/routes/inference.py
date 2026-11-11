@@ -49799,6 +49799,41 @@ def _decode_external_images(encoded: list) -> list:
     return images
 
 
+# decode_b64_image's per-side limit, restated so a connection run does not import the diffusion stack.
+_EXTERNAL_EDIT_MAX_SIDE = 4096
+
+
+def _external_edit_uploads(sources: list[str]) -> list[bytes]:
+    """Each base64 or data-URL source as an upright, flattened PNG (sd-server ignores EXIF orientation)."""
+    from PIL import Image
+
+    uploads = []
+    for source in sources:
+        raw = source.strip()
+        if raw.startswith("data:"):
+            raw = raw.partition(",")[2]
+        try:
+            image = Image.open(io.BytesIO(base64.b64decode(raw)))
+            width, height = image.size
+            # Checked from the header so a huge image is never loaded.
+            oversized = max(width, height) > _EXTERNAL_EDIT_MAX_SIDE
+            if not oversized:
+                image.load()
+                image = _mcp_flattened_rgb(exif_upright(image))
+        except Exception as exc:  # noqa: BLE001 - surfaced as a 400
+            # Not str(exc): Pillow's message includes the buffer's repr.
+            raise ValueError("Could not decode the image to edit.") from exc
+        if oversized:
+            raise ValueError(
+                f"Image is too large ({width}x{height}); maximum is "
+                f"{_EXTERNAL_EDIT_MAX_SIDE}px per side."
+            )
+        buffer = io.BytesIO()
+        image.save(buffer, format = "PNG", compress_level = 1)
+        uploads.append(buffer.getvalue())
+    return uploads
+
+
 async def _external_image_generation(
     body: DiffusionGenerateRequest, request: Request
 ) -> DiffusionGenerateResponse:
@@ -49817,9 +49852,10 @@ async def _external_image_generation(
             status_code = 400,
             detail = "model is required when using an external image connection.",
         )
+    editing = body.workflow == "edit"
     if (
-        body.init_image
-        or body.reference_images
+        (not editing and (body.init_image or body.reference_images or body.workflow))
+        or body.reference_resolution is not None
         or body.loras
         or body.controlnet
         or body.prompts
@@ -49828,7 +49864,6 @@ async def _external_image_generation(
         or body.mask_image
         or body.strength is not None
         or body.upscale is not None
-        or body.workflow
         or body.localized_edit
         or body.sampler
         or body.schedule_type
@@ -49844,7 +49879,12 @@ async def _external_image_generation(
     ):
         raise HTTPException(
             status_code = 400,
-            detail = "An external image connection only supports text to image.",
+            detail = "An external image connection only supports text to image and image edits.",
+        )
+    if editing and not body.init_image:
+        raise HTTPException(
+            status_code = 400,
+            detail = "init_image is required to edit an image through an external connection.",
         )
 
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
@@ -49900,10 +49940,25 @@ async def _external_image_generation(
         **_saved_extra_headers_kwarg(current, request),
         timeout = 600.0,
     )
+
+    async def _edit() -> list[str]:
+        try:
+            uploads = await asyncio.to_thread(
+                _external_edit_uploads, [body.init_image, *(body.reference_images or [])]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+        return await client.create_image_edits(
+            prompt = body.prompt, model = external_model, n = body.batch_size, images = uploads
+        )
+
     owner = current_account_id()
     generation_started = time.perf_counter()
+    # Source normalization runs inside the tracked task, so a Stop during it cancels the edit.
     task = asyncio.create_task(
-        client.create_images(
+        _edit()
+        if editing
+        else client.create_images(
             prompt = body.prompt,
             model = external_model,
             n = body.batch_size,
@@ -49929,7 +49984,8 @@ async def _external_image_generation(
             raise HTTPException(
                 status_code = 502,
                 detail = (
-                    f"Image endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+                    f"Image {'edit ' if editing else ''}endpoint returned HTTP "
+                    f"{exc.response.status_code}: {exc.response.text[:300]}"
                 ),
             ) from exc
         except httpx.HTTPError as exc:
@@ -49967,6 +50023,16 @@ async def _external_image_generation(
                             "model": external_model,
                             "model_kind": "connection",
                             "created_at": created_at,
+                            # Recorded like a local edit, so Restore reopens Edit.
+                            **(
+                                {
+                                    "workflow": "edit",
+                                    "reference_image_count": len(body.reference_images or [])
+                                    or None,
+                                }
+                                if editing
+                                else {}
+                            ),
                         },
                     )
                     for index, image in enumerate(images)

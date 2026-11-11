@@ -7370,6 +7370,32 @@ class ExternalProviderClient:
         response.raise_for_status()
         return [item["b64_json"] for item in response.json()["data"]]
 
+    async def create_image_edits(
+        self, prompt: str, model: str, n: int, images: list[bytes]
+    ) -> list[str]:
+        """POST PNGs to /images/edits. No ``size`` is sent: the server picks the output size."""
+        field = "image" if len(images) == 1 else "image[]"
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _client().post(
+            _append_provider_path(self.base_url, "/images/edits"),
+            headers = headers,
+            # llama-swap routes on the `model` form field.
+            data = {
+                "model": model,
+                "prompt": prompt,
+                "n": str(n),
+                "response_format": "b64_json",
+            },
+            files = [
+                (field, (f"image-{index}.png", image, "image/png"))
+                for index, image in enumerate(images, start = 1)
+            ],
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return [item["b64_json"] for item in response.json()["data"]]
+
     async def create_transcription(
         self,
         audio: bytes,
