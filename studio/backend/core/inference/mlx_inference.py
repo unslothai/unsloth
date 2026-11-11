@@ -6949,24 +6949,30 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        images = None,
     ) -> int:
         """Prompt tokens this model would receive for these messages. Renders and tokenizes exactly
         as generation does."""
         if self._model is None:
             raise RuntimeError("No model loaded")
-        full_messages = self._with_system_prompt(messages, system_prompt)
+        images = list(images or ())
+        full_messages = self._conversation_to_render(messages, system_prompt, images or None)
+        if len(images) > 1 and not self._multi_image_marker:
+            # Generation serves the newest picture alone.
+            full_messages = list(full_messages)
+            trim_image_turns(full_messages, images, limit = 1, keep = (len(images) - 1,))
 
         if self._is_vlm:
-            # images=None: an image anywhere makes the structured-item check raise.
+            # One image per marker, else the structured-item check raises.
             prompt, _target, _markers = self._render_vlm_prompt(
                 full_messages,
-                None,
+                images or None,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
-            return self._count_prompt_tokens(prompt)
+            return self._count_prompt_tokens(prompt, images)
 
         render_result = self._render_text_prompt(
             full_messages,
@@ -6975,6 +6981,17 @@ class MLXInferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
         )
+        if images and self._reads_vision_input():
+            from unsloth_zoo.mlx.loader import _mlx_lm_image_inputs
+
+            # The ids generation embeds, without running the vision tower.
+            expanded = _mlx_lm_image_inputs(
+                self._tokenizer,
+                self._tokenizer._unsloth_image_processor,
+                images,
+                render_result.prompt,
+            )
+            return len(expanded["input_ids"][0])
         return self._count_prompt_tokens(render_result.prompt)
 
     def generate_chat_response(

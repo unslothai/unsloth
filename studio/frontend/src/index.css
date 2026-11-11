@@ -1808,14 +1808,21 @@ html.pointer-cursors
 	cursor: pointer;
 }
 
-/* JS-driven springs are handled via MotionConfig in the provider. */
+/* JS-driven springs are handled via MotionConfig in the provider.
+   0s, not 0.01ms, on `*`: transition-property defaults to all, so a nonzero duration transitions
+   every property of every element (Chromium: thousands of no-op scrollbar-color transitions per
+   restyle in a long chat). Class-declared transitions and the overlays native-view.ts follows
+   keep 0.01ms so transitionend still fires. */
 html.force-reduced-motion *,
 html.force-reduced-motion *::before,
 html.force-reduced-motion *::after {
 	animation-duration: 0.01ms !important;
 	animation-iteration-count: 1 !important;
-	transition-duration: 0.01ms !important;
+	transition-duration: 0s !important;
 	scroll-behavior: auto !important;
+}
+html.force-reduced-motion :is([class*="transition"], [data-sonner-toast], .find-bar-surface, [data-native-clickable], [data-native-rail] > *) {
+	transition-duration: 0.01ms !important;
 }
 
 /* Same popup exemption as the OS-level media block below. */
@@ -5650,8 +5657,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	html:not(.force-motion) *::after {
 		animation-duration: 0.01ms !important;
 		animation-iteration-count: 1 !important;
-		transition-duration: 0.01ms !important;
+		transition-duration: 0s !important;
 		scroll-behavior: auto !important;
+	}
+	/* Same split as the html.force-reduced-motion block above. */
+	html:not(.force-motion) :is([class*="transition"], [data-sonner-toast], .find-bar-surface, [data-native-clickable], [data-native-rail] > *) {
+		transition-duration: 0.01ms !important;
 	}
 
 	/* The duration above turns on transitions everywhere (transition-property defaults to all), so
@@ -6429,6 +6440,17 @@ html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]
 /* No second wash on the welcome view: it crushes mid-tones into a dark horizon. */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {
   background: transparent;
+}
+/* The header is see-through here, so the thread fades out under it; the side layers keep the scrollbar's strip. */
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *),
+html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
+  mask-image:
+    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem)),
+    linear-gradient(#000, #000),
+    linear-gradient(#000, #000);
+  mask-size: 100% 100%, var(--thread-scrollbar-gutter, 10px) 100%, var(--thread-scrollbar-gutter, 10px) 100%;
+  mask-position: 0 0, left, right;
+  mask-repeat: no-repeat;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting {
   position: relative;

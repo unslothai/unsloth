@@ -290,6 +290,22 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // MiniMax-H3-Image: text to image and edits with 1-16 <Picture N> references. Size is the released bf16 total
+    // (the backend quantizes at load); tiers are measured offloaded runs. CUDA / ROCm only.
+    canonicalId: "MiniMaxAI/MiniMax-H3-Image",
+    displayName: "MiniMax-H3-Image",
+    description: "Text-to-image and image editing with up to 16 pictures",
+    scope: "image",
+    artifacts: [
+      bf16Pipeline("MiniMaxAI/MiniMax-H3-Image", 126, {
+        offloadFitTiers: [
+          { gpuGb: 22, systemRamGb: 48, requiresDenseQuant: true },
+          { gpuGb: 39, systemRamGb: 64, requiresDenseQuant: true },
+        ],
+      }),
+    ],
+  },
+  {
     // MOSS-Image SFT: the bf16 row keeps the OpenMOSS id but fetches from unsloth/MOSS-Image-SFT-FP8 (upstream
     // folders mirrored byte-identical). GGUFs are sd.cpp only, VAE and tokenizer from the same repo.
     canonicalId: "OpenMOSS-Team/MOSS-Image-SFT",

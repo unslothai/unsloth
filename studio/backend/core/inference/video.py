@@ -327,9 +327,9 @@ from .video_minimax_h3 import (
     h3_transformer_task,
 )
 from .video_minimax_h3_te import (
-    H3_TE_QUANT_DEFAULT,
-    H3_TE_QUANT_REPO,
+    h3_te_auto_scheme,
     h3_te_quant_scheme,
+    h3_te_quant_source,
     h3_te_resident_gb,
 )
 from .video_encode import encode_x264
@@ -6411,7 +6411,9 @@ class VideoBackend:
                     # under the assembly, while the base snapshot that no longer carries a dense encoder is still coming
                     # down). Same registration the native H3 path makes for its companions.
                     if h3_te_scheme:
-                        self._loading.asset_repos = self._loading.asset_repos + (H3_TE_QUANT_REPO,)
+                        self._loading.asset_repos = self._loading.asset_repos + (
+                            h3_te_quant_source(h3_te_scheme),
+                        )
                     # The same for a hosted pre-cast encoder (unsloth/Wan2.2-TI2V-5B-FP8 for every Wan base).
                     te_repos = tuple(
                         src.location
@@ -7539,10 +7541,10 @@ class VideoBackend:
             if _h3_precision_pinned_dense(text_encoder_quant):
                 return None
             if _h3_precision_unset(text_encoder_quant):
+                auto = h3_te_auto_scheme()
                 return (
-                    H3_TE_QUANT_DEFAULT
-                    if h3_te_quant_scheme(H3_TE_QUANT_DEFAULT) is not None
-                    and _h3_auto_precision_ok(target)
+                    auto
+                    if h3_te_quant_scheme(auto) is not None and _h3_auto_precision_ok(target)
                     else None
                 )
             return h3_te_quant_scheme(normalize_te_quant(text_encoder_quant))
@@ -7928,10 +7930,9 @@ class VideoBackend:
         filename = h3_te_quant_filename(scheme)
         if filename is None:
             return None, []
-        # Cached check uses the fetch repo; size comes from the mirror, as the repack may be gone.
         repo = h3_te_quant_source(scheme)
         try:
-            info = api.model_info(H3_TE_QUANT_REPO, files_metadata = True)
+            info = api.model_info(repo, files_metadata = True)
         except Exception:  # noqa: BLE001 -- an unavailable artifact keeps the dense encoder
             return None, []
         files = [
@@ -12124,7 +12125,7 @@ class VideoBackend:
                 pipe.update_components(text_encoder = text_encoder)
                 text_encoder_quant_engaged = te_scheme
                 text_encoder_quant_reason = (
-                    f"hosted quantized {te_scheme} conditioner ({H3_TE_QUANT_REPO})"
+                    f"hosted quantized {te_scheme} conditioner ({h3_te_quant_source(te_scheme)})"
                 )
                 logger.info(
                     "video.text_encoder_quant: %s quantized conditioner seeded for %s",

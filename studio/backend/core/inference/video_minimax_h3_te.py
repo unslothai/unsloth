@@ -20,24 +20,38 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
 
 # Not H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror, the conditioner did not.
 H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
-# Hosted quantized conditioners, by ``text_encoder_quant`` scheme. nvfp4
-# (``qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors``, 14.61 GiB) is deliberately absent: it is an AWQ NVFP4 layout with
-# two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
-# its own numerical verification. The table is the one place to add it.
+H3_TE_INT8 = "int8"
+# Hosted Q4_K_M GGUF: 18.2 GB vs 27.2, but 5.8% hidden_states[50] error vs bf16 against int8's 1.6%.
+H3_TE_Q4_K_M = "q4_k_m"
 H3_TE_QUANT_FILES: dict[str, str] = {
     # Built from MiniMaxAI text_encoder/ with quantize_convrot_int8_weight; reads the official path
     # only.
-    "int8": "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    H3_TE_INT8: "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    H3_TE_Q4_K_M: "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
 }
+H3_TE_QUANT_SOURCES: dict[str, str] = {
+    H3_TE_INT8: H3_TE_QUANT_REPO,
+    H3_TE_Q4_K_M: "unsloth/MiniMax-H3-GGUF",
+}
+# Never a request value: an explicit "nvfp4" keeps meaning the W4A4 runtime cast (refused for H3).
+H3_TE_AUTO_ONLY_SCHEMES = frozenset({H3_TE_Q4_K_M})
 
 # Default int8: 27 GB over 50 layers vs 66.7 GB dense 64-layer; transformers has no early exit.
 # Not an INT8 GEMM: ConvRot dequantizes then F.linear; the win is bytes moved, not math.
-H3_TE_QUANT_DEFAULT = "int8"
+H3_TE_QUANT_DEFAULT = H3_TE_INT8
 
-# From Hub safetensors headers; the load is storage-faithful, so file size == resident size.
 H3_TE_QUANT_RESIDENT_GB: dict[str, float] = {
-    "int8": 27.2,
+    H3_TE_INT8: 27.2,
+    H3_TE_Q4_K_M: 18.3,
 }
+
+H3_TE_QUANT_AUTO_ENV = "UNSLOTH_H3_TE_QUANT_AUTO"
+# Conditioner + denoiser + VAEs + headroom; below it int8 is re-read every prompt (L4: 47-53 s vs 19.7 s).
+H3_TE_INT8_HOST_SET_GB = 27.2 + 20.3 + 11.1 + 5.9
+H3_TE_LOW_RAM_SCHEME = H3_TE_Q4_K_M
+# Off until the q4_k_m accuracy trade (LPIPS 0.08-0.30 vs int8) is accepted.
+H3_TE_LOW_RAM_AUTO = False
+
 
 # Must equal MiniMaxH3ModularPipeline.text_encoder_layer.
 H3_TE_READ_LAYER = 50
@@ -61,16 +75,48 @@ def h3_te_quant_scheme(mode: Optional[str]) -> Optional[str]:
     return normalized if normalized in H3_TE_QUANT_FILES else None
 
 
+def h3_te_auto_scheme(
+    *, host_capacity_gb: Optional[float] = None, denoiser_gb: Optional[float] = None
+) -> str:
+    """Scheme for an unset request. Uses total (cgroup-capped) RAM, not free RAM, so plan, staging and assembly agree."""
+    import os
+
+    forced = h3_te_quant_scheme(os.environ.get(H3_TE_QUANT_AUTO_ENV))
+    if forced is not None:
+        return forced
+    if not H3_TE_LOW_RAM_AUTO:
+        return H3_TE_INT8
+    try:
+        if host_capacity_gb is None:
+            from utils.host_memory import host_ram_capacity_mib
+
+            mib = host_ram_capacity_mib()
+            if mib is None:
+                return H3_TE_INT8
+            host_capacity_gb = mib * (1 << 20) / 1e9
+        need = H3_TE_INT8_HOST_SET_GB
+        if denoiser_gb is not None:
+            need = need - 20.3 + float(denoiser_gb)
+        if float(host_capacity_gb) >= need:
+            return H3_TE_INT8
+        # Without gguf the 4-bit load falls back to the 66.7 GB dense encoder.
+        import importlib.util
+
+        if H3_TE_LOW_RAM_SCHEME == H3_TE_Q4_K_M and importlib.util.find_spec("gguf") is None:
+            return H3_TE_INT8
+        return H3_TE_LOW_RAM_SCHEME
+    except Exception:  # noqa: BLE001 -- no reading, no change
+        return H3_TE_INT8
+
+
 def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
     """The hosted checkpoint's path inside ``H3_TE_QUANT_REPO`` for ``scheme``, or None."""
     return H3_TE_QUANT_FILES.get(scheme or "")
 
 
 def h3_te_quant_source(scheme: Optional[str]) -> str:
-    """The repo to fetch the hosted quantized conditioner for ``scheme`` from: always ``H3_TE_QUANT_REPO``. A video
-    load never reads from the Comfy-Org repack, not even bytes an older install cached under it."""
-    del scheme
-    return H3_TE_QUANT_REPO
+    """Unsloth repo for ``scheme``; never a third-party repack, even one an older install cached."""
+    return H3_TE_QUANT_SOURCES.get(h3_te_quant_scheme(scheme) or "", H3_TE_QUANT_REPO)
 
 
 def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
@@ -273,60 +319,68 @@ def load_h3_quantized_text_encoder(
         language_model.norm = torch.nn.Identity()
         encoder.lm_head = torch.nn.Identity()
 
-        int8_linear_cls = _int8_convrot_linear_class()
-        with safe_open(path, framework = "pt", device = "cpu") as handle:
-            names = set(handle.keys())
-            quantized = {
-                name[: -len(_SCALE_SUFFIX)] for name in names if name.endswith(_SCALE_SUFFIX)
-            }
-            # Swap before loading so the state dict lands on int8 buffers, not bf16 Linears.
-            for prefix in sorted(quantized):
-                quant_key = prefix + _QUANT_SUFFIX
-                if quant_key not in names:
-                    raise ValueError(f"{prefix}: quantized weight with no {_QUANT_SUFFIX} metadata")
-                _validate_comfy_quant(handle.get_tensor(quant_key), prefix)
-                target = h3_te_remap_key(prefix)
-                parent_path, _, leaf = target.rpartition(".")
-                parent = encoder.get_submodule(parent_path)
-                existing = getattr(parent, leaf)
-                slice_ = handle.get_slice(prefix + ".weight")
-                out_features, in_features = slice_.get_shape()
-                if (existing.out_features, existing.in_features) != (out_features, in_features):
-                    raise ValueError(
-                        f"{target}: checkpoint shape {(out_features, in_features)} != model "
-                        f"{(existing.out_features, existing.in_features)}"
+        gguf_weights: set = set()
+        if filename.endswith(".gguf"):
+            state_dict, quantized, gguf_weights = _h3_gguf_state(encoder, path, dtype)
+        else:
+            int8_linear_cls = _int8_convrot_linear_class()
+            with safe_open(path, framework = "pt", device = "cpu") as handle:
+                names = set(handle.keys())
+                quantized = {
+                    name[: -len(_SCALE_SUFFIX)] for name in names if name.endswith(_SCALE_SUFFIX)
+                }
+                # Swap before loading so the state dict lands on int8 buffers, not bf16 Linears.
+                for prefix in sorted(quantized):
+                    quant_key = prefix + _QUANT_SUFFIX
+                    if quant_key not in names:
+                        raise ValueError(
+                            f"{prefix}: quantized weight with no {_QUANT_SUFFIX} metadata"
+                        )
+                    _validate_comfy_quant(handle.get_tensor(quant_key), prefix)
+                    target = h3_te_remap_key(prefix)
+                    parent_path, _, leaf = target.rpartition(".")
+                    parent = encoder.get_submodule(parent_path)
+                    existing = getattr(parent, leaf)
+                    slice_ = handle.get_slice(prefix + ".weight")
+                    out_features, in_features = slice_.get_shape()
+                    if (existing.out_features, existing.in_features) != (out_features, in_features):
+                        raise ValueError(
+                            f"{target}: checkpoint shape {(out_features, in_features)} != model "
+                            f"{(existing.out_features, existing.in_features)}"
+                        )
+                    setattr(
+                        parent,
+                        leaf,
+                        int8_linear_cls(
+                            in_features,
+                            out_features,
+                            bias = (prefix + ".bias") in names,
+                            group_size = H3_TE_CONVROT_GROUP,
+                        ),
                     )
-                setattr(
-                    parent,
-                    leaf,
-                    int8_linear_cls(
-                        in_features,
-                        out_features,
-                        bias = (prefix + ".bias") in names,
-                        group_size = H3_TE_CONVROT_GROUP,
-                    ),
-                )
 
-            # INT8 payload and fp32 scales keep their dtypes; dense parts follow the compute dtype.
-            state_dict = {}
-            for name in names:
-                if name.endswith(_QUANT_SUFFIX):
-                    continue
-                tensor = handle.get_tensor(name)
-                if (
-                    not name.endswith(_SCALE_SUFFIX)
-                    and tensor.is_floating_point()
-                    and dtype is not None
-                ):
-                    tensor = tensor.to(dtype)
-                state_dict[h3_te_remap_key(name)] = tensor
+                # INT8 payload and fp32 scales keep their dtypes; dense parts follow the compute dtype.
+                state_dict = {}
+                for name in names:
+                    if name.endswith(_QUANT_SUFFIX):
+                        continue
+                    tensor = handle.get_tensor(name)
+                    if (
+                        not name.endswith(_SCALE_SUFFIX)
+                        and tensor.is_floating_point()
+                        and dtype is not None
+                    ):
+                        tensor = tensor.to(dtype)
+                    state_dict[h3_te_remap_key(name)] = tensor
 
         # strict=True does not prove quantization: a dense re-upload loads as bf16 Linear and breaks
         # the VRAM preflight, so no plain Linear may survive in the decoder stack.
+        from .diffusion_weight_only_quant import is_dense_linear
+
         dense = [
             name
             for name, module in language_model.layers.named_modules()
-            if isinstance(module, torch.nn.Linear)
+            if is_dense_linear(module)
         ]
         if dense:
             raise ValueError(
@@ -334,7 +388,13 @@ def load_h3_quantized_text_encoder(
                 f"e.g. {', '.join(sorted(dense)[:3])}; it is not the {scheme} checkpoint this "
                 f"path budgets for"
             )
-        encoder.load_state_dict(state_dict, strict = True, assign = True)
+        # GGUF projections were swapped in whole, so only their weights may be missing.
+        missing, unexpected = encoder.load_state_dict(state_dict, strict = False, assign = True)
+        if unexpected or set(missing) - gguf_weights:
+            raise ValueError(
+                f"the {scheme} checkpoint does not match the conditioner: missing "
+                f"{sorted(set(missing) - gguf_weights)[:3]}, unexpected {sorted(unexpected)[:3]}"
+            )
         # A dense CPU rebuild is the 51 GB allocation this path avoids, so leftover meta is a refusal.
         stranded = _meta_tensor_names(encoder)
         if stranded:
@@ -346,7 +406,7 @@ def load_h3_quantized_text_encoder(
         if logger is not None:
             logger.info(
                 "video.h3_te_quant: loaded the hosted %s conditioner (%s, %s), "
-                "%d ConvRot INT8 projections over %d decoder layers",
+                "%d quantized layers over %d decoder layers",
                 scheme,
                 source_repo,
                 filename,
@@ -363,6 +423,69 @@ def load_h3_quantized_text_encoder(
                 exc,
             )
         return None
+
+
+def _model_shape(module: Any, name: str) -> Optional[tuple]:
+    owner_path, _, leaf = name.rpartition(".")
+    try:
+        owner = module.get_submodule(owner_path) if owner_path else module
+    except AttributeError:
+        return None
+    tensor = owner._parameters.get(leaf)
+    if tensor is None:
+        tensor = owner._buffers.get(leaf)
+    return None if tensor is None else tuple(tensor.shape)
+
+
+def _h3_gguf_state(encoder: Any, path: str, dtype: Any) -> tuple[dict, set, set]:
+    """``(dense state dict, quantized layer names, swapped weight keys)``; quantized projections become ``GGUFLinear``."""
+    import math
+
+    import gguf
+    import torch
+
+    from .diffusion_weight_only_quant import gguf_tensor, gguf_weight_only_linear
+
+    reader = gguf.GGUFReader(path)
+    state: dict = {}
+    quantized: set = set()
+    swapped: set = set()
+    for t in reader.tensors:
+        target = h3_te_remap_key(t.name)
+        tensor, qtype = gguf_tensor(t)
+        if qtype is None:
+            if tensor.is_floating_point() and dtype is not None:
+                tensor = tensor.to(dtype)
+            # GGUF caps tensors at 4-D: the 5-D patch conv is stored with its first two dims merged.
+            want = _model_shape(encoder, target)
+            if want is not None and tuple(tensor.shape) != want:
+                if tensor.numel() != math.prod(want) or len(tensor.shape) > len(want):
+                    raise ValueError(
+                        f"{t.name}: shape {tuple(tensor.shape)} cannot hold the model's {want}"
+                    )
+                tensor = tensor.reshape(want)
+            state[target] = tensor
+            continue
+        if not target.endswith(".weight"):
+            raise ValueError(f"{t.name}: a block-quantized tensor that is not a weight")
+        parent_path, _, leaf = target[: -len(".weight")].rpartition(".")
+        existing = getattr(encoder.get_submodule(parent_path), leaf)
+        if type(existing) is not torch.nn.Linear or existing.bias is not None:
+            raise ValueError(f"{target}: a quantized weight on a {type(existing).__name__}")
+        setattr(
+            encoder.get_submodule(parent_path),
+            leaf,
+            gguf_weight_only_linear(
+                tensor,
+                qtype,
+                in_features = existing.in_features,
+                out_features = existing.out_features,
+                compute_dtype = dtype or torch.bfloat16,
+            ),
+        )
+        quantized.add(target[: -len(".weight")])
+        swapped.add(target)
+    return state, quantized, swapped
 
 
 def _meta_tensor_names(module: Any) -> list[str]:

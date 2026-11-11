@@ -2978,11 +2978,11 @@ export const it = {
       showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
       showReplyTimesKeywords:
         "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
-      showGenerationDetails: "Info dettagliate su velocità e caricamento",
+      showGenerationDetails: "Info dettagliate sulla velocità",
       showGenerationDetailsDescription:
-        "Aggiunge alle letture dal vivo la velocità di lettura del prompt, il conteggio dei token e l'accettazione delle bozze, e mostra dove sono stati caricati i livelli del modello.",
+        "Aggiunge alle letture dal vivo la velocità di lettura del prompt, il conteggio dei token e l'accettazione delle bozze.",
       showGenerationDetailsKeywords:
-        "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "dettagli velocità token statistiche verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Statistiche di velocità e contesto",
       generationStatsUpdatesDescription:
         "In tempo reale conta i token al secondo e l'uso del contesto mentre una risposta è in streaming. Al termine li aggiorna quando ogni risposta finisce.",

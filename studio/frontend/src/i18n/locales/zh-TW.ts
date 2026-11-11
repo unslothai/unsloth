@@ -3138,11 +3138,11 @@ export const zhTW = {
       showReplyTimesDescription: "在每則回覆下方顯示其完成時間。",
       showReplyTimesKeywords:
         "時間戳記 時間 時鐘 日期 小時 完成 抵達 回覆 回應 訊息 timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "詳細速度與載入資訊",
+      showGenerationDetails: "詳細速度資訊",
       showGenerationDetailsDescription:
-        "在即時讀數中加入提示詞讀取速度、token 數和草稿採用率，並顯示模型各層載入在哪裡。",
+        "在即時讀數中加入提示詞讀取速度、token 數和草稿採用率。",
       showGenerationDetailsKeywords:
-        "詳細 開發人員 統計 速度 預填 解碼 層 卸載 專家 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "詳細 開發人員 統計 速度 預填 解碼 verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "速度與上下文統計",
       generationStatsUpdatesDescription:
         "即時模式在回覆串流輸出時統計每秒 token 數和上下文用量。完成後模式在每則回覆結束時更新。",
