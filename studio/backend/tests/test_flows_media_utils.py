@@ -461,3 +461,36 @@ def test_an_8_bit_wav_gap_is_silence_not_full_negative():
 
     with wave.open(io.BytesIO(concat_wav([clip(), clip()], 5))) as w:
         assert set(w.readframes(w.getnframes())) == {0x80}
+
+
+def test_join_audio_stops_reading_clips_once_over_the_limit(monkeypatch):
+    import io
+    import wave
+
+    import pytest
+
+    from core.flows.nodes import audio
+    from core.flows.registry import FlowNodeError
+
+    from .flows_player_fakes import FakeCtx, run
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(1000)
+        w.writeframes(b"\x00" * 2000)
+    clip = buf.getvalue()
+    reads = []
+
+    async def media_bytes(ctx, media):
+        reads.append(media["ref"])
+        return clip, "audio/wav"
+
+    monkeypatch.setattr(audio, "media_bytes", media_bytes)
+    monkeypatch.setattr(audio, "MAX_OUTPUT_BYTES", 3000)
+    clips = [{"kind": "audio", "ref": f"sha256:{i}"} for i in range(5)]
+    ctx = FakeCtx("audio.concat", inputs = {"clips": clips})
+    with pytest.raises(FlowNodeError, match = "over 1 GB"):
+        run(audio.concat(ctx))
+    assert len(reads) == 2
