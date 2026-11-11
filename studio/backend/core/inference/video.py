@@ -327,7 +327,6 @@ from .video_minimax_h3 import (
     h3_transformer_task,
 )
 from .video_minimax_h3_te import (
-    H3_TE_QUANT_REPO,
     h3_te_auto_scheme,
     h3_te_quant_scheme,
     h3_te_quant_source,
