@@ -485,3 +485,11 @@ test("on-device row menus open with the model's details", () => {
   );
   assert.match(menu, /details \? "w-60" : "w-48"/);
 });
+
+test("the details menu shows modalities with the Model Hub's coloured icons", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /<CapabilityGlyph capability=\{c\} \/>/);
+  assert.match(picker, /detectHubCapabilities\(undefined, task, id\)/);
+});

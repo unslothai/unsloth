@@ -37,6 +37,8 @@ import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
+  type Capability,
+  CapabilityGlyph,
   DELETABLE_LOCAL_SOURCES,
   HubFailureHint,
   OwnerAvatar,
@@ -44,6 +46,7 @@ import {
   TransportConflictDialog,
   deleteCachedModel,
   deleteLocalModel,
+  detectHubCapabilities,
   downloadManager,
   formatBytes,
   hfApiToken,
@@ -74,7 +77,6 @@ import {
   chatGgufFit,
   estimateQuantBytes,
   isMediaCatalogRepo,
-  detectCapabilities,
   isOverBudget,
   isRecommendableFormat,
   loadStampId,
@@ -785,6 +787,17 @@ const FORMAT_DOT: Partial<Record<FormatFilter, string>> = {
   npu: "bg-format-npu",
 };
 
+const CAPABILITY_ORDER: readonly Capability["key"][] = [
+  "vision",
+  "audio",
+  "reasoning",
+  "tools",
+  "code",
+];
+const SHOWN_CAPABILITIES: ReadonlySet<Capability["key"]> = new Set(
+  CAPABILITY_ORDER,
+);
+
 const FORMAT_NAME: Record<FormatTone, string> = {
   gguf: "GGUF",
   mlx: "MLX",
@@ -793,14 +806,18 @@ const FORMAT_NAME: Record<FormatTone, string> = {
 };
 
 /** What the ⋮ menu says about an on-device model, above its actions. */
-function ModelFacts({ facts }: { facts: readonly [string, string][] }) {
+function ModelFacts({ facts }: { facts: readonly [string, ReactNode][] }) {
   return (
     <dl className="flex flex-col gap-1 px-2.5 pt-1.5 pb-2 text-ui-12">
       {facts.map(([label, value]) => (
         <div key={label} className="flex items-baseline justify-between gap-3">
           <dt className="shrink-0 text-muted-foreground">{label}</dt>
-          <dd className="min-w-0 truncate text-right text-foreground">
-            {value}
+          <dd className="flex min-w-0 flex-wrap justify-end gap-x-2.5 gap-y-1 text-right text-foreground">
+            {typeof value === "string" ? (
+              <span className="min-w-0 truncate">{value}</span>
+            ) : (
+              value
+            )}
           </dd>
         </div>
       ))}
@@ -811,8 +828,8 @@ function ModelFacts({ facts }: { facts: readonly [string, string][] }) {
 function modelFacts(
   row: Row,
   onDisk: readonly GgufVariantDetail[],
-): [string, string][] {
-  const facts: [string, string][] = [];
+): [string, ReactNode][] {
+  const facts: [string, ReactNode][] = [];
   const format =
     row.kind === "npu" ? "NPU" : row.format ? FORMAT_NAME[row.format] : null;
   if (format) {
@@ -832,23 +849,35 @@ function modelFacts(
     facts.push(["Parameters", params]);
   }
   const task = row.gguf?.task ?? row.cached?.task ?? undefined;
-  const caps = detectCapabilities({
-    id: row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id,
-    pipelineTag: task ?? undefined,
-  });
-  const vision =
-    row.npu?.supports_vision ?? row.gguf?.has_vision ?? caps.vision;
-  const reasoning = row.npu?.supports_reasoning ?? caps.reasoning;
+  const id = row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id;
+  // The Model Hub's capability pills, kept to what a chat model takes in or does.
+  // A GGUF's projector or the NPU listing knows vision for sure; the name only guesses.
+  const vision = row.npu?.supports_vision ?? row.gguf?.has_vision;
+  const found = detectHubCapabilities(undefined, task, id).filter(
+    (c) =>
+      SHOWN_CAPABILITIES.has(c.key) &&
+      !(c.key === "vision" && vision === false),
+  );
+  const has = (key: Capability["key"]) => found.some((c) => c.key === key);
+  if (vision === true && !has("vision")) {
+    found.push({ key: "vision", label: "Vision" });
+  }
+  if (row.npu?.supports_reasoning && !has("reasoning")) {
+    found.push({ key: "reasoning", label: "Reasoning" });
+  }
+  found.sort(
+    (a, b) => CAPABILITY_ORDER.indexOf(a.key) - CAPABILITY_ORDER.indexOf(b.key),
+  );
   facts.push([
     "Supports",
-    [
-      "Text",
-      vision && "Vision",
-      caps.audio && "Audio",
-      reasoning && "Reasoning",
-    ]
-      .filter(Boolean)
-      .join(", "),
+    found.length > 0
+      ? found.map((c) => (
+          <span key={c.key} className="inline-flex items-center gap-1">
+            <CapabilityGlyph capability={c} />
+            {c.label}
+          </span>
+        ))
+      : "Text",
   ]);
   if (row.section) {
     facts.push(["From", SECTION_LABEL[row.section]]);

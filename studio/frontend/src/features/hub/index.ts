@@ -30,7 +30,9 @@ export {
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
-export type { CapabilityKey } from "./lib/model-capabilities";
+export type { Capability, CapabilityKey } from "./lib/model-capabilities";
+export { detectCapabilities as detectHubCapabilities } from "./lib/model-capabilities";
+export { CapabilityGlyph } from "./catalog/shared";
 export {
   HUB_CAPABILITY_FILTERS,
   type HubCapabilityFilter,
