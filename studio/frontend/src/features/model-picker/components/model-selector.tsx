@@ -8,6 +8,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Spinner } from "@/components/ui/spinner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
@@ -122,6 +123,7 @@ interface ModelSelectorProps {
   /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: (modelId?: string) => void;
+  ejecting?: boolean;
   onEjectAll?: () => void;
   loadedCount?: number;
   loadedNames?: string[];
@@ -176,6 +178,7 @@ function ModelSelectorTrigger({
   triggerLabelClassName,
   dataTour,
   onEject,
+  ejecting = false,
   loadedCount = 0,
   loadedNames,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
@@ -192,8 +195,10 @@ function ModelSelectorTrigger({
   triggerLabelClassName?: string;
   dataTour?: string;
   onEject?: () => void;
+  ejecting?: boolean;
   placeholder?: string;
 }) {
+  const unloading = isLoaded && ejecting;
   const severalLoaded = loadedCount > 1;
   const listsNames = severalLoaded && (loadedNames?.length ?? 0) > 1;
   const triggerTitle = listsNames
@@ -201,11 +206,13 @@ function ModelSelectorTrigger({
     : severalLoaded
       ? `${loadedCount} models loaded`
       : (currentModel?.name ?? placeholder);
-  const subtitle = listsNames
-    ? undefined
-    : severalLoaded
-      ? currentModel?.name
-      : currentModel?.description;
+  const subtitle = unloading
+    ? "Unloading…"
+    : listsNames
+      ? undefined
+      : severalLoaded
+        ? currentModel?.name
+        : currentModel?.description;
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -228,7 +235,18 @@ function ModelSelectorTrigger({
         )}
       >
         {isLoaded &&
-          (onEject ? (
+          (unloading ? (
+            <span
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+              className="-m-1 flex size-5 shrink-0 items-center justify-center"
+            >
+              <Spinner
+                className="size-3.5 text-muted-foreground"
+                label="Unloading model"
+              />
+            </span>
+          ) : onEject ? (
             // Mouse-only eject shortcut; keyboard and SR users use the "Eject model" button.
             // A span keeps it out of the button's content model; pointer-events-none on touch.
             <span
@@ -289,7 +307,7 @@ function ModelSelectorTrigger({
               </span>
             )}
           </span>
-          {!listsNames && currentModel?.descriptionSuffix && (
+          {!listsNames && !unloading && currentModel?.descriptionSuffix && (
             <span
               className={cn(
                 "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
@@ -784,7 +802,8 @@ export function ModelSelector({
   onConfigRequestAdopted,
   onValueChange,
   resolveDownloadFootprint,
-  onEject,
+  onEject: onEjectProp,
+  ejecting = false,
   onEjectAll,
   onFoldersChange,
   onModelsChange,
@@ -821,6 +840,7 @@ export function ModelSelector({
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
   const selected = value ?? uncontrolled;
+  const onEject = ejecting ? undefined : onEjectProp;
   // The chat model can be evicted by an image or video load while the pick survives.
   const isLoaded = selected !== "" && (loaded ?? true);
 
@@ -984,6 +1004,7 @@ export function ModelSelector({
         triggerLabelClassName={triggerLabelClassName}
         dataTour={triggerDataTour}
         onEject={onEject ? () => handleEject() : undefined}
+        ejecting={ejecting}
         loadedCount={loadedCount}
         loadedNames={loadedNames}
         placeholder={placeholder}

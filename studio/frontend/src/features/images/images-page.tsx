@@ -6257,6 +6257,7 @@ export function ImagesPage({
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}
+                ejecting={busy === "unloading"}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
