@@ -889,7 +889,7 @@ class _MarkdownRenderer(HTMLParser):
         self._link_heading_parts: list[str] = []
         self._emit_as_heading: bool = False
         self._replaying: bool = False
-        # Credited only at </a>: an <a> left open adopts body prose, which is not furniture.
+        # Credited only at </a> or a nested <a>: an <a> left open adopts body prose, which is not furniture.
         self._link_header_chars: int = 0
 
         self._list_stack: list[str] = []  # "ul" or "ol"
@@ -1710,6 +1710,11 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
+            # a nested <a> implicitly closes the open anchor, like its </a> arriving here
+            if self._in_link:
+                if self._header_stack:
+                    self._header_stack[-1].link_chars += self._link_header_chars
+                self._finish_link()
             self._link_href = attr_dict.get("href")
             self._link_text_parts = []
             self._link_heading_parts = []
