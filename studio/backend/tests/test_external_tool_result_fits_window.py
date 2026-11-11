@@ -45,7 +45,11 @@ def _sse(delta = None, finish = None) -> str:
     return "data: " + json.dumps({"choices": [choice]})
 
 
-def _call_turn(*call_ids, escaped = False):
+def _call_turn(
+    *call_ids,
+    escaped = False,
+    name = "web_search",
+):
     return [
         _sse(
             {
@@ -54,7 +58,7 @@ def _call_turn(*call_ids, escaped = False):
                         "index": index,
                         "id": call_id,
                         "function": {
-                            "name": "web_search",
+                            "name": name,
                             "arguments": json.dumps({"query": call_id}, ensure_ascii = escaped),
                         },
                     }
@@ -79,6 +83,7 @@ class FakeTransport:
 
     def stream(self, *, messages, tools, tool_choice, cancel_event):
         self.requests.append([dict(message) for message in messages])
+        self.tools = tools
         assert len(self.requests) <= 5, "loop never terminated"
         lines = self.turns.pop(0) if self.turns else [_DONE]
 
@@ -107,6 +112,7 @@ def _serves(window):
 def _forwarded(
     turns,
     history = (),
+    catalog = (WEB,),
     **run_kwargs,
 ):
     transport = turns if isinstance(turns, FakeTransport) else FakeTransport(turns)
@@ -121,7 +127,7 @@ def _forwarded(
                 **run_kwargs,
             ),
             policy = ToolLoopPolicy(
-                tools = [WEB],
+                tools = list(catalog),
                 max_calls = 25,
                 timeout = 300,
                 permission_mode = "off",
@@ -224,3 +230,30 @@ def test_non_ascii_call_arguments_do_not_use_up_the_result_room(monkeypatch, esc
     (result,) = _results(messages)
     assert result.startswith(reply[:200])
     assert estimate_messages_tokens_conservative(messages) < 4096
+
+
+def test_tool_schemas_found_by_search_count_against_the_result_room(monkeypatch):
+    from core.inference import tool_loop_controller as controller_mod
+
+    def _spec(name, description = ""):
+        return {
+            "type": "function",
+            "function": {**WEB["function"], "name": name, "description": description},
+        }
+
+    search = _spec("mcp_tool_search")
+    found = _spec("mcp__srv1__ping", "pings the server " * 300)
+    monkeypatch.setattr(controller_mod, "_mcp_tool_search_specs", lambda result: [found])
+    monkeypatch.setattr(controller_mod, "_mcp_tool_spec", lambda name: found)
+    monkeypatch.setattr(tools, "_web_search", lambda *a, **k: str(list(range(4000))))
+    transport = FakeTransport(
+        [_call_turn("s1", name = "mcp_tool_search"), _call_turn("c1"), _ANSWER_TURN]
+    )
+
+    messages = _forwarded(transport, catalog = (WEB, search), served_window = _serves(8192))
+
+    assert found in transport.tools
+    result = _results(messages)[-1]
+    rest = [message for message in messages if message.get("content") != result]
+    prompt = estimate_messages_tokens_conservative(rest + transport.tools)
+    assert len(result) + prompt < 8192

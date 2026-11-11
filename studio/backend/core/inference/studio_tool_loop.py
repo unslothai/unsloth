@@ -2173,7 +2173,7 @@ async def _stream_with_studio_tools(
                         window,
                         run.max_tokens,
                         getattr(transport, "sent_messages", None) or conversation,
-                        tools,
+                        controller.active_tools(include_deferred = True),
                         turn,
                         calls,
                         tool_messages,
