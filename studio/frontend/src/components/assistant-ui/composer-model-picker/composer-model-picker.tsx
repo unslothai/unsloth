@@ -125,9 +125,6 @@ import {
   DashboardCircleIcon,
   Download01Icon,
   Flag01Icon,
-  TextFontIcon,
-  Video01Icon,
-  VolumeHighIcon,
   FlashIcon,
   InformationCircleIcon,
   LaptopIcon,
@@ -137,7 +134,7 @@ import {
   Settings02Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Fragment,
@@ -796,9 +793,6 @@ const CAPABILITY_ORDER: readonly Capability["key"][] = [
 const SHOWN_CAPABILITIES: ReadonlySet<Capability["key"]> = new Set(
   CAPABILITY_ORDER,
 );
-const VIDEO_TONE = "text-[oklch(0.5_0.1_55)] dark:text-[oklch(0.78_0.09_60)]";
-const SPEECH_TONE =
-  "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]";
 
 const FORMAT_NAME: Record<FormatTone, string> = {
   gguf: "GGUF",
@@ -881,25 +875,23 @@ function modelFacts(
       {label}
     </span>
   );
-  const icon = (glyph: IconSvgElement, tone: string) => (
-    <HugeiconsIcon
-      icon={glyph}
-      strokeWidth={1.75}
-      className={cn("size-3 shrink-0", tone)}
-    />
+  // Every glyph is the Model Hub's own: text as Conversational, video as its Video gen slate,
+  // speech as Audio.
+  const hub = (key: Capability["key"], label: string) => (
+    <CapabilityGlyph capability={{ key, label }} />
   );
   const pill = (c: Capability) =>
     mark(c.key, <CapabilityGlyph capability={c} />, c.label);
   const inputs = new Set<Capability["key"]>(["vision", "audio"]);
   // What it reads, what it says, then what it does.
   const supports: ReactNode[] = [
-    mark("text", icon(TextFontIcon, "text-muted-foreground"), "Text"),
+    mark("text", hub("conversational", "Text"), "Text"),
     ...found.filter((c) => inputs.has(c.key)).map(pill),
     ...(known?.hasVideoInput
-      ? [mark("video", icon(Video01Icon, VIDEO_TONE), "Video")]
+      ? [mark("video", hub("diffusion", "Video gen"), "Video")]
       : []),
     ...(known?.speaks
-      ? [mark("speech", icon(VolumeHighIcon, SPEECH_TONE), "Speech")]
+      ? [mark("speech", hub("audio", "Speech"), "Speech")]
       : []),
     ...found.filter((c) => !inputs.has(c.key)).map(pill),
   ];
@@ -3240,8 +3232,7 @@ export function ComposerModelPicker({
           <>
             <div
               ref={settingsRef}
-              // The footer bleeds by the same variables.
-              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[var(--run-settings-pad-r)] pb-4.5 pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(16px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(16px*var(--ui-space-scale,1))]"
+              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7"
             >
               <ModelConfigPage
                 key={modelConfigInstanceKey(
