@@ -322,7 +322,8 @@ def _seq_len_rope(module) -> bool:
 def _rope_over_full_positions(module) -> None:
     """dynamic / longrope pick their frequencies from max(position_ids) + 1 (transformers'
     dynamic_rope_update): under Ulysses each rank would see only its shard and rotate with its own
-    frequencies. Compute cos / sin over the whole sequence's positions and keep this rank's slice."""
+    frequencies. Append the sequence's largest position so the frequencies match, then drop it: the
+    tables stay this rank's size (slicing full-sequence tables would keep them alive for backward)."""
     forward = module.forward
 
     @functools.wraps(forward)
@@ -337,8 +338,12 @@ def _rope_over_full_positions(module) -> None:
         ):
             return forward(x, position_ids, *args, **kwargs)
         start = manager.mesh.get_local_rank() * local
-        cos, sin = forward(x, full.to(position_ids.device), *args, **kwargs)
-        return cos[:, start : start + local], sin[:, start : start + local]
+        full = full.to(position_ids.device)
+        ids = torch.cat(
+            [full[:, start : start + local], full.max().expand(full.shape[0], 1)], dim = -1
+        )
+        cos, sin = forward(x, ids, *args, **kwargs)
+        return cos[:, :local], sin[:, :local]
 
     module.forward = full_positions_forward
     module._unsloth_cp_full_rope = True
