@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { type Ref, useMemo } from "react";
 import { EDIT_DIFF_MAX_WORDS, countChanges, diffSegments } from "../edit-diff";
 import { EDIT_COPY } from "../edit-policy";
+import { FieldLabel } from "./field";
 
 export function TranscriptDiffEditor({
   value,
@@ -41,12 +42,12 @@ export function TranscriptDiffEditor({
   return (
     <div className="grid gap-1.5" data-tour={dataTour}>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <label
+        <FieldLabel
           htmlFor={id}
           className="whitespace-nowrap text-ui-13 font-medium text-foreground"
         >
           {EDIT_COPY.changesLabel}
-        </label>
+        </FieldLabel>
         <div className="flex shrink-0 items-center gap-1.5">
           {changes === null ? (
             <Badge variant="outline">Too long</Badge>

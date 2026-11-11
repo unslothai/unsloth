@@ -2,13 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
-import { fetchInt8PrefillAvailable } from "../api/int8-prefill";
+import { fetchPrefillOptionAvailable, type PrefillOption } from "../api/int8-prefill";
 
-export function useInt8PrefillAvailable(
+export function usePrefillOptionAvailable(
+  option: PrefillOption,
   modelPath: string | null,
   hfToken: string | null,
 ): boolean {
-  const key = modelPath == null ? null : `${modelPath}\n${hfToken ?? ""}`;
+  const key = modelPath == null ? null : `${option}\n${modelPath}\n${hfToken ?? ""}`;
   const [answer, setAnswer] = useState<{
     key: string;
     available: boolean;
@@ -18,7 +19,7 @@ export function useInt8PrefillAvailable(
       return;
     }
     const controller = new AbortController();
-    fetchInt8PrefillAvailable(modelPath, hfToken, controller.signal)
+    fetchPrefillOptionAvailable(option, modelPath, hfToken, controller.signal)
       .then((available) => {
         if (!controller.signal.aborted) {
           setAnswer({ key, available });
@@ -30,6 +31,6 @@ export function useInt8PrefillAvailable(
         }
       });
     return () => controller.abort();
-  }, [key, modelPath, hfToken]);
+  }, [key, option, modelPath, hfToken]);
   return answer != null && answer.key === key && answer.available;
 }

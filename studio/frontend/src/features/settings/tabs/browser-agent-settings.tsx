@@ -15,7 +15,7 @@ import {
 } from "@/features/browser";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
-import { Add01Icon, Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -146,7 +146,7 @@ function PermissionsTable() {
       description={t("browser.agentSettings.permissionsDescription")}
       action={
         <Button variant="outline" size="sm" onClick={() => setDraft("")} disabled={draft !== null}>
-          <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-4" />
+          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
           {t("browser.agentSettings.addSite")}
         </Button>
       }

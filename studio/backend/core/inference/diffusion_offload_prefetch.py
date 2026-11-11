@@ -1,24 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Event-fenced prefetch for a block-streamed denoiser's diffusers offload groups.
-
-diffusers fences its stream prefetch on the host (``stream.synchronize()`` per onload) and copies one group ahead.
-Here the compute stream waits on a per-group CUDA event instead, and up to ``depth`` streamed groups are copied ahead
-in the order the first forward recorded.
-
-A forward's first copies are queued at the first block's onload (behind a compute-stream event when the top-level
-group uploads on the compute stream): queued earlier they hold that upload back on the copy engine.
-
-Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
-freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
-Unpinned copies' temporary pinned staging is capped at ``window`` (else T4 Z-Image pinned the whole denoiser).
-Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
-
-Cross-forward carry: past the last recorded group, the NEXT forward's first groups are copied into free window
-bytes. Only while a render arms it (never into the last step's decode); held off under a slot ring, step graph,
-capture, or another prefetcher's forward in between (its copies would not be read next).
-"""
+"""Event-fenced prefetch of streamed offload groups, no host sync; a freed block is reused only
+after the compute that read it; bytes in flight never pass window; carry held off under slot
+ring, step graph or capture"""
 
 from __future__ import annotations
 
@@ -455,11 +440,9 @@ class GroupPrefetcher:
                     _copy_into(buffers[i], src)
                     _point_at(t, buffers[i], is_torchao(t), swap)
                     continue
-                moved = _to_device(src, self.device)
-                if is_torchao(t) and swap is not None:
-                    swap(t, moved)
-                else:
-                    t.data = moved
+                # a wrapper already on the device takes the new inner tensors: swap_tensors would refuse a weight a
+                # compile traced (its fake-mode memo keeps a weakref to it after the compile)
+                _point_at(t, _to_device(src, self.device), is_torchao(t), swap)
         if buffers is not None:
             self.slot_owner[where] = id(group)
             self.stats["slot_fills"] = self.stats.get("slot_fills", 0) + 1
@@ -523,6 +506,12 @@ class GroupPrefetcher:
         carried = getattr(self, "carried", None)
         if carried:
             carried.discard(gid)
+        if gid in self.ready and self._keeps_for_next(gid):
+            # the next forward runs it first: re-uploading the same weights would only wait on the copy
+            self.__dict__.setdefault("carried", set()).add(gid)
+            self.stats["kept"] = self.stats.get("kept", 0) + 1
+            self._fill()
+            return
         if gid in self.ready:
             self._release(group, self.ready.pop(gid))
         else:
@@ -601,6 +590,19 @@ class GroupPrefetcher:
         if ahead < self.depth and self.pos >= len(self.order) and self.may_carry():
             self._carry(ahead)
 
+    def _keeps_for_next(self, gid: int) -> bool:
+        """``keep_first``: keep the top-level group on device; the next forward needs it first."""
+        order = self.order
+        return bool(
+            getattr(self, "keep_first", False)
+            and self.active
+            and self.on_order
+            and order
+            and self.pos >= len(order)
+            and order[0] == gid
+            and self.may_carry()
+        )
+
     def carry_usable(self) -> bool:
         return bool(
             not getattr(self, "interleaved", False)
@@ -617,9 +619,7 @@ class GroupPrefetcher:
         )
 
     def _carry(self, ahead: int) -> None:
-        """While the last block runs, at most ``TAIL_CARRY_GROUPS``: its activations are live and the allocator's peak
-        follows host order, so a second group beside them lifts the peak (FLUX at 32k tokens); after it frees, the
-        rest of the depth follows."""
+        """While the last block runs, carry at most TAIL_CARRY_GROUPS: a second group lifts the peak."""
         carried = self.__dict__.setdefault("carried", set())
         running = any(gid not in carried for gid in self.ready)
         limit = min(self.depth, TAIL_CARRY_GROUPS) if running else self.depth
@@ -1119,6 +1119,31 @@ def module_prefetcher(module: Any) -> Optional[GroupPrefetcher]:
     return getattr(module, PREFETCHER_ATTR, None)
 
 
+def match_skipped_order(module: Any, skipped: list, *, skipping: bool) -> None:
+    """Call after ``begin``: drop (``skipping``) or restore the groups wholly inside ``skipped`` in the order."""
+    pf = module_prefetcher(module)
+    if pf is None or not pf.active or pf.seen or pf.pos or not pf.order:
+        return
+    inside = {id(m) for block in skipped for m in block.modules()}
+    ids = {
+        gid
+        for gid, group in pf.by_id.items()
+        if getattr(group, "modules", None) and all(id(m) in inside for m in group.modules)
+    }
+    if not ids:
+        return
+    kept = [gid for gid in pf.order if gid not in ids]
+    if skipping:
+        if len(kept) != len(pf.order):
+            pf.__dict__["_unsloth_full_order"] = list(pf.order)
+            pf.order = kept
+    else:
+        full = pf.__dict__.get("_unsloth_full_order")
+        if full and len(kept) == len(pf.order) and [g for g in full if g not in ids] == kept:
+            pf.order = list(full)
+    pf.on_order = bool(pf.order)
+
+
 def _pinned_done(pinner: Any, group: Any) -> bool:
     event = getattr(pinner, "_done", {}).get(id(group))
     return event is None or event.is_set()
@@ -1134,6 +1159,10 @@ def capture_refusal(module: Any) -> Optional[str]:
         for group in _offload_groups(module):
             if getattr(group, "offload_to_disk_path", None):
                 return "a group streams from disk"
+            if getattr(group, "_unsloth_pinned_top", False) and getattr(
+                group, "_unsloth_top_gguf", False
+            ):
+                return "a GGUF top-level group onloads from its pinned copy (streamed graphs unmeasured there)"
             if getattr(group, "_unsloth_resident", False) or getattr(
                 group, "_unsloth_pinned_top", False
             ):
@@ -1195,6 +1224,18 @@ def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
                 _disarm(pf)
             except Exception:  # noqa: BLE001 - leave the render's own error to surface
                 pass
+
+
+def end_cross_forward(pipe: Any) -> int:
+    """Disarm ``pipe``'s prefetchers, drop their carry; returns carried copies read so far."""
+    hits = 0
+    for pf in _pipe_prefetchers(pipe):
+        try:
+            _disarm(pf)
+            hits += int(pf.stats.get("carried_hits", 0))
+        except Exception:  # noqa: BLE001 - leave the render's own error to surface
+            pass
+    return hits
 
 
 _UNKNOWN = object()

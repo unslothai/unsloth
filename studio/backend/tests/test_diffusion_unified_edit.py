@@ -234,7 +234,7 @@ def test_unified_edit_registers_the_requested_shape_not_the_source(backend21):
     src = Image.new("RGBA", (96, 64))
     assert _compile_shape_dims("edit", src, 1024, 768, fam) == (1024, 768)
     kontext = detect_family("black-forest-labs/FLUX.1-Kontext-dev")
-    assert _compile_shape_dims("edit", src, 1024, 768, kontext) == (96, 64)
+    assert _compile_shape_dims("edit", src, 1024, 768, kontext) == (1248, 832)
 
 
 @pytest.mark.parametrize("extras,ok", [(0, True), (3, True), (9, True), (10, False)])

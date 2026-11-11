@@ -12,6 +12,7 @@ import sys
 import types
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -98,7 +99,7 @@ def _managed_root(tmp_path, monkeypatch) -> Path:
 
 def _working_vulkan_install(root: Path) -> Path:
     """What the affected host had: the mirror's Vulkan build in its versioned subdirectory."""
-    sub = root / "sd-master-982-0518b34-ud331c66-bin-win-vulkan-x64"
+    sub = root / "sd-master-982-0518b34-uaba3a1c-bin-win-vulkan-x64"
     sub.mkdir()
     for name in (_CLI, _SERVER):
         (sub / name).write_bytes(_starting_binary())
@@ -121,6 +122,65 @@ def test_the_loader_refusal_is_read_from_the_exit_status_and_output():
     assert sdmod.loader_refusal(1, "unknown option --help") is None
     assert sdmod.loader_refusal(127) is None
     assert sdmod.loader_refusal(None) is None
+
+
+def test_a_glibc_symbol_version_failure_is_a_loader_refusal():
+    assert sdmod.loader_refusal(
+        1,
+        "./sd-cli: /opt/sd/libstable-diffusion.so: version `LIBDEMO_2' not found "
+        "(required by ./sd-cli)",
+    )
+    assert sdmod.loader_refusal(
+        1,
+        "./sd-cli: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by ./sd-cli)",
+    )
+    assert sdmod.loader_refusal(1, "error: model file not found") is None
+
+
+def _build_version_mismatch(tmp: Path) -> Optional[Path]:
+    import shutil
+    import subprocess
+
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if _WIN or sys.platform == "darwin" or not cc:
+        return None
+    (tmp / "v1.map").write_text("LIBDEMO_1 { global: demo; local: *; };\n")
+    (tmp / "v2.map").write_text("LIBDEMO_2 { global: demo; local: *; };\n")
+    (tmp / "lib.c").write_text("int demo(void) { return 0; }\n")
+    (tmp / "main.c").write_text("int demo(void);\nint main(void) { return demo(); }\n")
+    build = tmp / "build"
+    build.mkdir()
+    try:
+        for ver, out in (("v2.map", build / "libdemo.so"), ("v1.map", tmp / "libdemo.so")):
+            subprocess.run(
+                [
+                    cc,
+                    "-shared",
+                    "-fPIC",
+                    f"-Wl,--version-script={tmp / ver}",
+                    "-o",
+                    str(out),
+                    str(tmp / "lib.c"),
+                ],
+                check = True,
+                capture_output = True,
+            )
+        exe = tmp / _CLI
+        subprocess.run(
+            [cc, "-o", str(exe), str(tmp / "main.c"), f"-L{build}", "-ldemo"],
+            check = True,
+            capture_output = True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return exe
+
+
+def test_probe_refuses_a_real_elf_whose_library_lacks_the_needed_version(tmp_path):
+    exe = _build_version_mismatch(tmp_path)
+    if exe is None:
+        pytest.skip("needs a Linux C toolchain")
+    assert sdmod.probe_binary_starts(exe)
 
 
 def test_probe_reports_a_refused_binary_and_passes_a_starting_one(tmp_path):
@@ -151,6 +211,24 @@ def test_a_bundle_that_cannot_start_never_replaces_the_working_one(tmp_path, mon
     assert not (root / _CLI).exists() and not (root / _SERVER).exists()
     assert sdmod.read_install_record(root).get("accelerator") == "vulkan"
     assert not list(root.parent.glob(".sd-cpp-verify-*"))
+
+
+@pytest.mark.skipif(_WIN, reason = "glibc loader message")
+def test_a_symbol_version_refusal_never_replaces_the_working_one(tmp_path, monkeypatch):
+    root = _managed_root(tmp_path, monkeypatch)
+    old_server = _working_vulkan_install(root)
+    before = old_server.read_bytes()
+    refused = (
+        b"#!/bin/sh\necho \"$0: /opt/libstable-diffusion.so: version \\`LIBDEMO_2' not found "
+        b'(required by $0)" >&2\nexit 1\n'
+    )
+    _stub_release(monkeypatch, {"rocm": _bundle(refused)})
+
+    with pytest.raises(sdmod.UnrunnableBuildError):
+        sdmod.install(install_dir = root, accelerator = "rocm")
+
+    assert old_server.is_file() and old_server.read_bytes() == before
+    assert sdmod.read_install_record(root).get("accelerator") == "vulkan"
 
 
 def test_the_refusal_names_what_was_asked_for(tmp_path, monkeypatch):
@@ -311,13 +389,111 @@ def test_the_refusal_record_survives_a_fallback_from_another_release(
         monkeypatch,
         {"rocm": _bundle(_refused_binary()), "vulkan": _bundle(_starting_binary(), "vk/")},
     )
-    monkeypatch.setattr(sdmod, "_pinned_tag", lambda: "master-982-0518b34-ud331c66")
+    monkeypatch.setattr(sdmod, "_pinned_tag", lambda: "master-982-0518b34-uaba3a1c")
     monkeypatch.setattr(backend, "_managed_tree_in_use", lambda: False)
     monkeypatch.setattr(backend, "is_managed_binary", lambda _b: True)
 
     server = backend.ensure_sd_server_binary(accelerator = "rocm")
 
     assert server is not None
-    assert sdmod.read_install_record(root).get("tag") != "master-982-0518b34-ud331c66"
+    assert sdmod.read_install_record(root).get("tag") != "master-982-0518b34-uaba3a1c"
     assert backend.accelerator_runtime_failed("rocm") is True
     assert backend.preferred_accelerator("rocm") == "vulkan"
+
+
+def _dll_dir(path: Path, *dlls: str) -> Path:
+    path.mkdir(parents = True, exist_ok = True)
+    for dll in dlls:
+        (path / dll).write_bytes(b"")
+    return path
+
+
+@pytest.fixture
+def hip_sdk(tmp_path, monkeypatch):
+    """HIP SDK 7.2 as its MSI leaves it: HIP_PATH (with its trailing separator) set, bin dir not on PATH."""
+    program_files = tmp_path / "Program Files"
+    root = program_files / "AMD" / "ROCm" / "7.2"
+    bindir = _dll_dir(root / "bin", "hipblas.dll", "rocblas.dll", "amdhip64_7.dll")
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.setenv("HIP_PATH", str(root) + os.sep)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    return types.SimpleNamespace(bin = bindir, program_files = program_files)
+
+
+def _rocm_bundle(tmp_path: Path) -> Path:
+    """The upstream win-rocm layout: amdhip64_7.dll beside sd-cli, hipblas.dll left to the SDK."""
+    return _dll_dir(tmp_path / "bundle", _CLI, "stable-diffusion.dll", "amdhip64_7.dll") / _CLI
+
+
+def test_the_hip_sdk_is_found_through_hip_path(hip_sdk):
+    assert sdmod.windows_hip_sdk_bin_dirs() == [str(hip_sdk.bin)]
+
+
+def test_without_hip_path_the_default_location_is_searched_newest_7x_first(hip_sdk, monkeypatch):
+    monkeypatch.delenv("HIP_PATH")
+    rocm = hip_sdk.program_files / "AMD" / "ROCm"
+    older = _dll_dir(rocm / "7.1" / "bin", "hipblas.dll", "amdhip64_7.dll")
+    # A 6.x hipblas.dll binds amdhip64_6.dll, not the bundle's HIP 7 runtime.
+    _dll_dir(rocm / "6.4" / "bin", "hipblas.dll", "amdhip64_6.dll")
+    assert sdmod.windows_hip_sdk_bin_dirs() == [str(hip_sdk.bin), str(older)]
+
+
+def test_no_hip_sdk_finds_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+    monkeypatch.delenv("HIP_PATH", raising = False)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    assert sdmod.windows_hip_sdk_bin_dirs() == []
+
+
+def _search_path(env: dict, var: str) -> list[str]:
+    return env[var].split(os.pathsep)
+
+
+def test_the_rocm_bundle_child_gets_the_hip_sdk_after_the_callers_path(tmp_path, hip_sdk):
+    from core.inference import sd_cpp_engine
+
+    binary = _rocm_bundle(tmp_path)
+    var = sd_cpp_engine._lib_path_var()
+    env = sd_cpp_engine.runtime_env(str(binary), {var: "caller-dir"})
+    assert _search_path(env, var) == [str(binary.parent.resolve()), "caller-dir", str(hip_sdk.bin)]
+    probe = sdmod._probe_env(binary)
+    assert _search_path(probe, var)[0] == str(binary.parent)
+    assert _search_path(probe, var)[-1] == str(hip_sdk.bin)
+
+
+def test_other_bundles_and_a_bundled_hipblas_get_no_hip_sdk(tmp_path, hip_sdk):
+    from core.inference import sd_cpp_engine
+
+    vulkan = _dll_dir(tmp_path / "vk", _CLI, "stable-diffusion.dll") / _CLI
+    rocm_with_hipblas = _dll_dir(tmp_path / "full", _CLI, "amdhip64_7.dll", "hipblas.dll") / _CLI
+    var = sd_cpp_engine._lib_path_var()
+    for binary in (vulkan, rocm_with_hipblas):
+        assert sdmod.hip_sdk_dirs_for_bundle(binary.parent) == []
+        env = sd_cpp_engine.runtime_env(str(binary), {var: "caller-dir"})
+        assert str(hip_sdk.bin) not in _search_path(env, var)
+
+
+@pytest.fixture
+def windows_path_only(tmp_path, monkeypatch, backend):
+    system_root = tmp_path / "Windows"
+    (system_root / "System32").mkdir(parents = True)
+    monkeypatch.setenv("SystemRoot", str(system_root))
+    monkeypatch.setenv("PATH", str(_dll_dir(tmp_path / "on-path")))
+    monkeypatch.delenv("UNSLOTH_SD_CPP_WINDOWS_ROCM", raising = False)
+    monkeypatch.setattr(backend, "_on_windows", lambda: True, raising = False)
+    return backend
+
+
+def test_windows_rocm_with_the_hip_sdk_installed_off_path_keeps_rocm(windows_path_only, hip_sdk):
+    assert windows_path_only.windows_hip_runtime_missing_dlls() == []
+    assert windows_path_only.preferred_accelerator("rocm") == "rocm"
+
+
+def test_windows_rocm_without_any_hip_sdk_still_starts_at_vulkan(
+    windows_path_only, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+    monkeypatch.delenv("HIP_PATH", raising = False)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    assert windows_path_only.windows_hip_runtime_missing_dlls() == ["hipblas.dll"]
+    assert windows_path_only.preferred_accelerator("rocm") == "vulkan"

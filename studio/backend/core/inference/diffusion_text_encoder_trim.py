@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drop the unused ``lm_head`` of a Qwen3-VL text encoder whose pipeline reads only hidden states.
-
-Qwen-Image-2.1 reads ``hidden_states[-1]`` (diffusers ``QwenImage21Pipeline._get_qwen_prompt_embeds``); the untied
-151936 x 4096 head runs after every hidden state, so replacing it with :class:`NoLogitsHead` is bit-identical. The
-vision tower stays: edit requests on the same pipeline run ``model.visual``. Kill switch: ``UNSLOTH_TE_KEEP_LM_HEAD=1``.
-"""
+"""Drops unused lm_head of Qwen3-VL text encoder (bit-identical); vision tower must stay, since edit
+requests run model.visual; kill UNSLOTH_TE_KEEP_LM_HEAD=1"""
 
 from __future__ import annotations
 

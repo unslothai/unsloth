@@ -420,7 +420,6 @@ def fix_xformers_performance_issue():
 # flash-attn 4 makes flash_attn a namespace package without flash_attn_interface, which breaks
 # `import xformers.ops`; import xformers once with flash_attn hidden from find_spec.
 _FLASH_ATTN_INTERFACE_NAME = "flash_attn_interface"
-_FLASH_ATTN_INTERFACE_MODULE = "flash_attn." + _FLASH_ATTN_INTERFACE_NAME
 _FA4_NAMESPACE_WARNED = [False]
 
 
@@ -2122,6 +2121,121 @@ def fix_transformers_flash_attention_mrope_packed_sequence():
     logger.info(
         "Unsloth: Patching transformers `_is_packed_sequence` so flash attention never "
         "reads mRoPE position ids as packed sequences (transformers#44910)"
+    )
+
+
+_PACKED_ROWS_PATCH_FLAG = "_unsloth_patched_mrope_packed_rows"
+_PACKED_ROWS_CHECKED = [None, None, False]
+
+
+def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
+    """cu_seqlens from an Unsloth packed row whose layers got mRoPE ids, else None."""
+    if kwargs.get("packed_seq_lengths") is None:
+        return None
+    import torch
+
+    position_ids = kwargs.get("position_ids")
+    if (
+        attention_mask is not None
+        or kwargs.get("cu_seq_lens_q") is not None
+        or not isinstance(position_ids, torch.Tensor)
+        or position_ids.dim() <= 2
+        or query.dim() != 4
+        or query.shape[0] != 1
+    ):
+        return None
+    return _packed_row_boundaries(kwargs, query.device, query.shape[1])
+
+
+def _packed_row_boundaries_eager(kwargs, device, total):
+    """Host-side packed-row boundaries, outside any compiled graph: max_seqlen as a guarded
+    constant recompiled once per distinct length."""
+    from .utils.packing import cover_padded_cu_seqlens, get_packed_info_from_kwargs
+
+    info = get_packed_info_from_kwargs(kwargs, device)
+    if info is None:
+        return None
+    cu_seqlens = info[1]
+    # One host read per batch, not per layer: lengths past the row cannot be honoured.
+    checked = _PACKED_ROWS_CHECKED
+    if checked[0] is not cu_seqlens or checked[1] != total:
+        checked[:] = [cu_seqlens, total, int(cu_seqlens[-1]) <= total]
+    if not checked[2]:
+        return None
+    # A pad_to_multiple_of tail gets its own segment so no document attends to it.
+    cu_seqlens, max_seqlen = cover_padded_cu_seqlens(info, total)
+    return {
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
+    }
+
+
+# _packed_row_boundaries_eager under torch.compiler.disable, built when the patch is installed.
+_PACKED_ROW_BOUNDARIES_DISABLED = None
+
+
+def _packed_row_boundaries(kwargs, device, total):
+    import torch
+
+    disabled = _PACKED_ROW_BOUNDARIES_DISABLED
+    if disabled is not None and torch.compiler.is_compiling():
+        from .utils.packing import _PACKED_INFO_CACHE, _cache_hit
+
+        entry = _PACKED_INFO_CACHE.get(device)
+        if (
+            entry is not None
+            and entry["seq_lengths"] is kwargs.get("packed_seq_lengths")
+            and _cache_hit(entry)
+            and "row_shape" in entry
+        ):
+            covered, max_seqlen = entry["row_shape"].shape
+            if covered > total:
+                return None
+            cu_seqlens = entry["result"][1]
+            if covered < total:
+                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_full((1,), total)])
+                max_seqlen = max(max_seqlen, total - covered)
+            return {
+                "cu_seq_lens_q": cu_seqlens,
+                "cu_seq_lens_k": cu_seqlens,
+                "max_length_q": max_seqlen,
+                "max_length_k": max_seqlen,
+            }
+        return disabled(kwargs, device, total)
+    return _packed_row_boundaries_eager(kwargs, device, total)
+
+
+def fix_transformers_flash_attention_mrope_packed_rows():
+    """Qwen3.5 / Qwen3.5-MoE on transformers 5.3 give decoder layers 3-row mRoPE ids, which cannot mark
+    document starts: take a packed row's boundaries from `packed_seq_lengths` instead."""
+    try:
+        from transformers.integrations import flash_attention as fa_integration
+    except Exception:
+        return
+    current = getattr(fa_integration, "_flash_attention_forward", None)
+    if current is None or getattr(current, _PACKED_ROWS_PATCH_FLAG, False):
+        return
+    global _PACKED_ROW_BOUNDARIES_DISABLED
+    if _PACKED_ROW_BOUNDARIES_DISABLED is None:
+        import torch
+        _PACKED_ROW_BOUNDARIES_DISABLED = torch.compiler.disable(_packed_row_boundaries_eager)
+
+    @functools.wraps(current)
+    def _flash_attention_forward(
+        query_states, key_states, value_states, attention_mask, *args, **kwargs
+    ):
+        varlen = _packed_row_varlen_kwargs(query_states, attention_mask, kwargs)
+        if varlen is not None:
+            kwargs.update(varlen)
+        return current(query_states, key_states, value_states, attention_mask, *args, **kwargs)
+
+    setattr(_flash_attention_forward, _PACKED_ROWS_PATCH_FLAG, True)
+    fa_integration._flash_attention_forward = _flash_attention_forward
+    logger.info(
+        "Unsloth: Patching transformers flash attention so packed rows with mRoPE layer "
+        "position ids keep their documents apart"
     )
 
 
@@ -7055,11 +7169,21 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def _set_torch_config(config_module, name, value):
+    # torch >= 2.12 keeps config assignments per thread; checkpoint recomputes compile on autograd's device thread.
+    try:
+        from unsloth_zoo.torch_config import set_torch_config
+    except Exception:
+        setattr(config_module, name, value)
+        return
+    set_torch_config(config_module, name, value)
+
+
 def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass):
     # Warm FX / AOTAutograd caches would return barrier-free kernels: a no-op pass's uuid keys them.
     if custom_graph_pass is None:
         # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
-        inductor_config.fx_graph_cache = False
+        _set_torch_config(inductor_config, "fx_graph_cache", False)
         return
     marker = "unsloth-inductor-readback-barrier-v1"
 
@@ -7074,14 +7198,16 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
 
     existing = getattr(inductor_config, "post_grad_custom_post_pass", None)
     if existing is None:
-        inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+        _set_torch_config(inductor_config, "post_grad_custom_post_pass", ReadbackBarrierCacheKey())
         return
     # A pre-set pass keys the cache by its uuid alone; raw callables / uuid-less passes bypass it.
     if isinstance(existing, (list, tuple)):
         if any(getattr(p, "_unsloth_readback_barrier", False) for p in existing):
             return
-        inductor_config.post_grad_custom_post_pass = type(existing)(
-            [*existing, ReadbackBarrierCacheKey()]
+        _set_torch_config(
+            inductor_config,
+            "post_grad_custom_post_pass",
+            type(existing)([*existing, ReadbackBarrierCacheKey()]),
         )
         return
     if getattr(existing, "_unsloth_readback_barrier", False):
@@ -7106,9 +7232,13 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
             return self.inner(graph, *args, **kwargs)
 
         def uuid(self):
-            return (marker, self.inner.uuid())
+            # None is the inner pass opting out of the FX cache: keep it, never key a stale graph.
+            inner_uuid = self.inner.uuid()
+            return None if inner_uuid is None else (marker, inner_uuid)
 
-    inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
+    _set_torch_config(
+        inductor_config, "post_grad_custom_post_pass", ReadbackBarrierKeyedPass(existing)
+    )
 
 
 def fix_inductor_reduction_readback_race():
@@ -7194,6 +7324,10 @@ def fix_dynamo_config_thread_visibility():
         from contextvars import ContextVar
     except Exception:
         return
+    try:
+        from torch.utils._config_module import _UNSET_SENTINEL as _unset
+    except Exception:
+        _unset = None
 
     try:
         probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
@@ -7286,6 +7420,9 @@ def fix_dynamo_config_thread_visibility():
                 entry = self.__dict__["_config"].get(name, None)
                 if entry is not None and entry.alias is None:
                     entry.default = value
+                    # A process-wide value (set_torch_config, TORCHINDUCTOR_* env) shadows default: replace it too.
+                    if _unset is not None and entry.env_value_default is not _unset:
+                        entry.env_value_default = value
             except Exception:
                 pass
 
@@ -7652,6 +7789,335 @@ def fix_cudnn_sdpa_d256_masked_backward():
     logger.info(
         "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
         f"(devices {sorted(sm100_devices)})"
+    )
+
+
+_SDPA_GRAD_LAYOUT_FLAG = "_unsloth_gives_sdpa_backward_the_output_layout"
+_SDPA_GRAD_LAYOUT_FUNCTION = []
+# Eager outputs whose backward is cuDNN's; flash / efficient / math outputs stay untouched.
+_SDPA_GRAD_LAYOUT_NODES = frozenset(("ScaledDotProductCudnnAttentionBackward0",))
+
+
+def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version):
+    """torch 2.6 - 2.13 key the cuDNN backward plan without grad_output strides (fixed in
+    pytorch/pytorch#191576); cuDNN < 9.5.1 always copies grad_output to the output layout."""
+    try:
+        torch_version = TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return False
+    if not (TrueVersion("2.6") <= torch_version < TrueVersion("2.14")):
+        return False
+    return cudnn_version is not None and int(cudnn_version) >= 90501
+
+
+def _sdpa_grad_to_layout(stride, grad):
+    if grad.stride() == stride:
+        return grad
+    return grad.new_empty_strided(grad.size(), stride).copy_(grad)
+
+
+def _sdpa_grad_layout_function():
+    if _SDPA_GRAD_LAYOUT_FUNCTION:
+        return _SDPA_GRAD_LAYOUT_FUNCTION[0]
+    import torch
+
+    try:
+        import torch._dynamo.config as dynamo_config
+
+        # torch 2.6 Dynamo bans grad.stride() in a traced backward: a graph break per SDPA call.
+        stride_banned = "stride" in dynamo_config._autograd_backward_strict_mode_banned_ops
+    except Exception:
+        stride_banned = False
+
+    class _GradInOutputLayout(torch.autograd.Function):
+        # setup_context + generate_vmap_rule: torch.func.grad / vmap / jacrev keep working.
+        generate_vmap_rule = True
+
+        @staticmethod
+        def forward(out):
+            # Not a view: view outputs reject in-place consumers; Inductor drops the clone.
+            return out.clone()
+
+        @staticmethod
+        def setup_context(ctx, inputs, output):
+            ctx.out_stride = inputs[0].stride()
+
+        @staticmethod
+        def backward(ctx, grad):
+            if stride_banned and torch.compiler.is_compiling():
+                return grad.new_empty_strided(grad.size(), ctx.out_stride).copy_(grad)
+            return _sdpa_grad_to_layout(ctx.out_stride, grad)
+
+    _SDPA_GRAD_LAYOUT_FUNCTION.append(_GradInOutputLayout)
+    return _GradInOutputLayout
+
+
+def fix_cudnn_sdpa_backward_grad_layout():
+    """Force SDPA grad_output into the output's layout, which the plan key does cover, so two
+    same-shape backwards with different grad layouts cannot share a stale plan (wrong grads)."""
+    if os.environ.get("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", "0") == "1":
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return
+        if not _cudnn_sdpa_backward_cache_ignores_grad_layout(
+            torch.__version__, torch.backends.cudnn.version()
+        ):
+            return
+        grad_in_output_layout = _sdpa_grad_layout_function()
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA backward layout fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(*args, **kwargs):
+        out = original(*args, **kwargs)
+        # Plain tensors only: a DTensor gradient cannot be copied into a plain empty_strided buffer.
+        if type(out) is torch.Tensor and out.requires_grad and out.is_cuda and not out.is_nested:
+            if torch.compiler.is_compiling():
+                # Dynamo graph-breaks on a hook on an intermediate; the Function traces inline.
+                return grad_in_output_layout.apply(out)
+            if type(out.grad_fn).__name__ in _SDPA_GRAD_LAYOUT_NODES:
+                # A hook keeps out a plain tensor: a Function output is a view, so in-place
+                # ops on it would raise.
+                out.register_hook(functools.partial(_sdpa_grad_to_layout, out.stride()))
+        return out
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        f"Unsloth: torch {torch.__version__} reuses cuDNN SDPA backward plans across gradient "
+        "layouts; SDPA gradients are given the output's layout"
+    )
+
+
+_SDPA_CUDNN_KNOWN_BAD_FLAG = "_unsloth_avoids_cudnn_sdpa_known_bad_shapes"
+_SDPA_CUDNN_KNOWN_BAD_WARNED = set()
+# Backend flags are process-wide: refcount wrapped calls in flight so overlapping calls never see cuDNN back on early.
+_SDPA_CUDNN_HELD = [0]
+_SDPA_CUDNN_LOCK = threading.Lock()
+_SDPA_CUDNN_DECODE = "decode"
+_SDPA_CUDNN_DQ_NAN = "dq_nan"
+
+
+def _torch_release(torch_version):
+    try:
+        return TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return None
+
+
+def _cudnn_sdpa_decode_corrupts(torch_version, cudnn_version, capability):
+    """pytorch#193893: cuDNN 9.19 - 9.25.0 (not 9.24.1) one-row decode on SM 10.x / 11.x is wrong.
+    torch 2.14 refuses it (pytorch#194963); <= 2.13 cu128+ wheels ship 9.19 / 9.20."""
+    release = _torch_release(torch_version)
+    if release is None or release >= TrueVersion("2.14") or cudnn_version is None:
+        return False
+    cudnn_version = int(cudnn_version)
+    if cudnn_version < 91900 or cudnn_version > 92500 or 92400 < cudnn_version < 92500:
+        return False
+    return int(capability[0]) in (10, 11)
+
+
+def _cudnn_sdpa_dq_nan(torch_version, cudnn_version, capability):
+    """pytorch#196678: cuDNN < 9.26 on SM90 gives NaN dQ for non-causal s_kv % 128 == 64.
+    torch 2.15 refuses it (pytorch#196861)."""
+    release = _torch_release(torch_version)
+    if release is None or release >= TrueVersion("2.15") or cudnn_version is None:
+        return False
+    return int(cudnn_version) < 92600 and tuple(int(x) for x in capability[:2]) == (9, 0)
+
+
+def _sdpa_cudnn_known_bad_devices():
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return frozenset(), frozenset()
+        cudnn_version = torch.backends.cudnn.version()
+        capabilities = [
+            torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())
+        ]
+    except Exception:
+        return frozenset(), frozenset()
+    decode = frozenset(
+        i
+        for i, cap in enumerate(capabilities)
+        if _cudnn_sdpa_decode_corrupts(torch.__version__, cudnn_version, cap)
+    )
+    dq_nan = frozenset(
+        i
+        for i, cap in enumerate(capabilities)
+        if _cudnn_sdpa_dq_nan(torch.__version__, cudnn_version, cap)
+    )
+    return decode, dq_nan
+
+
+def _sdpa_cudnn_dq_nan_length(key):
+    # Compiling: _sdpa_cudnn_off tests the value, so a dynamic length adds no guard.
+    import torch
+    return torch.compiler.is_compiling() or key.shape[-2] % 128 == 64
+
+
+def _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal):
+    """The known cuDNN bug this call would hit, mirroring torch's later guards; None if none."""
+    import torch
+
+    if not getattr(query, "is_cuda", False) or getattr(query, "is_nested", False):
+        return None
+    index = query.device.index
+    if index not in decode_devices and index not in dq_devices:
+        return None
+    dtype = query.dtype
+    # Autocast casts fp32 SDPA inputs to half before dispatch.
+    if dtype == torch.float32 and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+    if dtype not in (torch.float16, torch.bfloat16) or query.dim() < 2:
+        return None
+    if index in decode_devices and query.shape[-2] == 1:
+        return _SDPA_CUDNN_DECODE
+    if (
+        index in dq_devices
+        and not is_causal
+        and query.requires_grad
+        and torch.is_grad_enabled()
+        and getattr(key, "dim", lambda: 0)() >= 2
+        and _sdpa_cudnn_dq_nan_length(key)
+    ):
+        return _SDPA_CUDNN_DQ_NAN
+    return None
+
+
+class _SdpaCudnnPolicy(types.ModuleType):
+    """Dynamo folds SDPA backend flags without a guard, but guards a module attribute by value:
+    reading the policy here makes a compiled graph recompile when the policy flips its backend."""
+
+    @property
+    def cudnn_off(self):
+        import torch
+        cuda = torch.backends.cuda
+        # A held switch counts as on, so another thread's matching call also takes it.
+        return (cuda.cudnn_sdp_enabled() or _SDPA_CUDNN_HELD[0] > 0) and (
+            cuda.flash_sdp_enabled() or cuda.mem_efficient_sdp_enabled() or cuda.math_sdp_enabled()
+        )
+
+
+_SDPA_CUDNN_POLICY = _SdpaCudnnPolicy("unsloth_sdpa_cudnn_policy")
+
+
+def _sdpa_cudnn_off(key_length = None):
+    """Turn cuDNN SDPA off unless it is the only backend; a symbolic key_length counts as a hit.
+    The count rises before the flag drops, so an unlocked policy read never sees cuDNN off."""
+    import torch
+
+    if not (key_length is None or isinstance(key_length, torch.SymInt) or key_length % 128 == 64):
+        return False
+    with _SDPA_CUDNN_LOCK:
+        if _SDPA_CUDNN_HELD[0] == 0 and not _SDPA_CUDNN_POLICY.cudnn_off:
+            return False
+        _SDPA_CUDNN_HELD[0] += 1
+        if _SDPA_CUDNN_HELD[0] == 1:
+            torch._C._set_sdp_use_cudnn(False)
+    return True
+
+
+def _sdpa_cudnn_restore(switch):
+    import torch
+    if not switch:
+        return
+    with _SDPA_CUDNN_LOCK:
+        if _SDPA_CUDNN_HELD[0] == 1:
+            torch._C._set_sdp_use_cudnn(True)
+        _SDPA_CUDNN_HELD[0] -= 1
+
+
+_SDPA_CUDNN_ORIGINALS = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
+_SDPA_CUDNN_MESSAGES = {
+    _SDPA_CUDNN_DECODE: "single-token decode on this Blackwell GPU (cuDNN 9.19 - 9.25.0 "
+    "returns wrong attention there, pytorch#193893)",
+    _SDPA_CUDNN_DQ_NAN: "training with a key length of 64 mod 128 on this H100 / H200 (cuDNN "
+    "< 9.26 returns NaN query gradients there, pytorch#196678)",
+}
+
+
+def _sdpa_without_cudnn(token, bug, key_length, query, key, value, *args, **kwargs):
+    """allow_in_graph: one eager-graph node whose finally runs even if SDPA raises; AOTAutograd
+    traces through it, so the traced SDPA avoids cuDNN."""
+    import torch
+
+    switch = _sdpa_cudnn_off(key_length)
+    try:
+        if switch and not torch.compiler.is_compiling() and bug not in _SDPA_CUDNN_KNOWN_BAD_WARNED:
+            _SDPA_CUDNN_KNOWN_BAD_WARNED.add(bug)
+            logger.warning(
+                f"Unsloth: running SDPA without cuDNN attention for {_SDPA_CUDNN_MESSAGES[bug]}. "
+                "Upgrade to torch 2.15 / cuDNN 9.26, or set UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1."
+            )
+        return _SDPA_CUDNN_ORIGINALS[token](query, key, value, *args, **kwargs)
+    finally:
+        _sdpa_cudnn_restore(switch)
+
+
+def fix_cudnn_sdpa_known_bad_shapes():
+    """Keep SDPA off cuDNN for the calls torch 2.14 / 2.15 later refuse (pytorch#193893, #196678),
+    only when a visible device is affected and another backend is enabled.
+    UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1 opts out."""
+    if os.environ.get("UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA", "0") == "1":
+        return
+    decode_devices, dq_devices = _sdpa_cudnn_known_bad_devices()
+    if not decode_devices and not dq_devices:
+        return
+    try:
+        import torch
+        import torch._dynamo
+        import torch.nn.functional as F
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA known-bad-shape fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, False):
+        return
+
+    # Switch, SDPA and restore stay one graph call: a trailing restore node would be skipped on a raise.
+    torch._dynamo.allow_in_graph(_sdpa_without_cudnn)
+    original = F.scaled_dot_product_attention
+    token = f"sdpa_{len(_SDPA_CUDNN_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    _SDPA_CUDNN_ORIGINALS[token] = original
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        *args,
+        **kwargs,
+    ):
+        bug = _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal)
+        # Compiled, this policy read is a guard.
+        if bug is not None and _SDPA_CUDNN_POLICY.cudnn_off:
+            key_length = key.shape[-2] if bug == _SDPA_CUDNN_DQ_NAN else None
+            return _sdpa_without_cudnn(
+                token, bug, key_length, query, key, value, attn_mask, dropout_p, is_causal,
+                *args, **kwargs,
+            )  # fmt: skip
+        return original(query, key, value, attn_mask, dropout_p, is_causal, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        "Unsloth: cuDNN SDPA known-bad shapes avoided "
+        f"(decode devices {sorted(decode_devices)}, NaN dQ devices {sorted(dq_devices)})"
     )
 
 
@@ -11377,10 +11843,143 @@ def fix_torchao_pytree_register_constant():
     return True
 
 
-# vLLM inspects architectures in a separate process that imports torchao itself, never sees a
-# parent monkey-patch, and fails the same way. sitecustomize is the one hook reaching a process
-# we do not launch: site imports it at startup off the inherited PYTHONPATH. A .pth would need
-# a real site directory, which a library has no business writing into.
+# Newest torchao release whose Python API supports each torch minor (pytorch/ao#2919); newer torch has no ceiling.
+_TORCHAO_NEWEST_FOR_TORCH = {
+    (2, 4): (0, 12),
+    (2, 5): (0, 12),
+    (2, 6): (0, 13),
+    (2, 7): (0, 15),
+    (2, 8): (0, 16),
+}
+
+# What importing transformers / peft pulls from torchao at module scope (transformers 5 quantizer_torchao, peft lora).
+_TORCHAO_IMPORT_TIME_MODULES = (
+    "torchao",
+    "torchao.quantization",
+    "torchao.prototype.safetensors.safetensors_support",
+)
+
+# "<torchao>|<torch>" metadata versions; the subprocess sitecustomize hides torchao only on an exact match.
+_TORCHAO_DISABLED_ENV = "UNSLOTH_TORCHAO_DISABLED_FOR"
+
+TORCHAO_DISABLED_FOR_OLD_TORCH = False
+
+
+def _release_pair(version_string):
+    match = re.match(r"\s*(\d+)\.(\d+)", str(version_string))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _is_torchao_torch_skew_error(error):
+    """Only torch's own missing-name wording; any other torchao failure stays visible."""
+    message = str(error)
+    if isinstance(error, AttributeError):
+        return message.startswith("module 'torch") and "has no attribute" in message
+    if isinstance(error, ImportError):
+        return "cannot import name" in message and "from 'torch" in message
+    return False
+
+
+def _hide_torchao_from_dependents():
+    """Make torchao read as not installed, as `disable_torchaudio_if_cuda_mismatched` does."""
+    for name in [n for n in list(sys.modules) if n == "torchao" or n.startswith("torchao.")]:
+        sys.modules.pop(name, None)
+    # find_spec returns None and `import torchao` raises ModuleNotFoundError: every guard takes its no-torchao branch.
+    sys.modules["torchao"] = None
+    # Libraries imported before unsloth cached the answer.
+    for module_name, flag_names in (
+        ("transformers.utils.import_utils", ("_torchao_available",)),
+        ("transformers.utils", ()),
+        ("peft.import_utils", ()),
+        ("diffusers.utils.import_utils", ("_torchao_available",)),
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        for flag_name in flag_names:
+            if hasattr(module, flag_name):
+                try:
+                    setattr(module, flag_name, False)
+                except Exception:
+                    pass
+        check = getattr(module, "is_torchao_available", None)
+        if check is None:
+            continue
+        try:
+            check.cache_clear()
+        except AttributeError:
+            pass
+        try:
+            setattr(module, "is_torchao_available", lambda *args, **kwargs: False)
+        except Exception:
+            pass
+
+
+def disable_torchao_if_torch_too_old():
+    """Treat a torchao built for a newer torch as not installed instead of failing `import unsloth`.
+
+    unsloth_zoo's uncapped `torchao>=0.13.0` resolves 0.18 on torch 2.6, whose import reads
+    `torch.float4_e2m1fn_x2` (torch 2.7+). Disables only on a real missing torch name.
+    """
+    global TORCHAO_DISABLED_FOR_OLD_TORCH
+    if TORCHAO_DISABLED_FOR_OLD_TORCH:
+        _hide_torchao_from_dependents()
+        return True
+    try:
+        if "torchao" in sys.modules or importlib.util.find_spec("torchao") is None:
+            return False
+        torchao_version = importlib_version("torchao")
+        torchao_release = _release_pair(torchao_version)
+        import torch
+
+        torch_version = str(torch.__version__)
+        newest = _TORCHAO_NEWEST_FOR_TORCH.get(_release_pair(torch_version))
+    except Exception:
+        return False
+    if newest is None or torchao_release is None or torchao_release <= newest:
+        return False
+    reason = None
+    for module_name in _TORCHAO_IMPORT_TIME_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except Exception as error:
+            if _is_torchao_torch_skew_error(error):
+                reason = str(error).split("\n", 1)[0]
+                break
+            if isinstance(error, ModuleNotFoundError) and str(
+                getattr(error, "name", "")
+            ).startswith("torchao"):
+                # An older torchao without this submodule: nothing imports it there.
+                continue
+            return False
+    if reason is None:
+        return False
+    TORCHAO_DISABLED_FOR_OLD_TORCH = True
+    _hide_torchao_from_dependents()
+    try:
+        os.environ[_TORCHAO_DISABLED_ENV] = (
+            f"{importlib_version('torchao')}|{importlib_version('torch')}"
+        )
+    except Exception:
+        pass
+    # unsloth_zoo needs torchao>=0.13, so below that only a newer torch is installable.
+    remedy = (
+        f'    pip install "torchao<{newest[0]}.{newest[1] + 1}"\nor a newer torch.'
+        if newest >= (0, 13)
+        else '    pip install --upgrade "torch>=2.6"'
+    )
+    print(
+        f"Unsloth: torchao=={torchao_version} does not support torch=={torch_version} "
+        f"({reason}), so torchao is disabled for this process and everything that does "
+        f"not use it keeps working. QAT, torchao float8 and torchao-quantized checkpoints "
+        f"need a torchao that matches this torch:\n{remedy}"
+    )
+    return True
+
+
+# vLLM's separate process imports torchao itself, never sees a parent monkey-patch and fails the
+# same way; sitecustomize is the one hook reaching a process we do not launch (site imports it off
+# the inherited PYTHONPATH); a .pth needs a real site directory a library should not write into.
 
 _SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
 
@@ -11436,8 +12035,9 @@ def _subprocess_sitecustomize_source():
     every subprocess. Ours runs the next one on sys.path first, then the fix.
     """
     return '''"""Written by unsloth. Makes `import torchao` survive a torch that
-predates the symbols torchao 0.18 imports unconditionally, in processes
-unsloth did not launch (notably vLLM's model-architecture inspector)."""
+predates the symbols torchao 0.18 imports unconditionally, or hides a torchao
+the parent disabled, in processes unsloth did not launch (notably vLLM's
+model-architecture inspector)."""
 import os
 import sys
 
@@ -11618,6 +12218,15 @@ class _TorchaoImportHook:
 # module object alive here: the finder below outlives this file's execution.
 _SELF = sys.modules.get(__name__)
 _chain_to_the_real_sitecustomize()
+# The parent disabled a torchao too new for its torch; hide it here only for the same torchao and torch.
+try:
+    _expected = os.environ.get("UNSLOTH_TORCHAO_DISABLED_FOR")
+    if _expected:
+        import importlib.metadata as _md
+        if _expected == "%s|%s" % (_md.version("torchao"), _md.version("torch")):
+            sys.modules["torchao"] = None
+except Exception:
+    pass
 try:
     sys.meta_path.insert(0, _TorchaoImportHook())
 except Exception:
@@ -11712,12 +12321,30 @@ def _torch_really_has(F, name):
     return not getattr(symbol, "__unsloth_placeholder__", False)
 
 
+def _child_torchao_symbol_fix_needed():
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        if Version(importlib_version("torchao")) < Version("0.18.0"):
+            return False
+        import torch.nn.functional as F
+
+        # Our own in-process patches do not count as torch having the symbols.
+        return not (
+            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+            and _aten_grouped_mm_library is None
+            and not _torch_op_is_missing("aten", "_grouped_mm")
+        )
+    except Exception:
+        return False
+
+
 def propagate_torchao_fix_to_subprocesses():
     """Make the torchao fix apply to child processes too.
 
-    A no-op unless the fix is needed: returns early when torchao is absent,
-    old enough to guard its own import, or when torch already has the symbols.
-    Nothing is written and PYTHONPATH is untouched on a healthy pair.
+    A no-op unless the symbol fix is needed (torchao 0.18+ on a torch missing its
+    symbols) or `disable_torchao_if_torch_too_old` disabled torchao here. Nothing is
+    written and PYTHONPATH is untouched on a healthy pair.
 
     The generated file inlines the symbol fix rather than importing unsloth: a
     sitecustomize runs at the start of every subprocess on the machine, so an
@@ -11729,24 +12356,7 @@ def propagate_torchao_fix_to_subprocesses():
 
     Returns the directory added to PYTHONPATH, or None.
     """
-    if importlib.util.find_spec("torchao") is None:
-        return None
-    try:
-        if Version(importlib_version("torchao")) < Version("0.18.0"):
-            return None
-    except Exception:
-        return None
-    try:
-        import torch.nn.functional as F
-
-        # Nothing to do only when both the functional symbols and the aten op are missing; our own in-process patches do not count.
-        if (
-            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
-            and _aten_grouped_mm_library is None
-            and not _torch_op_is_missing("aten", "_grouped_mm")
-        ):
-            return None  # this torch is new enough; nothing to do
-    except Exception:
+    if not TORCHAO_DISABLED_FOR_OLD_TORCH and not _child_torchao_symbol_fix_needed():
         return None
 
     try:
@@ -11778,9 +12388,9 @@ def propagate_torchao_fix_to_subprocesses():
     if directory not in parts:
         os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
         logger.info(
-            "Unsloth: torchao %s needs torch symbols this torch lacks. Added "
-            "a sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
-            "inspector) can import torchao too.",
+            "Unsloth: torchao %s does not match this torch. Added a "
+            "sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
+            "inspector) get the same torchao fix.",
             importlib_version("torchao"),
         )
     return directory

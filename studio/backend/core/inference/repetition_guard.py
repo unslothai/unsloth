@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Is this truncated fragment worth continuing, or is the model just echoing itself?
-
-Only asked on the length-continuation path. A turn cut off mid-answer is normally resumed
-by handing the partial back and asking for the rest, but a model stuck in a repetition loop
-can spend an entire window echoing one fragment, and continuing THAT stitches the echo into
-the final answer instead of finishing it. The nudge has to be withheld before it is sent,
-not regretted afterwards.
-
-The approach and the thresholds follow NousResearch/hermes-agent's `agent/repetition_guard.py`,
-written after an incident where a single turn produced a 60,698-char response delivered as
-31 messages. Deliberately conservative in the same way: only LONG verbatim repeats covering
-a majority of the fragment trip it, so a sentence cut mid-word, a repeated heading, or code
-with similar-looking lines are all still continued.
-"""
+"""Skips the length-continuation nudge when a truncated fragment is mostly long verbatim repeats."""
 
 from __future__ import annotations
 

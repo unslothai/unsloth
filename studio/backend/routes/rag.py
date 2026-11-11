@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HTTP API for the RAG engine: KB CRUD, uploads, SSE ingestion, search. Single-tenant: the subject gates
-access, not data.
-
-Without a working sqlite-vec the router still mounts, and one contract covers every endpoint. The KB list is
-polled, so it answers 200 with an empty list carrying an availability marker, which is what lets a client tell
-an empty store from a machine where RAG cannot run. Every other endpoint but /extract-text, which only parses,
-answers 503 stating the same reason.
-Nothing logs a traceback for it: the condition is fixed for the session and rag_db warns about it exactly once.
-"""
+"""No sqlite-vec: KB list gives empty 200 with availability marker; other routes 503 except
+/extract-text (parse only); single-tenant, subject gates access, not data"""
 
 from __future__ import annotations
 
@@ -346,9 +339,7 @@ def _require_scope_owner(
     scope_id: str,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """404 unless the scope's owner still exists. ``conn`` reuses a connection the caller already holds:
-    sqlite-vec loads per connection, so opening a second one to read a single row pays that twice.
-    """
+    """404 unless the scope owner exists; pass conn to reuse one since sqlite-vec loads per connection."""
     if scope_type == "knowledge_base":
         if conn is not None:
             exists = store.get_kb(conn, scope_id) is not None

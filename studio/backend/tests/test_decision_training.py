@@ -157,8 +157,7 @@ def _config(base, dataset, **overrides):
     }
 
 
-# The worker imports unsloth; CI installs unsloth_zoo only for the step that runs this file.
-# Apple Silicon trains with MLX, through unsloth_zoo's decision module.
+# Worker imports unsloth; CI installs unsloth_zoo only in this step; Apple Silicon uses MLX.
 _WORKER = "unsloth_zoo.mlx.decision" if sys.platform == "darwin" else "unsloth_zoo"
 needs_worker = pytest.mark.skipif(
     importlib.util.find_spec("unsloth_zoo") is None or importlib.util.find_spec(_WORKER) is None,
@@ -398,6 +397,7 @@ def test_all_invalid_rows_are_an_error_and_save_nothing(base, studio_home):
     events = _train(_config(base, _dataset(studio_home, rows)))
 
     assert "No usable decisions" in _of(events, "error")[0]["error"]
+    assert "Loading decision model..." not in [e["message"] for e in _of(events, "status")]
     assert not _of(events, "complete")
     assert not outputs_root().exists() or not any(outputs_root().iterdir())
 
@@ -455,7 +455,7 @@ def test_stop_while_preparing_decisions_ends_the_run(base, studio_home):
     events = _train(
         _config(base, _dataset(studio_home, rows)),
         False,
-        lambda event: event.get("message") == "Preparing decisions...",
+        lambda event: event.get("message") == "Preparing decision rows...",
     )
 
     assert _of(events, "complete")[-1]["status_message"] == "Training cancelled"
@@ -884,3 +884,31 @@ def test_held_out_decisions_count_every_clef_question():
     laya = [{"row": 0}, {"row": 1}]
     clef = [{"row": 0, "labels": [0, 1, 2]}, {"row": 1, "labels": [1]}]
     assert (_decision_count(laya), _decision_count(clef)) == (2, 4)
+
+
+@pytest.mark.parametrize(
+    "model_type, mlx, zoo_d1, head",
+    [
+        ("lfm3_omni", True, True, "d1"),
+        ("lfm3_vl", True, True, "d1"),
+        ("lfm3", True, True, "clef"),
+        ("qwen3_5", True, True, "clef"),
+        ("lfm3_omni", False, True, "clef"),
+        ("lfm3_vl", True, False, "clef"),
+    ],
+)
+def test_lfm3_vision_and_omni_train_as_a_d1_on_mlx(
+    tmp_path, monkeypatch, model_type, mlx, zoo_d1, head
+):
+    from core.training import decision_trainer
+
+    monkeypatch.setattr(decision_trainer, "_is_mlx", lambda: mlx)
+    monkeypatch.setattr(decision_trainer, "_zoo_trains_d1", lambda: zoo_d1)
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
+    assert decision_trainer._lm_decision_head(str(tmp_path), None) == head
+
+
+def test_an_unreadable_language_model_keeps_the_clef_head(tmp_path, monkeypatch):
+    from core.training import decision_trainer
+    monkeypatch.setattr(decision_trainer, "_is_mlx", lambda: True)
+    assert decision_trainer._lm_decision_head(str(tmp_path), None) == "clef"

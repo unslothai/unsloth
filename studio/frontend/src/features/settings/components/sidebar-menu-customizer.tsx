@@ -4,18 +4,16 @@
 import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import {
   CloudIcon,
-  CpuIcon,
   CursorInfo02Icon,
   DragDropVerticalIcon,
   HelpCircleIcon,
   Logout05Icon,
   Moon02Icon,
   PowerIcon,
-  Settings02Icon,
   UserCircleIcon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon, MessageCircleIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
@@ -34,7 +32,7 @@ const ITEM_META: Record<
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
-  resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
+  resources: { icon: ChipIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
@@ -115,7 +113,7 @@ export function SidebarMenuCustomizer() {
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
     <div className="flex flex-col rounded-lg border border-border/70 p-1">
-      <FixedRow icon={Settings02Icon} label={t("shell.navigation.settings")} />
+      <FixedRow icon={Settings01Icon} label={t("shell.navigation.settings")} />
       <Reorder.Group
         axis="y"
         values={sidebarMenu.map((item) => item.id)}

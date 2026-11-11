@@ -508,6 +508,46 @@ def test_generate_batch_size_persists_each_image(client):
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 3
 
 
+def test_gallery_records_generation_time_for_the_whole_batch(client, monkeypatch):
+    import time
+
+    backend = diffusion_module.get_diffusion_backend()
+    generate = backend.generate
+
+    def _slow_generate(**kwargs):
+        time.sleep(0.03)
+        return generate(**kwargs)
+
+    monkeypatch.setattr(backend, "generate", _slow_generate)
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    response = _post_generate(client, prompt = "p", batch_size = 2, seed = 5)
+    assert response.status_code == 200
+    images = response.json()["images"]
+    assert len(images) == 2
+    assert images[0]["generation_seconds"] >= 0.03
+    assert images[1]["generation_seconds"] == images[0]["generation_seconds"]
+    assert [image["generation_count"] for image in images] == [2, 2]
+    listed = client.get("/api/inference/images/gallery").json()["images"]
+    assert all(image["generation_seconds"] == images[0]["generation_seconds"] for image in listed)
+
+
+def test_generate_batch_persists_through_one_save_many(client, monkeypatch):
+    batches = []
+    real = gallery_module.save_many
+
+    def _spy(items):
+        items = list(items)
+        batches.append([meta["batch_index"] for _, meta in items])
+        return real(items)
+
+    monkeypatch.setattr(gallery_module, "save_many", _spy)
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    resp = _post_generate(client, prompt = "p", batch_size = 3, seed = 5)
+    assert resp.status_code == 200
+    assert batches == [[0, 1, 2]]
+    assert [i["batch_index"] for i in resp.json()["images"]] == [0, 1, 2]
+
+
 def test_generate_seed_list_records_replay_from_each_own_seed(client):
     # a seeds list gives each image its own seed, so restore must prefer batch_seed
     _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
@@ -647,6 +687,64 @@ def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
     assert "ran out of memory" in detail
     for leak in ("CUDA", "20.00 GiB", "/home/u", "safetensors"):
         assert leak not in detail
+
+
+def test_generate_native_job_failure_names_an_oom_from_its_log_tail(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[E] ggml: allocating 2304.00 MiB on device 0: cudaMalloc failed: out of memory"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("cudaMalloc", "2304", "generate_image"):
+        assert leak not in detail
+
+
+def test_generate_native_render_short_of_device_memory_names_the_shortfall(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n"
+            "[E] MOSS-Image segment 2/43 (moss_image.layers.1) failed during weight preparation\n"
+            "[E] sampling for image 1/1 failed after 0.87s\n"
+            "[W] model manager cannot make enough memory available on CUDA0: need 1223.37 MB device / 759.59 MB "
+            "budget, available 1187.75 MB device / 935.29 MB budget"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("CUDA0", "1223", "segment"):
+        assert leak not in detail
+
+
+def test_generate_failure_tail_echoing_a_prompt_word_is_not_an_oom(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[I] prompt: a cozy room with a broom, zoomed in"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Image generation failed."
 
 
 def test_generate_native_process_death_names_the_engine_not_its_output(client, monkeypatch):
@@ -1801,8 +1899,7 @@ def test_the_native_plan_refuses_the_same_request_the_native_load_would(client, 
 
 
 def test_the_native_plan_refuses_an_explicit_precision_while_training_runs(client, monkeypatch):
-    # Value-only, so it is not gated on training like the diffusers probe: the plan must not stage a native load
-    # /images/load refuses once training ends.
+    # Value-only, not training-gated: plan must not stage a native load /images/load refuses.
     import core.inference.diffusion_engine_router as engine_router
     import routes.inference as inference_routes
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
@@ -1829,8 +1926,7 @@ def test_the_plan_still_answers_when_nothing_was_promised(client):
 
 
 def test_the_native_refusal_is_waived_by_the_fallback_escape_hatch(client, monkeypatch):
-    """Same escape hatch as every other precision refusal, or this one becomes the only
-    unbypassable member of the family."""
+    """Same escape hatch as other precision refusals, or this one alone is unbypassable."""
     import core.inference.diffusion_engine_router as engine_router
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
@@ -2146,6 +2242,8 @@ def test_recipe_records_the_conditioned_workflow_settings(client, monkeypatch):
     assert gen.status_code == 200
     img = gen.json()["images"][0]
     assert img["workflow"] == "inpaint"
+    assert img["generation_seconds"] >= 0
+    assert img["generation_count"] == 1
     assert img["strength"] == 0.42
     plain = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
     assert plain.status_code == 200
@@ -2320,6 +2418,8 @@ def _pipeline_precision_gate(monkeypatch, **memory):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
@@ -2343,8 +2443,7 @@ def test_balanced_memory_refuses_a_pipeline_precision(monkeypatch):
 
 
 def test_a_measured_memory_mode_is_not_refused_by_the_precision_gate(monkeypatch):
-    """fast and auto decide their policy from the MEASURED footprint, so they are not knowable
-    network-free and this gate has no business refusing them."""
+    """fast and auto set policy from the measured footprint, so the gate must not refuse them."""
     from core.inference.diffusion import _memory_request_forces_offload
 
     assert _memory_request_forces_offload("fast", False) is False
@@ -2404,8 +2503,7 @@ def test_an_offloading_memory_request_refuses_a_torchao_text_encoder(monkeypatch
 
 
 def test_layerwise_fp8_survives_an_offloading_memory_request(monkeypatch):
-    """fp8 is a dtype cast, not a torchao tensor subclass, so offload does not rule it out and
-    refusing it would reject a load the runtime runs."""
+    """fp8 is a dtype cast, not a torchao subclass, so offload does not rule it out."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2455,8 +2553,7 @@ def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(mon
 
 
 def test_layerwise_fp8_does_not_need_torchao(monkeypatch):
-    """fp8 is a plain dtype cast, so a host without torchao still runs it and refusing it would
-    reject a load that works."""
+    """fp8 is a plain dtype cast, so a host without torchao still runs it."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2634,6 +2731,8 @@ def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
@@ -2720,6 +2819,8 @@ def test_a_transformer_family_still_reaches_the_scheme_check(monkeypatch):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     seen: list = []
     monkeypatch.setattr(
         diffusion_module,
@@ -2796,9 +2897,8 @@ def test_a_process_that_cannot_compile_refuses_a_pipeline_precision_up_front(mon
 
 
 def test_the_plan_route_refuses_an_unrecognised_model_before_planning(client):
-    """The route validates exactly as /images/load does, on purpose: an unloadable pick has to fail
-    HERE rather than after a multi-GB download. So an unrecognised repo never reaches the planner,
-    and Download only surfaces the reason instead of fetching a model nothing can open."""
+    """The plan route validates as /images/load does, so an unloadable pick fails before a multi-GB
+    download and never reaches the planner."""
     resp = _post_download_plan(
         client,
         model_path = "someone/mixed-gguf-collection",
@@ -3043,6 +3143,9 @@ def test_external_connection_generates_without_a_local_model_and_saves_to_galler
     assert [(i["prompt"], i["model"], i["width"], i["height"]) for i in images] == [
         ("a sloth", "qwen-image", 512, 256)
     ] * 2
+    assert images[0]["generation_seconds"] >= 0
+    assert images[1]["generation_seconds"] == images[0]["generation_seconds"]
+    assert [image["generation_count"] for image in images] == [2, 2]
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 2
     assert sent == [
         (
@@ -3500,17 +3603,23 @@ def test_the_image_unload_answers_are_declared_in_the_schema(token_client):
     assert stale == {"unloaded": False, "outcome": "superseded"}
 
 
-def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it():
+def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it(monkeypatch):
     # Weight 0 disables an adapter and every loader drops it, so an all-zero list is no LoRA load.
     from fastapi import HTTPException
+    from core.inference import mlx_diffusion_routing as routing
+    from core.inference.diffusion_families import detect_family
     from models.inference import DiffusionLoadRequest, LoraSpec
 
+    z_image = detect_family("z-image")
     off = DiffusionLoadRequest(model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0)])
-    inference_routes._refuse_mlx_loras(off)
-    assert inference_routes._has_active_loras(off.loras) is False
     on = DiffusionLoadRequest(
         model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0), LoraSpec(id = "b", weight = 0.5)]
     )
+    assert inference_routes._has_active_loras(off.loras) is False
     assert inference_routes._has_active_loras(on.loras) is True
+    inference_routes._refuse_mlx_loras(off, z_image)
+    inference_routes._refuse_mlx_loras(on, z_image)
+    monkeypatch.setitem(routing.MLX_CAPABILITIES, "z-image", routing.MlxCapabilities(loras = False))
+    inference_routes._refuse_mlx_loras(off, z_image)
     with pytest.raises(HTTPException):
-        inference_routes._refuse_mlx_loras(on)
+        inference_routes._refuse_mlx_loras(on, z_image)

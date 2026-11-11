@@ -19,7 +19,7 @@ import { type BrowseFoldersResponse, browseFolders } from "@/features/chat";
 import { useT } from "@/i18n";
 import { ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { Folder02Icon } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 

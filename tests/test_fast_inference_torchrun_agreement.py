@@ -11,7 +11,6 @@ Trainer's collectives, and both waited out the group timeout.
 import ast
 import json
 import os
-import socket
 import subprocess
 import sys
 import textwrap
@@ -136,9 +135,8 @@ def test_agreement_follows_the_last_per_card_gate():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def test_mixed_gpu_torchrun_ranks_take_the_same_path(tmp_path):

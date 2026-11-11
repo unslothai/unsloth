@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Row bound for a max_steps run.
-
-TRL prepares the whole train_dataset in the SFTTrainer constructor and never looks
-at max_steps, so a 30-step run over a large corpus tokenizes millions of rows to
-read a few hundred. The count is known before any of that work happens.
-
-This module holds no torch and no unsloth imports: both loaders use it, and the
-MLX one runs on hosts where importing core.training.trainer would drag in a torch
-stack that need not exist.
-"""
+"""Row bound for max_steps runs, computed before TRL tokenizes train_dataset; must stay torch-free."""
 
 import json
 import os

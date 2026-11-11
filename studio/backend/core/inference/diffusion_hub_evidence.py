@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Family evidence for a Hub single-file pick whose id and filename name no family.
-
-Fine-tunes ship under their own names (``Laxhar/noobai-XL-Vpred-1.0``,
-``OnomaAIResearch/Illustrious-xl-early-release-v0``), so the name matcher answers None and the pick
-is refused as an unknown family although the checkpoint states what it is: its safetensors header
-holds a whole SDXL checkpoint (UNet, both text encoders, VAE). Only that is read: the picked file's
-header, and only for whole-pipeline families (SDXL), whose checkpoint is self-contained; a
-transformer-only family resolves its base and defaults from the name. A pipeline pick needs no
-evidence here: a remote one loads only from trusted (named) repos, and a local folder is already
-read through its ``model_index.json``.
-
-Evidence is advisory. ``prefetch_for_pick`` (the routes, user-initiated requests only) re-reads the
-header off the Hub on every request; ``cached_family`` hands that verdict, or a cached copy's header,
-to the network-free ``detect_family_for_pick``. The load opens the downloaded file itself, and that
-stays the authoritative check.
-"""
+"""Family evidence from a Hub safetensors header (SDXL only); advisory, the load check stays final;
+remote pipeline picks need no evidence (trusted repos); detect_family_for_pick is network-free;
+prefetch_for_pick only for user requests."""
 
 from __future__ import annotations
 
@@ -81,9 +68,8 @@ def _verdict(key: tuple[str, str]) -> tuple[bool, Optional[str]]:
 
 
 def cached_family(repo_id: Optional[str], filename: Optional[str] = None) -> Optional[str]:
-    """The family a Hub single-file pick's header declares, from memory or disk only; None when
-    nothing is known. A header read off the Hub by this request's prefetch outranks a cached copy,
-    which may be an older revision of the file the load will fetch."""
+    """The family a Hub single-file header declares, from memory or disk only (None if unknown); a
+    prefetch read off the Hub outranks a cached copy, which may be an older revision."""
     if not is_hub_id(repo_id) or not _is_single_file(filename):
         return None
     repo_id = str(repo_id).strip()
@@ -107,11 +93,9 @@ def prefetch_for_pick(
     hf_token: Any,
     allow_network: bool = True,
 ) -> None:
-    """The route hook: read the picked single file's header off the Hub (a range read, no weights,
-    nothing cached) when neither the name, a local path nor the content answered. ``allow_network=
-    False`` (an automatic, cache-only load) does nothing. ``hf_token`` passes through as given apart
-    from trimming a string: ``False`` (a managed account with no token of its own) stays anonymous.
-    Fails open: offline, gated or odd keeps the previous verdict, if any."""
+    """Reads a picked single file's header off the Hub (range read, nothing cached) when name, path
+    and content gave no verdict; allow_network=False does nothing; hf_token passes through, False
+    stays anonymous; fails open."""
     if (
         not allow_network
         or family_override

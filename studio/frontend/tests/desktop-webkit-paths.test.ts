@@ -10,14 +10,14 @@ test("a fence body becomes skippable only once it carries its measured height", 
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
   assert.match(
     defer,
-    /data-unsloth-fence-windowed=\{lineWindow === null \|\| !measured \? undefined : "true"\}/,
+    /data-unsloth-fence-windowed=\{offscreenPlain \|\| lineWindow === null \|\| !measured \? undefined : "true"\}/,
     "a fence that upgrades off screen is first laid out as its plain lines; skipped before its height is written, it collapses, and WebKit, with no scroll anchoring, clamps a following reader's scrollTop and detaches them",
   );
   assert.match(defer, /const NO_WINDOW = \{ window: null, pins: null, measured: false \} as const;\s*const EMPTY_WINDOW = \{ window: EMPTY_LINE_WINDOW, pins: null, measured: false \} as const;/);
   const measure = defer.slice(defer.indexOf("measure.current = () => {"), defer.indexOf("setState({ measured: true, window: next, pins });"));
   assert.ok(measure.indexOf("region.style.setProperty(FENCE_HEIGHT_PROPERTY, declared);") >= 0, "the measure that first marks a fence measured writes its height before it does");
   const autoscroll = readSrc("components/assistant-ui/use-intent-aware-autoscroll.tsx");
-  assert.match(autoscroll, /const onMutation = \(\): void => \{\s*if \(el\.ownerDocument\.hidden\) \{\s*onLayoutChange\(\);\s*return;\s*\}\s*layoutChanged = true;\s*if \(!parkIfHeld\(\)\) \{\s*extendFollow\(\);\s*\}\s*requestTick\(\);\s*\};/, "a mutation on a shown page never forces layout, following stays the frame loop's job; a hidden page runs no frames, so it pins at once and a reply that ends there is at the bottom when the tab comes back");
+  assert.match(autoscroll, /const onMutation = \(records: MutationRecord\[\]\): void => \{\s*if \(records\.some\(\(record\) => record\.attributeName === ROW_DISTANT_ATTRIBUTE\)\) \{\s*rowsToggledSinceScroll = true;\s*\}\s*if \(el\.ownerDocument\.hidden\) \{\s*onLayoutChange\(\);\s*return;\s*\}\s*layoutChanged = true;\s*if \(!parkIfHeld\(\)\) \{\s*extendFollow\(\);\s*\}\s*requestTick\(\);\s*\};/, "a mutation on a shown page never forces layout, following stays the frame loop's job; a hidden page runs no frames, so it pins at once and a reply that ends there is at the bottom when the tab comes back");
   assert.match(autoscroll, /const adjustForContentInsertedAbove = useCallback\(\(deltaPx: number\) => \{\s*adjustImplRef\.current\(deltaPx\);\s*return userDetachedRef\.current;\s*\}, \[\]\);/, "the hold learns whether its correction was written, even when the engine rounded it to nothing");
 });
 
@@ -46,12 +46,12 @@ test("the Windows thread gutter follows the native thin bar, which neither brows
   assert.equal(readSrc("features/settings/lib/interface-scale-runtime.ts").includes("--studio-interface-zoom"), false);
 });
 
-test("below 1.5x device scale the Windows thread scrolls on the compositor and keeps LCD text", () => {
+test("below 1.5x device scale the Windows thread scrolls on the compositor and keeps LCD text unless a chat background shows through it", () => {
   const css = readSrc("index.css");
   assert.match(
     css,
-    /@media screen and \(forced-colors: none\) \{\s*:root\.client-windows\[data-low-device-scale\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*scrollbar-gutter: auto;\s*overflow-y: scroll;\s*border-inline-start: var\(--thread-scrollbar-gutter\) solid transparent;\s*background-color: var\(--background\);\s*\}\s*\}/,
-    "Chromium composites a scroller below 1.5x only when its scrolling background is opaque, which it paints that way only with an auto gutter; the always-on bar and the start border keep the stable both-edges geometry. A contrast theme paints that transparent border in its text colour, so forced colours keep the stable gutter",
+    /@media screen and \(forced-colors: none\) \{\s*:root\.client-windows\[data-low-device-scale\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*scrollbar-gutter: auto;\s*overflow-y: scroll;\s*border-inline-start: var\(--thread-scrollbar-gutter\) solid transparent;\s*\}\s*\/\*[^*]*\*\/\s*:root\.client-windows\[data-low-device-scale\]:not\(\[data-chat-wallpaper-ready\]\) \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*background-color: var\(--background\);\s*\}\s*\}/,
+    "Chromium composites a scroller below 1.5x only when its scrolling background is opaque, which it paints that way only with an auto gutter; the always-on bar and the start border keep the stable both-edges geometry. A contrast theme paints that transparent border in its text colour, so forced colours keep the stable gutter. A chat background or glass backdrop needs a see-through thread, so it drops the fill",
   );
   const supports = css.lastIndexOf("@supports selector(::-webkit-scrollbar)", css.indexOf("[data-low-device-scale]"));
   assert.ok(supports > css.indexOf(".aui-thread-viewport {\n\t/* Reserve scrollbar space"), "the Chromium-only scrollbar block holds it, so Firefox keeps its own scrolling");
@@ -66,11 +66,12 @@ test("grammar work waits for a held pointer and the reader, and without requestI
   assert.ok(defer.indexOf("if (warmMustWait()) {") < defer.indexOf("grammarsWarmed.add(language);"), "a warm that has to wait does not mark its grammar warmed");
 });
 
-test("settled fences go to the worker where the main thread's regex engine is slow", () => {
+test("settled fences go to the worker on every engine, and on WebKit even a short one", () => {
   const markdown = readSrc("components/assistant-ui/markdown-text.tsx");
   assert.match(markdown, /const slowMainThreadRegex =\s*typeof window !== "undefined"\s*&& typeof window\.requestIdleCallback !== "function";/);
-  assert.match(markdown, /if \(!tokenizesOffThread\(body, streaming\)\) \{\s*if \(streaming \|\| !slowMainThreadRegex\) return false;\s*const state = highlightWorkerState\(\);\s*if \(state === "unavailable" \|\| state === "stalled"\) return false;\s*\}\s*return code\.cover\(options\)\.uncovered > MAIN_THREAD_TAIL_CHARS;/, "JavaScriptCore interprets every lookbehind pattern, so WebKit tokenizes settled fences off the main thread, and a fence too long for the main thread goes to the worker, unless the main thread's own cache leaves only a short tail, as it does for the fence that just streamed");
-  assert.match(markdown, /const MAIN_THREAD_TAIL_CHARS = 512;/);
+  assert.match(markdown, /if \(!tokenizesOffThread\(body, streaming\)\) \{\s*if \(streaming\) return false;\s*const state = highlightWorkerState\(\);\s*if \(state === "unavailable" \|\| state === "stalled"\) return false;\s*\}\s*return code\.cover\(options\)\.uncovered > MAIN_THREAD_TAIL_CHARS;/, "a settled fence is tokenized by the worker while it answers, so scrolling and opening a chat keep the tokenizer off the main thread, unless the main thread's own cache leaves only a short tail, as it does for the fence that just streamed");
+  assert.match(markdown, /const MAIN_THREAD_TAIL_CHARS = slowMainThreadRegex \? 0 : 512;/, "JavaScriptCore interprets every lookbehind pattern, so WebKit sends even a short fence to the worker");
+  assert.match(markdown, /\(inView && !slowMainThreadRegex && !tokenizesOffThread\(body, Boolean\(isIncomplete\)\)\)/, "only a fence on screen with no tokens yet is tokenized on the main thread at the latch, and never on WebKit");
   const warm = markdown.slice(markdown.indexOf("const warm = useCallback("), markdown.indexOf("const speculate = useCallback("));
   assert.match(warm, /!settlesOffThread\(body, Boolean\(isIncomplete\), options\)/, "the reach latch's warm routes a settled fence the same way the render does, or a scroll tokenizes on the main thread a fence WebKit sends to the worker");
   assert.equal(markdown.includes("fenceJustStreamed"), false, "routing reads the cache itself, not a guess about which fence streamed last");
@@ -87,4 +88,36 @@ test("find in page defers rebuilds during scrolling with a maximum wait", () => 
   assert.match(find, /window\.addEventListener\("wheel", noteScroll, \{ capture: true, passive: true \}\);/);
   assert.match(find, /window\.removeEventListener\("wheel", noteScroll, \{ capture: true \}\);/);
   assert.equal(/addEventListener\("scroll", noteScroll/.test(find), false, "autoscroll's own scrolling must not starve a followed stream of rebuilds");
+});
+
+test("an offscreen fence update skipped under a held pointer or selection is retried on release", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  const hook = defer.slice(defer.indexOf("function useOffscreenFenceText("), defer.indexOf("export const FenceBody = memo("));
+  assert.match(
+    hook,
+    /if \(selected \|\| inputPointerHeld\(\)\) \{[^}]*heldLastFrame = true;\s*return;\s*\}/,
+    "releasePointer and selectionchange remeasure only after a held frame, so a skip must mark one or a fence that entered view mid-drag stays plain",
+  );
+  assert.match(defer, /const releasePointer = \(\): void => \{\s*pointerHeld = null;\s*if \(heldLastFrame\) scheduleRemeasure\(\);/, "touch never sets pointerHeld, so the release must not be gated on it (behaviour: code-fence-offscreen-restore.test.ts)");
+});
+
+test("settled WebKitGTK fences only line-window themselves while code wrapping is off", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  assert.match(
+    defer,
+    /windowing \|\|= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap\s*&& \(tokens\?\.length \?\? 0\) > WINDOW_CAP_LINES;/,
+    "line windows map offsets with one unwrapped row per source line; wrapped lines would highlight a window ahead of the reader, "
+      + "and a fence under the cap has no line window, so forcing windowing there would only drop the batched highlight path",
+  );
+  // A block's own wrap button counts too (data-wrap on its wrapper), not only the global setting.
+  assert.match(defer, /const useCodeWrap = \(node: RefObject<Element \| null>\): boolean =>\s*useSyncExternalStore\(subscribeCodeWrap, \(\) => codeWrapOn\(node\.current\), \(\) => false\);/);
+  assert.match(defer, /attributeFilter: \["data-code-wrap", "data-wrap"\]/);
+});
+
+test("fence work runs mid-scroll on every engine once the worker colours it", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  assert.doesNotMatch(defer, /MID_SCROLL_WORK/,
+    "the worker supplies coloured tokens mid-scroll, so WebKit no longer has to wait for the reader to stop");
+  assert.match(defer, /const remove = highlightQueue\.add\(\(\) => \{\s*finish\(\);\s*return true;\s*\}, finish, true\);/);
+  assert.match(defer, /budgetMs: HIGHLIGHT_RUN_MS,/, "each mid-scroll run stays inside a slice of a frame");
 });

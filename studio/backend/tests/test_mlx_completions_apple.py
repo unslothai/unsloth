@@ -121,7 +121,7 @@ def _direct_logprobs(backend, ids):
     scopes Studio decodes in: the logits llama-server reads ``n_probs`` from."""
     from mlx_lm import stream_generate
 
-    with backend._int8_prefill_scope(), backend._generation_scopes():
+    with backend._prefill_decision_scopes(), backend._generation_scopes():
         (first,) = list(
             stream_generate(backend._model, backend._tokenizer, prompt = ids, max_tokens = 1)
         )

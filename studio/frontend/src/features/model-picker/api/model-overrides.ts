@@ -17,6 +17,7 @@ import {
   normalizeMlxKvQuant,
   type PerModelConfig,
   normalizePerModelConfig,
+  perModelConfigSnapshot,
 } from "../model-config/per-model-config";
 import { forgetPerModelConfigsForOverrideKeys } from "../model-config/saved-run-settings";
 
@@ -42,6 +43,8 @@ export interface ApiModelOverride {
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_int8_prefill?: boolean;
+  mlx_ane_prefill?: boolean;
+  mlx_fast_verify?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_ple_offload?: "off" | number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -357,6 +360,8 @@ export function fromApiOverride(
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
     mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
+    mlxAnePrefill: override.mlx_ane_prefill ?? local.mlxAnePrefill,
+    mlxFastVerify: override.mlx_fast_verify ?? local.mlxFastVerify,
     mlxPleOffload: override.mlx_ple_offload ?? local.mlxPleOffload,
     mlxExpertOffload: override.mlx_expert_offload ?? local.mlxExpertOffload,
     loadIn4bit: override.load_in_4bit ?? local.loadIn4bit,
@@ -457,6 +462,12 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.mlxInt8Prefill) {
     payload.mlx_int8_prefill = true;
   }
+  if (config.mlxAnePrefill) {
+    payload.mlx_ane_prefill = true;
+  }
+  if (config.mlxFastVerify) {
+    payload.mlx_fast_verify = true;
+  }
   if (config.loadIn4bit === false) {
     payload.load_in_4bit = false;
   }
@@ -494,6 +505,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
 
 // One in-flight write per model so an older response cannot resurrect a replaced entry.
 const writesByKey = new Map<string, Promise<ModelOverrideWriteResult>>();
+// A forget clears every alias of a cached repo on the server, so per-key order is not enough: it
+// waits for every write in flight, and every write after it waits for the forget.
+let forgetBarrier: Promise<unknown> = Promise.resolve();
 
 export interface ModelOverrideWriteResult {
   overrides: ApiModelOverrides;
@@ -520,12 +534,18 @@ export async function putModelOverride(
     normalizeModelIdentity(modelId),
     normalizeGgufVariantIdentity(ggufVariant),
   );
-  // Chain on the settled tail: a failed write must not cancel the next one.
-  const previous = writesByKey.get(key) ?? Promise.resolve();
-  const write = previous
-    .catch(() => {})
-    .then(() => sendModelOverride(modelId, ggufVariant, config, options));
+  const isForget = config === null && !options?.keepLaunchFlags;
+  // Chain on the settled tails: a failed write must not cancel the next one.
+  const previous = isForget
+    ? Promise.allSettled([forgetBarrier, ...writesByKey.values()])
+    : Promise.allSettled([forgetBarrier, writesByKey.get(key)]);
+  const write = previous.then(() =>
+    sendModelOverride(modelId, ggufVariant, config, options),
+  );
   writesByKey.set(key, write);
+  if (isForget) {
+    forgetBarrier = write.catch(() => {});
+  }
   try {
     return await write;
   } finally {
@@ -606,6 +626,10 @@ async function sendModelOverride(
   };
 }
 
+// Last write per folded key: a forget's cleanup spares any alias saved after it was sent.
+let syncSeq = 0;
+const lastWriteSeq = new Map<string, number>();
+
 /** Best-effort: the localStorage write already happened, so failures are only logged. */
 export function syncModelOverride(
   modelId: string,
@@ -613,9 +637,17 @@ export function syncModelOverride(
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
 ): void {
+  const seq = ++syncSeq;
+  lastWriteSeq.set(foldOverrideKey(modelOverrideKey(modelId, ggufVariant)), seq);
+  // localStorage is shared, so this also catches a save from another tab meanwhile.
+  const sent = config === null ? perModelConfigSnapshot() : undefined;
   void putModelOverride(modelId, ggufVariant, config, options)
     .then(({ removedKeys }) => {
-      if (!forgetPerModelConfigsForOverrideKeys(removedKeys)) {
+      // An undo, or a save under another alias, already rewrote what this forget reports.
+      const stale = removedKeys.filter(
+        (key) => (lastWriteSeq.get(foldOverrideKey(key)) ?? 0) <= seq,
+      );
+      if (!forgetPerModelConfigsForOverrideKeys(stale, sent)) {
         console.warn(
           "Forgot model settings on the server, but this browser kept its own copy.",
         );

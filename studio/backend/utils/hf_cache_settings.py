@@ -179,9 +179,8 @@ def configured_cache_key() -> str:
 
 
 def _portable_cache_home() -> Optional[Path]:
-    """The HF cache home a portable install uses, else None: a normal install keeps the platform
-    default so models shared with other tools are not re-downloaded. Lazy import, since
-    storage_roots reaches into this module during startup."""
+    """HF cache home for a portable install, else None: normal installs keep the platform default,
+    so shared models are not re-downloaded; lazy import; storage_roots imports this module."""
     try:
         from utils.paths.storage_roots import cache_root, portable_mode
     except ImportError:
@@ -194,7 +193,25 @@ def _portable_cache_home() -> Optional[Path]:
         return None
 
 
+def _scan_memoized(name: str, compute):
+    from utils.scan_memo import memoized
+
+    environ = os.environ
+    key = (
+        name,
+        environ.get("HOME"),
+        environ.get("XDG_CACHE_HOME"),
+        environ.get("UNSLOTH_PORTABLE"),
+        environ.get("UNSLOTH_HOME"),
+    )
+    return memoized(key, compute)
+
+
 def get_hf_cache_paths() -> HuggingFaceCachePaths:
+    return _scan_memoized("hf_cache_paths", _get_hf_cache_paths_uncached)
+
+
+def _get_hf_cache_paths_uncached() -> HuggingFaceCachePaths:
     env_paths = _environment_paths()
     if env_paths is not None:
         return env_paths
@@ -391,10 +408,8 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
 
 
 def download_cache_paths(download_dir: Optional[str]) -> HuggingFaceCachePaths:
-    """Cache paths for one download: the Models folder, or a chosen folder laid out the same way.
-
-    Raises ValueError for a folder the Models folder setting would also refuse.
-    """
+    """Cache paths for one download: the Models folder, or a chosen folder laid out the same way;
+    raises ValueError for a folder the Models setting would refuse."""
     active = get_hf_cache_paths()
     if download_dir is None or not download_dir.strip():
         return active
@@ -411,10 +426,8 @@ def download_cache_paths(download_dir: Optional[str]) -> HuggingFaceCachePaths:
 
 
 def remember_cache_home(cache_home: Path) -> None:
-    """Keep a download folder among the known caches, like a previous Models folder.
-
-    Progress, resume, delete and the cached-model checks read only known caches. Idempotent.
-    """
+    """Keeps a download folder among the known caches, like a previous Models folder; progress,
+    resume, delete and cached-model checks read only known caches. Idempotent."""
     home = _canonical(cache_home)
     key = os.path.normcase(str(home))
     with _settings_lock:
@@ -435,8 +448,7 @@ def remember_cache_home(cache_home: Path) -> None:
 
 
 def _invalidate_cache_views() -> None:
-    # Inventory scans are cached independently from settings. Invalidate after
-    # persistence so the next request sees both the new active root and history.
+    # Inventory scans are cached apart from settings, so invalidate after persisting them.
     from hub.utils.inventory_scan import invalidate_hf_cache_scans
 
     invalidate_hf_cache_scans()
@@ -457,6 +469,10 @@ def effective_cache_home() -> Path:
 
 
 def known_hf_cache_homes() -> list[Path]:
+    return list(_scan_memoized("known_hf_cache_homes", _known_hf_cache_homes))
+
+
+def _known_hf_cache_homes() -> list[Path]:
     paths = get_hf_cache_paths()
     stored = _stored_cache_home()
     candidates: list[Path] = []
@@ -483,6 +499,10 @@ def known_hf_cache_homes() -> list[Path]:
 
 
 def known_hf_hub_caches() -> list[Path]:
+    return list(_scan_memoized("known_hf_hub_caches", _known_hf_hub_caches))
+
+
+def _known_hf_hub_caches() -> list[Path]:
     active = get_hf_cache_paths()
     out = [active.hub_cache]
     seen = {os.path.normcase(str(_canonical(active.hub_cache)))}

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load a whole-pipeline GGUF (stable-diffusion.cpp ``convert`` of an SDXL checkpoint) through diffusers.
-
-Pipeline-level ``from_single_file`` treats every component as packed GGUF bytes (text encoders fail 816 vs 768), so
-only the denoiser loads quantized; the rest is dequantized once and fed to the pipeline loader in place of the read.
-"""
+"""Loads whole-pipeline GGUFs via diffusers: only the denoiser stays quantized, rest is dequantized."""
 
 import threading
 from typing import Any, Optional
@@ -70,6 +66,11 @@ def load_whole_pipeline_gguf(
     import diffusers.loaders.single_file as single_file_mod
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
 
+    from .diffusion_gguf_exact import install_exact_dequant
+    from .diffusion_gguf_lowbit import install_lowbit_iq
+
+    install_lowbit_iq()  # diffusers' reader refuses unknown types, so before the read
+    install_exact_dequant()
     checkpoint = load_single_file_checkpoint(
         path,
         local_files_only = pipe_kwargs.get("local_files_only"),

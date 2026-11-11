@@ -7,7 +7,14 @@ import re
 from typing import Any, Optional
 
 from utils.datasets.cells import text_cell_check, unwrap_message_column
-from utils.datasets.format_detection import detect_dataset_format, has_message_prompt_completion
+from utils.datasets.format_detection import (
+    detect_dataset_format,
+    detect_video_columns,
+    detect_video_structure,
+    has_message_prompt_completion,
+    video_sample,
+    is_plain_text_dataset,
+)
 from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 
 
@@ -453,6 +460,7 @@ def detect_multimodal_dataset(dataset):
     if sample is None:
         return {
             "is_image": False,
+            "is_video": False,
             "multimodal_columns": [],
             "modality_types": [],
             "is_audio": False,
@@ -504,6 +512,12 @@ def detect_multimodal_dataset(dataset):
             modality_types.add("audio")
     if audio_columns:
         multimodal_columns = [col for col in multimodal_columns if col not in set(audio_columns)]
+    video_columns = detect_video_columns(video_sample(dataset, sample))
+    audio_columns = [col for col in audio_columns if col not in video_columns]
+    if video_columns:
+        multimodal_columns = [col for col in multimodal_columns if col not in video_columns]
+        multimodal_columns += video_columns
+        modality_types.add("video")
 
     detected_text_col = None
     if audio_columns:
@@ -526,6 +540,7 @@ def detect_multimodal_dataset(dataset):
                 break
     return {
         "is_image": len(multimodal_columns) > 0,
+        "is_video": bool(video_columns),
         "multimodal_columns": multimodal_columns,
         "modality_types": list(modality_types),
         "is_audio": len(audio_columns) > 0,
@@ -546,6 +561,9 @@ def detect_vlm_dataset_structure(dataset):
             "text_column": None,
             "messages_column": None,
         }
+    video_structure = detect_video_structure(video_sample(dataset, sample))
+    if video_structure is not None:
+        return video_structure
     column_names = set(sample.keys())
     is_text = text_cell_check(dataset)
     if "messages" in column_names:
@@ -734,13 +752,30 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "detected_speaker_column": multimodal_info.get("detected_speaker_column"),
     }
 
+    if is_plain_text_dataset(dataset):
+        # Before the VLM branch: text-only data trains as raw text on a vision model too.
+        # Media flags off: a name match (a "speech" column) would route an audio model to its audio path.
+        return {
+            "requires_manual_mapping": False,
+            "detected_format": "raw",
+            "columns": columns,
+            "suggested_mapping": None,
+            "detected_image_column": None,
+            "detected_text_column": None,
+            "is_image": False,
+            "multimodal_columns": None,
+            "is_audio": False,
+            "detected_audio_column": None,
+            "detected_speaker_column": None,
+        }
+
     if is_vlm:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         requires_mapping = vlm_structure["format"] == "unknown"
         warning = None
         if requires_mapping:
             missing = []
-            if not vlm_structure.get("image_column"):
+            if not (vlm_structure.get("image_column") or vlm_structure.get("video_column")):
                 missing.append("image")
             if not vlm_structure.get("text_column"):
                 missing.append("text")
@@ -863,15 +898,19 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
         if not isinstance(message, dict):
             continue
         role = message.get("role") or message.get("from")
-        content = message.get("content") if "content" in message else message.get("value")
+        content = message.get("content")
+        if content is None:
+            content = message.get("value")
         normalized = _normalize_role_alias(role)
-        messages.append(
+        new_message = {key: value for key, value in message.items() if key not in ("from", "value")}
+        new_message.update(
             {
                 # Unknown alias shown as written; blank falls back to "user", as before.
                 "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
-                "content": "" if content is None else content,
+                "content": "" if content is None and not message.get("tool_calls") else content,
             }
         )
+        messages.append(new_message)
     return {chat_column: messages}
 
 

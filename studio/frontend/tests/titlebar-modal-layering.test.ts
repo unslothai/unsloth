@@ -27,8 +27,9 @@ const TITLEBAR_BACKDROP_RULE_PATTERN =
   /\[data-slot="window-titlebar"\]\[data-viewport-backdrop-open\]::after\s*\{\s*opacity:\s*1;\s*\}/;
 const TITLEBAR_BACKDROP_STORE_PATTERN =
   /useSyncExternalStore\(\s*enabled \? subscribeViewportBackdrop : subscribeNever,/;
+// On the titlebar's own opening tag; other attributes may sit between the two.
 const TITLEBAR_BACKDROP_ATTRIBUTE_PATTERN =
-  /data-slot="window-titlebar"\s+data-viewport-backdrop-open=\{backdropOpen \? "" : undefined\}/;
+  /data-slot="window-titlebar"[^>]*?\sdata-viewport-backdrop-open=\{backdropOpen \? "" : undefined\}/;
 const TOUR_VIEWPORT_BACKDROP_PATTERN =
   /data-slot="dialog-overlay"[\s\S]*?data-viewport-backdrop=\{true\}/;
 

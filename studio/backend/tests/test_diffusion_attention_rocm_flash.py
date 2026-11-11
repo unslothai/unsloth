@@ -40,6 +40,8 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_STORED_MISSES", set(), raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_SEGMENTS_MEMO", {}, raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_TRACED_KEYS", set(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BASELINE", [None], raising = False)
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
@@ -1197,8 +1199,7 @@ def test_max_abs_error_alone_rejects(max_rel, wins):
     assert att._rocm_flash_wins({**_GOOD, "max_rel": max_rel}) is wins
 
 
-# Lengths: calls are gated per power-of-two length bucket; an unseen bucket is timed on its first eager call and never
-# inherits the 4096 verdict.
+# Gates are per power-of-two length bucket; an unseen bucket is timed, never inheriting 4096.
 
 
 @pytest.mark.parametrize(
@@ -1964,7 +1965,12 @@ class _CompiledDit(__import__("torch").nn.Module):
         return self._guarded(q, q, q, None)
 
 
-def _compiled_env(monkeypatch, auto, flash_ms):
+def _compiled_env(
+    monkeypatch,
+    auto,
+    flash_ms,
+    dit_cls = None,
+):
     torch = pytest.importorskip("torch")
     _rocm(monkeypatch)
     ad = pytest.importorskip("diffusers.models.attention_dispatch")
@@ -1997,7 +2003,7 @@ def _compiled_env(monkeypatch, auto, flash_ms):
         return {**_GOOD, "flash_ms": flash_ms.get(tokens, 90.0), "tokens": tokens}
 
     monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
-    dit = _CompiledDit(guarded)
+    dit = (dit_cls or _CompiledDit)(guarded)
     backend = att.ROCM_FLASH_CANDIDATE if auto else "flash"
     assert (
         att.apply_attention_backend(
@@ -2051,6 +2057,63 @@ def test_compiled_dynamic_lengths_recompile_per_bucket_not_per_length(monkeypatc
     assert out == [1.0, 1.0, 1.0] and len(frames) == 1
     assert float(compiled(torch.zeros(1, 9000, 2, 16, dtype = bf16)).flatten()[0]) == -1.0
     assert len(frames) == 2 and timed == [4096, 8192]
+    torch._dynamo.reset()
+
+
+class _CompiledCrossDit(_CompiledDit):
+    def forward(self, q, k):
+        return self._guarded(q, k, k, None)
+
+
+def _traces_statically_known_true():
+    try:
+        from torch._dynamo import trace_rules
+    except Exception:  # noqa: BLE001
+        return False
+    name = "torch.fx.experimental.symbolic_shapes.statically_known_true"
+    return name in trace_rules.manual_torch_name_rule_map
+
+
+# Cross attention: the key length is its own symbol. Telling self from cross attention must not compare the two
+# lengths with a guard, or a query length equal to the key length recompiles and a marked dynamic range is rejected.
+_needs_skt = pytest.mark.skipif(
+    not _traces_statically_known_true(),
+    reason = "this torch's Dynamo cannot trace statically_known_true",
+)
+
+
+@_needs_skt
+def test_compiled_cross_attention_does_not_guard_query_length_on_key_length(monkeypatch):
+    torch, dit, timed = _compiled_env(monkeypatch, True, {4096: 70.0}, _CompiledCrossDit)
+    torch._dynamo.reset()
+    frames = []
+    compiled = torch.compile(
+        dit,
+        backend = lambda gm, inputs: frames.append(gm) or gm.forward,
+        dynamic = True,
+        fullgraph = True,
+    )
+    bf16 = torch.bfloat16
+    k = torch.zeros(1, 6000, 2, 16, dtype = bf16)
+    counts = []
+    for n in (5000, 6000, 7000, 5500):
+        assert float(compiled(torch.zeros(1, n, 2, 16, dtype = bf16), k).flatten()[0]) == 1.0
+        counts.append(len(frames))
+    assert counts == [1, 1, 1, 1]
+    torch._dynamo.reset()
+
+
+@_needs_skt
+def test_compiled_cross_attention_accepts_a_marked_query_range_spanning_the_key_length(monkeypatch):
+    torch, dit, timed = _compiled_env(monkeypatch, True, {4096: 70.0}, _CompiledCrossDit)
+    torch._dynamo.reset()
+    bf16 = torch.bfloat16
+    q = torch.zeros(1, 5000, 2, 16, dtype = bf16)
+    k = torch.zeros(1, 6000, 2, 16, dtype = bf16)
+    torch._dynamo.mark_dynamic(q, 1, min = 4500, max = 7500)
+    torch._dynamo.mark_static(k, 1)
+    compiled = torch.compile(dit, backend = "eager", dynamic = True, fullgraph = True)
+    assert float(compiled(q, k).flatten()[0]) == 1.0
     torch._dynamo.reset()
 
 
@@ -2379,8 +2442,7 @@ def test_admission_key_does_not_alias_geometry_and_lengths(monkeypatch):
     assert len(att.ROCM_FLASH_ADMISSIONS) == 2
 
 
-# A re-apply on the same pipe that no longer picks ROCm flash takes the tracking off with it: the badge and the memory
-# guard must not keep reading the pipe as flash.
+# Native re-apply drops ROCm flash tracking so the badge and memory guard stop reading flash.
 
 
 def test_reapply_to_native_removes_rocm_flash_tracking(monkeypatch):
@@ -2399,3 +2461,59 @@ def test_reapply_to_native_removes_rocm_flash_tracking(monkeypatch):
     assert state.resolved["attention_backend"] == entry
     assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
     assert att.attention_may_run_native(pipe)
+
+
+class _CompiledDitWithBreak(_CompiledDit):
+    """A traced attention call followed by a graph break in the same frame: Dynamo compiles the prefix and restarts
+    the frame's analysis, replaying it against its speculation log (diffusers' Wan blocks under regional compile)."""
+
+    def forward(self, q):
+        import torch
+
+        out = self._guarded(q, q, q, None)
+        torch._dynamo.graph_break()
+        return out * 1
+
+
+def test_traced_probe_survives_a_dynamo_restart_of_the_frame(monkeypatch):
+    # The traced call times an untimed bucket (8192) during the first analysis; the restart after the graph break
+    # must see the same segments, else SpeculationLogDivergence (Wan2.2 on gfx1151 with flash-attn, auto backend).
+    torch, dit, timed = _compiled_env(
+        monkeypatch, True, {4096: 70.0, 8192: 70.0}, _CompiledDitWithBreak
+    )
+    torch._dynamo.reset()
+    compiled = torch.compile(dit, backend = "eager")
+    q8 = torch.zeros(1, 9000, 2, 16, dtype = torch.bfloat16)
+    assert float(compiled(q8).flatten()[0]) == 1.0
+    assert timed == [4096, 8192]
+    # A later trace after an eager verdict sees it: the key moves with verdicts the traced calls did not add.
+    q16 = torch.zeros(1, 17000, 2, 16, dtype = torch.bfloat16)
+    assert float(compiled(q16).flatten()[0]) == -1.0
+    torch._dynamo.reset()
+
+
+def test_a_new_sdpa_baseline_drops_the_memoized_segments(monkeypatch):
+    # A load that changes the enabled native SDPA kernels clears the verdicts; the traced segments built from the old
+    # verdicts must go with them, or a later trace would bake the old baseline's route into its graph.
+    att._ROCM_FLASH_BUCKETS[("cuda:0", "torch.bfloat16", 32, 2, 16, 4096, 4096, 1)] = True
+    monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: "sdpa-A")
+    att._sync_rocm_flash_baseline()
+    att._ROCM_FLASH_SEGMENTS_MEMO[("stale",)] = ((8192, 4096, True, None),)
+    att._ROCM_FLASH_TRACED_KEYS.add(("cuda:0", "torch.bfloat16", 32, 2, 16, 8192, 8192, 1))
+    monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: "sdpa-B")
+    att._sync_rocm_flash_baseline()
+    assert att._ROCM_FLASH_SEGMENTS_MEMO == {} and att._ROCM_FLASH_TRACED_KEYS == set()
+    assert att._ROCM_FLASH_BUCKETS == {}
+
+
+def test_segments_memo_key_follows_eager_verdicts_not_traced_ones(monkeypatch):
+    args = ("cuda:0", "torch.bfloat16", 2, 16, ((32, 2, 16),), None, 1)
+    k0 = att._rocm_flash_segments_key(args)
+    traced = ("cuda:0", "torch.bfloat16", 32, 2, 16, 8192, 8192, 1)
+    att._ROCM_FLASH_BUCKETS[traced] = True
+    att._ROCM_FLASH_TRACED_KEYS.add(traced)
+    assert (
+        att._rocm_flash_segments_key(args) == k0
+    )  # a traced call's verdict keeps the key (Dynamo restart)
+    att._ROCM_FLASH_BUCKETS[("cuda:0", "torch.bfloat16", 32, 2, 16, 16384, 16384, 1)] = False
+    assert att._rocm_flash_segments_key(args) != k0  # an eager / stored verdict moves it

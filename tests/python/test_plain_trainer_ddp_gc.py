@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import queue as queue_module
-import socket
 import sys
 
 import pytest
@@ -31,9 +30,8 @@ def _failed(results):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _run(cases):
@@ -49,13 +47,14 @@ def _run(cases):
     try:
         while len(results) < len(procs):
             try:
-                rank, out = queue.get(timeout = 60 if _failed(results) else 600)
+                # Below the 330 s pytest timeout, so a hang fails here with what did arrive.
+                rank, out = queue.get(timeout = 60 if _failed(results) else 240)
             except queue_module.Empty:
                 break
             results[rank] = out
     finally:
         for p in procs:
-            p.join(5 if len(results) < len(procs) else 120)
+            p.join(5 if len(results) < len(procs) else 30)
             if p.is_alive():
                 p.kill()
     assert results, "no rank reported"

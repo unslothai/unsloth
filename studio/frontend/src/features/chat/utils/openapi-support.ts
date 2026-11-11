@@ -28,3 +28,18 @@ export function readGuardProbe(ok: boolean, document: unknown): GuardProbe {
   if (!ok) return { supported: false, settled: false };
   return { supported: schemaDeclaresRepairGuards(document), settled: true };
 }
+
+/** threadPatchGuards from a thread-list response; null when the backend predates the flag. */
+export function readAdvertisedPatchGuards(data: unknown): boolean | null {
+  if (typeof data !== "object" || data === null) return null;
+  const value = (data as { threadPatchGuards?: unknown }).threadPatchGuards;
+  return typeof value === "boolean" ? value : null;
+}
+
+export async function resolveGuardProbe(
+  advertised: boolean | null,
+  probeSchema: () => Promise<GuardProbe>,
+): Promise<GuardProbe> {
+  if (advertised !== null) return { supported: advertised, settled: true };
+  return probeSchema();
+}

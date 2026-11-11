@@ -115,6 +115,20 @@ def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
     return None
 
 
+try:
+    from unsloth_zoo.torch_config import set_torch_config
+except Exception:  # older unsloth_zoo: current thread only
+
+    def set_torch_config(
+        config_module,
+        name,
+        value,
+        force = False,
+    ):
+        setattr(config_module, name, value)
+        return value
+
+
 def tag_compile_cache(path):
     """Add a hash of a kernel file to torch.compile's cache key. Inductor's FX graph cache keys a
     torch.library.triton_op call without the Triton source behind it, so after an Unsloth upgrade
@@ -126,4 +140,5 @@ def tag_compile_cache(path):
         tag = f"unsloth/{os.path.basename(path)}:{hashlib.sha256(file.read()).hexdigest()[:16]}"
     tags = [t for t in config.cache_key_tag.split(",") if t]
     if tag not in tags:
-        config.cache_key_tag = ",".join(tags + [tag])
+        # Every thread: a reentrant checkpoint recompiles its grad graph on autograd's device thread.
+        set_torch_config(config, "cache_key_tag", ",".join(tags + [tag]))

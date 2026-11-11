@@ -128,3 +128,92 @@ def run_rank(rank, port, checkpoint, out_dir, queue):
         raise
     if result.get("error") is None:
         dist.destroy_process_group()
+
+
+def run_rank_save_options(rank, port, checkpoint, out_dir, queue):
+    """create_model_card=False must skip the usage snippet; no save may leave eval mode."""
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        LOCAL_RANK = str(rank),
+        WORLD_SIZE = "2",
+        LOCAL_WORLD_SIZE = "2",
+        ACCELERATE_USE_CPU = "true",
+        UNSLOTH_FSDP2 = "1",
+    )
+    runpy.run_path(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "conftest.py")
+    )
+    import torch
+    import torch.distributed as dist
+
+    torch.set_num_threads(1)
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.models import Pooling, Transformer
+
+    import unsloth  # noqa: F401
+    from unsloth import FastSentenceTransformer
+    from unsloth.models.fsdp2_native import FSDP2Config, shard_model
+
+    dist.init_process_group("gloo", rank = rank, world_size = 2)
+    result = {}
+    try:
+        torch.manual_seed(0)
+        transformer = Transformer(checkpoint)
+        model = SentenceTransformer(
+            modules = [transformer, Pooling(transformer.get_word_embedding_dimension())],
+            device = "cpu",
+        )
+        model._unsloth_fast_encoder = True
+        model._compile_mode = None
+        model = FastSentenceTransformer.get_peft_model(
+            model,
+            r = 4,
+            lora_alpha = 8,
+            target_modules = ["query", "key", "value", "dense"],
+            use_gradient_checkpointing = False,
+        )
+        shard_model(model, FSDP2Config(device = "cpu", reshard_after_forward = True))
+        n_sharded = sum(type(p).__name__ == "DTensor" for p in model.parameters())
+        card_cls = type(model.model_card_data)
+        original_run = card_cls.run_usage_snippet
+        runs = []
+
+        def counted(self, *args, **kwargs):
+            runs.append(1)
+            return original_run(self, *args, **kwargs)
+
+        card_cls.run_usage_snippet = counted
+        try:
+            model.train()
+            model.model_card_data.similarities = None
+            no_card = os.path.join(out_dir, "no_card")
+            model.save_pretrained(no_card, create_model_card = False)
+            result["no_card_runs"] = len(runs)
+            result["no_card_eval_modules"] = sum(not m.training for m in model.modules())
+            dist.barrier()
+            if rank == 0:
+                readme = os.path.join(no_card, "README.md")
+                result["no_card_has_st_card"] = os.path.exists(readme) and (
+                    "library_name: sentence-transformers" in open(readme, encoding = "utf-8").read()
+                )
+            model.train()
+            model.model_card_data.similarities = None
+            model.save_pretrained(os.path.join(out_dir, "card"))
+            result["card_runs"] = len(runs) - result["no_card_runs"]
+            result["card_eval_modules"] = sum(not m.training for m in model.modules())
+        finally:
+            card_cls.run_usage_snippet = original_run
+        result.update(
+            error = None,
+            n_sharded = n_sharded,
+            still_sharded = sum(type(p).__name__ == "DTensor" for p in model.parameters()),
+        )
+        dist.barrier()
+        queue.put((rank, result))
+    except BaseException:
+        import traceback
+        queue.put((rank, {"error": traceback.format_exc()}))
+        raise
+    dist.destroy_process_group()

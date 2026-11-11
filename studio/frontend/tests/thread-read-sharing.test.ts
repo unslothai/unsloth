@@ -65,6 +65,7 @@ function harness() {
         publishChatHistoryRevision: () => {},
         CHAT_HISTORY_REVISION_KEY: "unsloth_chat_history_revision",
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
       "../lib/load-request": {},
       "./generation-length.ts": {},

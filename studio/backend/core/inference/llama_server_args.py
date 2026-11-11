@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Boundary validator for user-supplied llama-server pass-through args. Reject only flags Unsloth
-manages (model identity, auth, network, parallel slots). Everything else (sampling, ``-c``,
-``-ngl``, ``--flash-attn``, ``--cache-type-*``, ``--spec-*``, ``--jinja``, ...) is appended after
-Unsloth's auto-set flags so llama.cpp's last-wins parser lets the user override. Ref:
-https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"""
+"""Rejects only Unsloth-managed flags (model, auth, network, slots); user flags come last and win."""
 
 from __future__ import annotations
 
@@ -588,9 +584,6 @@ MEMORY_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_NO_DIO",
 )
 
-_SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
-)
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
@@ -718,9 +711,8 @@ def effective_ctx_checkpoints(
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
-    """Return the context size load_model should treat as requested. Single source of truth for
-    load_model's ctx-override conditional so tests don't reimplement and assert against their own
-    logic."""
+    """Return the context size load_model treats as requested; the single source of truth for its
+    ctx-override conditional, so tests call it rather than reimplement the logic."""
     override = parse_ctx_override(args)
     return override if override is not None else fallback_n_ctx
 
@@ -858,13 +850,20 @@ def resolve_reasoning_budget_message_with_env(
 
 def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     """Last user-supplied -ngl value from extras, read before Manual mode strips the flags."""
-    raw_value = _last_flag_value(args, _GPU_LAYER_FLAGS)
+    raw_value = _last_flag_value(args, _GPU_LAYER_FLAGS, preserve_raw = True)
     if raw_value is None:
         return None
+    if raw_value == "auto":
+        return -1
+    if raw_value == "all":
+        # Manual mode needs a fixed count; negative values enable fitting.
+        return 2**31 - 1
     try:
         value = int(raw_value)
     except ValueError as exc:
-        raise ValueError("llama-server GPU layers flag requires an integer value") from exc
+        raise ValueError(
+            "llama-server GPU layers flag requires an integer value, auto, or all"
+        ) from exc
     if value < -1:
         raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
     return value
@@ -1059,9 +1058,8 @@ def resolve_cache_type_kv(
 
 
 def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the last-wins ``--split-mode`` / ``-sm`` value from extras. Mirrors
-    parse_cache_override for the multi-GPU split mode; returns the raw mode string (``tensor`` /
-    ``row`` / ``none`` / ``layer``), or None when extras don't set it."""
+    """Return the last-wins --split-mode or -sm value from extras as a raw mode string (tensor, row,
+    none or layer), or None; mirrors parse_cache_override for multi-GPU split mode."""
     return _last_flag_value(args, _SPLIT_MODE_FLAGS)
 
 
@@ -1315,15 +1313,39 @@ def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
 MANAGED_DIO_FLAGS: tuple[str, ...] = ("--load-mode", "dio")
 
 
-def no_reserve_requires_dio(*, supports_load_mode: bool, gpu_offload_confirmed: bool) -> bool:
+def no_reserve_requires_dio(
+    *, supports_load_mode: Optional[bool], gpu_offload_confirmed: bool
+) -> bool:
     """Windows keeps a full offload mapping resident, so DirectIO is owed only on confirmed offload and on a build supporting --load-mode."""
-    return sys.platform == "win32" and supports_load_mode and gpu_offload_confirmed
+    return sys.platform == "win32" and bool(supports_load_mode) and gpu_offload_confirmed
+
+
+def load_mode_support(server_caps: Mapping[str, object]) -> Optional[bool]:
+    """--load-mode support from a --help probe; None when the probe failed or listed nothing."""
+    if server_caps.get("supports_load_mode"):
+        return True
+    if server_caps.get("help_probe_ok") and server_caps.get("flags"):
+        return False
+    return None
+
+
+def keep_resident_lock_flags(supports_load_mode: Optional[bool]) -> list[str]:
+    """Page-lock spelling for this build; none when unknown, since newer builds exit on --mlock."""
+    if supports_load_mode is None:
+        return []
+    # mmap+mlock, not bare mlock, matches what --mlock meant with default mmap.
+    return ["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"]
+
+
+def keep_resident_lock_applicable(host_resident: bool, supports_load_mode: Optional[bool]) -> bool:
+    """Whether a missing lock is owed; an unknown build gets none, so a reload must not ask for one."""
+    return bool(host_resident) and supports_load_mode is not None
 
 
 def resolve_launch_load_mode(
     extra_args: Optional[Iterable[str]],
     *,
-    supports_load_mode: bool,
+    supports_load_mode: Optional[bool],
     weights_in_host_memory: bool,
     gpu_offload_confirmed: bool,
     requested_load_mode: Optional[str],
@@ -1355,7 +1377,7 @@ def resolve_launch_load_mode(
 def apply_model_memory_policy(
     extra_args: Optional[Iterable[str]],
     *,
-    supports_load_mode: bool = False,
+    supports_load_mode: Optional[bool] = False,
     weights_in_host_memory: bool = True,
     gpu_offload_confirmed: bool = False,
     env: Optional[Mapping[str, str]] = None,
@@ -1398,9 +1420,9 @@ def apply_model_memory_policy(
     ):
         # On confirmed full offload, Windows streams via dio since the GGUF cannot be partially unmapped; per-model modes still win later.
         managed.extend(MANAGED_DIO_FLAGS)
-    if keep_resident and not no_ram_reserve and weights_in_host_memory:
-        # Before the extras, like the managed block: mmap+mlock, not bare mlock, matches what --mlock meant with default mmap.
-        managed.extend(["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"])
+    lock = keep_resident_lock_flags(supports_load_mode)
+    if keep_resident and not no_ram_reserve and weights_in_host_memory and lock:
+        managed.extend(lock)
         tokens = strip_shadowing_flags(
             tokens,
             strip_context = False,
@@ -1418,7 +1440,7 @@ def apply_model_memory_policy(
 def apply_load_mode_policy(
     extra_args: Optional[Iterable[str]],
     *,
-    supports_load_mode: bool = False,
+    supports_load_mode: Optional[bool] = False,
     weights_in_host_memory: bool = True,
     requested_load_mode: Optional[str] = None,
     settings: Optional[tuple[bool, bool]] = None,
@@ -1447,6 +1469,12 @@ def apply_load_mode_policy(
         logger.info(
             "Model Memory: 'Don't reserve system RAM' drops the requested load mode %r.",
             mode,
+        )
+        return [], tokens
+    if supports_load_mode is None:
+        # Newer builds exit on the legacy flags, so an unknown build gets none.
+        logger.info(
+            "llama-server --help probe was inconclusive; skipping the requested %r mode.", mode
         )
         return [], tokens
     if not supports_load_mode:
@@ -1686,10 +1714,17 @@ def _pageable_env_value(
 
 
 def force_pageable_load(
-    argv: Optional[Iterable[str]], env: Optional[dict] = None
+    argv: Optional[Iterable[str]],
+    env: Optional[dict] = None,
+    *,
+    auto_unmapped: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay dropped; decided by pre-rewrite state, not tokens."""
+    """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay dropped; decided by pre-rewrite state, not tokens.
+
+    ``auto_unmapped``: auto is none on this child, so an unset mode gets ``--load-mode mmap``."""
     tokens = [str(a) for a in (argv or [])]
+    if auto_unmapped and load_mode_left_auto(tokens, env):
+        return [*tokens, "--load-mode", "mmap"], ["auto, which is none on this GPU"]
     # Only RAM-reserving launches are rewritten; pageable dio or mmap keeps every token, mlock included.
     _mlock_now, _reserves_now = resolve_effective_memory_state(tokens, env)
     drop_shadowed_mlock = _reserves_now and not _mlock_now
@@ -1742,6 +1777,9 @@ def force_pageable_load(
             else:
                 env[name] = new_value
             overridden.append(name)
+    # Dropping none/--no-mmap leaves auto, which is none again here.
+    if overridden and auto_unmapped and load_mode_left_auto(out, env):
+        out.extend(["--load-mode", "mmap"])
     return out, overridden
 
 
@@ -1763,10 +1801,15 @@ _LOAD_MODE_RESERVING_VALUES = frozenset({"none", "mlock"})
 
 
 def resolve_effective_memory_state(
-    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    argv: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    auto_unmapped: bool = False,
 ) -> tuple[bool, bool]:
     """What the child runs with: env supplies defaults, argv overrides last-wins, as llama.cpp does."""
-    mlock, reserves_ram, _direct_io = resolve_effective_load_state(argv, env)
+    mlock, reserves_ram, _direct_io = resolve_effective_load_state(
+        argv, env, auto_unmapped = auto_unmapped
+    )
     return mlock, reserves_ram
 
 
@@ -1778,37 +1821,63 @@ def resolve_effective_direct_io(
 
 
 def resolve_effective_load_state(
-    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    argv: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    auto_unmapped: bool = False,
 ) -> tuple[bool, bool, bool]:
     """``(mlock, reserves_ram, direct_io)``. Every branch that resolves the mode
-    assigns all three, so the DirectIO bit cannot fall out of step with the pair."""
+    assigns all three, so the DirectIO bit cannot fall out of step with the pair.
+
+    ``auto_unmapped``: a device lacks ``mmap_support`` (an iGPU), so ``auto`` is ``none``
+    (``load_tensors``), not mmap."""
+    mlock, reserves_ram, direct_io, auto = _resolve_load_state(argv, env)
+    if auto and auto_unmapped:
+        return False, True, False
+    return mlock, reserves_ram, direct_io
+
+
+def load_mode_left_auto(
+    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether nothing selects a mode other than ``auto``. Legacy flags count: only builds
+    without ``auto`` accept them."""
+    return _resolve_load_state(argv, env)[3]
+
+
+def _resolve_load_state(
+    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[bool, bool, bool, bool]:
+    """``(mlock, reserves_ram, direct_io, auto)``, last selector wins, env before argv."""
     env = env or {}
     mlock = False
     reserves_ram = False
     direct_io = False
+    auto = True
     # Env vars run the flag's handler in registration order, so a later one overwrites the mode.
     if str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES:
         # Either mode it can mean maps or buffers the weights; neither streams.
-        mlock, direct_io = True, False
+        mlock, direct_io, auto = True, False, False
     # LLAMA_ARG_NO_<NAME> present forces false whatever the value, and beats the affirmative var.
     _mmap_env = "0" if "LLAMA_ARG_NO_MMAP" in env else str(env.get("LLAMA_ARG_MMAP", ""))
     _mmap_env = _mmap_env.strip().lower()
     if _mmap_env in _ENV_TRUE_VALUES:
-        mlock, reserves_ram, direct_io = False, False, False
+        mlock, reserves_ram, direct_io, auto = False, False, False, False
     elif _mmap_env in _ENV_FALSE_VALUES:
-        mlock, reserves_ram, direct_io = False, True, False
+        mlock, reserves_ram, direct_io, auto = False, True, False, False
     # LLAMA_ARG_DIO likewise: on selects DirectIO, off selects "none".
     _dio_env = "0" if "LLAMA_ARG_NO_DIO" in env else str(env.get("LLAMA_ARG_DIO", ""))
     _dio_env = _dio_env.strip().lower()
     if _dio_env in _ENV_TRUE_VALUES:
-        mlock, reserves_ram, direct_io = False, False, True
+        mlock, reserves_ram, direct_io, auto = False, False, True, False
     elif _dio_env in _ENV_FALSE_VALUES:
-        mlock, reserves_ram, direct_io = False, True, False
+        mlock, reserves_ram, direct_io, auto = False, True, False, False
     _mode_env = str(env.get("LLAMA_ARG_LOAD_MODE", "")).strip().lower()
     if _mode_env:
         mlock = _mode_env in _LOAD_MODE_MLOCK_VALUES
         reserves_ram = _mode_env in _LOAD_MODE_RESERVING_VALUES
         direct_io = _mode_env == "dio"
+        auto = _mode_env == "auto"
 
     tokens = [str(a) for a in (argv or [])]
     i, n = 0, len(tokens)
@@ -1820,30 +1889,34 @@ def resolve_effective_load_state(
             continue
         if flag in _MLOCK_FLAGS:
             # Only the mlock bit matters: mlock and mmap+mlock both replace an earlier DirectIO mode.
-            mlock, direct_io = True, False
+            mlock, direct_io, auto = True, False, False
             i += 1
         elif flag in _NO_MMAP_FLAGS:
             # --no-mmap resets the whole mode, clearing an earlier --mlock.
             mlock = False
             reserves_ram = True
             direct_io = False
+            auto = False
             i += 1
         elif flag in _DIO_ON_FLAGS:
             # Deprecated load-mode selector resets the mode, dropping mlock; DirectIO holds no full host copy.
             mlock = False
             reserves_ram = False
             direct_io = True
+            auto = False
             i += 1
         elif flag in _DIO_OFF_FLAGS:
             # Not plain mmap: upstream maps these to mode `none` (full host buffer).
             mlock = False
             reserves_ram = True
             direct_io = False
+            auto = False
             i += 1
         elif flag == "--mmap":
             mlock = False
             reserves_ram = False
             direct_io = False
+            auto = False
             i += 1
         elif flag in _LOAD_MODE_FLAGS:
             if "=" in tok:
@@ -1857,10 +1930,11 @@ def resolve_effective_load_state(
                 mlock = value in _LOAD_MODE_MLOCK_VALUES
                 reserves_ram = value in _LOAD_MODE_RESERVING_VALUES
                 direct_io = value == "dio"
+                auto = value == "auto"
             i += step
         else:
             i += 1
-    return mlock, reserves_ram, direct_io
+    return mlock, reserves_ram, direct_io, auto
 
 
 def memory_state_satisfies_settings(
@@ -1890,3 +1964,41 @@ def memory_state_satisfies_settings(
             return False
         return mlock or not mlock_applicable
     return not policy_active
+
+
+_NGRAM_MOD_LEGACY_FLAGS = {
+    "--spec-ngram-mod-n-match": "--spec-ngram-size-n",
+    "--spec-ngram-mod-n-min": "--draft-min",
+    "--spec-ngram-mod-n-max": "--draft-max",
+}
+
+
+def translate_ngram_mod_args(
+    args: Iterable[str],
+    flavor: Optional[str],
+    *,
+    chain_with_mtp: bool = False,
+) -> list[str]:
+    """Respell ``--spec-ngram-mod-n-*`` for a legacy build (else it refuses to start); with MTP drop min/max (MTP owns the range)."""
+    args = [str(a) for a in args]
+    if flavor != "legacy":
+        return args
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        _flag, eq, value = args[i].partition("=")
+        legacy = _NGRAM_MOD_LEGACY_FLAGS.get(_flag_name(args[i]) or "")
+        # A following flag is not this flag's value; consuming it would orphan that flag's own value.
+        if legacy is None or (
+            not eq and (i + 1 >= len(args) or _flag_name(args[i + 1]) is not None)
+        ):
+            out.append(args[i])
+            i += 1
+            continue
+        if not eq:
+            value = args[i + 1]
+        i += 1 if eq else 2
+        if chain_with_mtp and legacy != "--spec-ngram-size-n":
+            continue
+        out.extend([legacy, value])
+    return out

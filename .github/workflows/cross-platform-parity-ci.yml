@@ -50,6 +50,7 @@ on:
       # The only lane that runs this test; the Windows smoke workflow skips it.
       - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_rollback_background_delete.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_setup_download_progress.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
@@ -65,16 +66,20 @@ on:
       - 'tests/studio/install/test_keep_install_backcompat_9979.py'
       - 'studio/prebuilt_core.py'
       - 'studio/nvidia_probe.py'
+      - 'studio/precompile_bytecode.py'
       - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'tests/studio/test_uv_damaged_cache_repair.ps1'
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
       - 'tests/studio/test_torch_overrides_merge.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_rocm_triton_windows_pairing.ps1'
+      - 'tests/studio/test_xpu_triton_windows_swap.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
       - 'tests/studio/test_nvidia_python_probe_parity.ps1'
@@ -152,6 +157,7 @@ on:
       # The only lane that runs this test; the Windows smoke workflow skips it.
       - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_rollback_background_delete.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_setup_download_progress.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
@@ -167,16 +173,20 @@ on:
       - 'tests/studio/install/test_keep_install_backcompat_9979.py'
       - 'studio/prebuilt_core.py'
       - 'studio/nvidia_probe.py'
+      - 'studio/precompile_bytecode.py'
       - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'tests/studio/test_uv_damaged_cache_repair.ps1'
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
       - 'tests/studio/test_torch_overrides_merge.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_rocm_triton_windows_pairing.ps1'
+      - 'tests/studio/test_xpu_triton_windows_swap.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
       - 'tests/studio/test_nvidia_python_probe_parity.ps1'
@@ -231,12 +241,12 @@ jobs:
         # concurrency is capped at 5. The non-Windows shell steps cover Intel XPU paths no Mac reaches.
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
       # The CLI import chain test_installer_profile_hardening.py pulls in; rich is imported directly
@@ -250,6 +260,7 @@ jobs:
           python -m pytest
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
+          tests/python/test_windows_rollback_background_delete.py
           tests/python/test_windows_setup_output_encoding.py
           tests/python/test_windows_setup_download_progress.py
           tests/python/test_windows_installer_resolver_fallback.py
@@ -271,6 +282,14 @@ jobs:
       - name: Intel registry fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
+      - name: uv damaged cache repair tests
+        shell: pwsh
+        run: |
+          python -m pip install uv
+          pwsh -NoProfile -File tests/studio/test_uv_damaged_cache_repair.ps1
+      - name: uv damaged cache repair tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -File tests\studio\test_uv_damaged_cache_repair.ps1
       - name: Setup XPU pre-report tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_setup_xpu_runtime_prereport.ps1
@@ -294,6 +313,20 @@ jobs:
       - name: AMD GPU-name arch table tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
+      - name: AMD ROCm triton-windows pairing tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_rocm_triton_windows_pairing.ps1
+      - name: AMD ROCm triton-windows pairing tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_rocm_triton_windows_pairing.ps1
+      - name: Intel XPU triton swap tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_xpu_triton_windows_swap.ps1
+      - name: Intel XPU triton swap tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_xpu_triton_windows_swap.ps1
       # The 5.1 leg compiles the P/Invoke helper with the .NET Framework compiler setup.ps1 uses.
       - name: NVIDIA driver-library inventory tests
         shell: pwsh

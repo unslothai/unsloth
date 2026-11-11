@@ -1,26 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build a pre-quantized transformer checkpoint for the Unsloth diffusion fast path.
-
-Quantise a model's dense bf16 DiT transformer ONCE and save the quantized state dict, so
-the backend can load the already-quantized weights at runtime (meta-init +
-load_state_dict(assign=True)) instead of materialising the dense bf16 on the GPU. That
-drops the transformer GPU load peak ~2x and the download ~2x for fp8 (measured on Z-Image:
-12.9 -> 6.3 GB peak, 12 -> 6.28 GB on disk), with bit-identical output -- it is the exact
-same torchao config + min_features filter the runtime path uses, applied ahead of time.
-
-Run on one CUDA (Blackwell / Ada / Hopper) GPU. fp8 works on torch 2.9+; the FP4/MX schemes
-need the newer kernels (see scripts/nvfp4_t211_probe.py).
-
-  python scripts/build_prequant_checkpoint.py \
-      --base Tongyi-MAI/Z-Image-Turbo --family z-image --scheme fp8 \
-      --out outputs/quant_research/prequant_fp8/transformer_fp8.pt [--upload-repo ORG/REPO]
-"""
+"""Quantizes the DiT once so runtime loads it with assign=True, skipping the dense bf16 GPU load peak."""
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -43,12 +29,8 @@ def resolve_build_family(base: str, override: Optional[str] = None) -> Optional[
 def convrot_refusal(
     group: int, rotatable: Sequence[str], not_divisible: Sequence[str]
 ) -> Optional[str]:
-    """Why a ConvRot build must not be quantised and saved, or None when it is fine.
-
-    An empty rotatable set means the group divides no quantized input axis (a group larger than
-    every Linear, say). The build would still stamp the v2 tag and an empty fqn list, which
-    ``rotation_metadata_error`` refuses at load time, so the only thing it produces is a
-    multi-gigabyte artifact nothing can ever open. Refuse before the hours, not after."""
+    """Refuse a ConvRot build with no rotatable Linear before the hours of quantising, not after:
+    its empty fqn list is refused at load time, leaving an unopenable artifact"""
     if rotatable:
         return None
     return (
@@ -89,7 +71,14 @@ def upload_destination(
     dispatches on the extension alone, so a safetensors build published as ``.pt`` is read as a
     pickle and a pickle published as ``.safetensors`` is read from a header it does not have. Either
     way the upload succeeds and the artifact is unopenable, after the hours the quantization took.
+
+    nvfp4 publishes safetensors only: Studio never resolves or opens an nvfp4 pickle.
     """
+    if (scheme or "").strip().lower() == "nvfp4" and not safetensors:
+        raise ValueError(
+            "nvfp4 checkpoints are published as .safetensors only (Studio never reads an nvfp4 "
+            "pickle); write --out as a .safetensors file"
+        )
     if override:
         wanted = ".safetensors" if safetensors else ".pt"
         if not override.lower().endswith(wanted):
@@ -220,6 +209,13 @@ def main(argv = None) -> int:
         "activations of that list and nothing else. Writes the v2 format tag.",
     )
     p.add_argument(
+        "--nvfp4-weight-quant",
+        default = None,
+        choices = ["max6", "4over6"],
+        help = "nvfp4 block-scale choice: max6 (torchao's) or 4over6 (per 16-block max/6 vs max/4, "
+        "per-tensor scale for an E4M3 top of 256). Default: UNSLOTH_NVFP4_WEIGHT_QUANT, else 4over6.",
+    )
+    p.add_argument(
         "--upload-repo", default = None, help = "optional HF repo id to upload the checkpoint to"
     )
     p.add_argument("--upload-revision", default = None)
@@ -231,6 +227,18 @@ def main(argv = None) -> int:
         "otherwise",
     )
     args = p.parse_args(argv)
+    if (args.scheme or "").strip().lower() == "nvfp4" and not str(args.out).lower().endswith(
+        ".safetensors"
+    ):
+        print(
+            "error: --scheme nvfp4 writes .safetensors only (Studio never reads an NVFP4 pickle); "
+            "give --out a .safetensors path",
+            flush = True,
+        )
+        return 2
+    if (args.scheme or "").strip().lower() != "nvfp4" and args.nvfp4_weight_quant:
+        print("error: --nvfp4-weight-quant applies to --scheme nvfp4 only", flush = True)
+        return 2
 
     sys.path.insert(0, str(BACKEND))
     import torch
@@ -368,6 +376,14 @@ def main(argv = None) -> int:
             flush = True,
         )
 
+    weight_quant = None
+    if scheme == "nvfp4":
+        from core.inference.diffusion_nvfp4_weight_quant import WEIGHT_QUANT_ENV, resolve_method
+
+        weight_quant = resolve_method(args.nvfp4_weight_quant)
+        os.environ[WEIGHT_QUANT_ENV] = weight_quant
+        print(f"  nvfp4 weight scales: {weight_quant}", flush = True)
+
     quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
 
     state_dict = {
@@ -391,6 +407,8 @@ def main(argv = None) -> int:
         "torchao_version": getattr(torchao, "__version__", "?"),
         "diffusers_version": diffusers.__version__,
     }
+    if weight_quant is not None:
+        metadata["nvfp4_weight_quant"] = weight_quant
     from core.inference.diffusion_prequant import canonical_weight_fingerprint
 
     # Version-neutral, so a file built on one torchao generation verifies on every other.

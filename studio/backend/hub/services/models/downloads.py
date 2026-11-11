@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
@@ -58,15 +59,19 @@ def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
 
 
 def scoped_file_blob_hashes(
-    repo_id: str, files: Sequence[str], hf_token: Optional[str]
+    repo_id: str,
+    files: Sequence[str],
+    hf_token: Optional[str],
+    *,
+    siblings: Optional[Sequence] = None,
 ) -> frozenset[str]:
     """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer protection cover its own files and nothing else in the repo."""
-    from huggingface_hub import HfApi
-
     wanted = set(files)
-    info = HfApi().model_info(repo_id, files_metadata = True, token = hf_token)
+    if siblings is None:
+        from huggingface_hub import HfApi
+        siblings = HfApi().model_info(repo_id, files_metadata = True, token = hf_token).siblings
     return blob_hashes_for_siblings(
-        [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
+        [s for s in siblings if getattr(s, "rfilename", None) in wanted]
     )
 
 
@@ -351,6 +356,7 @@ async def download_model_response(
     key = _download_job_key(repo_id, variant)
     _reject_if_load_owned(key)
     # Size and Auto resolution may perform network probes, so keep both off the event loop.
+    sized_since = time.monotonic()
     largest_file_bytes = await asyncio.to_thread(
         download_lifecycle.largest_download_file_bytes,
         "model",
@@ -381,7 +387,17 @@ async def download_model_response(
             if scope_variant is not None:
                 # A scope owns exactly its own files: same set for purge and for progress.
                 variant_blob_hashes = await asyncio.to_thread(
-                    scoped_file_blob_hashes, repo_id, scoped_files, hf_token
+                    scoped_file_blob_hashes,
+                    repo_id,
+                    scoped_files,
+                    hf_token,
+                    siblings = download_lifecycle.repo_siblings_fetched_since(
+                        "model",
+                        repo_id,
+                        hf_token,
+                        allow_ambient_token = allow_ambient_token,
+                        since = sized_since,
+                    ),
                 )
                 variant_progress_blob_hashes = variant_blob_hashes
             else:

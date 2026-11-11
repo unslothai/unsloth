@@ -39,6 +39,7 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
 )
 from hub.utils.gguf import (
+    HUB_MODEL_INFO_SINK,
     GgufVariantInfo,
     extract_quant_label,
     gguf_variant_family,
@@ -230,6 +231,9 @@ def gguf_variant_requirements(
     variant: str,
     hf_token: Optional[str] = None,
 ) -> Optional[_GgufVariantRequirement]:
+    # A scope is never in the repo's quant listing, so it would miss the cache and refetch model_info every call.
+    if _is_scope_key(variant):
+        return None
     key = _variant_hash_cache_key(repo_id, variant, hf_token)
     cached = _variant_requirement_cache_get(key)
     if cached is not None:
@@ -783,9 +787,6 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
     return found >= set(range(1, total + 1))
 
 
-# Cache scan's looser grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE), not the five digits above.
-_CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
-
 # Only enumerates candidates for the resolver to adjudicate; drift costs a candidate, not a verdict.
 _KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
@@ -999,6 +1000,7 @@ async def _audio_cpp_variants_answer(
 ) -> Optional[VariantsAnswer]:
     """group audio.cpp umbrella and package components; generic single-file repos return None."""
     from core.inference import audio_cpp_models
+    from core.inference.audio_cpp_failures import estimate_resident_gb, gpu_estimate_applies
 
     text = (repo_id or "").strip()
     umbrella = audio_cpp_models.is_umbrella_id(text)
@@ -1058,6 +1060,7 @@ async def _audio_cpp_variants_answer(
         for variant in model.variants:
             for path in {f.path for f in variant.files}:
                 counts[path] = counts.get(path, 0) + 1
+        gpu_placed = gpu_estimate_applies(model.audio_type)
         rows = []
         for variant in model.variants:
             row_model = model.with_variant(variant)
@@ -1104,6 +1107,11 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
+                    estimated_resident_gb = (
+                        estimate_resident_gb(variant.size_bytes, model.family)
+                        if gpu_placed and not row_model.cpu_only
+                        else None
+                    ),
                     download_remaining_bytes = remaining,
                     downloaded = downloaded,
                     partial = partial,
@@ -1144,12 +1152,14 @@ async def _mlx_precision_variants_answer(
     hf_token: Optional[str],
     offline: bool,
     cache_readable: bool = True,
+    info = None,
 ) -> Optional[VariantsAnswer]:
     """The precision folders of an MLX repo (``4-bit/``, ``6-bit/``, ``8bit/``) as its variants,
-    else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone."""
+    else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone.
+    *info* is this request's own ``model_info`` (same token, files_metadata), reused if given."""
     if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
         return None
-    from hub.utils.mlx_variants import cached_precision_folder
+    from hub.utils.mlx_variants import cached_precision_folder, looks_like_mlx_repo
     from hub.utils.snapshot_filters import (
         precision_variant_subfolders,
         repo_ships_root_safetensors,
@@ -1163,21 +1173,27 @@ async def _mlx_precision_variants_answer(
         if not offline:
             from huggingface_hub import HfApi
             try:
-                info = call_with_anonymous_retry(
-                    lambda token: HfApi(token = token).model_info(
-                        repo_id, files_metadata = True, timeout = 5.0
-                    ),
-                    hf_token,
-                )
+                hub_info = info
+                if hub_info is None:
+                    hub_info = call_with_anonymous_retry(
+                        lambda token: HfApi(token = token).model_info(
+                            repo_id, files_metadata = True, timeout = 5.0
+                        ),
+                        hf_token,
+                    )
             except Exception as exc:  # noqa: BLE001 - fall back to the cached copy below
                 logger.debug("MLX precision folders for %s unavailable: %s", repo_id, exc)
             else:
-                tags = {str(tag).lower() for tag in (info.tags or [])}
-                if "mlx" not in tags and str(info.library_name or "").lower() != "mlx":
+                tags = {str(tag).lower() for tag in (hub_info.tags or [])}
+                if (
+                    "mlx" not in tags
+                    and str(hub_info.library_name or "").lower() != "mlx"
+                    and not looks_like_mlx_repo(repo_id)
+                ):
                     return None
-                sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
-                hashes = {s.rfilename: sibling_sha256(s) for s in (info.siblings or [])}
-                has_vision = str(info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
+                sizes = {s.rfilename: int(s.size or 0) for s in (hub_info.siblings or [])}
+                hashes = {s.rfilename: sibling_sha256(s) for s in (hub_info.siblings or [])}
+                has_vision = str(hub_info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
         if not sizes:
             # A caller refused this repo's cache learns nothing from it.
             if not cache_readable:
@@ -1607,8 +1623,9 @@ async def get_gguf_variants_answer(
     hf_token = account_access.account_hf_token(hf_token)
     from core.inference.audio_cpp_models import is_umbrella_id
 
-    # An umbrella folder row is never a directory: its On Device row sends the row id as local_path.
-    if not local_path or is_umbrella_id(repo_id):
+    # Umbrella folder and package repo (YuE2) On Device rows send their row id as local_path.
+    row_id = bool(local_path) and local_path.strip().lower() == (repo_id or "").strip().lower()
+    if not local_path or is_umbrella_id(repo_id) or row_id:
         audio_cpp_answer = await _audio_cpp_variants_answer(repo_id, hf_token, offline)
         if audio_cpp_answer is not None:
             return audio_cpp_answer
@@ -1626,8 +1643,7 @@ async def get_gguf_variants_answer(
             await listing_thread(
                 False, account_access.authorize_download, repo_id, "model", hf_token
             )
-    # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
-    # the copy from the request alone.
+    # Sent back since the HF cache answers before local_path; callers cannot infer the copy.
     answered_from: list[Optional[str]] = [None]
     # A repo id naming a directory is answered by that directory alone, or a GGUF-less dir evicts it.
     answered_locally = [False]
@@ -1635,6 +1651,7 @@ async def get_gguf_variants_answer(
     cache_authorized = [True]
     variant_context_sources: dict[str, str] = {}
     hub_listing = None
+    hub_model_info: list = []
     # The downloaded rows a Hub-less answer proved complete from disk, see _locally_resolved.
     locally_proven: list[Optional[frozenset]] = [None]
 
@@ -1983,8 +2000,7 @@ async def get_gguf_variants_answer(
                 complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
             answered_locally[0] = True
-            # Surface the resolution so the CLI gate matches the local resolver's exact labels rather than the
-            # id's shape, and no client mirrors its grammar.
+            # Report the resolution so the CLI gate matches the resolver, not the id's shape.
             return _local_response(
                 repo_id, variants, has_vision, complete, context_root = local_id
             ).model_copy(
@@ -2159,7 +2175,11 @@ async def get_gguf_variants_answer(
 
         try:
             if hub_listing is None:
-                hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
+                sink_token = HUB_MODEL_INFO_SINK.set(hub_model_info)
+                try:
+                    hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
+                finally:
+                    HUB_MODEL_INFO_SINK.reset(sink_token)
             variants, has_vision, siblings = hub_listing
         except Exception:
             # Ungated: _cache_fallback_response already refuses an unauthorized caller.
@@ -2726,7 +2746,11 @@ async def get_gguf_variants_answer(
         # Only after an empty GGUF listing, so GGUF answers never change.
         if not answer.response.variants and not local_path:
             mlx_answer = await _mlx_precision_variants_answer(
-                repo_id, hf_token, offline, cache_readable = answer.cache_authorized
+                repo_id,
+                hf_token,
+                offline,
+                cache_readable = answer.cache_authorized,
+                info = hub_model_info[-1] if hub_model_info and not offline else None,
             )
             if mlx_answer is not None:
                 return mlx_answer

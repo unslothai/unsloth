@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared, family-agnostic building blocks for diffusion LoRA training: dataset discovery, request
-config + validation, image loading, event emission, the stop protocol, adapter publishing, and
-the family/trainer registry, so the SDXL U-Net trainer (``diffusion_lora_trainer``) and the
-flow-matching DiT trainers share them. The pure helpers have no torch/diffusers import at call
-time and are unit-tested without a GPU; this module only routes a request to the right training
-loop."""
+"""Shared diffusion LoRA helpers and family registry; pure helpers avoid torch, so tests need no GPU."""
 
 from __future__ import annotations
 
@@ -317,9 +312,7 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
 
 
 def repo_is_prequantized(base_model: str) -> bool:
-    """Heuristic: a repo whose name marks a bitsandbytes 4-bit build already ships a quantized
-    transformer, so it loads as-is for nf4 and cannot serve the dense (bf16/int8/fp8/mxfp8) base
-    precisions."""
+    """Name heuristic: a bnb-4bit repo is already quantized, so it serves nf4 only, not dense precisions."""
     name = str(base_model or "").lower()
     return "bnb-4bit" in name or "-4bit" in name or "int4" in name or "nf4" in name
 
@@ -527,11 +520,12 @@ _BASE_TRAIN_SPECS: dict[str, dict[str, Any]] = {
 _GATED_NOTE = "Gated: needs its license and your HF token."
 
 
-def _family_vram_note(name: str) -> str:
+def _family_vram_note(name: str, overrides: Optional[dict[str, Any]] = None) -> str:
     """The one-line note, rebuilt from the spec for clients that predate the chip fields."""
     spec = _FAMILY_TRAIN_SPECS.get(name)
     if not spec:
         return ""
+    spec = {**spec, **(overrides or {})}
     gb = spec["qlora_vram_gb"]
     head = f"{spec['params']}, QLoRA by default (~{gb} GB+)." if spec["params"] else f"~{gb} GB+."
     tail = [t for t in (_GATED_NOTE if spec["gated"] else "", spec["note"]) if t]
@@ -721,19 +715,9 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
 
 
 def bitsandbytes_optimizer_supported() -> bool:
-    """Whether a bitsandbytes optimizer can complete an update on the SELECTED backend.
-
-    False only when training actually runs on Intel XPU: bitsandbytes registers
-    optimizer_update_8bit_blockwise (and optimizer_update_32bit) to Triton in every branch of
-    backends/xpu/ops.py, and Intel's Triton backend asserts on a SYCL toolchain we do not ship.
-    Construction still succeeds, so the trainers' try/except around the constructor never sees
-    it -- the run dies at the first optimizer.step(). Mirrors core/training/training.py.
-
-    Keyed on get_device(), NOT torch.xpu.is_available(): a hybrid host with an Intel iGPU beside
-    an NVIDIA card reports both and detection prefers CUDA. Answering the presence question there
-    would make make_lora_optimizer skip AdamW8bit, so restore_resume_state refuses every existing
-    AdamW8bit checkpoint with a ResumeError.
-    """
+    """False only on Intel XPU, where bitsandbytes 8-bit updates route to Triton and assert
+    (construction succeeds, so try/except misses it); keyed on get_device(), NOT
+    torch.xpu.is_available()."""
     try:
         from utils.hardware import DeviceType, get_device
         return get_device() != DeviceType.XPU
@@ -922,9 +906,7 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 f"base_precision={mode!r} is not available on this host: torchao is the "
                 "non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
             )
-        # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, AFTER a full dense load.
-        # Re-check here so a stale client fails fast before eviction.
-        # fp8 needs sm89+: below it the first float8 _scaled_mm raises inside the loop, after eviction.
+        # mxfp8 needs sm100+, fp8 needs sm89+; checked here so a stale client fails before eviction.
         if mode == "fp8":
             try:
                 import torch
@@ -948,6 +930,48 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                     "Use base_precision='bf16', 'int8', 'nf4', or 'auto'."
                 )
     return None
+
+
+def _training_fetch_repo(base: str, token: Optional[str] = None) -> str:
+    from core.inference.diffusion_families import (
+        _is_local_path,
+        mirror_repo,
+        prefer_ungated_mirror,
+        upstream_is_gated,
+    )
+
+    fetched = prefer_ungated_mirror(base, token)
+    # Anonymous training ignores partial caches of gated upstreams.
+    if (
+        not token
+        and upstream_is_gated(base)
+        and not _is_local_path(base)
+        and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
+    ):
+        fetched = mirror_repo(base) or fetched
+    return fetched
+
+
+def _training_mirror_access_specs(repo: str, note: str = "") -> dict[str, dict[str, Any]]:
+    from core.inference.diffusion_families import mirror_repo, upstream_is_gated
+
+    mirror = mirror_repo(repo)
+    if not mirror or not upstream_is_gated(repo):
+        return {}
+    facts = {}
+    for shown in (repo, mirror):
+        fetched = _training_fetch_repo(shown)
+        gated = upstream_is_gated(fetched)
+        explanation = (
+            f"Downloads from {fetched}. The original model license still applies."
+            if not gated
+            else ""
+        )
+        facts[shown] = {
+            "gated": gated,
+            "note": " ".join(part for part in (note, explanation) if part),
+        }
+    return facts
 
 
 def family_train_infos() -> list[dict[str, Any]]:
@@ -988,6 +1012,12 @@ def family_train_infos() -> list[dict[str, Any]]:
             repo_mirror = mirror_repo(repo)
             if repo_mirror:
                 base_specs[repo_mirror] = dict(base_spec)
+        for repo in repos:
+            for shown, access in _training_mirror_access_specs(
+                repo, str(spec.get("note", ""))
+            ).items():
+                base_specs[shown] = {**base_specs.get(shown, {}), **access}
+        default_facts = base_specs.get(repos[0], {})
         for training_repo, inference_repo in getattr(fam, "deploy_base_repos", ()):
             deploy_bases[training_repo] = inference_repo
             # Mirror-id bases pair like vendor ids; return the inference mirror so Deploy stays ungated.
@@ -1001,12 +1031,14 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "default_base": repos[0],
                 "base_repos": repos,
                 "defaults": train_defaults(name),
-                "vram_note": dit_block or _family_vram_note(name),
+                "vram_note": dit_block or _family_vram_note(name, default_facts),
                 # Dropped on a dit_block, since vram_note then carries the reason.
                 "params": "" if dit_block else spec.get("params", ""),
                 "qlora_vram_gb": None if dit_block else spec.get("qlora_vram_gb"),
-                "gated": False if dit_block else bool(spec.get("gated", False)),
-                "note": "" if dit_block else spec.get("note", ""),
+                "gated": False
+                if dit_block
+                else bool(default_facts.get("gated", spec.get("gated", False))),
+                "note": "" if dit_block else default_facts.get("note", spec.get("note", "")),
                 "precision_modes": fam_modes,
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # Compile: SDXL and DiT trainers, except where the GPU lacks bf16 or the trainer cannot compile.
@@ -1016,6 +1048,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
                 "supports_samples": name in SAMPLE_FAMILIES,
                 "supports_bucketing": name not in UNBUCKETED_FAMILIES,
+                # The images loader refuses video bases, so the panel offers no Deploy to Create for these.
+                "is_video": name in TRAINABLE_VIDEO_FAMILIES,
                 # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
                 # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
                 "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,
@@ -1088,8 +1122,7 @@ class DiffusionLoraConfig:
     weighting_scheme: str = "none"
     # How often to emit a progress event (in optimizer steps).
     log_every: int = 1
-    # 0 writes no periodic checkpoints; a stop-and-save always writes one regardless, so the Resume action stays
-    # available.
+    # 0 writes no periodic checkpoints; stop-and-save writes one, so Resume stays available.
     save_steps: int = 0
     # How many checkpoint-<N> bundles to keep in the output dir; 0 keeps every one.
     save_total_limit: int = 2
@@ -1284,28 +1317,12 @@ class DiffusionLoraConfig:
         if resume_from_checkpoint and resolved_family != "sdxl" and targets == DEFAULT_LORA_TARGETS:
             from core.training.diffusion_checkpoint import recorded_resume_targets
             targets = recorded_resume_targets(resume_from_checkpoint) or targets
-        # A blank Hub token (the Unsloth default when none is configured) must load anonymously, not as an explicit
-        # empty credential.
+        # A blank Hub token must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
-        from core.inference.diffusion_families import (
-            _is_local_path,
-            mirror_repo,
-            prefer_ungated_mirror,
-            upstream_is_gated,
-        )
-
         if resolved_family == "sdxl":
             fetch_base_model = self.base_model
         else:
-            fetch_base_model = prefer_ungated_mirror(self.base_model, token or None)
-            # Gated upstream with no token only: prefer the mirror even with a cached shard; UNSLOTH_DIFFUSION_NO_MIRROR still wins, and a local clone wins over both.
-            if (
-                not token
-                and upstream_is_gated(self.base_model)
-                and not _is_local_path(self.base_model)
-                and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
-            ):
-                fetch_base_model = mirror_repo(self.base_model) or fetch_base_model
+            fetch_base_model = _training_fetch_repo(self.base_model, token or None)
         # Blank caption_column means "text", matching the start route's fingerprint.
         caption_column = str(self.caption_column or "").strip() or "text"
         bucketing = None if self.bucketing is None else _coerce_bool(self.bucketing)
@@ -1385,8 +1402,7 @@ class PermutationBatchSampler:
         self._pos = 0
 
     def next_batch(self, k: int) -> list[int]:
-        # k may exceed n (batch larger than the dataset): the permutation refills across cycles so the caller always
-        # gets exactly k indices.
+        # k may exceed n; the permutation refills across cycles so exactly k indices return.
         out: list[int] = []
         while len(out) < k:
             if self._pos >= len(self._order):
@@ -1397,9 +1413,8 @@ class PermutationBatchSampler:
         return out
 
     def state_dict(self) -> dict[str, Any]:
-        """The position inside the current permutation cycle, for a resume checkpoint. The order
-        itself is stored (not just the position): it was drawn from the run's rng, and restoring
-        the rng alone would not reproduce a cycle already in progress."""
+        """Stores the cycle order, not just the position: the rng alone cannot reproduce a cycle in
+        progress."""
         return {"n": self._n, "order": list(self._order), "pos": int(self._pos)}
 
     def load_state_dict(self, state: Optional[dict[str, Any]]) -> bool:
@@ -1723,12 +1738,10 @@ def bucket_groups(canvases: list[tuple[int, int]]) -> dict[tuple[int, int], list
     return groups
 
 
-# Two fp32 posterior tensors per crop/flip variant per image, so a few thousand images can exhaust pinned RAM; over
-# budget it falls back to per-step VAE encoding.
+# Fp32 posteriors per image and variant can exhaust pinned RAM; over budget, encode per step.
 _LATENT_CACHE_BUDGET_BYTES = 4 * 1024**3  # 4 GiB
 
-# Returned by the cache builders when the estimate exceeds budget: the caller keeps the VAE resident. Distinct from
-# ``None`` (a stop requested mid-build).
+# Cache builders return this when over budget, so the VAE stays resident; None is a stop.
 LATENT_CACHE_OVER_BUDGET: Any = object()
 
 
@@ -1867,8 +1880,7 @@ def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) 
         shape = _single_file_shape(base_model)
         if shape is None:
             raise
-        # Echo only the caller's own path: this runs before the cached-path authorization, so naming a file found
-        # inside the folder would disclose it.
+        # Echo only the caller's own path; a file found inside would leak before authorization.
         what = "is a single-file checkpoint" if shape == "file" else "holds single-file checkpoints"
         raise ValueError(
             f"'{base_model}' {what}, which cannot be a training base yet: training loads the base "
@@ -1961,9 +1973,7 @@ def load_trainable_state_dict(model: Any, state: Optional[dict[str, Any]]) -> in
 
 
 def _json_safe_progress(progress: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Drop non-finite floats from the manifest's progress block. A diverged run pushes
-    ``running_loss`` to NaN/inf, which json.dumps writes as the JS-only NaN/Infinity tokens --
-    invalid strict JSON that a stricter reader rejects."""
+    """Drops NaN/inf progress values: json.dumps emits NaN/Infinity, which strict JSON readers reject."""
     out: dict[str, Any] = {}
     for key, value in (progress or {}).items():
         if isinstance(value, float) and not math.isfinite(value):

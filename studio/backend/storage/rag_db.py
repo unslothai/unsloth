@@ -1,22 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for the RAG engine.
-
-Same pattern as providers_db.py / studio_db.py (module functions, raw sqlite3, WAL, per-call connections, lazy
-schema), but every connection also loads sqlite-vec (vec0 needs it per-connection). If it cannot load,
-get_connection() raises RagExtensionUnavailable rather than failing import, and rag_available() reports the
-machine as one where RAG cannot run.
-
-One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index (``chunks_fts``) and the
-sqlite-vec dense index (``chunks_vec``, created lazily by ensure_vec once the embedding dim is known, since vec0
-bakes the dim into the column type).
-"""
+"""Every connection loads sqlite-vec; if it fails get_connection raises RagExtensionUnavailable,
+never at import; rag_available reports it; chunks_vec made lazily by ensure_vec"""
 
 import logging
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -36,6 +28,14 @@ except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
 
 _RAG_UNAVAILABLE_MSG = "RAG unavailable: sqlite-vec extension could not be loaded"
 
+# Han, Kana and Hangul. unicode61 keeps an unspaced run as one token, so chunks_fts holds them one per token.
+CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff66-\uff9f\U00020000-\U0002fa1f"
+_CJK_CHAR = re.compile(f"[{CJK}]")
+
+
+def fts_text(text: str) -> str:
+    return _CJK_CHAR.sub(r" \g<0> ", text)
+
 
 class RagExtensionUnavailable(RuntimeError):
     """sqlite-vec is installed but its native library will not load (a missing vec0 binary in the venv is the
@@ -46,6 +46,11 @@ class RagExtensionUnavailable(RuntimeError):
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
+# Held idle so per-operation closes do not delete and recreate WAL/SHM (#15552).
+_wal_keepers: dict[Path, sqlite3.Connection] = {}
+_wal_keeper_paths: dict[Path, Path] = {}
+_wal_keeper_lock = threading.Lock()
+_wal_keepers_enabled = True
 # Warn once per process: the UI polls the KB list on a timer.
 _unavailable_lock = threading.Lock()
 _unavailable_warned = False
@@ -221,6 +226,26 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ON linked_folder_sync_jobs(folder_id)
             WHERE status IN ('pending','running');
 
+        -- No INSERT trigger: any row trigger on chunks costs ~20 us per insert. Inserts show up as a new
+        -- max(rowid) per scope instead; a reused rowid only follows a delete, which bumps the epoch.
+        CREATE TABLE IF NOT EXISTS rag_vec_epoch (
+            scope TEXT NOT NULL PRIMARY KEY,
+            n INTEGER NOT NULL
+        ) WITHOUT ROWID;
+        CREATE TRIGGER IF NOT EXISTS rag_vec_epoch_chunk_delete AFTER DELETE ON chunks BEGIN
+            INSERT INTO rag_vec_epoch(scope, n) VALUES (OLD.scope, 1)
+                ON CONFLICT(scope) DO UPDATE SET n = n + 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS rag_vec_epoch_document_model
+            AFTER UPDATE OF embedding_model ON documents BEGIN
+            INSERT INTO rag_vec_epoch(scope, n) VALUES (NEW.scope, 1)
+                ON CONFLICT(scope) DO UPDATE SET n = n + 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS rag_vec_epoch_document_delete AFTER DELETE ON documents BEGIN
+            INSERT INTO rag_vec_epoch(scope, n) VALUES (OLD.scope, 1)
+                ON CONFLICT(scope) DO UPDATE SET n = n + 1;
+        END;
+
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
             text,
             chunk_id UNINDEXED,
@@ -254,8 +279,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chunks ADD COLUMN page_char_end INTEGER")
     if "whole_document_token_count" not in chunk_cols:
         conn.execute("ALTER TABLE chunks ADD COLUMN whole_document_token_count INTEGER")
-    # Partial, so it is empty until a chat is compacted and the MAX() that allocates the next ordinal is
-    # an index probe rather than a scan.
+    # Partial: empty until a chat is compacted; keeps the MAX() ordinal lookup an index probe.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
         "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"
@@ -266,13 +290,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
     )
     ensure_linked_folder_columns(conn)
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+        conn.executemany(
+            "UPDATE chunks_fts SET text=? WHERE rowid=?",
+            [
+                (fts_text(text), rowid)
+                for rowid, text in conn.execute("SELECT rowid, text FROM chunks_fts")
+                if text and _CJK_CHAR.search(text)
+            ],
+        )
+        conn.execute("PRAGMA user_version = 1")
     conn.commit()
 
 
 def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
-    """Add the linked-folder columns a database created by an earlier build is missing. Also called for
-    the metadata connection, which skips _ensure_schema so that scope retirement keeps working when
-    the vector extension cannot load."""
+    """Adds linked-folder columns missing from older builds; also called on the metadata connection,
+    which skips _ensure_schema so scope retirement works without the vector extension"""
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
     # the queued follow-up request; it replaced a flag that only recorded rebuilds
     if job_cols and "successor_kind" not in job_cols:
@@ -299,6 +332,85 @@ def reset_schema_state_for_tests() -> None:
         _schema_ready.clear()
 
 
+class _ReusedConnection(sqlite_gate.GatedConnection):
+    """Shared by a reuse_connections() block: close() rolls back the uncommitted rest (what a real close
+    discards) and keeps the connection open."""
+
+    _reuse_slot = None
+
+    def close(self) -> None:
+        slot = self._reuse_slot
+        if slot is None or slot.conn is not self:
+            super().close()
+            return
+        if not slot.checked_out:
+            return
+        slot.checked_out = False
+        try:
+            self.rollback()
+        except Exception:  # noqa: BLE001 - a real close would not raise here either
+            slot.discard()
+
+
+class _ReuseSlot:
+    __slots__ = ("conn", "db_path", "checked_out")
+
+    def __init__(self) -> None:
+        self.conn = None
+        self.db_path = None
+        self.checked_out = False
+
+    def checkout(self, db_path: Path):
+        conn = self.conn
+        if conn is None or self.checked_out or self.db_path != db_path:
+            return None
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 5000")
+        except Exception:  # noqa: BLE001 - unusable now, so the caller opens a new one
+            self.discard()
+            return None
+        self.checked_out = True
+        return conn
+
+    def discard(self) -> None:
+        conn, self.conn, self.db_path, self.checked_out = self.conn, None, None, False
+        if conn is not None:
+            conn._reuse_slot = None
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not close a reused rag.db connection", exc_info = True)
+
+
+_reuse_state = threading.local()
+
+
+def release_reused() -> None:
+    """Close this thread's idle shared connection before file work or waits, so an account rename on
+    Windows sees the same open handles as without the block. No-op outside a block or while checked out."""
+    slot = getattr(_reuse_state, "slot", None)
+    if slot is not None and slot.conn is not None and not slot.checked_out:
+        slot.discard()
+
+
+@contextmanager
+def reuse_connections():
+    """On this thread, get_connection() reuses one connection (a fresh open costs ~0.5 ms) unless it is
+    still checked out, then opens a normal one. Callers commit and close as before. Nested blocks share
+    the outer one, which closes it."""
+    if getattr(_reuse_state, "slot", None) is not None:
+        yield
+        return
+    slot = _ReuseSlot()
+    _reuse_state.slot = slot
+    try:
+        yield
+    finally:
+        _reuse_state.slot = None
+        slot.discard()
+
+
 def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
     global _extension_loaded
@@ -307,18 +419,28 @@ def get_connection() -> sqlite3.Connection:
 
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite_gate.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    # Wait for a lock instead of erroring: figure-heavy ingests hold connections across many seconds.
-    conn.execute("PRAGMA busy_timeout = 5000")
-    try:
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
-    except Exception as exc:  # noqa: BLE001
-        conn.close()
-        _warn_unavailable_once(exc)
-        raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
+    slot = getattr(_reuse_state, "slot", None)
+    conn = slot.checkout(db_path) if slot is not None else None
+    if conn is None:
+        adopt = slot is not None and slot.conn is None
+        if adopt:
+            conn = sqlite_gate.connect(db_path, factory = _ReusedConnection)
+        else:
+            conn = sqlite_gate.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        # Wait for a lock instead of erroring: figure-heavy ingests hold connections across many seconds.
+        conn.execute("PRAGMA busy_timeout = 5000")
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+        except Exception as exc:  # noqa: BLE001
+            conn.close()
+            _warn_unavailable_once(exc)
+            raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
+        if adopt:
+            slot.conn, slot.db_path, slot.checked_out = conn, db_path, True
+            conn._reuse_slot = slot
     # Set before the schema step: the library loaded, whatever the db does next. Monotonic, no lock.
     _extension_loaded = True
 
@@ -332,19 +454,100 @@ def get_connection() -> sqlite3.Connection:
                 except Exception:
                     conn.close()
                     raise
+    try:
+        _ensure_wal_keeper(db_path)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
 def get_metadata_connection() -> sqlite3.Connection:
-    """Open rag.db without loading sqlite-vec. This connection is only for ordinary SQLite metadata
-    tables. It lets lifecycle tombstones remain writable when the optional native vector extension
-    is temporarily unavailable. Callers must not query or mutate the vec0 virtual table."""
+    """Metadata-only connection without sqlite-vec: tombstones stay writable; do not touch vec0 tables."""
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite_gate.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        _ensure_wal_keeper(db_path)
+    except Exception:
+        conn.close()
+        raise
     return conn
+
+
+def _ensure_wal_keeper(db_path: Path) -> None:
+    if not _wal_keepers_enabled or db_path in _wal_keeper_paths:
+        return
+    with _wal_keeper_lock:
+        if not _wal_keepers_enabled or _account_retired():
+            return
+        resolved = db_path.resolve()
+        if resolved not in _wal_keepers:
+            # No vec0 load: metadata-only callers must work without sqlite-vec.
+            keeper = sqlite_gate.connect(db_path, check_same_thread = False)
+            try:
+                mode = keeper.execute("PRAGMA journal_mode").fetchone()[0]
+                if not isinstance(mode, str) or mode.lower() != "wal":
+                    keeper.close()
+                    # Not cached: a metadata open can precede RAG switching the file to WAL.
+                    return
+                keeper.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchall()
+            except Exception:
+                keeper.close()
+                raise
+            _wal_keepers[resolved] = keeper
+        _wal_keeper_paths[db_path] = resolved
+        _wal_keeper_paths[resolved] = resolved
+
+
+def _account_retired() -> bool:
+    # Under _wal_keeper_lock: a late open must not recreate a keeper retirement closed (blocks the Windows rename).
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return False
+    from core.training.account_jobs import account_is_retired
+
+    return account_is_retired()
+
+
+def start_wal_keepers() -> None:
+    """Enable lazy keepers for a new backend lifespan without initializing RAG."""
+    global _wal_keepers_enabled
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = True
+
+
+def _close_keeper(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except Exception as exc:
+        logger.warning("Could not close the rag.db WAL keeper: %s", exc)
+
+
+def close_wal_keeper_for(path: str | Path) -> None:
+    """Release one account's RAG database before its directories are retired."""
+    resolved = Path(path).resolve()
+    with _wal_keeper_lock:
+        keeper = _wal_keepers.pop(resolved, None)
+        if keeper is not None:
+            _close_keeper(keeper)
+        for spelling, target in tuple(_wal_keeper_paths.items()):
+            if target == resolved:
+                del _wal_keeper_paths[spelling]
+
+
+def close_wal_keeper() -> None:
+    """Release all keepers; late workers cannot reopen them after shutdown."""
+    global _wal_keepers_enabled
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = False
+        for keeper in _wal_keepers.values():
+            _close_keeper(keeper)
+        _wal_keepers.clear()
+        _wal_keeper_paths.clear()
 
 
 def vec_table_dim(conn: sqlite3.Connection) -> int | None:
@@ -381,6 +584,11 @@ def ensure_vec(
             int(dim),
         )
         conn.execute("DROP TABLE chunks_vec")
+        # The drop moves no chunks row; the global epoch invalidates every cached scope.
+        conn.execute(
+            "INSERT INTO rag_vec_epoch(scope, n) VALUES ('', 1) "
+            "ON CONFLICT(scope) DO UPDATE SET n = n + 1"
+        )
         conn.execute(
             "UPDATE documents SET embedding_model=? || COALESCE(embedding_model, '') "
             "WHERE id IS NOT ? AND COALESCE(embedding_model, '') NOT LIKE ?",
@@ -411,30 +619,46 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+# Under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
+_DOC_ID_BATCH = 900
+
+
+def _id_batches(ids):
+    ids = list(dict.fromkeys(ids))
+    for start in range(0, len(ids), _DOC_ID_BATCH):
+        batch = ids[start : start + _DOC_ID_BATCH]
+        yield batch, ",".join("?" * len(batch))
+
+
 def _delete_document_chunks(conn, document_id: str) -> None:
-    """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
-    reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
-    stay citable."""
-    chunk_ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
-        ).fetchall()
-    ]
-    if not chunk_ids:
-        return
-    has_vec = vec_table_exists(conn)
-    for chunk_id in chunk_ids:
-        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
+    """Deletes chunk rows, keeps the documents row; retrieval filters by scope, so leftovers stay
+    citable."""
+    _delete_documents_chunks(conn, [document_id])
+
+
+def _delete_documents_chunks(
+    conn,
+    document_ids,
+    *,
+    vec: bool = True,
+) -> None:
+    """chunk_id is unindexed in fts5 and vec0: one full scan per id batch, not per document."""
+    has_vec = None if vec else False
+    for batch, marks in _id_batches(document_ids):
+        owned = f"SELECT id FROM chunks WHERE document_id IN ({marks})"
+        if conn.execute(f"{owned} LIMIT 1", batch).fetchone() is None:
+            continue
+        conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", batch)
+        if has_vec is None:
+            has_vec = vec_table_exists(conn)
         if has_vec:
-            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
-    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+            conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", batch)
+        conn.execute(f"DELETE FROM chunks WHERE document_id IN ({marks})", batch)
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:
-    """Fail ingestion jobs/documents left mid-flight by a crash so they stop showing as stuck
-    "processing" and become re-ingestible. Work owned by another live backend is left alone until
-    its lease expires. No-op without RAG. Returns the number of jobs reset."""
+    """Fails crash-orphaned ingestion jobs so they can re-run; another live backend's work is left
+    alone until its lease expires; no-op without RAG"""
     # rag_available(): the package may be installed without the vec0 binary.
     if not rag_available():
         return 0

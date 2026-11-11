@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 Image Klein prompt upsampling through a llama.cpp sidecar.
-
-FLUX.3 was trained on ~250-word captions, and a short request ("a gymnast doing a backflip") renders broken
-anatomy. BFL ships a prompt upsampler (a Qwen3.5-9B fine-tune) that rewrites the request into such a caption;
-ComfyUI's FLUX.3 templates run it by default. Studio runs a GGUF of it in one ``llama-server`` on an ephemeral
-127.0.0.1 port, loaded on demand and unloaded after the dictation keep-alive (or right after the call when VRAM is
-tight, so the DiT and text encoder never denoise next to it). The diffusers graph's own ``prompt_upsampler`` step
-stays dropped (``diffusion_flux3.flux3_blocks``); this replaces it.
-
-Prompts and sampling follow ComfyUI's FLUX.3 templates. The system prompts are BFL's ``system_prompts.json``
-(black-forest-labs/flux-3-image-klein-pup at commit 8b069751), byte-identical to ``SYSTEM_PROMPTS`` in diffusers'
-``modular_pipelines/flux3/prompt_upsampler.py`` at d42ebf9c6e (huggingface/diffusers#15058). The reference
-preparation is adapted from that file's ``get_reference_size`` / ``prepare_reference`` (Apache-2.0).
-
-Weights only ever come from the unsloth GGUF repo below or a local override; nothing is fetched implicitly by a
-generate call, the UI drives the download. Any failure leaves the prompt as typed.
-"""
+"""FLUX.3 prompt upsampler via llama-server; weights never fetched by generate, failures keep prompt"""
 
 from __future__ import annotations
 
@@ -50,8 +34,8 @@ UPSAMPLER_MODEL_FILES = {
     "Q4_K_M": "flux-3-image-klein-pup-Q4_K_M.gguf",
     "Q8_0": "flux-3-image-klein-pup-Q8_0.gguf",
 }
-# Unsloth Dynamic 4-bit with an imatrix: against BF16 on the upsampler's own captions, about 39% lower mean KL
-# divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
+# Unsloth Dynamic 4-bit: against BF16 on the upsampler's own captions, about 39% lower mean KL divergence than
+# Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
 # What a run reads, best first: an install holding Q4_K_M (the default until UD-Q4_K_XL) keeps enhancing offline.
@@ -1786,9 +1770,8 @@ def _cuda_device_count() -> int:
 
 
 def cancel_warm_start() -> bool:
-    """Cancel a warm start still launching (it holds the image engine's generation slot until its server is up), for
-    a teardown, a model switch or an unenhanced render that would otherwise wait it out. Never creates the sidecar,
-    never blocks."""
+    """Cancel a warm start still launching (it holds the image engine's generation slot until up),
+    for a teardown, model switch or unenhanced render; never creates the sidecar or blocks."""
     sidecar = _sidecar
     return sidecar is not None and sidecar.cancel_warm_start()
 
@@ -2177,6 +2160,10 @@ def enhance_for_generation(
     variant = variant_for_family(family_name)
     distinct = list(dict.fromkeys(p for p in prompts if isinstance(p, str)))
     cancel_event = cancel_event or threading.Event()
+    from core.inference.generation_ticket import bind_generation_cancel
+
+    # A queued job's or chat image's own Stop reaches its captioning too, not only the denoise.
+    bind_generation_cancel(cancel_event)
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
     # On every exit, a Stop included: a retry with enhancement off must not denoise beside a tight server.

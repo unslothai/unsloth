@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Host RAM this process can use: psutil / meminfo capped by the tightest enforcing cgroup level.
-
-psutil reads the whole machine, so under a container or systemd MemoryMax it admits work the cgroup
-OOM-kills. Torch-free: the polled /api/system route calls it."""
+"""Usable host RAM, capped by cgroup limits since psutil sees the whole machine; torch-free."""
 
 from __future__ import annotations
 
@@ -50,10 +47,15 @@ _V1_TOTAL_FILE_KEYS = (
 _V1_LOCAL_FILE_KEYS = ("inactive_file", "active_file", "mapped_file", "dirty", "writeback")
 
 
-def _reclaimable_file_bytes(path: str, *, v1: bool) -> int:
-    """Droppable page cache in bytes: inactive_file + (active_file - mapped - dirty - writeback, conservative).
-
-    shmem/tmpfs is on the anon LRU, never counted. Not crediting active_file counted twice-read models as used."""
+def _reclaimable_file_bytes(
+    path: str,
+    *,
+    v1: bool,
+    credit_mapped: bool = False,
+) -> int:
+    """Droppable page cache bytes: inactive_file + active_file minus mapped, dirty and writeback
+    (conservative); shmem/tmpfs is never counted; credit_mapped also counts clean mapped pages as
+    MemAvailable does, else MGLRU flips the reading."""
     values: dict[str, int] = {}
     try:
         with open(path, "r", encoding = "utf-8") as f:
@@ -72,6 +74,8 @@ def _reclaimable_file_bytes(path: str, *, v1: bool) -> int:
     else:
         keys = _V1_LOCAL_FILE_KEYS
     inactive, active, mapped, dirty, writeback = (values.get(key, 0) for key in keys)
+    if credit_mapped:
+        mapped = 0
     return inactive + max(active - mapped - dirty - writeback, 0)
 
 
@@ -93,7 +97,10 @@ def _directories(root: str, relative: Optional[str]) -> list[str]:
 
 
 def cgroup_memory_budgets(
-    cgroup_root: Optional[str] = None, proc_self_cgroup: Optional[str] = None
+    cgroup_root: Optional[str] = None,
+    proc_self_cgroup: Optional[str] = None,
+    *,
+    credit_mapped: bool = False,
 ) -> list[tuple[int, int]]:
     """``(remaining, limit)`` bytes per enforcing limit on this cgroup and its ancestors (an ancestor
     can bind through sibling usage), less reclaimable page cache; empty = no finite limit."""
@@ -115,7 +122,10 @@ def cgroup_memory_budgets(
         if used is not None:
             used = max(
                 0,
-                used - _reclaimable_file_bytes(os.path.join(directory, "memory.stat"), v1 = False),
+                used
+                - _reclaimable_file_bytes(
+                    os.path.join(directory, "memory.stat"), v1 = False, credit_mapped = credit_mapped
+                ),
             )
         budgets.append((limit if used is None else limit - used, limit))
 
@@ -133,7 +143,11 @@ def cgroup_memory_budgets(
         used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
         if used is not None:
             used = max(
-                0, used - _reclaimable_file_bytes(os.path.join(directory, "memory.stat"), v1 = True)
+                0,
+                used
+                - _reclaimable_file_bytes(
+                    os.path.join(directory, "memory.stat"), v1 = True, credit_mapped = credit_mapped
+                ),
             )
         budgets.append((limit if used is None else limit - used, limit))
     return budgets
@@ -249,9 +263,8 @@ def cgroup_swap_allowance_bytes(
 def cgroup_v1_memsw_headroom_bytes(
     cgroup_root: Optional[str] = None, proc_self_cgroup: Optional[str] = None
 ) -> Optional[int]:
-    """The tightest cgroup v1 RAM+swap (``memsw``) headroom on this cgroup and its ancestors, the most RAM and swap
-    together this process can still charge; None without a finite memsw limit. Unreadable membership is read as
-    the namespace root; a finite limit whose usage cannot be read yields 0."""
+    """Tightest cgroup v1 memsw headroom (RAM plus swap) up the cgroup chain; None without a finite
+    limit, 0 if its usage is unreadable; unreadable membership uses the root."""
     cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
     proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
     try:
@@ -341,6 +354,11 @@ def usable_mib(available_mib: Optional[int], headroom_mib: Optional[int]) -> Opt
 def usable_host_ram_mib() -> Optional[int]:
     """Host RAM this process can still allocate, in MiB: min(system available, cgroup headroom)."""
     return usable_mib(system_available_mib(), cgroup_headroom_mib())
+
+
+def credited_cgroup_headroom_mib() -> Optional[int]:
+    """``cgroup_headroom_mib`` with clean mapped file pages counted as reclaimable, from one read per level."""
+    return cgroup_headroom_mib(cgroup_memory_budgets(credit_mapped = True))
 
 
 def host_ram_capacity_mib() -> Optional[int]:

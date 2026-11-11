@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""bitsandbytes NF4 ``Linear4bit.forward`` on Unsloth's NF4 kernels: Triton dequantize + F.linear
-(bit-exact to bitsandbytes' dequantize) and ``fast_gemv`` for one decode row; dX recomputes the
-weight as bitsandbytes does. From bitsandbytes 0.50, shapes its fused 4-bit GEMM takes stay with it.
-Default on before bitsandbytes 0.50, and from 0.50 only on sm100 / sm120 (A100 / T4 batched decode
-measured 2-3% slower). UNSLOTH_BNB_NF4_LINEAR=1/0 forces it; UNSLOTH_BNB_TRITON=0 disables it."""
+"""Replaces bitsandbytes NF4 Linear4bit.forward with Unsloth's Triton dequant + F.linear and
+fast_gemv; from bnb 0.50 fused 4-bit GEMM shapes stay with bnb. On before 0.50, and from 0.50
+only on sm100/sm120; UNSLOTH_BNB_NF4_LINEAR=1/0 forces it, UNSLOTH_BNB_TRITON=0 disables it."""
 
 import os
 
@@ -180,10 +178,9 @@ def _eligible(self, x, weight, quant_state):
 
 
 def _bnb_fused_takes(self, x, quant_state):
-    """bitsandbytes >= 0.50 would run its fused 4-bit GEMM here (2..1536 rows, per its own per-GPU
-    heuristic): keep that. Where it dequantizes + F.linear instead, the override does the same with
-    the faster Triton dequantize, bit for bit. Eager answers are cached per layer and element count
-    (_nf4_forward checks that cache first): this runs on every decode call."""
+    """Keeps bitsandbytes >= 0.50 fused 4-bit GEMM where it runs (2..1536 rows, per its per-GPU
+    heuristic); otherwise Triton dequantize + F.linear, bit for bit; eager answers are cached per
+    layer and element count since this runs every decode call."""
     K = x.shape[-1]
     n = x.numel()
     if n <= K or n > _BNB_FUSED_MAX_ROWS * K:

@@ -16,8 +16,10 @@ from fastapi.responses import JSONResponse
 
 from core.inference.engine_transport import engine_messages, engine_request_timeout
 from core.inference.inference_gate import gated_async_client
+from core.inference.managed_engine import fold_reasoning_into_answer
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
+from utils.api_errors import openai_error_body
 
 
 class ManagedToolTransport:
@@ -32,10 +34,14 @@ class ManagedToolTransport:
         *,
         preserve_thinking = None,
         message_fitter = None,
+        continuing = False,
+        reply_cap = None,
     ):
         self.client, self.engine, self.body = client, engine, body
+        self._continuing = continuing
         self._preserve_thinking = preserve_thinking
         self._message_fitter = message_fitter
+        self._reply_cap = reply_cap
         # The tool loop keeps a turn's reasoning_content on the assistant message only when asked.
         self.preserves_reasoning = bool(engine.reasoning_parser and preserve_thinking)
 
@@ -55,6 +61,9 @@ class ManagedToolTransport:
         }
         if max_tokens:
             body["max_tokens"] = max_tokens
+        continuing = self._continuing and messages[-1].get("role") == "assistant"
+        if continuing:
+            self.engine.continue_final_message(body)
         if truncation_line:
             yield truncation_line
         if tools:
@@ -63,6 +72,8 @@ class ManagedToolTransport:
         else:
             body.pop("tools", None)
             body.pop("tool_choice", None)
+        if self._reply_cap is not None:
+            await self._reply_cap(body)
         if cancel_event.is_set():
             return
         async with self.client.stream(
@@ -80,9 +91,20 @@ class ManagedToolTransport:
                     if cancel_event.is_set():
                         return
                     if line.startswith("data:"):
-                        yield _with_reasoning_content(line)
+                        yield _as_answer(line) if continuing else _with_reasoning_content(line)
             finally:
                 await lines.aclose()
+
+
+def _as_answer(line: str) -> str:
+    try:
+        event = json.loads(line[5:])
+    except ValueError:
+        return line
+    for choice in event.get("choices") or () if isinstance(event, dict) else ():
+        if isinstance(choice, dict) and isinstance(choice.get("delta"), dict):
+            fold_reasoning_into_answer(choice["delta"])
+    return "data: " + json.dumps(event)
 
 
 def _with_reasoning_content(line: str) -> str:
@@ -111,11 +133,11 @@ def _message_fitter(
     tools,
     studio_loop = False,
 ):
-    """Auto-compact to the vLLM engine's window; the exact count refuses tools, so this estimates."""
+    """Auto-compact to the managed engine's window; the exact count refuses tools, so this estimates."""
     from routes import inference as api
 
     if (
-        getattr(engine, "engine", None) != "vllm"
+        getattr(engine, "engine", None) not in ("vllm", "sglang")
         or api._rolling_context_policy(payload) is None
         or not engine.context
     ):
@@ -134,6 +156,9 @@ def _message_fitter(
     # on a controller re-prompt that recall must not query for.
     branch: list = []
     tool_loop = studio_loop and not api._tool_calls_are_disabled(payload)
+    # An uncapped reply is sized by the engine; a cap from the estimate can push the prompt over.
+    limit = api._effective_max_tokens(payload)
+    capped = bool(limit) and limit < engine.context
 
     async def fit(messages):
         if not branch:
@@ -151,9 +176,18 @@ def _message_fitter(
             line = api._context_truncated_sse_chunk(
                 "chatcmpl-" + uuid.uuid4().hex[:12], public, truncation
             ).rstrip("\n")
-        return fitted, max_tokens, line
+        return fitted, max_tokens if capped else None, line
 
     return fit
+
+
+def _has_image(messages) -> bool:
+    return any(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
 
 
 def _with_model(line: str, public: str) -> str:
@@ -186,6 +220,10 @@ async def managed_tool_chat(
     tools_on = bool(api._effective_enable_tools(payload))
     ui_events = api._ui_stream_events_enabled(request)
     if tools_on and not api._launcher_tool_default_applies(payload, ui_events):
+        tools_on = False
+    if api._response_format_constrains_decoding(
+        payload
+    ) and not api._explicit_studio_tool_loop_requested(payload):
         tools_on = False
     if payload.tool_choice == "none":
         tools_on = False
@@ -224,6 +262,19 @@ async def managed_tool_chat(
     )
     if tools and api._wants_multiple_choices(payload):
         raise reject("Multiple choices are unavailable when Unsloth executes tools.")
+    if tools and api._response_format_constrains_decoding(payload):
+        # The tool loop never forwards response_format; refuse rather than violate it (as GGUF does).
+        message = (
+            "response_format is not supported with Unsloth tool execution; send the request "
+            "without enable_tools or mcp_enabled to use guided decoding."
+        )
+        api.api_monitor.fail(monitor_id, message)
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                message, status = 400, code = "unsupported_parameter", param = "response_format"
+            ),
+        )
     if tools:
         api._reject_confirm_gate_without_channel(
             payload, ui_events, monitor_id, api._catalog_names(tools)
@@ -287,6 +338,27 @@ async def managed_tool_chat(
         body["tools"] = payload.tools
     if payload.tool_choice is not None and not tools:
         body["tool_choice"] = payload.tool_choice
+    response_format = api._response_format_beside_tools(payload, tools or payload.tools)
+    if response_format is not None:
+        body["response_format"] = response_format
+    continuing = api._continue_final_message(payload)
+    thinking = {
+        "enable_thinking": payload.enable_thinking,
+        "reasoning_effort": payload.reasoning_effort,
+        "preserve_thinking": payload.preserve_thinking,
+    }
+
+    async def cap_reply(request_body):
+        # As in ManagedEngine.generate, an image prompt is left to the engine to judge.
+        if request_body.get("max_tokens") and not _has_image(request_body["messages"]):
+            request_body["max_tokens"] = await asyncio.to_thread(
+                engine._reply_cap_in_window,
+                request_body["messages"],
+                "",
+                request_body["max_tokens"],
+                thinking,
+                request_body.get("tools"),
+            )
 
     cancel = api._chat_cancel_event(request)
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:12]
@@ -310,6 +382,8 @@ async def managed_tool_chat(
             message_fitter = _message_fitter(
                 payload, engine, public, tools or payload.tools, studio_loop = bool(tools)
             ),
+            continuing = continuing,
+            reply_cap = cap_reply,
         )
         stripper = api.ServerToolCallStripper()
         stream = None
@@ -326,6 +400,7 @@ async def managed_tool_chat(
                         tool_choice = payload.tool_choice,
                         supports_vision = bool(info.get("is_vision")),
                         promoted_image_parts = promoted_image_parts,
+                        continue_final_message = continuing,
                     ),
                     policy = ToolLoopPolicy(
                         tools = tools,
@@ -358,6 +433,9 @@ async def managed_tool_chat(
                     )
                     if max_tokens:
                         request_body["max_tokens"] = max_tokens
+                await cap_reply(request_body)
+                if continuing:
+                    engine.continue_final_message(request_body)
                 response = await client.post(
                     engine.base_url + "/v1/chat/completions",
                     headers = engine.headers,
@@ -370,6 +448,8 @@ async def managed_tool_chat(
                     data["model"] = public
                 for choice in data.get("choices") or () if isinstance(data, dict) else ():
                     message = choice.get("message") if isinstance(choice, dict) else None
+                    if continuing and isinstance(message, dict):
+                        fold_reasoning_into_answer(message)
                     if isinstance(message, dict) and "reasoning" in message:
                         reasoning = message.pop("reasoning")
                         if reasoning and not message.get("reasoning_content"):
@@ -511,6 +591,11 @@ async def managed_engine_completions(request, current_subject, backend, body):
     stream = bool(body.get("stream"))
     include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
     upstream = {**body, "model": engine.model}
+    limit = body.get("max_tokens")
+    if isinstance(limit, int) and limit > 0 and isinstance(body.get("prompt"), str):
+        upstream["max_tokens"] = await asyncio.to_thread(
+            engine._completion_cap_in_window, body["prompt"], limit
+        )
     if stream:
         # Always asked for so the monitor counts tokens; dropped again unless the caller opted in.
         upstream["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}

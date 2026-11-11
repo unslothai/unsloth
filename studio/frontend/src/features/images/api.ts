@@ -29,6 +29,8 @@ export interface DiffusionResolvedControl {
 
 export interface DiffusionStatus {
   loaded: boolean;
+  // False when the resident model belongs to another account; the response then carries nothing else.
+  yours?: boolean;
   repo_id: string | null;
   display_repo_id?: string | null;
   resident_mib?: number | null;
@@ -53,6 +55,7 @@ export interface DiffusionStatus {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   speed_optims?: string[];
   attention_backend?: string | null;
@@ -75,6 +78,8 @@ export interface DiffusionStatus {
   lora_after_reload?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
+  // Why supports_lora is false, shown in the LoRA slot when no reload would turn LoRA on.
+  lora_unavailable_reason?: string | null;
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
   // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).
@@ -262,6 +267,17 @@ export interface DiffusionGenerateRequest {
   hires?: HiresRequest;
   // Upscale workflow: a model upscaler id from status.upscale_models; omitted = Lanczos.
   upscale_model?: string | null;
+  // Server-side X/Y grid (API callers; the page's Compare grid builds its cells client-side).
+  xy?: { x: XYAxisSpec; y?: XYAxisSpec };
+}
+
+export interface XYAxisSpec {
+  field:
+    | "seed" | "steps" | "guidance" | "sampler" | "schedule_type" | "shift" | "base_shift" | "max_shift"
+    | "strength" | "clip_skip" | "cfg_rescale" | "variation_seed" | "variation_strength" | "lora_weight"
+    | "prompt_sr";
+  values: Array<number | string>;
+  index?: number;
 }
 
 export interface LoraSpecInput {
@@ -311,6 +327,8 @@ export interface GalleryImage {
   batch_seed?: number | null;
   batch_index: number;
   batch_size: number;
+  generation_seconds?: number | null;
+  generation_count?: number | null;
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
@@ -322,6 +340,7 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   attention_backend?: string | null;
   transformer_cache?: string | null;
@@ -368,6 +387,13 @@ export interface GalleryImage {
   hires_base_width?: number | null;
   hires_base_height?: number | null;
   created_at: number;
+  xy_grid?: {
+    x: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
+    y?: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
+    cells: string[];
+    cell_width?: number;
+    cell_height?: number;
+  } | null;
   pinned?: boolean;
   archived?: boolean;
   order_at?: number | null;
@@ -375,6 +401,7 @@ export interface GalleryImage {
 
 export interface DiffusionGenerateResponse {
   images: GalleryImage[];
+  grid?: GalleryImage | null;
 }
 
 export async function parseJson<T>(response: Response): Promise<T> {
@@ -444,6 +471,7 @@ export interface DiffusionDownloadPlan {
     gguf_filename: string | null;
     /** Only the planner knows: a gated pick is staged from an ungated mirror under another repo id. */
     checkpoint?: boolean;
+    hosted_denoiser?: boolean;
   }[];
   total_bytes: number;
   required_bytes?: number;
@@ -478,8 +506,11 @@ export class GenerateResponseLostError extends Error {
 const RESPONSE_LOST_STATUSES = new Set([408, 502, 503, 504, 522, 524]);
 
 /** A run past the proxy window throws GenerateResponseLostError; settle it, do not retry. */
+/** `sequence`: this run belongs to a multi-run Generate; while `more` runs follow, the server queue holds its next job
+ *  until this sequence's next request arrives. */
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
+  sequence?: { id: string; more: boolean },
 ): Promise<DiffusionGenerateResponse> {
   let response: Response;
   try {
@@ -488,7 +519,11 @@ export async function generateDiffusionImage(
       "/api/inference/images/generate",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(sequence && { "X-Unsloth-Run-Sequence": sequence.id }),
+          ...(sequence?.more && { "X-Unsloth-More-Runs": "1" }),
+        },
         body: JSON.stringify(body),
       },
       { retryNetworkErrors: false },
@@ -500,9 +535,8 @@ export async function generateDiffusionImage(
   }
   if (!response.ok && RESPONSE_LOST_STATUSES.has(response.status)) {
     const detail = await readFastApiError(response);
-    // A proxy answers with HTML (or nothing); the app answers with JSON. Only the former means the request may still
-    // be running: settling an application error would poll for a generation that never started and hide the reason
-    // the backend gave.
+    // Only a proxy's HTML or empty reply means the generation may still be running; a JSON
+    // application error is thrown with the backend's reason rather than polled for.
     if ((response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
       throw new Error(detail);
     }
@@ -529,6 +563,75 @@ export async function cancelDiffusionGeneration(
       { retryNetworkErrors: false },
     ),
   );
+}
+
+export type ImageQueueStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export interface ImageQueueJob {
+  id: string;
+  status: ImageQueueStatus;
+  /** 0-based place among the queued jobs; null once started. */
+  position: number | null;
+  prompt: string;
+  width: number;
+  height: number;
+  /** null follows the loaded model's default. */
+  steps: number | null;
+  seed: number | null;
+  batch_size: number;
+  workflow: string | null;
+  loras: string[];
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  error: string | null;
+  image_ids: string[];
+  seed_used: number | null;
+}
+
+// A server without the queue (older Studio, proxy, test double) answers without a list: no jobs, not a crash.
+function queueJobs(body: unknown): ImageQueueJob[] {
+  const jobs = (body as { jobs?: unknown } | null)?.jobs;
+  return Array.isArray(jobs) ? (jobs as ImageQueueJob[]) : [];
+}
+
+export async function enqueueDiffusionImage(body: DiffusionGenerateRequest): Promise<ImageQueueJob> {
+  // No retry: a re-sent POST queues the run twice.
+  return parseJson(
+    await authFetch(
+      "/api/inference/images/queue",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      { retryNetworkErrors: false },
+    ),
+  );
+}
+
+export async function listDiffusionQueue(): Promise<ImageQueueJob[]> {
+  return queueJobs(await parseJson(await authFetch("/api/inference/images/queue")));
+}
+
+export async function cancelDiffusionQueueJob(id: string): Promise<ImageQueueJob> {
+  return parseJson(
+    await authFetch(`/api/inference/images/queue/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  );
+}
+
+export async function moveDiffusionQueueJob(id: string, index: number): Promise<ImageQueueJob[]> {
+  const res = await authFetch(`/api/inference/images/queue/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index }),
+  });
+  return queueJobs(await parseJson(res));
+}
+
+export async function clearDiffusionQueue(): Promise<ImageQueueJob[]> {
+  const res = await authFetch("/api/inference/images/queue", { method: "DELETE" });
+  return queueJobs(await parseJson(res));
 }
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
@@ -688,6 +791,13 @@ export interface DiffusionTrainingStatus {
   grad_norm?: number | null;
   num_images: number | null;
   in_model_load: boolean;
+  model_load_stage?: "conditioning" | "transformer" | "quantizing" | null;
+  model_load_progress?: {
+    done: number;
+    total: number;
+    unit: "tensors" | "components" | "shards";
+    label: string;
+  } | null;
   preparation?: { stage?: string | null; done?: number | null; total?: number | null } | null;
   download_progress?: { bytes_done: number; bytes_total: number; label?: string; scope?: "active_files" } | null;
   output_dir: string | null;
@@ -826,6 +936,7 @@ export interface DiffusionTrainableFamily {
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.
   supports_samples?: boolean;
+  is_video?: boolean;
   // Undefined on an older backend (control hidden).
   supports_bucketing?: boolean;
   /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */

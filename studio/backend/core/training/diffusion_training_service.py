@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A small job service for diffusion LoRA training.
-
-This is deliberately separate from the LLM ``TrainingBackend``: that backend's
-lifecycle (LLM config build, per-run SQLite rows, and matplotlib plots) is specific
-to text training and would mis-handle a diffusion run. This service does only what a
-diffusion job needs -- spawn the trainer subprocess, pump its
-events (``model_load_*`` / ``progress`` / ``complete`` / ``error``) into an in-memory
-status snapshot, and support stop -- and is polled over JSON by the route layer.
-
-The subprocess context, target, and queues are injectable so the service can be unit
-tested without real multiprocessing or torch: tests pass a fake context whose Process
-runs a scripted target on a thread.
-"""
+"""Diffusion LoRA job service: runs the trainer subprocess, kept apart from the LLM TrainingBackend."""
 
 from __future__ import annotations
 
@@ -174,8 +162,7 @@ def _default_target(
     )
 
 
-# Cap on retained metric points; over it, arrays are decimated so a long run stays bounded while the
-# chart keeps its shape.
+# Cap on retained metric points; past it the arrays are decimated so a long run stays bounded.
 _METRIC_CAP = 4000
 
 
@@ -242,8 +229,7 @@ def _resume_fields(
     return {
         "can_resume": can_resume,
         "checkpoint_step": state.get("checkpoint_step"),
-        # The EXACT bundle this run would continue, so the client resumes the one it was shown rather than
-        # whatever is newest in a folder two runs share.
+        # The EXACT bundle this run would continue, not the newest in a folder two runs share.
         "checkpoint_path": state.get("checkpoint_path") if can_resume else None,
         "resume_blocked_reason": state.get("resume_blocked_reason"),
     }
@@ -371,6 +357,8 @@ def _idle_state() -> dict[str, Any]:
         "num_images": None,
         "in_model_load": False,
         "preparation": None,
+        "model_load_stage": None,
+        "model_load_progress": None,
         "download_progress": None,
         "output_dir": None,
         "lora_path": None,
@@ -395,8 +383,7 @@ def _idle_state() -> dict[str, Any]:
         "metric_loss": [],
         "metric_lr": [],
         "metric_grad_norm": [],
-        # Null on every other family, and on H3 steps that reported only the combined loss, so the series
-        # stay index-aligned.
+        # Null for other families and H3 steps with only a combined loss; series stay aligned.
         "metric_video_loss": [],
         "metric_audio_loss": [],
         "samples": [],
@@ -439,9 +426,7 @@ def _append_samples(
         delete_sample_files(output_dir, [e["path"] for e in entries if e["step"] not in keep])
 
 
-# The value series, in append order, paired index-for-index with metric_steps. One list so a new
-# series cannot be added to the appends and forgotten in the decimation below, which would
-# silently misalign the curves.
+# Values paired index-for-index with metric_steps; one list so no series is forgotten in decimation.
 _METRIC_SERIES: tuple[str, ...] = (
     "metric_loss",
     "metric_lr",
@@ -798,6 +783,8 @@ class DiffusionTrainingService:
                     status = "stopped",
                     in_model_load = False,
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     message = "Stopped while loading model files; training had not started.",
                     updated_at = time.time(),
@@ -814,8 +801,7 @@ class DiffusionTrainingService:
                 return False
             self._stop_signalled = True
             if not save:
-                # Remembered here so a child that dies before its discarded completion still blocks the resume the
-                # user threw away.
+                # Kept so a child dying before a discarded completion still blocks the resume.
                 self._discard_requested = True
             self._state["message"] = (
                 "Stop requested; finishing the current step and saving a partial adapter..."
@@ -931,6 +917,8 @@ class DiffusionTrainingService:
                                 # A worker killed mid-load / mid-preparation sends no terminal event to clear these.
                                 in_model_load = False,
                                 preparation = None,
+                                model_load_stage = None,
+                                model_load_progress = None,
                                 download_progress = None,
                                 message = self._unexpected_exit_message(proc),
                                 updated_at = time.time(),
@@ -1087,8 +1075,7 @@ class DiffusionTrainingService:
         ev: dict[str, Any],
         proc: Any = None,
     ) -> None:
-        """Events from a superseded job's process are ignored, so a stale pump cannot touch current
-        state."""
+        """Events from a superseded process are dropped so a stale pump cannot touch state."""
         etype = ev.get("type")
         with self._lock:
             if proc is not None and self._proc is not proc:
@@ -1101,12 +1088,36 @@ class DiffusionTrainingService:
                 s.update(
                     in_model_load = True,
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     status = "running",
                     message = "Loading base model...",
                 )
+                s["model_load_stage"] = (
+                    ev.get("stage")
+                    if ev.get("stage") in ("conditioning", "transformer", "quantizing")
+                    else None
+                )
                 if ev.get("num_images") is not None:
                     s["num_images"] = ev.get("num_images")
+            elif etype == "model_load_progress":
+                done, total = ev.get("done"), ev.get("total")
+                if (
+                    s.get("in_model_load")
+                    and s.get("preparation") is None
+                    and type(done) is int
+                    and type(total) is int
+                    and 0 <= done <= total
+                    and total > 0
+                    and ev.get("unit") in ("tensors", "components", "shards")
+                ):
+                    s["model_load_progress"] = {
+                        "done": done,
+                        "total": total,
+                        "unit": ev["unit"],
+                        "label": str(ev.get("label", "Model weights"))[:200],
+                    }
             elif etype == "model_download_progress":
                 if s.get("in_model_load") and s.get("preparation") is None:
                     progress = ev.get("download_progress")
@@ -1127,10 +1138,14 @@ class DiffusionTrainingService:
                 s.update(
                     in_model_load = False,
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     message = "Training...",
                 )
             elif etype == "preparing":
+                s["model_load_stage"] = None
+                s["model_load_progress"] = None
                 # Long precompute such as the VAE latent cache, surfaced so the UI does not look stalled.
                 done, total = ev.get("done"), ev.get("total")
                 stage = str(ev.get("stage", "prepare")).replace("_", " ")
@@ -1201,6 +1216,8 @@ class DiffusionTrainingService:
                     status = "running",
                     step = ev.get("step", s["step"]),
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     in_model_load = False,
                     total_steps = ev.get("total_steps", s["total_steps"]),
@@ -1241,6 +1258,8 @@ class DiffusionTrainingService:
                     in_model_load = False,
                     status = "stopped" if ev.get("stopped") else "completed",
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
@@ -1276,6 +1295,8 @@ class DiffusionTrainingService:
                     in_model_load = False,
                     status = "error",
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     message = str(ev.get("message", "error")),
                 )

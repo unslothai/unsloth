@@ -55,7 +55,8 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
       const status = (await res.json()) as AuthStatus;
       authStatusCheckedAt = Date.now();
       setLoginMode(status.login_mode ?? "single", status.full_access);
-      if (status.login_mode === "multi") {
+      // Desktop never saw the seeded password, so the seeded-password setup page is no way back in.
+      if (status.login_mode === "multi" || isTauri) {
         return { ...status, requires_password_change: mustChangePassword() };
       }
       // Server truth wins; keep localStorage in sync both ways.

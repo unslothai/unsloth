@@ -1,23 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Minimal HTML-to-Markdown converter using only the standard library.
-
-Replaces the external ``html2text`` (GPL-3.0) dependency with a ~250-line
-``html.parser.HTMLParser`` subclass. Covers headings, links, bold/italic,
-lists, tables, blockquotes, code blocks, and entity decoding.
-
-``main_content=True`` also applies a readability-style heuristic: scope
-conversion to the page's ``<article>`` (else ``<main>``) subtree when it
-carries substantial text, and strip known boilerplate fragments (skip-links,
-error placeholders, session banners, cookie prompts) from the result.
-"""
+"""Stdlib HTML-to-Markdown (replaces GPL html2text); main_content=True scopes to article/main."""
 
 from __future__ import annotations
 
-import html
 import itertools
+import operator
 import re
 import secrets
 import unicodedata
@@ -88,9 +77,11 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     """Any present hidden attribute counts, even hidden=false, since presence means not rendered; aria-hidden=true and inline hiding styles count too"""
     if "hidden" in attr_dict:
         return True
-    if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
+    aria_hidden = attr_dict.get("aria-hidden")
+    if aria_hidden and aria_hidden.strip().lower() == "true":
         return True
-    return _style_hides_element(attr_dict.get("style") or "")
+    style = attr_dict.get("style")
+    return bool(style) and _style_hides_element(style)
 
 
 def _span_attr(attr_dict: dict, name: str) -> int:
@@ -103,7 +94,8 @@ def _span_attr(attr_dict: dict, name: str) -> int:
 
 def _is_aria_heading(attr_dict: dict) -> bool:
     """Any role token counts: WAI-ARIA's first-token rule needs the full role table, so match loosely."""
-    return "heading" in (attr_dict.get("role") or "").lower().split()
+    role = attr_dict.get("role")
+    return bool(role) and "heading" in role.lower().split()
 
 
 # HTML5 optional end tags: a listed start tag implicitly closes an open element of the key type, else an unclosed p hidden swallows later siblings
@@ -161,6 +153,19 @@ _IMPLICIT_CLOSERS: dict = {
     "option": frozenset({"option", "optgroup"}),
     "optgroup": frozenset({"optgroup"}),
 }
+# a start tag outside every closer set can close nothing, so implicit-close recovery skips its scan
+_ANY_IMPLICIT_CLOSER = frozenset().union(*_IMPLICIT_CLOSERS.values())
+
+
+def _innermost_index(stack: list, tag: str) -> int:
+    """Index of the last ``tag`` in ``stack``, else -1; searches backward from the top without copying."""
+    last = len(stack) - 1
+    if last >= 0 and stack[last] == tag:
+        return last
+    try:
+        return last - operator.indexOf(reversed(stack), tag)
+    except ValueError:
+        return -1
 
 
 # A nested container makes an inner item a descendant, so recovery must stop there.
@@ -345,6 +350,13 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
+_WHITESPACE_RUN = re.compile(r"\s+")
+# browsers collapse only ASCII whitespace, so text indented with &nbsp; or &emsp; keeps its indent
+_COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
+# a space run holding a kept Unicode space; the lookbehind starts it only at a run's first char, keeping it linear
+_KEPT_SPACE_RUN = re.compile(r"(?<![^\S\n])[ \t\r\f\v]*[^\S \t\n\r\f\v][^\S\n]*")
+_KEPT_SPACE = re.compile(r"[^\S \t\n\r\f\v]")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -671,22 +683,34 @@ class _TitleButtonScan:
         # per open heading: [open-tag index, candidate position or None, candidate has text, _text_seq at open]
         self._headings: list[list] = []
 
-    def starttag(self, tag: str, attrs: list[tuple[str, str | None]], pos: tuple[int, int]) -> None:
-        attr_dict = dict(attrs)
-        self._prepare_foreign_html_start(tag, attr_dict)
-        self._close_implicit(tag)
+    def starttag(
+        self, tag: str, attr_dict: dict, pos: tuple[int, int], hidden: bool, aria_heading: bool
+    ) -> None:
+        """``hidden`` / ``aria_heading`` are the renderer's ``_is_hidden_element`` / ``_is_aria_heading`` results."""
+        namespaces = self._namespaces
+        if namespaces and namespaces[-1] != "html":
+            self._prepare_foreign_html_start(tag, attr_dict)
+        if self._closable_open and tag in _ANY_IMPLICIT_CLOSER:
+            self._close_implicit(tag)
         if tag in _VOID_TAGS:
             return
-        namespace = self._next_namespace(tag)
+        # _next_namespace's HTML-parent branch, inlined; an HTML element is never an integration point
+        if not namespaces or namespaces[-1] == "html":
+            namespace = "svg" if tag == "svg" else "math" if tag == "math" else "html"
+        else:
+            namespace = self._next_namespace(tag)
+        integration = namespace != "html" and self._is_html_integration_point(
+            tag, namespace, attr_dict
+        )
         self._open.append(tag)
-        self._namespaces.append(namespace)
-        self._html_integration.append(self._is_html_integration_point(tag, namespace, attr_dict))
+        namespaces.append(namespace)
+        self._html_integration.append(integration)
         if tag in _IMPLICIT_CLOSERS:
             self._closable_open += 1
         index = len(self._open) - 1
-        if _is_hidden_element(attr_dict) or (tag in _SKIP_TAGS and tag != "button"):
+        if hidden or (tag in _SKIP_TAGS and tag != "button"):
             self._muted.append(index)
-        if tag in _HEADING_TAGS or _is_aria_heading(attr_dict):
+        if tag in _HEADING_TAGS or aria_heading:
             self._headings.append([index, None, False, self._text_seq])
         elif tag == "button" and self._button_at is None:
             self._button_at = index
@@ -696,10 +720,9 @@ class _TitleButtonScan:
                 self._button_frame = frame
 
     def endtag(self, tag: str) -> None:
-        for i in range(len(self._open) - 1, -1, -1):
-            if self._open[i] == tag:
-                self._pop_to(i)
-                return
+        i = _innermost_index(self._open, tag)
+        if i >= 0:
+            self._pop_to(i)
 
     def data(self, data: str) -> None:
         if self._muted or not data.strip():
@@ -773,8 +796,10 @@ class _TitleButtonScan:
             self._button_frame = None
         while self._muted and self._muted[-1] >= i:
             self._muted.pop()
-        self._close_headings(i)
-        self._closable_open -= sum(1 for name in self._open[i:] if name in _IMPLICIT_CLOSERS)
+        if self._headings and self._headings[-1][0] >= i:
+            self._close_headings(i)
+        if self._closable_open:
+            self._closable_open -= sum(1 for name in self._open[i:] if name in _IMPLICIT_CLOSERS)
         del self._open[i:]
         del self._namespaces[i:]
         del self._html_integration[i:]
@@ -808,7 +833,9 @@ class _MarkdownRenderer(HTMLParser):
         site_links: SiteLinks | None = None,
         page_span_limit: int | None = None,
     ):
-        super().__init__(convert_charrefs = False)
+        # charrefs must decode inside their text run: decoded apart, they left <pre> and gained a stray ';' (#17199)
+        super().__init__(convert_charrefs = True)
+        self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
         self._title_scan: _TitleButtonScan | None = None
@@ -920,6 +947,10 @@ class _MarkdownRenderer(HTMLParser):
         if text:
             self._li_marker_pending = False
         frame = self._header_stack[-1] if self._header_stack else None
+        # outside header frames and headings no tee or tally below applies: only the routing does
+        if frame is None and not self._heading_marks and not self._emit_as_heading:
+            self._emit_target().append(text)
+            return
         # Tee wherever text routes; a link inside the frame arrives twice, so tee only its formatted form
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
@@ -928,7 +959,14 @@ class _MarkdownRenderer(HTMLParser):
         as_heading = (
             self._heading_marks and not in_nested_link and not self._replaying
         ) or self._emit_as_heading
-        measured = self._site_links.clean(text) if self._site_links is not None else text
+        # clean() is pure and only a header frame reads measured
+        measured = (
+            self._site_links.clean(text)
+            if frame is not None and self._site_links is not None
+            else text
+        )
+        if frame is not None:
+            measured = _fold_kept_spaces(measured)
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(measured.strip())
@@ -1060,15 +1098,13 @@ class _MarkdownRenderer(HTMLParser):
         self._emit_replay(f"\n\n{fence}\n{raw}\n{fence}\n\n")
 
     def _drain_blockquote(self) -> None:
-        """Pop the innermost quote and emit it prefixed. Not used by ``flush_pending``,
-        which re-nests into the parent stack instead of emitting."""
+        """Pop the innermost quote and emit it prefixed; flush_pending re-nests it instead."""
         prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
         if prefixed:
             self._emit_replay("\n\n" + prefixed + "\n\n")
 
     def _emit_replay(self, text: str) -> None:
-        """Emit a flushed buffer's own output, which must not be teed as a heading
-        a second time (the raw text was teed when it entered the buffer)."""
+        """Flushed buffer output is not teed again; the raw text was teed on entry."""
         was, self._replaying = self._replaying, True
         try:
             self._emit(text)
@@ -1078,7 +1114,7 @@ class _MarkdownRenderer(HTMLParser):
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
         content = re.sub(r"[ \t]+$", "", content, flags = re.MULTILINE)
-        content = re.sub(r"\n{3,}", "\n\n", content).strip()
+        content = _BLANK_LINE_RUN.sub("\n\n", content).strip()
         if not content:
             return ""
         lines = content.split("\n")
@@ -1270,7 +1306,7 @@ class _MarkdownRenderer(HTMLParser):
 
     def _close_implicit(self, tag: str) -> None:
         """Recovery stops at _CLOSE_BARRIERS containers so an outer item hidden content cannot leak; runs even for skipped nav and footer, which also close p"""
-        if not self._closable_open:
+        if not self._closable_open or tag not in _ANY_IMPLICIT_CLOSER:
             return
         barriers = _IMPLICIT_CLOSE_BARRIERS.get(tag, frozenset())
         while True:
@@ -1297,8 +1333,7 @@ class _MarkdownRenderer(HTMLParser):
         depth: int,
         own_tag: bool = False,
     ) -> None:
-        """Judge and emit every buffered header at or below *depth*. Only the
-        innermost frame can be the one its own ``</header>`` closed."""
+        """Emit buffered headers at or below depth; own-tag closes only the innermost frame."""
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             self._finalize_nested_buffers(self._header_stack[-1])
@@ -1356,6 +1391,8 @@ class _MarkdownRenderer(HTMLParser):
         if not self._header_stack or self._heading_marks:
             return
         frame = self._header_stack[-1]
+        if not text.isascii():
+            text = _WHITESPACE_RUN.sub(" ", text)
         chars = len(text.strip())
         frame.text_chars += chars
         # anchors without usable hrefs render as prose
@@ -1416,17 +1453,29 @@ class _MarkdownRenderer(HTMLParser):
         self._skip_html_at.clear()
         self._skip_html_integration.clear()
 
-    def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
-        """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery."""
+    def _enter_tag(
+        self,
+        tag: str,
+        attr_dict: dict,
+        hidden: bool | None = None,
+        aria_heading: bool | None = None,
+    ) -> bool:
+        """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery; None checks are computed here."""
+        if hidden is None:
+            hidden = _is_hidden_element(attr_dict)
         if tag not in _VOID_TAGS:
             if tag in _INDEXED_OPEN_TAGS:
                 self._open_at.setdefault(tag, []).append(len(self._open_tags))
             self._open_tags.append(tag)
             if tag in _IMPLICIT_CLOSERS:
                 self._closable_open += 1
-            if _is_hidden_element(attr_dict):
+            if hidden:
                 self._hidden_marks.append(len(self._open_tags) - 1)
-            if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
+            if (
+                tag in _HEADING_TAGS
+                or tag == "hgroup"
+                or (_is_aria_heading(attr_dict) if aria_heading is None else aria_heading)
+            ):
                 self._heading_marks.append(len(self._open_tags) - 1)
                 if self._in_link:
                     self._link_had_heading = True
@@ -1448,7 +1497,7 @@ class _MarkdownRenderer(HTMLParser):
                         self._table_depth(),
                     )
                 )
-        elif _is_hidden_element(attr_dict):
+        elif hidden:
             return False
         if self._scope_tags is not None and tag in self._scope_tags:
             self._flush_header_frames()
@@ -1479,16 +1528,16 @@ class _MarkdownRenderer(HTMLParser):
         # Flush the heading here while the tee still recognises it; it emits only after its mark pops
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
-        if tag not in _VOID_TAGS:
-            for i in range(len(self._open_tags) - 1, -1, -1):
-                if self._open_tags[i] == tag:
-                    self._truncate_open_tags(i)
-                    while self._hidden_marks and self._hidden_marks[-1] >= i:
-                        self._hidden_marks.pop()
-                    while self._heading_marks and self._heading_marks[-1] >= i:
-                        self._heading_marks.pop()
-                    self._close_header_frames(i, own_tag = tag == "header")
-                    break
+        i = -1 if tag in _VOID_TAGS else _innermost_index(self._open_tags, tag)
+        if i >= 0:
+            self._truncate_open_tags(i)
+            while self._hidden_marks and self._hidden_marks[-1] >= i:
+                self._hidden_marks.pop()
+            while self._heading_marks and self._heading_marks[-1] >= i:
+                self._heading_marks.pop()
+            # _close_header_frames' own loop test
+            if self._header_stack and self._header_stack[-1].depth >= i:
+                self._close_header_frames(i, own_tag = tag == "header")
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
@@ -1577,9 +1626,16 @@ class _MarkdownRenderer(HTMLParser):
                 self._close_rendered_tag(section[1])
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._record is not None:
+            # HTMLParser builds a fresh attrs list per tag and nothing here mutates it, so it is kept uncopied
+            self._record.append((0, (tag, attrs, self.lineno, self.offset)))
         tag = tag.lower()
+        attr_dict = dict(attrs)
+        hidden = aria_heading = None
         if self._title_scan is not None:
-            self._title_scan.starttag(tag, attrs, self.getpos())
+            hidden = bool(attr_dict) and _is_hidden_element(attr_dict)
+            aria_heading = bool(attr_dict) and _is_aria_heading(attr_dict)
+            self._title_scan.starttag(tag, attr_dict, self.getpos(), hidden, aria_heading)
         title_button = (
             tag == "button" and bool(self.title_buttons) and self.getpos() in self.title_buttons
         )
@@ -1587,7 +1643,9 @@ class _MarkdownRenderer(HTMLParser):
             button = self._last_skip_position("button", "html")
             if button >= 0 and self._skip_target_in_scope(tag, button):
                 self._truncate_skip_tags(button)
-        self._prepare_foreign_html_start(tag, attrs)
+        # each _prepare_* / _close_implicit call below is guarded by that helper's own early-return test
+        if self._skip_tags and self._skip_namespaces[-1] != "html":
+            self._prepare_foreign_html_start(tag, attrs)
         if tag in _TABLE_ONLY_START_TAGS and not self._in_table:
             return
         if tag == "table" and self._prepare_sibling_table_start():
@@ -1601,7 +1659,6 @@ class _MarkdownRenderer(HTMLParser):
 
         if self._skip_tags:
             if tag not in _VOID_TAGS:
-                attr_dict = dict(attrs)
                 namespace = self._skipped_tag_namespace(tag)
                 template = self._last_skip_position("template", "html")
                 if tag == "form" and namespace == "html" and template < 0:
@@ -1624,9 +1681,12 @@ class _MarkdownRenderer(HTMLParser):
             return
 
         # close optional tags before skipping so skipped <nav>/<footer> releases an open <p> marker
-        self._close_implicit(tag)
-        self._prepare_heading_start(tag)
-        self._prepare_table_start(tag)
+        if self._closable_open and tag in _ANY_IMPLICIT_CLOSER:
+            self._close_implicit(tag)
+        if tag in _HEADING_TAGS:
+            self._prepare_heading_start(tag)
+        if self._in_table:
+            self._prepare_table_start(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             self._skip_tags.append(tag)
@@ -1636,14 +1696,13 @@ class _MarkdownRenderer(HTMLParser):
             self._skip_namespaces = [namespace]
             self._skip_html_at = [0] if namespace == "html" else []
             self._skip_html_integration = [
-                self._is_html_integration_point(tag, namespace, dict(attrs))
+                self._is_html_integration_point(tag, namespace, attr_dict)
             ]
             return
 
-        attr_dict = dict(attrs)
         if tag == "form":
             self._form_pointer = True
-        if not self._enter_tag(tag, attr_dict):
+        if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
             return
 
         if tag in _HEADING_TAGS:
@@ -1768,6 +1827,8 @@ class _MarkdownRenderer(HTMLParser):
             return
 
     def handle_endtag(self, tag: str) -> None:
+        if self._record is not None:
+            self._record.append((1, tag))
         tag = tag.lower()
         if self._title_scan is not None:
             self._title_scan.endtag(tag)
@@ -1958,9 +2019,11 @@ class _MarkdownRenderer(HTMLParser):
         return self._scope_tags is not None and self._scope_depth == 0
 
     def handle_data(self, data: str) -> None:
+        if self._record is not None:
+            self._record.append((2, data))
         if self._title_scan is not None:
             self._title_scan.data(data)
-        if self._text_suppressed():
+        if self._skip_tags or self._hidden_marks or self._text_suppressed():
             return
         if self._in_pre:
             self._count_header_text(data)
@@ -1971,35 +2034,34 @@ class _MarkdownRenderer(HTMLParser):
             self._count_header_text(data)
             self._emit(data)
             return
-        # Collapse all whitespace (including newlines) per HTML rules.
-        text = re.sub(r"\s+", " ", data)
+        # Collapse ASCII whitespace (including newlines) per HTML rules.
+        text = _COLLAPSIBLE_RUN.sub(" ", data)
         # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
-        # Suppress whitespace-only nodes between table elements (source indentation).
-        if self._in_table and not self._in_cell and not text.strip():
+        # Drop whitespace-only nodes between table elements, except a caption's &nbsp; (Javadoc tab separators).
+        if (
+            self._in_table
+            and not self._in_cell
+            and not text.strip()
+            and not (self._open_at.get("caption") and not text.isascii())
+        ):
             return
         # Source indentation between <li> and its first block must not end the marker line.
         if self._li_marker_pending and not text.strip():
             return
         self._emit(text)
 
-    def handle_entityref(self, name: str) -> None:
-        text = html.unescape(f"&{name};")
-        if self._title_scan is not None:
-            self._title_scan.data(text)
-        if self._text_suppressed():
-            return
-        self._count_header_text(text)
-        self._emit(text)
-
-    def handle_charref(self, name: str) -> None:
-        text = html.unescape(f"&#{name};")
-        if self._title_scan is not None:
-            self._title_scan.data(text)
-        if self._text_suppressed():
-            return
-        self._count_header_text(text)
-        self._emit(text)
+    def replay(self, events: list) -> None:
+        """Re-run recorded handler calls in order, restoring ``getpos()`` at each start tag."""
+        start, end, data = self.handle_starttag, self.handle_endtag, self.handle_data
+        for kind, arg in events:
+            if kind == 2:
+                data(arg)
+            elif kind == 0:
+                tag, attrs, self.lineno, self.offset = arg
+                start(tag, list(attrs))
+            else:
+                end(arg)
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
@@ -2112,9 +2174,7 @@ def _line_is_boilerplate(line: str) -> bool:
 
 
 def _fence_state(line: str, fence: int) -> int:
-    """Fence width after *line*, 0 outside a block. Every pass over rendered text
-    must agree with ``_fence_for``: a block opened with a longer fence is closed
-    only by a run at least as long, so a literal ``` inside it is content."""
+    """Fence width after a line, 0 outside a block; every pass must agree with _fence_for."""
     stripped = line.strip()
     if len(stripped) < 3 or stripped.count("`") != len(stripped):
         return fence
@@ -2142,7 +2202,20 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
             continue
         out.append(line)
     # Collapse blank runs the dropped lines may have left behind.
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return _BLANK_LINE_RUN.sub("\n\n", "\n".join(out)).strip()
+
+
+class _TokenLog:
+    """Handler calls of one document, recorded by the first fed pass and replayed by later ones.
+    Sound only while the renderer overrides just ``handle_starttag``, ``handle_endtag`` and
+    ``handle_data`` and reads parser state only via ``getpos()`` in ``handle_starttag``."""
+
+    __slots__ = ("events", "armed")
+
+    def __init__(self, armed: bool) -> None:
+        self.events: list | None = None
+        # record only when html_to_markdown knows another pass follows
+        self.armed = armed
 
 
 def _new_renderer(
@@ -2152,6 +2225,7 @@ def _new_renderer(
     site_links: SiteLinks | None = None,
     span_char_limit: int | None = None,
     header_decisions: list[bool] | None = None,
+    tokens: _TokenLog | None = None,
 ) -> _MarkdownRenderer:
     def build(
         title_buttons: frozenset[tuple[int, int]], scan: _TitleButtonScan | None
@@ -2166,8 +2240,16 @@ def _new_renderer(
         )
         renderer.title_buttons = title_buttons
         renderer._title_scan = scan
-        renderer.feed(source_html)
-        renderer.close()
+        if tokens is None:
+            renderer.feed(source_html)
+            renderer.close()
+        elif tokens.events is None:
+            renderer._record = [] if tokens.armed else None
+            renderer.feed(source_html)
+            renderer.close()
+            tokens.events, renderer._record = renderer._record, None
+        else:
+            renderer.replay(tokens.events)
         renderer.flush_pending()
         return renderer
 
@@ -2202,6 +2284,7 @@ def _select_main_scope_render(
     tag: str,
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
+    tokens: _TokenLog | None = None,
 ) -> tuple[int, str, int, int]:
     """return the best eligible score, subtree, count, and visible length; cap header credit at retained prose."""
     renderer = _new_renderer(
@@ -2210,6 +2293,7 @@ def _select_main_scope_render(
         strip_header = True,
         site_links = site_links,
         span_char_limit = span_char_limit,
+        tokens = tokens,
     )
     # generated span cells must not lift a scope past the content gate or rank; only span pages pay this second pass
     scoring = (
@@ -2219,6 +2303,7 @@ def _select_main_scope_render(
             strip_header = True,
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
+            tokens = tokens,
         )
         if renderer._has_generated_spans
         else renderer
@@ -2228,9 +2313,14 @@ def _select_main_scope_render(
     best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
-        scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        scored = (
+            rendered
+            if scoring is renderer
+            else _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        )
         if site_links is not None:
             scored = site_links.clean(scored)
+        scored = _fold_kept_spaces(scored)
         visible = _visible_chars(scored)
         prose = visible - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
@@ -2249,9 +2339,12 @@ def _select_main_scope_render(
 
 
 def _render_main_document(
-    source_html: str, site_links: SiteLinks | None, span_char_limit: int
+    source_html: str,
+    site_links: SiteLinks | None,
+    span_char_limit: int,
+    tokens: _TokenLog | None = None,
 ) -> tuple[int, str]:
-    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit)
+    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit, tokens = tokens)
     rendered = _strip_boilerplate_lines(_cleanup("".join(renderer._out)), site_links)
     scoring = (
         _new_renderer(
@@ -2260,37 +2353,52 @@ def _render_main_document(
             True,
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
+            tokens = tokens,
         )
         if renderer._has_generated_spans
         else renderer
     )
-    scored = _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    scored = (
+        rendered
+        if scoring is renderer
+        else _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    )
     if site_links is not None:
         scored = site_links.clean(scored)
     return _visible_chars(scored), rendered
 
 
+def _fold_kept_spaces(text: str) -> str:
+    """Scoring view of *text*: a space run holding U+00A0 or another kept Unicode space is layout
+    padding, so it counts as one space, while pure ASCII runs (code indentation) stay as rendered."""
+    if text.isascii() or not _KEPT_SPACE.search(text):
+        return text
+    return _KEPT_SPACE_RUN.sub(" ", text)
+
+
 def _visible_chars(text: str) -> int:
     """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
+    text = _fold_kept_spaces(text)
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
+_BACKTICK_RUN = re.compile(r"`+")
+
+
 def _fence_for(raw: str) -> str:
-    """Fence long enough to survive backticks in *raw*, as CommonMark requires:
-    a literal ``` line inside the block would otherwise close it early."""
-    longest = run = 0
-    for char in raw:
-        run = run + 1 if char == "`" else 0
-        longest = max(longest, run)
-    return "`" * max(3, longest + 1)
+    """Must outrun backtick runs in raw (CommonMark), or a literal fence line closes it early."""
+    if "`" not in raw:
+        return "```"
+    return "`" * max(3, max(map(len, _BACKTICK_RUN.findall(raw))) + 1)
 
 
 def _visible_len(line: str) -> int:
-    """Length of *line* without Markdown link destinations. A tracking URL is not
-    prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
-    characters off 4 and displaced the article. Scanned, so no backtracking."""
+    """Visible length without Markdown link destinations: a tracking URL is not prose; scan is linear."""
+    if "[" not in line and "\\" not in line:
+        return len(line)
     total, i, n = 0, 0, len(line)
     open_bracket = False
+    closes = None
     while i < n:
         if line[i] == "\\":
             total += 2
@@ -2300,15 +2408,22 @@ def _visible_len(line: str) -> int:
             open_bracket = True
         # With no opening bracket, "](" is literal and the parens after it are prose.
         if open_bracket and line[i] == "]" and i + 1 < n and line[i + 1] == "(":
-            # Destinations may hold balanced or escaped parens, so the first ) does not end them.
-            j, depth = i + 2, 1
-            while j < n and depth:
-                char = line[j]
-                if char == "\\":
-                    j += 2
-                    continue
-                depth += (char == "(") - (char == ")")
-                j += 1
+            if closes is None:
+                # Destinations may hold balanced or escaped parens, so the first ) does not end them.
+                j, depth = i + 2, 1
+                while j < n and depth:
+                    char = line[j]
+                    if char == "\\":
+                        j += 2
+                        continue
+                    depth += (char == "(") - (char == ")")
+                    j += 1
+                if depth:
+                    # Unclosed: later candidates would rescan this tail, so index it once.
+                    closes = _destination_ends(line)
+            else:
+                j = closes.get(i + 2, -1)
+                depth = j < 0
             if depth:
                 total += 1
                 i += 1
@@ -2321,8 +2436,49 @@ def _visible_len(line: str) -> int:
     return total
 
 
+def _destination_ends(line: str) -> dict:
+    """Where a scan from each position closes: the paren-depth prefix sum first drops below its start."""
+    steps: list[int] = []
+    sums: list[int] = []
+    depth, k, n = 0, 0, len(line)
+    while k < n:
+        steps.append(k)
+        sums.append(depth)
+        char = line[k]
+        if char == "\\":
+            k += 2
+            continue
+        depth += (char == "(") - (char == ")")
+        k += 1
+    ends: dict = {}
+    first_at: dict = {}  # prefix sum -> earliest later step index
+    sums.append(depth)
+    for m in range(len(steps), -1, -1):
+        if m < len(steps):
+            after = first_at.get(sums[m] - 1)
+            if after is not None:
+                ends[steps[m]] = steps[after - 1] + 1
+        first_at[sums[m]] = m
+    return ends
+
+
 # Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
+# absent text = no such tag can tokenize, so that scope finds nothing and its pass is skipped
+_ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
+_MAIN_START = re.compile(r"<main", re.IGNORECASE)
+# absent text = no generated span cells, so a pass needs no span-free scoring re-render
+_SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
+# html.unescape raises once a decimal reference has more digits, leading zeros included, than
+# int()'s limit, which Python never sets below 640
+_LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
+
+
+def _short_decimal_ref(match: re.Match[str]) -> str:
+    """The reference without its leading zeros, or &#65533 (U+FFFD, what html.unescape gives past
+    U+10FFFF) when 8 or more digits remain."""
+    digits = match.group(1).lstrip("0") or "0"
+    return "&#" + (digits if len(digits) < 8 else "65533")
 
 
 def html_to_markdown(
@@ -2334,22 +2490,34 @@ def html_to_markdown(
 ) -> str:
     """convert HTML to Markdown; main_content prefers a dominant article or main subtree, site_links records same-site links without changing output, and max_span_chars limits generated table cells."""
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
+    source_html = _LONG_DECIMAL_REF.sub(_short_decimal_ref, source_html)
     span_limit = 2 * len(source_html)
     if max_span_chars is not None:
         span_limit = min(span_limit, max_span_chars)
     rendered = ""
     full_rendered = ""
     if main_content:
-        length, rendered, articles, article_visible = _select_main_scope_render(
-            source_html, "article", site_links, span_limit
-        )
-        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
-            main_length, main_rendered, _, main_visible = _select_main_scope_render(
-                source_html, "main", site_links, span_limit
+        has_article = _ARTICLE_START.search(source_html) is not None
+        # without <article> the first pass may be followed by a title rescan or the whole-page pass
+        tokens = _TokenLog(armed = not has_article)
+        if has_article:
+            length, rendered, articles, article_visible = _select_main_scope_render(
+                source_html, "article", site_links, span_limit, tokens
             )
+        else:
+            length, rendered, articles, article_visible = 0, "", 0, 0
+        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
+            if _MAIN_START.search(source_html) is not None:
+                main_length, main_rendered, _, main_visible = _select_main_scope_render(
+                    source_html, "main", site_links, span_limit, tokens
+                )
+            else:
+                main_length, main_rendered, main_visible = 0, "", 0
+                # the whole-page pass follows and re-renders span pages to score them
+                tokens.armed = tokens.armed or _SPAN_ATTR.search(source_html) is not None
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
                 main_length, full_rendered = _render_main_document(
-                    source_html, site_links, span_limit
+                    source_html, site_links, span_limit, tokens
                 )
                 main_rendered = full_rendered
                 main_visible = main_length
@@ -2359,7 +2527,9 @@ def html_to_markdown(
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
             if not full_rendered:
-                _, full_rendered = _render_main_document(source_html, site_links, span_limit)
+                _, full_rendered = _render_main_document(
+                    source_html, site_links, span_limit, tokens
+                )
             rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)

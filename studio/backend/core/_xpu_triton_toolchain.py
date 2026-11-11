@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows XPU Triton builds its helpers with icpx, else cl, else $CXX, and uses MSVC flags only when
-the path contains `cl.EXE`; Studio is not started from a Developer Prompt, so load vcvars and hand it
-`cl.EXE`, plus the Level Zero SDK the helpers link against (#14807)."""
+"""Windows XPU Triton tries icpx, then cl, then $CXX; MSVC flags only for cl.EXE; Studio loads
+vcvars and hands it cl.EXE plus the Level Zero SDK."""
 
 from __future__ import annotations
 

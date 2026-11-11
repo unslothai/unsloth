@@ -311,8 +311,7 @@ def test_custom_max_output_tokens_requires_a_safe_integer(value):
 
 
 def test_known_and_custom_preset_providers_accept_a_non_null_max_output_override():
-    """The override replaces the frontend's 32,768-token fallback, which every type
-    reaches for a model with no documented cap."""
+    """Replaces the frontend's 32,768-token fallback, used when a model has no documented cap."""
     for provider_type in ("openai", "openrouter", "vllm", "ollama", "llama_cpp"):
         created = asyncio.run(
             providers_route.create_provider_config(
@@ -331,8 +330,7 @@ def test_known_and_custom_preset_providers_accept_a_non_null_max_output_override
 
 
 def test_chatgpt_subscription_rejects_a_non_null_max_output_override():
-    """Codex routing, model list and output cap are fixed, so a stored override would
-    never be read."""
+    """Codex routing, model list and output cap are fixed, so a stored override is never read."""
     with pytest.raises(HTTPException) as error:
         asyncio.run(
             providers_route.create_provider_config(

@@ -409,11 +409,12 @@ def _with_session_packages(env: dict[str, str], workdir: str) -> dict[str, str]:
         # Windows environment names are case-insensitive, and the inherited PATH is often spelled Path.
         return next((k for k in env if k.upper() == name), name)
 
-    env[key("PIP_TARGET")] = packages
+    env[key("PIP_PREFIX")] = packages
+    env[key("PIP_IGNORE_INSTALLED")] = "1"
     env[key("PYTHONNOUSERSITE")] = "1"
     # Appended, so an installed package or script cannot shadow the sandbox shim or a trusted command.
     for name, value in (
-        ("PYTHONPATH", packages),
+        ("PYTHONPATH", os.pathsep.join(os_sandbox.session_package_paths(packages))),
         ("PATH", os.path.join(packages, "Scripts")),
         ("PATH", os.path.join(packages, "bin")),
     ):

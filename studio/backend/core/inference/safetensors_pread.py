@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows media loads read converted safetensors shards with safetensors' ``pread`` backend instead of mmap (#9977,
-#14513).
-
-torch maps a shard copy-on-write and Windows charges the whole view to commit while transformers holds every shard
-open, so a converting load commits the stored bytes next to the converted copy: LTX-2's 48.7 GB fp32 Gemma3 loaded at
-bf16 needs ~73 GB, a 16.7 GB bf16 Qwen-Image encoder loaded at fp16 ~38 GB, and torch's unchecked ``MapViewOfFile``
-NULL is an access violation. ``pread`` reads each tensor into its own buffer, freed once converted (what
-transformers >= 5.17 does on Windows, huggingface/transformers#48341; ComfyUI and llama.cpp map read-only instead).
-A shard loaded at its stored dtype keeps mmap: its mapping is the loaded weight, and the small-host route keeps it
-paged from disk. ``UNSLOTH_SAFETENSORS_PREAD=0|1`` disables / forces it on any OS.
-"""
+"""Windows converting loads use pread instead of mmap to save commit; UNSLOTH_SAFETENSORS_PREAD=0|1."""
 
 from __future__ import annotations
 
@@ -27,7 +17,8 @@ PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 _lock = threading.Lock()
 _depth = 0
 _original: Any = None
-# per load thread, so concurrent media loads never share rules: (target dtype or None = fp32-only video rule, kept dirs)
+# per load thread, so concurrent media loads never share rules: (target dtype or None = fp32-only video rule, kept dirs,
+# every shard)
 _local = threading.local()
 
 
@@ -74,13 +65,15 @@ def _backend_for(filename: Any) -> Optional[str]:
 
     path = Path(filename)
     rules = _active_rules()
-    if any(path.parent.name in keep for _, keep in rules):
+    if any(path.parent.name in keep for _, keep, _ in rules):
         return "keep"
     stored = {k: v for k, v in _safetensors_bytes_by_dtype(path).items() if k != "kept"}
     if not stored:
         return None
     dominant = max(stored.items(), key = lambda kv: kv[1])[0]
-    for to, _ in rules:
+    for to, _, every in rules:
+        if every:
+            return "pread"
         if to is None and stored.get("float32", 0) * 2 > sum(stored.values()):
             return "pread"
         if to is not None and dominant in ("bfloat16", "float16", "float32") and dominant != to:
@@ -121,10 +114,16 @@ def _with_pread(safe_open: Any) -> Any:
 
 
 @contextlib.contextmanager
-def pread_safetensors(convert_to: Any = None, keep: Iterable[str] = ()) -> Iterator[bool]:
+def pread_safetensors(
+    convert_to: Any = None,
+    keep: Iterable[str] = (),
+    every_shard: bool = False,
+) -> Iterator[bool]:
     """Route ``transformers.modeling_utils.safe_open`` of fp32 shards, and with ``convert_to`` of every shard stored in
-    another dtype outside the ``keep`` component dirs, through ``pread``; yields whether it did. Nests; a concurrent
-    load in another thread only gets the same bytes through another backend."""
+    another dtype outside the ``keep`` component dirs, through ``pread``; yields whether it did. ``every_shard`` reads
+    same-dtype shards through ``pread`` too: on an integrated GPU the device copy is host commit, and a mapped shard
+    stays charged until its last tensor has moved. Nests; a concurrent load in another thread only gets the same bytes
+    through another backend."""
     global _depth, _original
     installed = False
     previous_rules = None
@@ -146,7 +145,7 @@ def pread_safetensors(convert_to: Any = None, keep: Iterable[str] = ()) -> Itera
         if installed:
             to = None if convert_to is None else str(convert_to).replace("torch.", "")
             previous_rules = _active_rules()
-            _local.rules = previous_rules + ((to, frozenset(keep)),)
+            _local.rules = previous_rules + ((to, frozenset(keep), bool(every_shard)),)
     try:
         yield installed
     finally:

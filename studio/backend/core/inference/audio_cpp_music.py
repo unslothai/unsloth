@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""audio.cpp music request bodies for ``/audio/generate`` and ``/audio/run``.
-
-A strict spec (``schema_version``) refuses undeclared options, so the CLI's top-level shortcuts
-(``duration_seconds``, ``lyrics``) are sent to it only as declared options. MiniMax keeps its old
-body: its session reads both duration keys.
-"""
+"""audio.cpp music request bodies for /audio/generate and /audio/run. A strict schema_version spec
+refuses undeclared options, so duration_seconds and lyrics go only as declared options; MiniMax
+keeps its old body, since its session reads both duration keys."""
 
 from __future__ import annotations
 

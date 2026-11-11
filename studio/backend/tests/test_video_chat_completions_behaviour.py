@@ -31,8 +31,14 @@ class _VideoGguf(FakeLlamaCppBackend):
     is_vision = True
     _has_video_input = True
 
-    def __init__(self, *, has_video = True):
+    def __init__(
+        self,
+        *,
+        has_video = True,
+        needs_ffmpeg = False,
+    ):
         self._has_video_input = has_video
+        self._video_needs_ffmpeg = needs_ffmpeg
         self.dispatched: list[dict] = []
 
     def generate_chat_completion(self, **kwargs):
@@ -232,13 +238,24 @@ def test_a_gguf_without_a_video_projector_refuses_either_spelling(monkeypatch, b
 
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+def test_a_video_model_without_ffmpeg_is_refused_naming_ffmpeg(monkeypatch, body):
+    backend = _VideoGguf(has_video = False, needs_ffmpeg = True)
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 400
+    assert "ffmpeg and ffprobe were not found" in _detail(response)
+    assert "--video-ffmpeg-dir" in _detail(response)
+    assert backend.dispatched == []
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
 def test_a_non_gguf_backend_is_offered_the_clip_rather_than_refused_outright(monkeypatch, body):
     """A blanket not using_gguf refusal would break working MLX and transformers video on macOS."""
     reached: list[dict] = []
 
     def _gate(payload, model_info):
         reached.append(model_info)
-        return _CLIP_B64
+        return [_CLIP_B64]
 
     monkeypatch.setattr(
         inference_route,
@@ -248,7 +265,7 @@ def test_a_non_gguf_backend_is_offered_the_clip_rather_than_refused_outright(mon
             models = {"mlx-model": {"is_vision": True, "has_video_input": True}},
         ),
     )
-    monkeypatch.setattr(inference_route, "_local_video_clip", _gate)
+    monkeypatch.setattr(inference_route, "_local_video_clips", _gate)
     with _client(monkeypatch, None) as client:
         response = client.post("/v1/chat/completions", json = body)
 
@@ -259,15 +276,15 @@ def test_a_non_gguf_backend_is_offered_the_clip_rather_than_refused_outright(mon
 
 
 def test_the_non_gguf_gate_reads_both_spellings(monkeypatch):
-    """_local_video_clip predates the part, so left reading payload.video_base64 alone it would
+    """_local_video_clips predates the part, so left reading payload.video_base64 alone it would
     hand an MLX model nothing while the legacy field worked."""
     from models.inference import ChatCompletionRequest
 
     info = {"is_vision": True, "has_video_input": True}
     field = ChatCompletionRequest(model = "m", messages = [], video_base64 = _DATA_URI)
     part = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
-    assert inference_route._local_video_clip(field, info) == _CLIP_B64
-    assert inference_route._local_video_clip(part, info) == _CLIP_B64
+    assert inference_route._local_video_clips(field, info) == [_CLIP_B64]
+    assert inference_route._local_video_clips(part, info) == [_CLIP_B64]
 
 
 def test_a_non_gguf_backend_without_video_refuses_by_name():
@@ -276,34 +293,42 @@ def test_a_non_gguf_backend_without_video_refuses_by_name():
 
     payload = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(payload, {"is_vision": True})
+        inference_route._local_video_clips(payload, {"is_vision": True})
     assert exc.value.status_code == 400
     assert exc.value.detail == inference_route._VIDEO_INPUT_REFUSAL
     assert "MLX" in inference_route._VIDEO_INPUT_REFUSAL
 
 
-def test_a_second_clip_is_refused_rather_than_dropped_on_a_non_gguf_backend():
-    """Generation takes one video kwarg. Taking clips[0] silently changed the prompt by
-    backend: GGUF forwards every clip, so the same request meant two different things."""
+def test_every_clip_is_served_in_request_order_on_a_non_gguf_backend():
+    """GGUF forwards every clip, so the non-GGUF path must too rather than serve one; the
+    request-wide count and size caps still apply, since the pre-switch check may not have run."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
     info = {"is_vision": True, "has_video_input": True}
-    two = ChatCompletionRequest.model_validate(_part_body(_DATA_URI, _DATA_URI))
-    with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(two, info)
-    assert exc.value.status_code == 400
-    assert "Only one video" in exc.value.detail
+    second = "BBBBGGZ0eXBtcDQy"
+    two = ChatCompletionRequest.model_validate(
+        _part_body(_DATA_URI, f"data:video/mp4;base64,{second}")
+    )
+    assert inference_route._local_video_clips(two, info) == [_CLIP_B64, second]
 
     both = ChatCompletionRequest.model_validate(
-        _part_body(_DATA_URI, **{"video_base64": _DATA_URI})
+        _part_body(f"data:video/mp4;base64,{second}", **{"video_base64": _DATA_URI})
+    )
+    assert inference_route._local_video_clips(both, info) == [_CLIP_B64, second]
+
+    too_many = ChatCompletionRequest.model_validate(
+        _part_body(*[_DATA_URI] * (inference_route._MAX_VIDEO_CLIPS_PER_REQUEST + 1))
     )
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(both, info)
-    assert exc.value.status_code == 400
+        inference_route._local_video_clips(too_many, info)
+    assert exc.value.status_code == 400 and "Too many videos" in exc.value.detail
 
-    one = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
-    assert inference_route._local_video_clip(one, info) == _CLIP_B64
+    half = "data:video/mp4;base64," + "A" * (inference_route._MAX_VIDEO_B64_CHARS // 2 + 10)
+    oversized = ChatCompletionRequest.model_validate(_part_body(half, half))
+    with pytest.raises(HTTPException) as exc:
+        inference_route._local_video_clips(oversized, info)
+    assert exc.value.status_code == 413
 
 
 def test_an_unsupported_scheme_is_refused_on_the_non_gguf_path_too():
@@ -314,7 +339,7 @@ def test_an_unsupported_scheme_is_refused_on_the_non_gguf_path_too():
 
     payload = ChatCompletionRequest.model_validate(_part_body("file:///etc/passwd"))
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+        inference_route._local_video_clips(payload, {"is_vision": True, "has_video_input": True})
     assert exc.value.status_code == 400
     assert "Unsupported video URL scheme" in exc.value.detail
 
@@ -352,7 +377,7 @@ def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
 
     payload = ChatCompletionRequest.model_validate(_part_body(_REMOTE))
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+        inference_route._local_video_clips(payload, {"is_vision": True, "has_video_input": True})
     assert exc.value.status_code == 400
     assert "Remote video URLs are not supported" in exc.value.detail
 
@@ -425,9 +450,45 @@ def test_a_data_uri_with_no_payload_is_refused(monkeypatch):
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
 def test_an_external_provider_refuses_either_spelling(monkeypatch, body):
-    """_build_external_messages rebuilds from an allowlist, so a clip left standing is dropped
-    and the provider answers a prompt the caller did not send."""
+    """The allowlist rebuild drops a clip, so the provider answers a prompt never sent."""
     body = {**body, "provider_type": "openai", "provider_api_key": "sk-test"}
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 400
+    assert response.json()["detail"] == inference_route._VIDEO_INPUT_REFUSAL
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+@pytest.mark.parametrize("provider_type", ["custom", "vllm"])
+def test_a_custom_connection_is_handed_the_clip_like_an_image(monkeypatch, body, provider_type):
+    import httpx
+    from core.inference import external_provider as ep_mod
+    from .test_external_provider_sampling_over_the_wire import _Server
+
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(trust_env = False))
+    with _Server() as server, _client(monkeypatch, _VideoGguf()) as client:
+        body = {
+            **body,
+            "stream": True,
+            "provider_type": provider_type,
+            "provider_base_url": server.base_url,
+        }
+        response = client.post("/v1/chat/completions", json = body)
+        assert response.status_code == 200, response.text
+        sent = server.bodies[-1]["messages"][-1]["content"]
+    assert {"type": "video_url", "video_url": {"url": _DATA_URI}} in sent
+    assert {"type": "text", "text": "what happens here?"} in sent
+
+
+@pytest.mark.parametrize(
+    "connection",
+    [
+        {"provider_type": "anthropic"},
+        {"provider_type": "custom", "provider_api_type": "responses"},
+    ],
+)
+def test_a_connection_that_cannot_place_a_clip_still_refuses_it(monkeypatch, connection):
+    body = {**_field_body(), **connection, "provider_base_url": "http://127.0.0.1:9/v1"}
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = body)
     assert response.status_code == 400
@@ -572,8 +633,7 @@ def test_admission_prices_the_two_spellings_of_one_clip_alike():
 
 
 def test_the_rolling_context_does_not_price_a_clip_as_text():
-    """Trimming counts a turn to decide what to drop; a clip counted as text would evict the
-    conversation around it."""
+    """Trimming counts turns to pick drops; a clip priced as text would evict its neighbors."""
     from core.inference.context_window import _UNPRICED_MEDIA_TYPES
     assert {"video_url", "input_video"} <= set(_UNPRICED_MEDIA_TYPES)
 
@@ -607,9 +667,8 @@ def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
     ],
 )
 def test_a_remote_video_url_is_refused(monkeypatch, url):
-    """llama-server, not Studio, would fetch the clip, and its downloader follows redirects
-    (set_follow_location in common/http.h), so a public URL redirecting to a private address
-    defeats any host check made here. The shape is refused rather than guarded."""
+    """llama-server fetches the clip and follows redirects (common/http.h set_follow_location), so a
+    public URL redirecting to a private address defeats host checks; the shape is refused."""
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body(url))
     assert response.status_code == 400
@@ -626,8 +685,7 @@ def test_no_url_ever_reaches_llama_server_as_a_video(monkeypatch):
 
 
 def test_the_dispatch_boundary_refuses_a_remote_url_on_its_own():
-    """_request_video_rejection only runs on a pre-switch validation, so translation has to
-    refuse it too rather than trust that it was already checked."""
+    """The pre-switch check does not run here, so translation must refuse remote URLs too."""
     from fastapi import HTTPException
 
     messages = [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": _REMOTE}}]}]
@@ -664,15 +722,14 @@ def _older_turn_body(clip = _DATA_URI):
 
 
 def test_a_clip_on_an_older_turn_is_refused_on_a_non_gguf_backend():
-    """GGUF keeps the part on the turn that carried it; the non-GGUF path flattens the parts and
-    hands generation one video kwarg, which MLX attaches to the newest turn. Refusing keeps the
-    two backends from reading the same request as different conversations."""
+    """GGUF keeps a clip on the turn that carried it, while non-GGUF flattens parts and MLX attaches
+    the clips to the newest turn; refusing stops the backends diverging."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
     payload = ChatCompletionRequest.model_validate(_older_turn_body())
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+        inference_route._local_video_clips(payload, {"is_vision": True, "has_video_input": True})
     assert exc.value.status_code == 400
     assert "attached to the latest message" in exc.value.detail
 
@@ -680,10 +737,9 @@ def test_a_clip_on_an_older_turn_is_refused_on_a_non_gguf_backend():
 def test_a_clip_on_the_latest_turn_is_still_served_on_a_non_gguf_backend():
     from models.inference import ChatCompletionRequest
     payload = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
-    assert (
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
-        == _CLIP_B64
-    )
+    assert inference_route._local_video_clips(
+        payload, {"is_vision": True, "has_video_input": True}
+    ) == [_CLIP_B64]
 
 
 def test_the_legacy_field_is_not_treated_as_an_older_turn():
@@ -692,10 +748,9 @@ def test_the_legacy_field_is_not_treated_as_an_older_turn():
 
     payload = ChatCompletionRequest.model_validate(_field_body())
     assert inference_route._video_is_on_an_older_turn(payload) is False
-    assert (
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
-        == _CLIP_B64
-    )
+    assert inference_route._local_video_clips(
+        payload, {"is_vision": True, "has_video_input": True}
+    ) == [_CLIP_B64]
 
 
 def test_gguf_still_keeps_a_clip_on_the_turn_that_carried_it(monkeypatch):
@@ -758,9 +813,8 @@ def test_the_measured_verdict_agrees_on_the_cap_boundary():
 
 
 def test_a_part_carried_clip_is_transcoded_like_the_legacy_field(monkeypatch):
-    """main shrinks the clip before llama-server samples it, but only on the legacy field's
-    path. Without the same pass over the parts, the same clip would reach llama-server at a
-    different resolution depending on which spelling carried it."""
+    """main shrinks the clip before llama-server samples it, but only on the legacy field path; the
+    same pass must cover parts, or resolution depends on the spelling."""
     seen = []
 
     def _shrink(
@@ -768,6 +822,8 @@ def test_a_part_carried_clip_is_transcoded_like_the_legacy_field(monkeypatch):
         cap,
         *,
         sampled_fps = None,
+        ffmpeg_dir = None,
+        env = None,
     ):
         seen.append(clip)
         return "SHRUNK"
@@ -843,9 +899,8 @@ def test_recosting_still_charges_a_clip_the_conversation_kept():
 
 
 def test_the_legacy_field_is_not_charged_twice_during_recosting():
-    """_inject_video_part splices the legacy clip into the conversation as input_video before
-    the loop starts, so during a recost the conversation clips already include it. Charging the
-    field as well priced it at exactly 2x and clamped the lease toward the whole KV budget."""
+    """_inject_video_part splices the legacy clip in as input_video before the loop, so charging the
+    field too priced it at 2x and clamped the lease toward the whole KV budget."""
     from models.inference import ChatCompletionRequest
 
     clip = "A" * 40_000
