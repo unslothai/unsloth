@@ -643,6 +643,14 @@ def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settl
         or UPGRADE_MARKER in run.log
     ), run.log[-8000:]
     assert run.connections == run.refused, run.report()
+    if UPGRADE_MARKER in run.log:
+        # Windows reached PyPI and moved to its release (the checkout's version is not PyPI's, as between
+        # a version bump and its publish), so the disk moved by design. Restore the checkout first: the
+        # fault tests after this one expect the code under test.
+        restore = run_update(directory, "run6-restore", local = True)
+        assert restore.rc == 0, restore.log[-8000:]
+        _assert_install_working(install, before, same_distributions = False)
+        pytest.skip("installed version is not PyPI's latest; the offline keep path was not taken")
     assert diff(before, snapshot(install)) == []
 
 

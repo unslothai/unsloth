@@ -240,6 +240,7 @@ import {
   DEFAULT_GEN,
   defaultsFor,
   defaultsKeyFor,
+  fixedStepsFor,
   loadedRecipeFor,
   residentDefaultsKey,
   residentRecipeFor,
@@ -263,8 +264,10 @@ import {
   TRANSPARENCY_CHECKER,
   additionalImageNumber,
   conditionedRequestFields,
+  familyPresetsCopy,
+  familyPresetsWithin,
+  inputImageWord,
   maxAdditionalImages,
-  presetsWithin,
   resolveEditSize,
   restoreInputsNote,
   seedReferenceResolution,
@@ -2410,6 +2413,10 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
+  const fixedSteps = !external && status?.loaded === true ? fixedStepsFor(status.family) : null;
+  useEffect(() => {
+    if (fixedSteps !== null && steps !== fixedSteps) setSteps(fixedSteps);
+  }, [fixedSteps, steps]);
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
@@ -5087,8 +5094,15 @@ export function ImagesPage({
       resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
     [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
   );
-  const officialPresets = useMemo(() => presetsWithin(sizeLimits), [sizeLimits]);
+  const loadedFamily = status?.family ?? null;
+  const officialPresets = useMemo(
+    () => familyPresetsWithin(loadedFamily, sizeLimits),
+    [loadedFamily, sizeLimits],
+  );
+  const presetsCopy = familyPresetsCopy(loadedFamily);
   const showOfficialPresets = sizeLimits.maxSide > MAX_OUTPUT_DEFAULT && officialPresets.length > 0;
+  // "Picture" where the family's prompts name the inputs <Picture N> (MiniMax-H3-Image), else "Image".
+  const imageWord = inputImageWord(loadedFamily);
   const unifiedEditActive = workflow === "edit" && unifiedEdit;
   const onLocalizedLayer = useCallback((dataUrl: string | null) => setLocalizedLayer(dataUrl), []);
   const onLocalizedColors = useCallback((names: string[]) => setLocalizedColors(names), []);
@@ -5096,15 +5110,15 @@ export function ImagesPage({
   const renderAdditionalImages = (numberOf: (i: number) => number, hint: string) => (
     <>
       {referenceImages.map((img, i) => (
-        <Field key={i} label={`Image ${numberOf(i)}`} hint={hint}>
+        <Field key={i} label={`${imageWord} ${numberOf(i)}`} hint={hint}>
           <div className="space-y-1.5">
             <ImageDropzone
               value={img}
               onChange={(v) =>
                 setReferenceImages((prev) => prev.map((p, j) => (j === i ? (v ?? "") : p)))
               }
-              removeLabel={`Remove image ${numberOf(i)}`}
-              cropSubject={`Image ${numberOf(i)}`}
+              removeLabel={`Remove ${imageWord.toLowerCase()} ${numberOf(i)}`}
+              cropSubject={`${imageWord} ${numberOf(i)}`}
             />
             <Button
               type="button"
@@ -5114,7 +5128,7 @@ export function ImagesPage({
               onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
             >
               <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
-              Remove image {numberOf(i)}
+              Remove {imageWord.toLowerCase()} {numberOf(i)}
             </Button>
           </div>
         </Field>
@@ -5134,7 +5148,7 @@ export function ImagesPage({
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          Add image
+          Add {imageWord.toLowerCase()}
         </Button>
       )}
     </>
@@ -5224,10 +5238,7 @@ export function ImagesPage({
         </div>
       </Field>
       {showOfficialPresets && (
-        <Field
-          label="2K presets"
-          hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
-        >
+        <Field label={presetsCopy.label} hint={presetsCopy.hint}>
           <Select
             value=""
             onValueChange={(v) => {
@@ -5240,8 +5251,8 @@ export function ImagesPage({
               setPortrait(m.portrait);
             }}
           >
-            <SelectTrigger aria-label="2K presets">
-              <SelectValue placeholder="Choose a 2K size" />
+            <SelectTrigger aria-label={presetsCopy.label}>
+              <SelectValue placeholder="Choose a size" />
             </SelectTrigger>
             <SelectContent>
               {officialPresets.map((p) => (
@@ -6602,10 +6613,10 @@ export function ImagesPage({
             {workflow === "reference" && (
               <>
                 <Field
-                  label={unifiedEdit ? "Image 1" : "Reference image"}
+                  label={unifiedEdit ? `${imageWord} 1` : "Reference image"}
                   hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? "Image 1" : "Reference image"} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? `${imageWord} 1` : "Reference image"} />
                 </Field>
                 {renderAdditionalImages(
                   (i) => i + 2,
@@ -6677,10 +6688,14 @@ export function ImagesPage({
                   </Field>
                 ) : (
                   <Field
-                    label="Image 1 (source)"
-                    hint="The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                    label={`${imageWord} 1 (source)`}
+                    hint={
+                      imageWord === "Picture"
+                        ? "The image to edit. Describe the change in the instruction below; add up to 15 more pictures and refer to them as <Picture 1>, <Picture 2> and so on, saying what to keep and what to change."
+                        : "The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                    }
                   >
-                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Image 1" />
+                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={`${imageWord} 1`} />
                   </Field>
                 )}
                 {conditioning?.localized_edit_modes?.length ? (
@@ -7072,12 +7087,17 @@ export function ImagesPage({
                 <div className="pt-2">
                   <SliderField
                     label="Steps"
-                    hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
-                    value={steps}
+                    hint={
+                      fixedSteps !== null
+                        ? `The loaded model is distilled to exactly ${fixedSteps} steps, one output head per step, so the count is fixed.`
+                        : "Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
+                    }
+                    value={fixedSteps ?? steps}
                     min={1}
                     max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
+                    disabled={fixedSteps !== null}
                   />
                 </div>
                 <SliderField
