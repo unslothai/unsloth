@@ -483,6 +483,18 @@ def test_legacy_threads_drop_blank_assistant_parts(parent):
     assert _shape(trace) == expected
 
 
+def test_legacy_threads_drop_data_images_with_line_breaks():
+    image = [{"type": "image", "image": "data:image/png;base64,AA\nBB"}]
+    rows = [
+        _row("u1", "user", _text("hi"), None, 1),
+        _row("a1", "assistant", image, None, 2),
+        _row("u2", "user", _text("again"), None, 3),
+        _row("a2", "assistant", _text("ok"), None, 4),
+    ]
+    trace = session_to_trace({"id": "t"}, rows)
+    assert _shape(trace) == [("user", "again"), ("assistant", "ok")]
+
+
 def test_infinite_args_text_falls_back_to_args():
     part = _call("A", args = {"a": 1}, argsText = '{"a":1e400}')
     assert _assistant([part]).messages[1].tool_calls[0].arguments == {"a": 1}

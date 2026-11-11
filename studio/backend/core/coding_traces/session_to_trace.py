@@ -55,7 +55,8 @@ _STOP_LABELS = {
 _PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
 
 # fromThreadMessageLike in @assistant-ui/core keeps only these assistant images.
-_DATA_IMAGE = re.compile(r"data:image/(png|jpeg|jpg|gif|webp);base64,.*", re.DOTALL)
+# JS "." stops at line breaks, so a data URL with one is dropped too.
+_DATA_IMAGE = re.compile(r"data:image/(png|jpeg|jpg|gif|webp);base64,[^\n\r\u2028\u2029]*")
 
 
 def _as_dict(value: object) -> dict:
