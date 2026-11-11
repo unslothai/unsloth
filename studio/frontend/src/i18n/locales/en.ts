@@ -2822,6 +2822,8 @@ export const en = {
             "This is the model cache. Clearing it downloads those models again the next time you use them.",
           datasetsCost:
             "Clearing this downloads those datasets again the next time you use them.",
+          npuCost:
+            "These are your downloaded NPU models. Clearing deletes them, and you download them again from the Hub to use them.",
           blocked: "Not cleared: {reason}",
           cleared: "Cleared {size}",
           partial: "Some cache files could not be removed",
@@ -2843,6 +2845,7 @@ export const en = {
             hfAssets: "Hugging Face asset cache",
             hfDatasets: "Hugging Face dataset cache",
             hfHub: "Hugging Face model cache",
+            npuModels: "AMD NPU models",
           },
         },
         lowDisk: {

@@ -2771,6 +2771,8 @@ export const ja = {
             "これはモデルキャッシュです。削除すると、次に使うときにそれらのモデルを再ダウンロードします。",
           datasetsCost:
             "削除すると、次に使うときにそれらのデータセットを再ダウンロードします。",
+          npuCost:
+            "ダウンロード済みの NPU モデルです。削除すると消去され、使うには Hub から再ダウンロードが必要です。",
           blocked: "削除されませんでした: {reason}",
           cleared: "{size}を削除しました",
           partial: "一部のキャッシュファイルを削除できませんでした",
@@ -2792,6 +2794,7 @@ export const ja = {
             hfAssets: "Hugging Faceアセットキャッシュ",
             hfDatasets: "Hugging Faceデータセットキャッシュ",
             hfHub: "Hugging Faceモデルキャッシュ",
+            npuModels: "AMD NPU モデル",
           },
         },
         lowDisk: {

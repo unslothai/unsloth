@@ -2783,6 +2783,8 @@ export const ko = {
             "모델 캐시입니다. 정리하면 다음에 사용할 때 해당 모델을 다시 다운로드합니다.",
           datasetsCost:
             "정리하면 다음에 사용할 때 해당 데이터셋을 다시 다운로드합니다.",
+          npuCost:
+            "다운로드한 NPU 모델입니다. 지우면 삭제되며, 사용하려면 Hub에서 다시 다운로드해야 합니다.",
           blocked: "정리되지 않음: {reason}",
           cleared: "{size} 정리함",
           partial: "일부 캐시 파일을 삭제하지 못했습니다",
@@ -2804,6 +2806,7 @@ export const ko = {
             hfAssets: "Hugging Face 에셋 캐시",
             hfDatasets: "Hugging Face 데이터셋 캐시",
             hfHub: "Hugging Face 모델 캐시",
+            npuModels: "AMD NPU 모델",
           },
         },
         lowDisk: {

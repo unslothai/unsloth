@@ -2889,6 +2889,8 @@ export const zhTW = {
             "Unsloth 會在下次需要時重新建立快取。下載的模型、專案、聊天、設定以及您的 Hugging Face 權杖都不會受到影響。",
           hubCost: "這是模型快取。清除後，下次使用這些模型時會重新下載。",
           datasetsCost: "清除後，下次使用這些資料集時會重新下載。",
+          npuCost:
+            "這些是你已下載的 NPU 模型。清除會刪除它們，要使用需從 Hub 重新下載。",
           blocked: "未清除：{reason}",
           cleared: "已清除 {size}",
           partial: "部分快取檔案無法移除",
@@ -2910,6 +2912,7 @@ export const zhTW = {
             hfAssets: "Hugging Face 資源快取",
             hfDatasets: "Hugging Face 資料集快取",
             hfHub: "Hugging Face 模型快取",
+            npuModels: "AMD NPU 模型",
           },
         },
         lowDisk: {

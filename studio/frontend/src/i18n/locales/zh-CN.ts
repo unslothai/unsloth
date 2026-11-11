@@ -2754,6 +2754,8 @@ export const zhCN = {
             "Unsloth 会在下次需要时重新生成缓存。已下载的模型、项目、对话、设置以及你的 Hugging Face 令牌不会受到影响。",
           hubCost: "这是模型缓存。清理后，下次使用这些模型时会重新下载。",
           datasetsCost: "清理后，下次使用这些数据集时会重新下载。",
+          npuCost:
+            "这些是你已下载的 NPU 模型。清除会删除它们，要使用需从 Hub 重新下载。",
           blocked: "未清理：{reason}",
           cleared: "已清理{size}",
           partial: "部分缓存文件无法删除",
@@ -2775,6 +2777,7 @@ export const zhCN = {
             hfAssets: "Hugging Face 资源缓存",
             hfDatasets: "Hugging Face 数据集缓存",
             hfHub: "Hugging Face 模型缓存",
+            npuModels: "AMD NPU 模型",
           },
         },
         lowDisk: {

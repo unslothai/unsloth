@@ -3027,6 +3027,8 @@ export const tr = {
             "Bu, model önbelleğidir. Temizlerseniz bu modeller bir sonraki kullanımınızda yeniden indirilir.",
           datasetsCost:
             "Bunu temizlerseniz bu veri kümeleri bir sonraki kullanımınızda yeniden indirilir.",
+          npuCost:
+            "Bunlar indirdiğiniz NPU modelleri. Temizlemek onları siler; kullanmak için Hub'dan yeniden indirmeniz gerekir.",
           blocked: "Temizlenmedi: {reason}",
           cleared: "{size} temizlendi",
           partial: "Bazı önbellek dosyaları kaldırılamadı",
@@ -3048,6 +3050,7 @@ export const tr = {
             hfAssets: "Hugging Face varlık önbelleği",
             hfDatasets: "Hugging Face veri kümesi önbelleği",
             hfHub: "Hugging Face model önbelleği",
+            npuModels: "AMD NPU modelleri",
           },
         },
         lowDisk: {

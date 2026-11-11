@@ -82,6 +82,17 @@ _downloads: dict[str, _Download] = {}
 _downloads_lock = threading.Lock()
 
 
+def downloads_running() -> bool:
+    with _downloads_lock:
+        return any(not job.finished for job in _downloads.values())
+
+
+def _forget_storage_size() -> None:
+    """Settings > Storage remembers folder sizes for a minute; a pull or delete changes this one."""
+    from utils.cache_inventory import invalidate_cache_size
+    invalidate_cache_size("npu_models")
+
+
 def _start_download(npu, model_id: str) -> _Download:
     """The model's running pull, or a new one; a second request follows the first."""
     with _downloads_lock:
@@ -108,6 +119,7 @@ def _start_download(npu, model_id: str) -> _Download:
             logger.exception(f"NPU model download of {model_id} failed{_progress()}")
             job.publish({"event": "error", "error": f"Downloading {model_id} failed: {exc}"})
         finally:
+            _forget_storage_size()
             with job.changed:
                 job.finished = True
                 job.changed.notify_all()
@@ -193,4 +205,6 @@ async def delete_npu_model(model_id: str):
         await asyncio.to_thread(get_npu_backend().delete, model_id)
     except NpuError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
+    finally:
+        _forget_storage_size()
     return {"status": "deleted", "model": model_id}

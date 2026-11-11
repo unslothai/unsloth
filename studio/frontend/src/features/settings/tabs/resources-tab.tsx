@@ -586,13 +586,15 @@ export function ResourcesTab() {
   const diskBytes = (entry: (typeof cache.entries)[number]) =>
     entry.systemDiskBytes ??
     (systemEntries.includes(entry) ? entry.sizeBytes : 0);
+  const isModels = (entry: (typeof cache.entries)[number]) =>
+    entry.key === "hf_hub" || entry.key === "npu_models";
   const modelsDiskGb =
     cache.entries
-      .filter((entry) => entry.key === "hf_hub")
+      .filter(isModels)
       .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const cachesDiskGb =
     cache.entries
-      .filter((entry) => entry.key !== "hf_hub")
+      .filter((entry) => !isModels(entry))
       .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const otherDiskGb = Math.max(
     0,

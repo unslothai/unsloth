@@ -185,3 +185,32 @@ test("the picker's NPU format holds no Hub repo", () => {
     assert.equal(matchesFormatFilter(id, gguf, "all"), true);
   }
 });
+
+test("Storage deletes an NPU folder through lemond's id for its checkpoint", async () => {
+  const models = [
+    { id: "qwen3-4b-FLM", checkpoint: "qwen3:4b", downloaded: true },
+    { id: "qwen3-0.6b-FLM", checkpoint: "qwen3:0.6b", downloaded: true },
+  ];
+  const { api, requests } = client(() =>
+    requests.length === 1
+      ? Response.json({ models })
+      : Response.json({ status: "deleted" }),
+  );
+  assert.equal(await api.deleteNpuModelByCheckpoint("qwen3:0.6b"), "qwen3-0.6b-FLM");
+  assert.deepEqual(
+    requests.map((request) => [request.path, request.init?.method]),
+    [
+      ["/api/npu/models", undefined],
+      ["/api/npu/models/qwen3-0.6b-FLM", "DELETE"],
+    ],
+  );
+});
+
+test("Storage deletes nothing for a checkpoint the NPU catalog does not know", async () => {
+  const { api, requests } = client(() => Response.json({ models: [] }));
+  await assert.rejects(
+    api.deleteNpuModelByCheckpoint("gone:1b"),
+    /gone:1b is not in the NPU catalog/,
+  );
+  assert.equal(requests.length, 1);
+});

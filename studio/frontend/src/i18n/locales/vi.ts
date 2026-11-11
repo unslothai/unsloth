@@ -3030,6 +3030,8 @@ export const vi = {
             "Đây là bộ nhớ đệm mô hình. Xóa nó sẽ khiến các mô hình đó được tải xuống lại vào lần tới bạn dùng.",
           datasetsCost:
             "Xóa mục này sẽ khiến các tập dữ liệu đó được tải xuống lại vào lần tới bạn dùng.",
+          npuCost:
+            "Đây là các mô hình NPU bạn đã tải xuống. Xóa sẽ gỡ chúng, và bạn cần tải lại từ Hub để dùng.",
           blocked: "Chưa xóa: {reason}",
           cleared: "Đã xóa {size}",
           partial: "Không thể xóa một số tệp bộ nhớ đệm",
@@ -3051,6 +3053,7 @@ export const vi = {
             hfAssets: "Bộ nhớ đệm tài nguyên Hugging Face",
             hfDatasets: "Bộ nhớ đệm tập dữ liệu Hugging Face",
             hfHub: "Bộ nhớ đệm mô hình Hugging Face",
+            npuModels: "Mô hình AMD NPU",
           },
         },
         lowDisk: {

@@ -3048,6 +3048,8 @@ export const cs = {
             "Toto je mezipaměť modelů. Po jejím vymazání se tyto modely při příštím použití stáhnou znovu.",
           datasetsCost:
             "Po vymazání se tyto datové sady při příštím použití stáhnou znovu.",
+          npuCost:
+            "Toto jsou vaše stažené modely NPU. Vymazáním je smažete a pro použití je musíte znovu stáhnout z Hubu.",
           blocked: "Nevymazáno: {reason}",
           cleared: "Vymazáno: {size}",
           partial: "Některé soubory mezipaměti se nepodařilo odstranit",
@@ -3069,6 +3071,7 @@ export const cs = {
             hfAssets: "Mezipaměť prostředků Hugging Face",
             hfDatasets: "Mezipaměť datových sad Hugging Face",
             hfHub: "Mezipaměť modelů Hugging Face",
+            npuModels: "Modely AMD NPU",
           },
         },
         lowDisk: {

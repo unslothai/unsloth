@@ -2948,6 +2948,8 @@ export const sv = {
             "Det här är modellcachen. Om du rensar den hämtas modellerna igen nästa gång du använder dem.",
           datasetsCost:
             "Om du rensar detta hämtas datauppsättningarna igen nästa gång du använder dem.",
+          npuCost:
+            "Det här är dina nedladdade NPU-modeller. Att rensa tar bort dem, och du laddar ner dem igen från Hub för att använda dem.",
           blocked: "Inte rensad: {reason}",
           cleared: "Rensade {size}",
           partial: "Vissa cachefiler kunde inte tas bort",
@@ -2969,6 +2971,7 @@ export const sv = {
             hfAssets: "Hugging Face-resurscache",
             hfDatasets: "Hugging Face-datauppsättningscache",
             hfHub: "Hugging Face-modellcache",
+            npuModels: "AMD NPU-modeller",
           },
         },
         lowDisk: {

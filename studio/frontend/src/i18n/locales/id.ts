@@ -3032,6 +3032,8 @@ export const id = {
             "Ini adalah cache model. Menghapusnya akan membuat model tersebut diunduh lagi saat Anda menggunakannya berikutnya.",
           datasetsCost:
             "Menghapus ini akan membuat dataset tersebut diunduh lagi saat Anda menggunakannya berikutnya.",
+          npuCost:
+            "Ini adalah model NPU yang sudah Anda unduh. Membersihkannya akan menghapusnya, dan Anda perlu mengunduhnya lagi dari Hub untuk memakainya.",
           blocked: "Tidak dihapus: {reason}",
           cleared: "{size} dihapus",
           partial: "Beberapa file cache tidak dapat dihapus",
@@ -3053,6 +3055,7 @@ export const id = {
             hfAssets: "Cache aset Hugging Face",
             hfDatasets: "Cache dataset Hugging Face",
             hfHub: "Cache model Hugging Face",
+            npuModels: "Model AMD NPU",
           },
         },
         lowDisk: {

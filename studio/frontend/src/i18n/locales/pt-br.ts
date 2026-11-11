@@ -2803,6 +2803,8 @@ export const ptBR = {
             "Este é o cache de modelos. Ao limpá-lo, esses modelos serão baixados novamente na próxima vez que você usá-los.",
           datasetsCost:
             "Ao limpar isso, esses conjuntos de dados serão baixados novamente na próxima vez que você usá-los.",
+          npuCost:
+            "Estes são seus modelos NPU baixados. Limpar os exclui, e você precisa baixá-los de novo pelo Hub para usá-los.",
           blocked: "Não foi limpo: {reason}",
           cleared: "{size} liberados",
           partial: "Não foi possível remover alguns arquivos de cache",
@@ -2824,6 +2826,7 @@ export const ptBR = {
             hfAssets: "Cache de recursos do Hugging Face",
             hfDatasets: "Cache de conjuntos de dados do Hugging Face",
             hfHub: "Cache de modelos do Hugging Face",
+            npuModels: "Modelos AMD NPU",
           },
         },
         lowDisk: {

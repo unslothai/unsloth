@@ -19,6 +19,7 @@ from core.inference.flm_files import (
     FlmDownloadError,
     FlmModelFiles,
     download_files,
+    model_folder_checkpoints,
     read_model_files,
 )
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
@@ -178,6 +179,11 @@ def _pinned_flm_version() -> Optional[str]:
 def _npu_root() -> Path:
     from utils.paths.storage_roots import studio_root
     return studio_root() / "lemonade"
+
+
+def npu_model_dir() -> Path:
+    """FastFlowLM's FLM_MODEL_PATH. Fixed under the Unsloth Studio home; not movable yet."""
+    return _npu_root() / "flm"
 
 
 def _error_message(response) -> str:
@@ -709,6 +715,40 @@ class LemonadeNpuBackend:
             response = server.request("POST", "/v1/delete", json_body = {"model_name": model_id})
             if _failed(response):
                 raise NpuError(f"Deleting {model_id} failed: {_error_message(response)}")
+
+    def model_folders(self) -> list[tuple[Path, Optional[str]]]:
+        """Each entry under FLM_MODEL_PATH, with the checkpoint FastFlowLM's manifest gives a model
+        folder. Reads the disk only, so it never starts lemond."""
+        base = self._flm_model_dir
+        subfolder, checkpoints = model_folder_checkpoints(self._flm_binary())
+        models = base / subfolder if subfolder else None
+        rows: list[tuple[Path, Optional[str]]] = []
+        try:
+            children = sorted(base.iterdir()) if base.is_dir() else []
+            for child in children:
+                if models is not None and child == models and child.is_dir():
+                    rows.extend((entry, checkpoints.get(entry.name)) for entry in sorted(child.iterdir()))
+                else:
+                    rows.append((child, None))
+        except OSError as exc:
+            logger.debug("Could not list %s: %s", base, exc)
+        return rows
+
+    def delete_downloaded(self) -> tuple[int, list[str]]:
+        """Delete every downloaded model through lemond, so its registry matches the disk."""
+        try:
+            model_ids = [model.id for model in self.catalog() if model.downloaded]
+        except (NpuError, LemonadeUnavailable) as exc:
+            return 0, [str(exc)]
+        deleted = 0
+        errors: list[str] = []
+        for model_id in model_ids:
+            try:
+                self.delete(model_id)
+                deleted += 1
+            except (NpuError, LemonadeUnavailable) as exc:
+                errors.append(str(exc))
+        return deleted, errors
 
     def load(
         self,

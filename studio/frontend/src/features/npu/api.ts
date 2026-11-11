@@ -185,6 +185,18 @@ export async function deleteNpuModel(id: string): Promise<void> {
   }
 }
 
+/** Settings > Storage names NPU folders by FastFlowLM checkpoint; lemond deletes by its own id. */
+export async function deleteNpuModelByCheckpoint(
+  checkpoint: string,
+): Promise<string> {
+  const model = (await listNpuModels()).find(
+    (candidate) => candidate.checkpoint === checkpoint,
+  );
+  if (!model) throw new Error(`${checkpoint} is not in the NPU catalog`);
+  await deleteNpuModel(model.id);
+  return model.id;
+}
+
 export async function downloadNpuModel(
   id: string,
   onProgress: (event: NpuDownloadEvent) => void,

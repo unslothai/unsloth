@@ -3070,6 +3070,8 @@ export const nl = {
             "Dit is de modelcache. Als je deze wist, worden die modellen opnieuw gedownload wanneer je ze weer gebruikt.",
           datasetsCost:
             "Als je dit wist, worden die datasets opnieuw gedownload wanneer je ze weer gebruikt.",
+          npuCost:
+            "Dit zijn je gedownloade NPU-modellen. Wissen verwijdert ze, en je downloadt ze opnieuw via de Hub om ze te gebruiken.",
           blocked: "Niet gewist: {reason}",
           cleared: "{size} gewist",
           partial: "Sommige cachebestanden konden niet worden verwijderd",
@@ -3091,6 +3093,7 @@ export const nl = {
             hfAssets: "Hugging Face-assetcache",
             hfDatasets: "Hugging Face-datasetcache",
             hfHub: "Hugging Face-modelcache",
+            npuModels: "AMD NPU-modellen",
           },
         },
         lowDisk: {

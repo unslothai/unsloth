@@ -3066,6 +3066,8 @@ export const pl = {
             "To pamięć podręczna modeli. Jej wyczyszczenie spowoduje ponowne pobranie tych modeli przy następnym użyciu.",
           datasetsCost:
             "Wyczyszczenie spowoduje ponowne pobranie tych zbiorów danych przy następnym użyciu.",
+          npuCost:
+            "To są pobrane modele NPU. Wyczyszczenie je usuwa, a aby ich użyć, trzeba pobrać je ponownie z Huba.",
           blocked: "Nie wyczyszczono: {reason}",
           cleared: "Wyczyszczono {size}",
           partial: "Nie udało się usunąć niektórych plików pamięci podręcznej",
@@ -3087,6 +3089,7 @@ export const pl = {
             hfAssets: "Pamięć podręczna zasobów Hugging Face",
             hfDatasets: "Pamięć podręczna zbiorów danych Hugging Face",
             hfHub: "Pamięć podręczna modeli Hugging Face",
+            npuModels: "Modele AMD NPU",
           },
         },
         lowDisk: {

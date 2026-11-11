@@ -2819,6 +2819,8 @@ export const fr = {
             "Il s'agit du cache des modèles. Le vider entraîne un nouveau téléchargement de ces modèles lors de leur prochaine utilisation.",
           datasetsCost:
             "Vider ceci entraîne un nouveau téléchargement de ces jeux de données lors de leur prochaine utilisation.",
+          npuCost:
+            "Ce sont vos modèles NPU téléchargés. Les effacer les supprime, et vous devrez les retélécharger depuis le Hub pour les utiliser.",
           blocked: "Non vidé : {reason}",
           cleared: "{size} libérés",
           partial: "Certains fichiers de cache n'ont pas pu être supprimés",
@@ -2840,6 +2842,7 @@ export const fr = {
             hfAssets: "Cache des ressources Hugging Face",
             hfDatasets: "Cache des jeux de données Hugging Face",
             hfHub: "Cache des modèles Hugging Face",
+            npuModels: "Modèles AMD NPU",
           },
         },
         lowDisk: {

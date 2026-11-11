@@ -2732,6 +2732,8 @@ export const it = {
             "Questa è la cache dei modelli. Svuotandola, quei modelli verranno scaricati di nuovo al prossimo utilizzo.",
           datasetsCost:
             "Svuotandola, quei set di dati verranno scaricati di nuovo al prossimo utilizzo.",
+          npuCost:
+            "Questi sono i modelli NPU scaricati. Svuotarli li elimina e dovrai scaricarli di nuovo dall'Hub per usarli.",
           blocked: "Non svuotata: {reason}",
           cleared: "Liberati {size}",
           partial: "Alcuni file di cache non sono stati rimossi",
@@ -2753,6 +2755,7 @@ export const it = {
             hfAssets: "Cache delle risorse Hugging Face",
             hfDatasets: "Cache dei set di dati Hugging Face",
             hfHub: "Cache dei modelli Hugging Face",
+            npuModels: "Modelli AMD NPU",
           },
         },
         lowDisk: {

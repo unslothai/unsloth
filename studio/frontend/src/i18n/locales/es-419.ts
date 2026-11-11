@@ -3073,6 +3073,8 @@ export const es419 = {
             "Esta es la caché de modelos. Si la borras, esos modelos se volverán a descargar la próxima vez que los uses.",
           datasetsCost:
             "Si borras esto, esos conjuntos de datos se volverán a descargar la próxima vez que los uses.",
+          npuCost:
+            "Estos son tus modelos NPU descargados. Al borrarlos se eliminan y tendrás que descargarlos de nuevo desde el Hub para usarlos.",
           blocked: "No se borró: {reason}",
           cleared: "Se borraron {size}",
           partial: "Algunos archivos de caché no se pudieron eliminar",
@@ -3094,6 +3096,7 @@ export const es419 = {
             hfAssets: "Caché de recursos de Hugging Face",
             hfDatasets: "Caché de conjuntos de datos de Hugging Face",
             hfHub: "Caché de modelos de Hugging Face",
+            npuModels: "Modelos de AMD NPU",
           },
         },
         lowDisk: {
