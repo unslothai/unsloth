@@ -1,0 +1,423 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Prebuilt (ahead-of-time CUTLASS) int8 GEMM with torchao's dequant epilogue fused, for sm75 (fp16 out) and sm80 /
+sm86 / sm89 (bf16 out), whatever Triton is installed. The binary is a plain C ABI library (no torch or Python ABI,
+static CUDA runtime) from the ``unsloth-studio-i8gemm`` wheel, or ``UNSLOTH_DIFFUSION_INT8_CUTLASS_LIB``; absent,
+unloadable, the wrong ABI, or a tile failing the bit-exact probe against torchao's epilogue keeps today's path.
+
+Selection (``race``): per (card, N, K, dtypes, M bucket) every probed tile is timed against today's path (the Triton
+``i8mm_dq`` where Studio runs it, else cuBLAS ``_int_mm``); a tile replaces it only when it is faster by
+``_MARGIN``. Winners persist per card, toolchain and library build. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables,
+``=1`` skips the race (fastest probed tile by the size heuristic, timing only)."""
+
+from __future__ import annotations
+
+import ctypes
+import os
+import threading
+from functools import lru_cache
+from typing import Any, Callable, Optional
+
+CUTLASS_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS"
+CUTLASS_LIB_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_LIB"
+WHEEL_MODULE = "unsloth_studio_i8gemm"
+ABI_VERSION = 1
+LIB_NAMES = ("libunsloth_i8gemm.so", "unsloth_i8gemm.dll")
+
+# ui8_gemm status codes
+_STATUS = {
+    0: "ok",
+    1: "bad arguments",
+    2: "no kernel for this tile / dtype",
+    3: "cannot implement",
+    4: "initialize failed",
+    5: "launch failed",
+}
+# CUTLASS's tile beats today's path only by this much (fraction of today's time): ties keep today's path.
+_MARGIN = 0.02
+# M buckets the race times at (rows of the activation); a call runs the winner of the nearest bucket at or below.
+_RACE_M = (512, 4096)
+_LOCK = threading.Lock()
+_LOAD_ERROR: list = [None]
+# engagement census, never read inside a traced region
+_CALLS = [0]
+
+
+def mode() -> str:
+    raw = (os.environ.get(CUTLASS_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return "off"
+    if raw in ("1", "on", "true", "yes", "force"):
+        return "force"
+    return "auto"
+
+
+def family(capability: Optional[tuple]) -> Optional[int]:
+    """Library family for a compute capability: 75 (Turing, fp16 out), 80 (sm80 / sm86 / sm87 / sm89, bf16 out)."""
+    if capability is None:
+        return None
+    cap = (int(capability[0]), int(capability[1]))
+    if cap == (7, 5):
+        return 75
+    if cap[0] == 8:
+        return 80
+    return None
+
+
+def out_dtype_for(fam: int) -> Any:
+    import torch
+    return torch.float16 if fam == 75 else torch.bfloat16
+
+
+def _candidate_paths() -> list:
+    paths = []
+    explicit = (os.environ.get(CUTLASS_LIB_ENV) or "").strip()
+    if explicit:
+        paths.append(explicit)
+        return paths
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec(WHEEL_MODULE)
+        roots = list(spec.submodule_search_locations or ()) if spec is not None else []
+    except Exception:  # noqa: BLE001 - no wheel
+        roots = []
+    for root in roots:
+        for name in LIB_NAMES:
+            for sub in ("", "lib"):
+                p = os.path.join(root, sub, name)
+                if os.path.isfile(p):
+                    paths.append(p)
+    return paths
+
+
+def _bind(lib: Any) -> Any:
+    c = ctypes
+    lib.ui8_abi_version.restype = c.c_int
+    lib.ui8_abi_version.argtypes = []
+    lib.ui8_num_tiles.restype = c.c_int
+    lib.ui8_num_tiles.argtypes = [c.c_int]
+    lib.ui8_tile_info.restype = c.c_int
+    lib.ui8_tile_info.argtypes = [c.c_int, c.c_int, c.POINTER(c.c_int)]
+    lib.ui8_has_kernel.restype = c.c_int
+    lib.ui8_has_kernel.argtypes = [c.c_int] * 6
+    lib.ui8_gemm.restype = c.c_int
+    lib.ui8_gemm.argtypes = [c.c_int] * 5 + [c.c_void_p] * 6 + [c.c_int64] * 6 + [c.c_void_p]
+    return lib
+
+
+@lru_cache(maxsize = 1)
+def library() -> Optional[Any]:
+    """The loaded library, or None (absent, unloadable, wrong ABI, ROCm / CPU torch, switched off)."""
+    if mode() == "off":
+        return None
+    try:
+        import torch
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    for path in _candidate_paths():
+        try:
+            lib = _bind(ctypes.CDLL(path))
+            if lib.ui8_abi_version() != ABI_VERSION:
+                _LOAD_ERROR[0] = f"{path}: ABI {lib.ui8_abi_version()} != {ABI_VERSION}"
+                continue
+            return lib
+        except Exception as exc:  # noqa: BLE001 - a broken binary keeps today's path
+            _LOAD_ERROR[0] = f"{path}: {exc}"
+    return None
+
+
+def load_error() -> Optional[str]:
+    return _LOAD_ERROR[0]
+
+
+def library_path() -> Optional[str]:
+    lib = library()
+    return getattr(lib, "_name", None) if lib is not None else None
+
+
+@lru_cache(maxsize = 4)
+def tiles(fam: int) -> tuple:
+    lib = library()
+    if lib is None:
+        return ()
+    out = []
+    buf = (ctypes.c_int * 8)()
+    for i in range(lib.ui8_num_tiles(fam)):
+        if lib.ui8_tile_info(fam, i, buf) == 0:
+            out.append(tuple(buf))
+    return tuple(out)
+
+
+def _kind(dtype: Any) -> Optional[int]:
+    import torch
+    return {torch.float32: 0, torch.bfloat16: 1, torch.float16: 2}.get(dtype)
+
+
+def has_kernel(
+    fam: int, tile: int, out_dtype: Any, xs_dtype: Any, ws_dtype: Any, bias: bool
+) -> bool:
+    lib = library()
+    kinds = (_kind(out_dtype), _kind(xs_dtype), _kind(ws_dtype))
+    if lib is None or None in kinds:
+        return False
+    return bool(lib.ui8_has_kernel(fam, tile, kinds[0], kinds[1], kinds[2], int(bool(bias))))
+
+
+def eligible(a: Any, w: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> bool:
+    """Operands the library takes: int8 [M, K] / [N, K] with unit inner stride, K % 16, N % 8, 16-byte aligned rows,
+    base pointers and scale / bias vectors, scales [M] / [N] contiguous, bias in the output dtype."""
+    import torch
+    try:
+        if a.dtype != torch.int8 or w.dtype != torch.int8 or a.dim() != 2 or w.dim() != 2:
+            return False
+        if a.device != w.device or not a.is_cuda:
+            return False
+        m, k = a.shape
+        n = w.shape[0]
+        if w.shape[1] != k or k % 16 or n % 8 or m < 1:
+            return False
+        if a.stride(1) != 1 or w.stride(1) != 1 or a.stride(0) % 16 or w.stride(0) % 16:
+            return False
+        if a.data_ptr() % 16 or w.data_ptr() % 16:
+            return False
+        for vec, size in ((xs, m), (ws, n)):
+            if vec.device != a.device or vec.numel() != size or (vec.dim() and vec.stride(-1) != 1):
+                return False
+            if vec.data_ptr() % 16 or _kind(vec.dtype) is None:
+                return False
+        if bias is not None:
+            if (
+                bias.dtype != out_dtype
+                or bias.numel() != n
+                or bias.data_ptr() % 16
+                or bias.device != a.device
+            ):
+                return False
+            if bias.dim() and bias.stride(-1) != 1:
+                return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, fam: int, tile: int, out_dtype: Any) -> Any:
+    """``out[M, N]`` from the library's ``tile`` kernel on the current stream; raises on any status but ok."""
+    import torch
+
+    lib = library()
+    if lib is None:
+        raise RuntimeError("int8 CUTLASS library not loaded")
+    m, k = a.shape
+    n = w.shape[0]
+    out = torch.empty((m, n), device = a.device, dtype = out_dtype)
+    with torch.cuda.device(a.device):
+        stream = torch.cuda.current_stream(a.device).cuda_stream
+        status = lib.ui8_gemm(
+            fam,
+            tile,
+            _kind(out_dtype),
+            _kind(xs.dtype),
+            _kind(ws.dtype),
+            a.data_ptr(),
+            w.data_ptr(),
+            xs.data_ptr(),
+            ws.data_ptr(),
+            bias.data_ptr() if bias is not None else None,
+            out.data_ptr(),
+            m,
+            n,
+            k,
+            a.stride(0),
+            w.stride(0),
+            out.stride(0),
+            stream,
+        )
+    if status != 0:
+        raise RuntimeError(f"ui8_gemm tile {tile}: {_STATUS.get(status, status)}")
+    _CALLS[0] += 1
+    return out
+
+
+def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> Any:
+    """torchao's int8 dynamic Linear after ``_int_mm``, op for op: ``c * x_scale`` in the x_scale dtype (fp32 for an
+    fp16 x_scale), cast to ``out_dtype``, ``* w_scale``, ``+ bias``, cast. bf16 out = ``diffusion_int8_gemm.reference``."""
+    import torch
+
+    m = a.shape[0]
+    if m < 17:  # _int_mm's row floor: pad, then drop the pad rows (exact)
+        a = torch.cat([a, a.new_zeros((17 - m, a.shape[1]))])
+    c = torch._int_mm(a, w.t())[:m]
+    inter = torch.float32 if xs.dtype == torch.float16 else xs.dtype
+    y = (c * xs.reshape(-1, 1).to(inter)).to(out_dtype)
+    y = y * ws.reshape(-1)
+    if bias is not None:
+        y = y + bias
+    return y.to(out_dtype)
+
+
+# (M, N, K, bias, xs dtype tag, ws dtype tag): ragged M and N tails, K below / above one tile, bias, every scale kind.
+_PROBE_SHAPES = (
+    (257, 384, 512, False),
+    (33, 208, 144, True),
+    (300, 528, 1040, True),
+    (1, 64, 64, False),
+)
+
+
+def _scale_dtypes(fam: int) -> tuple:
+    """(xs, ws) dtype pairs the library carries for a family, in probe order."""
+    import torch
+
+    if fam == 75:
+        return tuple(
+            (x, w)
+            for x in (torch.float16, torch.float32)
+            for w in (torch.float16, torch.bfloat16, torch.float32)
+        )
+    return tuple(
+        (x, w) for x in (torch.bfloat16, torch.float32) for w in (torch.bfloat16, torch.float32)
+    )
+
+
+def _probe_tile(index: int, fam: int, tile: int, pairs: tuple) -> bool:
+    import torch
+
+    from .diffusion_int8_gemm import tie_operands
+
+    dev = torch.device("cuda", index)
+    out_dtype = out_dtype_for(fam)
+    g = torch.Generator(device = "cpu").manual_seed(0)
+    try:
+        for xs_dt, ws_dt in pairs:
+            for m, n, k, bias in _PROBE_SHAPES:
+                if not has_kernel(fam, tile, out_dtype, xs_dt, ws_dt, bias):
+                    return False
+                a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
+                w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
+                xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(xs_dt).to(dev)
+                ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(ws_dt).to(dev)
+                b = (torch.randn(n, generator = g) * 0.1).to(out_dtype).to(dev) if bias else None
+                if not torch.equal(
+                    launch(a, w, xs, ws, b, fam, tile, out_dtype),
+                    reference(a, w, xs, ws, b, out_dtype),
+                ):
+                    return False
+            # int32 products one or two units off a 16-bit midpoint, both signs: the double rounding must match
+            a, w = tie_operands(dev)
+            xs = torch.ones(a.shape[0], device = dev, dtype = xs_dt)
+            ws = torch.ones(w.shape[0], device = dev, dtype = ws_dt)
+            if fam == 75:
+                # fp16 overflows at these magnitudes: scale into range so the casts, not inf, are compared
+                xs = torch.full((a.shape[0],), 2.0**-12, device = dev, dtype = xs_dt)
+            if not torch.equal(
+                launch(a, w, xs, ws, None, fam, tile, out_dtype),
+                reference(a, w, xs, ws, None, out_dtype),
+            ):
+                return False
+        torch.cuda.synchronize(dev)
+        return True
+    except Exception:  # noqa: BLE001 - out of shared memory, launch failure, ...
+        return False
+
+
+_PROBED: dict = {}
+
+
+def probed_tiles(index: int) -> tuple:
+    """Tile ids passing the bit-exact probe on card ``index`` for every scale-dtype pair (cached per process)."""
+    if index in _PROBED:
+        return _PROBED[index]
+    ok: tuple = ()
+    try:
+        import torch
+        fam = family(torch.cuda.get_device_capability(index))
+        if fam is not None and library() is not None:
+            pairs = _scale_dtypes(fam)
+            ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
+    except Exception:  # noqa: BLE001
+        ok = ()
+    _PROBED[index] = ok
+    return ok
+
+
+def available(index: int) -> bool:
+    return bool(probed_tiles(index))
+
+
+# ---------------------------------------------------------------------------------------------------------------- race
+
+
+def time_us(
+    fns: dict,
+    rounds: int = 3,
+    reps: int = 3,
+    warm: int = 1,
+) -> dict:
+    """{name: us}: each fn launched ``reps`` times back to back per round, rounds interleaved, min over rounds."""
+    import torch
+
+    start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+    for fn in fns.values():
+        for _ in range(warm):
+            fn()
+    torch.cuda.synchronize()
+    best = {name: float("inf") for name in fns}
+    for _ in range(rounds):
+        for name, fn in fns.items():
+            start.record()
+            for _ in range(reps):
+                fn()
+            end.record()
+            end.synchronize()
+            best[name] = min(best[name], start.elapsed_time(end) * 1000.0 / reps)
+    return best
+
+
+def race(
+    index: int, w: Any, ws: Any, bias: Any, xs_dtype: Any, today: Optional[Callable], m: int
+) -> dict:
+    """{"tile": id or None, "us": {...}} for one weight at ``m`` rows: probed tiles screened once, the best three timed
+    against ``today(a, w, xs, ws, bias)`` (None = cuBLAS ``_int_mm`` + one read of its output, the stock GEMM with its
+    epilogue fused into the consumer). None keeps today's path."""
+    import torch
+
+    fam = family(torch.cuda.get_device_capability(index))
+    tiles_ok = probed_tiles(index)
+    if fam is None or not tiles_ok:
+        return {"tile": None, "us": {}}
+    out_dtype = out_dtype_for(fam)
+    dev = w.device
+    k = w.shape[1]
+    g = torch.Generator(device = "cpu").manual_seed(7)
+    a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
+    xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(xs_dtype).to(dev)
+    if not eligible(a, w, xs, ws, bias, out_dtype):
+        return {"tile": None, "us": {}}
+    cands = [
+        t for t in tiles_ok if has_kernel(fam, t, out_dtype, xs_dtype, ws.dtype, bias is not None)
+    ]
+    if not cands:
+        return {"tile": None, "us": {}}
+
+    def cut(t):
+        return lambda: launch(a, w, xs, ws, bias, fam, t, out_dtype)
+
+    if today is None:
+        base = lambda: torch._int_mm(a, w.t()).amax()  # noqa: E731
+        base_name = "cublas"
+    else:
+        base = lambda: today(a, w, xs, ws, bias)  # noqa: E731
+        base_name = "today"
+    with torch.cuda.device(dev):
+        screen = time_us({t: cut(t) for t in cands}, rounds = 1, reps = 2, warm = 1)
+        top = sorted(cands, key = lambda t: screen[t])[:3]
+        fns = {base_name: base}
+        fns.update({t: cut(t) for t in top})
+        timing = time_us(fns, rounds = 3, reps = 3, warm = 1)
+    best = min(top, key = lambda t: timing[t])
+    keep = timing[best] < timing[base_name] * (1.0 - _MARGIN)
+    us = {str(k_): round(v, 1) for k_, v in timing.items()}
+    return {"tile": best if keep else None, "us": us, "m": m}
