@@ -101,6 +101,27 @@ class _Server:
     def __init__(self):
         self.bodies = []
 
+    def note(self, message):
+        pass
+
+    def open_window(self):
+        return None
+
+    def backend_output(self, window):
+        import contextlib
+        return contextlib.nullcontext()
+
+    def output_mark(self):
+        return 0
+
+    def output_since(
+        self,
+        mark,
+        lines = 40,
+        settle = 0.5,
+    ):
+        return []
+
     def request(
         self,
         method,
