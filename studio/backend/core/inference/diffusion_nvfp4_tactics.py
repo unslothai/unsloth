@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""mm_fp4 tactics per (GEMM shape, M bucket): tuned once per bucket, reused by every M in it, kept on disk.
-
-A cutlass NVFP4 tactic is an index into a static, shape-independent config table, and FlashInfer's own
-autotuner already applies the tactic it measured at one bucket to every M that maps to it. This module
-owns that mapping for Studio instead: the bucket set is fixed and coarse (a new prompt length lands in a
-bucket that is already tuned), each bucket is profiled at exactly its own M (so the result does not depend
-on which length came first), and winners are persisted per GPU, CUDA and FlashInfer build."""
+"""mm_fp4 tactics per (GEMM shape, M bucket): each bucket profiled once at its own M, reused by every M in it,
+persisted per GPU, CUDA and FlashInfer build (a tactic indexes a static, shape-independent config table)."""
 
 from __future__ import annotations
 

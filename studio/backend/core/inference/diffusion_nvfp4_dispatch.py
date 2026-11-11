@@ -32,8 +32,7 @@ _RUNNERS: dict[int, tuple] = {}
 # One tune at a time: profiling launches must not overlap, and 0.6.6's tuning mode is process-global.
 _TUNE_LOCK = threading.Lock()
 _BUCKET_CONFIGS: dict = {}
-# Its own AutoTuner op name: an entry the stock mm_fp4 path tuned (measured at some other M, e.g. the
-# first length seen for its top bucket) must never answer a bucket, which is always measured at its own M.
+# Own op name: a stock mm_fp4 entry (measured at some other M) must never answer a bucket.
 BUCKET_OP = "fp4_gemm.studio_m_bucket"
 
 
@@ -264,9 +263,7 @@ def gemm_plan(
     force: bool = False,
 ):
     """``(runner, tactic, workspace)``, or None (use ``mm_fp4``), also for a COLD key under capture.
-
-    Keyed by the M bucket (``diffusion_nvfp4_tactics``), so every M in a bucket shares one plan and one
-    tune; ``force`` (verify) keeps the exact-M AutoTuner lookup and caches nothing."""
+    Keyed by M bucket; ``force`` (verify) keeps the exact-M AutoTuner lookup and caches nothing."""
     from . import diffusion_nvfp4_tactics as tactics
     from .diffusion_nvfp4_ops import _device_index, _is_capturing
 
