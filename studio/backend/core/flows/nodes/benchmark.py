@@ -477,16 +477,26 @@ class _Rows:
         return [convert(dict(r)) for r in self.rows]
 
 
-def rl_format(rows: list[dict], objective: Any, mapping: Any) -> Optional[list[dict]]:
+def rl_format(
+    rows: list[dict],
+    objective: Any,
+    mapping: Any,
+    system_prompt: Any = None,
+) -> Optional[list[dict]]:
     """``rows`` through training's own GRPO, DPO or ORPO formatter, or None (not RL, or rows it
-    refuses)."""
+    refuses). ``system_prompt`` is training's fallback for rows with no system message."""
     if objective not in ("grpo", "dpo", "orpo") or not rows:
         return None
     from core.training.rl import format_rl_dataset
 
     try:
         formatted, _roles = format_rl_dataset(
-            _Rows(rows), objective, mapping if isinstance(mapping, dict) else None
+            _Rows(rows),
+            objective,
+            mapping if isinstance(mapping, dict) else None,
+            system_prompt = system_prompt
+            if isinstance(system_prompt, str) and system_prompt
+            else None,
         )
     except Exception:
         return None
@@ -499,7 +509,9 @@ def _rl_rows(rows: list[dict], facts: dict) -> Optional[list[dict]]:
     the answer, the preferred reply's closing turn. None when the checkpoint is not RL or the rows
     do not format."""
     objective = facts.get("rl_objective")
-    formatted = rl_format(rows, objective, facts.get("rl_mapping"))
+    formatted = rl_format(
+        rows, objective, facts.get("rl_mapping"), facts.get("system_prompt_fallback")
+    )
     if formatted is None:
         return None
     shaped = []
@@ -526,11 +538,14 @@ def _asked_spec(
     its assistant prefill when a reference column holds the answer), or "" for the Loop's own
     Alpaca reading."""
     if prompt_col == MAPPED_PROMPT and rl is not None:
-        return {
+        spec = {
             "kind": "rl",
             "objective": facts.get("rl_objective"),
             "mapping": facts.get("rl_mapping"),
         }
+        if facts.get("system_prompt_fallback"):
+            spec["system_prompt"] = facts["system_prompt_fallback"]
+        return spec
     if prompt_col == MAPPED_PROMPT:
         return mapped
     if prompt_col == ALPACA_PROMPT:

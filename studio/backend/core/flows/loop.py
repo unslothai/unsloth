@@ -70,7 +70,9 @@ def _rl_prompt(row: dict, spec: dict) -> Any:
     from core.flows.nodes.benchmark import rl_format
 
     own = {k: v for k, v in row.items() if str(k).lower() not in (*OUTPUT_KEYS, *_SCORED)}
-    formatted = rl_format([own], spec.get("objective"), spec.get("mapping"))
+    formatted = rl_format(
+        [own], spec.get("objective"), spec.get("mapping"), spec.get("system_prompt")
+    )
     return formatted[0]["prompt"] if formatted else None
 
 
