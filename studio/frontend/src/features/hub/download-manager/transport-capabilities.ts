@@ -16,6 +16,7 @@ export interface DownloadTransportCapabilities {
   auto_reason?: string | null;
   // Server-side: only the backend knows which huggingface_hub writer is installed.
   partials_resumable?: boolean;
+  speed_limited?: boolean;
 }
 
 export const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabilities = {
@@ -64,6 +65,7 @@ export function normalizeDownloadTransportCapabilities(
     auto_resolves_to?: unknown;
     auto_reason?: unknown;
     partials_resumable?: unknown;
+    speed_limited?: unknown;
   };
   return {
     http: normalizeDownloadTransportCapability(candidate.http, {
@@ -82,5 +84,6 @@ export function normalizeDownloadTransportCapabilities(
     auto_reason:
       typeof candidate.auto_reason === "string" ? candidate.auto_reason : null,
     partials_resumable: candidate.partials_resumable === true,
+    speed_limited: candidate.speed_limited === true,
   };
 }

@@ -77,6 +77,26 @@ const SUPPORTED_LANGUAGE_LIST = Array.from(
 ) as BundledLanguage[];
 const PLAIN_TEXT = "text" as BundledLanguage;
 
+// Shiki names shells by grammar ("Shell" for bash and zsh); readers name them by the tag they typed.
+const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
+  bash: "Bash",
+  zsh: "Zsh",
+  text: "Text",
+  plaintext: "Text",
+  txt: "Text",
+  cuda: "CUDA",
+};
+const DISPLAY_NAMES = new Map(
+  bundledLanguagesInfo.flatMap((info) =>
+    [info.id, ...(info.aliases ?? [])].map((name) => [name.toLowerCase(), info.name] as const),
+  ),
+);
+
+export const languageDisplayName = (language: string): string => {
+  const key = language.trim().toLowerCase();
+  return DISPLAY_NAME_OVERRIDES[key] ?? DISPLAY_NAMES.get(key) ?? key.charAt(0).toUpperCase() + key.slice(1);
+};
+
 export const normalizeLanguage = (language: string): BundledLanguage => {
   const key = language.trim().toLowerCase();
   const alias = LANGUAGE_ALIAS_OVERRIDES[key] ?? SHIKI_LANGUAGE_ALIASES[key];
@@ -84,6 +104,7 @@ export const normalizeLanguage = (language: string): BundledLanguage => {
 };
 
 export const MIN_INCREMENTAL_CHARS = 2000;
+export const LIVE_TAIL_CHARS = 1024;
 const REFRESH_MS = 250;
 const REFRESH_SLICE_MS = 8;
 // A wall-clock limit can cache a half-plain theme; bound line length for deterministic dual-theme output.
@@ -639,7 +660,8 @@ export function createCodePlugin(
       const grewLargeFence =
         fence.result !== null &&
         fence.code.length >= MIN_INCREMENTAL_CHARS &&
-        opts.code.length > fence.code.length;
+        opts.code.length > fence.code.length &&
+        opts.code.length - fence.committedLength > LIVE_TAIL_CHARS;
       if (!exact && grewLargeFence && elapsed < REFRESH_MS) {
         const result = approximateResult(fence, opts.code);
         queuePending(fence, opts.code, callback);

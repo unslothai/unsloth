@@ -10,9 +10,8 @@ KLEIN_REPO = "unsloth/FLUX.2-klein-GGUF"
 
 
 def test_klein_4b_and_9b_in_one_repo_get_different_keys():
-    """sd_cpp_text_encoders_for hands klein-9B Qwen3-8B and klein-4B the family
-    default, keyed on repo id + filename. Same repo, same family, different
-    companions, so a repo-wide footprint is wrong for one of the two rows."""
+    """sd_cpp_text_encoders_for keys klein-4B and klein-9B by repo id and filename: same repo and
+    family but different companions, so a repo-wide footprint is wrong"""
     key_4b = _variant_dependency_key(KLEIN_REPO, "flux.2-klein-4b-Q4_K_M.gguf")
     key_9b = _variant_dependency_key(KLEIN_REPO, "flux.2-klein-9b-Q4_K_M.gguf")
     assert key_4b is not None and key_9b is not None
@@ -41,8 +40,7 @@ def test_unidentified_klein_filenames_do_not_share_a_footprint(monkeypatch):
 
 
 def test_two_quants_of_the_same_model_share_one_key():
-    """The common case must stay a single group: the client resolves one footprint
-    per key, and splitting quants of one model would multiply the requests."""
+    """Quants of one model share one key, since the client resolves one footprint per key."""
     assert _variant_dependency_key(
         KLEIN_REPO, "flux.2-klein-4b-Q4_K_M.gguf"
     ) == _variant_dependency_key(KLEIN_REPO, "flux.2-klein-4b-Q8_0.gguf")
@@ -70,8 +68,7 @@ def test_a_text_model_has_no_key():
 
 
 def test_the_key_never_raises_and_makes_no_network_call(monkeypatch):
-    """It runs inside the variant listing, once per row. A family-detection failure
-    must cost the listing nothing, and a socket here would stall the picker."""
+    """Runs once per row, so a family-detection failure must cost nothing and open no socket."""
     import hub.services.models.gguf_variants as gv
 
     def _boom(*args, **kwargs):
@@ -82,8 +79,7 @@ def test_the_key_never_raises_and_makes_no_network_call(monkeypatch):
 
 
 def test_the_listing_carries_the_key_per_variant():
-    """The field is on the variant row, not the response, because the response is
-    the repo and the repo is exactly the wrong granularity."""
+    """dependency_key sits on the variant row; a per-repo response is the wrong granularity."""
     from hub.schemas.inventory import GgufVariantDetail
 
     field = GgufVariantDetail.model_fields["dependency_key"]

@@ -28,12 +28,8 @@ def resolve_build_family(base: str, override: Optional[str] = None) -> Optional[
 def convrot_refusal(
     group: int, rotatable: Sequence[str], not_divisible: Sequence[str]
 ) -> Optional[str]:
-    """Why a ConvRot build must not be quantised and saved, or None when it is fine.
-
-    An empty rotatable set means the group divides no quantized input axis (a group larger than
-    every Linear, say). The build would still stamp the v2 tag and an empty fqn list, which
-    ``rotation_metadata_error`` refuses at load time, so the only thing it produces is a
-    multi-gigabyte artifact nothing can ever open. Refuse before the hours, not after."""
+    """Refuse a ConvRot build with no rotatable Linear before the hours of quantising, not after:
+    its empty fqn list is refused at load time, leaving an unopenable artifact"""
     if rotatable:
         return None
     return (
@@ -74,7 +70,14 @@ def upload_destination(
     dispatches on the extension alone, so a safetensors build published as ``.pt`` is read as a
     pickle and a pickle published as ``.safetensors`` is read from a header it does not have. Either
     way the upload succeeds and the artifact is unopenable, after the hours the quantization took.
+
+    nvfp4 publishes safetensors only: Studio never resolves or opens an nvfp4 pickle.
     """
+    if (scheme or "").strip().lower() == "nvfp4" and not safetensors:
+        raise ValueError(
+            "nvfp4 checkpoints are published as .safetensors only (Studio never reads an nvfp4 "
+            "pickle); write --out as a .safetensors file"
+        )
     if override:
         wanted = ".safetensors" if safetensors else ".pt"
         if not override.lower().endswith(wanted):
@@ -216,6 +219,15 @@ def main(argv = None) -> int:
         "otherwise",
     )
     args = p.parse_args(argv)
+    if (args.scheme or "").strip().lower() == "nvfp4" and not str(args.out).lower().endswith(
+        ".safetensors"
+    ):
+        print(
+            "error: --scheme nvfp4 writes .safetensors only (Studio never reads an NVFP4 pickle); "
+            "give --out a .safetensors path",
+            flush = True,
+        )
+        return 2
 
     sys.path.insert(0, str(BACKEND))
     import torch
