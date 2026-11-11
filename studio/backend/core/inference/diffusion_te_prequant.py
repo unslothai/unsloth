@@ -233,6 +233,21 @@ def te_int8_convrot_published(repo_id: Optional[str], filename: Optional[str]) -
     return listed
 
 
+@contextmanager
+def _cache_only_scope(local_files_only: Optional[bool]):
+    """Resolve sources as a cache-only load when ``local_files_only``, so the publication probe never asks the Hub."""
+    if not local_files_only:
+        yield
+        return
+    from .diffusion_prequant import _LOCAL_FILES_ONLY
+
+    token = _LOCAL_FILES_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _LOCAL_FILES_ONLY.reset(token)
+
+
 # Module names of the Linears an int8 ConvRot file stores int8: decoder q/k/v/o + gate/up/down of a Qwen / Llama /
 # Mistral / Gemma stack (``...layers.N.``; vision towers name their blocks ``blocks`` / ``attention`` and stay bf16)
 # and T5's SelfAttention q/k/v/o + DenseReluDense wi_0/wi_1/wo. The builder quantizes exactly these and the loader
@@ -494,14 +509,15 @@ def explicit_int8_hosted_components(
                 standalone = {"text_encoder_4": HIDREAM_LLAMA_REPO}
             # TE4 is matched against its own standalone repo, the rest against the selected base.
             component_base = standalone.get(component) or base or getattr(fam, "base_repo", "")
-            got = te_prequant_sources_for_base(
-                fam,
-                str(component_base or ""),
-                te_quant_mode = "int8",
-                target = target,
-                components = (component,),
-                **({"standalone_component_bases": standalone} if standalone else {}),
-            ).get(component)
+            with _cache_only_scope(local_files_only):
+                got = te_prequant_sources_for_base(
+                    fam,
+                    str(component_base or ""),
+                    te_quant_mode = "int8",
+                    target = target,
+                    components = (component,),
+                    **({"standalone_component_bases": standalone} if standalone else {}),
+                ).get(component)
             out[component] = bool(
                 got is not None
                 and not (got.kind == "repo" and _is_fp8_te_name(got.filename))
@@ -1492,12 +1508,13 @@ def _te_prequant_pipe_kwargs(
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
 
-        sources = te_prequant_sources_for_base(
-            fam,
-            base,
-            te_quant_mode = te_quant_mode,
-            target = target,
-        )
+        with _cache_only_scope(local_files_only):
+            sources = te_prequant_sources_for_base(
+                fam,
+                base,
+                te_quant_mode = te_quant_mode,
+                target = target,
+            )
         # Non-empty only for a hosted scheme (see te_prequant_sources' gate).
         mode = normalize_te_quant(te_quant_mode) or TE_QUANT_FP8
         injected: dict[str, Any] = {}

@@ -298,3 +298,15 @@ def test_cuda_load_of_a_pending_row_downloads_only_the_fp8_file(name, hub, monke
     path = tpq._resolve_checkpoint_path(source, None, cache_dir = "/nonexistent")
     assert asked and not set(asked) & UNPUBLISHED
     assert path.endswith(asked[-1]) and "fp8" in asked[-1].lower()
+
+
+def test_a_cache_only_preflight_never_asks_the_hub_for_a_pending_row(hub, monkeypatch):
+    _cuda(monkeypatch)
+    monkeypatch.setattr(
+        tpq, "te_prequant_hub_files", lambda *a, **k: pytest.fail("cache-only: no Hub call")
+    )
+    fam = _ALL["lumina-2"]
+    takes = tpq.explicit_int8_hosted_components(
+        fam, fam.base_repo, CUDA_BF16, local_files_only = True
+    )
+    assert takes and not any(takes.values())
