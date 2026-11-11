@@ -3797,9 +3797,11 @@ _NPU_LUID_PS = (
     " -KeyName '{60b193cb-5276-4d0f-96fc-f173abad3ec6} 2' -ErrorAction SilentlyContinue).Data}"
 )
 _NPU_LOAD_TTL_S = 3.0
+_NPU_LUID_TTL_S = 60.0
 _npu_load_lock = threading.Lock()
 _npu_hardware: Optional[Dict[str, Any]] = None
 _npu_luid: Optional[int] = None
+_npu_luid_at = 0.0
 # (completed_at, spawn seconds, load)
 _npu_load_cache: Optional[tuple[float, float, Optional[float]]] = None
 
@@ -3808,9 +3810,11 @@ def _npu_engine_load(luid: int) -> Optional[float]:
     ps = (
         f"$s=(Get-Counter '\\GPU Engine(*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*)"
         "\\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples;"
-        "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
+        "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue.ToString([cultureinfo]::InvariantCulture)}}else{'__NONE__'}"
     )
-    stdout = _rocm_windows_counter_stdout_uncached(ps) or ""
+    stdout = _rocm_windows_counter_stdout_uncached(ps)
+    if stdout is None:
+        raise RuntimeError("GPU Engine counters unreadable")
     by_engine: dict[str, float] = {}
     for line in stdout.splitlines():
         instance, sep, raw = line.strip().rpartition("|")
@@ -3821,7 +3825,7 @@ def _npu_engine_load(luid: int) -> Optional[float]:
             value = float(raw)
         except ValueError:
             continue
-        if engine is None or value != value or value < 0:
+        if engine is None or value != value or value == float("inf") or value < 0:
             continue
         by_engine[engine.group(1)] = by_engine.get(engine.group(1), 0.0) + value
     # Per engine, processes add up; the adapter is as busy as its busiest engine, as in Task Manager.
@@ -3830,7 +3834,7 @@ def _npu_engine_load(luid: int) -> Optional[float]:
 
 def npu_load_percent() -> Optional[float]:
     """The supported NPU's utilization, or None where no counter reports it (Linux, no NPU, no LUID)."""
-    global _npu_hardware, _npu_luid, _npu_load_cache
+    global _npu_hardware, _npu_luid, _npu_luid_at, _npu_load_cache
     if platform.system() != "Windows":
         return None
     try:
@@ -3848,11 +3852,13 @@ def npu_load_percent() -> Optional[float]:
                 if _npu_luid is None:
                     raw = (_rocm_windows_counter_stdout_uncached(_NPU_LUID_PS) or "").strip()
                     _npu_luid = int(raw) if raw.isdigit() and int(raw) else None
+                    _npu_luid_at = now
                 load = _npu_engine_load(_npu_luid) if _npu_luid is not None else None
             except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
-                load = None
-            if load is None:
                 # Windows reassigns LUIDs on a driver restart: look it up again next time.
+                load = _npu_luid = None
+            # An idle NPU lists no counters either, so a stale LUID is only rechecked now and then.
+            if load is None and now - _npu_luid_at >= _NPU_LUID_TTL_S:
                 _npu_luid = None
             done = time.monotonic()
             _npu_load_cache = (done, done - now, load)

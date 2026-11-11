@@ -37,6 +37,7 @@ def host(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_npu_load_cache", None, raising = False)
     monkeypatch.setattr(hw, "_npu_luid", None, raising = False)
+    monkeypatch.setattr(hw, "_npu_luid_at", 0.0, raising = False)
     monkeypatch.setattr(hw, "_npu_hardware", {"present": True, "supported": True}, raising = False)
     clock = _Clock()
     monkeypatch.setattr(hw, "time", clock)
@@ -92,6 +93,14 @@ def test_an_idle_npu_reads_zero(host):
     assert hw.npu_load_percent() == 0.0
 
 
+def test_an_infinite_sample_is_not_a_full_load(host):
+    host["counters"] = (
+        "pid_10_luid_0x00000000_0x0001a5c9_phys_0_eng_0_engtype_Compute|Infinity\n"
+        "pid_10_luid_0x00000000_0x0001a5c9_phys_0_eng_1_engtype_Compute|7\n"
+    )
+    assert hw.npu_load_percent() == 7.0
+
+
 def test_polls_inside_the_window_share_one_sample(host):
     assert hw.npu_load_percent() == 42.5
     spawned = len(host["calls"])
@@ -104,9 +113,24 @@ def test_polls_inside_the_window_share_one_sample(host):
     assert len(host["calls"]) == spawned + 1
 
 
+def test_an_idle_npu_missing_from_the_counters_keeps_its_luid(host):
+    # No model loaded: Windows lists no engine instances for the NPU, which is not a failure.
+    host["counters"] = "__NONE__\n"
+    assert hw.npu_load_percent() is None
+    host["clock"].now += 30.0
+    assert hw.npu_load_percent() is None
+    assert sum("Get-PnpDeviceProperty" in ps for ps in host["calls"]) == 1
+    # A driver restart can hand the NPU a new LUID, so a long silence rechecks it.
+    host["clock"].now += 60.0
+    hw.npu_load_percent()
+    host["clock"].now += 30.0
+    hw.npu_load_percent()
+    assert sum("Get-PnpDeviceProperty" in ps for ps in host["calls"]) == 2
+
+
 def test_a_luid_that_left_the_counters_is_looked_up_again(host):
     assert hw.npu_load_percent() == 42.5
-    host["counters"] = ""
+    host["counters"] = None
     host["clock"].now += 30.0
     assert hw.npu_load_percent() is None
     host["counters"] = _COUNTERS
