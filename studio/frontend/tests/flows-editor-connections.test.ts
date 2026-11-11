@@ -54,6 +54,7 @@ const cases: [string, string, string, string, string, string, string, boolean][]
   ["Story has no incoming path", "s", "story.start", flowOutHandle("next"), "c", "story.start", FLOW_IN_HANDLE, false],
   ["an input does not connect to an input", "a", "llm.generate", inHandle("prompt"), "b", "llm.generate", inHandle("prompt"), false],
   ["a node cannot feed itself", "a", "llm.generate", outHandle("text"), "a", "llm.generate", inHandle("prompt"), false],
+  ["a story exit cannot link to its own input", "s", "story.scene", flowOutHandle("next"), "s", "story.scene", FLOW_IN_HANDLE, false],
 ];
 for (const [why, sid, stype, sh, tid, ttype, th, ok] of cases)
   test(`connection: ${why}`, () => {

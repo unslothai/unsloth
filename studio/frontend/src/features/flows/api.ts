@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { isUnderKeepaliveBudget } from "@/features/chat/utils/settings-retry";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -81,11 +82,14 @@ export const saveFlow = (
   flowId: string,
   doc: FlowDocument,
   baseUpdatedAt: number | null,
-) =>
-  request<FlowRecord>(
-    `/${encodeURIComponent(flowId)}`,
-    json("PUT", { doc, baseUpdatedAt }),
-  );
+  keepalive = false,
+) => {
+  const init = json("PUT", { doc, baseUpdatedAt });
+  // keepalive outlives a closing tab but only under the Fetch 64 KiB budget; larger flows go as a plain PUT.
+  if (keepalive && isUnderKeepaliveBudget(String(init.body)))
+    init.keepalive = true;
+  return request<FlowRecord>(`/${encodeURIComponent(flowId)}`, init);
+};
 
 export const deleteFlow = (flowId: string) =>
   request<void>(`/${encodeURIComponent(flowId)}`, { method: "DELETE" });
@@ -189,7 +193,9 @@ export const recipeRuns = (flowId: string, nodeId: string, limit: number) =>
   );
 
 export const recipeRun = (flowId: string, nodeId: string, runId: string) =>
-  request<Record<string, unknown> & { dataset?: unknown; datasetTotal?: unknown }>(
+  request<
+    Record<string, unknown> & { dataset?: unknown; datasetTotal?: unknown }
+  >(
     `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs/${encodeURIComponent(runId)}`,
   );
 

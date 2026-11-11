@@ -311,6 +311,19 @@ export class WriteAhead {
   }
 }
 
+/** Start `run` once per key; a failed request drops its key so a later visit asks again. */
+export function requestOnce<T>(
+  requested: Set<string>,
+  key: string,
+  run: () => Promise<T>,
+): Promise<T> | null {
+  if (requested.has(key)) return null;
+  requested.add(key);
+  const req = run();
+  req.catch(() => requested.delete(key));
+  return req;
+}
+
 export class Lanes {
   private tails: Record<"text" | "art", Promise<unknown>> = {
     text: Promise.resolve(),
