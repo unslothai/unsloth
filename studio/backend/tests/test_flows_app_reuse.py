@@ -83,6 +83,37 @@ async def test_run_flow_returns_the_called_flows_outputs():
 
 
 @run_async
+async def test_run_flow_recomputes_baked_steps_fed_by_the_values_it_passes():
+    d = doc(
+        [
+            {**node("q", "input.text", value = "baked question"), "label": "Question"},
+            node("t", "text.template", template = "about {}"),
+            node("k", "input.text", value = "kept"),
+            node("out", "output.result", name = "answer"),
+            node("out2", "output.result", name = "kept"),
+        ],
+        [
+            edge("q", "text", "t", "values"),
+            edge("t", "text", "out", "value"),
+            edge("k", "text", "out2", "value"),
+        ],
+        id = "bakedchild",
+        baked = {
+            "q": {"text": "baked question"},
+            "t": {"text": "baked answer"},
+            "k": {"text": "baked k"},
+        },
+    )
+    flows_db.save_flow(parse_document(d)[0])
+    eng = make_engine(_handlers())
+    rs = await run_doc(eng, _caller_doc("bakedchild", {}))
+    assert rs.outputs["got"] == {"answer": "baked answer", "kept": "baked k"}
+    rs = await run_doc(eng, _caller_doc("bakedchild", {"question": "new question"}))
+    assert rs.status == "completed", rs.error
+    assert rs.outputs["got"] == {"answer": "about new question", "kept": "baked k"}
+
+
+@run_async
 async def test_run_flow_refuses_cycles_and_deep_chains():
     for fid, target in (("a", "b"), ("b", "a")):
         d = _caller_doc(target, {})

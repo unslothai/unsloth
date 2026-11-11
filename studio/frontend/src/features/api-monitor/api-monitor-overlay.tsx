@@ -267,18 +267,22 @@ export function ApiMonitorOverlay(): ReactElement | null {
     }
     wasVisibleRef.current = visible;
   }, [visible]);
+  // A host that stays mounted, so opening and closing the panel never inserts a first child of #root:
+  // Chromium then restyles the whole app root (about 1,700 elements) under Reduce motion in Glass.
   return (
-    <AnimatePresence>
-      {visible && (
-        <ApiMonitorPanel
-          key={panelKey}
-          data={data}
-          unreachable={unreachable}
-          close={close}
-          setAutoOpen={setAutoOpen}
-        />
-      )}
-    </AnimatePresence>
+    <div data-api-monitor-host="" className="contents">
+      <AnimatePresence>
+        {visible && (
+          <ApiMonitorPanel
+            key={panelKey}
+            data={data}
+            unreachable={unreachable}
+            close={close}
+            setAutoOpen={setAutoOpen}
+          />
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 

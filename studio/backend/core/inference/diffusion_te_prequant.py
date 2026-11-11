@@ -741,6 +741,27 @@ def int8_convrot_te_runs_on(target: Any) -> bool:
     return getattr(target, "device", None) == "mps"
 
 
+TE_INT8_FP16_ENV = "UNSLOTH_TE_INT8_FP16"
+# Families whose hosted int8 ConvRot encoder was validated in float16 compute.
+_TE_INT8_FP16_FAMILIES = frozenset({"qwen-image-2.1"})
+
+
+def int8_convrot_te_runs_fp16(fam: Any, target: Any) -> bool:
+    """float16 CUDA (no bf16/fp8) runs the hosted int8 ConvRot encoder; ``UNSLOTH_TE_INT8_FP16=0`` keeps the dense one."""
+    import os
+
+    if os.environ.get(TE_INT8_FP16_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    name = str(getattr(fam, "name", fam) or "").strip().lower()
+    if name not in _TE_INT8_FP16_FAMILIES or getattr(target, "device", None) != "cuda":
+        return False
+    try:
+        import torch
+        return getattr(target, "dtype", None) is torch.float16
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def hosted_int8_convrot_te_runs_on(fam: Any, target: Any) -> bool:
     """Whether an explicit int8 encoder request on ``fam`` loads the hosted int8 ConvRot file on ``target`` without the
     fp8 fallback: the family hosts the file (and the lm_head trim it needs is on) and the device runs it as plain
@@ -959,7 +980,10 @@ def te_prequant_sources(
             return {}
         # int8 falls back to the fp8 file, so it needs fp8; MPS runs the int8 file alone and drops the fp8 names.
         fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
-        if not fp8_runs and not (mode == "int8" and int8_convrot_te_runs_on(target)):
+        if not fp8_runs and not (
+            mode == "int8"
+            and (int8_convrot_te_runs_on(target) or int8_convrot_te_runs_fp16(fam, target))
+        ):
             return {}
         sources: dict[str, TePrequantSource] = {}
         for component in components:
@@ -1779,6 +1803,10 @@ def _build_int8_convrot_encoder(
         )
     _fill_tied_aliases(encoder, state_dict)
     encoder.load_state_dict(state_dict, strict = True, assign = True)
+    if dtype is torch.float16:
+        for module in encoder.modules():
+            if isinstance(module, linear_cls):
+                module.scale_weight_first = True
     # assign=True gives a tied pair separate tensors; re-tie a headless encoder (T5 / UMT5's encoder.embed_tokens ->
     # shared), as the fp8 path does. One with a (trimmed) head is left as loaded: its head is a stand-in with no weight
     # to tie.

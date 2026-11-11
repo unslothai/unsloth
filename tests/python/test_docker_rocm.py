@@ -765,6 +765,107 @@ class TestRocmEntrypoint:
         assert rc == 0 and ran, err
         assert "KFD reports: gfx1030" in err, err
 
+    @staticmethod
+    def _gfx103x_host(
+        tmp_path,
+        *gtvs,
+        archs = "gfx1030 gfx1100",
+    ):
+        """A KFD topology holding `gtvs` (plus the CPU node), and a torch whose wheels carry
+        `archs` and that, like ROCr, reports gfx1030 for a gfx103X card under the override."""
+        for i, gtv in enumerate(("0",) + gtvs):
+            node = tmp_path / "topo" / str(i)
+            node.mkdir(parents = True)
+            vendor = "0" if gtv == "0" else "4098"
+            (node / "properties").write_text(f"vendor_id {vendor}\ngfx_target_version {gtv}\n")
+        fake = tmp_path / "fake"
+        (fake / "torch" / "cuda").mkdir(parents = True)
+        (fake / "torch" / "__init__.py").write_text(
+            "__version__ = '2.11.0+rocm7.2'\nclass version:\n    hip = '7.2.26015'\nfrom . import cuda\n"
+        )
+        g = int(gtvs[0])
+        physical = "gfx%d%d%x" % (g // 10000, g // 100 % 100, g % 100)
+        (fake / "torch" / "cuda" / "__init__.py").write_text(
+            "import os\n"
+            "class _P:\n"
+            "    gcnArchName = ('gfx1030' if os.environ.get('HSA_OVERRIDE_GFX_VERSION') == '10.3.0'"
+            f" else '{physical}')\n"
+            "def is_available(): return True\ndef device_count(): return 1\n"
+            "def get_device_name(i): return 'AMD GPU'\ndef get_device_properties(i): return _P()\n"
+            "def is_bf16_supported(): return True\n"
+            f"def get_arch_list(): return {archs.split()!r}\n"
+        )
+        return {
+            "python_body": f'PYTHONPATH="{fake}" exec python3 "$@"\n',
+            "command": "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}",
+        }
+
+    def test_a_gfx1031_runs_as_gfx1030_when_the_wheels_lack_it(self, tmp_path):
+        """The generic wheels carry gfx1030 but not gfx1031, whose first kernel launch
+        segfaults; ROCm runs the card as gfx1030, so the entrypoint exports that."""
+        kw = self._gfx103x_host(tmp_path, "100301")
+        rc, ran, err = _entrypoint(
+            tmp_path, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")}, **kw
+        )
+        assert rc == 0 and ran, err
+        assert (tmp_path / "ran").read_text().strip() == "10.3.0"
+        assert "running it as" in err and "HSA_OVERRIDE_GFX_VERSION=10.3.0" in err, err
+        assert "KFD reports: gfx1031" in err and "arch=gfx1030" in err, err
+
+    def test_the_gfx103x_override_leaves_every_other_host_alone(self, tmp_path):
+        """No override when the user set one, when torch carries the card or lacks
+        gfx1030, on a gfx1030, on a per-arch image, or for a gfx1033 (check 4 refuses it)."""
+        cases = [
+            ("user-set", "100301", {"HSA_OVERRIDE_GFX_VERSION": "10.3.1"}, {}, "10.3.1"),
+            ("native", "100301", {}, {"archs": "gfx1030 gfx1031"}, "unset"),
+            ("no-gfx1030", "100301", {}, {"archs": "gfx1100"}, "unset"),
+            ("gfx1030", "100300", {}, {}, "unset"),
+            ("per-arch", "100301", {}, {"build_info_gfx": "gfx1151"}, "unset"),
+        ]
+        for name, gtv, env, opts, want in cases:
+            d = tmp_path / name
+            d.mkdir()
+            kw = self._gfx103x_host(d, gtv, archs = opts.pop("archs", "gfx1030 gfx1100"))
+            env = {"UNSLOTH_KFD_TOPOLOGY": str(d / "topo"), **env}
+            rc, ran, err = _entrypoint(d, env_extra = env, **kw, **opts)
+            assert rc == 0 and ran, (name, err)
+            assert (d / "ran").read_text().strip() == want, (name, err)
+            assert "running it as" not in err, (name, err)
+        d = tmp_path / "steamdeck"
+        d.mkdir()
+        kw = self._gfx103x_host(d, "100303")
+        rc, ran, err = _entrypoint(d, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(d / "topo")}, **kw)
+        assert rc == 1 and not ran and "refuses" in err and "running it as" not in err, err
+
+    def test_a_mixed_host_is_warned_not_spoofed(self, tmp_path):
+        """A global override would also present the gfx1100 as gfx1030."""
+        kw = self._gfx103x_host(tmp_path, "100301", "110000")
+        rc, ran, err = _entrypoint(
+            tmp_path, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")}, **kw
+        )
+        assert rc == 0 and ran, err
+        assert (tmp_path / "ran").read_text().strip() == "unset"
+        assert "gfx1031 has no kernels" in err and "also apply to gfx1100" in err, err
+        assert "-> RDNA 2" not in err and "than gfx1030: 10.3.0" in err, err
+
+    def test_an_igpu_spoofs_only_on_an_apu_only_host(self, tmp_path):
+        """A spoofed gfx1036 iGPU reads as covered and Studio could then select it over the
+        card, so beside any card it is left alone (a gfx1031 is warned); alone, it is run as gfx1030."""
+        for name, gtvs, want, warned in [
+            ("beside-gfx1100", ("100306", "110000"), "unset", False),
+            ("beside-gfx1030", ("100306", "100300"), "unset", False),
+            ("beside-gfx1031", ("100301", "100306"), "unset", True),
+            ("alone", ("100306",), "10.3.0", False),
+        ]:
+            d = tmp_path / name
+            d.mkdir()
+            kw = self._gfx103x_host(d, *gtvs)
+            rc, ran, err = _entrypoint(d, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(d / "topo")}, **kw)
+            assert rc == 0 and ran, (name, err)
+            assert (d / "ran").read_text().strip() == want, (name, err)
+            assert ("running it as" in err) == (want == "10.3.0"), (name, err)
+            assert ("also apply to gfx1036" in err) == warned, (name, err)
+
     def test_a_per_arch_image_on_a_generic_card_points_at_the_generic_image(self, tmp_path):
         """Dockerfile.rocm refuses ROCM_GFX outside the per-arch families, so the advice
         must not be a rebuild command that fails on the spot."""

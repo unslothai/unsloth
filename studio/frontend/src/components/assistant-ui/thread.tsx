@@ -6118,11 +6118,13 @@ const Composer: FC<{
     </>
   );
 
+  // The blur is only on while the overlay shows: WebKitGTK stops drawing the composer's own Glass
+  // blur while a hidden (opacity 0) child still carries a backdrop-filter.
   const dropOverlay = (
     <div
       className={cn(
-        "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
-        (pageDragging || nativeDragging) && "opacity-100",
+        "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 group-data-[dragging=true]/dropzone:backdrop-blur-sm dark:bg-card/90",
+        (pageDragging || nativeDragging) && "opacity-100 backdrop-blur-sm",
       )}
     >
       <HugeiconsIcon

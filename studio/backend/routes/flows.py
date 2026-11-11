@@ -906,7 +906,12 @@ async def start_run(request: Request, flow_id: str, body: RunBody) -> dict:
     options = body.model_dump(exclude = {"doc"})
     try:
         rs = await get_engine().start_run(
-            app = request.app, flow_id = flow_id, doc = doc, options = options, hf_token = _hf_token(request)
+            app = request.app,
+            flow_id = flow_id,
+            doc = doc,
+            options = options,
+            hf_token = _hf_token(request),
+            saved = record["doc"] if body.doc is not None else None,
         )
     except CompileError as exc:
         raise _compile_error(exc)

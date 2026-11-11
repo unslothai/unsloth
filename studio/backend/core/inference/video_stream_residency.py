@@ -4,7 +4,8 @@
 """Keeps top group and block prefix of a Wan, HunyuanVideo-1.5, LTX-2 or LTX-2.5 denoiser resident, re-fitted per
 request; need estimate stays the lower bound; kill switches UNSLOTH_VIDEO_DIT_RESIDENT=0,
 UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top group only), UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0
-(estimate only)."""
+(estimate only), UNSLOTH_VIDEO_DIT_RESIDENT_WARM_ONLY=0 (stored peaks widen a process's first render too),
+UNSLOTH_VIDEO_DIT_RESIDENT_OOM_RETRY=0 (an out-of-memory render with groups resident fails as is)."""
 
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ from typing import Any, Optional
 VIDEO_DIT_RESIDENT_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT"
 VIDEO_DIT_RESIDENT_BLOCKS_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS"
 VIDEO_DIT_RESIDENT_MEASURED_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED"
+VIDEO_DIT_RESIDENT_WARM_ONLY_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_WARM_ONLY"
+VIDEO_DIT_RESIDENT_OOM_RETRY_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_OOM_RETRY"
 RESIDENT_POLICIES = ("group", "streaming")
 # Single-DiT families measured under the fit (MiniMax-H3 has its own controller, video_minimax_h3_residency).
 RESIDENT_FAMILY_PREFIXES = ("wan", "hunyuanvideo-1.5")
@@ -31,6 +34,8 @@ _COUNTS: dict[str, int] = {
     "released_mib": 0,
     "resident_mib": 0,
     "groups": 0,
+    "cold_skips": 0,
+    "oom_retries": 0,
 }
 
 
@@ -52,6 +57,14 @@ def blocks_enabled() -> bool:
 
 def measured_enabled() -> bool:
     return not _off(VIDEO_DIT_RESIDENT_MEASURED_ENV)
+
+
+def warm_only_enabled() -> bool:
+    return not _off(VIDEO_DIT_RESIDENT_WARM_ONLY_ENV)
+
+
+def oom_retry_enabled() -> bool:
+    return not _off(VIDEO_DIT_RESIDENT_OOM_RETRY_ENV)
 
 
 def applies(
@@ -139,6 +152,13 @@ def measured_room_mib(
 
 # calibration key -> {work (pixels x frames): peak MiB above the request's start}; survives a reload of the same model
 _PEAKS: dict = {}
+# keys rendered in this process; a stored warm peak omits first-render compile/allocator cost, so only widens later renders
+_WARM: set = set()
+
+
+def _cold(module: Any) -> bool:
+    key = getattr(module, "_unsloth_video_calibration_key", None)
+    return warm_only_enabled() and key is not None and key not in _WARM
 
 
 def calibration_key(
@@ -405,6 +425,9 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         module._unsloth_video_pending = None
         work, start, dev = pending
         extra = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
+        completed = getattr(module, "_unsloth_video_calibration_key", None)
+        if completed is not None:
+            _WARM.add(completed)
         window = getattr(module, "_unsloth_video_window", None)
         module._unsloth_video_window = None
         if window is not None:
@@ -508,6 +531,15 @@ def fit_for_request(
             frames = frames,
         )
         measured = _measured_extra_mib(module, work) if measured_enabled() else None
+        if measured is not None and _cold(module):
+            _COUNTS["cold_skips"] += 1
+            if logger is not None:
+                logger.info(
+                    "video.dit_resident: stored peak %d MiB waits for this process's first render of the setup "
+                    "(compile, kernel loads and a fresh allocator are not in it)",
+                    measured,
+                )
+            measured = None
         if measured is not None:
             wider = measured_room_mib(
                 free_mib = int(free) >> 20,
@@ -583,3 +615,57 @@ def fit_for_request(
         except Exception:  # noqa: BLE001
             pass
         return None
+
+
+def may_stream_after_oom(pipe: Any) -> bool:
+    try:
+        return oom_retry_enabled() and resident_mib(getattr(pipe, "transformer", None)) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def stream_after_oom(pipe: Any, *, logger: Any = None) -> bool:
+    """Stream all resident groups for the rest of the request after an OOM; True = caller may retry. Never raises."""
+    module = getattr(pipe, "transformer", None)
+    if module is None or not oom_retry_enabled():
+        return False
+    try:
+        import gc
+
+        import torch
+
+        from .diffusion_memory import release_resident_groups
+
+        held = resident_mib(module)
+        if held <= 0:
+            return False
+        release_resident_groups(
+            pipe, 1 << 30, logger, denoisers_only = True, reason = "a render that ran out of memory"
+        )
+        left = resident_mib(module)
+        if left >= held:
+            return False
+        # no re-pin (encode lend restore, decode restore) until the next request's fit
+        module._unsloth_resident_room = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        pending = getattr(module, "_unsloth_video_pending", None)
+        if pending is not None:
+            work, _start, dev = pending
+            torch.cuda.reset_peak_memory_stats(dev)
+            module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
+        _COUNTS["oom_retries"] += 1
+        _COUNTS["resident_mib"] = left
+        if logger is not None:
+            logger.warning(
+                "video.dit_resident: out of memory with %d MiB of the denoiser resident; streaming it and "
+                "rendering once more",
+                held,
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the original error is reported instead
+        if logger is not None:
+            logger.warning(
+                "video.dit_resident: could not stream the denoiser after the OOM (%s)", exc
+            )
+        return False

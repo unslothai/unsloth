@@ -536,9 +536,14 @@ class FlowEngine:
         options: Optional[dict] = None,
         hf_token: Optional[str] = None,
         origin: Optional[str] = None,
+        saved: Optional[dict] = None,
     ) -> RunState:
-        """Compile (raises CompileError) and start a run for the current account; returns at once."""
+        """Compile (raises CompileError) and start a run for the current account; returns at once.
+
+        ``saved`` is the stored flow when ``doc`` is an edited copy of it (an app's filled inputs, unsaved edits)."""
         plan = compile_flow(doc)
+        if saved is not None:
+            doc = without_stale_baked(doc, saved, plan)
         options = dict(options or {})
         account = current_account()
         run_origin = _origin(account, origin)
@@ -836,6 +841,7 @@ class FlowEngine:
             plan = compile_flow(doc)
         except CompileError as exc:
             raise FlowNodeError(f"The flow this step runs has a problem: {exc}") from None
+        doc = without_stale_baked(doc, record["doc"], plan)
         child = RunState(
             id = "call-" + uuid.uuid4().hex,
             flow_id = flow_id,
@@ -2345,6 +2351,29 @@ class FlowEngine:
         finished.sort(key = lambda r: r.finished_at or 0)
         for rs in finished[: len(finished) - FINISHED_RUNS_KEPT]:
             self.runs.pop(rs.id, None)
+
+
+def without_stale_baked(doc: dict, saved: dict, plan: Plan) -> dict:
+    """``doc`` without the baked outputs of nodes that differ from ``saved``, or read from one that does.
+
+    Baked outputs were made from the saved flow; a run whose inputs were filled in must recompute what they feed."""
+    baked = doc.get("baked") or {}
+    if not baked:
+        return doc
+    before = {
+        str(n.get("id")): (n.get("type"), n.get("params") or {}) for n in saved.get("nodes") or []
+    }
+    changed = {
+        nid
+        for nid, n in plan.nodes.items()
+        if before.get(nid) != (n.get("type"), n.get("params") or {})
+    }
+    if not changed:
+        return doc
+    stale = {nid for nid in baked if nid in changed or not changed.isdisjoint(plan.upstream(nid))}
+    if not stale:
+        return doc
+    return {**doc, "baked": {nid: v for nid, v in baked.items() if nid not in stale}}
 
 
 def _asset_entry(digest: str, mime: str, data: bytes) -> dict:
