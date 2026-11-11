@@ -218,3 +218,74 @@ def test_an_unknown_size_says_nothing_about_its_pool(monkeypatch):
     )
     status = _run_status(monkeypatch, backend)
     assert (status.resident_mib, status.resident_on_gpu) == (None, None)
+
+
+def _npu_status(
+    monkeypatch,
+    *,
+    size_gb,
+    rss_by_pid,
+    children = (11, 12),
+):
+    """A resident NPU model: lemond (pid 10) runs FastFlowLM under it, all in system RAM."""
+    psutil = pytest.importorskip("psutil")
+    from core.inference import npu_backend as nb
+
+    model = nb.NpuModel(
+        id = "qwen3.5-9b-FLM",
+        checkpoint = "qwen3.5:9b",
+        size_gb = size_gb,
+        downloaded = True,
+        labels = ("chat",),
+        max_context_length = 32768,
+    )
+    npu = SimpleNamespace(
+        resident = lambda: SimpleNamespace(model = model),
+        _server = SimpleNamespace(pid = 10),
+    )
+
+    def _process(pid):
+        if pid not in rss_by_pid:
+            raise psutil.NoSuchProcess(pid)
+        return SimpleNamespace(
+            pid = pid,
+            memory_info = lambda: SimpleNamespace(rss = rss_by_pid[pid]),
+            children = lambda recursive = False: [_process(c) for c in children],
+        )
+
+    async def _slot_status(_subject):
+        return InferenceStatusResponse(
+            active_model = model.id, model_identifier = model.model_path, is_npu = True
+        )
+
+    monkeypatch.setattr(inference_route, "_slot_status", _slot_status)
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: npu)
+    monkeypatch.setattr("utils.process_tree.linux_descendant_pids", lambda pid: None)
+    monkeypatch.setattr(psutil, "Process", _process)
+    return asyncio.run(inference_route.get_status("tester"))
+
+
+def test_npu_status_sizes_the_model_from_lemonds_process_tree(monkeypatch):
+    gib = 1024**3
+    status = _npu_status(
+        monkeypatch, size_gb = 5.4, rss_by_pid = {10: gib // 4, 11: 6 * gib, 12: gib // 4}
+    )
+    # Measured, and in system RAM: the NPU has no memory of its own.
+    assert (status.resident_mib, status.resident_on_gpu) == (6656, False)
+
+
+def test_npu_status_floors_at_the_catalog_size_when_rss_misses_the_buffers(monkeypatch):
+    status = _npu_status(monkeypatch, size_gb = 5.4, rss_by_pid = {10: 50 * 1024**2})
+    assert (status.resident_mib, status.resident_on_gpu) == (5149, False)
+
+
+def test_npu_status_without_a_resident_model_is_unsized(monkeypatch):
+    from core.inference import npu_backend as nb
+
+    async def _slot_status(_subject):
+        return InferenceStatusResponse(active_model = "qwen3.5-9b-FLM", is_npu = True)
+
+    monkeypatch.setattr(inference_route, "_slot_status", _slot_status)
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: None)
+    status = asyncio.run(inference_route.get_status("tester"))
+    assert (status.resident_mib, status.resident_on_gpu) == (None, None)
