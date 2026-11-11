@@ -2037,6 +2037,25 @@ export function ComposerModelPicker({
                   />
                 ))}
               </div>
+              {chosenLoaded && !pending && !modelLoading ? (
+                <button
+                  type="button"
+                  aria-label={`Eject ${chosenName ?? "model"}`}
+                  onClick={() =>
+                    chosen
+                      ? eject(chosen)
+                      : source?.eject(checkpoint ?? undefined)
+                  }
+                  className="ml-auto flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium text-red-500 transition-colors hover:bg-sidebar-accent"
+                >
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className="size-[calc(14px*var(--ui-space-scale,1))]"
+                  />
+                  Eject
+                </button>
+              ) : null}
               {chosenName ? (
                 <Hint label="Collapse">
                   <button
@@ -2044,33 +2063,12 @@ export function ComposerModelPicker({
                     aria-label="Collapse the model list"
                     aria-expanded={true}
                     onClick={() => setExpanded(false)}
-                    className="ml-auto grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                    className="mr-[calc(4px*var(--ui-space-scale,1))] grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
                   >
                     <HugeiconsIcon
                       icon={ChevronDownStandardIcon}
                       strokeWidth={1.5}
                       className="size-4 rotate-180"
-                    />
-                  </button>
-                </Hint>
-              ) : null}
-              {/* Outside the scrolling tabs, so it holds the row's right end. */}
-              {chosenLoaded && !pending && !modelLoading ? (
-                <Hint label="Eject model">
-                  <button
-                    type="button"
-                    aria-label={`Eject ${chosenName ?? "model"}`}
-                    onClick={() =>
-                      chosen
-                        ? eject(chosen)
-                        : source?.eject(checkpoint ?? undefined)
-                    }
-                    className="mr-[calc(8px*var(--ui-space-scale,1))] grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-red-500 transition-colors hover:bg-sidebar-accent"
-                  >
-                    <HugeiconsIcon
-                      icon={RemoveCircleIcon}
-                      strokeWidth={1.75}
-                      className="size-4"
                     />
                   </button>
                 </Hint>
