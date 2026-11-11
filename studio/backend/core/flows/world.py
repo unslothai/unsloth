@@ -1289,7 +1289,6 @@ def npc_prompt(
         "`remember` lists 1-2 short notes, written as you, worth keeping from this exchange, each with an "
         "importance from 1 (mundane) to 10 (life changing)."
     )
-    # Per-turn parts go last so llama-server reuses the cached prefix.
     return system, (
         head
         + f"It is {clock_text(state.get('clock'))}.\nWhat you remember:\n"
