@@ -3838,7 +3838,6 @@ class UnslothTrainer:
                     "use SFT or GRPO."
                 )
             if objective != "sft" and self.diffusion_lm_profile:
-                # Text-diffusion models train with their own denoising objective, not TRL's RL trainers.
                 raise ValueError(
                     f"{objective.upper()} is not available for text-diffusion models; use SFT."
                 )

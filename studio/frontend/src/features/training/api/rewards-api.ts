@@ -61,7 +61,6 @@ async function readJson<T>(res: Response): Promise<T> {
         detail = body.detail;
       }
     } catch {
-      // Retain the HTTP status when an error response has no JSON detail.
     }
     throw new Error(detail);
   }

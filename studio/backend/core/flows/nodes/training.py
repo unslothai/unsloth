@@ -21,7 +21,6 @@ from core.flows.registry import FlowCancelled, FlowNodeError, NodeContext, cache
 POLL_S = 5.0
 BUSY_WAIT_S = 180.0
 TRAINING_TYPES = {"lora": "LoRA/QLoRA", "full": "Full Finetuning", "cpt": "Continued Pretraining"}
-# Train page batch defaults when the node leaves them blank (GRPO sets its own).
 TRAIN_PAGE_BATCH = {"batch_size": 4, "gradient_accumulation_steps": 8}
 CPT_EMBEDDING_MODULES = ("embed_tokens", "lm_head")
 LORA_VARIANTS = ("rslora", "loftq", "dora")
@@ -508,7 +507,6 @@ def auto_mapping(row: Any) -> dict:
         return {}
 
 
-# RL roles as the chat roles Benchmark asks with: the preferred answer is the reference.
 _RL_AS_CHAT = {"prompt": "user", "answer": "assistant", "chosen": "assistant", "system": "system"}
 
 
@@ -975,7 +973,6 @@ def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
     if str(params.get("system_prompt") or "").strip():
         config["rl_system_prompt"] = str(params["system_prompt"])
     if params.get("batch_size") in (None, ""):
-        # One prompt and all its completions per step, as Unsloth's GRPO notebooks run.
         config["batch_size"] = int(params.get("num_generations") or 4)
         if params.get("gradient_accumulation_steps") in (None, ""):
             config["gradient_accumulation_steps"] = 1

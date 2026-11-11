@@ -200,7 +200,6 @@ export function RlDatasetRoles({
     setPreviewRow,
   ]);
 
-  // Reload on remount and on dataset changes, so roles survive leaving the page.
   useEffect(() => {
     let live = true;
     void Promise.resolve().then(() => {
@@ -317,7 +316,6 @@ export function RlDatasetRoles({
             <span>{t("rl.dataset.roleHeader")}</span>
           </div>
           {columns.map((column) => {
-            // A role kept for another objective shows as ignored here.
             const mapped = config.mapping[column] as RlRole | undefined;
             const role = mapped && roles.includes(mapped) ? mapped : undefined;
             const sample = previewCell(previewRow?.[column]);

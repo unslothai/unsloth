@@ -79,7 +79,6 @@ export function PromptFormatSection(): ReactElement {
       s.setPrompt("");
       setEditing(false);
     } else if (value === "custom") {
-      // Start from the notebook text rather than an empty box that looks filled in.
       if (s.prompt.trim() === "") {
         s.setPrompt(GRPO_DEFAULT_SYSTEM_PROMPT);
       }
