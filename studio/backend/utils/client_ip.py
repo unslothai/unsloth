@@ -159,11 +159,12 @@ def _host_header_is_loopback(host_header: str | None) -> bool:
 _PROXY_HOP_HEADERS = ("via", "x-forwarded-port", "x-forwarded-proto", "x-forwarded-server")
 
 
+_RELAY_HEADERS = frozenset(_PROXIED_CLIENT_HEADERS + _PROXY_HOP_HEADERS)
+
+
 def names_a_forwarded_client(request) -> bool:
     """Whether a proxy or tunnel marked this request as relayed."""
-    return any(
-        request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS + _PROXY_HOP_HEADERS
-    )
+    return not _RELAY_HEADERS.isdisjoint(k.lower() for k in request.headers.keys())
 
 
 def is_direct_local_request(request) -> bool:
