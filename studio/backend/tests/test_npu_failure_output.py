@@ -253,7 +253,9 @@ def test_a_failed_spawn_closes_the_log_file(tmp_path, monkeypatch):
     )
     opened = []
     real_open = server._open_log_file
-    monkeypatch.setattr(server, "_open_log_file", lambda *a: opened.append(real_open(*a)) or opened[-1])
+    monkeypatch.setattr(
+        server, "_open_log_file", lambda *a: opened.append(real_open(*a)) or opened[-1]
+    )
 
     def boom(spawn):
         raise OSError("no lemond")
