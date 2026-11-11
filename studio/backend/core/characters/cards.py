@@ -112,7 +112,6 @@ def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
 
 
 def character_fields(parsed: "ParsedCard") -> dict:
-    """A parsed card as the fields a stored character takes."""
     fields = parsed.fields
     return {
         "name": fields["name"],
@@ -422,8 +421,7 @@ def normalize_card(card: dict) -> dict[str, Any]:
     if not isinstance(card, dict):
         raise CardError("Not a character card.")
     data, _spec = card_data(card)
-    # A lorebook has its entries at the top and none of a card's text; one with a name would
-    # otherwise import as an empty character.
+    # A named lorebook would otherwise import as an empty character.
     if "entries" in card and data is card and not any(card.get(key) for key in _CARD_TEXT_KEYS):
         raise CardError("This file is a lorebook, not a character card.")
     name = _text(data.get("name") or card.get("name") or card.get("char_name")).strip()
@@ -492,7 +490,6 @@ _LOGIC = {0: "and_any", 1: "not_all", 2: "not_any", 3: "and_all"}
 
 
 def _as_list(value: Any) -> list:
-    """A list as-is, a lone string as one item, anything else as nothing."""
     if isinstance(value, list):
         return value
     return [value] if isinstance(value, str) else []

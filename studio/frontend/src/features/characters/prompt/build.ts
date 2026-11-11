@@ -6,13 +6,8 @@ import { activateLorebook, type ActivatedLore } from "./lorebook.ts";
 import { applyMacros, applyNameMacros } from "./macros.ts";
 
 /**
- * Builds a character chat's prompt for a chat-template model.
- *
- * Everything that does not change between replies sits in one leading system message, so a
- * llama.cpp prompt cache keeps it. What does change (notes at a depth, post-history
- * instructions, whose turn it is) rides on user turns near the end: Studio's backend merges
- * every system message into the first, and strict chat templates reject system turns after it.
- * History stays append-only, including in groups, so each reply reprocesses only the new tail.
+ * Static text sits in one leading system message so the llama.cpp prompt cache keeps it; per-turn
+ * text rides late user turns (the backend merges system messages, strict templates reject later ones).
  */
 
 export interface PromptCharacter {
@@ -35,7 +30,6 @@ export interface HistoryEntry {
 }
 
 export interface BuildInput {
-  /** Every character in the chat, in cast order. */
   cast: PromptCharacter[];
   speakerId: string;
   persona: { name: string; description: string };
@@ -75,10 +69,7 @@ export const GROUP_FRAME =
   "react to what was just said, tease, disagree, make plans and move the scene forward, rather than only asking {{user}} questions. " +
   "Leave {{user}}'s words, thoughts and actions to {{user}}.";
 
-/**
- * Messages that ask the model to write the user's own next line ("Write my reply"): the same
- * prompt, then one more user turn asking for the persona's words instead of a character's.
- */
+/** "Write my reply": the same prompt plus a user turn asking for the persona's line. */
 export function buildImpersonationMessages(input: Omit<BuildInput, "speakerId">): {
   system: string;
   messages: { role: "user" | "assistant"; content: string }[];
@@ -298,8 +289,7 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     const text = injection.text.trim();
     parts[target].push(text.startsWith("[") ? text : `[${text}]`);
   }
-  // The final instructions ride the last user turn. After a reply (as when drafting the user's own
-  // line) there is no such turn, so they are left out.
+  // Final instructions ride the last user turn; after a reply there is none, so they are dropped.
   if (history.length && history[history.length - 1].role === "user") {
     const lastParts = parts[history.length - 1];
     const post = speaker.postHistoryInstructions.trim();

@@ -32,7 +32,6 @@ export class CharacterChatUnavailableError extends Error {
 export interface CharacterRun {
   system: string;
   messages: ThreadMessage[];
-  /** One message as this run sends it. */
   shape: <M extends { id: string }>(message: M) => M;
   sends: (messageId: string) => boolean;
   stop: string[];
@@ -89,7 +88,6 @@ async function ensureLoaded(): Promise<void> {
   ]);
 }
 
-/** Re-reads the cast and the personas before a send: another tab or device may have edited a card. */
 async function revalidateParticipants(scene: ChatScene): Promise<void> {
   await Promise.all([
     ...scene.cast.map((member) =>
@@ -107,10 +105,7 @@ async function revalidateParticipants(scene: ChatScene): Promise<void> {
   ]);
 }
 
-/**
- * The chat's characters and persona, loaded for a model call. Refuses rather than fall back: a stale
- * library would drop a member from the prompt, and unloaded personas would speak as the account.
- */
+/** Refuses rather than fall back: a stale library drops members, unloaded personas speak as the account. */
 export async function loadParticipants(scene: ChatScene): Promise<{ cast: Character[]; persona: ResolvedPersona }> {
   const store = useCharactersStore.getState();
   await ensureLoaded();
@@ -134,7 +129,6 @@ export async function loadParticipants(scene: ChatScene): Promise<{ cast: Charac
   return { cast, persona: resolvePersona(scene, useCharactersStore.getState().personas) };
 }
 
-/** Whether this thread is known to be a character chat, from what the store has already loaded. */
 export function isKnownCharacterChat(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
   const store = useCharactersStore.getState();
@@ -146,18 +140,15 @@ export async function prepareCharacterRun(args: {
   threadId: string | undefined;
   messages: readonly ThreadMessage[];
   runConfig?: { custom?: Record<string, unknown> } | null;
-  /** Re-read the scene first, since another tab may have changed the cast or persona. */
   revalidate?: boolean;
 }): Promise<CharacterRun | null> {
   const { threadId, messages } = args;
   if (!threadId) return null;
   const store = useCharactersStore.getState();
-  // Sending a character chat as an ordinary one would put its hidden turns in front of the model
-  // and save an unattributed reply, so a chat known to have characters refuses instead.
+  // Sending as an ordinary chat would expose hidden turns and save an unattributed reply.
   const knownCharacterChat = isKnownCharacterChat(threadId) || messages.some((m) => roleplayMetaOf(m) !== null);
   let scene: ChatScene | null;
   try {
-    // Only a known character chat is re-read; an ordinary chat cannot gain characters.
     scene = await store.loadScene(threadId, args.revalidate === true && Boolean(store.scenes[threadId]));
   } catch (error) {
     scene = store.scenes[threadId] ?? null;

@@ -9,10 +9,7 @@ import { roleplayMetaOf } from "./meta";
 import { useCharactersStore } from "./store";
 import type { Character, ChatView } from "./types";
 
-/**
- * The character a click put in the picture, per chat. It holds until the chat gets another message,
- * then the picture follows whoever speaks.
- */
+/** Per-chat clicked character; holds until the next message. */
 interface StagePin {
   characterId: string;
   messageCount: number;
@@ -28,10 +25,7 @@ export function chatViewOf(settings: { view?: ChatView } | undefined): ChatView 
   return settings?.view ?? "chat";
 }
 
-/**
- * Who the picture shows: a character the user clicked, until the next message, otherwise whoever
- * spoke last (or is being asked to), otherwise the first character.
- */
+/** Clicked character, else the last (or next) speaker, else the first character. */
 type MessageLike = Parameters<typeof roleplayMetaOf>[0];
 
 function lastSpeakerOf(messages: readonly MessageLike[]): string | null {
@@ -42,7 +36,6 @@ function lastSpeakerOf(messages: readonly MessageLike[]): string | null {
   return null;
 }
 
-/** The character the picture shows right now, by the same rule as useStageFocus. */
 export function focusedCharacterId(threadId: string, messages: readonly MessageLike[], castIds: string[]): string | null {
   const pin = useStageFocusStore.getState().pins[threadId];
   const pinned = pin && pin.messageCount === messages.length ? pin.characterId : null;
@@ -70,10 +63,7 @@ export function setChatView(threadId: string, view: ChatView): void {
     .catch((error) => toast.error(error instanceof Error ? error.message : String(error)));
 }
 
-/**
- * A reply's portrait click: shows that character beside the chat, or, when stage view already shows
- * them, closes it again.
- */
+/** Portrait click: show the character, or close stage view if it already shows them. */
 export function toggleOnStage(threadId: string, characterId: string, messages: readonly MessageLike[], castIds: string[]): void {
   const scene = useCharactersStore.getState().scenes[threadId];
   if (chatViewOf(scene?.settings) === "stage" && focusedCharacterId(threadId, messages, castIds) === characterId) {

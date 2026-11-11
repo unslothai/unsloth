@@ -104,8 +104,7 @@ export function planReplies(input: {
     const last = active.findIndex((member) => member.id === input.lastSpeakerId);
     return [active[(last + 1) % active.length].id];
   }
-  // Natural order is a conversation, not a panel: whoever you name answers; otherwise one character
-  // speaks, picked by talkativeness. Now and then a second voice chimes in, never more.
+  // Named members answer, else one by talkativeness; at most one extra voice chimes in.
   const canFollow = (member: SpeakerCandidate) => input.allowSelfReplies || member.id !== input.lastSpeakerId;
   const pickWeighted = (pool: SpeakerCandidate[]): SpeakerCandidate | null => {
     if (pool.length === 0) return null;
