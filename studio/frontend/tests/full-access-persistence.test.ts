@@ -45,7 +45,8 @@ test("other accounts appearing while Studio runs clear the saved copy too", asyn
   resetStorage();
   const { state, flushPendingChatSettings } = await restart("live-multi");
   await state().hydratePersistedSettings();
-  state().setPermissionMode("full");
+  // Full access saved from another browser: this one never left "auto".
+  assert.equal(state().permissionMode, "auto");
   await flushPendingChatSettings();
   settingsHttp.puts.length = 0;
   try {
@@ -204,6 +205,15 @@ test("an install with other accounts neither saves nor restores Full access", as
   } finally {
     setLoginMode("single", true);
   }
+});
+
+test("resetting preferences before settings load still clears the server copy", async () => {
+  resetStorage();
+  const { state, forgetSavedFullAccess } = await restart("reset-before-load");
+  state().setPermissionMode("full");
+  settingsHttp.puts.length = 0;
+  await forgetSavedFullAccess();
+  assert.ok(settingsHttp.puts.some((put) => put.fullAccess === false));
 });
 
 test("resetting preferences clears the saved copy on the server", async () => {

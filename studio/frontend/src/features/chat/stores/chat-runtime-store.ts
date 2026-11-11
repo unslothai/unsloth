@@ -2004,28 +2004,22 @@ function rememberFullAccessCodeOff(off: boolean): void {
   writeStorageValue(CHAT_FULL_ACCESS_CODE_OFF_KEY, off ? "true" : "false");
 }
 
-/** "Reset all preferences" clears the saved Full access on the server too, before its reload. */
-export function forgetSavedFullAccess(): Promise<void> {
+/** "Reset all preferences" clears the saved Full access on the server too, before its reload.
+ *  Sent directly: the queued write may still be held for a settings load that has not landed. */
+export async function forgetSavedFullAccess(): Promise<void> {
   rememberFullAccess(false);
-  return flushPendingChatSettings();
+  await savePersistedChatSettingsPatch({ fullAccess: false }).catch(() => undefined);
 }
 
 let fullAccessResetSubscribed = false;
 
 /** Other accounts or a restricted install appearing while Studio runs reset Full access too, so the
- *  saved copy is cleared then rather than only at the next settings load. */
+ *  saved copy is cleared then, whichever browser saved it, rather than only at the next load. */
 function subscribeFullAccessReset(): void {
   if (fullAccessResetSubscribed) return;
   fullAccessResetSubscribed = true;
   subscribeLoginMode(() => {
-    const state = useChatRuntimeStore.getState();
-    if (
-      !getFullAccessAllowed() &&
-      state.permissionMode === "full" &&
-      state.chatFullAccessPreviousMode === null
-    ) {
-      rememberFullAccess(false);
-    }
+    if (!getFullAccessAllowed()) rememberFullAccess(false);
   });
 }
 
