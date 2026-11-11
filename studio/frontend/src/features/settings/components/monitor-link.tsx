@@ -41,7 +41,14 @@ export function MonitorLink({
     try {
       const active = await setApiMonitorLogging(enabled);
       setData((current) =>
-        current ? { ...current, logging_enabled: active, entries: active ? current.entries : [] } : current,
+        current
+          ? {
+              ...current,
+              logging_enabled: active,
+              active_requests: active ? current.active_requests : 0,
+              entries: active ? current.entries : [],
+            }
+          : current,
       );
     } catch (error) {
       toast.error("Could not update API monitor logging", {
