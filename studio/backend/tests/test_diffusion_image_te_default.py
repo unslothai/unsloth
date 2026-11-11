@@ -833,8 +833,6 @@ def test_explicit_int8_under_offload_checks_torchao_when_the_file_will_not_load(
 
 @pytest.fixture
 def rows_published(monkeypatch):
-    """Every int8 ConvRot table row counts as uploaded: the test checks the load a row routes to once it is
-    (test_diffusion_te_int8_missing_file covers the pending rows)."""
     monkeypatch.setattr(tpq, "te_int8_convrot_published", lambda *a, **k: True)
 
 

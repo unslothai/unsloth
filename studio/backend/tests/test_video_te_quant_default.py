@@ -168,8 +168,6 @@ def test_wan_is_not_equivalent_to_other_encoders():
 
 @pytest.fixture
 def rows_published(monkeypatch):
-    """Every int8 ConvRot table row counts as uploaded: these tests check which file a row routes to once it is, not
-    whether it is today (test_diffusion_te_int8_missing_file covers the pending rows)."""
     monkeypatch.setattr(tpq, "te_int8_convrot_published", lambda *a, **k: True)
 
 

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Explicit int8 TE quant with an unpublished int8 file: CUDA takes the fp8 file beside it (never asking for the
-missing one) and says so; Apple Silicon refuses up front, naming the file. Every table row is either in the committed
-published list or pending here. Network-free."""
+"""Explicit int8 TE quant with an unpublished int8 file: CUDA falls back to fp8 and says so; Apple Silicon refuses
+up front, naming the file. Network-free."""
 
 from __future__ import annotations
 
@@ -21,8 +20,7 @@ from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES  # noqa: 
 CUDA_BF16 = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, backend = "cuda", index = 0)
 MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps", index = 0)
 
-# The named files the Hub did not list on 2026-11-11 (HfApi().model_info(files_metadata = True) on each repo; the
-# FLUX.2-klein-9B-FP8 repo is private). Pending: built, not uploaded.
+# Files the Hub did not list on 2026-11-11 (FLUX.2-klein-9B-FP8 is private).
 UNPUBLISHED = {
     "FLUX.1-schnell-text_encoder_2-INT8-ConvRot.safetensors",
     "FLUX.2-klein-4B-text_encoder-INT8-ConvRot.safetensors",
@@ -95,7 +93,6 @@ def test_cuda_explicit_int8_has_the_hosted_fp8_file_behind_the_missing_one(name,
     assert sources
     for source in sources.values():
         chain = tpq.te_candidate_filenames(source)
-        # The pending file is never asked for: the chain is the fp8 file beside it.
         assert not set(chain) & UNPUBLISHED, chain
         assert chain and all("fp8" in n.lower() for n in chain), chain
     assert prec.preflight_te_quant("int8", fam, fam.base_repo, CUDA_BF16) == "fp8"
@@ -206,7 +203,6 @@ def test_every_table_row_is_published_or_pending():
     # A new row must be added to the published list (after its upload) or to UNPUBLISHED here.
     assert entries == published | pending
     assert not published & pending
-    # The published list names only table rows, so it cannot drift from the table.
     assert published <= entries
     assert {e[1] for e in pending} == UNPUBLISHED
 
@@ -240,7 +236,6 @@ def test_a_pending_row_is_hidden_and_logged_once(hub, monkeypatch, caplog):
     for _ in range(3):
         assert tpq.family_te_int8_convrot(fam, "text_encoder") is None
     assert tpq.family_te_int8_convrot(fam, "text_encoder", include_pending = True) is not None
-    # One Hub ask for the miss inside the TTL, one log line naming the file and the fp8 fallback.
     assert calls == [["Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors"]]
     assert len(messages) == 1 and "not published yet" in messages[0] and "fp8" in messages[0]
 
@@ -279,7 +274,6 @@ def test_a_pending_row_engages_once_it_is_cached_locally(hub, monkeypatch):
 
 @pytest.mark.parametrize("name", ["z-image", "wan2.2-ti2v-5b", "flux.1"])
 def test_cuda_load_of_a_pending_row_downloads_only_the_fp8_file(name, hub, monkeypatch):
-    """The loader is handed the fp8 file alone, so no load spends a request on the missing int8 one."""
     import core.inference.diffusion_prequant as dpq
 
     _cuda(monkeypatch)
