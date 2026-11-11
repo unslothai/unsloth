@@ -29,3 +29,15 @@ export function evalsExpectedModel(
 ): string | null {
   return ggufVariant ? `${model}:${ggufVariant}` : null;
 }
+
+// A selection that mirrored the loaded quant follows a reload of the same repo (e.g. from another
+// tab); an explicit pick of a different quant keeps its pin so evalsExpectedModel still guards it.
+export function followResidentGgufVariant(
+  selected: string | null,
+  prevActive: string | null,
+  nextActive: string | null,
+): string | null {
+  return (selected ?? "").toLowerCase() === (prevActive ?? "").toLowerCase()
+    ? nextActive
+    : selected;
+}

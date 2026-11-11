@@ -12,6 +12,7 @@ import { type LocalModelInfo, listLocalModels } from "@/features/training";
 import { useT } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ModelCheckpoints, fetchCheckpoints } from "./api/benchmark-api";
+import { followResidentGgufVariant } from "./lib/model-labels";
 
 export interface EvalsModel {
   models: ModelOption[];
@@ -69,13 +70,20 @@ export function useEvalsModel(): EvalsModel {
   const inferenceParams = useChatRuntimeStore((s) => s.params);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
 
+  const prevActiveGgufVariantRef = useRef(activeGgufVariant);
   useEffect(() => {
+    const prevActive = prevActiveGgufVariantRef.current;
+    prevActiveGgufVariantRef.current = activeGgufVariant;
     if (
       inferenceParams.checkpoint &&
       inferenceParams.checkpoint !== selectedModel
     ) {
       setSelectedModel(inferenceParams.checkpoint);
       setSelectedGgufVariant(activeGgufVariant);
+    } else if (inferenceParams.checkpoint && prevActive !== activeGgufVariant) {
+      setSelectedGgufVariant((selected) =>
+        followResidentGgufVariant(selected, prevActive, activeGgufVariant),
+      );
     } else if (!inferenceParams.checkpoint && selectedModel) {
       setSelectedModel(null);
       setSelectedGgufVariant(null);
