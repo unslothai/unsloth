@@ -447,3 +447,26 @@ test("returning a connection to an earlier endpoint lists it again", async () =>
     globalThis.fetch = realFetch;
   }
 });
+
+test("saving a connection with a new Base URL forgets the old server's windows", async () => {
+  const { learnServedContextWindows } = await import("../src/features/chat/model-catalog.ts");
+  const { useExternalProvidersStore } = await import(
+    "../src/features/chat/stores/external-providers-store.ts"
+  );
+  const row = (baseUrl: string) => ({
+    id: "conn-move",
+    providerType: "vllm",
+    name: "Box",
+    baseUrl,
+    models: ["m"],
+    createdAt: 0,
+    updatedAt: 0,
+  });
+  useExternalProvidersStore.getState().setProviders([row("http://old/v1")]);
+  learnServedContextWindows("conn-move", [{ id: "m", display_name: "m", served_context_window: 16384 }], "http://old/v1");
+  assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-move"), 8192);
+  useExternalProvidersStore.getState().setProviders([{ ...row("http://old/v1"), name: "Renamed" }]);
+  assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-move"), 8192);
+  useExternalProvidersStore.getState().setProviders([row("http://new/v1")]);
+  assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-move"), EXTERNAL_MAX_OUTPUT_TOKENS);
+});

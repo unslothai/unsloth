@@ -11,6 +11,7 @@ import {
   saveExternalProviders,
   type ExternalProviderConfig,
 } from "../external-providers";
+import { forgetServedContextWindows } from "../model-catalog";
 
 interface ExternalProvidersState {
   providers: ExternalProviderConfig[];
@@ -23,10 +24,16 @@ interface ExternalProvidersState {
 export const providerSavesInFlight = new Set<string>();
 
 export const useExternalProvidersStore = create<ExternalProvidersState>(
-  (set) => ({
+  (set, get) => ({
     providers: loadExternalProviders(),
     connectionsEnabled: loadConnectionsEnabled(),
     setProviders: (providers) => {
+      // A saved Base URL change makes the old server's windows wrong for a persistent clamp.
+      const before = new Map(get().providers.map((p) => [p.id, p.baseUrl]));
+      for (const p of providers) {
+        const was = before.get(p.id);
+        if (was !== undefined && was !== p.baseUrl) forgetServedContextWindows(p.id);
+      }
       set({ providers });
       saveExternalProviders(providers);
     },

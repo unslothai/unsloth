@@ -305,6 +305,21 @@ export function learnServedContextWindows(
   notifyCatalogChange();
 }
 
+export function forgetServedContextWindows(connectionId: string): void {
+  servedWindowsEndpoint.delete(connectionId);
+  const all = loadServedWindows();
+  if (!(connectionId in all)) return;
+  delete all[connectionId];
+  if (canUseStorage()) {
+    try {
+      localStorage.setItem(SERVED_WINDOWS_KEY, JSON.stringify(all));
+    } catch {
+      // Storage failures leave the in-memory copy valid for this session.
+    }
+  }
+  notifyCatalogChange();
+}
+
 export function servedWindowsListedFrom(connectionId: string): string | undefined {
   return servedWindowsEndpoint.get(connectionId);
 }
