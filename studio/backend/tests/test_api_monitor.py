@@ -450,6 +450,43 @@ def test_api_monitor_disabled_is_noop():
     assert monitor.get(request_id) is None
 
 
+def test_api_monitor_can_toggle_recording_at_runtime():
+    monitor = ApiMonitor(max_entries = 3)
+    first = _start(monitor, prompt = "before")
+    monitor.finish(first)
+    assert monitor.enabled is True
+    assert monitor.snapshot()[0]["id"] == first
+
+    monitor.set_enabled(False)
+    assert monitor.enabled is False
+    assert monitor.snapshot() == []
+    assert monitor.start(endpoint = "/v1", method = "POST", model = "m", prompt = "off") == ""
+
+    monitor.set_enabled(True)
+    second = _start(monitor, prompt = "after")
+    assert monitor.enabled is True
+    assert monitor.snapshot()[0]["id"] == second
+
+
+def test_api_monitor_settings_endpoint_toggles_recording(monkeypatch):
+    monitor = ApiMonitor()
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "test-user"}
+    client = TestClient(app)
+
+    response = client.post("/monitor/settings", json={"enabled": False})
+    assert response.status_code == 200
+    assert response.json() == {"logging_enabled": False}
+    assert monitor.enabled is False
+
+    response = client.post("/monitor/settings", json={"enabled": True})
+    assert response.status_code == 200
+    assert response.json() == {"logging_enabled": True}
+    assert monitor.enabled is True
+
+
 def test_api_monitor_disable_env_var_truthy(monkeypatch):
     import core.inference.api_monitor as m
     for value in ("1", "true", "yes", "on", "TRUE", "On", " yes "):
