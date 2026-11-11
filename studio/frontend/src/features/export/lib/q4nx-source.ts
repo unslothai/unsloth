@@ -117,6 +117,11 @@ export function q4nxVariantLookup(
   };
 }
 
+/** Whether the field still shows the picked model; typing a new query leaves it picked but uncommitted. */
+export function q4nxPickCommitted(selected: string, inputText: string): boolean {
+  return !!selected && inputText.trim() === selected;
+}
+
 /** A local row's file: the row itself when it is a .gguf, else the variant inside its folder. */
 export function localGgufPath(
   rowPath: string,

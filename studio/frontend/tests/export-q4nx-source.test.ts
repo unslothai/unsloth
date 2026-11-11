@@ -11,6 +11,7 @@ import {
   Q4NX_INFO_FIELDS,
   q4nxArchFit,
   q4nxBaseModel,
+  q4nxPickCommitted,
   q4nxQuantLabel,
   q4nxVariantLookup,
   sortQ4nxVariants,
@@ -196,4 +197,14 @@ test("a typed repo's lookup asks the Hub for its GGUF architecture", async () =>
   assert.ok(new URL(url).searchParams.getAll("expand").includes("gguf"), url);
   assert.equal(info.gguf?.architecture, "llama");
   assert.ok(info.tags?.length);
+});
+
+test("Convert needs the field to show the picked model, not a new query", () => {
+  const repo = "unsloth/Qwen3-0.6B-GGUF";
+  assert.equal(q4nxPickCommitted(repo, repo), true);
+  assert.equal(q4nxPickCommitted(repo, ` ${repo} `), true);
+  // Typing a different query keeps the old pick in state but must not convert it.
+  assert.equal(q4nxPickCommitted(repo, "gemma"), false);
+  assert.equal(q4nxPickCommitted(repo, ""), false);
+  assert.equal(q4nxPickCommitted("", ""), false);
 });

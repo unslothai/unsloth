@@ -50,6 +50,7 @@ import {
   Q4NX_INFO_FIELDS,
   q4nxArchFit,
   q4nxBaseModel,
+  q4nxPickCommitted,
   q4nxQuantLabel,
   q4nxVariantLookup,
   sortQ4nxVariants,
@@ -81,6 +82,7 @@ function SourceCombobox({
   value,
   onSelect,
   onTyped,
+  onInputText,
   placeholder,
   icon,
   loading,
@@ -95,6 +97,8 @@ function SourceCombobox({
   value: string;
   onSelect: (id: string) => void;
   onTyped: (value: string) => void;
+  /** Every change to the visible text, including Base UI resyncing it to the selection. */
+  onInputText: (value: string) => void;
   placeholder: string;
   icon: typeof Search01Icon;
   loading: boolean;
@@ -124,10 +128,12 @@ function SourceCombobox({
           onValueChange={(id: string | null) => {
             selectingRef.current = true;
             inputRef.current = id ?? "";
+            onInputText(id ?? "");
             onSelect(id ?? "");
           }}
           onInputValueChange={(next: string, details?: { reason?: string }) => {
             inputRef.current = next;
+            onInputText(next);
             if (selectingRef.current) {
               selectingRef.current = false;
               return;
@@ -189,6 +195,7 @@ export function Q4nxConvertCard() {
   const [source, setSource] = useState<Source>("hub");
   const [hubQuery, setHubQuery] = useState("");
   const [repoId, setRepoId] = useState("");
+  const [hubInput, setHubInput] = useState("");
   const [localModels, setLocalModels] = useState<LocalModelInfo[]>(
     () => getCachedLocalModels() ?? [],
   );
@@ -197,6 +204,7 @@ export function Q4nxConvertCard() {
   );
   const [localQuery, setLocalQuery] = useState("");
   const [localId, setLocalId] = useState("");
+  const [localInput, setLocalInput] = useState("");
   const [variants, setVariants] = useState<{
     key: string;
     list: GgufVariantDetail[];
@@ -379,6 +387,9 @@ export function Q4nxConvertCard() {
   const canConvert =
     !running &&
     sourceReady &&
+    (source === "hub"
+      ? q4nxPickCommitted(repoId, hubInput)
+      : q4nxPickCommitted(localId, localInput)) &&
     archFit?.status !== "unsupported" &&
     !!effectiveBase.trim() &&
     !!saveDirectory.trim();
@@ -451,6 +462,9 @@ export function Q4nxConvertCard() {
           options={SOURCE_OPTIONS}
           onValueChange={(next) => {
             setSource(next);
+            // The remounted field shows the kept selection, not the last typed text.
+            setHubInput(repoId);
+            setLocalInput(localId);
             setFilename("");
             setBaseModel(null);
           }}
@@ -473,6 +487,7 @@ export function Q4nxConvertCard() {
                 setHubQuery(value);
                 if (!value.trim()) pickRepo("");
               }}
+              onInputText={setHubInput}
               placeholder="Search GGUF models..."
               icon={Search01Icon}
               loading={searchingHub}
@@ -491,6 +506,7 @@ export function Q4nxConvertCard() {
                 setLocalQuery(value);
                 if (!value.trim()) pickLocal("");
               }}
+              onInputText={setLocalInput}
               placeholder={
                 loadingLocal
                   ? "Scanning local and cached models..."
