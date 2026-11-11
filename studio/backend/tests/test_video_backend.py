@@ -605,7 +605,8 @@ class _FakeModularPipe:
             "output": output,
             **kwargs,
         }
-        for _ in range(int(num_inference_steps or 1)):
+        # As diffusers' MiniMaxH3Scheduler: grid points include the terminal 0.
+        for _ in range(int(num_inference_steps or 2) - 1):
             self.scheduler.step(object(), 0, object())
         return {"videos": [[object() for _ in range(int(num_frames or 1))]], "audio": None}
 
@@ -5818,6 +5819,24 @@ def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runt
         backend.generate(prompt = "a fox", steps = 4)
     assert pipe.scheduler.calls == 1
     assert pipe.scheduler.step.__func__ is _FakeH3Scheduler.step
+
+
+@pytest.mark.parametrize("steps", [1, 2, 8, 20])
+def test_h3_modular_runs_one_denoiser_evaluation_per_requested_step(fake_runtime, steps):
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    backend.generate(prompt = "a fox", steps = steps)
+    assert pipe.scheduler.calls == steps
+    assert pipe.last_kwargs["num_inference_steps"] == steps + 1
+
+
+def test_h3_step_evaluations_kill_switch_passes_the_grid_through(fake_runtime, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_H3_STEP_EVALUATIONS", "0")
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    backend.generate(prompt = "a fox", steps = 20)
+    assert pipe.last_kwargs["num_inference_steps"] == 20
+    assert pipe.scheduler.calls == 19
 
 
 def test_the_pipeline_call_runs_with_uint8_frames_on_every_family(

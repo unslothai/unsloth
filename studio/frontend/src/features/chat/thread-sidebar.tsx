@@ -55,7 +55,7 @@ import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
   CONVERSATION_HTML_LABEL,
   CONVERSATION_PDF_LABEL,
-} from "./utils/conversation-html";
+} from "./utils/conversation-html-format";
 import {
   deleteChatItem,
   renameChatItem,

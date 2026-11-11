@@ -2574,7 +2574,7 @@ class VideoUrl(BaseModel):
 
 
 class VideoContentPart(BaseModel):
-    """Video content part; served only through llama-server's ``input_video``."""
+    """Video content part for llama-server or a custom OpenAI-compatible connection."""
 
     type: Literal["video_url"]
     video_url: VideoUrl
@@ -7641,6 +7641,21 @@ class VideoGenerateRequest(BaseModel):
         "cover-cropped onto the canvas.",
     )
 
+    continuation_video: Optional[str] = Field(
+        None,
+        max_length = 96 * 1024 * 1024,
+        description = "Base64/data-URL video to continue (Cosmos3-Nano only, status "
+        "supports_video_continuation): the clip keeps 5 frames from one end of it and generates "
+        "what follows. At most 15 seconds; frames are resampled onto fps and centre-cropped to "
+        "the canvas aspect. With width and height omitted the canvas is the preset nearest the "
+        "clip's aspect. Cannot be combined with keyframes or references.",
+    )
+    continuation_keep: Optional[Literal["last", "first"]] = Field(
+        None,
+        description = "Which end of continuation_video to keep: last (default) continues the "
+        "clip from its final frames; first keeps its opening frames and generates on from there.",
+    )
+
     # Separate lists preserve the model's image, video, then audio packing order.
     reference_images: Optional[list[str]] = Field(
         None,
@@ -7708,6 +7723,14 @@ class VideoGenerateRequest(BaseModel):
             raise ValueError(
                 "reference audio needs at least one reference image or video to go with"
             )
+        if self.continuation_video and (
+            images or videos or audios or self.first_frame or self.last_frame
+        ):
+            raise ValueError(
+                "A clip to continue cannot be combined with a start frame, end frame or references."
+            )
+        if self.continuation_keep is not None and not self.continuation_video:
+            raise ValueError("continuation_keep needs a continuation_video.")
         if (images or videos or audios) and (self.first_frame or self.last_frame):
             raise ValueError(
                 "keyframes and references cannot be combined: MiniMax-H3 runs them against "
@@ -7869,6 +7892,18 @@ class VideoGenerationDefaults(BaseModel):
     guidance: float = Field(..., description = "Default guidance scale")
     num_frames: int = Field(..., description = "Default frame count")
     fps: int = Field(..., description = "Default playback frame rate")
+    fps_range: Optional[list[int]] = Field(
+        None,
+        description = "Inclusive [min, max] frame rate a request may pick, or null (see fps_choices)",
+    )
+    fps_choices: list[int] = Field(
+        default_factory = list,
+        description = "Frame rates a request may pick; with neither this nor fps_range the rate is fixed",
+    )
+    min_num_frames: Optional[int] = Field(None, description = "Smallest frame count the family takes")
+    max_num_frames: Optional[int] = Field(
+        None, description = "Largest frame count the family takes, or null for no family cap"
+    )
     frame_step: int = Field(..., description = "Temporal lattice stride")
     frame_offset: int = Field(
         1, description = "Temporal lattice offset: valid counts are k * frame_step + frame_offset"
@@ -8056,6 +8091,11 @@ class VideoStatusResponse(BaseModel):
         description = "Whether the LOADED checkpoint takes reference images / videos / audio "
         "(gates the reference-to-video controls). Never true at the same time as "
         "supports_keyframes: MiniMax-H3 serves the two from different denoiser partitions.",
+    )
+    supports_video_continuation: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes continuation_video (Cosmos3-Nano "
+        "only): it keeps frames from one end of a clip and generates what happens next",
     )
     h3_task: Optional[str] = Field(
         None,

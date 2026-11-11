@@ -32,6 +32,7 @@ import random
 import re
 import sqlite3
 import shlex
+import posixpath
 import shutil
 import ssl
 import stat
@@ -164,7 +165,7 @@ _DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
 _DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
 _DDGS_PENDING = threading.local()
 
-# Tier 2 runs only if tier 1 found nothing; engines in neither tier are never contacted.
+# Tier 2 runs unless tier 1 found more than Wikipedia; engines in neither tier are never contacted.
 _SEARCH_ENGINE_TIERS = (
     ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
     ("grokipedia", "google", "yahoo"),
@@ -2131,11 +2132,6 @@ _AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
     r"powershell|pwsh|terminal|subprocess|interpreter)(?:[_\-]|$)",
     re.IGNORECASE,
 )
-_AUTO_EXEC_MCP_RUNTIME_NOUN_RE = re.compile(
-    r"(?:^|[_\-])(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|"
-    r"script|repl|sandbox|notebook)(?:[_\-]|$)",
-    re.IGNORECASE,
-)
 # Code/command runners run on the MCP server outside the sandbox; whole segments only.
 _AUTO_EXEC_MCP_TOOL_RE = re.compile(
     r"(?:^|[_\-])(?:"
@@ -3302,20 +3298,6 @@ def _references_studio_credential(text: str) -> bool:
 
 # Any run of text that could be a path argument, used to read one token at a time.
 _PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]+")
-# Only traversal is worth resolving: a relative path without `..` stays inside the sandbox.
-_TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
-# Used only after a `cd`, where `auth/auth.db` stops meaning "inside the sandbox".
-_RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
-# Case-insensitive: the shell is `cmd /c` on Windows without a trusted bash.
-_CD_TARGET_RE = re.compile(
-    # `builtin cd`, `command cd`, `! cd` and `time cd` move like a bare `cd`.
-    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
-    # Bash allows assignment words before a special builtin, so `X=1 cd ../..` moves like a bare `cd`.
-    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
-    r"(?:cd|pushd)\s+"
-    r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
-    re.IGNORECASE,
-)
 # `cd -` and `popd` return; matched in one pass so order is kept.
 _DIRECTORY_MOVE_RE = re.compile(
     r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
@@ -6609,8 +6591,6 @@ _HIGH_RISK_FORWARDING_COMMANDS = frozenset(
         "valgrind",
     }
 )
-# Tracers and profilers run the rest of the line as a child.
-_TRACER_LAUNCHERS = frozenset({"strace", "ltrace", "ktrace", "dtruss", "perf", "valgrind"})
 _EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
 _EXEC_FORWARD_FLAGS = frozenset(
     {"-exec", "-execdir", "-ok", "-okdir", "--exec", "--exec-batch", "-x", "-X"}
@@ -6680,6 +6660,348 @@ _BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?
 _HERESTRING_TO_INTERPRETER_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
 )
+_HEREDOC_INTERPRETER_RE = re.compile(
+    r"(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)"
+)
+_HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;", "\n"})
+_PYTHON_STDIN_DATA_MODULES = frozenset({"json.tool", "base64"})
+_SHELL_LINE_OPERATORS = (
+    "&>>",
+    "&>",
+    "<<-",
+    "<<<",
+    "&&",
+    "||",
+    ";;",
+    "|&",
+    ">>",
+    "<<",
+    ">&",
+    "<&",
+    "<>",
+    ">|",
+    ";",
+    "&",
+    "|",
+    "(",
+    ")",
+    "<",
+    ">",
+    "\n",
+)
+_HEREDOC_INTERPRETER_MENTION_RE = re.compile(
+    r"(?<![\w.-])(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)(?![\w-])"
+)
+_COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
+_SHELL_KEYWORDS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "{"})
+_HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
+
+
+def _heredoc_name(word: str) -> str:
+    return re.sub(r"\.exe$", "", ntpath.basename(word), flags = re.IGNORECASE)
+
+
+# Commands that only read a heredoc as data; any other owner may forward stdin to an interpreter.
+_HEREDOC_DATA_COMMANDS = _AUTO_SAFE_TERMINAL_COMMANDS | {
+    "tee",
+    "git",
+    "gh",
+    "read",
+    ":",
+    "base64",
+    "patch",
+}
+_SOURCE_ENCODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
+_PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
+
+
+def _quote_end(line: str, i: int) -> int:
+    """Index of the quote closing the one at ``i``; a `$(` or backtick inside double quotes opens a
+    fresh quoting context, as in bash. -1 when unterminated."""
+    quote, j, n = line[i], i + 1, len(line)
+    while j < n and line[j] != quote:
+        if quote == '"' and line[j] == "\\":
+            j += 2
+        elif quote == '"' and line.startswith("$(", j):
+            j = _quoted_substitution_end(line, j + 2)
+            if j < 0:
+                return -1
+        elif quote == '"' and line[j] == "`":
+            j = line.find("`", j + 1) + 1
+            if not j:
+                return -1
+        else:
+            j += 1
+    return j if j < n else -1
+
+
+def _quoted_substitution_end(line: str, j: int) -> int:
+    depth, n = 1, len(line)
+    while j < n:
+        ch = line[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch in "'\"":
+            j = _quote_end(line, j)
+            if j < 0:
+                return -1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if not depth:
+                return j + 1
+        j += 1
+    return -1
+
+
+def _shell_line_tokens(line: str) -> "list | None":
+    """Bash's word split of one line as (kind, text, quoted), kind word / op / fd; adjacent quoted
+    parts concatenate. None on an unterminated quote or arithmetic expansion."""
+    tokens, word, quoted, active = [], [], False, False
+    i, n = 0, len(line)
+
+    def flush(kind = "word"):
+        nonlocal word, quoted, active
+        if active:
+            tokens.append((kind, "".join(word), quoted))
+        word, quoted, active = [], False, False
+
+    while i < n:
+        ch = line[i]
+        if ch in " \t":
+            flush()
+            i += 1
+        elif ch == "#" and not active:
+            j = line.find("\n", i)
+            if j < 0:
+                break
+            i = j
+        elif ch == "\\":
+            word.append(line[i + 1 : i + 2])
+            quoted = active = True
+            i += 2
+        elif ch in "'\"":
+            j = _quote_end(line, i)
+            if j < 0:
+                return None
+            text = line[i + 1 : j]
+            word.append(re.sub(r'\\([$`"\\\n])', r"\1", text) if ch == '"' else text)
+            quoted = active = True
+            i = j + 1
+        elif line.startswith("$((", i) or (line.startswith("((", i) and not active):
+            j = line.find("))", i)
+            if j < 0:
+                return None
+            word.append(line[i : j + 2])
+            active = True
+            i = j + 2
+        else:
+            op = next((o for o in _SHELL_LINE_OPERATORS if line.startswith(o, i)), None)
+            if op is None:
+                word.append(ch)
+                active = True
+                i += 1
+                continue
+            text = "".join(word)
+            flush("fd" if op[0] in "<>" and text.isdigit() and not quoted else "word")
+            tokens.append(("op", op, False))
+            i += len(op)
+    flush()
+    return tokens
+
+
+def _expansion_has_heredoc(expansion: str) -> bool:
+    inner = expansion[2:] if expansion.startswith("$(") else expansion.strip("`")
+    tokens = _shell_line_tokens(inner[:-1] if inner.endswith(")") else inner)
+    return tokens is None or any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens)
+
+
+def _python_reads_stdin_program(words: list) -> "bool | None":
+    """CPython's option grammar: True when stdin is executed (program `-`, or -i), False when it is
+    only data (-c, -m, a script operand), None when the words cannot be resolved."""
+    interactive = False
+    words = iter(words)
+    for word in words:
+        if any(ch in word for ch in "$`*?[{~"):
+            return None
+        if word == "-" or posixpath.normpath(word) in (
+            "/dev/stdin",
+            "/dev/fd/0",
+            "/proc/self/fd/0",
+        ):
+            return True
+        if posixpath.normpath(word).startswith(("/dev/", "/proc/")):
+            return None
+        if word == "--check-hash-based-pycs":
+            if re.search(r"[$`]", next(words, "")):
+                return None
+        elif word.startswith("--"):
+            if not word.startswith("--check-hash-based-pycs="):
+                return None
+        elif word.startswith("-"):
+            for i, ch in enumerate(word[1:], 1):
+                if ch == "c":
+                    return interactive
+                if ch == "m":
+                    module = word[i + 1 :] or next(words, "")
+                    return interactive if module in _PYTHON_STDIN_DATA_MODULES else None
+                if ch in "WX":
+                    if i == len(word) - 1 and re.search(r"[$`]", next(words, "")):
+                        return None
+                    break
+                if ch == "i":
+                    interactive = True
+                elif ch not in _PYTHON_FLAG_LETTERS:
+                    return None
+        else:
+            return interactive
+    return True
+
+
+def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
+    """Heredocs taken in shell order, each owned by its simple command: Python executing stdin gets
+    the body screened. Other interpreters, a second stdin redirection, expansions in an unquoted
+    body, or any owner or terminator this cannot resolve while an interpreter is named fail closed."""
+    mentioned = bool(_HEREDOC_INTERPRETER_MENTION_RE.search(command))
+    lines = command.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        while i < len(lines) and (len(line) - len(line.rstrip("\\"))) % 2:
+            if "#" in line and mentioned:
+                return True
+            line = line[:-1] + lines[i]
+            i += 1
+        if "<<" not in line and "'" not in line and '"' not in line:
+            continue
+        tokens = _shell_line_tokens(line)
+        while tokens is None and i < len(lines):
+            line += "\n" + lines[i]
+            i += 1
+            tokens = _shell_line_tokens(line)
+        if tokens is None:
+            if mentioned:
+                return True
+            continue
+        if not any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens):
+            if mentioned and any(map(_expansion_has_heredoc, _shell_expansions(line))):
+                return True
+            continue
+        commands, current = [], []
+        for token in tokens:
+            if token[0] == "op" and token[1] in _HEREDOC_COMMAND_BREAKS:
+                commands.append(current)
+                current = []
+            else:
+                current.append(token)
+        commands.append(current)
+        pending = []
+        for words in commands:
+            names, stdin_redirects, expect = [], 0, None
+            for kind, text, quoted in words:
+                if kind == "op":
+                    stdin_redirects += text[0] == "<"
+                    expect = "heredoc" if text in ("<<", "<<-") else "target"
+                    if expect == "heredoc":
+                        pending.append([None, text == "<<-", False, None])
+                elif expect:
+                    if expect == "heredoc" and kind == "word":
+                        pending[-1][0], pending[-1][2] = text, quoted
+                    expect = None
+                elif kind == "word":
+                    names.append(text)
+            for heredoc in pending:
+                if heredoc[3] is None:
+                    heredoc[3] = (names, stdin_redirects)
+        for delimiter, dash, quoted, (names, stdin_redirects) in pending:
+            body, terminated = [], False
+            while i < len(lines):
+                text = lines[i].lstrip("\t") if dash else lines[i]
+                i += 1
+                if text == delimiter:
+                    terminated = True
+                    break
+                body.append(text)
+            if not terminated and _HEREDOC_INTERPRETER_MENTION_RE.search("\n".join(body)):
+                return True
+            if mentioned and not quoted and re.search(r"[$`]|\\\n", "\n".join(body) + "\n"):
+                return True
+            command_word, wrapper, skip = "", "", False
+            for w in names:
+                if skip:
+                    skip = False
+                elif re.match(r"\w+=", w) or (not wrapper and w in _SHELL_KEYWORDS):
+                    continue
+                elif wrapper and w.startswith("-"):
+                    skip = w in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, ())
+                elif wrapper == "timeout" and _WRAPPER_DURATION_RE.match(w):
+                    wrapper = "timeout:"
+                elif _heredoc_name(w) in _COMMAND_PREFIXES:
+                    wrapper = _heredoc_name(w)
+                else:
+                    command_word = w
+                    break
+            if mentioned and [w for w in names if not re.match(r"\w+=", w)] == ["exec"]:
+                return True
+            if _heredoc_name(command_word) in _HEREDOC_DATA_COMMANDS:
+                continue
+            if mentioned and (
+                not command_word
+                or command_word in _COMPOUND_CLOSERS
+                or any(ch in command_word for ch in "$`")
+            ):
+                return True
+            at = next(
+                (
+                    n
+                    for n, w in enumerate(names)
+                    if _HEREDOC_INTERPRETER_RE.fullmatch(_heredoc_name(w))
+                ),
+                None,
+            )
+            if any(_HEREDOC_SHELL_RE.fullmatch(_heredoc_name(w)) for w in names):
+                body_text = "\n".join(body)
+                if (
+                    depth >= 3
+                    or _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names) + "\n" + body_text)
+                    or _terminal_is_high_risk(body_text, depth + 1)
+                ):
+                    return True
+                continue
+            if at is None:
+                if mentioned and _heredoc_name(command_word) not in _HEREDOC_DATA_COMMANDS:
+                    return True
+                continue
+            if stdin_redirects > 1 or any("PYTHONINSPECT" in w for w in names[:at]):
+                return True
+            if not _heredoc_name(names[at]).lower().startswith(("python", "pypy")) or depth >= 3:
+                return True
+            if any(_HEREDOC_INTERPRETER_RE.fullmatch(_heredoc_name(w)) for w in names[at + 1 :]):
+                return True
+            reads = _python_reads_stdin_program(names[at + 1 :])
+            if reads is None:
+                return True
+            if not reads:
+                continue
+            program = "\n".join(body)
+            cookie = next(filter(None, map(_SOURCE_ENCODING_RE.match, body[:2])), None)
+            if cookie and cookie.group(1).lower().replace("_", "-") not in (
+                "utf-8",
+                "utf8",
+                "ascii",
+                "latin-1",
+            ):
+                return True
+            if not quoted and re.search(r"[$`]|\\[\\$`\n]", program + "\n"):
+                return True
+            if _inline_python_is_high_risk(program):
+                return True
+    return False
+
+
 # Generated script content is unscreenable; diff <(...) only reads and stays out.
 _PROC_SUBST_EXEC_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|source|eval|python[0-9.]*|node|nodejs|bun|ruby|perl|php)\b"
@@ -6718,7 +7040,6 @@ _INLINE_CODE_INTERPRETERS = frozenset(
         "php",
     }
 )
-_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
 # Flags are per interpreter (`python -E` is not eval). Value: (exact flags, cluster letters).
 _INLINE_CODE_FLAG_SPEC = {
     "python": (frozenset({"-c"}), "c"),
@@ -7409,6 +7730,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     _herestring = _HERESTRING_TO_INTERPRETER_RE.search(command)
     if _herestring:
+        return True
+    if "<<" in command and _heredoc_feeds_risky_program(command, _depth):
         return True
     # shlex reads newlines as whitespace; ANSI-C quoting hides names.
     decoded = _decode_ansi_c(command, keep_one_word = True)
@@ -8378,19 +8701,22 @@ def _windows_program_roots() -> list[str]:
 def _resolve_trusted_windows_git() -> tuple[str, str]:
     """Finds git in a trusted Program Files dir; the first PATH match may be an untrusted shim, so the other entries are scanned."""
     exts = [e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)]
-    candidates: list[str] = []
-    primary = shutil.which("git")
-    if primary:
-        candidates.append(primary)
-    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
-        entry = entry.strip().strip('"')
-        if not entry or not os.path.isabs(entry):
-            continue
-        for ext in exts:
-            cand = os.path.join(entry, "git" + ext)
-            if os.path.isfile(cand):
-                candidates.append(cand)
-    for git_exe in candidates:
+
+    def _candidates():
+        # Lazy, in the original order: a trusted hit stops the PATH x PATHEXT stat scan.
+        primary = shutil.which("git")
+        if primary:
+            yield primary
+        for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if not entry or not os.path.isabs(entry):
+                continue
+            for ext in exts:
+                cand = os.path.join(entry, "git" + ext)
+                if os.path.isfile(cand):
+                    yield cand
+
+    for git_exe in _candidates():
         git_dir = os.path.dirname(git_exe)
         if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
             return os.path.realpath(git_dir), os.path.splitext(git_exe)[1].upper()
@@ -10064,15 +10390,6 @@ def live_project_owns(
     return False
 
 
-def _project_exists(project_id: str) -> bool:
-    """Whether a project of the user's is stored under this exact id."""
-    try:
-        from storage.studio_db import get_chat_project
-        return get_chat_project(project_id) is not None
-    except Exception:  # noqa: BLE001 - a storage hiccup must not delete files
-        return True
-
-
 def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
     """Compares with the sandbox path, not the working-folder setting, which can change before the chmod."""
     if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
@@ -11370,18 +11687,23 @@ def _edit_file_write(
 ) -> str:
     """Atomic rename from a temp file; will not revert a file another chat rewrote since expect; containment rechecked before the rename catches a symlink swap."""
     payload = (bom + text.replace("\n", newline)).encode("utf-8")
-    directory = os.path.dirname(path) or "."
     try:
-        os.makedirs(directory, exist_ok = True)
+        dir_fd, leaf = _edit_file_parent(path, workdir, create_dirs = True)
     except OSError as exc:
         return f"Error: cannot create directory for '{os.path.basename(path)}': {exc}"
     tmp = ""
     try:
-        fd, tmp = tempfile.mkstemp(dir = directory, prefix = ".unsloth_edit_")
+        if dir_fd is None:
+            fd, tmp = tempfile.mkstemp(dir = os.path.dirname(path) or ".", prefix = ".unsloth_edit_")
+        else:
+            tmp = f".unsloth_edit_{uuid.uuid4().hex}"
+            fd = os.open(
+                tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600, dir_fd = dir_fd
+            )
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
         try:
-            shutil.copymode(path, tmp)
+            os.chmod(tmp, stat.S_IMODE(os.stat(leaf, dir_fd = dir_fd).st_mode), dir_fd = dir_fd)
         except OSError:
             pass  # new file, or a mode we cannot read; the default is fine
         if workdir is not None and _is_outside_workdir(path, workdir):
@@ -11391,7 +11713,9 @@ def _edit_file_write(
             )
         if expect is not None:
             try:
-                with open(path, "rb") as fh:
+                with os.fdopen(
+                    os.open(leaf, os.O_RDONLY | getattr(os, "O_BINARY", 0), dir_fd = dir_fd), "rb"
+                ) as fh:
                     current = fh.read(len(expect) + 1)
             except OSError:
                 current = None
@@ -11403,14 +11727,16 @@ def _edit_file_write(
                 )
         from core import library
 
-        library.replace_file(tmp, path)
+        library.replace_file(tmp, path, dir_fd = dir_fd)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
     finally:
         if tmp:
             with contextlib.suppress(OSError):
-                os.remove(tmp)
+                os.remove(tmp, dir_fd = dir_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
     return ""
 
 
@@ -11549,6 +11875,23 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
     return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
 
 
+def _edit_file_parent(
+    target: str, workdir: "str | None", create_dirs: bool
+) -> "tuple[int | None, str]":
+    """(folder fd or None, name to use with it). Confined POSIX writes open every parent below the
+    workdir without following links, so a folder swapped for a link mid-call fails instead of
+    carrying the write outside; unconfined calls and Windows keep the path."""
+    if workdir is None or not file_history.DIR_FD_WALK:
+        if create_dirs:
+            os.makedirs(os.path.dirname(target) or ".", exist_ok = True)
+        return None, target
+    root = os.path.realpath(workdir)
+    parts = os.path.relpath(target, root).split(os.sep)
+    if parts[0] == os.pardir:
+        raise OSError("not inside the working directory")
+    return file_history.open_dir_below(root, parts[:-1], create_dirs), parts[-1]
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -11559,37 +11902,40 @@ def _edit_file_create(
     """Creates with O_EXCL, not a lexists check, so two chats cannot drop each other's file; never clobbers, and a zero-byte target stays writable on purpose."""
     payload = (new.replace("\n", newline)).encode("utf-8")
     if not os.path.lexists(target):
-        directory = os.path.dirname(target) or "."
         try:
-            os.makedirs(directory, exist_ok = True)
+            dir_fd, leaf = _edit_file_parent(target, workdir, create_dirs = True)
         except OSError as exc:
             return f"Error: cannot create directory for '{name}': {exc}"
-        if workdir is not None and _is_outside_workdir(target, workdir):
-            return (
-                f"Error: '{name}' moved outside the working directory while the "
-                "edit was being prepared; nothing was written."
-            )
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        # Never follow a symlink planted at the final component in the meantime.
-        flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(target, flags, 0o666)
-        except FileExistsError:
-            return (
-                f"Error: '{name}' was created by something else while this call "
-                "was preparing it; nothing was written."
-            )
-        except OSError as exc:
-            return f"Error: cannot write '{name}': {exc}"
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(payload)
-        except OSError as exc:
-            # A partial write after ENOSPC cannot be retried (empty old_string refuses non-empty), so
-            # remove the inode.
-            with contextlib.suppress(OSError):
-                os.remove(target)
-            return f"Error: cannot write '{name}': {exc}"
+            if workdir is not None and _is_outside_workdir(target, workdir):
+                return (
+                    f"Error: '{name}' moved outside the working directory while the "
+                    "edit was being prepared; nothing was written."
+                )
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            # Never follow a symlink planted at the final component in the meantime.
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(leaf, flags, 0o666, dir_fd = dir_fd)
+            except FileExistsError:
+                return (
+                    f"Error: '{name}' was created by something else while this call "
+                    "was preparing it; nothing was written."
+                )
+            except OSError as exc:
+                return f"Error: cannot write '{name}': {exc}"
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(payload)
+            except OSError as exc:
+                # A partial write after ENOSPC cannot be retried (empty old_string refuses non-empty), so
+                # remove the inode.
+                with contextlib.suppress(OSError):
+                    os.remove(leaf, dir_fd = dir_fd)
+                return f"Error: cannot write '{name}': {exc}"
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
         return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
     try:
         st = os.stat(target)
@@ -12490,9 +12836,11 @@ _MCP_LISTING_THREAD: ContextVar = ContextVar("mcp_listing_thread", default = Non
 _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
+_MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
-_MCP_RANKED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
+# (account, thread) -> (held ranked tools, the last listing's order).
+_MCP_HELD_THREADS: "OrderedDict[tuple, tuple[list[str], list[str]]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -12505,11 +12853,13 @@ def set_mcp_listing_context_tokens(
     messages = None,
     tool_choice = None,
     mcp_image = None,
+    remember = True,
 ) -> None:
     """The local window the next MCP listing in this context is sized against; unset lists every tool in full.
     ``thread_id`` keeps the tools a chat ran listed; ``messages`` ranks the deferred ones listed up front; a
     ``tool_choice`` forcing a tool keeps that one listed, and an attached image (in the message or, sent to MCP tools
-    only, as ``mcp_image``) keeps the tools mapped to take it listed."""
+    only, as ``mcp_image``) keeps the tools mapped to take it listed. ``remember = False`` (token counts) reads the
+    held listing without replacing it."""
     from core.inference.chat_template_helpers import forced_tool_name, last_user_text  # noqa: PLC0415
 
     valid = isinstance(context_tokens, int) and context_tokens > 0
@@ -12518,6 +12868,7 @@ def set_mcp_listing_context_tokens(
     dicts = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages or []]
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
+    _MCP_LISTING_REMEMBER.set(bool(remember))
     last_user = next(
         (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
     )
@@ -12719,23 +13070,24 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
-def _mcp_held_ranking(by_name: dict) -> list[str]:
+def _mcp_held(by_name: dict) -> tuple[list[str], list[str]]:
     key = _mcp_thread_key()
     if key is None:
-        return []
+        return [], []
     with _MCP_LOADED_LOCK:
-        return [n for n in _MCP_RANKED_THREADS.get(key, ()) if n in by_name]
+        ranked, listed = _MCP_HELD_THREADS.get(key, ((), ()))
+    return [n for n in ranked if n in by_name], list(listed)
 
 
-def _mcp_hold_ranking(names: list[str]) -> None:
+def _mcp_hold(ranked: list[str], listed: list[str]) -> None:
     key = _mcp_thread_key()
-    if key is None:
+    if key is None or not _MCP_LISTING_REMEMBER.get():
         return
     with _MCP_LOADED_LOCK:
-        _MCP_RANKED_THREADS.pop(key, None)
-        _MCP_RANKED_THREADS[key] = names
-        while len(_MCP_RANKED_THREADS) > _MCP_LOADED_THREADS_MAX:
-            _MCP_RANKED_THREADS.popitem(last = False)
+        _MCP_HELD_THREADS.pop(key, None)
+        _MCP_HELD_THREADS[key] = (ranked, listed)
+        while len(_MCP_HELD_THREADS) > _MCP_LOADED_THREADS_MAX:
+            _MCP_HELD_THREADS.popitem(last = False)
 
 
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
@@ -12805,7 +13157,7 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
                 left -= cost
         return chosen
 
-    held = _mcp_held_ranking(by_name)
+    held, listed_before = _mcp_held(by_name)
     chosen = filled(held)
     held = [name for name in held if by_name[name] in chosen]
     if ranked and (not held or by_name[ranked[0]] not in chosen):
@@ -12813,8 +13165,11 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         # A best match too big to list is not worth dropping the held tools for.
         if not held or by_name[ranked[0]] in fresh:
             chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
-    _mcp_hold_ranking(held)
-    return chosen
+    # Listed tools keep their places, new ones go last: a reorder in the tool block reprocesses the whole chat.
+    names = [spec["function"]["name"] for spec in chosen[1:]]
+    order = list(dict.fromkeys([name for name in listed_before if name in names] + names))
+    _mcp_hold(held, order)
+    return chosen[:1] + [by_name[name] for name in order]
 
 
 def _cached_mcp_catalog() -> list[dict]:
@@ -12876,12 +13231,15 @@ def _mcp_search_index(specs: list[dict]) -> sqlite3.Connection:
     conn.execute(
         "CREATE VIRTUAL TABLE tool_text USING fts5(description, params, tokenize='porter unicode61')"
     )
+    from storage.rag_db import fts_text  # noqa: PLC0415
+
     conn.executemany(
-        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)", [(i, r[0]) for i, r in enumerate(rows)]
+        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)",
+        [(i, fts_text(r[0])) for i, r in enumerate(rows)],
     )
     conn.executemany(
         "INSERT INTO tool_text(rowid, description, params) VALUES (?, ?, ?)",
-        [(i, r[1], r[2]) for i, r in enumerate(rows)],
+        [(i, fts_text(r[1]), fts_text(r[2])) for i, r in enumerate(rows)],
     )
     _MCP_SEARCH_INDEXES[digest] = conn
     while len(_MCP_SEARCH_INDEXES) > 4:
@@ -17084,6 +17442,11 @@ def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, websi
     ]
 
 
+def _is_wikipedia_result(result) -> bool:
+    host = urllib.parse.urlsplit(str(result.get("href") or "").strip()).hostname or ""
+    return host == "wikipedia.org" or host.endswith(".wikipedia.org")
+
+
 def _usable_search_results(results, website_policy):
     from .web_access_policy import check_url_access
     return [
@@ -17186,12 +17549,14 @@ def _web_search(
                     client = DDGS(timeout = remaining)
                 try:
                     candidates = _ddgs_text(client, effective_query, wanted, backend)
-                    results = _usable_search_results(candidates, website_policy)
-                    rejected_results = rejected_results or bool(candidates and not results)
+                    found = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not found)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
                     last_error = exc
                     continue
-                if results:
+                seen = {r.get("href") for r in results}
+                results += [r for r in found if r.get("href") not in seen]
+                if not all(_is_wikipedia_result(r) for r in results):
                     break
         except Exception as exc:
             last_error = exc
@@ -17568,6 +17933,11 @@ def _check_signal_escape_patterns(code: str):
             "subprocess.Popen",
             "subprocess.getoutput",
             "subprocess.getstatusoutput",
+            "asyncio.create_subprocess_shell",
+            "asyncio.create_subprocess_exec",
+            "pty.spawn",
+            "loop.subprocess_shell",
+            "loop.subprocess_exec",
         }
     )
 
@@ -17589,7 +17959,9 @@ def _check_signal_escape_patterns(code: str):
         return []
 
     # Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
-    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+    _CMD_KWARGS = frozenset(
+        {"args", "command", "executable", "path", "file", "cmd", "program", "argv"}
+    )
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -17603,7 +17975,9 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
-    _STAR_EXPORTS = frozenset(fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS) | {"modules"}
+    _STAR_EXPORTS = frozenset(
+        fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS if not fq.startswith("loop.")
+    ) | {"modules"}
 
     def _module_expr(dotted):
         # posix and nt are the os module under its platform name.
@@ -17659,7 +18033,16 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name != "*":
                         names = (alias.name,)
-                    elif node.module in ("os", "posix", "nt", "subprocess", "sys"):
+                    elif node.module in (
+                        "os",
+                        "posix",
+                        "nt",
+                        "subprocess",
+                        "sys",
+                        "asyncio",
+                        "asyncio.subprocess",
+                        "pty",
+                    ):
                         names = _STAR_EXPORTS
                     else:
                         continue
@@ -17791,20 +18174,31 @@ def _check_signal_escape_patterns(code: str):
                         name = _folded_str_literal(value.args[0])
                 elif isinstance(value, ast.Subscript) and self._is_registry(value.value):
                     name = _folded_str_literal(value.slice)
+                elif (
+                    isinstance(value, ast.Attribute)
+                    and value.attr == "subprocess"
+                    and "asyncio" in self._modules_of(value.value)
+                ):
+                    name = "asyncio"
                 # __import__("os.path") returns the top-level os package.
                 top = (name or "").split(".")[0]
-                if top in ("os", "subprocess"):
+                if top in ("os", "subprocess", "asyncio", "pty"):
                     modules.add(top)
                 elif top in ("posix", "nt") and not isinstance(value, ast.Name):
                     modules.add("os")
             return frozenset(modules)
 
         def _shell_func_of(self, node):
+            loop_method = None
             for owner, attr in self._lookups(node):
+                # Event loop methods behind create_subprocess_*; any receiver, since a loop comes from a call.
+                if attr in ("subprocess_shell", "subprocess_exec"):
+                    loop_method = f"loop.{attr}"
                 for module in self._modules_of(owner):
                     if f"{module}.{attr}" in _SHELL_EXEC_FUNCS:
                         return f"{module}.{attr}"
-            return None
+            # Only when no other binding matches: a loop target skips argument zero, which may be the command.
+            return loop_method
 
         def visit_Assign(self, node):
             for tgt in node.targets:
@@ -17903,7 +18297,9 @@ def _check_signal_escape_patterns(code: str):
                         has_opaque_kwargs = True
 
                 cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
-                all_call_args = list(node.args) + cmd_kw_values
+                # A loop method's first positional is the protocol factory, not the command.
+                positional = node.args[1:] if shell_func.startswith("loop.") else node.args
+                all_call_args = list(positional) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
 
                 if has_opaque_kwargs:

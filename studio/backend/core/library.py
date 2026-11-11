@@ -1271,13 +1271,19 @@ def overlay_write():
         yield
 
 
-def replace_file(tmp: str, path: str) -> None:
+def replace_file(
+    tmp: str,
+    path: str,
+    dir_fd: "int | None" = None,
+) -> None:
     """``os.replace(tmp, path)``, carrying the overlay row of the file it replaces over to the new
-    inode, which the listing would otherwise drop as a different file."""
+    inode, which the listing would otherwise drop as a different file. With ``dir_fd``, ``tmp`` and
+    the basename of ``path`` are names in that open folder."""
+    leaf = path if dir_fd is None else os.path.basename(path)
     with _replace_lock:
-        before = os.stat(path)
-        staged = os.stat(tmp)
-        os.replace(tmp, path)
+        before = os.stat(leaf, dir_fd = dir_fd)
+        staged = os.stat(tmp, dir_fd = dir_fd)
+        os.replace(tmp, leaf, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
         _carry_overlay(path, before, staged)
 
 

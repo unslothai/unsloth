@@ -2175,7 +2175,9 @@ class ResearchSupervisor:
                 await heartbeat
             except asyncio.CancelledError:
                 pass
+            # Stops side lookups that outlive a failed step.
             self._cancel_events.pop(account_key(run["id"]), None)
+            cancel_event.set()
             self._lost_leases.discard(account_key(run["id"]))
             self._report_drafts.pop(account_key(run["id"]), None)
 
@@ -2608,28 +2610,46 @@ class ResearchSupervisor:
                 rag_result = ""
             else:
                 used_queries.add(argument)
-                result = await asyncio.to_thread(
-                    execute_tool,
-                    "web_search",
-                    {"query": argument},
-                    cancel_event = self._cancel_event(run["id"]),
-                    timeout = tool_timeout,
-                    website_policy = website_policy,
+                # Side lookups overlap the web search; awaited after it so a web error still wins.
+                rag_task = (
+                    asyncio.ensure_future(
+                        asyncio.to_thread(
+                            execute_tool,
+                            "search_knowledge_base",
+                            {"query": argument},
+                            cancel_event = self._cancel_event(run["id"]),
+                            timeout = tool_timeout,
+                            rag_scope = run["config"]["ragScope"],
+                        )
+                    )
+                    if run["config"].get("ragScope")
+                    else None
                 )
-                rag_result = ""
-                if run["config"].get("ragScope"):
-                    rag_result = await asyncio.to_thread(
+                mcp_task = (
+                    asyncio.ensure_future(
+                        self._search_mcp_tools(run, mcp_tools, argument, position, tool_timeout)
+                    )
+                    if mcp_tools
+                    else None
+                )
+                side_tasks = [task for task in (rag_task, mcp_task) if task is not None]
+                try:
+                    result = await asyncio.to_thread(
                         execute_tool,
-                        "search_knowledge_base",
+                        "web_search",
                         {"query": argument},
                         cancel_event = self._cancel_event(run["id"]),
                         timeout = tool_timeout,
-                        rag_scope = run["config"]["ragScope"],
+                        website_policy = website_policy,
                     )
-                if mcp_tools:
-                    mcp_sources = await self._search_mcp_tools(
-                        run, mcp_tools, argument, position, tool_timeout
-                    )
+                    rag_result = await rag_task if rag_task is not None else ""
+                    if mcp_task is not None:
+                        mcp_sources = await mcp_task
+                except BaseException:
+                    for task in side_tasks:
+                        task.cancel()
+                    await asyncio.gather(*side_tasks, return_exceptions = True)
+                    raise
             rag_result, rag_sources = _split_rag_result(rag_result)
             await self._check_active(run["id"])
             document_source_keys = {
