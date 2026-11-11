@@ -638,17 +638,25 @@ async def cancel_benchmark(
 
 
 @router.get("/status", response_model = BenchmarkStatusResponse)
-async def get_benchmark_status(current_subject: str = Depends(get_current_subject)):
-    """Get benchmark backend status."""
+async def get_benchmark_status(
+    run_token: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Get benchmark backend status. With ``run_token``, also whether the current/last run is the
+    one started with it, so a client whose /run request dropped does not adopt another run."""
     try:
         backend = get_benchmark_backend()
         if _run_hidden_from(backend, current_account()):
-            return BenchmarkStatusResponse(is_benchmark_active = backend.is_active())
+            return BenchmarkStatusResponse(
+                is_benchmark_active = backend.is_active(),
+                run_token_matches = False if run_token else None,
+            )
         return BenchmarkStatusResponse(
             is_benchmark_active = backend.is_active(),
             last_op_status = backend.get_last_op_status(),
             last_op_error = backend.get_last_error(),
             last_op_seq = backend.get_op_seq(),
+            run_token_matches = backend.run_token_matches(run_token) if run_token else None,
         )
     except Exception as e:
         logger.error(f"Error getting benchmark status: {e}", exc_info = True)

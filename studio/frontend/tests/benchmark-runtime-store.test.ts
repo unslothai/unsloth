@@ -3,11 +3,18 @@
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
-import test from "node:test";
+import test, { mock } from "node:test";
 
 register("./benchmark-runtime-resolver.mjs", import.meta.url);
 
-const { calls, runParams, setStatusGate } = await import(
+const {
+  calls,
+  runParams,
+  setRunDrops,
+  setStatusGate,
+  setStatusScript,
+  statusTokens,
+} = await import(
   "./helpers/store-stubs/benchmark-api.ts"
 );
 const { useBenchmarkRuntimeStore } = await import(
@@ -84,4 +91,43 @@ test("Cancel while the pre-run status probe is pending never posts the evaluatio
   assert.deepEqual(calls, ["cancel"]);
   assert.equal(store.getState().phase, "canceled");
   assert.equal(store.getState().isRunning, false);
+});
+
+test("a dropped evaluation request does not adopt another tab's run as its own", async () => {
+  const store = useBenchmarkRuntimeStore;
+  store.getState().reset();
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  try {
+    setRunDrops(true);
+    // Baseline probe, then another tab's run is active and finishes successfully.
+    setStatusScript([
+      { is_benchmark_active: false, last_op_seq: 0 },
+      { is_benchmark_active: true, last_op_seq: 1, run_token_matches: false },
+      {
+        is_benchmark_active: false,
+        last_op_seq: 1,
+        last_op_status: "success",
+        run_token_matches: false,
+      },
+    ]);
+    let done = false;
+    const running = store
+      .getState()
+      .run("org/model", "hf", "arc_easy")
+      .finally(() => (done = true));
+    for (let i = 0; i < 200 && !done; i++) {
+      await new Promise((r) => setImmediate(r));
+      mock.timers.tick(1500);
+    }
+    await running;
+    assert.notEqual(store.getState().result, "Benchmark completed");
+    assert.equal(store.getState().phase, "error");
+    const token = runParams.at(-1)?.run_token;
+    assert.equal(typeof token, "string");
+    assert.equal(statusTokens.at(-1), token);
+  } finally {
+    mock.timers.reset();
+    setRunDrops(false);
+    setStatusScript([]);
+  }
 });

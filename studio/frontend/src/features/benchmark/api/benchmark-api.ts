@@ -65,6 +65,8 @@ export interface BenchmarkStatus {
   last_op_seq?: number;
   last_op_status?: "success" | "error" | "cancelled" | null;
   last_op_error?: string | null;
+  /** Present when the status was asked with a run token; absent from older servers. */
+  run_token_matches?: boolean | null;
 }
 
 export interface BenchmarkTaskInfo {
@@ -109,6 +111,7 @@ export interface BenchmarkRunParams {
   num_fewshot?: number | null;
   max_tokens?: number | null;
   expected_model?: string | null;
+  run_token?: string;
 }
 
 export async function runBenchmark(params: BenchmarkRunParams): Promise<BenchmarkOperationResponse> {
@@ -125,8 +128,9 @@ export async function cancelBenchmark(): Promise<BenchmarkOperationResponse> {
   return parseJson<BenchmarkOperationResponse>(response);
 }
 
-export async function getBenchmarkStatus(): Promise<BenchmarkStatus> {
-  const response = await authFetch("/api/benchmarks/evals/status");
+export async function getBenchmarkStatus(runToken?: string): Promise<BenchmarkStatus> {
+  const query = runToken ? `?run_token=${encodeURIComponent(runToken)}` : "";
+  const response = await authFetch(`/api/benchmarks/evals/status${query}`);
   return parseJson<BenchmarkStatus>(response);
 }
 

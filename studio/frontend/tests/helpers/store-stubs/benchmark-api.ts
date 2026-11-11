@@ -10,9 +10,26 @@ export function setStatusGate(gate: Promise<void> | null): void {
   statusGate = gate;
 }
 
-export async function getBenchmarkStatus() {
+let statusScript: Record<string, unknown>[] = [];
+export const statusTokens: (string | undefined)[] = [];
+
+/** Answers for the next getBenchmarkStatus() calls, in order; the last one repeats. */
+export function setStatusScript(script: Record<string, unknown>[]): void {
+  statusScript = script;
+}
+
+export async function getBenchmarkStatus(runToken?: string) {
   if (statusGate) await statusGate;
-  return { is_benchmark_active: false, last_op_seq: 0 };
+  statusTokens.push(runToken);
+  if (statusScript.length > 1) return statusScript.shift();
+  return statusScript[0] ?? { is_benchmark_active: false, last_op_seq: 0 };
+}
+
+let runDrops = false;
+
+/** Make runBenchmark() fail as a dropped connection. */
+export function setRunDrops(value: boolean): void {
+  runDrops = value;
 }
 
 export const runParams: Record<string, unknown>[] = [];
@@ -20,6 +37,8 @@ export const runParams: Record<string, unknown>[] = [];
 export async function runBenchmark(params: Record<string, unknown>) {
   calls.push("run");
   runParams.push(params);
+  if (runDrops)
+    throw Object.assign(new Error("dropped"), { unslothTransportFailure: true });
   return { success: true };
 }
 
@@ -28,6 +47,9 @@ export async function cancelBenchmark() {
   return { success: true };
 }
 
-export function isRecoverableTransportError() {
-  return false;
+export function isRecoverableTransportError(err: unknown) {
+  return (
+    (err as { unslothTransportFailure?: unknown } | null)
+      ?.unslothTransportFailure === true
+  );
 }

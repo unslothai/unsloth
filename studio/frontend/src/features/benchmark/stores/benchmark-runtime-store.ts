@@ -26,8 +26,16 @@ const RECOVERY_MAX_STATUS_FAILS = 5;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Not randomUUID: Studio on a LAN address is not a secure context.
+function newRunToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
 async function recoverViaStatus(
   baseline: number | null,
+  runToken: string,
   isCurrent: () => boolean,
 ): Promise<void> {
   const start = Date.now();
@@ -40,7 +48,7 @@ async function recoverViaStatus(
 
     let st: BenchmarkStatus;
     try {
-      st = await getBenchmarkStatus();
+      st = await getBenchmarkStatus(runToken);
       statusFails = 0;
     } catch {
       statusFails += 1;
@@ -53,13 +61,18 @@ async function recoverViaStatus(
       continue;
     }
 
+    // A server that knows the token says whether the run is this request's; another tab's run
+    // (or a later one that replaced it) is never adopted. Older servers fall back to the sequence.
+    const tokenKnown = typeof st.run_token_matches === "boolean";
     if (st.is_benchmark_active) {
-      sawActive = true;
+      if (!tokenKnown || st.run_token_matches) sawActive = true;
       continue;
     }
 
     const seq = st.last_op_seq ?? 0;
-    const isOurs = sawActive || (baseline !== null && seq > baseline);
+    const isOurs = tokenKnown
+      ? st.run_token_matches === true
+      : sawActive || (baseline !== null && seq > baseline);
     if (isOurs) {
       if (st.last_op_status === "success") return;
       if (st.last_op_status === "cancelled") throw new BenchmarkCanceledError();
@@ -288,6 +301,8 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
 
     const isCurrent = () => get().runId === runId;
 
+    const runToken = newRunToken();
+
     const runRecoverableOp = async (
       post: () => Promise<BenchmarkOperationResponse>,
     ): Promise<void> => {
@@ -306,7 +321,7 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
         if (!isRecoverableTransportError(err)) throw err;
         set({ reconnecting: true });
         try {
-          await recoverViaStatus(baseline, isCurrent);
+          await recoverViaStatus(baseline, runToken, isCurrent);
         } finally {
           if (isCurrent()) set({ reconnecting: false });
         }
@@ -326,6 +341,7 @@ const apiParams = {
           batch_size: extraParams?.batch_size ?? "auto",
           num_fewshot: extraParams?.num_fewshot ?? null,
           max_tokens: extraParams?.max_tokens ?? null,
+          run_token: runToken,
           ...(extraParams?.expected_model
             ? { expected_model: extraParams.expected_model }
             : {}),

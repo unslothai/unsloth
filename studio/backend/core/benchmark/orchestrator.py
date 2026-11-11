@@ -262,6 +262,11 @@ class BenchmarkOrchestrator:
     def get_op_seq(self) -> int:
         return self._op_seq
 
+    def run_token_matches(self, token: str) -> bool:
+        """Whether the current/last run (not a reservation) was started with ``token``."""
+        with self._lock:
+            return self._op_seq > 0 and self._reserved_until is None and token == self._run_token
+
     def get_latest_progress(self) -> Optional[dict]:
         return get_latest_progress()
 

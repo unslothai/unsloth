@@ -619,6 +619,29 @@ def test_a_cancel_token_stops_only_the_run_started_with_it(monkeypatch):
     assert backend.cancel()
 
 
+def test_status_tells_a_dropped_run_request_whether_the_run_is_its_own(monkeypatch):
+    import asyncio
+
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
+    monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
+    monkeypatch.setattr(benchmark_routes, "_has_managed_accounts", lambda: False)
+
+    def status(token):
+        return asyncio.run(
+            benchmark_routes.get_benchmark_status(run_token = token, current_subject = "u")
+        )
+
+    # This tab's /run never arrived; another tab's run went through instead.
+    backend.finish(backend.try_begin(None, "other-tab"))
+    assert status("mine").run_token_matches is False
+    assert status(None).run_token_matches is None
+    backend.finish(backend.try_begin(None, "mine"))
+    assert status("mine").run_token_matches is True
+    # A later run replaced it before this tab polled.
+    backend.try_begin(None, None)
+    assert status("mine").run_token_matches is False
+
+
 def test_a_reservation_starts_clean_of_the_last_runs_logs_and_outcome(monkeypatch):
     backend = _orchestrator(monkeypatch, lambda params: {"results": {"t": {}}})
     seq = backend.try_begin(account = "A", token = "a")

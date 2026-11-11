@@ -127,6 +127,11 @@ class BenchmarkStatusResponse(BaseModel):
         None,
         description = "Counter of runs started; tells a client whether the finished op is the one it started",
     )
+    run_token_matches: Optional[bool] = Field(
+        None,
+        description = "With ?run_token=, whether the current/last run was started with that token "
+        "(None when no token was given)",
+    )
 
 
 class BenchmarkOperationResponse(BaseModel):
