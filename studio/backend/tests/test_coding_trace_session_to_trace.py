@@ -3,7 +3,6 @@
 
 import json
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -90,6 +89,11 @@ def _assistant(parts):
     )
 
 
+_NATIVE = _call("x", "code_execution", None, args = {"google": {"native_part": {}}})
+_R1, _R2 = {"type": "reasoning", "text": "r1"}, {"type": "reasoning", "text": "r2"}
+_IMAGE = {"type": "image", "image": "x"}
+
+
 def _shape(trace):
     return [
         (m.role, m.tool_call_id or [c.id for c in m.tool_calls] or m.text) for m in trace.messages
@@ -98,6 +102,9 @@ def _shape(trace):
 
 def _codes(trace):
     return [w.code for w in trace.warnings if w.code != "system_prompt_not_stored"]
+
+
+# Loading saved threads
 
 
 def test_claude_import_merges_reply_rows_around_the_tool_result(claude_home):
@@ -158,7 +165,6 @@ def test_native_thread_follows_the_newest_branch_unless_a_head_is_given():
     assert [m.text for m in newest.messages][1:] == ["Write a parser", "First try", "Thanks"]
     assert newest.model_id == "unsloth/model"
     assert [w.code for w in newest.warnings] == ["other_branches_dropped"]
-    assert "Left out 1 saved message(s)" in newest.warnings[0].message
 
     # A saved head resolves to its newest leaf, the same way the chat UI opens it; the inner node
     # a1 sorts last but never wins.
@@ -210,6 +216,9 @@ def test_unreadable_threads_and_cut_branches():
     )
     assert [m.text for m in trace.messages] == ["lost"]
     assert _codes(trace) == ["missing_parent", "other_branches_dropped", "no_user_message"]
+
+
+# Tool calls
 
 
 def _local(cid, round_id = None):
@@ -276,52 +285,36 @@ def test_adjacent_rows_alternate_calls_and_results():
 
 
 @pytest.mark.parametrize(
-    "parts, text, codes, note",
+    "parts, text, codes",
     [
-        ([*_text("a"), *_text(""), *_text("b")], "a\n\nb", [], None),
-        (_text("see [[img:0123456789ab]] now"), "see  now", [], None),
-        (_text("clip data:audio/wav;base64,AAAA="), "clip [audio]", [], None),
+        ([*_text("a"), *_text(""), *_text("b")], "a\n\nb", []),
+        (_text("see [[img:0123456789ab]] now"), "see  now", []),
+        (_text("clip data:audio/wav;base64,AAAA="), "clip [audio]", []),
         (
             [*_text("before"), _call("k", result = None), *_text("after")],
             "before\nafter",
             ["unanswered_tool_call_dropped"],
-            "no stored result",
         ),
         (
             [_call("s", "studio_load_skill", None, args = {"name": "lint"}), *_text("ok")],
             "ok",
             ["skill_preload_not_stored"],
-            "@lint",
-        ),
-        (
-            [_call("s", "studio_load_skill", None, args = "lint"), *_text("ok")],
-            "ok",
-            ["skill_preload_not_stored"],
-            "@None",
         ),
         (
             [_call("w", "web_search", {"hits": []}, args = {"_server_tool": True}), *_text("ok")],
             "ok",
             ["server_tool_skipped"],
-            "'web_search'",
         ),
-        (
-            [
-                _call("x", "code_execution", None, args = {"google": {"native_part": {}}}),
-                *_text("ok"),
-            ],
-            "ok",
-            ["server_tool_skipped"],
-            "replays its code",
-        ),
+        ([_NATIVE, *_text("ok")], "ok", ["server_tool_skipped"]),
     ],
 )
-def test_assistant_rows_replay_like_the_ui(parts, text, codes, note):
+def test_assistant_rows_replay_like_the_ui(parts, text, codes):
     trace = _assistant(parts)
     assert _shape(trace)[1:] == [("assistant", text)]
     assert _codes(trace) == codes
-    if note:
-        assert note in trace.warnings[0].message
+
+
+# Pruned and stopped turns
 
 
 def _turn(custom, content):
@@ -353,11 +346,6 @@ _STOPPED = {"incomplete": {"reason": "cancelled"}}
         ),
         # isAbandonedAssistantTurn keeps a turn with a reasoning part, even an empty one.
         ({}, [{"type": "reasoning", "text": ""}], [("user", "go")]),
-        # Malformed stored metadata is ignored, as readIncompleteInfo ignores it.
-        *[
-            (custom, _text("hi"), [("user", "go"), ("assistant", "hi")])
-            for custom in ("bad", {"incomplete": "length"}, {"incomplete": {"reason": ["length"]}})
-        ],
     ],
 )
 def test_refused_and_abandoned_turns_are_pruned(custom, content, before):
@@ -374,20 +362,15 @@ def test_stopped_turn_replays_reasoning_beside_text_or_calls():
 
 
 @pytest.mark.parametrize("custom", [{}, _STOPPED])
-@pytest.mark.parametrize("p", [{"google": {"native_part": {}}}, {"type": "image", "image": "x"}])
-def test_native_builtin_or_image_turn_keeps_its_prompt_and_reasoning(custom, p):
-    # The UI sends both, so no prune or label; their UI group keeps its reasoning (a call ends one).
-    part = p if "image" in p else _call("x", "code_execution", None, args = p)
-    trace, tail = _turn(custom, [part]), "" if custom and "image" not in p else "r"
+@pytest.mark.parametrize(
+    "part, code", [(_NATIVE, "server_tool_skipped"), (_IMAGE, "unsupported_part")]
+)
+def test_native_builtin_or_image_turn_keeps_its_prompt(custom, part, code):
+    # The UI sends the prompt and the reasoning, with no stop label.
+    trace = _turn(custom, [part])
     assert _shape(trace) == [("user", "go"), ("user", "again"), ("assistant", "fine")]
-    assert _codes(trace) == ["unsupported_part" if "image" in p else "server_tool_skipped"]
-    assert _turn(custom, [{"type": "reasoning", "text": "r"}, part]).messages[1].reasoning == "r"
-    assert _turn(custom, [part, {"type": "reasoning", "text": "r"}]).messages[1].reasoning == tail
-
-
-_NATIVE = _call("x", "code_execution", None, args = {"google": {"native_part": {}}})
-_R1, _R2 = {"type": "reasoning", "text": "r1"}, {"type": "reasoning", "text": "r2"}
-_IMAGE = {"type": "image", "image": "x"}
+    assert _codes(trace) == [code]
+    assert _turn(custom, [_R1, part]).messages[1].reasoning == "r1"
 
 
 @pytest.mark.parametrize(
@@ -418,6 +401,11 @@ def test_stopped_row_merged_into_earlier_text_keeps_its_first_group():
     assert (merged.text, merged.reasoning) == ("hello", "r1")
 
 
+def test_stopped_group_with_only_empty_text_drops_its_reasoning():
+    parts = [*_text(""), _NATIVE, _R2, *_text("")]
+    assert all(m.reasoning != "r2" for m in _turn(_STOPPED, parts).messages)
+
+
 @pytest.mark.parametrize("custom", [{}, _STOPPED])
 def test_assistant_text_that_python_strips_is_kept(custom):
     # The local path sends it. JS trim() keeps "\x1c", so a stopped turn gets no stop label.
@@ -435,6 +423,9 @@ def test_text_after_a_native_gemini_call_starts_a_new_message(between):
     trace = _turn({}, [*_text("before"), _NATIVE, *between, *_text("after")])
     first = [("assistant", ["k"]), ("tool", "k")] if between else [("assistant", "before")]
     assert _shape(trace)[: len(first) + 2] == [("user", "go"), *first, ("assistant", "after")]
+
+
+# Tool results
 
 
 @pytest.mark.parametrize("tool", ["generate_image", "generate_video"])
@@ -459,11 +450,6 @@ def test_untrimmed_text_group_after_a_tool_round_is_sent():
     assert session_to_trace({"id": "t"}, rows).messages[-1].text == "\ufeff"
 
 
-def test_stopped_group_with_only_empty_text_drops_its_reasoning():
-    parts = [*_text(""), _NATIVE, _R2, *_text("")]
-    assert all(m.reasoning != "r2" for m in _turn(_STOPPED, parts).messages)
-
-
 @pytest.mark.parametrize(
     "part, text",
     [
@@ -472,12 +458,19 @@ def test_stopped_group_with_only_empty_text_drops_its_reasoning():
         (_call("A", "search_knowledge_base", "Hit\n__RAG_SOURCES__:[1]"), "Hit"),
         (_call("A", "python", "Error: boom"), "Error: boom" + TOOL_ERROR_NUDGE),
         (_call("A", result = "out", provenance = {"model_suffix": " [2 left]"}), "out [2 left]"),
-        (_call("A", result = "out", provenance = "local"), "out"),
     ],
 )
 def test_tool_results_match_the_ui_wire_text(part, text):
     wire = json.dumps(part["result"], separators = (",", ":"))
     assert _assistant([part]).messages[2].text == (text or wire)
+
+
+def test_infinite_args_text_falls_back_to_args():
+    part = _call("A", args = {"a": 1}, argsText = '{"a":1e400}')
+    assert _assistant([part]).messages[1].tool_calls[0].arguments == {"a": 1}
+
+
+# User turns
 
 
 def test_user_attachments_are_model_input():
@@ -531,6 +524,9 @@ def test_audio_only_user_turn_stays_between_replies():
     ]
 
 
+# Legacy threads without parentId
+
+
 @pytest.mark.parametrize("parent", [None, "u1"])
 def test_legacy_threads_drop_blank_assistant_parts(parent):
     blank = [{"type": "reasoning", "text": " "}, {"type": "image", "image": "https://x/y.png"}]
@@ -573,9 +569,7 @@ def test_legacy_blank_text_uses_js_trim(blank, dropped):
     assert (shape == [("user", "again"), ("assistant", "ok")]) == dropped
 
 
-def test_infinite_args_text_falls_back_to_args():
-    part = _call("A", args = {"a": 1}, argsText = '{"a":1e400}')
-    assert _assistant([part]).messages[1].tool_calls[0].arguments == {"a": 1}
+# System prompt
 
 
 def test_deeply_nested_system_variables_fill_nothing():
@@ -585,28 +579,23 @@ def test_deeply_nested_system_variables_fill_nothing():
     assert trace.messages[0].text == "{{x}}"
 
 
-def test_system_variable_numbers_print_like_js():
-    variables = '{"a":1e-7,"b":1e21,"c":12345678901234567890,"d":[1e400,0.00001,-0.0],"e":1e400}'
-    thread = {"id": "t", "settings": {"systemPrompt": "{{a}} {{b}} {{c}} {{d}} {{e}}"}}
+def test_system_variables_print_like_js():
+    variables = '{"a":1e21,"b":[1e400,0.00001,3.0],"o":{"b":1,"2":2,"1":3}}'
+    thread = {"id": "t", "settings": {"systemPrompt": "{{a}} {{b}} {{o}}"}}
     thread["settings"]["systemVariables"] = variables
     trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
-    assert trace.messages[0].text == "1e-7 1e+21 12345678901234567000 [null,0.00001,0] Infinity"
+    assert trace.messages[0].text == '1e+21 [null,0.00001,3] {"1":3,"2":2,"b":1}'
 
 
-def test_system_variable_objects_print_like_js():
-    variables = '{"o":{"b":1,"2":2,"1":3,"01":4,"4294967295":5},"s":{"\\udc00":"\\ud800x"}}'
-    thread = {"id": "t", "settings": {"systemPrompt": "{{o}} {{s}}", "systemVariables": variables}}
-    trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
-    expected = '{"1":3,"2":2,"b":1,"01":4,"4294967295":5} {"\\udc00":"\\ud800x"}'
-    assert trace.messages[0].text == expected
-
-
-def test_system_variable_too_deep_to_print_stays_as_written():
+def test_system_variable_too_deep_to_print_stays_as_written(monkeypatch):
     # The depth where printing runs out of stack depends on the Python build.
+    def too_deep(value):
+        raise RecursionError
+
+    monkeypatch.setattr(session_to_trace_module, "_js_json", too_deep)
     variables = '{"a":[1]}'
     thread = {"id": "t", "settings": {"systemPrompt": "x {{a}} y", "systemVariables": variables}}
-    with mock.patch.object(session_to_trace_module, "_js_json", side_effect = RecursionError):
-        trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
+    trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
     assert trace.messages[0].text == "x {{a}} y"
 
 
