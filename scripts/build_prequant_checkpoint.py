@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -167,6 +169,80 @@ def quant_filter_settings(scheme: str, family: Optional[str]) -> dict:
     }
 
 
+def run_gptq(
+    args, fam, component, transformer, filter_fn, method, rotatable, group, pipe_kwargs, diffusers
+):
+    """Calibrate through the dense pipeline and GPTQ-solve every Linear the nvfp4 filter admits."""
+    import gc
+
+    import torch
+
+    from core.inference.diffusion_nvfp4_gptq_build import (
+        CALIB_PROMPTS,
+        calibrate_and_solve,
+        pipeline_renderer,
+    )
+
+    n = int(args.gptq_prompts)
+    if n > len(CALIB_PROMPTS):
+        raise SystemExit(
+            f"error: --gptq-prompts {n} exceeds the {len(CALIB_PROMPTS)} built-in prompts"
+        )
+    prompts = CALIB_PROMPTS[:n]
+    fqns = [
+        f
+        for f, m in transformer.named_modules()
+        if isinstance(m, torch.nn.Linear) and filter_fn(m, f)
+    ]
+    t0 = time.time()
+    pipe_cls = getattr(diffusers, fam.pipeline_class)
+    print(f"  GPTQ: loading {fam.pipeline_class} for calibration ({n} prompts) ...", flush = True)
+    pipe = pipe_cls.from_pretrained(
+        args.base, torch_dtype = torch.bfloat16, token = args.hf_token, **{component: transformer}
+    )
+    pipe.to("cuda")
+    pipe.set_progress_bar_config(disable = True)
+    free = torch.cuda.mem_get_info()[0]
+    budget = max(int(free - args.gptq_reserve_gib * 2**30), 1)
+    render_all = pipeline_renderer(
+        pipe,
+        prompts,
+        steps = args.gptq_steps,
+        height = args.gptq_size,
+        width = args.gptq_size,
+        seed = args.gptq_seed,
+        extra_kwargs = pipe_kwargs,
+    )
+    solved = calibrate_and_solve(
+        transformer,
+        fqns,
+        render_all,
+        method = method,
+        rotated = rotatable,
+        group = group,
+        budget_bytes = budget,
+        damp = args.gptq_damp,
+        blocksize = args.gptq_blocksize,
+        log = lambda msg: print(f"  {msg}", flush = True),
+    )
+    del pipe, render_all
+    gc.collect()
+    torch.cuda.empty_cache()
+    print(f"  GPTQ: {len(solved)} linears solved in {time.time() - t0:.0f}s", flush = True)
+    meta = {
+        "method": method,
+        "prompts": n,
+        "steps": int(args.gptq_steps),
+        "size": int(args.gptq_size),
+        "seed": int(args.gptq_seed),
+        "pipe_kwargs": pipe_kwargs,
+        "damp": float(args.gptq_damp),
+        "blocksize": int(args.gptq_blocksize),
+        "layers": len(solved),
+    }
+    return solved, meta
+
+
 def main(argv = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument(
@@ -208,6 +284,42 @@ def main(argv = None) -> int:
         "activations of that list and nothing else. Writes the v2 format tag.",
     )
     p.add_argument(
+        "--nvfp4-weight-quant",
+        default = None,
+        choices = ["max6", "4over6"],
+        help = "nvfp4 block-scale choice: max6 (torchao's) or 4over6 (per 16-block max/6 vs max/4, "
+        "per-tensor scale for an E4M3 top of 256). Default: UNSLOTH_NVFP4_WEIGHT_QUANT, else 4over6. "
+        "With --gptq-prompts the choice runs inside the GPTQ loop, weighted by the Hessian diagonal.",
+    )
+    p.add_argument(
+        "--gptq-prompts",
+        type = int,
+        default = 0,
+        help = "nvfp4 only: GPTQ-calibrate on the first N built-in calibration prompts (0 = off, "
+        "round-to-nearest). Same file format; one-time cost (minutes per model).",
+    )
+    p.add_argument(
+        "--gptq-steps", type = int, default = 8, help = "denoising steps per calibration prompt"
+    )
+    p.add_argument(
+        "--gptq-size", type = int, default = 1024, help = "calibration render height and width"
+    )
+    p.add_argument("--gptq-seed", type = int, default = 5000, help = "prompt i renders with seed + i")
+    p.add_argument(
+        "--gptq-pipe-kwargs",
+        default = "{}",
+        help = "JSON of extra pipeline call kwargs for calibration, e.g. '{\"guidance_scale\": 0.0}' for a "
+        "distilled model, or num_frames for video",
+    )
+    p.add_argument("--gptq-damp", type = float, default = 0.01)
+    p.add_argument("--gptq-blocksize", type = int, default = 128)
+    p.add_argument(
+        "--gptq-reserve-gib",
+        type = float,
+        default = 8.0,
+        help = "GPU memory kept free while Hessians are resident (more = more calibration passes)",
+    )
+    p.add_argument(
         "--upload-repo", default = None, help = "optional HF repo id to upload the checkpoint to"
     )
     p.add_argument("--upload-revision", default = None)
@@ -226,6 +338,22 @@ def main(argv = None) -> int:
             "error: --scheme nvfp4 writes .safetensors only (Studio never reads an NVFP4 pickle); "
             "give --out a .safetensors path",
             flush = True,
+        )
+        return 2
+    if (args.scheme or "").strip().lower() != "nvfp4" and (
+        args.gptq_prompts or args.nvfp4_weight_quant
+    ):
+        print(
+            "error: --gptq-prompts / --nvfp4-weight-quant apply to --scheme nvfp4 only", flush = True
+        )
+        return 2
+    try:
+        gptq_pipe_kwargs = json.loads(args.gptq_pipe_kwargs or "{}")
+    except ValueError:
+        gptq_pipe_kwargs = None
+    if not isinstance(gptq_pipe_kwargs, dict):
+        print(
+            f"error: --gptq-pipe-kwargs is not a JSON object: {args.gptq_pipe_kwargs!r}", flush = True
         )
         return 2
 
@@ -341,6 +469,7 @@ def main(argv = None) -> int:
 
     # Rotate before quantize_ so the quantizer sees the rotated distribution.
     rotation: dict = {}
+    rotatable: Sequence[str] = ()
     if convrot_group:
         from core.inference.diffusion_convrot import (
             rotatable_fqns,
@@ -356,6 +485,32 @@ def main(argv = None) -> int:
         if refusal:
             print(f"error: {refusal}", flush = True)
             return 2
+
+    # nvfp4 block-scale method: the quantize_ pass below reads it through the weight-quant patch.
+    weight_quant = None
+    gptq_solved: dict = {}
+    gptq_meta = None
+    if scheme == "nvfp4":
+        from core.inference.diffusion_nvfp4_weight_quant import WEIGHT_QUANT_ENV, resolve_method
+
+        weight_quant = resolve_method(args.nvfp4_weight_quant)
+        os.environ[WEIGHT_QUANT_ENV] = weight_quant
+        print(f"  nvfp4 weight scales: {weight_quant}", flush = True)
+    if scheme == "nvfp4" and args.gptq_prompts > 0:
+        gptq_solved, gptq_meta = run_gptq(
+            args,
+            fam,
+            component,
+            transformer,
+            filter_fn,
+            weight_quant,
+            rotatable,
+            int(convrot_group or 0),
+            gptq_pipe_kwargs,
+            diffusers,
+        )
+
+    if convrot_group:
         rotate_linears_(transformer, rotatable, group)
         rotation = rotation_metadata(group, rotatable)
         print(
@@ -366,6 +521,13 @@ def main(argv = None) -> int:
         )
 
     quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
+    if gptq_solved:
+        from core.inference.diffusion_nvfp4_gptq_build import apply_gptq_payloads
+        print(
+            f"  GPTQ payloads swapped into {apply_gptq_payloads(transformer, gptq_solved)} nvfp4 linears",
+            flush = True,
+        )
+        gptq_solved.clear()
 
     state_dict = {
         k: (v.detach().to("cpu") if hasattr(v, "detach") else v)
@@ -388,6 +550,9 @@ def main(argv = None) -> int:
         "torchao_version": getattr(torchao, "__version__", "?"),
         "diffusers_version": diffusers.__version__,
     }
+    if weight_quant is not None:
+        metadata["nvfp4_weight_quant"] = weight_quant
+        metadata["gptq"] = gptq_meta or False
     from core.inference.diffusion_prequant import canonical_weight_fingerprint
 
     # Version-neutral, so a file built on one torchao generation verifies on every other.
