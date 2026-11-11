@@ -23,6 +23,9 @@ _CHUNK = 1 << 20
 _MAX_STALLED_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 2.0
 _RETRIED_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_HF_REPO_URL = re.compile(
+    r"https://huggingface\.co/(?P<repo>[\w.-]+/[\w.-]+)(?:/resolve/(?P<revision>[^/?#]+))?/?$"
+)
 
 
 class FlmDownloadError(RuntimeError):
@@ -74,6 +77,24 @@ def _load(path: Path) -> Any:
     """Parsed once per version of the file: the catalog reads it for every model it lists."""
     info = path.stat()
     return _parsed(path, (info.st_mtime_ns, info.st_size))
+
+
+def read_model_repo(
+    flm_binary: Optional[Path], checkpoint: str
+) -> tuple[Optional[str], Optional[str]]:
+    """(owner/name, revision or None) of the Hugging Face repo model_list.json names for
+    checkpoint; (None, None) when unknown or not on huggingface.co."""
+    if flm_binary is None or ":" not in checkpoint:
+        return None, None
+    family, size = checkpoint.split(":", 1)
+    try:
+        url = _load(flm_binary.parent / "model_list.json")["models"][family][size]["url"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None
+    match = _HF_REPO_URL.match(url) if isinstance(url, str) else None
+    if match is None:
+        return None, None
+    return match["repo"], match["revision"]
 
 
 def read_model_files(

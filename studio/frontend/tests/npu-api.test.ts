@@ -214,3 +214,46 @@ test("the picker's NPU format holds no Hub repo", () => {
     assert.equal(matchesFormatFilter(id, gguf, "all"), true);
   }
 });
+
+test("NPU models carry FastFlowLM's model card repo, absent from older servers", async () => {
+  const rows = [
+    {
+      id: "qwen3.5-9b-FLM",
+      hf_repo: "FastFlowLM/Qwen3.5-9B-NPU2",
+      hf_revision: "flm_q4k_high_precision",
+    },
+    { id: "custom-FLM", hf_repo: null, hf_revision: null },
+    { id: "older-FLM" },
+  ];
+  const c = client(() => Response.json({ models: rows }));
+  const models = await c.api.listNpuModels();
+  assert.equal(c.requests[0].path, "/api/npu/models");
+  assert.equal(models[0].hf_repo, "FastFlowLM/Qwen3.5-9B-NPU2");
+  assert.equal(models[0].hf_revision, "flm_q4k_high_precision");
+  assert.equal(models[1].hf_repo, null);
+  assert.equal(models[2].hf_repo ?? null, null);
+});
+
+test("NPU capability tags and context label", () => {
+  const { api } = client(() => new Response(null));
+  const model = (vision: boolean, reasoning: boolean, tools: boolean) =>
+    ({
+      supports_vision: vision,
+      supports_reasoning: reasoning,
+      supports_tools: tools,
+    }) as Parameters<typeof api.npuCapabilities>[0];
+  assert.deepEqual(api.npuCapabilities(model(true, true, true)), [
+    { key: "vision", label: "Vision" },
+    { key: "reasoning", label: "Reasoning" },
+    { key: "tools", label: "Tools" },
+  ]);
+  assert.deepEqual(api.npuCapabilities(model(false, true, false)), [
+    { key: "reasoning", label: "Reasoning" },
+  ]);
+  assert.deepEqual(api.npuCapabilities(model(false, false, false)), []);
+  assert.equal(api.npuContextLabel(32768), "32K context");
+  assert.equal(api.npuContextLabel(262144), "256K context");
+  assert.equal(api.npuContextLabel(10000), "10,000 context");
+  assert.equal(api.npuContextLabel(null), null);
+  assert.equal(api.npuContextLabel(0), null);
+});

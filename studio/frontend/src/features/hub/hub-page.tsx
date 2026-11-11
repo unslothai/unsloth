@@ -27,7 +27,12 @@ import {
   requestModelConfigHandoff,
 } from "@/features/model-picker";
 import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
-import { type NpuModel, type NpuPickerSource, useNpuStatus } from "@/features/npu";
+import {
+  type NpuModel,
+  type NpuPickerSource,
+  useNpuCatalog,
+  useNpuStatus,
+} from "@/features/npu";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -51,7 +56,7 @@ import {
 import { toast } from "sonner";
 import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
-import { HubDetailView } from "./catalog/hub-detail-view";
+import { HubDetailShell, HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
 import {
@@ -80,6 +85,7 @@ import {
 } from "./lib/model-search-filters";
 import { ModelsToolbar } from "./catalog/models-toolbar";
 import { NpuCatalogList } from "./catalog/npu-catalog-list";
+import { NpuModelDetail } from "./catalog/npu-model-detail";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
@@ -649,6 +655,42 @@ export function ModelsPage() {
   const npuCatalogSource =
     formatFilter === "npu" && !isDatasetMode ? npuSource : undefined;
   const showNpuCatalog = npuCatalogSource !== undefined;
+  const npuCatalog = useNpuCatalog(npuCatalogSource);
+  const urlNpu = hubSearch.npu ?? null;
+  const npuModels = npuCatalog?.models ?? null;
+  const npuListing = showNpuCatalog && npuCatalog?.ready && npuModels === null;
+  const selectedNpu =
+    showNpuCatalog && urlNpu
+      ? (npuModels?.find(
+          (model) =>
+            model.id === urlNpu && (isDiscoverTab || model.downloaded),
+        ) ?? null)
+      : null;
+  // Leaving the NPU list (format, tab, kind) or losing the row closes its pane.
+  useEffect(() => {
+    if (!urlNpu || selectedNpu || npuStatus === null || npuListing) return;
+    void navigate({
+      to: "/hub",
+      search: (prev) => ({ ...prev, npu: undefined }),
+      replace: true,
+    });
+  }, [urlNpu, selectedNpu, npuStatus, npuListing, navigate]);
+  const handleSelectNpu = useCallback(
+    (model: NpuModel) =>
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({ ...prev, npu: model.id }),
+      }),
+    [navigate],
+  );
+  const handleCloseNpu = useCallback(
+    () =>
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({ ...prev, npu: undefined }),
+      }),
+    [navigate],
+  );
   const setFormatFilter = useCallback(
     (next: ModelFormatFilter) => {
       if (isDiscoverTab) {
@@ -2095,9 +2137,9 @@ export function ModelsPage() {
     setAllModelsView,
   ]);
 
-  // NPU rows have no detail view; one left open would cover their list.
-  const detailOpen = urlModel !== null && !showNpuCatalog;
-  const splitMode = allModelsView === "split" && !showNpuCatalog;
+  // The NPU list always splits; its pane follows ?npu, never a Hub repo left open in ?model.
+  const detailOpen = showNpuCatalog ? selectedNpu !== null : urlModel !== null;
+  const splitMode = showNpuCatalog || allModelsView === "split";
   const catalogCovered = detailOpen && !splitMode;
 
   const catalogPaneRef = useRef<HTMLDivElement>(null);
@@ -2189,11 +2231,13 @@ export function ModelsPage() {
           aria-hidden={catalogCovered || undefined}
           inert={catalogCovered || undefined}
         >
-          {npuCatalogSource ? (
+          {showNpuCatalog ? (
             <NpuCatalogList
-              source={npuCatalogSource}
+              catalog={npuCatalog}
               query={query}
               onDevice={!isDiscoverTab}
+              selectedId={selectedNpu?.id ?? null}
+              onSelect={handleSelectNpu}
               onRun={handleRunNpu}
             />
           ) : (
@@ -2222,6 +2266,16 @@ export function ModelsPage() {
             <div
               className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1"
             >
+              {selectedNpu && npuCatalog ? (
+                <HubDetailShell onBack={handleCloseNpu} compact={true}>
+                  <NpuModelDetail
+                    model={selectedNpu}
+                    catalog={npuCatalog}
+                    onRun={() => handleRunNpu(selectedNpu)}
+                    onSearchHub={handleSearchHub}
+                  />
+                </HubDetailShell>
+              ) : (
               <HubDetailView
                 model={selectedModel}
                 preferredGgufFile={preferredGgufFile}
@@ -2235,6 +2289,7 @@ export function ModelsPage() {
                 onBack={handleCloseDetail}
                 compact={true}
               />
+              )}
             </div>
           ) : (
             <div className="hidden min-h-0 flex-1 items-center justify-center px-6 text-center text-ui-13 text-muted-foreground lg:flex">
