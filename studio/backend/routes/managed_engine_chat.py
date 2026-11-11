@@ -35,11 +35,13 @@ class ManagedToolTransport:
         preserve_thinking = None,
         message_fitter = None,
         continuing = False,
+        reply_cap = None,
     ):
         self.client, self.engine, self.body = client, engine, body
         self._continuing = continuing
         self._preserve_thinking = preserve_thinking
         self._message_fitter = message_fitter
+        self._reply_cap = reply_cap
         # The tool loop keeps a turn's reasoning_content on the assistant message only when asked.
         self.preserves_reasoning = bool(engine.reasoning_parser and preserve_thinking)
 
@@ -70,6 +72,8 @@ class ManagedToolTransport:
         else:
             body.pop("tools", None)
             body.pop("tool_choice", None)
+        if self._reply_cap is not None:
+            await self._reply_cap(body)
         if cancel_event.is_set():
             return
         async with self.client.stream(
@@ -175,6 +179,15 @@ def _message_fitter(
         return fitted, max_tokens if capped else None, line
 
     return fit
+
+
+def _has_image(messages) -> bool:
+    return any(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
 
 
 def _with_model(line: str, public: str) -> str:
@@ -329,6 +342,23 @@ async def managed_tool_chat(
     if response_format is not None:
         body["response_format"] = response_format
     continuing = api._continue_final_message(payload)
+    thinking = {
+        "enable_thinking": payload.enable_thinking,
+        "reasoning_effort": payload.reasoning_effort,
+        "preserve_thinking": payload.preserve_thinking,
+    }
+
+    async def cap_reply(request_body):
+        # As in ManagedEngine.generate, an image prompt is left to the engine to judge.
+        if request_body.get("max_tokens") and not _has_image(request_body["messages"]):
+            request_body["max_tokens"] = await asyncio.to_thread(
+                engine._reply_cap_in_window,
+                request_body["messages"],
+                "",
+                request_body["max_tokens"],
+                thinking,
+                request_body.get("tools"),
+            )
 
     cancel = api._chat_cancel_event(request)
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:12]
@@ -353,6 +383,7 @@ async def managed_tool_chat(
                 payload, engine, public, tools or payload.tools, studio_loop = bool(tools)
             ),
             continuing = continuing,
+            reply_cap = cap_reply,
         )
         stripper = api.ServerToolCallStripper()
         stream = None
@@ -402,6 +433,7 @@ async def managed_tool_chat(
                     )
                     if max_tokens:
                         request_body["max_tokens"] = max_tokens
+                await cap_reply(request_body)
                 if continuing:
                     engine.continue_final_message(request_body)
                 response = await client.post(
@@ -559,6 +591,11 @@ async def managed_engine_completions(request, current_subject, backend, body):
     stream = bool(body.get("stream"))
     include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
     upstream = {**body, "model": engine.model}
+    limit = body.get("max_tokens")
+    if isinstance(limit, int) and limit > 0 and isinstance(body.get("prompt"), str):
+        upstream["max_tokens"] = await asyncio.to_thread(
+            engine._completion_cap_in_window, body["prompt"], limit
+        )
     if stream:
         # Always asked for so the monitor counts tokens; dropped again unless the caller opted in.
         upstream["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}

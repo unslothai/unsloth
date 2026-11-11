@@ -584,6 +584,38 @@ def _loaded_via_remote_code(obj):
     return False
 
 
+def _gguf_remote_code_approved(model, tokenizer = None):
+    """Did the load consent to remote code? A `trust_remote_code=True` stamp from the loader, or a model / tokenizer class that came from auto_map code (which only runs after consent)."""
+    try:
+        if getattr(model, "_unsloth_trust_remote_code", False) is True:
+            return True
+    except Exception:
+        pass
+    return _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)
+
+
+@contextmanager
+def _gguf_converter_remote_code(approved):
+    """Keep convert_hf_to_gguf.py to the load's trust decision, as Studio's export does.
+
+    The converter loads several architectures' tokenizers with trust_remote_code=True, so a
+    checkpoint loaded without consent could run its auto_map code there. Transformers imports
+    that code only from its HF_MODULES_CACHE copy, which the converter child inherits: a path no
+    directory can be created at refuses it. Checkpoints without auto_map never read it."""
+    if approved:
+        yield
+        return
+    existing = os.environ.get("HF_MODULES_CACHE")
+    os.environ["HF_MODULES_CACHE"] = os.path.join(os.path.abspath(__file__), "no_remote_code")
+    try:
+        yield
+    finally:
+        if existing is None:
+            os.environ.pop("HF_MODULES_CACHE", None)
+        else:
+            os.environ["HF_MODULES_CACHE"] = existing
+
+
 def _normalize_compressed_method(save_method):
     """(scheme, needs_calibration, suffix) if `save_method` is an FP8/FP4 compressed export, else None. Near-miss unsupported FP8/FP4 names raise a precise error instead of falling through to the generic "unknown save_method"."""
     if not isinstance(save_method, str):
@@ -1884,8 +1916,7 @@ def unsloth_save_model(
         raise ValueError(
             "Unsloth: a model with a trained MTP head saves as safetensors; drop `safe_serialization = False`."
         )
-    # Already `True` from the normalisation at the top of this function; the caller having
-    # passed `None` is what keeps the downgrade below from undoing it.
+    # Already True above; the caller passing None keeps the downgrade below from undoing it.
     if _force_safe_serialization:
         save_pretrained_settings["safe_serialization"] = safe_serialization
 
@@ -4006,6 +4037,105 @@ def _requests_float32(dtype):
     return dtype is torch.float32
 
 
+def _base_config_dicts(model):
+    """config.json of each base the model names (PEFT base, then _name_or_path), at the loaded commit, cache first."""
+    config = getattr(model, "config", None)
+    loaded = getattr(config, "_name_or_path", None)
+    names = [
+        getattr(peft_config, "base_model_name_or_path", None)
+        for peft_config in (getattr(model, "peft_config", None) or {}).values()
+    ]
+    names.append(loaded)
+    for name in dict.fromkeys(n for n in names if isinstance(n, str) and n):
+        # The loaded config's _commit_hash pins the snapshot it came from; another repo has no pin.
+        revision = getattr(config, "_commit_hash", None) if name == loaded else None
+        try:
+            if os.path.isdir(name):
+                path = os.path.join(name, "config.json")
+            else:
+                from huggingface_hub import hf_hub_download
+                try:
+                    path = hf_hub_download(
+                        name, "config.json", revision = revision, local_files_only = True
+                    )
+                except Exception:
+                    path = hf_hub_download(name, "config.json", revision = revision)
+            with open(path, encoding = "utf-8") as f:
+                yield json.load(f)
+        except Exception:
+            continue
+
+
+def _restore_lfm3_audio_release_config(model, save_directory):
+    """Swap LFM3-Audio's saved text_config layout for the base's release (lfm / encoder) one, the only one llama.cpp reads."""
+    path = os.path.join(save_directory, "config.json")
+    try:
+        with open(path, encoding = "utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if saved.get("model_type") != "lfm3_audio" or "lfm" in saved:
+        return False
+    vocab = (saved.get("text_config") or {}).get("vocab_size")
+    for release in _base_config_dicts(model):
+        if release.get("model_type") != "lfm3_audio" or not isinstance(release.get("lfm"), dict):
+            continue
+        if vocab is not None and release["lfm"].get("vocab_size") != vocab:
+            continue  # resized embeddings: the release config no longer describes these weights
+        # The dtype the weights were written in and the code modules the save copied, not the release's.
+        # `lfm` takes text_config's schema: the effective text settings (e.g. a user rope_scaling) win over the release's.
+        text = {k: v for k, v in (saved.get("text_config") or {}).items() if k != "_name_or_path"}
+        release = {
+            **release,
+            "lfm": {**release["lfm"], **text},
+            **{k: saved[k] for k in ("dtype", "torch_dtype", "auto_map") if k in saved},
+        }
+        with open(path, "w", encoding = "utf-8") as f:
+            json.dump(release, f, indent = 2)
+        return True
+    print(
+        "Unsloth: LFM3-Audio config.json is not in its release layout and the base's could not be read; "
+        "llama.cpp's converter will not recognize it."
+    )
+    return False
+
+
+def _release_layout_for_merged_save(model, save_directory, save_method):
+    # A merged folder has no PEFT base to read the release config from later. 4-bit keeps its quantization_config.
+    if "16bit" not in str(save_method) or not os.path.isdir(str(save_directory)):
+        return False
+    return _restore_lfm3_audio_release_config(model, save_directory)
+
+
+def _push_lfm3_audio_release_config(
+    model,
+    save_directory,
+    token = None,
+):
+    # The PEFT merged push uploads straight from the merge, so the release config follows it.
+    if getattr(getattr(model, "config", None), "model_type", None) != "lfm3_audio":
+        return False
+    # Only now: for other models this whoami could raise after a finished upload.
+    repo_id = _determine_username(save_directory, None, token)[0]
+    import tempfile
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    with tempfile.TemporaryDirectory(prefix = "unsloth-lfm3-config-") as directory:
+        hf_hub_download(
+            repo_id, "config.json", token = token, local_dir = directory, force_download = True
+        )
+        if not _restore_lfm3_audio_release_config(model, directory):
+            return False
+        HfApi(token = token).upload_file(
+            path_or_fileobj = os.path.join(directory, "config.json"),
+            path_in_repo = "config.json",
+            repo_id = repo_id,
+            commit_message = "Unsloth: LFM3-Audio config in its release layout",
+        )
+    return True
+
+
 def _stamp_saved_config_float32(save_directory):
     # save_pretrained writes the resident model's 16-bit dtype, and dtype = "auto" would then
     # cast the float32 tensors back down on load.
@@ -4987,6 +5117,8 @@ def unsloth_save_pretrained_gguf(
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
+    # Read before the processor is unwrapped to its tokenizer below.
+    remote_code_approved = _gguf_remote_code_approved(self, tokenizer)
     save_directory = os.path.normpath(os.fspath(save_directory))
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
@@ -5084,6 +5216,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
     del arguments["_gguf_prewarm_ok"]  # a local decision, not a save_pretrained kwarg
     del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
+    del arguments["remote_code_approved"]  # gates the converter, not a save_pretrained kwarg
 
     # Preserve the requested output before reusing a non-PEFT checkpoint as input. Same definition the preflight sized, so it measured the disk these files land on.
     gguf_directory = _gguf_output_directory(save_directory)
@@ -5232,21 +5365,28 @@ def unsloth_save_pretrained_gguf(
         raise
 
     try:
-        all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
-            model_name = model_name,
-            model_type = model_type,
-            model_dtype = model_dtype,
-            is_sentencepiece = False,
-            model_directory = save_directory,
-            quantization_method = quantization_methods,
-            first_conversion = first_conversion,
-            is_vlm = is_vlm,
-            is_gpt_oss = is_gpt_oss,
-            imatrix = imatrix_path,
-            gguf_directory = gguf_directory,
-            merge_is_disposable = merge_is_disposable,
-            preexisting_weights = preexisting_weights,
-        )
+        _restore_lfm3_audio_release_config(self, save_directory)
+    except BaseException:
+        _drop_staged_checkpoint(staged_directory)
+        raise
+
+    try:
+        with _gguf_converter_remote_code(remote_code_approved):
+            all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
+                model_name = model_name,
+                model_type = model_type,
+                model_dtype = model_dtype,
+                is_sentencepiece = False,
+                model_directory = save_directory,
+                quantization_method = quantization_methods,
+                first_conversion = first_conversion,
+                is_vlm = is_vlm,
+                is_gpt_oss = is_gpt_oss,
+                imatrix = imatrix_path,
+                gguf_directory = gguf_directory,
+                merge_is_disposable = merge_is_disposable,
+                preexisting_weights = preexisting_weights,
+            )
     except Exception as e:
         if _gguf_child_was_oom_killed(e):
             raise RuntimeError(
@@ -6514,11 +6654,12 @@ def save_to_gguf_generic(
             raise RuntimeError(error)
 
     for quantization_type in new_quantization_methods:
-        metadata = _convert_to_gguf(
-            save_directory,
-            print_output = True,
-            quantization_type = quantization_type,
-        )
+        with _gguf_converter_remote_code(_gguf_remote_code_approved(model, tokenizer)):
+            metadata = _convert_to_gguf(
+                save_directory,
+                print_output = True,
+                quantization_type = quantization_type,
+            )
         if repo_id is not None:
             from unsloth_zoo.saving_utils import prepare_saving
 
@@ -6771,9 +6912,7 @@ def unsloth_generic_save(
             'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
             "model and load it again) before `get_peft_model`."
         )
-    # The pruned base REAP saved is a local folder: an adapter pushed against it names a path no one
-    # else can load. In this process the marker says so (even if the folder moved since); after a
-    # reload from that folder, the provenance file reap_prune wrote there does.
+    # Pushing an adapter against a local pruned base names a path others cannot load.
     if (
         push_to_hub
         and isinstance(model, PeftModel)
@@ -6868,6 +7007,7 @@ def unsloth_generic_save(
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
         with _internal_mtp_save():
             model.save_pretrained(save_directory, **_save_kwargs)
+        _release_layout_for_merged_save(model, save_directory, save_method)
         if "16bit" in save_method and _requests_float32(dtype):
             _stamp_saved_config_float32(save_directory)
         if (
@@ -6961,6 +7101,9 @@ def unsloth_generic_save(
         # Pushes with an attached head were rerouted to a local save above.
         if not push_to_hub:
             _stitch_mtp_head(model, save_directory)
+            _release_layout_for_merged_save(model, save_directory, save_method)
+        elif "16bit" in save_method and is_main_process:
+            _push_lfm3_audio_release_config(model, save_directory, token = token)
 
     if push_to_hub and datasets:
         try:
@@ -7150,9 +7293,8 @@ def _fsdp2_merged_gather_options(model, args, kwargs):
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
-    # Packed 4-bit weights are staged on the CPU as they are gathered. merged_4bit merges with PEFT
-    # one layer at a time on the GPU the packed weight came from, so those layers' LoRA weights stay
-    # on that device; every other gathered weight goes to the CPU.
+    # Packed 4-bit weights are staged on CPU as gathered; merged_4bit keeps those layers LoRA
+    # weights on the packed weight GPU; every other gathered weight goes to CPU.
     offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
     gather_options = _fsdp2_merged_gather_options,
 )

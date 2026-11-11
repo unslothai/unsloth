@@ -150,8 +150,7 @@ def test_a_poisoned_metal_backend_in_the_log_retires_the_server(harness, lines, 
 
 
 def test_echoed_marker_without_a_compute_failure_does_not_retire(harness):
-    """A grammar parse error prints the request's grammar, so a forged E-line can carry the
-    marker: retirement needs the child to really fail compute."""
+    """A grammar error echoes the marker, so retire only on a confirmed compute failure."""
     backend, first, _loads = harness(_OFF, "none", [METAL_OOM])
     backend._metal_compute_failure_confirmed = lambda: False
     threading.Thread(target = backend._drain_stdout, daemon = True).start()
@@ -220,8 +219,7 @@ def test_a_terminal_second_oom_is_not_left_healthy(harness):
 
 
 def test_a_terminally_retired_server_is_not_active(harness):
-    """After the second Metal OOM nothing respawns the child, so delete, Always mode and the
-    training guard must not see a model still loading."""
+    """A second Metal OOM is terminal, so delete, Always mode and training never see loading."""
     backend, first, _loads = harness(_OFF, "none")
     _poison(backend, first)
     assert backend._respawn_if_dead() is True
@@ -269,8 +267,7 @@ def test_a_model_swap_during_retirement_is_not_charged_the_strike(harness):
 
 
 def test_the_strike_is_recorded_before_a_respawn_can_run(harness):
-    """Retirement decides the recovery before releasing _respawn_lock, so a request racing
-    the kill cannot replay the speculative config first."""
+    """Retirement sets recovery before the lock drops; a racer cannot replay speculation."""
     backend, first, loads = harness(_Intent(), "draft-dspark")
     seen = {}
     real_after = backend._after_metal_poisoned_server
@@ -436,8 +433,7 @@ def _loaded(tmp_path, **kw):
 
 @pytest.mark.parametrize("retired", [False, True])
 def test_a_retired_child_is_not_reused_by_an_identical_load(tmp_path, retired):
-    """After a first retirement the killed child is still recorded and _healthy is still
-    true: an identical explicit load must spawn a replacement."""
+    """Retired child stays recorded and _healthy, so an identical explicit load must respawn."""
     gguf = tmp_path / "m.gguf"
     gguf.write_bytes(b"gguf")
     backend = LlamaCppBackend()
@@ -491,8 +487,7 @@ def test_an_explicit_reload_clears_a_terminal_metal_oom(tmp_path, hint):
 
 
 def test_an_explicit_reload_with_changed_settings_clears_the_terminal_latch(tmp_path):
-    """The latch must not survive a reload that changes the GPU pick and re-arm once a
-    matching request writes gpu_ids back."""
+    """A changed GPU pick on reload clears the latch; it re-arms when gpu_ids is written back."""
     backend, gguf = _loaded(tmp_path)
     committed = backend._last_load_intent
     assert committed is not None and committed.gpu_ids is None
@@ -527,8 +522,7 @@ def test_a_callers_load_starts_a_fresh_metal_oom_episode(tmp_path):
 
 
 def test_automatic_recovery_keeps_the_strike(tmp_path):
-    """The respawn and the drafter-free reload replay under the recovery marker, which carries
-    the count, so a second OOM still stops respawning."""
+    """The recovery marker carries the strike count, so a second OOM still stops respawning."""
     backend, gguf = _loaded(tmp_path)
     _strike(backend)
     with llama_cpp._automatic_recovery_load():
@@ -544,8 +538,7 @@ def test_the_respawn_and_drafter_free_reload_run_as_automatic_recovery():
 
 
 def test_a_diffusion_load_drops_the_chat_servers_recovery_state(tmp_path, monkeypatch):
-    """A crashed diffusion runner must neither replay the chat load it replaced nor meet that
-    load's Metal OOM latch."""
+    """A crashed diffusion runner must not replay the chat load nor inherit its OOM latch."""
     import test_gpu_memory_mode as _gm
 
     real_init = LlamaCppBackend.__init__
@@ -603,8 +596,7 @@ def test_a_real_mtp_crash_still_reloads_without_mtp(harness):
 
 
 def test_a_reload_queued_before_the_retirement_stands_down(harness):
-    """The request saw the port close while the child was still exiting; the retirement
-    lands during the queued reload's exit wait."""
+    """The port closed mid-exit; the retirement lands during the queued reload's exit wait."""
     backend, first, loads = _mtp_server(harness)
     assert backend._maybe_recover_from_mtp_crash(httpx.ConnectError("closed")) is True
     backend._retire_device_lost_server(first)
@@ -775,8 +767,7 @@ def _release_primary(inf):
 
 
 def test_a_retired_kept_slot_is_dropped_and_keeps_the_primarys_residency(monkeypatch):
-    """Dead, it holds nothing a request could still use, so a held one goes too; the chat
-    residency is the primary's, which may be a live zero-VRAM model."""
+    """A dead kept slot is dropped, but the chat residency stays with the primary model."""
     inf, calls = _routes(monkeypatch)
     retired, other = _kept_slot(refs = 1), _kept_slot()
     monkeypatch.setattr(model_slots, "slots", [retired, other])
@@ -903,8 +894,7 @@ def test_the_standard_handoff_skips_the_wait_with_nothing_running(monkeypatch):
 
 
 def test_the_standard_handoff_waits_for_a_cleanup_past_its_check(monkeypatch):
-    """A cleanup holding the lock already decided the backend is still retired: the standard
-    load may not publish its residency until that cleanup is done."""
+    """A locked cleanup still sees the backend retired, so the standard load waits to publish."""
     import routes.inference as inf
 
     backend = LlamaCppBackend()

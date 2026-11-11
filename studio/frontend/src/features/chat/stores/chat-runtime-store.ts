@@ -20,6 +20,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   loadedContextFields,
   type MlxKvQuant,
@@ -448,6 +450,10 @@ export type LiveGenerationProgress = {
   /** Whether "Processing prompt" is up for this pass; see prefillLabelShown. */
   prefillShown: boolean;
   decode: LiveDecodeProgress | null;
+  /** The context fit is evicting turns; ends with this pass's context_truncated or its first prefill sample. */
+  compacting?: boolean;
+  /** This pass's own context_usage has landed: it counts the reply exactly, so live figures step aside. */
+  settled?: boolean;
 };
 export type PendingImageEditReference = {
   threadId: string | null;
@@ -2610,7 +2616,7 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       maxTokensCap?: number;
       migrateOwnedGlobalQwenDefaults?: boolean;
-      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+      /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
     },
@@ -2737,7 +2743,9 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setLivePrefill: (threadId: string | null, prefill: LivePrefillProgress) => void;
   setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
+  setLiveCompacting: (threadId: string | null, compacting: boolean) => void;
   clearLiveGenerationForThread: (threadId: string | null) => void;
+  settleLiveGeneration: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
@@ -5294,6 +5302,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+        if (
+          state.params.checkpoint &&
+          state.supportsReasoning &&
+          !state.reasoningAlwaysOn &&
+          state.supportsReasoningOff
+        ) {
+          persistReasoningEnabled(state.params.checkpoint, reasoningEnabled);
+        }
       } else {
         noteConstraintSuppressedThreadField("reasoningEnabled");
       }
@@ -5991,8 +6007,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             prefill: current?.prefill ?? null,
             prefillShown: current?.prefillShown ?? false,
             decode,
+            ...(current?.settled ? { settled: true } : {}),
           },
         },
+      };
+    }),
+  setLiveCompacting: (threadId, compacting) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (!compacting && !current?.compacting) return state;
+      // A new pass: the last round's prefill and decode figures describe a prompt the fit is replacing.
+      const next: LiveGenerationProgress = compacting
+        ? { prefill: null, prefillShown: false, decode: null, compacting: true }
+        : { ...current!, compacting: false };
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: next },
+      };
+    }),
+  settleLiveGeneration: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (current === undefined || current.settled) return state;
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: { ...current, settled: true } },
       };
     }),
   clearLiveGenerationForThread: (threadId) =>

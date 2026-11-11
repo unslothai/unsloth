@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured, other sm80+ behind a
-bit-exact probe and a latency check (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock
-(ROCm and CPU never reach it); Linear output bit-identical, compiled block not end to end;
-sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
+"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured (every sm8x stock on
+Triton >= 3.8, whose int8 dot spills there), other sm80+ behind a bit-exact probe and a latency check
+(UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock (ROCm and CPU never reach it);
+Linear output bit-identical, compiled block not end to end; sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
 UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
 INT8_SWIGLU_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED"
 INT8_GEMM_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED"
 INT8_GEMM_TMA_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TMA"
+INT8_GEMM_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_RACE"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -32,6 +33,9 @@ _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_mm_dequant"
 _REC = "_unsloth_i8_gemm"
 _MARK = "_unsloth_i8_gemm_prev"
+# The bound ``_linear_forward`` the swap installed: a traced forward checks the instance ``forward`` by identity with
+# it (dynamo resolves ``forward.__func__ is _linear_forward`` to False, so the shared paths never engaged compiled).
+_FWD = "_unsloth_i8_gemm_fwd"
 # on a SwiGLU MLP whose down projection takes its codes from the gate / value halves
 _FF_MARK = "_unsloth_i8_gemm_swiglu_prev"
 _SWIGLU_FF_CLASSES = ("QwenImage21SwiGLUFeedForward",)
@@ -59,6 +63,11 @@ _ARCH_CONFIG = {
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 # Measured slower than cuBLAS: not probed unless forced.
 _UNLISTED_SKIP = ((10, 0), (10, 3))
+# Raced against the fallback on unlisted archs; a tile overflowing shared memory fails the probe and drops out.
+_UNLISTED_RACE_TILES = (
+    (128, 128, 128, 8, 4, 3),
+    (256, 128, 128, 8, 8, 3),
+)
 
 # First match wins, bounds inclusive. No L4 rule on purpose: power-capped clocks lose end to end.
 # (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), M >= _SHAPE_MIN_M only.
@@ -131,6 +140,23 @@ def _triton_version_ok(version: Optional[str] = None) -> bool:
     return bool(match) and (int(match.group(1)), int(match.group(2))) >= _MIN_TRITON
 
 
+@lru_cache(maxsize = None)
+def _triton_at_least(major: int, minor: int) -> bool:
+    try:
+        import triton
+    except Exception:  # noqa: BLE001
+        return False
+    import re
+
+    match = re.match(r"(\d+)\.(\d+)", str(triton.__version__))
+    return bool(match) and (int(match.group(1)), int(match.group(2))) >= (major, minor)
+
+
+def _triton38_sm8x(cap: tuple) -> bool:
+    """Triton >= 3.8 spills sm8x int8 tiles (triton-lang/triton#12486); even spill-free ones trail cuBLAS."""
+    return cap[0] == 8 and _triton_at_least(3, 8)
+
+
 def unlisted_mode() -> str:
     """'off', 'force' (no latency check) or 'auto' for the sm80+ archs without an ``_ARCH_CONFIG`` tile."""
     gemm = int8_gemm_mode()
@@ -155,7 +181,10 @@ def unlisted_wanted(capability: Optional[tuple], mode: Optional[str] = None) -> 
     mode = unlisted_mode() if mode is None else mode
     if mode == "off" or not unlisted_arch(capability):
         return False
-    return mode == "force" or (int(capability[0]), int(capability[1])) not in _UNLISTED_SKIP
+    if mode == "force":
+        return True
+    cap = (int(capability[0]), int(capability[1]))
+    return cap not in _UNLISTED_SKIP and not _triton38_sm8x(cap)
 
 
 def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Optional[tuple]:
@@ -165,6 +194,8 @@ def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Opti
         return None
     cap = (int(capability[0]), int(capability[1]))
     cfg = _ARCH_CONFIG.get(cap)
+    if mode == "auto" and _triton38_sm8x(cap):
+        return None
     if cfg is None and mode == "force" and cap >= (8, 0):
         return _FALLBACK_CONFIG
     return cfg
@@ -528,10 +559,9 @@ def _tma_probe(index: int, capability: tuple) -> Optional[tuple]:
 
 
 def device_config(index: int) -> Optional[tuple]:
-    """Probe once per device: arch gate, Triton, op registration, then a launch that must match the eager torchao
-    epilogue bit for bit (bf16 and fp32 activation scales, bias, ragged M / N / K). None keeps the stock path. Each
-    per-shape tile is probed the same way; one that fails leaves its shapes on the default tile. Unlisted archs:
-    ``unlisted_config``, re-read per call so its switch acts between loads."""
+    """Probed once per device (arch gate, Triton, op registration, bit-exact match with the eager
+    torchao epilogue); None keeps the stock path, a failing per-shape tile falls back to the
+    default, and unlisted archs re-read unlisted_config per call."""
     if index in _UNLISTED_CARDS:
         return unlisted_config(index)
     if index in _DEVICE_CFG:
@@ -580,28 +610,57 @@ _UNLISTED_OK: dict = {}
 _UNLISTED_TIMING: dict = {}
 # (M, N, K): Qwen-Image-2.1 attention projection, MLP in, MLP down
 _UNLISTED_LATENCY_SHAPES = ((2048, 4096, 4096), (2048, 12288, 4096), (2048, 4096, 12288))
+# Hold per tile (then as long timed): long enough for a power-capped part (L4: 72 W) to settle its clock.
+_UNLISTED_RACE_SHAPES = tuple((4096, n, k) for _m, n, k in _UNLISTED_LATENCY_SHAPES)
+_RACE_HOLD_S = 0.3
 
 
 def _unlisted_latency(index: int, cfg: tuple) -> dict:
     """{"fused": us, "stock": us} summed over ``_UNLISTED_LATENCY_SHAPES``, each arm captured in a CUDA graph and
     replayed, best of seven interleaved rounds. Stock = cuBLAS ``_int_mm``; its epilogue fuses into the consumer, so
     each arm ends in one read of its output (int32 for stock, bf16 here) standing in for that consumer."""
+    return _graph_latency(
+        index,
+        {
+            "fused": lambda a, w, xs, ws: _launch(a, w, xs, ws, None, cfg).amax(),
+            "stock": lambda a, w, xs, ws: _int_mm_stock(a, w).amax(),
+        },
+    )
+
+
+def _int_mm_stock(a: Any, w: Any) -> Any:
+    import torch
+    return torch._int_mm(a, w.t())
+
+
+def _unlisted_race(index: int, cfgs: tuple) -> dict:
+    """{tile: us}, each held under load: a power-capped part clocks down under a tile that draws more, so a short
+    burst would rank tiles by boost-clock speed, not render speed."""
+    fns = {}
+    for cfg in cfgs:
+        fns[cfg] = lambda a, w, xs, ws, cfg = cfg: _launch(a, w, xs, ws, None, cfg).amax()
+    return _graph_latency(index, fns, _UNLISTED_RACE_SHAPES, hold_s = _RACE_HOLD_S)
+
+
+def _graph_latency(
+    index: int,
+    fns: dict,
+    shapes: tuple = _UNLISTED_LATENCY_SHAPES,
+    hold_s: float = 0.0,
+) -> dict:
+    """{name: us} per CUDA-graph arm: best of seven interleaved rounds, or held ``hold_s`` then timed ``hold_s``."""
     import torch
     from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
 
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(5)
     ops = []
-    for m, n, k in _UNLISTED_LATENCY_SHAPES:
+    for m, n, k in shapes:
         a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
         w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
         xs = torch.full((m,), 1e-3, device = dev, dtype = torch.bfloat16)
         ws = torch.full((n,), 1e-3, device = dev, dtype = torch.bfloat16)
         ops.append((a, w, xs, ws))
-    fns = {
-        "fused": lambda a, w, xs, ws: _launch(a, w, xs, ws, None, cfg).amax(),
-        "stock": lambda a, w, xs, ws: torch._int_mm(a, w.t()).amax(),
-    }
     reps = 2
     graphs = {}
     with torch.cuda.device(dev):
@@ -625,6 +684,11 @@ def _unlisted_latency(index: int, cfg: tuple) -> dict:
         synchronize_outside_capture(dev)
         start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
         best = {name: float("inf") for name in graphs}
+        if hold_s > 0:
+            for name, graph in graphs.items():
+                best[name] = _held_us(graph, hold_s, start, end) / reps
+            del graphs
+            return best
         for _ in range(7):
             for name, graph in graphs.items():
                 start.record()
@@ -636,9 +700,32 @@ def _unlisted_latency(index: int, cfg: tuple) -> dict:
     return best
 
 
+def _held_us(graph: Any, hold_s: float, start: Any, end: Any) -> float:
+    """us per replay of ``graph`` after ``hold_s`` of back-to-back replays, averaged over ``hold_s`` more."""
+    import time
+
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < hold_s:
+        graph.replay()
+        end.record()
+        end.synchronize()
+    n = 0
+    start.record()
+    t0 = time.perf_counter()
+    while n == 0 or time.perf_counter() - t0 < hold_s:
+        graph.replay()
+        n += 1
+        if n % 2 == 0:
+            end.record()
+            end.synchronize()
+    end.record()
+    end.synchronize()
+    return start.elapsed_time(end) * 1000.0 / n
+
+
 def unlisted_config(index: int) -> Optional[tuple]:
-    """Unlisted sm80+ card: ``_FALLBACK_CONFIG`` when it passed the bit-exact probe (once per device) and the latency
-    check (once per (device, mode); skipped under force), else None. Outside any trace / capture."""
+    """Unlisted sm80+ card: the race winner if the fallback passed the probe and the winner the latency check, else
+    None. Force skips race and check and runs the fallback. Outside any trace / capture."""
     import torch
 
     mode = unlisted_mode()
@@ -648,23 +735,140 @@ def unlisted_config(index: int) -> Optional[tuple]:
             if index not in _UNLISTED_PROBE:
                 _UNLISTED_PROBE[index] = _probe(index, _FALLBACK_CONFIG)
             if _UNLISTED_PROBE[index]:
-                key = (index, mode)
+                tile = _FALLBACK_CONFIG if mode == "force" else _unlisted_tile(index)
+                key = (index, mode, tile)
                 if key not in _UNLISTED_OK:
                     ok = True
                     if mode != "force":
                         try:
-                            timing = _unlisted_latency(index, _FALLBACK_CONFIG)
+                            timing = _unlisted_latency(index, tile)
                             _UNLISTED_TIMING[index] = {k: round(v, 1) for k, v in timing.items()}
+                            _UNLISTED_TIMING[index].update(_UNLISTED_RACE.get(index) or {})
                             ok = timing["fused"] <= timing["stock"]
                         except Exception:  # noqa: BLE001 - main's path stays
                             ok = False
                     _UNLISTED_OK[key] = ok
-                cfg = _FALLBACK_CONFIG if _UNLISTED_OK[key] else None
+                cfg = tile if _UNLISTED_OK[key] else None
     except Exception:  # noqa: BLE001
         cfg = None
     _DEVICE_TILES[index] = ()
     _DEVICE_CFG[index] = cfg
     return cfg
+
+
+_UNLISTED_TILE: dict = {}
+_UNLISTED_RACE: dict = {}  # index -> {"tile": kept tile, "race": {tile: us}} for the log
+_RACE_CACHE_NAME = "diffusion_int8_tile_race.json"
+_RACE_CACHE_MAX = 16
+
+
+def race_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_RACE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def _race_cache_file() -> Optional[Any]:
+    try:
+        from pathlib import Path
+        from utils.paths.storage_roots import cache_root
+        return Path(cache_root()) / _RACE_CACHE_NAME
+    except Exception:  # noqa: BLE001 - no resolvable root: race every process
+        return None
+
+
+def _race_key(index: int) -> Optional[str]:
+    """Card, toolchain and this file's source: any change re-races."""
+    try:
+        import hashlib
+        import torch
+        import triton as _triton
+
+        src = hashlib.sha256(open(__file__, "rb").read()).hexdigest()[:16]
+        cap = torch.cuda.get_device_capability(index)
+        return "|".join(
+            (
+                torch.cuda.get_device_name(index),
+                f"{cap[0]}.{cap[1]}",
+                torch.__version__,
+                str(torch.version.cuda),
+                _triton.__version__,
+                src,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _race_cache_load(key: Optional[str]) -> Optional[tuple]:
+    path = _race_cache_file() if key else None
+    try:
+        import json
+        tile = (
+            json.loads(path.read_text(encoding = "utf-8")).get(key)
+            if path is not None and path.is_file()
+            else None
+        )
+    except Exception:  # noqa: BLE001 - unreadable or corrupt: a miss
+        return None
+    tile = tuple(tile) if isinstance(tile, list) else None
+    return tile if tile == _FALLBACK_CONFIG or tile in _UNLISTED_RACE_TILES else None
+
+
+def _race_cache_store(key: Optional[str], tile: tuple) -> None:
+    path = _race_cache_file() if key else None
+    if path is None:
+        return
+    try:
+        import json
+
+        try:
+            table = json.loads(path.read_text(encoding = "utf-8")) if path.is_file() else {}
+        except Exception:  # noqa: BLE001
+            table = {}
+        table = {k: v for k, v in table.items() if k != key and isinstance(v, list)}
+        table = dict(list(table.items())[-(_RACE_CACHE_MAX - 1) :])
+        table[key] = list(tile)
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(table), encoding = "utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        pass
+
+
+def _unlisted_tile(index: int) -> tuple:
+    """Once per device: fastest probe-passing tile vs the fallback (ties keep the fallback), persisted per card and
+    toolchain. Any failure, or UNSLOTH_DIFFUSION_INT8_GEMM_RACE=0, keeps the fallback."""
+    if (
+        not race_enabled()
+    ):  # read per load, ahead of the kept winner, so the switch acts between loads
+        return _FALLBACK_CONFIG
+    if index not in _UNLISTED_TILE:
+        best = _FALLBACK_CONFIG
+        try:
+            key = _race_key(index) if race_enabled() else None
+            cached = _race_cache_load(key)
+            if cached is not None and (cached == _FALLBACK_CONFIG or _probe(index, cached)):
+                best = cached
+                _UNLISTED_RACE[index] = {"tile": best}
+            elif race_enabled():
+                cands = tuple(
+                    t for t in _UNLISTED_RACE_TILES if t != _FALLBACK_CONFIG and _probe(index, t)
+                )
+                if cands:
+                    timing = _unlisted_race(index, (_FALLBACK_CONFIG,) + cands)
+                    for tile in cands:
+                        if timing[tile] < timing[best]:
+                            best = tile
+                    _UNLISTED_RACE[index] = {
+                        "tile": best,
+                        "race": {t: round(us, 1) for t, us in timing.items()},
+                    }
+                    _race_cache_store(key, best)
+        except Exception:  # noqa: BLE001 - the fallback stays
+            best = _FALLBACK_CONFIG
+        _UNLISTED_TILE[index] = best
+    return _UNLISTED_TILE[index]
 
 
 # (M, N, K, bias, fp32 scales). Ragged N / K stay on 16: an off-16 probe compiles the spilling variant (see ``_aligned``).
@@ -798,8 +1002,8 @@ def _act_quant_v1(x2d: Any) -> tuple:
 
 
 def _act_quant_v2(x2d: Any, weight: Any) -> tuple:
-    from .diffusion_int8_fused import _act_quant
-    return _act_quant(x2d, weight)
+    from .diffusion_int8_fused import _mlp_act_quant
+    return _mlp_act_quant(x2d, weight)
 
 
 @lru_cache(maxsize = 4)
@@ -909,7 +1113,11 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
     rec = d.get(_REC)
     if rec is None or _MARK not in d or "_diffusers_hook" in d or "_hf_hook" in d:
         return None
-    if getattr(d.get("forward"), "__func__", None) is not _linear_forward:
+    fwd = d.get("forward")
+    if torch.compiler.is_compiling():
+        if fwd is None or fwd is not d.get(_FWD):
+            return None
+    elif getattr(fwd, "__func__", None) is not _linear_forward:
         return None
     if d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
         return None
@@ -986,6 +1194,50 @@ def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
     else:
         y = stock_gemm(xq, wq, xs, ws, down.bias)
     return y.reshape(*gate.shape[:-1], y.shape[-1])
+
+
+def producer_linear(down: Any, prefix: Any, gate: Any, value: Any) -> Optional[Any]:
+    """``down(cat([prefix.flatten(-2), silu(gate) * value], -1))`` (no prefix: ``down(silu(gate) * value)``) with the
+    product, concat, rotation and act quant in one kernel reading the producers' buffers, else None (caller: stock).
+    ``gate`` / ``value``: ``[..., F]`` halves of one projection output; ``prefix``: the attention output
+    ``[B, S, H, D]`` as the attention backend returned it."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    lead = gate.shape[:-1]
+    f = gate.shape[-1]
+    width = f if prefix is None else f + prefix.shape[-2] * prefix.shape[-1]
+    if (
+        not rotq
+        or group != 256
+        or gate.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or gate.shape != value.shape
+        or width != down.in_features
+        or gate.numel() < _MIN_ROWS * f
+    ):
+        return None
+    if prefix is not None and (prefix.dim() != 4 or prefix.shape[:2] != lead):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_producer_act_quant
+
+    q = convrot_producer_act_quant(
+        prefix, gate.reshape(-1, f), value.reshape(-1, f), group, kind == "v2"
+    )
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*lead, y.shape[-1])
 
 
 def _plain_silu(act: Any) -> bool:
@@ -1342,6 +1594,7 @@ def _swap_on(
             )
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
+            module.__dict__[_FWD] = module.forward
             count += 1
         ff = (
             _install_swiglu_ff(
@@ -1365,7 +1618,18 @@ def _swap_on(
             if gemm
             else "keep cuBLAS",
             *torch.cuda.get_device_capability(index),
-            f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS)"
+            f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS"
+            + (f", tile {timing['tile']}" if timing.get("tile") else "")
+            + (
+                " of "
+                + " / ".join(
+                    f"{t[0]}x{t[1]}x{t[2]} {us:.0f} us" for t, us in timing["race"].items()
+                )
+                + " held"
+                if timing.get("race")
+                else ""
+            )
+            + ")"
             if timing
             else "",
             (
@@ -1444,6 +1708,7 @@ def uninstall(transformer: Any = None) -> None:
             if prev is None:
                 continue
             module.__dict__.pop(_REC, None)
+            module.__dict__.pop(_FWD, None)
             if prev is _NO_PREV:
                 module.__dict__.pop("forward", None)
             else:

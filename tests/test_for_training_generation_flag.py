@@ -95,6 +95,8 @@ def _for_training(module, class_name):
     # No tensor parallel world in these tests (for_training calls the TP guard first since #15368).
     namespace["_tensor_parallel_for_training"] = lambda model: None
     namespace["enable_fp8_lora"] = lambda model: []
+    # No decode graphs held in these tests (for_training frees them first since decode graphs became the default).
+    namespace["_decode_graphs"] = types.SimpleNamespace(release_for_training = lambda model: None)
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
     return namespace["for_training"]
 

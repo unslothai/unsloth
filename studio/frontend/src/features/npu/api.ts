@@ -79,6 +79,20 @@ export function npuRowsFor(
   );
 }
 
+/** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
+export function npuRuntimeLabel(
+  versions: NpuStatus["versions"],
+): string | null {
+  const parts: string[] = [];
+  for (const [name, version] of [
+    ["FastFlowLM", versions?.fastflowlm],
+    ["Lemonade", versions?.lemonade],
+  ] as const) {
+    if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export function npuSizeLabel(sizeGb: number | null): string | null {
   if (sizeGb == null) return null;
   return sizeGb < 1
