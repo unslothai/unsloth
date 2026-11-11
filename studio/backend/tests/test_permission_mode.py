@@ -1511,6 +1511,73 @@ def test_shell_command_through_asyncio_or_pty_is_high_risk(code, refused):
     assert (_check_code_safety(code) is not None) is refused
 
 
+@pytest.mark.parametrize(
+    "code, refused",
+    [
+        ("import os\nlist(map(os.system, ['rm -rf x']))", True),
+        (
+            "import subprocess\nfrom concurrent.futures import ThreadPoolExecutor\n"
+            "ThreadPoolExecutor().submit(subprocess.run, 'rm -rf x', shell=True)",
+            True,
+        ),
+        ("import functools, os\nfunctools.partial(os.system, 'rm -rf x')()", True),
+        (
+            "import os, threading\nthreading.Thread(target=os.system, args=('rm -rf x',)).start()",
+            True,
+        ),
+        ("import asyncio, os\nasyncio.run(asyncio.to_thread(os.system, 'rm -rf x'))", True),
+        ("import os\ndef go(f=os.system):\n    f('rm -rf x')\ngo()", True),
+        ("import os\nfor f in [os.system]:\n    f('rm -rf x')", True),
+        ("import operator, os\noperator.methodcaller('system', 'rm -rf x')(os)", True),
+        (
+            "from operator import methodcaller as mc\nimport subprocess\nmc('run', ['rm', 'x'])(subprocess)",
+            True,
+        ),
+        ("import os\nrun = os.system\nlist(map(run, ['rm -rf x']))", True),
+        ("from subprocess import run\nlist(map(run, [['rm', '-rf', 'x']]))", True),
+        ("import os\nlist(map(getattr(os, 'system'), ['rm -rf x']))", True),
+        ("import os\nrun, n = os.system, 1\nrun('rm -rf x')", True),
+        ("import os\nruns = {'sh': os.system}\nruns['sh']('rm -rf x')", True),
+        ("import os\ndef pick():\n    return os.system\npick()('rm -rf x')", True),
+        ("import os\nclass Box: ...\nrun = Box.run = os.system\nBox.run('rm -rf x')", True),
+        ("import os\nx: list(map(os.system, ['rm -rf x'])) = 1", True),
+        ("import os\nlist(map(os.path.basename, ['a/b']))", False),
+        ("import os\nrun = os.system\nrun('ls')", False),
+        (
+            "import subprocess\ndef serve() -> subprocess.Popen:\n"
+            "    return subprocess.Popen(['ls'])\np: 'subprocess.Popen | None' = serve()",
+            False,
+        ),
+        ("from subprocess import Popen\ndef wait(p: Popen): ...\nq: Popen = Popen(['ls'])", False),
+        ("import subprocess\nsubprocess.run(['ls'], stdout=subprocess.PIPE)", False),
+        ("import operator\nprint(operator.methodcaller('upper')('x'))", False),
+        ("def system(c): ...\nlist(map(system, ['rm -rf x']))", False),
+    ],
+)
+def test_shell_function_passed_by_reference_is_high_risk(code, refused):
+    assert is_high_risk_tool_call("python", {"code": code}) is refused
+    assert (_check_code_safety(code) is not None) is refused
+
+
+@pytest.mark.parametrize("code", ["value = " + "+".join(["1"] * 400), "value = data" + "[0]" * 400])
+def test_long_expression_chain_is_classified(code):
+    import threading
+
+    errors = []
+
+    def classify():
+        try:
+            is_high_risk_tool_call("python", {"code": code})
+        except RecursionError as exc:
+            errors.append(exc)
+
+    # A fresh thread starts at stack depth zero, so the margin does not depend on pytest's own frames.
+    thread = threading.Thread(target = classify)
+    thread.start()
+    thread.join()
+    assert not errors
+
+
 def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call("web_search", {"query": "hi"}) is False
     assert is_high_risk_tool_call("search_knowledge_base", {}) is False

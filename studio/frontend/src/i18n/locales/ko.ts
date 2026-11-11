@@ -3036,11 +3036,11 @@ export const ko = {
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
-      showGenerationDetails: "자세한 속도 및 로딩 정보",
+      showGenerationDetails: "자세한 속도 정보",
       showGenerationDetailsDescription:
-        "실시간 표시에 프롬프트 읽기 속도, 토큰 수, 초안 채택률을 더하고 모델 레이어가 로드된 위치를 보여 줍니다.",
+        "실시간 표시에 프롬프트 읽기 속도, 토큰 수, 초안 채택률을 더합니다.",
       showGenerationDetailsKeywords:
-        "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "세부 속도 토큰 통계 verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "속도 및 컨텍스트 통계",
       generationStatsUpdatesDescription:
         "실시간은 응답이 스트리밍되는 동안 초당 토큰과 컨텍스트 사용량을 셉니다. 완료 시는 각 응답이 끝날 때 업데이트합니다.",

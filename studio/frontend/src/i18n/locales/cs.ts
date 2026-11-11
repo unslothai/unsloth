@@ -3308,11 +3308,11 @@ export const cs = {
         "Pod každou odpovědí zobrazovat, kdy byla dokončena.",
       showReplyTimesKeywords:
         "časové razítko čas hodiny datum kdy dokončeno odpověď zpráva timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Podrobné informace o rychlosti a načítání",
+      showGenerationDetails: "Podrobné informace o rychlosti",
       showGenerationDetailsDescription:
-        "Přidá do živých údajů rychlost čtení výzvy, počty tokenů a přijetí návrhů a ukáže, kam se načetly vrstvy modelu.",
+        "Přidá do živých údajů rychlost čtení výzvy, počty tokenů a přijetí návrhů.",
       showGenerationDetailsKeywords:
-        "podrobné vývojář statistiky rychlost vrstvy verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "podrobné vývojář statistiky rychlost verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Statistiky rychlosti a kontextu",
       generationStatsUpdatesDescription:
         "Režim V reálném čase počítá tokeny za sekundu a využití kontextu během streamování odpovědi. Po dokončení je aktualizuje, až každá odpověď skončí.",

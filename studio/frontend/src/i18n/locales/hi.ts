@@ -3052,11 +3052,11 @@ export const hi = {
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
-      showGenerationDetails: "गति और लोडिंग की विस्तृत जानकारी",
+      showGenerationDetails: "गति की विस्तृत जानकारी",
       showGenerationDetailsDescription:
-        "लाइव रीडआउट में प्रॉम्प्ट पढ़ने की गति, टोकन गिनती और ड्राफ़्ट स्वीकृति जोड़ता है, और दिखाता है कि मॉडल की लेयर कहाँ लोड हुईं।",
+        "लाइव रीडआउट में प्रॉम्प्ट पढ़ने की गति, टोकन गिनती और ड्राफ़्ट स्वीकृति जोड़ता है।",
       showGenerationDetailsKeywords:
-        "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "विवरण गति टोकन आँकड़े verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "गति और संदर्भ आँकड़े",
       generationStatsUpdatesDescription:
         "रीयल-टाइम उत्तर स्ट्रीम होते समय प्रति सेकंड टोकन और संदर्भ उपयोग गिनता है। पूरा होने पर हर उत्तर खत्म होने पर इन्हें अपडेट करता है।",
