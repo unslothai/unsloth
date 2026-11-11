@@ -78,10 +78,12 @@ test("the server copy carries the NPU settings and hydrates them back", () => {
     [row.npu_power_mode, row.npu_prefill_chunk_len, row.npu_img_pre_resize],
     ["turbo", 1024, 1],
   );
+  // Sent as null when unset: the server keeps a stored NPU setting the payload omits.
   const empty = toApiOverride(DEFAULT_PER_MODEL_CONFIG);
-  assert.equal("npu_power_mode" in empty, false);
-  assert.equal("npu_prefill_chunk_len" in empty, false);
-  assert.equal("npu_img_pre_resize" in empty, false);
+  assert.deepEqual(
+    [empty.npu_power_mode, empty.npu_prefill_chunk_len, empty.npu_img_pre_resize],
+    [null, null, null],
+  );
   const hydrated = fromApiOverride(row);
   assert.deepEqual(
     [hydrated.npuPowerMode, hydrated.npuPrefillChunkLen, hydrated.npuImgPreResize],

@@ -293,3 +293,26 @@ def test_the_override_payload_refuses_a_boolean(field):
     from routes.settings import ModelOverridePayload
     with pytest.raises(ValidationError):
         ModelOverridePayload(model_id = "lemonade:qwen3.5-9b-FLM", **{field: True})
+
+
+def test_a_save_that_omits_the_npu_settings_keeps_them(monkeypatch):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import utils.openai_auto_switch_settings as settings
+    from test_openai_auto_switch import _mock_override_store, _put
+
+    _mock_override_store(monkeypatch)
+    npu = "lemonade:qwen3.5-9b-FLM"
+    _put(npu, npu_power_mode = "turbo", npu_prefill_chunk_len = 2048, npu_img_pre_resize = 0)
+    # An older client sends no NPU keys at all.
+    _put(npu, max_seq_length = 8192)
+    assert settings.get_model_override(npu) == {
+        "max_seq_length": 8192,
+        "npu_power_mode": "turbo",
+        "npu_prefill_chunk_len": 2048,
+        "npu_img_pre_resize": 0,
+    }
+    _put(npu, npu_power_mode = None, npu_prefill_chunk_len = None, npu_img_pre_resize = None)
+    assert settings.get_model_override(npu) == {}
