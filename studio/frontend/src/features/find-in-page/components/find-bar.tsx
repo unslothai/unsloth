@@ -18,6 +18,7 @@ import {
   findTarget,
   findTargetsVersion,
   subscribeFindTargets,
+  resolveFindScopeTargets,
 } from "../lib/find-targets.ts";
 import { isFindScopeBackgrounded } from "../lib/find-backgrounded.ts";
 import {
@@ -77,6 +78,8 @@ function useTargetFind(target: FindTarget | undefined, query: string) {
   return {
     count: result.count,
     active: result.active,
+    capped: result.capped ?? false,
+    truncated: result.truncated ?? false,
     next: () => target?.step(1),
     previous: () => target?.step(-1),
   };
@@ -101,7 +104,9 @@ export default function FindBar({
   const queryPending = query !== settledQuery;
   useSyncExternalStore(subscribeFindTargets, findTargetsVersion);
   const targets = availableFindTargets();
-  const target = scope === null ? undefined : targets.find((candidate) => candidate.id === scope);
+  // A virtualized chat replaces the normal chat DOM index, without becoming
+  // an extra browser scope button. External target behaviour is unchanged.
+  const { selected: target, external: visibleTargets } = resolveFindScopeTargets(targets, scope);
   useEffect(() => {
     if (scope !== null && !findTarget(scope)?.available()) setScope(null);
   });
@@ -110,7 +115,7 @@ export default function FindBar({
   // A target that can only step (a native page) reports no count; its walk stays open.
   const pageCount = page.count ?? (settledQuery ? 1 : 0);
   const { count, active, capped, truncated, next, previous } = target
-    ? { ...page, count: pageCount, capped: false, truncated: false }
+    ? { ...page, count: pageCount, capped: page.capped ?? false, truncated: page.truncated ?? false }
     : chat;
   const uncounted = target !== undefined && page.count === null;
 
@@ -232,7 +237,7 @@ export default function FindBar({
       // biome-ignore lint/a11y/useSemanticElements: this landmark contains the field and its navigation controls.
       role="search"
       aria-label={t("shell.find.label")}
-      data-scoped={targets.length > 0 ? "" : undefined}
+      data-scoped={visibleTargets.length > 0 ? "" : undefined}
       className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-4.5 data-scoped:w-[calc(27.75rem*var(--ui-space-scale,1))] sm:w-[calc(28.25rem*var(--ui-space-scale,1))] sm:data-scoped:w-[calc(33.75rem*var(--ui-space-scale,1))]"
     >
       <HugeiconsIcon
@@ -296,8 +301,8 @@ export default function FindBar({
       >
         <ArrowDownIcon strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
-      {targets.length > 0
-        ? [null, ...targets.map((candidate) => candidate.id)].map((id) => {
+      {visibleTargets.length > 0
+        ? [null, ...visibleTargets.map((candidate) => candidate.id)].map((id) => {
             const label = t(id === null ? "shell.find.searchChat" : "shell.find.searchBrowser");
             const selected = scope === id;
             return (
@@ -325,7 +330,7 @@ export default function FindBar({
             );
           })
         : null}
-      {targets.length > 0 ? <span aria-hidden={true} className="mx-1 h-5 w-px shrink-0 bg-border" /> : null}
+      {visibleTargets.length > 0 ? <span aria-hidden={true} className="mx-1 h-5 w-px shrink-0 bg-border" /> : null}
       <Button
         variant="ghost"
         size="icon"

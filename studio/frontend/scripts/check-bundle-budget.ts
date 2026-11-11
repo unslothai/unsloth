@@ -11,8 +11,10 @@ const DIST = resolve(HERE, "..", "dist");
 
 export const BUDGET = {
   // Keep the prior headroom when measured startup imports move out of the entry graph.
-  transferBytes: 1_271_720,
-  rawBytes: 3_971_182,
+  // R6V3 integration: prior measured added allowance +22,407 transfer / +28,072 raw.
+  // Exact values must be verified by the CI bundle measurement for this new base.
+  transferBytes: 1_294_127,
+  rawBytes: 3_999_254,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

@@ -4,6 +4,8 @@
 import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
+import { useAgentHistoryModeStore } from "@/features/chat/stores/agent-history-mode-store";
+import { agentHistoryStorageModeForUi, agentHistoryUiModeFor } from "@/features/chat/stores/agent-history-preference-policy";
 import {
   Select,
   SelectContent,
@@ -294,6 +296,9 @@ export function ChatTab() {
   const t = useT();
   const pillId = useId();
   const navigate = useNavigate();
+  const globalDomLevel = useAgentHistoryModeStore((state) => state.globalDomLevel);
+  const setGlobalDomLevel = useAgentHistoryModeStore((state) => state.setGlobalDomLevel);
+  const globalAgentEnabled = useAgentHistoryModeStore((state) => state.globalEnabled);
   const resetPlusMenu = usePlusMenuPrefsStore((state) => state.resetMenu);
   const plusMenuPristine = usePlusMenuPrefsStore((state) =>
     plusMenuAtDefaults(state.pins, state.order),
@@ -778,6 +783,29 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.display.title")}>
+        <SettingsRow
+          label={t("settings.chat.agentHistoryGlobal")}
+          description={t("settings.chat.agentHistoryGlobalDescription")}
+        >
+          <Select
+            value={globalAgentEnabled
+              ? agentHistoryUiModeFor(globalDomLevel ?? "legacy") : "off"}
+            onValueChange={(value) => {
+              if (value === "off" || value === "dynamic" || value === "fixed") {
+                setGlobalDomLevel(agentHistoryStorageModeForUi(value));
+              }
+            }}
+          >
+            <SelectTrigger className="w-60" aria-label={t("settings.chat.agentHistoryChatMode")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="dynamic">{t("settings.chat.agentHistoryBufferDynamic")}</SelectItem>
+              <SelectItem value="fixed">{t("settings.chat.agentHistoryBufferFixed")}</SelectItem>
+              <SelectItem value="off">{t("settings.chat.agentHistoryModeOff")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.showLinkPreviews")}
           description={t("settings.chat.showLinkPreviewsDescription")}

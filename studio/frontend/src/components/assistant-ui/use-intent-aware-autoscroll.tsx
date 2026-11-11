@@ -44,9 +44,13 @@ export type ScrollToBottom = (behavior?: ScrollBehavior) => void;
 type AutoScrollContextValue = {
   scrollToBottom: ScrollToBottom;
   getIsAtBottom: () => boolean;
+  /** Canonical intent; physical proximity is not proof of following. */
+  getIsFollowingBottom: () => boolean;
   subscribe: (listener: () => void) => () => void;
   /** Detach as if scrolled up: composer growth must not let observer pins shove the chat up. */
   detachFromBottom: () => void;
+  /** Explicit reader/search navigation wins over active follow and its pending frames. */
+  navigateTo: (top: number) => void;
   /**
    * Called on every widening commit, zero included, since this hook owns scrollTop and resyncs
    * intent.
@@ -60,10 +64,14 @@ const noopContext: AutoScrollContextValue = {
     /* no viewport mounted */
   },
   getIsAtBottom: () => true,
+  getIsFollowingBottom: () => true,
   subscribe: () => () => {
     /* no-op */
   },
   detachFromBottom: () => {
+    /* no viewport mounted */
+  },
+  navigateTo: () => {
     /* no viewport mounted */
   },
   adjustForContentInsertedAbove: () => false,
@@ -91,6 +99,10 @@ export function useScrollThreadToBottom(): ScrollToBottom {
 }
 
 /** See AutoScrollContextValue.adjustForContentInsertedAbove. */
+export function useNavigateThreadViewport(): (top: number) => void {
+  return useContext(AutoScrollContext).navigateTo;
+}
+
 export function useAdjustForContentInsertedAbove(): (deltaPx: number) => boolean {
   return useContext(AutoScrollContext).adjustForContentInsertedAbove;
 }
@@ -103,6 +115,11 @@ export function useDetachThreadFromBottom(): () => void {
 export function useIsThreadAtBottom(): boolean {
   const ctx = useContext(AutoScrollContext);
   return useSyncExternalStore(ctx.subscribe, ctx.getIsAtBottom, () => true);
+}
+
+/** An imperative read for the virtualizer when a new row is committed. */
+export function useGetThreadBottomFollowIntent(): () => boolean {
+  return useContext(AutoScrollContext).getIsFollowingBottom;
 }
 
 export function useIntentAwareAutoScroll(): {
@@ -119,12 +136,16 @@ export function useIntentAwareAutoScroll(): {
   const runEndAtRef = useRef(Number.NEGATIVE_INFINITY);
 
   const isAtBottomRef = useRef(true);
+  const getIsFollowingBottom = useCallback(() => !userDetachedRef.current, []);
   const listenersRef = useRef<Set<() => void>>(new Set());
 
   const scrollImplRef = useRef<ScrollToBottom>(() => {
     /* no viewport mounted */
   });
   const detachImplRef = useRef<() => void>(() => {
+    /* no viewport mounted */
+  });
+  const navigateImplRef = useRef<(top: number) => void>(() => {
     /* no viewport mounted */
   });
   const adjustImplRef = useRef<(deltaPx: number) => void>(() => {
@@ -158,6 +179,10 @@ export function useIntentAwareAutoScroll(): {
 
   const detachFromBottom = useCallback(() => {
     detachImplRef.current();
+  }, []);
+
+  const navigateTo = useCallback((top: number) => {
+    navigateImplRef.current(top);
   }, []);
 
   const adjustForContentInsertedAbove = useCallback((deltaPx: number) => {
@@ -403,6 +428,18 @@ export function useIntentAwareAutoScroll(): {
         detach();
         requestTick();
       };
+
+      navigateImplRef.current = (top: number) => {
+        if (!Number.isFinite(top)) return;
+        // Search navigation is a deliberate detach, not an inert programmatic
+        // scroll that follow/layout observers are entitled to undo.
+        detach();
+        el.scrollTo({ top: Math.max(0, top), behavior: "instant" });
+        lastScrollTop = el.scrollTop;
+        lastDistanceFromBottom = distanceFromBottom();
+        requestTick();
+      };
+
 
       // Correct prepends before paint: a queued follow tick can run a frame late.
       // This hook owns scrollTop and resyncs intent after either kind of correction.
@@ -712,6 +749,9 @@ export function useIntentAwareAutoScroll(): {
         detachImplRef.current = () => {
           /* no viewport mounted */
         };
+        navigateImplRef.current = () => {
+          /* no viewport mounted */
+        };
         adjustImplRef.current = () => {
           /* no viewport mounted */
         };
@@ -765,16 +805,20 @@ export function useIntentAwareAutoScroll(): {
     () => ({
       scrollToBottom,
       getIsAtBottom,
+      getIsFollowingBottom,
       subscribe,
       detachFromBottom,
+      navigateTo,
       adjustForContentInsertedAbove,
       notifyContentResized,
     }),
     [
       scrollToBottom,
       getIsAtBottom,
+      getIsFollowingBottom,
       subscribe,
       detachFromBottom,
+      navigateTo,
       adjustForContentInsertedAbove,
       notifyContentResized,
     ],
