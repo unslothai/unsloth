@@ -832,7 +832,10 @@ export function ChatProvidersSettings({
       if (silent && autoLoadedCatalogRef.current !== autoLoad) return;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
-      learnServedContextWindows(editingProviderId, models);
+      // A draft Base URL is not the saved server; its window waits for Save and the next listing.
+      if ((baseUrl ?? "") === (editingProvider?.baseUrl ?? "")) {
+        learnServedContextWindows(editingProviderId, models);
+      }
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : (registryByType.get(providerType)?.default_models ?? []);

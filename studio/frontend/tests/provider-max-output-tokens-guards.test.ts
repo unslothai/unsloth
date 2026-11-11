@@ -335,7 +335,7 @@ test("a saved self-hosted connection learns its window without opening its edito
   );
 });
 
-test("the run settings learner lists a saved vLLM connection once and learns its window", async () => {
+test("the run settings learner lists a saved vLLM connection once per endpoint and learns its window", async () => {
   const { refreshServedContextWindow } = await import(
     "../src/features/chat/served-window-refresh.ts"
   );
@@ -361,6 +361,14 @@ test("the run settings learner lists a saved vLLM connection once and learns its
       createdAt: 0,
       updatedAt: 0,
     };
+    const { useExternalProvidersStore } = await import(
+      "../src/features/chat/stores/external-providers-store.ts"
+    );
+    useExternalProvidersStore.getState().setProviders([provider]);
+    assert.equal(getExternalMaxOutputTokens("vllm", "Org/Saved-Model", null, "conn-1"), EXTERNAL_MAX_OUTPUT_TOKENS);
+    // The old server's answer to a connection whose Base URL changed mid-request is dropped.
+    refreshServedContextWindow({ ...provider, id: "conn-1", baseUrl: "http://10.0.0.9:8000/v1" }, "Org/Saved-Model");
+    await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(getExternalMaxOutputTokens("vllm", "Org/Saved-Model", null, "conn-1"), EXTERNAL_MAX_OUTPUT_TOKENS);
     refreshServedContextWindow(provider, "Org/Saved-Model");
     refreshServedContextWindow(provider, "Org/Saved-Model");
@@ -368,10 +376,10 @@ test("the run settings learner lists a saved vLLM connection once and learns its
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     assert.equal(getExternalMaxOutputTokens("vllm", "Org/Saved-Model", null, "conn-1"), 20480);
-    assert.equal(calls.filter((c) => c.includes("/api/providers/models")).length, 1);
-    assert.match(calls[0], /"provider_id":"conn-1"/);
+    assert.equal(calls.filter((c) => c.includes("/api/providers/models")).length, 2);
+    assert.match(calls[1], /"provider_id":"conn-1"/);
     refreshServedContextWindow({ ...provider, providerType: "openai" }, "gpt-x");
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
   } finally {
     globalThis.fetch = realFetch;
   }

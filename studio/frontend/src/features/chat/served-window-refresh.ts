@@ -10,6 +10,7 @@ import {
 } from "./external-providers";
 import { learnServedContextWindows } from "./model-catalog";
 import { SERVED_WINDOW_PROVIDERS } from "./provider-capabilities";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
 
 const asked = new Set<string>();
 
@@ -32,7 +33,11 @@ export function refreshServedContextWindow(
       provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? provider.apiType : undefined,
     extraHeaders: provider.extraHeaders,
   })
-    .then((models) => learnServedContextWindows(provider.id, models))
+    .then((models) => {
+      // A Base URL edited mid-request makes this answer the old server's.
+      const live = useExternalProvidersStore.getState().providers.find((p) => p.id === provider.id);
+      if (live?.baseUrl === provider.baseUrl) learnServedContextWindows(provider.id, models);
+    })
     // An offline server keeps the fallback; the next endpoint or session asks again.
     .catch(() => asked.delete(key));
 }
