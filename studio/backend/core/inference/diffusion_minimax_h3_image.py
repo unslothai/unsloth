@@ -1138,8 +1138,14 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             "MiniMax-H3-Image editing needs the Qwen3-VL processor (processor/ of the repo)."
         )
 
-    def _encode(self, prompt: str, vision_images: Optional[list]) -> tuple:
-        """(prompt_embeds (1, n, 5120), per-row text tags) for one presentation."""
+    def encode_prompt(
+        self,
+        prompt: str,
+        vision_images: Optional[list] = None,
+    ) -> tuple:
+        """(prompt_embeds (1, n, 5120), per-row text tags) for one presentation. Named like every diffusers pipeline's
+        encoder entry point so ``diffusion_prompt_cache.install`` wraps it: a repeated prompt (new seed, batch) with the
+        same reference pixels reuses the conditioning. The VAE reference latents are never cached (seeded sample)."""
         import torch
 
         tokenizer = self.tokenizer
@@ -1183,6 +1189,14 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         finally:
             self._leave("text_encoder")
         return embeds, torch.tensor(tags, dtype = torch.long)
+
+    def _encode(self, prompt: str, vision_images: Optional[list]) -> tuple:
+        return self.encode_prompt(prompt, vision_images)
+
+    def _prompt_cache_hits(self) -> int:
+        cache = getattr(self, "_unsloth_prompt_cache", None)
+        stats = getattr(cache, "stats", None)
+        return int(stats.get("hits", 0)) if isinstance(stats, dict) else 0
 
     def _encode_references(self, images: list, generator: Any) -> list:
         import numpy as np
@@ -1332,8 +1346,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         device = self._device()
         canvas_h, canvas_w = canvas_size(height, width, min_generation_area)
         stats["canvas"] = (canvas_w, canvas_h)
-        embeds, text_tags = self._encode(prompt, vision_refs)
+        hits = self._prompt_cache_hits()
+        embeds, text_tags = self.encode_prompt(prompt, vision_refs)
         stats["encode_s"] = time.perf_counter() - t0
+        stats["encode_cached"] = self._prompt_cache_hits() > hits
         patch = tuple(self.transformer.config.patch_size)
         channels = int(self.vae.config.latent_channels) if self.vae is not None else 24
         lh, lw = canvas_h // H3_IMAGE_VAE_SCALE, canvas_w // H3_IMAGE_VAE_SCALE
