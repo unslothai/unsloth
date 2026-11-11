@@ -14,7 +14,7 @@ export {
   npuSizeLabel,
 } from "./api";
 export { useNpuCatalogStore } from "./npu-catalog-store";
-export { NpuRuntimeVersions, NpuSetupNotice } from "./npu-setup-notice";
+export { NpuSetupNotice } from "./npu-setup-notice";
 export {
   type NpuCatalog,
   type NpuPickerSource,

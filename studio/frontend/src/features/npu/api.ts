@@ -103,20 +103,6 @@ function npuRank(checkpoint: string): number {
   return rank === -1 ? NPU_RECOMMENDED.length : rank;
 }
 
-/** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
-export function npuRuntimeLabel(
-  versions: NpuStatus["versions"],
-): string | null {
-  const parts: string[] = [];
-  for (const [name, version] of [
-    ["FastFlowLM", versions?.fastflowlm],
-    ["Lemonade", versions?.lemonade],
-  ] as const) {
-    if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
-  }
-  return parts.length > 0 ? parts.join(" · ") : null;
-}
-
 export interface NpuCapability {
   key: "vision" | "reasoning" | "tools";
   label: string;
