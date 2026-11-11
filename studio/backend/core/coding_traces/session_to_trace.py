@@ -376,11 +376,12 @@ def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
     for m in out:
         if m.role == "assistant":
             m.text = _sanitised_assistant_text(m.text)
-    # toOpenAIMessages sends every user turn, even an empty one; hasReplayContent trims the rest.
+    # toOpenAIMessages sends every user turn, even an empty one.
     return [
         m
         for m in out
-        if m.role in ("user", "tool") or m.text.strip(_JS_SPACE) or m.reasoning or m.tool_calls
+        # The UI sends a group whose text is not empty, without trimming it.
+        if m.role in ("user", "tool") or m.text or m.reasoning or m.tool_calls
     ]
 
 

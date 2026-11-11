@@ -429,6 +429,15 @@ def test_assistant_text_that_python_strips_is_dropped(custom):
     ]
 
 
+def test_untrimmed_text_group_after_a_tool_round_is_sent():
+    # JS trim() empties "\ufeff" but Python's strip() keeps it, so the backend sends it.
+    rows = [
+        _row("u", "user", _text("hi"), None, 1),
+        _row("a", "assistant", [*_text("go"), _call("c1"), *_text("\ufeff")], "u", 2),
+    ]
+    assert session_to_trace({"id": "t"}, rows).messages[-1].text == "\ufeff"
+
+
 def test_stopped_group_with_only_empty_text_drops_its_reasoning():
     parts = [*_text(""), _NATIVE, _R2, *_text("")]
     assert all(m.reasoning != "r2" for m in _turn(_STOPPED, parts).messages)
