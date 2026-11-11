@@ -7,7 +7,9 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import ts from "@typescript/typescript6";
+
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 import {
   THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
@@ -171,4 +173,83 @@ test("chat A's Code-off under Full access holds after chat B picks Ask for appro
   const run = withRunThreadScopedSettings(live, atSend);
   assert.equal(run.permissionMode, "full");
   assert.equal(codeToolsOn(run), false);
+});
+
+// The adapter's own post-wait selection, lifted from source: importing the adapter would drag in
+// the stores, toasts and network layer. Dropping the snapshot from that block fails these tests.
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const selectionStart = ADAPTER.indexOf(
+  "      const liveRuntime = useChatRuntimeStore.getState();",
+);
+const selectionEnd = ADAPTER.indexOf("      runtime = withChatFullAccess(", selectionStart);
+assert.ok(selectionStart >= 0 && selectionEnd > selectionStart, "post-wait selection moved");
+const selectRunRuntime = new Function(
+  "useChatRuntimeStore",
+  "queuedRunSettings",
+  "queuedEmptyModelRuntime",
+  "runtimeAtSend",
+  "resolvedThreadId",
+  "withRunThreadScopedSettings",
+  "mergeQueuedModelCapabilities",
+  `let runtime;\n${ts.transpileModule(ADAPTER.slice(selectionStart, selectionEnd), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText}\nreturn runtime;`,
+) as (...args: unknown[]) => ReturnType<typeof chatState>;
+
+function runAfterWait(
+  live: ReturnType<typeof chatState>,
+  atSend: ReturnType<typeof chatState>,
+  resolvedThreadId: string | undefined,
+) {
+  return selectRunRuntime(
+    { getState: () => live },
+    null,
+    null,
+    atSend,
+    resolvedThreadId,
+    withRunThreadScopedSettings,
+    () => {
+      throw new Error("a direct send has no queued model capabilities");
+    },
+  );
+}
+
+const loadedB = (overrides: Record<string, unknown> = {}) =>
+  chatState(
+    { activeThreadId: "chat-b", permissionMode: "auto", supportsTools: true, ...overrides },
+    { checkpoint: "unsloth/new-model-GGUF", systemPrompt: "chat B prompt", temperature: 1.1 },
+  );
+
+test("the adapter keeps the sent chat's settings when another chat is on screen", () => {
+  const run = runAfterWait(loadedB(), chatState({}, {}), "chat-a");
+  assert.equal(run.permissionMode, "ask");
+  assert.equal(run.params.systemPrompt, "chat A prompt");
+  assert.equal(run.params.temperature, 0.2);
+  assert.equal(run.params.checkpoint, "unsloth/new-model-GGUF");
+  assert.equal(run.supportsTools, true);
+});
+
+test("the adapter reads the live store while the sent chat is still on screen", () => {
+  const live = loadedB({ activeThreadId: "chat-a" });
+  assert.equal(runAfterWait(live, chatState({}, {}), "chat-a"), live);
+  // A first send: no id on screen at send, then the new chat's own id.
+  const firstSend = loadedB({ activeThreadId: "chat-new" });
+  assert.equal(
+    runAfterWait(firstSend, chatState({ activeThreadId: null }, {}), "chat-new"),
+    firstSend,
+  );
+});
+
+test("the adapter keeps the sent chat's settings while the shown chat's settings load", () => {
+  const live = loadedB({ activeThreadId: "chat-a", threadScopedSettingsPending: true });
+  const run = runAfterWait(live, chatState({}, {}), "chat-a");
+  assert.equal(run.permissionMode, "ask");
+  assert.equal(run.params.systemPrompt, "chat A prompt");
+});
+
+test("the adapter takes its send-time settings before the model wait", () => {
+  const capture = ADAPTER.indexOf("      const runtimeAtSend = runtime;");
+  const wait = ADAPTER.indexOf("await waitForModelReady(abortSignal);", capture);
+  assert.ok(capture >= 0, "runtimeAtSend is captured");
+  assert.ok(wait - capture < 400 && wait < selectionStart, "captured just before the wait");
 });
