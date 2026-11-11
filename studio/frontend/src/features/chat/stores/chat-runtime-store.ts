@@ -1995,6 +1995,7 @@ function loadFullAccess(): boolean {
 
 /** The only writer of the app-wide flag. Not chat-scoped, so a pick with a chat open still lands. */
 function rememberFullAccess(on: boolean, codeDeclined = false): void {
+  fullAccessRestoredUnconfirmed = false;
   if (on && !getFullAccessAllowed()) return;
   saveBool(CHAT_FULL_ACCESS_KEY, on);
   rememberFullAccessCodeOff(on && codeDeclined);
@@ -2019,11 +2020,24 @@ function subscribeFullAccessReset(): void {
   if (fullAccessResetSubscribed) return;
   fullAccessResetSubscribed = true;
   subscribeLoginMode(() => {
-    if (!getFullAccessAllowed()) rememberFullAccess(false);
+    if (getFullAccessAllowed()) return;
+    const state = useChatRuntimeStore.getState();
+    // Restored before the login mode was known: Full access now needs the dialog again.
+    if (
+      fullAccessRestoredUnconfirmed &&
+      state.permissionMode === "full" &&
+      state.chatFullAccessPreviousMode === null
+    ) {
+      state.setPermissionMode(loadPermissionMode());
+      return;
+    }
+    rememberFullAccess(false);
   });
 }
 
 const INITIAL_FULL_ACCESS = loadFullAccess();
+// Restored Full access the owner has not confirmed in this session; a pick through the dialog clears it.
+let fullAccessRestoredUnconfirmed = INITIAL_FULL_ACCESS;
 
 /** Re-picking the level already in force is not a fresh grant, so a manual Tools-off stands. */
 function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
@@ -3652,6 +3666,7 @@ function getHydratedSettingsState(
     }
   }
   if (serverFullAccess === true) {
+    if (state.permissionMode !== "full") fullAccessRestoredUnconfirmed = true;
     Object.assign(nextState, appFullAccessState(), {
       codeToolsDeclinedUnderFullAccess:
         state.permissionMode === "full"

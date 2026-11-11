@@ -59,6 +59,27 @@ test("other accounts appearing while Studio runs clear the saved copy too", asyn
   }
 });
 
+test("a restore made before learning of other accounts is undone when the mode arrives", async () => {
+  resetStorage("ask");
+  browser.store.set(FLAG, "true");
+  const { state } = await restart("restore-then-multi");
+  await state().hydratePersistedSettings();
+  assert.equal(state().permissionMode, "full");
+  try {
+    setLoginMode("multi");
+    assert.equal(state().permissionMode, "ask");
+    assert.equal(state().bypassPermissions, false);
+    assert.equal(browser.store.get(FLAG), "false");
+
+    state().setPermissionMode("full");
+    setLoginMode("multi", false);
+    assert.equal(state().permissionMode, "full", "a pick confirmed this session stands");
+  } finally {
+    state().setPermissionMode("auto");
+    setLoginMode("single", true);
+  }
+});
+
 test("Full access picked in settings is restored after a restart", async () => {
   resetStorage("off");
   const first = await restart("full-pick");
