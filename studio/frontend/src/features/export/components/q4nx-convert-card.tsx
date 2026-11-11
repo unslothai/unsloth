@@ -23,7 +23,6 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  cachedModelInfo,
   detectBaseModel,
   type GgufVariantDetail,
   type LocalModelInfo,
@@ -33,8 +32,11 @@ import {
   useHubModelSearch,
 } from "@/features/hub";
 import { useDebouncedValue } from "@/hooks";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { hubFetch } from "@/lib/hub-fetch";
 import { FolderSearchIcon } from "@/lib/folder-icons";
 import { CpuIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import { modelInfo } from "@huggingface/hub";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertGgufToQ4nx } from "../api/export-api";
@@ -45,8 +47,12 @@ import {
 import {
   localGgufPath,
   packsDirectly,
+  Q4NX_INFO_FIELDS,
   q4nxArchFit,
   q4nxBaseModel,
+  q4nxPickCommitted,
+  q4nxQuantLabel,
+  q4nxVariantLookup,
   sortQ4nxVariants,
 } from "../lib/q4nx-source";
 
@@ -76,6 +82,7 @@ function SourceCombobox({
   value,
   onSelect,
   onTyped,
+  onInputText,
   placeholder,
   icon,
   loading,
@@ -90,6 +97,8 @@ function SourceCombobox({
   value: string;
   onSelect: (id: string) => void;
   onTyped: (value: string) => void;
+  /** Every change to the visible text, including Base UI resyncing it to the selection. */
+  onInputText: (value: string) => void;
   placeholder: string;
   icon: typeof Search01Icon;
   loading: boolean;
@@ -119,10 +128,12 @@ function SourceCombobox({
           onValueChange={(id: string | null) => {
             selectingRef.current = true;
             inputRef.current = id ?? "";
+            onInputText(id ?? "");
             onSelect(id ?? "");
           }}
           onInputValueChange={(next: string, details?: { reason?: string }) => {
             inputRef.current = next;
+            onInputText(next);
             if (selectingRef.current) {
               selectingRef.current = false;
               return;
@@ -184,6 +195,7 @@ export function Q4nxConvertCard() {
   const [source, setSource] = useState<Source>("hub");
   const [hubQuery, setHubQuery] = useState("");
   const [repoId, setRepoId] = useState("");
+  const [hubInput, setHubInput] = useState("");
   const [localModels, setLocalModels] = useState<LocalModelInfo[]>(
     () => getCachedLocalModels() ?? [],
   );
@@ -192,6 +204,7 @@ export function Q4nxConvertCard() {
   );
   const [localQuery, setLocalQuery] = useState("");
   const [localId, setLocalId] = useState("");
+  const [localInput, setLocalInput] = useState("");
   const [variants, setVariants] = useState<{
     key: string;
     list: GgufVariantDetail[];
@@ -221,7 +234,9 @@ export function Q4nxConvertCard() {
   );
   const hubIds = useMemo(() => {
     const ids = hubResults
-      .filter((r) => q4nxArchFit(r.ggufArchitecture).status !== "unsupported")
+      .filter(
+        (r) => q4nxArchFit(r.ggufArchitecture, r.id).status !== "unsupported",
+      )
       .map((r) => r.id);
     if (repoId && !ids.includes(repoId)) ids.unshift(repoId);
     return ids;
@@ -274,15 +289,11 @@ export function Q4nxConvertCard() {
     : null;
   const localSingleFile = !!localRow && /\.gguf$/i.test(localRow.path.trim());
 
-  const localDirPath = localRow && !localSingleFile ? localRow.path : null;
-  const variantKey =
-    source === "hub"
-      ? repoId
-        ? `hub::${repoId}`
-        : null
-      : localDirPath
-        ? `local::${localDirPath}`
-        : null;
+  const { key: variantKey, localDirPath } = q4nxVariantLookup(
+    source,
+    repoId,
+    localRow && !localSingleFile ? localRow.path : null,
+  );
   useEffect(() => {
     if (!variantKey) return;
     const controller = new AbortController();
@@ -317,15 +328,21 @@ export function Q4nxConvertCard() {
   useEffect(() => {
     if (source !== "hub" || !repoId || hubResult) return;
     let cancelled = false;
-    void cachedModelInfo({ name: repoId, accessToken })
+    // Not cachedModelInfo: its shared cache never asks for the gguf expansion this gate reads.
+    void modelInfo({
+      name: repoId,
+      accessToken,
+      hubUrl: getHfEndpoint(),
+      fetch: hubFetch,
+      additionalFields: Q4NX_INFO_FIELDS,
+    })
       .then((info) => {
         if (cancelled) return;
+        const typed = info as { tags?: string[]; gguf?: { architecture?: string } };
         setCardInfo({
           repoId,
-          baseModel: detectBaseModel(info.tags),
-          architecture:
-            (info as { gguf?: { architecture?: string } }).gguf?.architecture ??
-            null,
+          baseModel: detectBaseModel(typed.tags),
+          architecture: typed.gguf?.architecture ?? null,
         });
       })
       .catch(() => undefined);
@@ -344,17 +361,10 @@ export function Q4nxConvertCard() {
         ? q4nxBaseModel(
             localRow.model_id ??
               (localRow.source === "hf_cache" ? localRow.id : ""),
-            localRow.base_model ?? detectBaseModel(localRow.tags),
+            null,
           )
         : "";
   const effectiveBase = baseModel ?? autoBase;
-
-  const archFit =
-    source === "hub" && repoId
-      ? q4nxArchFit(hubResult?.ggufArchitecture ?? looked?.architecture)
-      : localRow
-        ? q4nxArchFit(null)
-        : null;
 
   const selectedVariant =
     variantList.find((v) => v.filename === filename) ?? null;
@@ -362,11 +372,24 @@ export function Q4nxConvertCard() {
     source === "local" && localRow
       ? localGgufPath(localRow.path, localSingleFile ? null : selectedVariant)
       : null;
+
+  const archFit =
+    source === "hub" && repoId
+      ? q4nxArchFit(
+          hubResult?.ggufArchitecture ?? looked?.architecture,
+          `${repoId} ${selectedVariant?.filename ?? ""}`,
+        )
+      : localRow
+        ? q4nxArchFit(null, `${localRow.id} ${ggufPath ?? localRow.path}`)
+        : null;
   const sourceReady =
     source === "hub" ? !!(repoId && selectedVariant) : !!ggufPath;
   const canConvert =
     !running &&
     sourceReady &&
+    (source === "hub"
+      ? q4nxPickCommitted(repoId, hubInput)
+      : q4nxPickCommitted(localId, localInput)) &&
     archFit?.status !== "unsupported" &&
     !!effectiveBase.trim() &&
     !!saveDirectory.trim();
@@ -439,6 +462,9 @@ export function Q4nxConvertCard() {
           options={SOURCE_OPTIONS}
           onValueChange={(next) => {
             setSource(next);
+            // The remounted field shows the kept selection, not the last typed text.
+            setHubInput(repoId);
+            setLocalInput(localId);
             setFilename("");
             setBaseModel(null);
           }}
@@ -461,6 +487,7 @@ export function Q4nxConvertCard() {
                 setHubQuery(value);
                 if (!value.trim()) pickRepo("");
               }}
+              onInputText={setHubInput}
               placeholder="Search GGUF models..."
               icon={Search01Icon}
               loading={searchingHub}
@@ -479,6 +506,7 @@ export function Q4nxConvertCard() {
                 setLocalQuery(value);
                 if (!value.trim()) pickLocal("");
               }}
+              onInputText={setLocalInput}
               placeholder={
                 loadingLocal
                   ? "Scanning local and cached models..."
@@ -567,7 +595,7 @@ export function Q4nxConvertCard() {
             )}
             {selectedVariant && !packsDirectly(selectedVariant.quant) && (
               <p className="text-xs text-muted-foreground">
-                {selectedVariant.quant} is dequantized and rounded again to
+                {q4nxQuantLabel(selectedVariant.quant)} is dequantized and rounded again to
                 4-bit, so it loses some quality. Q4_0, Q4_1 and Q4_K_M pack
                 directly.
               </p>
