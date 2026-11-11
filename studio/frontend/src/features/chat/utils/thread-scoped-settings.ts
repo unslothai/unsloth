@@ -158,11 +158,13 @@ export function isThreadOwnedSettingKey(key: string): boolean {
   );
 }
 
-// They follow permissionMode: the two mirror it and the full-access overlay reads the third.
+// They follow permissionMode: two mirror it, the full-access overlay reads the third, and
+// codeToolsOn reads the last with it (a Code-off under Full access).
 const PERMISSION_MIRROR_KEYS = [
   "confirmToolCalls",
   "bypassPermissions",
   "chatFullAccessPreviousMode",
+  "codeToolsDeclinedUnderFullAccess",
 ] as const;
 
 /** `live` with `own`'s thread-scoped settings and permission mirrors; the model fields stay live. */

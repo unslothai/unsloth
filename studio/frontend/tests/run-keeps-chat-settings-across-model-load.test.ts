@@ -4,14 +4,33 @@
 // A send that waits on a model load must not pick up the settings of the chat opened meanwhile.
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
 
+import { installLocalStorageFake } from "./helpers/kit.ts";
 import {
   THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
   isThreadScopedParamKey,
   withRunThreadScopedSettings,
 } from "../src/features/chat/utils/thread-scoped-settings.ts";
+
+const { store: localStorageFake } = installLocalStorageFake();
+localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
+register("./thread-sampling-resolver.mjs", import.meta.url);
+await import("./helpers/store-stubs/settings-http.ts");
+await import("./helpers/store-stubs/chat-history-storage.ts");
+
+type StoreState = Record<string, unknown> & { params: { checkpoint: string } };
+const { useChatRuntimeStore, codeToolsOn } = (await import(
+  "../src/features/chat/stores/chat-runtime-store.ts"
+)) as unknown as {
+  useChatRuntimeStore: {
+    getState: () => StoreState;
+    setState: (patch: Record<string, unknown>) => void;
+  };
+  codeToolsOn: (state: StoreState) => boolean;
+};
 
 function chatState(overrides: Record<string, unknown>, params: Record<string, unknown>) {
   return {
@@ -129,4 +148,27 @@ test("every thread-scoped key comes from the run's own chat", () => {
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     assert.equal(Object.hasOwn(run, key), false, `${key} belongs under params`);
   }
+});
+
+test("chat A's Code-off under Full access holds after chat B picks Ask for approval", () => {
+  const store = useChatRuntimeStore;
+  store.setState({
+    params: { ...store.getState().params, checkpoint: "unsloth/Qwen3-1.7B-GGUF" },
+    supportsTools: true,
+  });
+  const call = (name: string, value: unknown) =>
+    (store.getState()[name] as (value: unknown) => void)(value);
+  call("setPermissionMode", "full");
+  call("setCodeToolsEnabled", false);
+  const atSend = store.getState();
+  assert.equal(codeToolsOn(atSend), false, "chat A switched Code off");
+
+  // Full access outlives the switch; picking Ask in chat B clears the decline.
+  call("setPermissionMode", "ask");
+  const live = store.getState();
+  assert.equal(live.codeToolsDeclinedUnderFullAccess, false);
+
+  const run = withRunThreadScopedSettings(live, atSend);
+  assert.equal(run.permissionMode, "full");
+  assert.equal(codeToolsOn(run), false);
 });
