@@ -191,3 +191,14 @@ test("a compare pane Qwen model gets the sampling for the active thinking mode",
   compareLoad(QWEN35);
   assert.deepEqual(sampling(), { temperature: 0.7, topP: 0.8, topK: 20 });
 });
+
+test("an NPU load keeps its sized window when Lemonade reports no model limit", () => {
+  const fields = loadedContextFields({
+    is_npu: true,
+    context_length: 65536,
+    max_context_length: 65536,
+    native_context_length: null,
+  });
+  assert.equal(fields.loadedContextLength, 65536);
+  assert.equal(fields.maxContextLength, 65536);
+});

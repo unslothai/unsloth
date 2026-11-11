@@ -243,7 +243,7 @@ import {
   vramPercentToFraction,
 } from "../model-config/per-model-config";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
-import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
+import { isNpuModelId } from "../../npu";
 import {
   type RunConfigImport,
   SharedRunConfigControls,
@@ -501,6 +501,7 @@ function MaxSeqLengthSetting({
   pinned,
   fittedToMemory,
   windowUnknown,
+  unknownLabel = "—",
   hint,
 }: {
   value: number;
@@ -512,6 +513,8 @@ function MaxSeqLengthSetting({
   pinned?: boolean;
   fittedToMemory?: boolean;
   windowUnknown?: boolean;
+  /** Shown while the window is unknown, e.g. "Auto" until a load sizes it. */
+  unknownLabel?: string;
   hint?: string;
 }) {
   const label = isMlx ? "Context Length" : "Max Seq Length";
@@ -543,7 +546,7 @@ function MaxSeqLengthSetting({
           max={inputMax}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
-          displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}
+          displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}
           derived={isMlx && !pinned && !dragging}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
@@ -3387,10 +3390,9 @@ export function ModelConfigPage({
     mlxFittedWindow,
     mlxProspectiveWindow,
   );
-  const npuServedWindow = targetIsNpu
-    ? ((isActiveModel ? servedWindow(loadedContextLength) : null) ??
-      Math.min(NPU_DEFAULT_CONTEXT_LENGTH, nativeMaxSeqLength))
-    : null;
+  // Auto is sized to free RAM at load time, so only a resident model knows its window.
+  const npuServedWindow =
+    targetIsNpu && isActiveModel ? servedWindow(loadedContextLength) : null;
   const maxSeqLengthValue =
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??
@@ -4321,15 +4323,27 @@ export function ModelConfigPage({
                 mlxServedWindow == null &&
                 npuServedWindow == null
               }
+              unknownLabel={targetIsNpu ? "Auto" : undefined}
               hint={
                 targetIsNpu
-                  ? `Context the NPU loads the model with. Default ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if lower.`
+                  ? "Context the NPU loads the model with. Auto fits it to the RAM free at load time, up to 65,536 tokens or the model's limit."
                   : undefined
               }
               onChange={(value) =>
                 update(contextPinPatch(value, pinsContextLength))
               }
             />
+            {targetIsNpu &&
+              isActiveModel &&
+              savedContextPin(config) != null &&
+              loadedMaxContextLength != null &&
+              maxSeqLengthValue > loadedMaxContextLength && (
+                <p className="text-ui-11 text-amber-500">
+                  Above Unsloth&apos;s free-memory estimate (
+                  {loadedMaxContextLength.toLocaleString()} tokens). The NPU
+                  may fail to load it.
+                </p>
+              )}
             {!targetIsNpu && (
               <>
                 <AdvancedSettingsToggle
