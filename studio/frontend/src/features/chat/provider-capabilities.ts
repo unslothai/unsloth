@@ -13,6 +13,7 @@ import {
   resolveModelCatalogEntry,
   resolveModelCatalogEntryByName,
   servedContextWindow,
+  servedWindowsListedFrom,
   sortReasoningEfforts,
 } from "./model-catalog";
 
@@ -331,6 +332,17 @@ function _servedWindow(
     : null;
 }
 
+/**
+ * False until this page load has listed a self-hosted connection's current endpoint: until then its
+ * cap is the 32,768 fallback, which must not persistently lower a setting the real window allows.
+ */
+export function externalMaxTokensCapSettled(
+  provider: { id: string; providerType: string; baseUrl: string } | null | undefined,
+): boolean {
+  if (!provider || !SERVED_WINDOW_PROVIDERS.has(provider.providerType)) return true;
+  return servedWindowsListedFrom(provider.id) === provider.baseUrl;
+}
+
 /** Only lowers and is persisted; no provider means unknown, not the 32,768 fallback. */
 export function resolveExternalMaxTokensClamp(input: {
   settingsHydrated: boolean;
@@ -338,8 +350,10 @@ export function resolveExternalMaxTokensClamp(input: {
   isExternalModel: boolean;
   maxTokens: number;
   maxTokensMax: number;
+  capSettled?: boolean;
 }): number | null {
   if (!input.settingsHydrated || !input.hasActiveExternalProvider) return null;
+  if (input.capSettled === false) return null;
   if (!input.isExternalModel || input.maxTokens <= input.maxTokensMax) {
     return null;
   }

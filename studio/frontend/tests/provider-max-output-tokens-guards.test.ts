@@ -231,7 +231,7 @@ test("every clamp site waits for a resolved provider", () => {
   const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.match(
     store,
-    /if \(provider\) \{\s*const cap = getExternalMaxOutputTokens\(\s*provider\.providerType/,
+    /if \(provider && externalMaxTokensCapSettled\(provider\)\) \{\s*const cap = getExternalMaxOutputTokens\(\s*provider\.providerType/,
   );
 });
 
@@ -479,5 +479,39 @@ test("saving a connection with a new Base URL forgets the old server's windows",
   assert.match(
     readSrc("features/chat/stores/external-providers-store.ts"),
     /const providers = loadExternalProviders\(\);\s*forgetMovedConnections\(/,
+  );
+});
+
+test("a self-hosted cap clamps persistently only once this page load listed its endpoint", async () => {
+  const { learnServedContextWindows } = await import("../src/features/chat/model-catalog.ts");
+  const { externalMaxTokensCapSettled } = await import(
+    "../src/features/chat/provider-capabilities.ts"
+  );
+  const conn = { id: "conn-settle", providerType: "vllm", baseUrl: "http://s/v1" };
+  assert.equal(externalMaxTokensCapSettled(conn), false);
+  assert.equal(externalMaxTokensCapSettled({ ...conn, providerType: "openai" }), true);
+  const base = {
+    settingsHydrated: true,
+    hasActiveExternalProvider: true,
+    isExternalModel: true,
+    maxTokens: 65536,
+    maxTokensMax: EXTERNAL_MAX_OUTPUT_TOKENS,
+  };
+  assert.equal(resolveExternalMaxTokensClamp({ ...base, capSettled: false }), null);
+  learnServedContextWindows(conn.id, [], "http://other/v1");
+  assert.equal(externalMaxTokensCapSettled(conn), false);
+  learnServedContextWindows(conn.id, [{ id: "m", display_name: "m", served_context_window: 262144 }], conn.baseUrl);
+  assert.equal(externalMaxTokensCapSettled(conn), true);
+  assert.equal(
+    resolveExternalMaxTokensClamp({
+      ...base,
+      maxTokensMax: getExternalMaxOutputTokens("vllm", "m", null, conn.id),
+      capSettled: true,
+    }),
+    null,
+  );
+  assert.match(
+    readSrc("features/chat/chat-settings-sheet.tsx"),
+    /capSettled: externalMaxTokensCapSettled\(activeExternalProvider\)/,
   );
 });

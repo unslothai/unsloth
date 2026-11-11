@@ -113,6 +113,7 @@ import {
 } from "./presets/preset-load-config";
 import {
   type ProviderCapabilities,
+  externalMaxTokensCapSettled,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   modelCatalogVersion,
@@ -886,6 +887,7 @@ export function ChatSettingsPanel({
       isExternalModel,
       maxTokens: params.maxTokens,
       maxTokensMax,
+      capSettled: externalMaxTokensCapSettled(activeExternalProvider),
     });
     if (clampedMaxTokens == null) {
       return;
