@@ -861,8 +861,9 @@ class LemonadeNpuBackend:
                 if isinstance(data, dict) and data.get("status") == "error":
                     raise NpuError(f"Downloading {model.id} failed: {data.get('message') or data}")
                 completed = completed or event == "complete"
-                # lemond's per-file percent would move the bar backwards after Studio's download.
-                if isinstance(data, dict) and (files is None or event == "complete"):
+                # After Studio's own download lemond only registers the files: relay nothing, its
+                # per-file percent would move the bar backwards and its complete precedes Studio's.
+                if isinstance(data, dict) and files is None:
                     yield {"event": event, **data}
                 event = "progress"
         if not completed:
