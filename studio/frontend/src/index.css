@@ -3699,6 +3699,23 @@ html[data-chat-font] .aui-root {
 		@apply text-muted-foreground;
 	}
 
+	/* One tab's pitch (32px tab, 4px gap), reaching nothing at the clipped edge. */
+	.composer-tab-strip[data-fade-left] {
+		mask-image: linear-gradient(to right, transparent, #000 calc(36px * var(--ui-space-scale, 1)));
+	}
+	.composer-tab-strip[data-fade-right] {
+		mask-image: linear-gradient(to left, transparent, #000 calc(36px * var(--ui-space-scale, 1)));
+	}
+	.composer-tab-strip[data-fade-left][data-fade-right] {
+		mask-image: linear-gradient(
+			to right,
+			transparent,
+			#000 calc(36px * var(--ui-space-scale, 1)),
+			#000 calc(100% - 36px * var(--ui-space-scale, 1)),
+			transparent
+		);
+	}
+
 	.composer-tab-line {
 		background: var(--control-accent);
 	}

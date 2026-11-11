@@ -691,6 +691,29 @@ export function ComposerModelPicker({
   const [quantsOpen, setQuantsOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // Too many tabs scroll sideways: each edge fades over the tabs hidden past it.
+  const [tabStrip, setTabStrip] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!tabStrip) {
+      return;
+    }
+    const update = () => {
+      const max = tabStrip.scrollWidth - tabStrip.clientWidth;
+      tabStrip.toggleAttribute("data-fade-left", tabStrip.scrollLeft > 1);
+      tabStrip.toggleAttribute(
+        "data-fade-right",
+        tabStrip.scrollLeft < max - 1,
+      );
+    };
+    update();
+    tabStrip.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(tabStrip);
+    return () => {
+      tabStrip.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+  }, [tabStrip]);
 
   const inventory = useChatPickerInventory({ enabled: open });
   const online = useOnlineStatus();
@@ -1933,6 +1956,13 @@ export function ComposerModelPicker({
   };
 
   const viewedTab = tabs.find((t) => t.value === viewed);
+  // Only when the tab changes, so a sideways scroll of the user's own is left alone.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `viewed` is the trigger; the DOM holds the selection.
+  useEffect(() => {
+    tabStrip
+      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tabStrip, viewed]);
   const connectionId = viewed.startsWith(EXT_PREFIX)
     ? viewed.slice(EXT_PREFIX.length)
     : null;
@@ -2024,9 +2054,16 @@ export function ComposerModelPicker({
           <>
             <div className="flex shrink-0 items-center gap-1">
               <div
+                ref={setTabStrip}
                 role="tablist"
                 aria-label="Model sources"
-                className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+                className="composer-tab-strip flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+                onWheel={(event) => {
+                  // A mouse wheel scrolls the tabs sideways; a trackpad already does.
+                  if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+                    event.currentTarget.scrollLeft += event.deltaY;
+                  }
+                }}
               >
                 {tabs.map((t) => (
                   <TabButton
