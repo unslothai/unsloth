@@ -128,13 +128,19 @@ class LemonadeServer:
     ) -> list[str]:
         """What lemond printed after ``mark``, at most ``lines``. It logs a failure just before
         answering, so this waits up to ``settle`` seconds for the drain to go quiet."""
-        deadline = time.monotonic() + settle
+        now = time.monotonic()
+        deadline = now + settle
+        quiet_for = min(0.2, settle)
         seen = self._lines_seen
+        changed = now
         while time.monotonic() < deadline:
             time.sleep(0.05)
-            if self._lines_seen == seen:
+            if self._lines_seen != seen:
+                seen = self._lines_seen
+                changed = time.monotonic()
+            # Nothing yet means the drain may still be behind: keep waiting to the deadline.
+            elif seen > mark and time.monotonic() - changed >= quiet_for:
                 break
-            seen = self._lines_seen
         count = min(self._lines_seen - mark, lines)
         return list(self._tail)[-count:] if count > 0 else []
 

@@ -161,6 +161,16 @@ def test_output_since_a_mark_is_only_what_came_after(tmp_path):
     assert server.output_since(mark, lines = 2, settle = 0) == ["two", "three"]
 
 
+def test_output_since_waits_for_a_drain_that_runs_late(tmp_path):
+    import threading
+
+    server = _server(tmp_path)
+    mark = server.output_mark()
+    threading.Timer(0.15, _prints, (server, "late error")).start()
+    threading.Timer(0.25, _prints, (server, "later detail")).start()
+    assert server.output_since(mark, settle = 1.0) == ["late error", "later detail"]
+
+
 def test_lemond_output_goes_to_a_log_file_settings_lists(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
