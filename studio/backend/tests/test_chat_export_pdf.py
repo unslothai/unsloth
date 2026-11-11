@@ -54,6 +54,19 @@ def test_long_chats_span_pages():
     assert "line 399" in _text(response.content)
 
 
+@pytest.mark.parametrize(
+    "run",
+    ["ภาษาไทยไม่เว้นวรรคระหว่างคำ" * 6, "a" * 200],
+    ids = ["thai", "long-token"],
+)
+@pytest.mark.parametrize("template", ["<p>{}</p>", "<pre><code>{}</code></pre>"], ids = ["p", "pre"])
+def test_text_without_break_points_wraps_inside_the_page(run, template):
+    body = template.format(f"{run}TAILMARK")
+    response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
+    assert response.status_code == 200
+    assert "TAILMARK" in _text(response.content).replace("\n", "")
+
+
 def test_only_data_images_embed(tmp_path):
     png = io.BytesIO()
     pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 4, 4), False)

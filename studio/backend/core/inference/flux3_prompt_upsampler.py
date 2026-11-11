@@ -34,8 +34,8 @@ UPSAMPLER_MODEL_FILES = {
     "Q4_K_M": "flux-3-image-klein-pup-Q4_K_M.gguf",
     "Q8_0": "flux-3-image-klein-pup-Q8_0.gguf",
 }
-# Unsloth Dynamic 4-bit with an imatrix: against BF16 on the upsampler's own captions, about 39% lower mean KL
-# divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
+# Unsloth Dynamic 4-bit: against BF16 on the upsampler's own captions, about 39% lower mean KL divergence than
+# Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
 # What a run reads, best first: an install holding Q4_K_M (the default until UD-Q4_K_XL) keeps enhancing offline.

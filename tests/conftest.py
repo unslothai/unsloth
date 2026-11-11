@@ -83,6 +83,16 @@ def _no_deleted_torch_config_entries():
     check_after_test()
 
 
+@pytest.fixture(autouse = True)
+def _fresh_parallel_layout():
+    """unsloth.models.tp_env reads the UNSLOTH_TP_SIZE / UNSLOTH_PARALLEL layout once per process. A test
+    that read it under another environment would hand every later test in its worker that stale layout,
+    so each test starts with it unread. Only when the module is already imported: no unsloth import here."""
+    tp_env = sys.modules.get("unsloth.models.tp_env")
+    if tp_env is not None:
+        tp_env._reset_env_layout()
+
+
 @pytest.hookimpl(trylast = True)
 def pytest_collection_modifyitems(config, items):
     """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""

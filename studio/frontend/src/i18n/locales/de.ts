@@ -3084,11 +3084,11 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
-      showGenerationDetails: "Detaillierte Geschwindigkeits- und Ladeinfos",
+      showGenerationDetails: "Detaillierte Geschwindigkeitsinfos",
       showGenerationDetailsDescription:
-        "Ergänzt die Live-Anzeigen um Prompt-Lesegeschwindigkeit, Tokenzahlen und Entwurfsannahme und zeigt, wo die Schichten eines Modells geladen wurden.",
+        "Ergänzt die Live-Anzeigen um Prompt-Lesegeschwindigkeit, Tokenzahlen und Entwurfsannahme.",
       showGenerationDetailsKeywords:
-        "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "Details Geschwindigkeit Token Statistik verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Geschwindigkeits- und Kontextstatistik",
       generationStatsUpdatesDescription:
         "Echtzeit zählt Token pro Sekunde und Kontextnutzung, während eine Antwort gestreamt wird. Nach Abschluss aktualisiert sie, sobald jede Antwort fertig ist.",

@@ -3278,11 +3278,11 @@ export const fa = {
         "زمان پایان هر پاسخ، زیر همان پاسخ نمایش داده شود.",
       showReplyTimesKeywords:
         "مهر زمانی زمان ساعت تاریخ پایان رسیدن پاسخ پیام timestamp",
-      showGenerationDetails: "اطلاعات دقیق سرعت و بارگذاری",
+      showGenerationDetails: "اطلاعات دقیق سرعت",
       showGenerationDetailsDescription:
-        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید و نشان می‌دهد لایه‌های مدل کجا بارگذاری شده‌اند.",
+        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید.",
       showGenerationDetailsKeywords:
-        "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode لایه‌ها offload vram experts",
+        "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode",
       generationStatsUpdates: "آمار سرعت و زمینه",
       generationStatsUpdatesDescription:
         "حالت بی‌درنگ توکن در ثانیه و مصرف زمینه را هنگام پخش پاسخ می‌شمارد. حالت پس از پایان آن‌ها را با تمام شدن هر پاسخ به‌روز می‌کند.",

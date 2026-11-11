@@ -3000,11 +3000,11 @@ export const zhCN = {
       showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
       showReplyTimesKeywords:
         "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
-      showGenerationDetails: "详细速度与加载信息",
+      showGenerationDetails: "详细速度信息",
       showGenerationDetailsDescription:
-        "在实时读数中加入提示词读取速度、token 数和草稿采纳率，并显示模型各层加载在哪里。",
+        "在实时读数中加入提示词读取速度、token 数和草稿采纳率。",
       showGenerationDetailsKeywords:
-        "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "详情 速度 统计 verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "速度与上下文统计",
       generationStatsUpdatesDescription:
         "实时模式在回复流式输出时统计每秒 token 数和上下文用量。完成后模式在每条回复结束时更新。",

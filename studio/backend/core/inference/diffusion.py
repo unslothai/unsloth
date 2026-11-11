@@ -165,7 +165,7 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
-from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
+from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
 from .diffusion_anima import (
     ANIMA_COMPONENT_FOLDERS,
     ANIMA_COMPONENTS,
@@ -2036,6 +2036,9 @@ def _family_default_ids(fam: Any) -> tuple:
         return (fam.name,)
     if is_anima_family(fam):
         return (fam.base_repo,)
+    if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+        # Its 6 steps / guidance 1 are fixed by the checkpoint (PDD heads), whatever the folder is called.
+        return (fam.name,)
     return ()
 
 
@@ -2164,6 +2167,13 @@ def _family_model_class(diffusers: Any, name: str) -> Any:
     if name in ("MOSSImagePipeline", "MOSSImageTransformer", "MOSSImageScheduler"):
         from .diffusion_moss_image import in_tree_class
         return in_tree_class(name)
+    if name in (
+        "MiniMaxH3ImagePipeline",
+        "MiniMaxH3ImageTransformer2DModel",
+        "AutoencoderKLMiniMaxH3Image",
+    ):
+        from .diffusion_minimax_h3_image import in_tree_class as h3_image_class
+        return h3_image_class(name)
     return getattr(diffusers, name)
 
 
@@ -2579,6 +2589,30 @@ def _step_cache_dropped_by_layer_split(pipe: Any) -> bool:
     (``diffusion_layer_split._drop_step_cache``): the marker is gone, so the load's cache locals are stale."""
     transformer = getattr(pipe, "transformer", None)
     return transformer is not None and not getattr(transformer, "_unsloth_step_cache", None)
+
+
+def _engage_streamed_expandable(pipe: Any) -> bool:
+    """Blocks sized from the denoise phase: run the load in expandable allocator segments (diffusion_decode_segments)."""
+    try:
+        from .diffusion_decode_segments import engage_streamed
+        from .diffusion_memory import _phase_placement
+        if not _phase_placement(pipe) or not engage_streamed():
+            return False
+    except Exception as exc:  # noqa: BLE001 - fixed segments, as before
+        logger.debug("diffusion.memory: expandable segments not engaged (%s)", exc)
+        return False
+    logger.info(
+        "diffusion.memory: the denoise-phase placement runs in expandable allocator segments"
+    )
+    return True
+
+
+def _release_streamed_expandable() -> None:
+    try:
+        from .diffusion_decode_segments import release_streamed
+        release_streamed()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
 
 
 def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
@@ -5466,6 +5500,11 @@ class DiffusionBackend:
                 )
         if text_encoder_files or vae_file:
             self._validate_component_files(fam, kind, repo_id, text_encoder_files, vae_file)
+        if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+            from .diffusion_minimax_h3_image import h3_image_device_refusal
+            refusal = h3_image_device_refusal(resolve_diffusion_device_target().device)
+            if refusal:
+                raise ValueError(refusal)
         return fam
 
     def preflight_base_access(
@@ -5729,6 +5768,13 @@ class DiffusionBackend:
                     kwargs.get("gguf_filename"),
                 )
             kwargs["base_repo"] = base
+            if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+                # Its loader fetches only the files it reads, so the generic estimate / prefetch is skipped.
+                self.load_pipeline(**kwargs)
+                with self._load_cancel_lock:
+                    if self._load_token == token:
+                        self._loading = None
+                return
             discovered = False
             if not kwargs.get("text_encoder_files") and not kwargs.get("vae_file"):
                 kwargs["text_encoder_files"] = (
@@ -8535,6 +8581,24 @@ class DiffusionBackend:
                     reset_compile_cache_tag()
                 except Exception as exc:  # noqa: BLE001 - keying only
                     logger.debug("nvfp4 cache tag reset skipped: %r", exc)
+                if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+                    # Native layout: the in-tree loader streams, converts, quantizes and places it, so the generic
+                    # plan (which would materialise the bf16 DiT) never runs.
+                    return self._load_h3_image_locked(
+                        repo_id = repo_id,
+                        display_repo_id = display_repo_id,
+                        base = base,
+                        fetch_base = _base_local_dir or fetch_base,
+                        fam = fam,
+                        target = target,
+                        hf_token = hf_token,
+                        local_files_only = local_files_only,
+                        transformer_quant = transformer_quant,
+                        # the raw request: "none" (keep bf16) and unset must stay apart
+                        text_encoder_quant = text_encoder_quant_requested,
+                        text_encoder_quant_explicit = bool(text_encoder_quant_requested),
+                        load_token = _load_token,
+                    )
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
                 single_file_path = (
@@ -11349,6 +11413,7 @@ class DiffusionBackend:
                             )
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
+                    _engage_streamed_expandable(pipe)
                     # Placed, not yet compiled or captured: a later LoRA weight / subset change then writes in place.
                     pinned_scales = _pin_baked_lora_scales(pipe, target.device)
                     if pinned_scales:
@@ -11673,6 +11738,7 @@ class DiffusionBackend:
                             load_bg_compile.close()
                             load_bg_compile = None
                         restore_backend_flags(backend_flags_before)
+                        _release_streamed_expandable()
                         _release_rocm_tunableop(pipe)
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
@@ -11708,6 +11774,97 @@ class DiffusionBackend:
         finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
         # after the pins: their pageable sources are freed by now
         trim_host_heap_after_load(logger)
+        return self.status()
+
+    def _load_h3_image_locked(
+        self,
+        *,
+        repo_id: str,
+        display_repo_id: Optional[str],
+        base: str,
+        fetch_base: str,
+        fam: Any,
+        target: Any,
+        hf_token: Optional[str],
+        local_files_only: bool,
+        transformer_quant: Optional[str],
+        text_encoder_quant: Optional[str],
+        load_token: Optional[int],
+        text_encoder_quant_explicit: bool = False,
+    ) -> dict[str, Any]:
+        """MiniMax-H3-Image load under the transition slot and state lock (the previous model is already evicted)."""
+        from .diffusion_minimax_h3_image import (
+            PLACE_RESIDENT,
+            PLACE_SEQUENTIAL,
+            load_minimax_h3_image_pipeline,
+        )
+
+        # Unset = Studio's hosted int8 encoder (the bf16 one is 66.7 GB); only an explicit dense ask keeps bf16.
+        requested_te = str(text_encoder_quant or "").strip().lower()
+        te_scheme = None if requested_te in ("none", "off", "bf16", "dense", "bfloat16") else "int8"
+        pipe = load_minimax_h3_image_pipeline(
+            fetch_base,
+            dtype = target.dtype,
+            device = target.device,
+            transformer_quant = transformer_quant,
+            text_encoder_quant = te_scheme,
+            hf_token = hf_token,
+            cache_dir = hub_cache_dir(),
+            local_files_only = local_files_only,
+            check_cancelled = lambda: self._raise_if_load_cancelled(load_token),
+        )
+        report = pipe._unsloth_h3_report
+        plan = report.plan
+        policy = (
+            OFFLOAD_NONE
+            if plan.placement == PLACE_RESIDENT
+            else OFFLOAD_MODEL
+            if plan.placement == PLACE_SEQUENTIAL
+            else OFFLOAD_STREAMING
+        )
+        resolved = {
+            "transformer_quant": {
+                "value": report.scheme or "bf16",
+                "source": "explicit" if transformer_quant not in (None, "", "auto") else "auto",
+                "reason": report.scheme_reason,
+            },
+            "text_encoder_quant": {
+                "value": report.te_scheme or "bf16",
+                "source": "explicit" if text_encoder_quant_explicit else "auto",
+                "reason": "Studio's hosted int8 ConvRot Qwen3-VL"
+                if report.te_scheme == "int8"
+                else "released bf16",
+            },
+            "memory_mode": {
+                "value": plan.placement,
+                "source": "auto",
+                "reason": "; ".join(plan.reasons),
+            },
+        }
+        state = _LoadState(
+            pipe = pipe,
+            family = fam,
+            repo_id = repo_id,
+            display_repo_id = display_repo_id,
+            base_repo = base,
+            device = target.device,
+            gpu_ordinal = target.ordinal,
+            placed_ordinal = placed_cuda_ordinal(target),
+            dtype = str(target.dtype).replace("torch.", ""),
+            kind = "pipeline",
+            cpu_offload = policy != OFFLOAD_NONE,
+            offload_policy = policy,
+            memory_mode = plan.placement,
+            text_encoder_quant = report.te_scheme,
+            transformer_quant = report.scheme,
+            hf_token = hf_token,
+            resolved = resolved,
+        )
+        with self._load_cancel_lock:
+            self._raise_if_load_cancelled(load_token)
+            self._state = state
+            commit_load_budget_fraction("image")
+        logger.info("diffusion.loaded: repo=%s family=%s %s", repo_id, fam.name, report.as_dict())
         return self.status()
 
     @staticmethod
@@ -16037,6 +16194,7 @@ class DiffusionBackend:
                 pass
         # Restore process-wide backend flags so the next `off` load is bit-identical; all calls idempotent.
         restore_backend_flags(state.backend_flags_before)
+        _release_streamed_expandable()
         _release_rocm_tunableop(state.pipe)
         prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
         if prebuild is not None:
@@ -16048,6 +16206,11 @@ class DiffusionBackend:
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
         prompt_cache.release(state.pipe)
+        if getattr(state.family, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+            try:
+                state.pipe.release()
+            except Exception as exc:  # noqa: BLE001 - teardown is best effort; the pipe is dropped below anyway
+                logger.debug("minimax_h3_image release skipped: %r", exc)
         if state.te_releaser is not None:
             state.te_releaser.close()
         for aux in (*self._aux_pipes.values(), *self._cn_pipes.values()):

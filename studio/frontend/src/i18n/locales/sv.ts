@@ -3205,11 +3205,11 @@ export const sv = {
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:
         "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
-      showGenerationDetails: "Detaljerad hastighets- och laddningsinfo",
+      showGenerationDetails: "Detaljerad hastighetsinfo",
       showGenerationDetailsDescription:
-        "Lägger till läshastighet för prompten, tokenantal och utkastgodkännande i livevisningen och visar var modellens lager laddades.",
+        "Lägger till läshastighet för prompten, tokenantal och utkastgodkännande i livevisningen.",
       showGenerationDetailsKeywords:
-        "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "detaljer hastighet token statistik verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Hastighets- och kontextstatistik",
       generationStatsUpdatesDescription:
         "Realtid räknar token per sekund och kontextanvändning medan ett svar strömmas. När klart uppdaterar dem när varje svar är färdigt.",

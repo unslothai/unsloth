@@ -3123,11 +3123,11 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
-      showGenerationDetails: "מידע מפורט על מהירות וטעינה",
+      showGenerationDetails: "מידע מפורט על מהירות",
       showGenerationDetailsDescription:
-        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות, ומציג היכן נטענו שכבות המודל.",
+        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות.",
       showGenerationDetailsKeywords:
-        "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "פרטים מהירות אסימונים סטטיסטיקה verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "נתוני מהירות והקשר",
       generationStatsUpdatesDescription:
         "מצב זמן אמת סופר טוקנים לשנייה ושימוש בהקשר בזמן שתשובה מוזרמת. מצב בסיום מעדכן אותם כשכל תשובה מסתיימת.",
