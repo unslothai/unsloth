@@ -8,6 +8,7 @@ import { modelInfo } from "@huggingface/hub";
 import {
   localGgufPath,
   packsDirectly,
+  q4nxPacking,
   Q4NX_INFO_FIELDS,
   q4nxArchFit,
   q4nxBaseModel,
@@ -24,10 +25,19 @@ import {
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
-test("only Q4_0, Q4_1 and Q4_K_M pack directly, matching the backend's SOURCE_QUANTS", () => {
-  for (const quant of ["Q4_0", "q4_1", "Q4_K_M"]) {
+test("Q4_0 and Q4_1 pack directly everywhere; Q4_K_M only where the q4k converter runs", () => {
+  for (const quant of ["Q4_0", "q4_1"]) {
     assert.equal(packsDirectly(quant), true, quant);
+    assert.equal(packsDirectly(quant, "llama"), true, quant);
   }
+  // q4nx_converter_pins.json sends only qwen35 and qwen35moe to the converter that unpacks Q4_K.
+  assert.equal(q4nxPacking("Q4_K_M", "qwen35"), "direct");
+  assert.equal(q4nxPacking("Q4_K_M", "QWEN35MOE"), "direct");
+  assert.equal(q4nxPacking("Q4_K_M", "llama"), "requantized");
+  assert.equal(q4nxPacking("Q4_K_M", "gemma3"), "requantized");
+  // A local file's architecture is read during conversion.
+  assert.equal(q4nxPacking("Qwen3.5-4B-Q4_K_M", null), "by-architecture");
+  assert.equal(packsDirectly("Q4_K_M"), false);
   for (const quant of ["Q8_0", "BF16", "Q4_K_S", "UD-Q4_K_XL", "IQ4_XS"]) {
     assert.equal(packsDirectly(quant), false, quant);
   }
@@ -44,6 +54,18 @@ test("the file list keeps every quant but puts the directly packed ones first", 
   assert.deepEqual(
     sorted.map((v) => v.quant),
     ["Q4_0", "Q4_1", "Q4_K_M", "Q8_0", "BF16"],
+  );
+  // On an architecture the q4nx converter handles, Q4_K_M ranks with the re-quantized files.
+  assert.deepEqual(
+    sortQ4nxVariants(
+      [
+        { filename: "m-Q4_K_M.gguf", quant: "Q4_K_M" },
+        { filename: "m-Q8_0.gguf", quant: "Q8_0" },
+        { filename: "m-Q4_1.gguf", quant: "Q4_1" },
+      ],
+      "llama",
+    ).map((v) => v.quant),
+    ["Q4_1", "Q4_K_M", "Q8_0"],
   );
 });
 
@@ -235,9 +257,11 @@ const GIB = 1024 ** 3;
 test("a file that packs directly needs its own size; any other needs a sibling's or the parameter count's", () => {
   const q4 = { filename: "m-Q4_K_M.gguf", quant: "Q4_K_M", size_bytes: 5 * GIB };
   const q8 = { filename: "m-Q8_0.gguf", quant: "Q8_0", size_bytes: 9 * GIB };
-  assert.deepEqual(q4nxWeights(q4, [q8, q4]), { bytes: 5 * GIB, estimated: false });
+  assert.deepEqual(q4nxWeights(q4, [q8, q4], null, "qwen35"), { bytes: 5 * GIB, estimated: false });
   // Q8_0 is rounded again to 4-bit, so its own size overstates the result.
-  assert.deepEqual(q4nxWeights(q8, [q8, q4]), { bytes: 5 * GIB, estimated: true });
+  assert.deepEqual(q4nxWeights(q8, [q8, q4], null, "qwen35"), { bytes: 5 * GIB, estimated: true });
+  // The q4nx converter rounds Q4_K_M again, so on llama it is no exact size either.
+  assert.equal(q4nxWeights(q4, [q8, q4], null, "llama"), null);
   assert.deepEqual(q4nxWeights(q8, [q8], 10e9), { bytes: 6e9, estimated: true });
   // A repo not listed yet has only the Hub's parameter count.
   assert.deepEqual(q4nxWeights(null, [], 10e9), { bytes: 6e9, estimated: true });
@@ -325,6 +349,7 @@ test("the export summary describes the conversion: source, file and quant, outpu
     model: "unsloth/Qwen3.5-4B-GGUF",
     file: "Qwen3.5-4B-Q4_K_M.gguf",
     quant: "Q4_K_M",
+    packing: q4nxPacking("Q4_K_M", "qwen35"),
     baseModel: "Qwen/Qwen3.5-4B",
     saveDirectory: "q4nx",
     size: "2.7 GB",
@@ -349,10 +374,15 @@ test("the export summary describes the conversion: source, file and quant, outpu
   const over = rows({
     ...picked,
     quant: "Q8_0",
+    packing: q4nxPacking("Q8_0", "qwen35"),
     memory: { fits: false, label: "~16.5 of 16.0 GB NPU" },
     archFit: q4nxArchFit("qwen35", "unsloth/Qwen3.8-27B-GGUF"),
   });
   assert.equal(over.Quant, "Q8_0, re-quantized to 4-bit");
+  assert.equal(
+    rows({ ...picked, packing: q4nxPacking("Q4_K_M", null) }).Quant,
+    "Q4_K_M, packs directly for Qwen3.5 only",
+  );
   assert.equal(over["NPU memory"], "May not fit: ~16.5 of 16.0 GB NPU");
   assert.equal(over.Convertible, "No");
 
@@ -363,6 +393,7 @@ test("the export summary describes the conversion: source, file and quant, outpu
     model: null,
     file: null,
     quant: null,
+    packing: null,
     baseModel: " ",
     saveDirectory: "",
     size: null,

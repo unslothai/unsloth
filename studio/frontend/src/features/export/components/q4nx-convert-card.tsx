@@ -3,15 +3,18 @@
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { SectionBox } from "@/components/section-box";
-import { SegmentedControl } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent } from "@/components/ui/popover";
 import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useChatRuntimeStore } from "@/features/chat";
 import {
   detectBaseModel,
@@ -25,15 +28,22 @@ import {
 import {
   formatFootprintBytes,
   ListLabel,
+  ModelLoadSettingsAction,
   ModelRow,
+  ModelSelector,
+  PillTabs,
 } from "@/features/model-picker";
 import { useNpuStatus } from "@/features/npu";
 import { useDebouncedValue } from "@/hooks";
+import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { hubFetch } from "@/lib/hub-fetch";
-import { FolderSearchIcon } from "@/lib/folder-icons";
 import { cn } from "@/lib/utils";
-import { CpuIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  CpuIcon,
+  Download01Icon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { modelInfo } from "@huggingface/hub";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -44,16 +54,17 @@ import {
 } from "../export-navigation-cache";
 import {
   localGgufPath,
-  packsDirectly,
   Q4NX_INFO_FIELDS,
+  Q4NX_PACKING_TEXT,
   type Q4nxMemory,
   q4nxArchFit,
   q4nxBaseModel,
   q4nxIsExpanded,
   q4nxMemoryWarning,
   q4nxNpuMemory,
+  q4nxPacking,
   q4nxParamsFromName,
-  q4nxQuantLabel,
+  q4nxQuantName,
   q4nxSummaryRows,
   q4nxToggleExpanded,
   q4nxVariantLookup,
@@ -62,10 +73,18 @@ import {
 } from "../lib/q4nx-source";
 
 type Source = "hub" | "local";
-const SOURCE_OPTIONS = [
-  { value: "hub", label: "Hugging Face" },
-  { value: "local", label: "Local file" },
-] as const satisfies readonly { value: Source; label: string }[];
+const SOURCE_TABS = [
+  {
+    value: "hub",
+    label: "Hugging Face",
+    icon: <HugeiconsIcon icon={Search01Icon} className="size-3.5 shrink-0" />,
+  },
+  {
+    value: "local",
+    label: "On Device",
+    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />,
+  },
+];
 
 const FIELD_LABEL =
   "flex items-center gap-1.5 text-xs font-medium text-muted-foreground";
@@ -76,6 +95,15 @@ const LOCAL_SOURCE_HINT: Record<string, string> = {
   hf_cache: "HF cache",
   custom: "Custom Folders",
 };
+const DEFAULT_SAVE_DIRECTORY = "q4nx";
+
+/** The card's data-tour value, which the export page uses to tell the card is in use. */
+export const Q4NX_CARD_MARK = "export-q4nx";
+
+export interface Q4nxSummary {
+  ready: boolean;
+  rows: ReturnType<typeof q4nxSummaryRows>;
+}
 
 interface SourceRow {
   id: string;
@@ -84,6 +112,7 @@ interface SourceRow {
   listingKey: string | null;
   folder: string | null;
   hint?: string;
+  architecture?: string | null;
   sizeBytes?: number | null;
   totalParams?: number | null;
 }
@@ -150,7 +179,7 @@ function ModelFiles({
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const row = ref.current?.parentElement;
-    const list = row?.parentElement;
+    const list = row?.closest<HTMLElement>("[data-q4nx-list]");
     if (!reveal || !row || !list) return;
     list.scrollTop +=
       row.getBoundingClientRect().top - list.getBoundingClientRect().top;
@@ -160,14 +189,6 @@ function ModelFiles({
       {children}
     </div>
   );
-}
-
-/** The card's data-tour value, which the export page uses to tell the card is in use. */
-export const Q4NX_CARD_MARK = "export-q4nx";
-
-export interface Q4nxSummary {
-  ready: boolean;
-  rows: ReturnType<typeof q4nxSummaryRows>;
 }
 
 export function Q4nxConvertCard({
@@ -181,6 +202,9 @@ export function Q4nxConvertCard({
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
   const [npuStatus] = useNpuStatus();
   const windowGb = npuStatus?.memory_window_gb ?? null;
+  const [open, setOpen] = useState(false);
+  // The popover's second page, like the chat picker's run settings.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [source, setSource] = useState<Source>("hub");
   const [hubQuery, setHubQuery] = useState("");
   const [repoId, setRepoId] = useState("");
@@ -207,7 +231,7 @@ export function Q4nxConvertCard({
     architecture: string | null;
   } | null>(null);
   const [baseModel, setBaseModel] = useState<string | null>(null);
-  const [saveDirectory, setSaveDirectory] = useState("q4nx");
+  const [saveDirectory, setSaveDirectory] = useState(DEFAULT_SAVE_DIRECTORY);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(
     null,
@@ -239,6 +263,11 @@ export function Q4nxConvertCard({
     };
   }, [source]);
 
+  // The Hub's "Base" chip reads base_model from the card tags; a typed repo is looked up.
+  const hubResult = hubResults.find((r) => r.id === repoId);
+  const looked = cardInfo?.repoId === repoId ? cardInfo : null;
+  const lookedArchitecture = looked?.architecture ?? null;
+
   const hubRows = useMemo(() => {
     const rows: SourceRow[] = hubResults
       .map((r) => ({ r, fit: q4nxArchFit(r.ggufArchitecture, r.id) }))
@@ -250,6 +279,7 @@ export function Q4nxConvertCard({
         listingKey: q4nxVariantLookup("hub", r.id, null).key,
         folder: null,
         hint: fit.status === "unsupported" ? "Not convertible" : undefined,
+        architecture: r.ggufArchitecture,
         totalParams: r.totalParams ?? q4nxParamsFromName(r.id),
       }));
     // A typed repo id the search does not return is used as is; the pick stays listed.
@@ -261,11 +291,12 @@ export function Q4nxConvertCard({
         label: id,
         listingKey: q4nxVariantLookup("hub", id, null).key,
         folder: null,
+        architecture: id === repoId ? lookedArchitecture : null,
         totalParams: q4nxParamsFromName(id),
       });
     }
     return rows;
-  }, [hubResults, hubQuery, repoId]);
+  }, [hubResults, hubQuery, repoId, lookedArchitecture]);
 
   const localById = useMemo(
     () => new Map(localModels.map((row) => [row.id, row])),
@@ -334,6 +365,8 @@ export function Q4nxConvertCard({
     };
   }, [accessToken]);
   useEffect(() => {
+    // Nothing is listed until the picker opens; a pick made in it stays listed.
+    if (!open && !selectedId) return;
     for (const row of rows) {
       if (inFlight.current.size >= LISTING_WORKERS) return;
       const key = row.listingKey;
@@ -342,7 +375,8 @@ export function Q4nxConvertCard({
         !key ||
         (source === "hub" &&
           row.id !== repoId &&
-          !q4nxIsExpanded(expansion, row.id))
+          !q4nxIsExpanded(expansion, row.id)) ||
+        (!open && row.id !== selectedId)
       ) {
         continue;
       }
@@ -368,9 +402,7 @@ export function Q4nxConvertCard({
         }));
       };
       request
-        .then((response) =>
-          settle({ list: sortQ4nxVariants(response.variants), error: null }),
-        )
+        .then((response) => settle({ list: response.variants, error: null }))
         .catch((error: unknown) =>
           settle({
             list: [],
@@ -378,20 +410,25 @@ export function Q4nxConvertCard({
           }),
         );
     }
-  }, [source, rows, repoId, expansion, listings, accessToken]);
+  }, [open, source, rows, repoId, selectedId, expansion, listings, accessToken]);
+
+  /** A model's files, the ones its converter packs directly first. */
+  const filesOf = (row: SourceRow): GgufVariantDetail[] =>
+    row.listingKey
+      ? sortQ4nxVariants(
+          listings[row.listingKey]?.list ?? [],
+          row.architecture,
+        )
+      : [];
 
   const selectedRow = rows.find((row) => row.id === selectedId) ?? null;
-  const selectedList = selectedRow?.listingKey
-    ? (listings[selectedRow.listingKey]?.list ?? [])
-    : [];
+  const selectedFiles = selectedRow ? filesOf(selectedRow) : [];
   const selectedVariant =
-    selectedList.find((v) => v.filename === filename) ?? null;
+    selectedFiles.find((v) => v.filename === filename) ?? null;
   const localRow = source === "local" ? selectedRow : null;
   const localInfo = localRow ? localById.get(localRow.id) : undefined;
   const localPath = localRow ? (localInfo?.path ?? localRow.id) : null;
 
-  // The Hub's "Base" chip reads base_model from the card tags; a typed repo is looked up.
-  const hubResult = hubResults.find((r) => r.id === repoId);
   useEffect(() => {
     if (source !== "hub" || !repoId || hubResult) return;
     let cancelled = false;
@@ -417,7 +454,6 @@ export function Q4nxConvertCard({
       cancelled = true;
     };
   }, [source, repoId, hubResult, accessToken]);
-  const looked = cardInfo?.repoId === repoId ? cardInfo : null;
 
   const autoBase =
     source === "hub"
@@ -438,10 +474,14 @@ export function Q4nxConvertCard({
       ? localGgufPath(localPath, localRow.listingKey ? selectedVariant : null)
       : null;
 
+  const selectedArchitecture =
+    source === "hub"
+      ? (hubResult?.ggufArchitecture ?? lookedArchitecture)
+      : null;
   const archFit =
     source === "hub" && repoId
       ? q4nxArchFit(
-          hubResult?.ggufArchitecture ?? looked?.architecture,
+          selectedArchitecture,
           `${repoId} ${selectedVariant?.filename ?? ""}`,
         )
       : localRow
@@ -461,77 +501,66 @@ export function Q4nxConvertCard({
     if (source === "hub") setRepoId(id);
     else setLocalId(id);
     setFilename(file);
+    setResult(null);
   }
 
-  function variantMemory(
-    variant: GgufVariantDetail | null,
-    list: GgufVariantDetail[],
-    totalParams?: number | null,
-  ) {
-    return q4nxNpuMemory(q4nxWeights(variant, list, totalParams), windowGb);
+  /** A one-file row is its own variant, named by its file stem. */
+  function ownVariant(row: SourceRow): GgufVariantDetail {
+    const path = localById.get(row.id)?.path ?? row.id;
+    return {
+      filename: path,
+      quant: fileName(path).replace(GGUF_FILE_RE, ""),
+      size_bytes: row.sizeBytes ?? 0,
+    };
   }
 
-  /** A one-file row's own need; a model's is its picked file's, else its default file's. */
+  function weightsOf(row: SourceRow, variant: GgufVariantDetail | null) {
+    return q4nxWeights(
+      row.listingKey ? variant : ownVariant(row),
+      filesOf(row),
+      row.totalParams,
+      row.architecture,
+    );
+  }
+
+  /** A model row's need is its picked file's, else its default file's. */
   function rowMemory(row: SourceRow): Q4nxMemory | null {
-    if (!row.listingKey) {
-      const path = localById.get(row.id)?.path ?? row.id;
-      return variantMemory(
-        {
-          filename: path,
-          quant: fileName(path).replace(GGUF_FILE_RE, ""),
-          size_bytes: row.sizeBytes ?? 0,
-        },
-        [],
-        row.totalParams,
-      );
-    }
-    const list = listings[row.listingKey]?.list ?? [];
     const variant =
-      (row.id === selectedId ? selectedVariant : null) ?? list[0] ?? null;
-    return variantMemory(variant, list, row.totalParams);
+      (row.id === selectedId ? selectedVariant : null) ??
+      filesOf(row)[0] ??
+      null;
+    return q4nxNpuMemory(weightsOf(row, variant), windowGb);
   }
 
-  const selectedMemory =
+  const selectedQuant =
     sourceReady && selectedRow
-      ? selectedRow.listingKey
-        ? variantMemory(selectedVariant, selectedList, selectedRow.totalParams)
-        : rowMemory(selectedRow)
+      ? (selectedVariant ?? ownVariant(selectedRow)).quant
       : null;
+  const selectedPacking = selectedQuant
+    ? q4nxPacking(selectedQuant, selectedArchitecture)
+    : null;
+  const selectedWeights =
+    sourceReady && selectedRow ? weightsOf(selectedRow, selectedVariant) : null;
+  const selectedMemory = q4nxNpuMemory(selectedWeights, windowGb);
   const memoryWarning = q4nxMemoryWarning(selectedMemory, windowGb);
-
   const selectedFile = sourceReady
     ? fileName(source === "hub" ? filename : (ggufPath ?? ""))
     : null;
-  const summaryModel = source === "hub" ? repoId : (localRow?.label ?? "");
-  const summaryQuant = sourceReady
-    ? (selectedVariant?.quant ??
-      fileName(ggufPath ?? "").replace(GGUF_FILE_RE, ""))
-    : null;
-  const selectedWeights =
-    sourceReady && selectedRow
-      ? q4nxWeights(
-          selectedVariant ?? {
-            filename: ggufPath ?? "",
-            quant: summaryQuant ?? "",
-            size_bytes: selectedRow.sizeBytes,
-          },
-          selectedList,
-          selectedRow.totalParams,
-        )
-      : null;
-  const summarySize = selectedWeights
-    ? `${selectedWeights.estimated ? "~" : ""}${formatFootprintBytes(selectedWeights.bytes)}`
-    : null;
+  const selectedLabel = selectedRow?.label ?? "";
+
   // Serialized so the page hears about a change of content, not every render.
   const summaryJson = JSON.stringify({
     ready: canConvert,
     rows: q4nxSummaryRows({
-      model: summaryModel,
+      model: selectedLabel,
       file: selectedFile,
-      quant: summaryQuant,
+      quant: selectedQuant,
+      packing: selectedPacking,
       baseModel: effectiveBase,
       saveDirectory,
-      size: summarySize,
+      size: selectedWeights
+        ? `${selectedWeights.estimated ? "~" : ""}${formatFootprintBytes(selectedWeights.bytes)}`
+        : null,
       memory: selectedMemory,
       archFit,
     }),
@@ -568,7 +597,16 @@ export function Q4nxConvertCard({
 
   const loadingRows = source === "hub" ? searchingHub : loadingLocal;
 
-  const renderVariants = (row: SourceRow) => {
+  const packingTag = (quant: string, architecture?: string | null) => {
+    const packing = q4nxPacking(quant, architecture);
+    return packing === "direct" ? null : (
+      <span className="ml-1.5 font-sans text-ui-9 font-medium text-muted-foreground">
+        {packing === "requantized" ? "re-quantized" : "direct for Qwen3.5"}
+      </span>
+    );
+  };
+
+  const renderFiles = (row: SourceRow) => {
     const listing = row.listingKey ? listings[row.listingKey] : undefined;
     if (!listing) {
       return (
@@ -577,7 +615,8 @@ export function Q4nxConvertCard({
         </div>
       );
     }
-    if (listing.list.length === 0) {
+    const files = filesOf(row);
+    if (files.length === 0) {
       return (
         <p
           className={cn(
@@ -591,16 +630,19 @@ export function Q4nxConvertCard({
         </p>
       );
     }
-    return listing.list.map((v) => {
+    return files.map((v) => {
       const picked = row.id === selectedId && v.filename === filename;
-      const memory = variantMemory(v, listing.list, row.totalParams);
+      const memory = q4nxNpuMemory(weightsOf(row, v), windowGb);
       return (
         <div key={v.filename}>
           <button
             type="button"
             data-testid="q4nx-source-file"
             aria-pressed={picked}
-            onClick={() => pick(row.id, v.filename)}
+            onClick={() => {
+              pick(row.id, v.filename);
+              setSettingsOpen(true);
+            }}
             className={cn(
               "flex w-full min-w-0 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               picked && "bg-sidebar-accent",
@@ -608,11 +650,7 @@ export function Q4nxConvertCard({
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
               {fileName(v.filename)}
-              {!packsDirectly(v.quant) && (
-                <span className="ml-1.5 font-sans text-ui-9 font-medium text-muted-foreground">
-                  re-quantized
-                </span>
-              )}
+              {packingTag(v.quant, row.architecture)}
             </span>
             <span className="flex shrink-0 items-center gap-1.5 font-mono text-ui-10 text-muted-foreground tabular-nums">
               {memory && (
@@ -641,140 +679,233 @@ export function Q4nxConvertCard({
     });
   };
 
-  return (
-    <SectionBox
-      dataTour={Q4NX_CARD_MARK}
-      icon={CpuIcon}
-      chipTint="var(--chart-1)"
-      title="Convert a GGUF to Q4NX (AMD NPU)"
-      description="Convert a Q4_0, Q4_1 or Q4_K_M GGUF to Q4NX. Only supported on AMD NPUs."
-      titleAction={
-        <SegmentedControl
+  // The chat picker's list page: search, section tabs, then the rows.
+  const listPage = (
+    <div className="relative space-y-2">
+      <div className="flex items-center gap-2 pb-1 pr-2">
+        <div className="relative flex-1">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            value={source === "hub" ? hubQuery : localQuery}
+            onChange={(e) =>
+              (source === "hub" ? setHubQuery : setLocalQuery)(e.target.value)
+            }
+            placeholder={
+              source === "hub"
+                ? "Search GGUF models or type owner/name"
+                : "Search local models or type a .gguf path"
+            }
+            data-model-picker-search-input={true}
+            className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8 text-sm"
+          />
+          {loadingRows && (
+            <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          )}
+        </div>
+      </div>
+      <div className="-mr-2 flex flex-wrap items-center gap-2">
+        <PillTabs
+          className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
+          ariaLabel="GGUF source"
+          tabs={SOURCE_TABS}
           value={source}
-          options={SOURCE_OPTIONS}
           onValueChange={(next) => {
-            setSource(next);
+            setSource(next as Source);
             setFilename("");
             setBaseModel(null);
           }}
-          ariaLabel="GGUF source"
-          size="compact"
-          className="@md/train-card:w-[calc(220px*var(--ui-space-scale,1))]"
+          fit={true}
         />
-      }
-    >
-      <div className="flex flex-col gap-6">
-        <div className="grid gap-4 @md/train-section:grid-cols-2">
-          <div className="flex flex-col gap-2 @md/train-section:col-span-2">
-            <label htmlFor="q4nx-search" className={FIELD_LABEL}>
-              GGUF model
-            </label>
-            <InputGroup>
-              <InputGroupAddon>
-                <HugeiconsIcon
-                  icon={source === "hub" ? Search01Icon : FolderSearchIcon}
-                  className="size-4"
+      </div>
+      <div
+        data-q4nx-list=""
+        data-testid="q4nx-source-list"
+        className="model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 pl-0.5"
+      >
+        <div className="model-list-gutter pb-4">
+          <ListLabel>{source === "hub" ? "Hugging Face" : "On device"}</ListLabel>
+          {rows.map((row) => {
+            const memory = rowMemory(row);
+            const selected = row.id === selectedId;
+            const expanded = q4nxIsExpanded(expansion, row.id);
+            return (
+              <div key={row.id} data-testid="q4nx-source-row">
+                <ModelRow
+                  label={row.label}
+                  meta={[
+                    "GGUF",
+                    row.hint,
+                    memory?.label,
+                    memory?.fits === false ? "May not fit NPU memory" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  selected={selected}
+                  quantChip={
+                    selected && selectedQuant
+                      ? q4nxQuantName(selectedQuant)
+                      : null
+                  }
+                  vramStatus={null}
+                  onClick={() => {
+                    const key = row.listingKey;
+                    if (!key) {
+                      pick(row.id, "");
+                      setSettingsOpen(true);
+                      return;
+                    }
+                    const next = q4nxToggleExpanded(expansion, row.id);
+                    setToggled({ key: expansionKey, ids: next.toggled });
+                    // Reopening a model whose files failed to list asks again.
+                    if (q4nxIsExpanded(next, row.id) && listings[key]?.error) {
+                      setListed((prev) => ({
+                        ...prev,
+                        byKey: Object.fromEntries(
+                          Object.entries(prev.byKey).filter(
+                            ([k]) => k !== key,
+                          ),
+                        ),
+                      }));
+                    }
+                  }}
                 />
-              </InputGroupAddon>
-              <InputGroupInput
-                id="q4nx-search"
-                placeholder={
-                  source === "hub"
-                    ? "Search GGUF models or type owner/name..."
-                    : "Filter, or type /path/to/model.Q4_1.gguf"
-                }
-                value={source === "hub" ? hubQuery : localQuery}
-                onChange={(e) =>
-                  (source === "hub" ? setHubQuery : setLocalQuery)(
-                    e.target.value,
-                  )
-                }
-              />
-            </InputGroup>
-            <div
-              data-testid="q4nx-source-list"
-              className="max-h-[calc(280px*var(--ui-space-scale,1))] overflow-y-auto rounded-xl border border-border px-1 pb-1"
-            >
-              <ListLabel>
-                {source === "hub" ? "Hugging Face" : "On device"}
-              </ListLabel>
-              {rows.map((row) => {
-                const memory = rowMemory(row);
-                const selected = row.id === selectedId;
-                const expanded = q4nxIsExpanded(expansion, row.id);
-                return (
-                  <div key={row.id} data-testid="q4nx-source-row">
-                    <ModelRow
-                      label={row.label}
-                      meta={[
-                        "GGUF",
-                        row.hint,
-                        memory?.label,
-                        memory?.fits === false
-                          ? "May not fit NPU memory"
-                          : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                      selected={selected}
-                      quantChip={
-                        selected && selectedVariant
-                          ? q4nxQuantLabel(selectedVariant.quant)
-                          : null
-                      }
-                      vramStatus={null}
-                      onClick={() => {
-                        if (!row.listingKey) {
-                          pick(row.id, "");
-                          return;
-                        }
-                        const next = q4nxToggleExpanded(expansion, row.id);
-                        setToggled({ key: expansionKey, ids: next.toggled });
-                        // Reopening a model whose files failed to list asks again.
-                        const key = row.listingKey;
-                        if (q4nxIsExpanded(next, row.id) && listings[key]?.error) {
-                          setListed((prev) => ({
-                            ...prev,
-                            byKey: Object.fromEntries(
-                              Object.entries(prev.byKey).filter(
-                                ([k]) => k !== key,
-                              ),
-                            ),
-                          }));
-                        }
-                      }}
-                    />
-                    {!row.listingKey && selected && (
-                      <NpuMemoryBar
-                        memory={memory}
-                        windowGb={windowGb}
-                        className="mb-1 px-3"
-                      />
-                    )}
-                    {expanded && row.listingKey && (
-                      <ModelFiles
-                        reveal={expansion.toggled.includes(row.id)}
-                        loaded={row.listingKey in listings}
-                      >
-                        {renderVariants(row)}
-                      </ModelFiles>
-                    )}
-                  </div>
-                );
-              })}
-              {loadingRows ? (
-                <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-                  <Spinner className="size-4" />
-                  {source === "hub" ? "Searching..." : "Scanning..."}
-                </div>
-              ) : rows.length === 0 ? (
-                <p className="py-4 text-center text-xs text-muted-foreground">
-                  {source === "hub"
-                    ? "No GGUF models found"
-                    : "No local GGUF models found"}
-                </p>
-              ) : null}
+                {!row.listingKey && selected && (
+                  <NpuMemoryBar
+                    memory={memory}
+                    windowGb={windowGb}
+                    className="mb-1 px-3"
+                  />
+                )}
+                {expanded && row.listingKey && (
+                  <ModelFiles
+                    reveal={expansion.toggled.includes(row.id)}
+                    loaded={row.listingKey in listings}
+                  >
+                    {renderFiles(row)}
+                  </ModelFiles>
+                )}
+              </div>
+            );
+          })}
+          {loadingRows ? (
+            <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+              <Spinner className="size-4" />
+              {source === "hub" ? "Searching..." : "Scanning..."}
             </div>
+          ) : rows.length === 0 ? (
+            <p className="py-4 text-center text-xs text-muted-foreground">
+              {source === "hub"
+                ? "No GGUF models found"
+                : "No local GGUF models found"}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+
+  const notes = (archFit?.note ||
+    memoryWarning ||
+    (selectedQuant && selectedPacking !== "direct")) && (
+    <div className="flex flex-col gap-1">
+      {archFit?.note && (
+        <p
+          className={
+            archFit.status === "unsupported"
+              ? "text-xs text-destructive"
+              : "text-xs text-muted-foreground"
+          }
+        >
+          {archFit.note}
+        </p>
+      )}
+      {memoryWarning && (
+        <p
+          data-testid="q4nx-memory-warning"
+          className="text-xs text-amber-600 dark:text-amber-500"
+        >
+          {memoryWarning}
+        </p>
+      )}
+      {selectedQuant && selectedPacking === "requantized" && (
+        <p className="text-xs text-muted-foreground">
+          {q4nxQuantName(selectedQuant)} is dequantized and rounded again to
+          4-bit, so it loses some quality. Q4_0 and Q4_1 pack directly, and
+          Q4_K_M does for Qwen3.5.
+        </p>
+      )}
+      {selectedQuant && selectedPacking === "by-architecture" && (
+        <p className="text-xs text-muted-foreground">
+          Q4_K_M packs directly only for Qwen3.5 models. For any other model it
+          is dequantized and rounded again to 4-bit.
+        </p>
+      )}
+    </div>
+  );
+
+  // The popover's second page, laid out like the chat picker's run settings.
+  const settingsPage = (
+    <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
+      <div className="flex flex-col" data-testid="q4nx-convert-settings">
+        <div className="flex items-center gap-2.5 pb-5">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(false)}
+            className="nav-icon-btn -ml-2.75 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+            aria-label="Back to model list"
+          >
+            <HugeiconsIcon
+              icon={ChevronLeftStandardIcon}
+              className="size-4"
+              strokeWidth={1.75}
+            />
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+              Convert settings
+            </div>
+            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
+              {selectedLabel}
+            </div>
+            <div className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground">
+              {selectedMemory?.label ?? " "}
+            </div>
+          </div>
+        </div>
+        <div className="space-y-5">
+          <div className="flex flex-col gap-2">
+            <span className={FIELD_LABEL}>Source quant</span>
+            {selectedRow?.listingKey ? (
+              <Select value={filename} onValueChange={setFilename}>
+                <SelectTrigger className="w-full" aria-label="Source quant">
+                  <SelectValue placeholder="Select a file" />
+                </SelectTrigger>
+                <SelectContent>
+                  {selectedFiles.map((v) => (
+                    <SelectItem key={v.filename} value={v.filename}>
+                      <span className="flex min-w-0 items-center">
+                        <span className="truncate">{fileName(v.filename)}</span>
+                        {packingTag(v.quant, selectedRow.architecture)}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="truncate font-mono text-xs text-foreground/90">
+                {selectedFile}
+              </p>
+            )}
+            {selectedQuant && selectedPacking && (
+              <p className="text-ui-11 text-muted-foreground">
+                {q4nxQuantName(selectedQuant)},{" "}
+                {Q4NX_PACKING_TEXT[selectedPacking]}
+              </p>
+            )}
+            <NpuMemoryBar memory={selectedMemory} windowGb={windowGb} />
           </div>
           <div className="flex flex-col gap-2">
             <label htmlFor="q4nx-base" className={FIELD_LABEL}>
@@ -797,39 +928,119 @@ export function Q4nxConvertCard({
               onChange={(e) => setSaveDirectory(e.target.value)}
             />
           </div>
+          {notes}
         </div>
-        {(archFit?.note ||
-          memoryWarning ||
-          (selectedVariant && !packsDirectly(selectedVariant.quant))) && (
-          <div className="flex flex-col gap-1">
-            {archFit?.note && (
-              <p
-                className={
-                  archFit.status === "unsupported"
-                    ? "text-xs text-destructive"
-                    : "text-xs text-muted-foreground"
+        <div className="flex flex-wrap items-center gap-2 pt-5">
+          <Button
+            variant="dark"
+            type="button"
+            size="sm"
+            disabled={!canConvert}
+            onClick={() => {
+              setOpen(false);
+              setSettingsOpen(false);
+              void handleConvert();
+            }}
+          >
+            Convert
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="text-muted-foreground"
+            disabled={
+              baseModel === null && saveDirectory === DEFAULT_SAVE_DIRECTORY
+            }
+            onClick={() => {
+              setBaseModel(null);
+              setSaveDirectory(DEFAULT_SAVE_DIRECTORY);
+            }}
+          >
+            Reset all
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const showSettings = settingsOpen && !!selectedRow;
+
+  return (
+    <SectionBox
+      dataTour={Q4NX_CARD_MARK}
+      icon={CpuIcon}
+      chipTint="var(--chart-1)"
+      title="Convert a GGUF to Q4NX (AMD NPU)"
+      description="Convert a Q4_0, Q4_1 or Q4_K_M GGUF to Q4NX. Only supported on AMD NPUs."
+    >
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-2">
+          <span className={FIELD_LABEL}>GGUF model</span>
+          <div className="flex min-w-0 items-center gap-2">
+            <Popover
+              open={open}
+              onOpenChange={(next) => {
+                setOpen(next);
+                if (!next) setSettingsOpen(false);
+              }}
+            >
+              <ModelSelector.Trigger
+                currentModel={
+                  selectedRow
+                    ? {
+                        id: selectedRow.id,
+                        name: selectedRow.label,
+                        description: selectedQuant
+                          ? q4nxQuantName(selectedQuant)
+                          : "Pick a GGUF file",
+                        descriptionSuffix: selectedMemory?.label,
+                      }
+                    : undefined
                 }
+                isLoaded={canConvert}
+                placeholder="Select GGUF model"
+                className="min-w-0 max-w-full"
+              />
+              <PopoverContent
+                align="start"
+                alignOffset={10}
+                dropdownGlow="picker"
+                data-tour={Q4NX_CARD_MARK}
+                aria-label={
+                  showSettings
+                    ? `Convert settings for ${selectedLabel}`
+                    : undefined
+                }
+                className={cn(
+                  "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(var(--picker-panel-w),calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0",
+                  showSettings
+                    ? "max-h-[var(--radix-popover-content-available-height)] overflow-hidden p-0 !px-0"
+                    : "pt-4 pb-0 pl-4 pr-2",
+                )}
               >
-                {archFit.note}
-              </p>
-            )}
-            {memoryWarning && (
-              <p
-                data-testid="q4nx-memory-warning"
-                className="text-xs text-amber-600 dark:text-amber-500"
-              >
-                {memoryWarning}
-              </p>
-            )}
-            {selectedVariant && !packsDirectly(selectedVariant.quant) && (
-              <p className="text-xs text-muted-foreground">
-                {q4nxQuantLabel(selectedVariant.quant)} is dequantized and rounded again to
-                4-bit, so it loses some quality. Q4_0, Q4_1 and Q4_K_M pack
-                directly.
-              </p>
+                <TooltipProvider
+                  delayDuration={0}
+                  skipDelayDuration={0}
+                  disableHoverableContent={true}
+                >
+                  {showSettings ? settingsPage : listPage}
+                </TooltipProvider>
+              </PopoverContent>
+            </Popover>
+            {sourceReady && (
+              <ModelLoadSettingsAction
+                ariaLabel="Convert settings"
+                tooltip="Original model and save directory"
+                onConfigure={() => {
+                  setSettingsOpen(true);
+                  setOpen(true);
+                }}
+              />
             )}
           </div>
-        )}
+        </div>
+        {notes}
         <div className="flex items-center justify-between gap-3">
           <p
             className={
@@ -840,7 +1051,7 @@ export function Q4nxConvertCard({
           >
             {result?.text ??
               (selectedFile
-                ? `Selected ${selectedFile}. No training or GPU needed.`
+                ? `Converts ${selectedFile} with ${effectiveBase.trim() || "no original model"} into ${saveDirectory.trim() || "no save directory"}. No training or GPU needed.`
                 : "Pick a GGUF file. No training or GPU needed.")}
           </p>
           <Button variant="dark" disabled={!canConvert} onClick={handleConvert}>

@@ -3,6 +3,9 @@
 
 // Mirrors SOURCE_QUANTS in backend core/export/q4nx.py; any other quant is dequantized and rounded again.
 const DIRECT_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
+// Only the q4k converter unpacks Q4_K, and only these architectures use it
+// (q4k_architectures in q4nx_converter_pins.json); the q4nx converter rounds Q4_K_M again.
+const Q4K_ARCHITECTURES = ["qwen35", "qwen35moe"];
 
 // GGUF general.architecture values the pinned ROCm/FLM_Q4NX_Converter accepts (q4nx_converter_pins.json),
 // with the caveat when it only takes some models of that architecture. Some (qwen35, qwen2vl) it
@@ -51,13 +54,34 @@ function directRank(quant: string): number {
   return i === -1 ? DIRECT_QUANTS.length : i;
 }
 
-export function packsDirectly(quant: string): boolean {
-  return directRank(quant) < DIRECT_QUANTS.length;
+/** "by-architecture": Q4_K_M of a file whose architecture is not known yet. */
+export type Q4nxPacking = "direct" | "by-architecture" | "requantized";
+
+export function q4nxPacking(
+  quant: string,
+  architecture?: string | null,
+): Q4nxPacking {
+  const rank = directRank(quant);
+  if (rank === DIRECT_QUANTS.length) return "requantized";
+  if (DIRECT_QUANTS[rank] !== "q4_k_m") return "direct";
+  const arch = architecture?.trim().toLowerCase();
+  if (!arch) return "by-architecture";
+  return Q4K_ARCHITECTURES.includes(arch) ? "direct" : "requantized";
 }
 
+export function packsDirectly(quant: string, architecture?: string | null): boolean {
+  return q4nxPacking(quant, architecture) === "direct";
+}
+
+const PACKING_ORDER: Q4nxPacking[] = ["direct", "by-architecture", "requantized"];
+
 /** Directly packed quants first (backend order), then the rest; the first one is the default pick. */
-export function sortQ4nxVariants<T extends Q4nxVariant>(variants: T[]): T[] {
-  const rank = (v: T) => directRank(v.quant);
+export function sortQ4nxVariants<T extends Q4nxVariant>(
+  variants: T[],
+  architecture?: string | null,
+): T[] {
+  const rank = (v: T) =>
+    PACKING_ORDER.indexOf(q4nxPacking(v.quant, architecture)) * 10 + directRank(v.quant);
   return variants
     .map((variant, index) => ({ variant, index }))
     .sort((a, b) => rank(a.variant) - rank(b.variant) || a.index - b.index)
@@ -188,12 +212,14 @@ export function q4nxWeights(
   variant: SizedVariant | null,
   siblings: readonly SizedVariant[] = [],
   totalParams?: number | null,
+  architecture?: string | null,
 ): Q4nxWeights | null {
-  if (variant?.size_bytes && packsDirectly(variant.quant)) {
+  if (variant?.size_bytes && packsDirectly(variant.quant, architecture)) {
     return { bytes: variant.size_bytes, estimated: false };
   }
   const direct = sortQ4nxVariants(
-    siblings.filter((v) => v.size_bytes && packsDirectly(v.quant)),
+    siblings.filter((v) => v.size_bytes && packsDirectly(v.quant, architecture)),
+    architecture,
   )[0];
   if (direct?.size_bytes) return { bytes: direct.size_bytes, estimated: true };
   if (totalParams && totalParams > 0) {
@@ -255,16 +281,23 @@ export function q4nxQuantName(quant: string): string {
 
 export const Q4NX_GUIDE_STEPS = [
   "Pick a GGUF model from Hugging Face or from this device",
-  "Choose its GGUF file: Q4_0, Q4_1 and Q4_K_M pack directly",
-  "Check the original model, which supplies the config and tokenizer",
-  "Click Convert to write the Q4NX files to the save directory",
+  "Choose its GGUF file: Q4_0 and Q4_1 pack directly, Q4_K_M for Qwen3.5",
+  "Check the original model and save directory in the convert settings",
+  "Click Convert to write the Q4NX files",
 ] as const;
+
+export const Q4NX_PACKING_TEXT: Record<Q4nxPacking, string> = {
+  direct: "packs directly",
+  "by-architecture": "packs directly for Qwen3.5 only",
+  requantized: "re-quantized to 4-bit",
+};
 
 export interface Q4nxSummaryInput {
   model: string | null;
   /** The picked GGUF file's name and quant key; null until one is picked. */
   file: string | null;
   quant: string | null;
+  packing: Q4nxPacking | null;
   baseModel: string;
   saveDirectory: string;
   /** Formatted size of the converted weights. */
@@ -284,9 +317,10 @@ export function q4nxSummaryRows(
     { label: "GGUF file", value: input.file || dash },
     {
       label: "Quant",
-      value: quant
-        ? `${q4nxQuantName(quant)}, ${packsDirectly(quant) ? "packs directly" : "re-quantized to 4-bit"}`
-        : dash,
+      value:
+        quant && input.packing
+          ? `${q4nxQuantName(quant)}, ${Q4NX_PACKING_TEXT[input.packing]}`
+          : dash,
     },
     { label: "Original model", value: input.baseModel.trim() || dash },
     { label: "Save directory", value: input.saveDirectory.trim() || dash },
