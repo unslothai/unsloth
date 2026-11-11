@@ -1,19 +1,23 @@
 {
   "files": {
     "LICENSE.diffusers": "f9e2070c247517b1ddf65f7b11b393484a18da91a958fd18a97bd0f241c3125c",
-    "diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py": "f2df4e00282ecbc71afcd71da3351f1bc9eadffa876250333c64539869c2108c",
-    "diffusers_minimax_h3_image/transformer_minimax_h3_image.py": "6e9cd1b22fa5e52754788a1b14a78305ae74113696e7057418c64141df474c40"
+    "diffusers_minimax_h3_image/__init__.py": "4e11808f514c975a1be8417561c5915bee093eb7749b726cf9d9ded1259b5087",
+    "diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py": "657aa796864d65ddfb3d25cb7102f132b31290e927ec362cba899d4f4bdf5d37",
+    "diffusers_minimax_h3_image/transformer_minimax_h3_image.py": "9f50ea2714c7dbec63f02c29729579cce6c4c362f5f5d2260325607469630560"
+  },
+  "guard_files": {
+    "diffusers_minimax_h3_image/__init__.py": "Unsloth guard (not upstream): raises ImportError so the directory is never importable as a top-level package"
   },
   "license": "Apache-2.0",
   "package": "diffusers_minimax_h3_image",
   "patches": {
     "diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py": {
-      "change": "relative imports rewritten onto the installed diffusers",
+      "reason": "relative imports rewritten onto the installed diffusers; `from __future__ import annotations` added so the PEP 604 annotations are not evaluated on Python 3.9",
       "upstream_path": "src/diffusers/models/autoencoders/autoencoder_kl_minimax_h3_image.py",
       "upstream_sha256": "82da645ee07b0c0443aacd64f160c14c3fe928d61d64023e0102ecbe99557ce1"
     },
     "diffusers_minimax_h3_image/transformer_minimax_h3_image.py": {
-      "change": "relative imports rewritten onto the installed diffusers; PackedColwiseParallel optional (diffusers < 0.43)",
+      "reason": "relative imports rewritten onto the installed diffusers; PackedColwiseParallel optional (diffusers < 0.43); `from __future__ import annotations` added so the PEP 604 annotations are not evaluated on Python 3.9",
       "upstream_path": "src/diffusers/models/transformers/transformer_minimax_h3_image.py",
       "upstream_sha256": "0928960f80447c5e4db43d61a361ccc4c785021207325aabe65416f8f6f94e62"
     }

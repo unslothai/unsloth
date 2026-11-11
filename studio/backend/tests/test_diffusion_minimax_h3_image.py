@@ -9,6 +9,7 @@ generate path."""
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.machinery
 import importlib.util
 import json
@@ -66,18 +67,32 @@ def pipe(h3i, release):
 
 
 def test_vendored_files_match_the_manifest():
-    manifest = json.loads((_BACKEND / "vendor" / "diffusers_minimax_h3_image.json").read_text())
+    manifest = json.loads(
+        (_BACKEND / "vendor" / "diffusers_minimax_h3_image_manifest.json").read_text(
+            encoding = "utf-8"
+        )
+    )
     assert manifest["license"] == "Apache-2.0"
     assert len(manifest["upstream_commit"]) == 40
     for rel, digest in manifest["files"].items():
         data = (_BACKEND / "vendor" / rel).read_bytes()
         assert hashlib.sha256(data).hexdigest() == digest, rel
     for rel in manifest["files"]:
-        if rel.endswith(".py"):
-            text = (_BACKEND / "vendor" / rel).read_text()
+        if rel.endswith(".py") and rel not in manifest["guard_files"]:
+            text = (_BACKEND / "vendor" / rel).read_text(encoding = "utf-8")
             assert "Licensed under the Apache License, Version 2.0" in text
             # Every relative import was rewritten onto the installed diffusers.
             assert "\nfrom ." not in text
+
+
+def test_vendored_directory_is_not_importable_as_a_package(h3i, monkeypatch):
+    # native_tls appends vendor/ to sys.path; the guard keeps the copy reachable only through _load_vendored().
+    monkeypatch.syspath_prepend(str(_BACKEND / "vendor"))
+    monkeypatch.delitem(sys.modules, "diffusers_minimax_h3_image", raising = False)
+    with pytest.raises(ImportError, match = "_load_vendored"):
+        importlib.import_module("diffusers_minimax_h3_image.transformer_minimax_h3_image")
+    mod = h3i._load_vendored("transformer_minimax_h3_image")
+    assert mod.__name__ == "unsloth_studio_vendor_minimax_h3_image.transformer_minimax_h3_image"
 
 
 def test_classes_resolve_to_diffusers_or_the_vendored_copy(h3i):
@@ -191,7 +206,7 @@ def test_native_config_maps_and_refuses_the_video_dit(h3i):
     real = json.loads(
         (
             Path(__file__).with_name("data") / "minimax_h3_image" / "transformer_config.json"
-        ).read_text()
+        ).read_text(encoding = "utf-8")
     )
     cfg = h3i.transformer_config_from_native(real)
     assert cfg["num_layers"] == 50 and cfg["hidden_size"] == 5376 and cfg["ffn_dim"] == 14336

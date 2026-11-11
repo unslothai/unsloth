@@ -96,8 +96,8 @@ tests/test_systemone.py`, which compares the fast path against `laya.Agent.predi
 ## diffusers MiniMax-H3-Image models (Apache-2.0)
 
 - Upstream: https://github.com/huggingface/diffusers/pull/15230, merged into diffusers `main`
-- Commit: `875373ac7f5856071e345a3e394c74efccc6b9e6` (the merge; recorded in `diffusers_minimax_h3_image.json`). Both
-  files are byte-identical to the PR head `529403c21a36d03551f09bfd4d432cb64ab6d450` they were first vendored from.
+- Commit: `875373ac7f5856071e345a3e394c74efccc6b9e6` (the merge; recorded in `diffusers_minimax_h3_image_manifest.json`). Upstream's
+  two files are byte-identical at the PR head `529403c21a36d03551f09bfd4d432cb64ab6d450` they were first vendored from.
 - Files: `diffusers_minimax_h3_image/transformer_minimax_h3_image.py` (`MiniMaxH3ImageTransformer2DModel`) and
   `diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py` (`AutoencoderKLMiniMaxH3Image`), from
   `src/diffusers/models/` of that commit, with their Apache-2.0 headers.
@@ -112,17 +112,23 @@ ported into that module, not vendored: the PR ships it as Modular Diffusers bloc
 
 Relative imports (`from ...configuration_utils`, `from ..attention`, `from .vae`) are rewritten onto the installed
 `diffusers` package, and `PackedColwiseParallel` (only read by diffusers' tensor-parallel hooks, which diffusers
-before 0.43 does not have) falls back to a stub when it cannot be imported. Nothing else differs; the upstream
-hashes are under `patches` in the manifest.
+before 0.43 does not have) falls back to a stub when it cannot be imported. Both files also gain `from __future__ import annotations` after the
+licence header: upstream annotates with PEP 604 unions (`int | None`), which Python 3.9 (the backend's floor) cannot
+evaluate at import. diffusers' `register_to_config` and `ConfigMixin` read parameter names and defaults through
+`inspect.signature`, never the annotations, so the string annotations change nothing at runtime. Nothing else
+differs; the upstream hashes are under `patches` in the manifest.
 
 ### How it is imported
 
 Only through `diffusion_minimax_h3_image._load_vendored()`, which loads each file by path under a private module
-name (`unsloth_studio_vendor_minimax_h3_image.*`), never through `sys.path`.
+name (`unsloth_studio_vendor_minimax_h3_image.*`), never through `sys.path`. `utils/native_tls.py` appends this
+directory to `sys.path` for truststore, so `diffusers_minimax_h3_image/__init__.py` (Unsloth's, not upstream's, listed
+under `guard_files` in the manifest) raises `ImportError`: the directory is never importable as a top-level package,
+which would load the same classes a second time under another name. `_load_vendored()` never runs it.
 
 ### Updating
 
 When diffusers releases the classes, the vendored copy stops being used without a change here; drop it once the
-pinned diffusers carries them. To move to a newer PR commit, copy the two files from it, re-apply the import patch,
-and update the hashes and `upstream_commit` in `diffusers_minimax_h3_image.json`;
-`tests/test_diffusion_minimax_h3_image.py` checks the manifest.
+pinned diffusers carries them. To move to a newer PR commit, copy the two files from it, re-apply the import and
+`__future__` patch, and update the hashes and `upstream_commit` in `diffusers_minimax_h3_image_manifest.json`;
+`tests/test_vendored_truststore.py` and `tests/test_diffusion_minimax_h3_image.py` check the manifest.

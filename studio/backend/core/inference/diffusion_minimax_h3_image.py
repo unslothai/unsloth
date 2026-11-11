@@ -3,7 +3,7 @@
 #
 # The sampling recipe below (canvas rule, packed [text | references | image] layout, rotary grid, reference noising,
 # velocity-form Euler step, presentation of edit references, decode) is a port of the MiniMax-H3-Image Modular
-# Diffusers blocks of huggingface/diffusers PR 15230 (Apache-2.0, commit in vendor/diffusers_minimax_h3_image.json),
+# Diffusers blocks of huggingface/diffusers PR 15230 (Apache-2.0, commit in vendor/diffusers_minimax_h3_image_manifest.json),
 # and the native-checkpoint key mapping follows that PR's scripts/convert_minimax_h3_to_diffusers.py.
 
 """MiniMax-H3-Image (33B DiT + Qwen3-VL-32B conditioner) in Studio's image backend.
