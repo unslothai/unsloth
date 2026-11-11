@@ -588,8 +588,12 @@ def test_a_failed_npu_chat_names_the_reason_lemonade_printed(flm, monkeypatch, t
     warnings: list[str] = []
     monkeypatch.setattr(
         nb,
-        "logger",
-        SimpleNamespace(warning = lambda message, *args: warnings.append(message % args)),
+        "_events",
+        SimpleNamespace(
+            warning = lambda message, **fields: warnings.append(
+                "\n".join([message, *fields["lemonade_output"]])
+            )
+        ),
     )
 
     status, body = _call(stream = stream, messages = [{"role": "user", "content": "LOADFAIL"}])

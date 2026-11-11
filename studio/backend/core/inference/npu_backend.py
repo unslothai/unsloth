@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+import structlog
+
 from core.inference.flm_files import (
     FlmDownloadError,
     FlmModelFiles,
@@ -36,6 +38,8 @@ from utils.process_lifetime import (
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
+# A JSON record in the server log, like the chat proxy's, for the one warning users go looking for.
+_events = structlog.get_logger(__name__)
 
 MODEL_PREFIX = "lemonade:"
 PROVIDER_TYPE = "lemonade"
@@ -212,17 +216,30 @@ def _failed(response) -> bool:
 
 def _explain(server: Optional[LemonadeServer], mark: int, message: str) -> str:
     """``message`` plus the first error lemond printed after ``mark`` that it does not already
-    say. Logs that output at warning, since lemond's lines are otherwise debug-only."""
+    say. Logs that output at warning, since lemond's lines are otherwise debug-only, and notes the
+    outcome in the Lemonade log."""
     lines = server.output_since(mark) if server is not None else []
-    if not lines:
-        return message
-    logger.warning("Lemonade output before the NPU error (%s):\n%s", message, "\n".join(lines))
+    explained = message
     for line in lines:
         match = _LEMOND_ERROR.search(line)
         reason = match.group(1).strip() if match else ""
         if reason and not reason.endswith(":") and reason not in message and message not in reason:
-            return f"{message} ({reason[:300]})"
-    return f"{message} (Lemonade's output is on the Logs page.)"
+            explained = f"{message} ({reason[:300]})"
+            break
+    log_name = server.log_path.name if server is not None and server.log_path else None
+    if server is not None:
+        server.note(f"Request failed: {explained}")
+    if not lines:
+        return message
+    _events.warning(
+        "Lemonade output before the NPU error",
+        error = message,
+        lemonade_log = log_name,
+        lemonade_output = lines,
+    )
+    if explained == message:
+        return f"{message} (Lemonade's output is on the Logs page.)"
+    return explained
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -756,6 +773,7 @@ class LemonadeNpuBackend:
                 replaced = True
                 self._loaded = None
                 self._raise_if_load_cancelled(model_id)
+                server.note(f"Loading {model.id} with a {ctx}-token context")
                 mark = server.output_mark()
                 response = server.request(
                     "POST",

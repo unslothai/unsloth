@@ -20,8 +20,10 @@ class _Log:
     def __init__(self) -> None:
         self.warnings: list[str] = []
 
-    def warning(self, message, *args) -> None:
-        self.warnings.append(message % args if args else message)
+    def warning(self, message, *args, **fields) -> None:
+        text = message % args if args else message
+        self.warnings.append("\n".join([text, *map(str, fields.get("lemonade_output") or [])]))
+        self.fields = fields
 
     def info(self, *args) -> None:
         pass
@@ -49,7 +51,7 @@ def _line(severity: str, tag: str, message: str) -> str:
 @pytest.fixture
 def log(monkeypatch):
     recorder = _Log()
-    monkeypatch.setattr(nb, "logger", recorder)
+    monkeypatch.setattr(nb, "_events", recorder)
     return recorder
 
 
@@ -187,3 +189,38 @@ def test_no_log_dir_writes_no_file(tmp_path):
     assert server._open_log_file(4242) is None
     _prints(server, _line("Info", "Server", "ready"))
     assert not any(tmp_path.rglob("lemonade-*.log"))
+
+
+def test_the_lemonade_log_says_what_was_asked_and_how_it_ended(tmp_path, monkeypatch, log):
+    server = LemonadeServer(
+        tmp_path / "lemond",
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+        log_dir = tmp_path / "logs" / "lemonade",
+    )
+    handle = server._open_log_file(4242, ["lemond", "--port", "4242"])
+    server._drain(SimpleNamespace(stdout = []), handle)
+    server._open_log_file(4243)
+    summary = f"Failed to load {_MODEL} model!"
+
+    def answer(path):
+        return (
+            [_line("Error", "WrappedServer", "FastFlowLM process has terminated with exit code 1")],
+            httpx.Response(500, json = {"error": {"message": summary}}),
+        )
+
+    backend = _backend(tmp_path, monkeypatch, server, answer)
+    with pytest.raises(nb.NpuError):
+        backend.load(_MODEL, 32768)
+
+    first = (tmp_path / "logs" / "lemonade" / "lemonade-").parent
+    texts = {p.name: p.read_text(encoding = "utf-8") for p in first.glob("lemonade-*.log")}
+    assert any(
+        "(Unsloth Studio) Starting Lemonade: lemond --port 4242" in t for t in texts.values()
+    )
+    current = texts[server.log_path.name]
+    assert f"(Unsloth Studio) Loading {_MODEL} with a" in current
+    assert "(Unsloth Studio) Request failed: " + summary in current
+    assert "exit code 1" in current
+    assert log.fields["lemonade_log"] == server.log_path.name

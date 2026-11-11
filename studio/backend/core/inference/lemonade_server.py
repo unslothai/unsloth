@@ -85,6 +85,9 @@ class LemonadeServer:
         self.binary = Path(binary)
         # One file per lemond start, listed in Settings > Logs; None keeps output in memory only.
         self.log_dir = Path(log_dir) if log_dir is not None else None
+        self.log_path: Optional[Path] = None
+        self._log_file = None
+        self._log_lock = threading.Lock()
         self.cache_dir = Path(cache_dir)
         self.config_dir = Path(config_dir)
         self.flm_model_dir = Path(flm_model_dir)
@@ -212,7 +215,7 @@ class LemonadeServer:
         ]
         logger.info("Starting Lemonade: %s", " ".join(cmd))
         self._tail.clear()
-        log_file = self._open_log_file(port)
+        log_file = self._open_log_file(port, cmd)
 
         def _spawn() -> subprocess.Popen:
             return subprocess.Popen(
@@ -248,7 +251,11 @@ class LemonadeServer:
             return False
         return True
 
-    def _open_log_file(self, port: int):
+    def _open_log_file(
+        self,
+        port: int,
+        cmd: Optional[list[str]] = None,
+    ):
         if self.log_dir is None:
             return None
         try:
@@ -261,7 +268,32 @@ class LemonadeServer:
         # After the open, so the cap counts this file and can never delete it.
         prune_log_dir(self.log_dir, "lemonade-*.log", protect = path)
         logger.info("Lemonade output -> %s", path)
+        with self._log_lock:
+            self._log_file = handle
+            self.log_path = path
+        if cmd:
+            self.note(f"Starting Lemonade: {' '.join(cmd)}")
         return handle
+
+    def note(self, message: str) -> None:
+        """A line of Unsloth Studio's own in the Lemonade log, in lemond's format, so the file reads
+        on its own: what was asked of Lemonade and how it ended."""
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self._write_log(f"{stamp} [Info] (Unsloth Studio) {message}")
+
+    def _write_log(
+        self,
+        line: str,
+        handle = None,
+    ) -> None:
+        with self._log_lock:
+            target = handle if handle is not None else self._log_file
+            if target is None or target.closed:
+                return
+            try:
+                target.write(line + "\n")
+            except (OSError, ValueError):
+                pass
 
     def _drain(
         self,
@@ -277,15 +309,16 @@ class LemonadeServer:
                     self._lines_seen += 1
                     logger.debug("[lemond] %s", line)
                     if log_file is not None:
-                        try:
-                            log_file.write(line + "\n")
-                        except (OSError, ValueError):
-                            log_file = None
+                        self._write_log(line, log_file)
         except Exception:  # noqa: BLE001 -- the pipe closes at teardown
             pass
         finally:
             if log_file is not None:
-                log_file.close()
+                with self._log_lock:
+                    # A restart may already have opened the next file; only close this one.
+                    if self._log_file is log_file:
+                        self._log_file = None
+                    log_file.close()
 
     def _wait_ready(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
