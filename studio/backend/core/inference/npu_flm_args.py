@@ -25,13 +25,10 @@ def _int(value: Any) -> Optional[int]:
 
 
 def build_flm_args(
-    *,
-    power_mode: Optional[str],
-    prefill_chunk_len: Optional[int],
-    img_pre_resize: Optional[int],
-    ctx_size: int,
+    *, power_mode: Optional[str], prefill_chunk_len: Optional[int], img_pre_resize: Optional[int]
 ) -> Optional[str]:
-    """The ``flm_args`` string, or None when every setting is the default. Raises ValueError."""
+    """The ``flm_args`` string, or None when every setting is the default. Raises ValueError.
+    The prefill chunk is held to the context by the load (clamp_prefill_chunk)."""
     args: list[str] = []
     if power_mode not in (None, "", "default"):
         if power_mode not in NPU_POWER_MODES:
@@ -43,8 +40,7 @@ def build_flm_args(
         chunk = _int(prefill_chunk_len)
         if chunk is None or chunk < 1:
             raise ValueError("Prefill chunk length must be a positive whole number.")
-        # Lemonade refuses a chunk longer than the context.
-        args += ["--prefill-chunk-len", str(min(chunk, ctx_size))]
+        args += ["--prefill-chunk-len", str(chunk)]
     if img_pre_resize is not None:
         level = _int(img_pre_resize)
         if level is None or not 0 <= level <= NPU_IMG_PRE_RESIZE_MAX:
@@ -53,6 +49,17 @@ def build_flm_args(
             )
         args += ["--img-pre-resize", str(level)]
     return " ".join(args) or None
+
+
+def clamp_prefill_chunk(flm_args: Optional[str], ctx_size: Optional[int]) -> Optional[str]:
+    """``flm_args`` with its prefill chunk held to ``ctx_size``: Lemonade refuses a longer one."""
+    if not flm_args or not ctx_size:
+        return flm_args or None
+    tokens = flm_args.split()
+    for i, token in enumerate(tokens[:-1]):
+        if token == "--prefill-chunk-len" and tokens[i + 1].isdigit():
+            tokens[i + 1] = str(min(int(tokens[i + 1]), ctx_size))
+    return " ".join(tokens) or None
 
 
 def flm_args_status(flm_args: Optional[str]) -> dict[str, Any]:

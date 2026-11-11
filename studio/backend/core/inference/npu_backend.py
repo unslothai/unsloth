@@ -30,6 +30,7 @@ from core.inference.flm_files import (
 )
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable, OutputWindow
 from core.inference.npu_context import DEFAULT_CONTEXT_LENGTH, plan_context
+from core.inference.npu_flm_args import clamp_prefill_chunk
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -975,6 +976,8 @@ class LemonadeNpuBackend:
                 self._raise_if_load_cancelled(model_id)
                 server.note(f"Loading {model.id} with a {ctx}-token context")
                 window = server.open_window()
+                # Held to the context this load resolved, which only the load knows under Auto.
+                flm_args = clamp_prefill_chunk(flm_args, ctx)
                 json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False}
                 if flm_args:
                     json_body["flm_args"] = flm_args
