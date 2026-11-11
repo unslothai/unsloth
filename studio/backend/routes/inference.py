@@ -8508,6 +8508,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
+        npu_power_mode = None,
+        npu_prefill_chunk_len = None,
+        npu_img_pre_resize = None,
         speaks = False,
         mlx_kv_quant = None,
         mlx_kv_quant_requested = None,
@@ -11166,12 +11169,15 @@ async def _auto_switch_npu_model(
     """
     from core.inference.gpu_arbiter import MultiModelAlwaysRefusal, require_no_foreign_generations
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
+    from core.inference.npu_flm_args import NPU_FLM_FIELDS
     from utils.openai_auto_switch_settings import get_model_override, resolve_fit_max_seq_length
 
     if await asyncio.to_thread(_loaded_satisfies, named_model):
         return
-    # The context length saved in the model's settings, as a picker load sends it.
-    max_seq_length = resolve_fit_max_seq_length(get_model_override(named_model), is_gguf = False)
+    # The context length and FastFlowLM settings saved for the model, as a picker load sends them.
+    override = get_model_override(named_model)
+    max_seq_length = resolve_fit_max_seq_length(override, is_gguf = False)
+    flm_fields = {key: override[key] for key in NPU_FLM_FIELDS if override.get(key) is not None}
     cancel_event = getattr(getattr(fastapi_request, "state", None), "generation_cancel_event", None)
 
     def _raise_if_cancelled() -> None:
@@ -11198,7 +11204,11 @@ async def _auto_switch_npu_model(
                     loaded_ok = False
                     try:
                         await _load_model_impl(
-                            LoadRequest(model_path = named_model, max_seq_length = max_seq_length or 0),
+                            LoadRequest(
+                                model_path = named_model,
+                                max_seq_length = max_seq_length or 0,
+                                **flm_fields,
+                            ),
                             fastapi_request,
                             current_subject,
                             current_request_counted = True,
@@ -18867,6 +18877,31 @@ async def _unload_npu_before_local_load() -> None:
         await asyncio.to_thread(npu.unload)
 
 
+def _npu_flm_args(request: LoadRequest, model, requested_ctx: Optional[int]) -> Optional[str]:
+    """The ``flm_args`` this load sends; a bad value is the client's 400."""
+    from core.inference.npu_backend import DEFAULT_CONTEXT_LENGTH
+    from core.inference.npu_flm_args import NPU_FLM_FIELDS, build_flm_args
+
+    if all(getattr(request, field) is None for field in NPU_FLM_FIELDS):
+        return None
+    # The context npu.load resolves, which Lemonade holds the prefill chunk to.
+    limit = model.max_context_length
+    ctx = requested_ctx or min(DEFAULT_CONTEXT_LENGTH, limit or DEFAULT_CONTEXT_LENGTH)
+    try:
+        return build_flm_args(
+            power_mode = request.npu_power_mode,
+            prefill_chunk_len = request.npu_prefill_chunk_len,
+            img_pre_resize = request.npu_img_pre_resize if model.vision else None,
+            ctx_size = min(ctx, limit) if limit else ctx,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+
+def _npu_loaded_flm_args(npu) -> Optional[str]:
+    return getattr(getattr(npu, "_loaded", None), "flm_args", None)
+
+
 async def _load_npu_model(
     request: LoadRequest,
     *,
@@ -18903,13 +18938,15 @@ async def _load_npu_model(
         and not request.force_reload
         # Exact: Auto after a pin, or a pin after Auto, is a different load.
         and requested_ctx == resident.requested_context_length
+        and _npu_flm_args(request, resident.model, requested_ctx) == _npu_loaded_flm_args(npu)
     ):
         account_access.join_resident("chat")
         return _npu_load_response(resident, "already_loaded")
     try:
-        await asyncio.to_thread(npu.loadable_model, model_id)
+        model = await asyncio.to_thread(npu.loadable_model, model_id)
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
+    flm_args = _npu_flm_args(request, model, requested_ctx)
     # The NPU model replaces the primary: under Always only the one already serving may reload.
     # After the checks above, so a request that can only fail never asks to unload a model.
     if routed_slot.get() is None:
@@ -18958,7 +18995,11 @@ async def _load_npu_model(
     await asyncio.to_thread(release_chat_gpu_claim)
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
-    load = asyncio.ensure_future(asyncio.to_thread(npu.load, model_id, requested_ctx))
+    load = asyncio.ensure_future(
+        asyncio.to_thread(
+            npu.load, model_id, requested_ctx, **({"flm_args": flm_args} if flm_args else {})
+        )
+    )
     if load_cancel_event is not None:
         # Stop the load mid-way, as a GGUF load polls its cancel event.
         while not load.done():
@@ -22684,6 +22725,7 @@ async def _slot_status(current_subject: str):
         backend = _peek_inference_backend()
 
         from core.inference.npu_backend import peek_npu_backend
+        from core.inference.npu_flm_args import flm_args_status
 
         _npu = peek_npu_backend()
         _npu_resident = _npu.resident() if _npu is not None and routed_slot.get() is None else None
@@ -22699,6 +22741,7 @@ async def _slot_status(current_subject: str):
                 inference = load_inference_config(_npu_model.id),
                 context_length = _npu_resident.context_length,
                 requested_context_length = _npu_resident.requested_context_length,
+                **flm_args_status(_npu_loaded_flm_args(_npu)),
                 max_context_length = _npu_model.max_context_length,
                 native_context_length = _npu_model.max_context_length,
                 context_length_enforced = True,

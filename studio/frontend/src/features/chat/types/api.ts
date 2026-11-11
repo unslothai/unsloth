@@ -93,6 +93,10 @@ export interface LoadModelRequest {
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlx_ple_offload?: "off" | number | null;
   mlx_expert_offload?: "off" | number | null;
+  /** AMD NPU only: FastFlowLM flags; omitted leaves its default. */
+  npu_power_mode?: "powersaver" | "balanced" | "performance" | "turbo";
+  npu_prefill_chunk_len?: number;
+  npu_img_pre_resize?: number;
   /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
    *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
    *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
@@ -341,6 +345,10 @@ export interface InferenceStatusResponse {
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
+  /** What the resident NPU load asked FastFlowLM for; null is its default. */
+  npu_power_mode?: string | null;
+  npu_prefill_chunk_len?: number | null;
+  npu_img_pre_resize?: number | null;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;

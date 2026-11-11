@@ -226,6 +226,8 @@ import {
   isReasoningBudgetMessageValid,
   contextPinPatch,
   isServedByMlx,
+  NPU_POWER_MODES,
+  type NpuPowerMode,
   savedContextPin,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
@@ -243,7 +245,11 @@ import {
   vramPercentToFraction,
 } from "../model-config/per-model-config";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
-import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
+import {
+  isNpuModelId,
+  NPU_DEFAULT_CONTEXT_LENGTH,
+  useNpuCatalogStore,
+} from "../../npu";
 import {
   type RunConfigImport,
   SharedRunConfigControls,
@@ -1624,6 +1630,138 @@ function MlxSpeculativeRows({
   );
 }
 
+const NPU_DEFAULT_CHOICE = "default";
+const NPU_POWER_MODE_LABELS: Record<NpuPowerMode, string> = {
+  powersaver: "Power saver",
+  balanced: "Balanced",
+  performance: "Performance",
+  turbo: "Turbo",
+};
+// FastFlowLM's pre-resize levels 0 to NPU_IMG_PRE_RESIZE_MAX, by the height an image is scaled to.
+const NPU_IMG_PRE_RESIZE_LABELS = ["Original size", "480p", "720p", "1080p", "1440p"];
+
+function NpuAdvancedSettings({
+  config,
+  update,
+  contextLength,
+  showImagePreResize,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  contextLength: number;
+  showImagePreResize: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-5">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Power Mode</span>
+          <InfoHint>
+            How hard FastFlowLM drives the NPU. Turbo answers fastest and draws
+            the most power, Power saver the least. Default keeps FastFlowLM&apos;s
+            own. Changing it reloads the model.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.npuPowerMode ?? NPU_DEFAULT_CHOICE}
+          onValueChange={(v) =>
+            update({ npuPowerMode: v === NPU_DEFAULT_CHOICE ? null : (v as NpuPowerMode) })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            aria-label="NPU power mode"
+            className={SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value={NPU_DEFAULT_CHOICE}>Default</SelectItem>
+            {NPU_POWER_MODES.map((mode) => (
+              <SelectItem key={mode} value={mode}>
+                {NPU_POWER_MODE_LABELS[mode]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Prefill Chunk Length</span>
+          <InfoHint>
+            Prompt tokens FastFlowLM reads per step. Leave blank for its
+            default. Never more than the context length.
+          </InfoHint>
+        </div>
+        <input
+          type="number"
+          min={1}
+          max={contextLength}
+          step={1}
+          value={config.npuPrefillChunkLen ?? ""}
+          placeholder="auto"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              update({ npuPrefillChunkLen: null });
+              return;
+            }
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed)) {
+              update({ npuPrefillChunkLen: Math.max(1, Math.min(contextLength, parsed)) });
+            }
+          }}
+          aria-label="NPU prefill chunk length"
+          className={NUMBER_INPUT_CLASS}
+        />
+      </div>
+      {/* Stays visible while set so it can be cleared. */}
+      {(showImagePreResize || config.npuImgPreResize != null) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Image Pre-resize</span>
+            <InfoHint>
+              The height FastFlowLM scales an image to before reading it.
+              Smaller answers sooner; Original size keeps every detail. Default
+              keeps FastFlowLM&apos;s own.
+            </InfoHint>
+          </div>
+          <Select
+            value={
+              config.npuImgPreResize == null
+                ? NPU_DEFAULT_CHOICE
+                : String(config.npuImgPreResize)
+            }
+            onValueChange={(v) =>
+              update({ npuImgPreResize: v === NPU_DEFAULT_CHOICE ? null : Number(v) })
+            }
+          >
+            <SelectTrigger
+              animateRadius={false}
+              icon={ChevronDownStandardIcon}
+              iconClassName="size-3.5"
+              aria-label="NPU image pre-resize"
+              className={SELECT_TRIGGER_CLASS}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+              <SelectItem value={NPU_DEFAULT_CHOICE}>Default</SelectItem>
+              {NPU_IMG_PRE_RESIZE_LABELS.map((label, level) => (
+                <SelectItem key={label} value={String(level)}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MlxAdvancedSettings({
   config,
   update,
@@ -2596,6 +2734,9 @@ export function ModelConfigPage({
   );
   const configId = target.configId ?? target.id;
   const targetIsNpu = isNpuModelId(target.id);
+  const npuCatalogVision = useNpuCatalogStore(
+    (s) => s.models?.some((m) => m.model_path === target.id && m.supports_vision) ?? false,
+  );
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);
@@ -2772,6 +2913,12 @@ export function ModelConfigPage({
   const [initialMlxOffload] = useState(
     () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
   );
+  const [initialNpuFlm] = useState(
+    () =>
+      configState.npuPowerMode != null ||
+      configState.npuPrefillChunkLen != null ||
+      configState.npuImgPreResize != null,
+  );
   // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
@@ -2779,6 +2926,7 @@ export function ModelConfigPage({
   const autoOpenForMlxAnePrefill = servedByMlx && initialMlxAnePrefill;
   const autoOpenForMlxFastVerify = servedByMlx && initialMlxFastVerify;
   const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
+  const autoOpenForNpuFlm = targetIsNpu && initialNpuFlm;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
   const showAdvanced =
@@ -2789,7 +2937,8 @@ export function ModelConfigPage({
         autoOpenForMlxInt8Prefill ||
         autoOpenForMlxAnePrefill ||
         autoOpenForMlxFastVerify ||
-        autoOpenForMlxOffload));
+        autoOpenForMlxOffload ||
+        autoOpenForNpuFlm));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
     saveAdvancedSettingsOpen(open);
@@ -4330,47 +4479,51 @@ export function ModelConfigPage({
                 update(contextPinPatch(value, pinsContextLength))
               }
             />
-            {!targetIsNpu && (
-              <>
-                <AdvancedSettingsToggle
-                  checked={showAdvanced}
-                  onCheckedChange={toggleAdvanced}
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
+            {showAdvanced &&
+              (targetIsNpu ? (
+                <NpuAdvancedSettings
+                  config={config}
+                  update={update}
+                  contextLength={maxSeqLengthValue}
+                  showImagePreResize={target.meta.isVision === true || npuCatalogVision}
                 />
-                {showAdvanced && (
-                  <MlxAdvancedSettings
-                    config={config}
-                    update={update}
-                    outcome={mlxKvQuantOutcome}
-                    servedByMlx={servedByMlx}
-                    int8PrefillAvailable={int8PrefillAvailable}
-                    onInt8PrefillChange={(checked) =>
-                      checked
-                        ? setInt8PrefillConfirmOpen(true)
-                        : update({ mlxInt8Prefill: false })
-                    }
-                    anePrefillAvailable={anePrefillAvailable}
-                    onAnePrefillChange={(checked) =>
-                      checked
-                        ? setAnePrefillConfirmOpen(true)
-                        : update({ mlxAnePrefill: false })
-                    }
-                    fastVerifyAvailable={fastVerifyAvailable}
-                    onFastVerifyChange={(checked) =>
-                      checked
-                        ? setFastVerifyConfirmOpen(true)
-                        : update({ mlxFastVerify: false })
-                    }
-                    offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
-                    offloadDecided={mlxOffloadDecidedNow}
-                    offloadNotes={mlxOffloadNotes}
-                    speculativeFallback={speculativeFallback}
-                    modelPath={target.id}
-                    onEditTemplate={() => setTemplateOpen(true)}
-                    templateOutcome={chatTemplateOutcome}
-                  />
-                )}
-              </>
-            )}
+              ) : (
+                <MlxAdvancedSettings
+                  config={config}
+                  update={update}
+                  outcome={mlxKvQuantOutcome}
+                  servedByMlx={servedByMlx}
+                  int8PrefillAvailable={int8PrefillAvailable}
+                  onInt8PrefillChange={(checked) =>
+                    checked
+                      ? setInt8PrefillConfirmOpen(true)
+                      : update({ mlxInt8Prefill: false })
+                  }
+                  anePrefillAvailable={anePrefillAvailable}
+                  onAnePrefillChange={(checked) =>
+                    checked
+                      ? setAnePrefillConfirmOpen(true)
+                      : update({ mlxAnePrefill: false })
+                  }
+                  fastVerifyAvailable={fastVerifyAvailable}
+                  onFastVerifyChange={(checked) =>
+                    checked
+                      ? setFastVerifyConfirmOpen(true)
+                      : update({ mlxFastVerify: false })
+                  }
+                  offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
+                  offloadDecided={mlxOffloadDecidedNow}
+                  offloadNotes={mlxOffloadNotes}
+                  speculativeFallback={speculativeFallback}
+                  modelPath={target.id}
+                  onEditTemplate={() => setTemplateOpen(true)}
+                  templateOutcome={chatTemplateOutcome}
+                />
+              ))}
           </>
         )}
       </div>

@@ -14,6 +14,7 @@ import {
   publicModelId,
 } from "./model-identity";
 import { isExternalModelId } from "@/features/chat/external-providers";
+import type { LoadModelRequest } from "@/features/chat/types/api";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
   DRAFTER_MODEL_SPEC_TYPES,
@@ -40,6 +41,10 @@ export interface PerModelConfig {
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlxPleOffload?: MlxOffload;
   mlxExpertOffload?: MlxOffload;
+  /** AMD NPU only, sent to FastFlowLM as flm_args; null leaves its default. */
+  npuPowerMode?: NpuPowerMode | null;
+  npuPrefillChunkLen?: number | null;
+  npuImgPreResize?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** Draft-context KV dtype, independent of kvCacheDtype. Optional so older blobs parse. */
@@ -90,6 +95,9 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   mlxFastVerify: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
+  npuPowerMode: null,
+  npuPrefillChunkLen: null,
+  npuImgPreResize: null,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
@@ -375,6 +383,45 @@ export function normalizeMlxOffload(value: unknown): MlxOffload {
     : null;
 }
 
+// Mirrors core/inference/npu_flm_args.py, itself Lemonade's flm_args allow-list. Default is null.
+export const NPU_POWER_MODES = ["powersaver", "balanced", "performance", "turbo"] as const;
+export type NpuPowerMode = (typeof NPU_POWER_MODES)[number];
+export const NPU_IMG_PRE_RESIZE_MAX = 4;
+
+export function normalizeNpuPowerMode(value: unknown): NpuPowerMode | null {
+  return (NPU_POWER_MODES as readonly unknown[]).includes(value)
+    ? (value as NpuPowerMode)
+    : null;
+}
+
+function wholeNumberIn(value: unknown, min: number, max: number): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
+    ? value
+    : null;
+}
+
+export function normalizeNpuPrefillChunkLen(value: unknown): number | null {
+  return wholeNumberIn(value, 1, MAX_SEQ_LENGTH_MAX);
+}
+
+export function normalizeNpuImgPreResize(value: unknown): number | null {
+  return wholeNumberIn(value, 0, NPU_IMG_PRE_RESIZE_MAX);
+}
+
+/** The /load fields an NPU load sends; unset ones are left out. */
+export function npuLoadFields(
+  config: PerModelConfig,
+): Pick<LoadModelRequest, "npu_power_mode" | "npu_prefill_chunk_len" | "npu_img_pre_resize"> {
+  const powerMode = normalizeNpuPowerMode(config.npuPowerMode);
+  const prefillChunkLen = normalizeNpuPrefillChunkLen(config.npuPrefillChunkLen);
+  const imgPreResize = normalizeNpuImgPreResize(config.npuImgPreResize);
+  return {
+    ...(powerMode != null && { npu_power_mode: powerMode }),
+    ...(prefillChunkLen != null && { npu_prefill_chunk_len: prefillChunkLen }),
+    ...(imgPreResize != null && { npu_img_pre_resize: imgPreResize }),
+  };
+}
+
 // llama-server's --load-mode enum in --help order. "auto" is the default: the UI shows it, storage keeps null and
 // the backend emits no flag. Never sent verbatim; builds like b10360 reject "auto" as a value.
 export const LOAD_MODES = [
@@ -411,9 +458,10 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill, v14 mlxFastVerify. v8 is skipped: nightly builds stamped it for the reverted custom
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill, v14 mlxFastVerify, v15 the NPU trio. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 14;
+const STORAGE_SCHEMA_VERSION = 15;
+const PRE_NPU_FLM_SCHEMA_VERSION = 14;
 const PRE_MLX_FAST_VERIFY_SCHEMA_VERSION = 13;
 const PRE_MLX_ANE_PREFILL_SCHEMA_VERSION = 12;
 const PRE_MLX_OFFLOAD_SCHEMA_VERSION = 11;
@@ -467,6 +515,9 @@ const STORED_CONFIG_FIELDS = new Set([
   "mlxFastVerify",
   "mlxPleOffload",
   "mlxExpertOffload",
+  "npuPowerMode",
+  "npuPrefillChunkLen",
+  "npuImgPreResize",
   "loadIn4bit",
   "speculativeType",
   "specDraftNMax",
@@ -1093,6 +1144,9 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     mlxFastVerify: partial.mlxFastVerify === true,
     mlxPleOffload: normalizeMlxOffload(partial.mlxPleOffload),
     mlxExpertOffload: normalizeMlxOffload(partial.mlxExpertOffload),
+    npuPowerMode: normalizeNpuPowerMode(partial.npuPowerMode),
+    npuPrefillChunkLen: normalizeNpuPrefillChunkLen(partial.npuPrefillChunkLen),
+    npuImgPreResize: normalizeNpuImgPreResize(partial.npuImgPreResize),
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -1177,8 +1231,15 @@ function storedSchemaVersion(normalized: PerModelConfig): number {
   const mode = normalized.speculativeType;
   // A kept Auto and the MLX-only modes are values an older client folds back to unset.
   const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
-  if (normalized.mlxFastVerify) {
+  if (
+    normalized.npuPowerMode != null ||
+    normalized.npuPrefillChunkLen != null ||
+    normalized.npuImgPreResize != null
+  ) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.mlxFastVerify) {
+    return PRE_NPU_FLM_SCHEMA_VERSION;
   }
   if (normalized.mlxAnePrefill) {
     return PRE_MLX_FAST_VERIFY_SCHEMA_VERSION;
@@ -1381,6 +1442,9 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     !config.mlxFastVerify &&
     config.mlxPleOffload == null &&
     config.mlxExpertOffload == null &&
+    config.npuPowerMode == null &&
+    config.npuPrefillChunkLen == null &&
+    config.npuImgPreResize == null &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&

@@ -1202,6 +1202,11 @@ class ModelOverridePayload(BaseModel):
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
     mlx_fast_verify: bool = False
+    npu_power_mode: Optional[
+        Literal["default", "powersaver", "balanced", "performance", "turbo"]
+    ] = None
+    npu_prefill_chunk_len: Optional[int] = Field(default = None, ge = 1, le = 1048576)
+    npu_img_pre_resize: Optional[int] = Field(default = None, ge = 0, le = 4)
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -3123,6 +3128,9 @@ def update_openai_auto_switch_override(
                 mlx_int8_prefill = payload.mlx_int8_prefill,
                 mlx_ane_prefill = payload.mlx_ane_prefill,
                 mlx_fast_verify = payload.mlx_fast_verify,
+                npu_power_mode = payload.npu_power_mode,
+                npu_prefill_chunk_len = payload.npu_prefill_chunk_len,
+                npu_img_pre_resize = payload.npu_img_pre_resize,
                 load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
