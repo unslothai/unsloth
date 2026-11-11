@@ -1287,6 +1287,7 @@ class AudioCppBackend:
             seconds = _wav_seconds(source)
         else:
             seconds = cm.clamp_seconds(mode, music.get("duration_s"))
+        instrumental = False
         try:
             if mode_id == "edit":
                 requests = [
@@ -1302,7 +1303,9 @@ class AudioCppBackend:
                     )
                 ]
             else:
-                instrumental = bool(music.get("instrumental")) and mode.instrumental != "never"
+                instrumental = (
+                    bool(music.get("instrumental")) and mode.instrumental != "never"
+                ) or mode.instrumental == "always"
                 takes = 1 if batch > 1 else variations
                 requests = [
                     cm.song_request(
@@ -1312,7 +1315,7 @@ class AudioCppBackend:
                         seconds = seconds,
                         options = options,
                         seed = cm.take_seed(seed, index),
-                        instrumental = instrumental or mode.instrumental == "always",
+                        instrumental = instrumental,
                         batch = batch,
                     )
                     for index in range(takes)
@@ -1328,6 +1331,8 @@ class AudioCppBackend:
         try:
             for index, request in enumerate(requests):
                 _raise_if_cancelled(cancel_event)
+                if instrumental and cm.needs_instrumental_score(model, request):
+                    request = self._instrumental_score(server, request, timeout, cancel_event)
                 ctype, data = server.post_json(
                     "/v1/tasks/run",
                     {"model": server.model_id, "request": request},
@@ -1353,6 +1358,25 @@ class AudioCppBackend:
             _write_outputs(output_dir, outputs)
         first = outputs[0][1]
         return first, _wav_sample_rate(first)
+
+    def _instrumental_score(self, server, request: dict, timeout: float, cancel_event) -> dict:
+        """Plans the score first and renders it with the Vocal melody moved to Ins; a plan it cannot
+        rewrite renders the take as before."""
+        abc = request["options"].get("abc")
+        if not abc:
+            _, data = server.post_json(
+                "/v1/tasks/run",
+                {"model": server.model_id, "request": cm.planning_request(request)},
+                timeout = timeout,
+                cancel_event = cancel_event,
+            )
+            _raise_if_cancelled(cancel_event)
+            abc = cm.planned_score(data)
+        try:
+            return cm.with_instrumental_score(request, abc) if abc else request
+        except ValueError as exc:
+            logger.warning("audio.cpp: YuE2 score not made instrumental: %s", exc)
+            return request
 
     # Unloading
     @_invalidates_gpu_memory("audio unload")

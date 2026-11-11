@@ -261,9 +261,8 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
             ),
         ),
         description_option = "style",
-        # audio.cpp's instrumental adapter recognizes the lowercase tag; the base YuE2 model
-        # otherwise treats the title-cased spelling as a lyric and may add vocals.
-        instrumental_lyrics = "[instrumental]",
+        # Empty lyrics still sing; only this tag stays wordless.
+        instrumental_lyrics = "[Instrumental]",
         rtf = 6.0,
         # Any length budget cut songs mid-verse (#13337); upstream's own cap is 9000 frames = 360 s.
         self_ending_s = 360.0,

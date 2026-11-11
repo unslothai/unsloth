@@ -7,7 +7,10 @@ keeps its old body, since its session reads both duration keys."""
 
 from __future__ import annotations
 
+import base64
+import json
 import math
+import re
 import secrets
 from typing import Any, Optional
 
@@ -193,7 +196,7 @@ def song_request(
     if model.family == "yue2":
         if not description:
             raise MusicRequestError("YuE2 needs a style description.")
-        # Missing or empty lyrics still sing; only "[Instrumental]" comes back wordless.
+        # Missing or empty lyrics still sing; a planned take also needs needs_instrumental_score.
         if instrumental or not lyrics:
             lyrics = (
                 music.instrumental_lyrics
@@ -215,6 +218,95 @@ def song_request(
     if batch > 1:
         request_options["batch_size"] = str(int(batch))
     return _finish(model, request, request_options, seed)
+
+
+_ABC_NOTE = re.compile(r"[\^_=]*[A-Ga-g][,']*(\d*/?\d*)-?")
+_ABC_MARKUP = re.compile(r'("[^"]*"|\[[A-Za-z]:[^\]]*\])')
+_ABC_FIELD = re.compile(r"^[A-Za-z]:")
+_ABC_VOICE = re.compile(r"^V:\s*(\S+)\s*$")
+
+
+def _abc_bars(line: str) -> list[str]:
+    bars: list[str] = []
+    for bar in line.rstrip().rstrip("|").split("|"):
+        rests = re.fullmatch(r"\s*Z(\d*)\s*", bar)
+        bars.extend(["Z"] * int(rests.group(1) or 1) if rests else [bar])
+    return bars
+
+
+def _abc_rest_notes(bar: str) -> str:
+    parts = _ABC_MARKUP.split(bar)
+    for i in range(0, len(parts), 2):
+        parts[i] = _ABC_NOTE.sub(lambda m: "z" + m.group(1), parts[i])
+    rested = "".join(parts)
+    return "Z" if re.fullmatch(r"(z\d*)+", rested) else rested
+
+
+def yue2_instrumental_score(abc: str) -> str:
+    """YuE2's instrumental recipe (upstream skills/yue2-music/instrumental): every bar the Vocal part
+    sings moves to Ins, and Vocal keeps its chords over rests, so nothing is left to sing."""
+    lines = abc.splitlines()
+    voice = None
+    pending: dict[str, int] = {}
+    groups: list[tuple[int, int]] = []
+    for index, line in enumerate(lines):
+        named = _ABC_VOICE.match(line.strip())
+        if named:
+            voice = named.group(1)
+        elif line.strip() and not line.startswith("%") and not _ABC_FIELD.match(line) and voice:
+            pending[voice] = index
+            if voice == "Ins" and "Vocal" in pending:
+                groups.append((pending.pop("Vocal"), pending.pop("Ins")))
+    parts = [(v, i, _abc_bars(lines[v]), _abc_bars(lines[i])) for v, i in groups]
+    flat: list[tuple[list[str], int, bool]] = []
+    for _, _, vocal, ins in parts:
+        if len(vocal) != len(ins):
+            raise ValueError("Vocal and Ins differ in bar count")
+        for b, bar in enumerate(vocal):
+            moved = bool(_ABC_NOTE.search(_ABC_MARKUP.sub("", bar)))
+            if moved:
+                ins[b] = re.sub(r'"[^"]*"', "", bar)
+                vocal[b] = _abc_rest_notes(bar)
+            flat.append((ins, b, moved))
+    # A tie cannot join a moved bar to a kept one, nor end the score.
+    for (bars, b, moved), following in zip(flat, flat[1:] + [None]):
+        if following is None or following[2] != moved:
+            bars[b] = bars[b].rstrip().rstrip("-")
+    for v, i, vocal, ins in parts:
+        lines[v] = "|".join(vocal) + "|"
+        lines[i] = "|".join(ins) + "|"
+    return "\n".join(lines) + ("\n" if abc.endswith("\n") else "")
+
+
+def needs_instrumental_score(model: AudioCppModel, request: dict) -> bool:
+    """A planned YuE2 take writes a Vocal melody whatever the lyrics say (#17473)."""
+    options = request.get("options") or {}
+    return (
+        model.family == "yue2"
+        and options.get("cot") in ("melody", "full")
+        and "abc_file" not in options
+        and (model.request_keys is None or {"abc", "stop_after"} <= model.request_keys)
+    )
+
+
+def planning_request(request: dict) -> dict:
+    return {**request, "options": {**request["options"], "stop_after": "abc"}}
+
+
+def planned_score(data: bytes) -> str:
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except ValueError:
+        return ""
+    artifacts = payload.get("artifacts") if isinstance(payload, dict) else None
+    for artifact in artifacts or []:
+        if isinstance(artifact, dict) and artifact.get("id") == "score":
+            return base64.b64decode(artifact.get("payload") or "").decode("utf-8", "replace")
+    return ""
+
+
+def with_instrumental_score(request: dict, abc: str) -> dict:
+    return {**request, "options": {**request["options"], "abc": yue2_instrumental_score(abc)}}
 
 
 def legacy_song_request(

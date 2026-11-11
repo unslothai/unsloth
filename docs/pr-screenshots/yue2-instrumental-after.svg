@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300">
-  <rect width="900" height="300" fill="#ecfdf5"/>
-  <text x="40" y="58" font-family="sans-serif" font-size="28" fill="#065f46">After · YuE2 instrumental request</text>
-  <rect x="40" y="96" width="820" height="120" rx="12" fill="#d1fae5" stroke="#34d399"/>
-  <text x="72" y="150" font-family="monospace" font-size="32" fill="#064e3b">lyrics: [instrumental]</text>
-  <text x="72" y="190" font-family="sans-serif" font-size="22" fill="#065f46">Uses the case-sensitive audio.cpp instrumental marker.</text>
-</svg>
