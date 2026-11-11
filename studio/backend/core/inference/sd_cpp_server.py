@@ -65,6 +65,11 @@ _TOTAL_PARAMS_VRAM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# sd.cpp auto-fit device line "[I]  CUDA0  <card>  free N MiB, budget M MiB"; the RAM "params budget" line won't match.
+_AUTO_FIT_DEVICE_FREE_RE = re.compile(
+    r"^\[I\]\s+(\S+)\s.*\bfree\s+([0-9]+)\s*MiB,\s*budget\s+[0-9]+\s*MiB\b"
+)
+
 _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
@@ -165,6 +170,7 @@ class SdCppServer:
         self.port: Optional[int] = None
         self._process: Optional[subprocess.Popen] = None
         self._resident_params_vram_gb: Optional[float] = None
+        self._planned_free_vram_mib: dict[str, int] = {}
         # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
         self._tail: deque[str] = deque(maxlen = 200)
         self._lines_seen = 0
@@ -267,6 +273,7 @@ class SdCppServer:
             # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
             self._tail.clear()
             self._resident_params_vram_gb = None
+            self._planned_free_vram_mib = {}
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
@@ -468,6 +475,9 @@ class SdCppServer:
                     value = float(match.group(1)) / 1024.0
                     if value > 0:
                         self._resident_params_vram_gb = value
+                match = _AUTO_FIT_DEVICE_FREE_RE.search(line)
+                if match is not None:
+                    self._planned_free_vram_mib[match.group(1)] = int(match.group(2))
                 logger.debug("[sd-server] %s", line)
                 cb = self._step_listener
                 if cb is not None:
@@ -485,6 +495,11 @@ class SdCppServer:
         wake = getattr(self, "_log_wake", None)
         if wake is not None:
             wake.set()
+
+    @property
+    def planned_free_vram_mib(self) -> dict[str, int]:
+        """Free VRAM per device (``{"CUDA0": 6666}``) from sd.cpp's startup auto-fit plan; empty without one."""
+        return dict(self._planned_free_vram_mib)
 
     def reclaimable_params_vram_gb(
         self, physical_gpu_id: Optional[int]

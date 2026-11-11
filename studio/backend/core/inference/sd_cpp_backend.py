@@ -52,6 +52,7 @@ from core.inference.sd_cpp_multigpu import split_for_load
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    sd_cpp_flow_shift_for,
     MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -1634,12 +1635,6 @@ _RUNTIME_FINGERPRINT_MEMO: Optional[dict] = None
 _HOST_FINGERPRINT_MEMO: Optional[dict] = None
 
 
-def _reset_host_fingerprint() -> None:
-    global _HOST_FINGERPRINT_MEMO, _RUNTIME_FINGERPRINT_MEMO
-    _HOST_FINGERPRINT_MEMO = None
-    _RUNTIME_FINGERPRINT_MEMO = None
-
-
 def _runtime_fingerprint() -> dict:
     global _RUNTIME_FINGERPRINT_MEMO
     if _RUNTIME_FINGERPRINT_MEMO is not None:
@@ -2906,6 +2901,7 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    scheduler: Optional[str] = None
     # The base's shipped ``sample_sigmas`` grid, sent as custom sigmas; None keeps sd.cpp's own schedule.
     sample_sigmas: Optional[tuple[float, ...]] = None
     server: Optional[SdCppServer] = None
@@ -2930,9 +2926,13 @@ class _SdState:
     gpu_explicit: bool = False
     multi_gpu: Optional[dict[str, Any]] = None
     split_physical_gpu_id: Optional[int] = None
+    vram_budget: Optional[str] = None
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
+
+    def vram_budget_args(self) -> list[str]:
+        return ["--max-vram", self.vram_budget] if self.vram_budget else []
 
     @property
     def placed_ordinal(self) -> Optional[int]:
@@ -3119,8 +3119,15 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
     )
 
 
+def _request_scheduler(state: Any) -> Optional[str]:
+    """The family's ``--scheduler``; None under custom sigmas (they replace the schedule) or the kill switch."""
+    if getattr(state, "sample_sigmas", None) or not sd_cpp_args_mod.family_scheduler_enabled():
+        return None
+    return getattr(state, "scheduler", None)
+
+
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
-    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
+    """The family's ``--flow-shift``; Krea 2 Raw follows output size, variants apply under the family scheduler."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
         state.gguf_filename,
         getattr(state, "display_repo_id", None),
@@ -3128,6 +3135,14 @@ def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
         state.base_repo,
     ):
         return krea2_sd_cpp_flow_shift(width, height)
+    if _request_scheduler(state) and getattr(state.family, "sd_cpp_flow_shift_variants", ()):
+        # Not base_repo: an unnamed dev GGUF can fall back to the family's schnell base.
+        return sd_cpp_flow_shift_for(
+            state.family,
+            getattr(state, "gguf_filename", None),
+            getattr(state, "repo_id", None),
+            getattr(state, "display_repo_id", None),
+        )
     return state.flow_shift
 
 
@@ -4106,6 +4121,7 @@ class SdCppDiffusionBackend:
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
                     flow_shift = fam.sd_cpp_flow_shift,
+                    scheduler = fam.sd_cpp_scheduler,
                     sample_sigmas = sample_sigmas,
                     server = server,
                     mode = mode,
@@ -5027,6 +5043,7 @@ class SdCppDiffusionBackend:
         # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False
         device_losses = 0
+        vram_restarted = False
         hires_payload: Optional[dict] = None
         hires_staged: list[Path] = []
 
@@ -5072,6 +5089,7 @@ class SdCppDiffusionBackend:
                     seed = chunk_seed,
                     batch_count = count,
                     sample_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
@@ -5099,10 +5117,12 @@ class SdCppDiffusionBackend:
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
-                    # fresh device: respawn the same build once. Any other death propagates.
+                    # fresh device: respawn the same build once. A VRAM refusal restarts once under a smaller
+                    # budget. Any other death propagates.
                     exc = first_exc
                     while True:
                         moved_to_cpu = False
+                        vram_budget: Optional[str] = None
                         server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
                         if server is None and output_shows_vulkan_device_lost(str(exc)):
                             device_losses += 1
@@ -5120,10 +5140,17 @@ class SdCppDiffusionBackend:
                                     state, str(exc), cancel
                                 )
                                 device_respawned = server is not None
+                        if server is None and not vram_restarted:
+                            server, vram_budget = self._restart_server_with_vram_headroom(
+                                state, str(exc), cancel
+                            )
+                            vram_restarted = server is not None
                         if server is None:
                             raise exc
                         old_server = state.server
                         state = replace(state, server = server)
+                        if vram_budget is not None:
+                            state = replace(state, vram_budget = vram_budget)
                         if moved_to_cpu:
                             # Placement follows the server: the flags the CPU server got, no Vulkan pin.
                             state = replace(
@@ -5287,7 +5314,59 @@ class SdCppDiffusionBackend:
             native_speed = state.native_speed,
             threads = state.threads,
             env = state.spawn_env(),
+            extra_args = state.vram_budget_args(),
         )
+
+    def _restart_server_with_vram_headroom(
+        self, state: _SdState, error_text: str, cancel: threading.Event
+    ) -> tuple[Optional[SdCppServer], Optional[str]]:
+        """Restart sd-server under ``--max-vram`` after sd.cpp refused a render for VRAM; returns the server and its
+        budget, or ``(None, None)``. The budget comes from the first refusing server's plan and is reused: a server
+        restarted while another application held the card planned too little to halve, and keeps refusing."""
+        if not sd_cpp_args_mod.is_vram_refusal_text(error_text):
+            return None, None
+        if state.device == "cpu" or self._cpu_backend_forced:
+            return None, None
+        if state.server is None or cancel.is_set():
+            return None, None
+        binary = state.server.binary
+        # A two-card split already carries per-device budgets, and an older build rejects the flag.
+        if "--max-vram" in state.offload_flags or "--max-vram" not in sd_cpp_graph_cut_options(
+            binary
+        ):
+            return None, None
+        planned = dict(getattr(state.server, "planned_free_vram_mib", None) or {})
+        budget = state.vram_budget or sd_cpp_args_mod.image_vram_retry_budget(
+            planned, _backend_devices(state.offload_flags)
+        )
+        if budget is None or ("=" in budget and not _layer_split_supported(binary)):
+            return None, None
+        if not self._begin_replacement(state):
+            return None, None
+        logger.warning(
+            "sd-server refused the render for VRAM; restarting it with --max-vram %s (half the free VRAM this "
+            "load first planned with; the refusing server planned with, in MiB: %s) and retrying once. "
+            "Details: %s",
+            budget,
+            planned,
+            error_text[:300],
+        )
+        state.server.stop()
+        server = SdCppServer(binary)
+        with self._lock:
+            self._pending_server = server
+        started = self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            offload = state.offload_flags,
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+            extra_args = ["--max-vram", budget],
+        )
+        return started, (budget if started is not None else None)
 
     def _restart_server_on_cpu_backend(
         self,
@@ -5437,6 +5516,7 @@ class SdCppDiffusionBackend:
                     guidance = flux_guidance,
                     seed = seed_i,
                     sampling_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     batch_count = 1,
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,

@@ -242,6 +242,12 @@ class DiffusionFamily:
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
+    # sd-cli --scheduler; "simple" matches the diffusers grid (sd.cpp's default ends at sigma ~0.003). None = sd.cpp's.
+    sd_cpp_scheduler: Optional[str] = None
+    # (id substring, shift) overriding sd_cpp_flow_shift under sd_cpp_scheduler; first match wins, None = sd.cpp's.
+    sd_cpp_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
+        default_factory = tuple
+    )
     # Literal an sd.cpp build carries once it can run this family; matched against binary bytes
     # since old runnable builds are never upgraded and release tags cannot answer it.
     sd_cpp_arch_marker: Optional[str] = None
@@ -328,7 +334,7 @@ _QWENIMAGE_RDNA_AUTO_W8A8 = (
     "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
     "LPIPS 0.014"
 )
-# FLUX.3 renders black in float16, so fp16-only cards run it in float32; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
+# FLUX.3 renders black in plain float16; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
 _FLUX3_FP16_INCOMPATIBLE = (
     os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16") or ""
 ).strip().lower() not in (
@@ -336,6 +342,13 @@ _FLUX3_FP16_INCOMPATIBLE = (
     "on",
     "true",
     "yes",
+)
+# fp16 cards keep FLUX.3 in fp16 via the residual rescale; UNSLOTH_STUDIO_FLUX3_FP16_GUARD=0 promotes to fp32.
+_FLUX3_FP16_GUARD = (
+    None
+    if (os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16_GUARD") or "").strip().lower()
+    in ("0", "off", "false", "no")
+    else "rescale_residual"
 )
 # FLUX.3 Klein transformer-quant keep-list, every scheme (FamilyProfile.quant_exclude_tokens).
 _FLUX3_QUANT_KEEP = (
@@ -428,6 +441,7 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
+MINIMAX_H3_IMAGE_FAMILY_NAME = "minimax-h3-image"
 ANIMA_FAMILY_NAME = "anima"
 # MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
@@ -535,6 +549,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
+        # schnell mu 0; dev rows (sd.cpp's mu 1.15) stop a dev GGUF matching a schnell id later in the list.
+        sd_cpp_scheduler = "simple",
+        sd_cpp_flow_shift_variants = tuple(
+            (f"{prefix}-{model}", shift)
+            for model, shift in (("schnell", 0.0), ("krea-dev", None), ("dev", None))
+            for prefix in ("flux.1", "flux1", "flux-1", "flux")
+        ),
     ),
     # Must precede a generic flux match.
     DiffusionFamily(
@@ -639,6 +660,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.3-klein-base",
         comfy_shift_node = "flux",
         fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
+        fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
@@ -698,6 +720,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.3-klein",
         comfy_shift_node = "flux",
         fp16_incompatible = _FLUX3_FP16_INCOMPATIBLE,
+        fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
@@ -827,6 +850,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(
         # Specific aliases first so detect_family prefers this over qwen-image.
@@ -903,6 +927,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         sd_cpp_sampling_method = "euler",
         sd_cpp_flow_shift = 3.0,
+        sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(
         # Listed before qwen-image so the name outranks it.
@@ -948,6 +973,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         sd_cpp_sampling_method = "euler",
         sd_cpp_flow_shift = 1.0,
+        sd_cpp_scheduler = "simple",
         # Layered support landed upstream in master-744 (556f04b); an older reused build has no such literal.
         sd_cpp_arch_marker = "qwen_image_layers",
     ),
@@ -1016,6 +1042,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen-Image's supported sd.cpp invocation (docs/qwen_image.md).
         sd_cpp_sampling_method = "euler",
         sd_cpp_flow_shift = 3.0,
+        sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(
         # Different architecture from qwen-image, so its own family.
@@ -1213,6 +1240,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same BF16 file
         # klein 4B reads, so one download serves both.
         sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-BF16.gguf", "llm"),),
+        sd_cpp_scheduler = "simple",
     ),
     DiffusionFamily(
         name = "krea-2",
@@ -1245,6 +1273,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae = ("unsloth/Krea-2-Turbo", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
         sd_cpp_sampling_method = "euler",
+        sd_cpp_scheduler = "simple",
         sd_cpp_arch_marker = _KREA2_SD_CPP_ARCH_MARKER,
     ),
     # HunyuanImage 2.1: 17B dual-stream DiT. HiDream-I1 repos lack text_encoder_4 (Llama-3.1-8B), loaded from the open unsloth mirror; one family for Full/Dev/Fast
@@ -1452,6 +1481,44 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_tokenizer = ("unsloth/MOSS-Image-SFT-FP8", "tokenizer/tokenizer.json"),
         # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
+        sd_cpp_scheduler = "simple",
+    ),
+    # MiniMax-H3-Image: 33B H3 DiT without audio plus per-step PDD heads, conditioned by Qwen3-VL-32B. diffusers has
+    # no class yet, so diffusion_minimax_h3_image loads, converts, quantizes and places it itself.
+    DiffusionFamily(
+        name = MINIMAX_H3_IMAGE_FAMILY_NAME,
+        label = "MiniMax-H3-Image",
+        pipeline_class = "MiniMaxH3ImagePipeline",
+        transformer_class = "MiniMaxH3ImageTransformer2DModel",
+        base_repo = "MiniMaxAI/MiniMax-H3-Image",
+        aliases = ("minimax_h3_image", "minimaxh3image", "h3-image", "h3_image"),
+        uses_negative_prompt = False,
+        uses_guidance = False,
+        # Text-to-image that also takes 1-16 reference images (<Picture N>); edits go through the same call.
+        reference = True,
+        reference_edit = True,
+        max_condition_images = 16,
+        dimension_multiple = 32,
+        max_output_side = 6272,
+        max_output_pixels = 20 * 1024 * 1024,
+        prompt_hint = (
+            "MiniMax-H3-Image follows long, complete descriptions of the whole image. For edits, refer to the inputs"
+            " as <Picture 1>, <Picture 2> and say what to keep and what to change."
+        ),
+        # The in-tree loader reads the native shards; no single-file / GGUF denoiser load.
+        pipeline_only = True,
+        gguf_loadable = False,
+        supports_torch_compile = False,
+        # No te_quant_auto: the in-tree loader picks the hosted int8 Qwen3-VL itself when the encoder is unset.
+        # Hosted pre-quantized DiTs: the loader checks the file exists and quantizes on the fly otherwise.
+        prequant_repos = (
+            ("int8", "unsloth/MiniMax-H3-Image-FP8"),
+            ("fp8", "unsloth/MiniMax-H3-Image-FP8"),
+        ),
+        prequant_filenames = (
+            ("int8", "MiniMax-H3-Image-INT8-ConvRot.safetensors"),
+            ("fp8", "MiniMax-H3-Image-FP8.safetensors"),
+        ),
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
@@ -2226,6 +2293,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
+    ("minimax-h3-image", 6, 1.0),
+    ("minimax_h3_image", 6, 1.0),
+    ("minimaxh3image", 6, 1.0),
+    ("h3-image", 6, 1.0),
     # MOSS-Image: the SFT and Base t2i templates both run 25 steps at CFG 2.5.
     ("moss-image", 25, 2.5),
     ("moss_image", 25, 2.5),
@@ -2264,6 +2335,11 @@ def family_for_checkpoint(fam: Any, *identifiers: Optional[str]) -> Any:
 def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
     row = _first_variant(getattr(fam, "comfy_flow_shift_variants", ()), identifiers)
     return row[1] if row else getattr(fam, "comfy_flow_shift", None)
+
+
+def sd_cpp_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
+    row = _first_variant(getattr(fam, "sd_cpp_flow_shift_variants", ()), identifiers)
+    return row[1] if row else getattr(fam, "sd_cpp_flow_shift", None)
 
 
 # FLUX.3 single files and GGUFs can take the other variant's transformer config from the companion
@@ -2757,6 +2833,8 @@ _PIPELINE_PROBE_FILES: dict[str, str] = {
 # In-tree pipelines: (diffusers VAE module, transformers floor, family label).
 _IN_TREE_PIPELINES: dict[str, tuple[str, str, str]] = {
     "MOSSImagePipeline": ("models/autoencoders/autoencoder_kl_flux2.py", "5.3.0", "MOSS-Image"),
+    # Transformer and VAE vendored (vendor/diffusers_minimax_h3_image) when diffusers lacks them; Qwen3-VL needs 4.57.
+    "MiniMaxH3ImagePipeline": ("models/attention_dispatch.py", "4.57.0", "MiniMax-H3-Image"),
 }
 
 
@@ -2781,11 +2859,27 @@ def in_tree_pipeline_refusal(pipeline_class: str, family_name: str) -> Optional[
     if installed is None:
         return f"'{family_name}' ({label}) needs transformers >= {min_transformers}, which is not installed."
     if not _installed_at_least(installed, min_transformers):
+        encoder = (
+            "Qwen3.5 text encoder (transformers.Qwen3_5Model)"
+            if pipeline_class == "MOSSImagePipeline"
+            else "Qwen3-VL text encoder (transformers.Qwen3VLForConditionalGeneration)"
+        )
         return (
-            f"'{family_name}' ({label}) needs transformers >= {min_transformers} for its Qwen3.5 text encoder "
-            f"(transformers.Qwen3_5Model), but this environment has transformers {installed}. Update Unsloth Studio "
+            f"'{family_name}' ({label}) needs transformers >= {min_transformers} for its {encoder}, but this "
+            f"environment has transformers {installed}. Update Unsloth Studio "
             f"(or run: pip install -U 'transformers>={min_transformers}') and restart it."
         )
+    if pipeline_class == "MiniMaxH3ImagePipeline":
+        import sys
+
+        if sys.version_info < (3, 10):
+            return f"'{family_name}' ({label}) needs Python 3.10 or newer. Update Unsloth Studio and restart it."
+        if _diffusers_package_has_file(vae_file) is False:
+            return (
+                f"'{family_name}' ({label}) needs a diffusers with the attention dispatcher (0.35 or newer). "
+                f"{DIFFUSERS_UPDATE_REMEDY}"
+            )
+        return None
     if _diffusers_package_has_file(vae_file) is False:
         return (
             f"'{family_name}' ({label}) needs a diffusers with the FLUX.2 VAE (AutoencoderKLFlux2). "

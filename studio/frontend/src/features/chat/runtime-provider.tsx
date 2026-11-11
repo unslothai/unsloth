@@ -2538,6 +2538,7 @@ function useStudioRuntimeAdapters(
       globalThis,
       document,
       recoverCurrentThread,
+      { wakeKey: () => aui.threadListItem().getState().remoteId },
     );
   }, [aui]);
 

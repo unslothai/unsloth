@@ -612,6 +612,20 @@ export function scheduleRemoval(key: string, delayMs: number): void {
   runtimeRegistry.removalTimers.set(key, timer);
 }
 
+export function scheduleRetention(key: string, delayMs: number): void {
+  const existing = runtimeRegistry.removalTimers.get(key);
+  if (existing != null) clearRuntimeTimer(existing);
+  const startedAt = getState().jobs[key]?.startedAt;
+  const timer = window.setTimeout(() => {
+    runtimeRegistry.removalTimers.delete(key);
+    const job = getState().jobs[key];
+    if (job?.startedAt === startedAt && job.state === "error") {
+      patchJob(key, { retained: true });
+    }
+  }, delayMs);
+  runtimeRegistry.removalTimers.set(key, timer);
+}
+
 export function selectActiveJob(
   state: DownloadManagerState,
   kind: DownloadKind,

@@ -154,6 +154,7 @@ from .diffusion_conditioning import (
     decode_condition_images,
     edit_takes_extra_images,
     effective_reference_resolution,
+    reference_request_pixels,
     match_source_size,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
@@ -164,7 +165,7 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
-from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
+from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
 from .diffusion_anima import (
     ANIMA_COMPONENT_FOLDERS,
     ANIMA_COMPONENTS,
@@ -232,6 +233,8 @@ from .diffusion_memory import (
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
+    image_activation_verdict,
+    ACTIVATION_REFUSE,
     raise_on_unified_memory_shortfall,
     scoped_allow_oversized_load,
     UNIFIED_OVERSIZE_REFUSAL_CODE,
@@ -273,6 +276,9 @@ from .diffusion_memory import (
     take_deferred_restore,
     resident_group_mib,
     hook_resident_denoiser,
+    live_reference_shortfall_mib,
+    static_reference_release_mib,
+    load_covered_reference_need_mib,
     measured_request_extra_mib,
     DECODE_LEND_ATTR,
     decode_lend_from_plan,
@@ -2030,6 +2036,9 @@ def _family_default_ids(fam: Any) -> tuple:
         return (fam.name,)
     if is_anima_family(fam):
         return (fam.base_repo,)
+    if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+        # Its 6 steps / guidance 1 are fixed by the checkpoint (PDD heads), whatever the folder is called.
+        return (fam.name,)
     return ()
 
 
@@ -2158,6 +2167,13 @@ def _family_model_class(diffusers: Any, name: str) -> Any:
     if name in ("MOSSImagePipeline", "MOSSImageTransformer", "MOSSImageScheduler"):
         from .diffusion_moss_image import in_tree_class
         return in_tree_class(name)
+    if name in (
+        "MiniMaxH3ImagePipeline",
+        "MiniMaxH3ImageTransformer2DModel",
+        "AutoencoderKLMiniMaxH3Image",
+    ):
+        from .diffusion_minimax_h3_image import in_tree_class as h3_image_class
+        return h3_image_class(name)
     return getattr(diffusers, name)
 
 
@@ -2573,6 +2589,30 @@ def _step_cache_dropped_by_layer_split(pipe: Any) -> bool:
     (``diffusion_layer_split._drop_step_cache``): the marker is gone, so the load's cache locals are stale."""
     transformer = getattr(pipe, "transformer", None)
     return transformer is not None and not getattr(transformer, "_unsloth_step_cache", None)
+
+
+def _engage_streamed_expandable(pipe: Any) -> bool:
+    """Blocks sized from the denoise phase: run the load in expandable allocator segments (diffusion_decode_segments)."""
+    try:
+        from .diffusion_decode_segments import engage_streamed
+        from .diffusion_memory import _phase_placement
+        if not _phase_placement(pipe) or not engage_streamed():
+            return False
+    except Exception as exc:  # noqa: BLE001 - fixed segments, as before
+        logger.debug("diffusion.memory: expandable segments not engaged (%s)", exc)
+        return False
+    logger.info(
+        "diffusion.memory: the denoise-phase placement runs in expandable allocator segments"
+    )
+    return True
+
+
+def _release_streamed_expandable() -> None:
+    try:
+        from .diffusion_decode_segments import release_streamed
+        release_streamed()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
 
 
 def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
@@ -4212,11 +4252,14 @@ def _image_cast_cached(cands: list, variant: Optional[str]) -> list:
 
 def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
     """Windows: transformers components converted to ``dtype`` read through ``pread`` (no copy-on-write commit for the
-    stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped."""
-    from .safetensors_pread import pread_safetensors
+    stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped. An Intel
+    iGPU reads every shard through ``pread`` (#17137)."""
+    from .host_pinning import xpu_is_integrated
+    from .safetensors_pread import pread_safetensors, pread_wanted
 
     keep = tuple(small_host.storage_dtypes) if small_host is not None and small_host.engaged else ()
-    return pread_safetensors(convert_to = dtype, keep = keep)
+    every = pread_wanted() and xpu_is_integrated()
+    return pread_safetensors(convert_to = dtype, keep = keep, every_shard = every)
 
 
 class DiffusionBackend:
@@ -5457,6 +5500,11 @@ class DiffusionBackend:
                 )
         if text_encoder_files or vae_file:
             self._validate_component_files(fam, kind, repo_id, text_encoder_files, vae_file)
+        if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+            from .diffusion_minimax_h3_image import h3_image_device_refusal
+            refusal = h3_image_device_refusal(resolve_diffusion_device_target().device)
+            if refusal:
+                raise ValueError(refusal)
         return fam
 
     def preflight_base_access(
@@ -5720,6 +5768,13 @@ class DiffusionBackend:
                     kwargs.get("gguf_filename"),
                 )
             kwargs["base_repo"] = base
+            if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+                # Its loader fetches only the files it reads, so the generic estimate / prefetch is skipped.
+                self.load_pipeline(**kwargs)
+                with self._load_cancel_lock:
+                    if self._load_token == token:
+                        self._loading = None
+                return
             discovered = False
             if not kwargs.get("text_encoder_files") and not kwargs.get("vae_file"):
                 kwargs["text_encoder_files"] = (
@@ -8526,6 +8581,24 @@ class DiffusionBackend:
                     reset_compile_cache_tag()
                 except Exception as exc:  # noqa: BLE001 - keying only
                     logger.debug("nvfp4 cache tag reset skipped: %r", exc)
+                if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+                    # Native layout: the in-tree loader streams, converts, quantizes and places it, so the generic
+                    # plan (which would materialise the bf16 DiT) never runs.
+                    return self._load_h3_image_locked(
+                        repo_id = repo_id,
+                        display_repo_id = display_repo_id,
+                        base = base,
+                        fetch_base = _base_local_dir or fetch_base,
+                        fam = fam,
+                        target = target,
+                        hf_token = hf_token,
+                        local_files_only = local_files_only,
+                        transformer_quant = transformer_quant,
+                        # the raw request: "none" (keep bf16) and unset must stay apart
+                        text_encoder_quant = text_encoder_quant_requested,
+                        text_encoder_quant_explicit = bool(text_encoder_quant_requested),
+                        load_token = _load_token,
+                    )
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
                 single_file_path = (
@@ -11233,7 +11306,9 @@ class DiffusionBackend:
                             "measured_runtime_headroom_mib"
                         )
                         if headroom and (
-                            plan.resident_transformer_mib or plan.resident_text_encoder_mib
+                            plan.resident_transformer_mib
+                            or plan.resident_text_encoder_mib
+                            or plan.estimates.get("measured_reference_te_cut_mib")
                         ):
                             pipe._unsloth_measured_reserve = (
                                 int(headroom),
@@ -11251,6 +11326,13 @@ class DiffusionBackend:
                                 bool(streamed_headroom),
                                 # MEASURED_RESERVE_DENOISE_PHASE_INDEX: the blocks sized from the denoise phase
                                 plan.estimates.get("measured_denoise_phase_headroom_mib"),
+                                # MEASURED_RESERVE_REFERENCE_INDEX: the edit the placement priced, if any
+                                (
+                                    int(plan.estimates["measured_reference_phase_mib"]),
+                                    int(plan.estimates["measured_reference_reserve_mib"]),
+                                )
+                                if plan.estimates.get("measured_reference_reserve_mib")
+                                else None,
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
@@ -11331,6 +11413,7 @@ class DiffusionBackend:
                             )
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
+                    _engage_streamed_expandable(pipe)
                     # Placed, not yet compiled or captured: a later LoRA weight / subset change then writes in place.
                     pinned_scales = _pin_baked_lora_scales(pipe, target.device)
                     if pinned_scales:
@@ -11655,6 +11738,7 @@ class DiffusionBackend:
                             load_bg_compile.close()
                             load_bg_compile = None
                         restore_backend_flags(backend_flags_before)
+                        _release_streamed_expandable()
                         _release_rocm_tunableop(pipe)
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
@@ -11690,6 +11774,97 @@ class DiffusionBackend:
         finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
         # after the pins: their pageable sources are freed by now
         trim_host_heap_after_load(logger)
+        return self.status()
+
+    def _load_h3_image_locked(
+        self,
+        *,
+        repo_id: str,
+        display_repo_id: Optional[str],
+        base: str,
+        fetch_base: str,
+        fam: Any,
+        target: Any,
+        hf_token: Optional[str],
+        local_files_only: bool,
+        transformer_quant: Optional[str],
+        text_encoder_quant: Optional[str],
+        load_token: Optional[int],
+        text_encoder_quant_explicit: bool = False,
+    ) -> dict[str, Any]:
+        """MiniMax-H3-Image load under the transition slot and state lock (the previous model is already evicted)."""
+        from .diffusion_minimax_h3_image import (
+            PLACE_RESIDENT,
+            PLACE_SEQUENTIAL,
+            load_minimax_h3_image_pipeline,
+        )
+
+        # Unset = Studio's hosted int8 encoder (the bf16 one is 66.7 GB); only an explicit dense ask keeps bf16.
+        requested_te = str(text_encoder_quant or "").strip().lower()
+        te_scheme = None if requested_te in ("none", "off", "bf16", "dense", "bfloat16") else "int8"
+        pipe = load_minimax_h3_image_pipeline(
+            fetch_base,
+            dtype = target.dtype,
+            device = target.device,
+            transformer_quant = transformer_quant,
+            text_encoder_quant = te_scheme,
+            hf_token = hf_token,
+            cache_dir = hub_cache_dir(),
+            local_files_only = local_files_only,
+            check_cancelled = lambda: self._raise_if_load_cancelled(load_token),
+        )
+        report = pipe._unsloth_h3_report
+        plan = report.plan
+        policy = (
+            OFFLOAD_NONE
+            if plan.placement == PLACE_RESIDENT
+            else OFFLOAD_MODEL
+            if plan.placement == PLACE_SEQUENTIAL
+            else OFFLOAD_STREAMING
+        )
+        resolved = {
+            "transformer_quant": {
+                "value": report.scheme or "bf16",
+                "source": "explicit" if transformer_quant not in (None, "", "auto") else "auto",
+                "reason": report.scheme_reason,
+            },
+            "text_encoder_quant": {
+                "value": report.te_scheme or "bf16",
+                "source": "explicit" if text_encoder_quant_explicit else "auto",
+                "reason": "Studio's hosted int8 ConvRot Qwen3-VL"
+                if report.te_scheme == "int8"
+                else "released bf16",
+            },
+            "memory_mode": {
+                "value": plan.placement,
+                "source": "auto",
+                "reason": "; ".join(plan.reasons),
+            },
+        }
+        state = _LoadState(
+            pipe = pipe,
+            family = fam,
+            repo_id = repo_id,
+            display_repo_id = display_repo_id,
+            base_repo = base,
+            device = target.device,
+            gpu_ordinal = target.ordinal,
+            placed_ordinal = placed_cuda_ordinal(target),
+            dtype = str(target.dtype).replace("torch.", ""),
+            kind = "pipeline",
+            cpu_offload = policy != OFFLOAD_NONE,
+            offload_policy = policy,
+            memory_mode = plan.placement,
+            text_encoder_quant = report.te_scheme,
+            transformer_quant = report.scheme,
+            hf_token = hf_token,
+            resolved = resolved,
+        )
+        with self._load_cancel_lock:
+            self._raise_if_load_cancelled(load_token)
+            self._state = state
+            commit_load_budget_fraction("image")
+        logger.info("diffusion.loaded: repo=%s family=%s %s", repo_id, fam.name, report.as_dict())
         return self.status()
 
     @staticmethod
@@ -15059,8 +15234,8 @@ class DiffusionBackend:
                     )
                     # unweighted reference pixels: a measured placement prices them from their token count
                     if ref_resolution is not None and not layer_count:
-                        guard_reference_pixels = int(
-                            (1 + len(ref_extra)) * ref_resolution * ref_resolution
+                        guard_reference_pixels = reference_request_pixels(
+                            ref_resolution, len(ref_extra)
                         )
                     if layer_count:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
@@ -15114,6 +15289,56 @@ class DiffusionBackend:
                         guard_capture_gen = cuda_graph.capture_generation(_peak_device_index(state))
                     # groups an earlier oversized request streamed out stay out when this one streams them all too
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
+
+                    def _guard_kwargs() -> dict:
+                        return dict(
+                            # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
+                            device_memory = reclaimable_snapshot_device_memory(guard_target),
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            # The hint the load planned with, so the distilled / edit multipliers match.
+                            family = state.variant_hint,
+                            # Only img2img is bounded by the Resolution control (_fit_within); others need an upload-side fix.
+                            source_driven = source_sized and workflow != "img2img",
+                            condition_pixels = guard_condition_pixels,
+                            vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
+                            vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
+                            quadratic_attention = guard_quadratic,
+                            allow_oversized = allow_oversized,
+                            calibrated_placement = bool(
+                                getattr(state, "calibrated_placement", False)
+                            ),
+                            controlnet = workflow == "controlnet" and control_pil is not None,
+                            logger = logger,
+                        )
+
+                    if extra_mib > 0 and guard_reference_pixels > 0:
+                        reference_need = load_covered_reference_need_mib(
+                            state.pipe,
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            reference_pixels = guard_reference_pixels,
+                            cfg = guard_cfg,
+                            quadratic_attention = guard_quadratic,
+                        )
+                        static_release = (
+                            None
+                            if reference_need is None
+                            else static_reference_release_mib(state.pipe, reference_need)
+                        )
+                        if static_release is not None and extra_mib <= static_release:
+                            short = live_reference_shortfall_mib(
+                                state.pipe, reference_need, guard_target.torch_device
+                            )
+                            # never looser than the activation guard below
+                            if short is not None and short < extra_mib:
+                                fits = image_activation_verdict(
+                                    **{k: v for k, v in _guard_kwargs().items() if k != "logger"}
+                                )
+                                if fits.action != ACTIVATION_REFUSE:
+                                    extra_mib = short
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (
@@ -15129,25 +15354,7 @@ class DiffusionBackend:
                             if restore_resident is None
                             else chained_restore(carried_restore, restore_resident)
                         )
-                    guard_kwargs = dict(
-                        # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
-                        device_memory = reclaimable_snapshot_device_memory(guard_target),
-                        width = guard_width,
-                        height = guard_height,
-                        batch_size = guard_batch,
-                        # The hint the load planned with, so the distilled / edit multipliers match.
-                        family = state.variant_hint,
-                        # Only img2img is bounded by the Resolution control (_fit_within); others need an upload-side fix.
-                        source_driven = source_sized and workflow != "img2img",
-                        condition_pixels = guard_condition_pixels,
-                        vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
-                        vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
-                        quadratic_attention = guard_quadratic,
-                        allow_oversized = allow_oversized,
-                        calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
-                        controlnet = workflow == "controlnet" and control_pil is not None,
-                        logger = logger,
-                    )
+                    guard_kwargs = _guard_kwargs()
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)
@@ -15987,6 +16194,7 @@ class DiffusionBackend:
                 pass
         # Restore process-wide backend flags so the next `off` load is bit-identical; all calls idempotent.
         restore_backend_flags(state.backend_flags_before)
+        _release_streamed_expandable()
         _release_rocm_tunableop(state.pipe)
         prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
         if prebuild is not None:
@@ -15998,6 +16206,11 @@ class DiffusionBackend:
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
         prompt_cache.release(state.pipe)
+        if getattr(state.family, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+            try:
+                state.pipe.release()
+            except Exception as exc:  # noqa: BLE001 - teardown is best effort; the pipe is dropped below anyway
+                logger.debug("minimax_h3_image release skipped: %r", exc)
         if state.te_releaser is not None:
             state.te_releaser.close()
         for aux in (*self._aux_pipes.values(), *self._cn_pipes.values()):

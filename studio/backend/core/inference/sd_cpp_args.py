@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Sequence
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -84,6 +85,7 @@ class SdCppGenParams:
     guidance: Optional[float] = None
     seed: Optional[int] = None
     sampling_method: Optional[str] = None
+    scheduler: Optional[str] = None
     batch_count: int = 1
     init_img: Optional[str] = None
     strength: Optional[float] = None
@@ -709,6 +711,60 @@ def is_device_oom_text(text: Optional[str]) -> bool:
     return False
 
 
+# sd.cpp ``fail_segment`` capacity-check stages (ggml_runner.cpp); "workspace allocation" is an allocator failure.
+_SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
+    "failed during weight preparation",
+    "failed during workspace capacity check",
+    "failed during allocated capacity check",
+)
+# Allocator failures on the host RAM that weight preparation stages into, as well as on the device.
+_ALLOCATION_FAILURE_MARKERS: tuple[str, ...] = (
+    *_HOST_OOM_MARKERS,
+    "erroroutofhostmemory",
+    "failed to allocate",
+    "backend buffer failed",
+)
+# sd.cpp fills free-512 MiB with cached weights, so each phase needs memory the last one released; half leaves it
+# unclaimed when the driver reports the release late (Windows may defer destroying allocations).
+IMAGE_VRAM_RETRY_SCALE = 0.5
+
+
+def is_vram_refusal_text(text: Optional[str]) -> bool:
+    """sd.cpp's model manager declined a segment for VRAM, and no allocation failed outright (that keeps its error)."""
+    lines = str(text or "").lower().splitlines()
+    if not any(marker in line for line in lines for marker in _SEGMENT_REFUSAL_MARKERS):
+        return False
+    return not any(
+        "failed during" not in line
+        and (
+            is_device_oom_text(line)
+            or any(marker in line for marker in _ALLOCATION_FAILURE_MARKERS)
+        )
+        for line in lines
+    )
+
+
+def image_vram_retry_budget(
+    planned_free_mib: Optional[Mapping[str, int]], render_devices: Iterable[str] = ()
+) -> Optional[str]:
+    """``--max-vram`` for the image retry: half of each planned card's free VRAM (``CUDA0=..,CUDA1=..`` for several),
+    skipping cards under the floor. None if none qualifies or a ``render_devices`` card does not."""
+    planned = dict(planned_free_mib or {})
+    budgets: dict[str, float] = {}
+    for name, mib in planned.items():
+        gib = graph_cut_budget_gib(int(mib) << 20, reserve_bytes = 0, scale = IMAGE_VRAM_RETRY_SCALE)
+        if gib is not None:
+            budgets[name] = gib
+    if not budgets:
+        return None
+    known = {name.lower() for name in budgets}
+    if any(str(device).lower() not in known for device in render_devices):
+        return None
+    if len(planned) == 1:
+        return _format_gib(next(iter(budgets.values())))
+    return ",".join(f"{name}={_format_gib(gib)}" for name, gib in budgets.items())
+
+
 def device_backend_flags(
     device_name: Optional[str],
     offload: Optional[list[str]] = None,
@@ -791,6 +847,22 @@ def offload_flags(
     return out
 
 
+# sd-cli's own <lora:NAME:W> pattern; it loads an absolute NAME from anywhere, whatever --lora-model-dir says.
+_LORA_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
+
+
+def strip_lora_tags(prompt: str) -> str:
+    """Removes every tag sd-cli would parse, to a fixed point so a split tag cannot reassemble, plus any dangling
+    ``<lora:`` that could pair with a tag appended after it."""
+    out, prev = prompt, None
+    while prev != out:
+        prev = out
+        out = _LORA_TAG_RE.sub("", out).replace("<lora:", "")
+    if out == prompt:
+        return prompt
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+
 def build_sd_cpp_command(
     binary: str,
     files: SdCppModelFiles,
@@ -825,7 +897,9 @@ def build_sd_cpp_command(
         if value:
             cmd += [flag, value]
 
-    cmd += ["--prompt", params.prompt]
+    # Tags are only honoured against a lora_dir the caller filled with validated adapters.
+    prompt = params.prompt if params.lora_dir else strip_lora_tags(params.prompt)
+    cmd += ["--prompt", prompt]
     if params.negative_prompt:
         cmd += ["--negative-prompt", params.negative_prompt]
     if params.init_img:
@@ -858,6 +932,8 @@ def build_sd_cpp_command(
         cmd += ["--guidance", _fmt_float(params.guidance)]
     if params.sampling_method:
         cmd += ["--sampling-method", str(params.sampling_method)]
+    if params.scheduler:
+        cmd += ["--scheduler", str(params.scheduler)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     if params.batch_count and params.batch_count != 1:
@@ -944,7 +1020,8 @@ def build_sd_cpp_video_command(
         cmd += ["--ref-audio", ref]
     cmd += [
         "--prompt",
-        params.prompt,
+        # Video has no LoRA selection, so no prompt tag is legitimate.
+        strip_lora_tags(params.prompt),
         "--cfg-scale",
         _fmt_float(params.cfg_scale),
         "--width",
@@ -1097,6 +1174,7 @@ def build_img_gen_request(
     seed: Optional[int] = None,
     batch_count: int = 1,
     sample_method: Optional[str] = None,
+    scheduler: Optional[str] = None,
     flow_shift: Optional[float] = None,
     cfg_scale: Optional[float] = None,
     distilled_guidance: Optional[float] = None,
@@ -1123,6 +1201,8 @@ def build_img_gen_request(
         sample_params["sample_steps"] = int(steps)
     if sample_method:
         sample_params["sample_method"] = str(sample_method)
+    if scheduler:
+        sample_params["scheduler"] = str(scheduler)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
     if custom_sigmas:
@@ -1173,6 +1253,15 @@ def sd_cli_output_paths(output_path: str, num_results: int) -> list[str]:
 H3_SERVER_REFS_ENV = "UNSLOTH_H3_SERVER_REFS"
 # sd-cli's --ref-video reader (examples/cli/main.cpp load_images_from_dir): these extensions, byte-ordered names.
 _SD_CLI_FRAME_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+# "0" = no family --scheduler / flow-shift variants (sd.cpp default schedule).
+FAMILY_SCHEDULER_ENV = "UNSLOTH_SD_CPP_FAMILY_SCHEDULER"
+
+
+def family_scheduler_enabled() -> bool:
+    value = os.environ.get(FAMILY_SCHEDULER_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
 
 
 def h3_server_refs_enabled() -> bool:

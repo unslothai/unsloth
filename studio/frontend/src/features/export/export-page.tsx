@@ -118,7 +118,11 @@ import {
   reapSummaryLabel,
 } from "./lib/reap";
 import { exportRemoteCodeConsent } from "./lib/remote-code-consent";
-import { saveDirectoryField } from "./lib/save-directory";
+import {
+  type SourceMode,
+  buildRelativeSaveDirectory,
+  saveDirectoryField,
+} from "./lib/save-directory";
 import { exportUnsupportedText } from "./lib/unsupported-text";
 import {
   isExportPanelActive,
@@ -144,46 +148,6 @@ const SOURCE_TAB_OPTIONS = [
 ] as const satisfies readonly { value: SourceTab; label: string }[];
 const FIELD_LABEL =
   "flex items-center gap-1.5 text-xs font-medium text-muted-foreground";
-type SourceMode = "checkpoint" | "model";
-
-function safePathSegment(
-  value: string | null | undefined,
-  fallback = "model",
-  maxLength = 250,
-): string {
-  const safe = (value ?? "")
-    .replace(/[^a-zA-Z0-9._-]/g, "-")
-    .replace(/^[._-]+|[._-]+$/g, "")
-    .slice(0, maxLength)
-    .replace(/[._-]+$/g, "");
-  return safe || fallback;
-}
-
-function buildRelativeSaveDirectory(
-  exportMethod: ExportMethod | null,
-  sourceMode: SourceMode,
-  sourceBaseModelName: string,
-  selectedModelIdx: string | null,
-  checkpoint: string | null,
-): string {
-  if (exportMethod === "gguf") {
-    const rawName =
-      sourceMode === "checkpoint"
-        ? (checkpoint ?? selectedModelIdx ?? sourceBaseModelName)
-        : sourceBaseModelName;
-    return `${safePathSegment(rawName)}-GGUF`;
-  }
-  if (sourceMode === "checkpoint" && selectedModelIdx && checkpoint) {
-    return `${selectedModelIdx}/${checkpoint}`;
-  }
-  // Name from the model id to avoid "model/null".
-  const rawName =
-    sourceMode === "checkpoint"
-      ? (checkpoint ?? selectedModelIdx ?? sourceBaseModelName)
-      : sourceBaseModelName;
-  return `${safePathSegment(rawName)}-${exportMethod === "lora" ? "adapter" : "merged"}`;
-}
-
 function siblingGgufDirectory(sourcePath: string): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
