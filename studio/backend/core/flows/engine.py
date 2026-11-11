@@ -1648,8 +1648,12 @@ class FlowEngine:
                         if relook:
                             key = await ran_on()
             else:
-                rs.set_status(nid, "running")
-                outputs = await handler(ctx)
+                if rs.cpu_gate is None:
+                    rs.cpu_gate = asyncio.Semaphore(CPU_CONCURRENCY)
+                async with rs.cpu_gate:
+                    ctx.check_cancelled()
+                    rs.set_status(nid, "running")
+                    outputs = await handler(ctx)
         except (FlowCancelled, asyncio.CancelledError):
             rs.flush(nid)
             self._stop(rs, nid, env, iteration, "cancelled")

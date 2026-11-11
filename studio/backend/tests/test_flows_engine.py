@@ -873,6 +873,54 @@ async def test_parallel_for_each_keeps_the_cpu_limit():
 
 
 @run_async
+async def test_parallel_for_each_shares_one_cpu_limit_across_iterations():
+    live = 0
+    peak = 0
+    release = asyncio.Event()
+
+    async def slow(ctx):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        await release.wait()
+        live -= 1
+        return {"text": "ok"}
+
+    eng = make_engine(
+        {
+            **BASE_HANDLERS,
+            "input.list": lambda ctx: ret({"items": list(range(12))}),
+            "text.template": slow,
+        }
+    )
+    # Two independent steps per iteration: a per-iteration limit would let 4 x 2 run at once.
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each", parallel = True),
+            node("t", "text.template", group = "fe"),
+            node("u", "text.template", group = "fe"),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "t", "values"),
+            edge("fe", "item", "u", "values"),
+        ],
+    )
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = {})
+    limit = engine_mod.CPU_CONCURRENCY
+    await wait_until(lambda: live >= limit, timeout = 30, what = "the steps to fill the CPU limit")
+    with contextlib.suppress(AssertionError):
+        await wait_until(lambda: live > limit, timeout = 0.5)
+    release.set()
+    await asyncio.wait_for(rs.task, 20)
+    assert rs.status == "completed", rs.error
+    assert peak == limit
+
+
+@run_async
 async def test_for_each_keeps_null_results_in_place():
     async def passthrough(ctx):
         return {"value": ctx.inputs.get("value")}
