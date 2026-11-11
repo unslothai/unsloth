@@ -18,7 +18,9 @@ import type { WorldSpec } from "../../types";
 import type { PlayerApi } from "../player-api";
 import {
   applyMayorReply,
+  type HudLife,
   cityDigest,
+  hudLife,
   localAdvice,
   mayorRequest,
   parseMayorReply,
@@ -143,6 +145,12 @@ export function MayorHud({
   useEffect(() => {
     live.current = sim;
   }, [sim]);
+  const life = useRef<HudLife | null>(null);
+  useEffect(() => {
+    const l = hudLife();
+    life.current = l;
+    return l.end;
+  }, []);
   const [tool, setTool] = useState<CityTool | null>(null);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [open, setOpen] = useState(true);
@@ -166,7 +174,9 @@ export function MayorHud({
   }, [ready, view, paint, city]);
 
   const ask = useCallback(
-    async (kind: "month" | "advice", signal: AbortSignal) => {
+    async (kind: "month" | "advice", signal: AbortSignal, l: HudLife) => {
+      const stale = () => !l.alive() || live.current !== sim;
+      if (stale()) return false;
       const digest = cityDigest(spec, sim, kind);
       if (!replyEntry) {
         if (kind === "month") sim.claimMonth(digest.month);
@@ -182,7 +192,7 @@ export function MayorHud({
           { state: mayorRequest(digest) },
           { signal },
         );
-        if (signal.aborted || live.current !== sim) return;
+        if (signal.aborted || stale()) return;
         const reply = parseMayorReply(res.outputs.reply);
         if (reply)
           for (const line of applyMayorReply(sim, digest, reply)) toast(line);
@@ -191,7 +201,7 @@ export function MayorHud({
           sim.setAdvisor(localAdvice(digest), "local");
         }
       } catch {
-        if (signal.aborted || live.current !== sim) return;
+        if (signal.aborted || stale()) return;
         if (kind === "month") sim.claimMonth(digest.month);
         sim.setAdvisor(localAdvice(digest), "local");
       } finally {
@@ -205,11 +215,9 @@ export function MayorHud({
   const askLater = useCallback(
     (kind: "month" | "advice") => {
       if (kind === "month" && conf?.advisor === false) return;
-      queue.push({
-        key: `city:${kind}`,
-        kind: "chat",
-        run: (signal) => ask(kind, signal),
-      });
+      const l = life.current;
+      if (!l) return;
+      queue.push(l.job(kind, (signal) => ask(kind, signal, l)));
       queue.pump();
     },
     [ask, conf?.advisor, queue],

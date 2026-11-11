@@ -601,3 +601,31 @@ test("old saves (v1, v2) still load; a city world opens them without new state",
   assert.equal(parsed.taxed, parsed.month);
   assert.equal(parsed.petitioned, parsed.month);
 });
+
+test("a Mayor job queued before the HUD unmounts never commits its old simulation", async () => {
+  const { BackgroundQueue } = await import(
+    "../src/features/flows/player/world/world-sim.ts"
+  );
+  let t = 0;
+  const queue = new BackgroundQueue(1, () => t);
+  const commits: string[] = [];
+  // The minute's budget is spent, so the advisor request waits in the queue.
+  queue.push({ key: "busy", kind: "chat", run: async () => {} });
+  queue.pump();
+  await new Promise((r) => setTimeout(r, 0));
+  const old = A.hudLife();
+  queue.push(old.job("month", async () => void commits.push("old")));
+  // 2D/3D switch: the queue pauses, the HUD unmounts, a new one mounts and asks for the same month.
+  queue.setPaused(true);
+  old.end();
+  const fresh = A.hudLife();
+  queue.push(fresh.job("month", async () => void commits.push("new")));
+  assert.equal(queue.pending, 2);
+  queue.setPaused(false);
+  t = 61_000;
+  queue.pump();
+  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+  // The stale job made no call and refunded its slot, so the new HUD's request still ran this minute.
+  assert.deepEqual(commits, ["new"]);
+  assert.equal(queue.pending, 0);
+});

@@ -11,8 +11,38 @@ import {
   type Petition,
   cityOf,
 } from "./city-sim";
+import type { SimJob } from "./world-sim";
 
 export const CITY_CALLS_PER_MINUTE = 2;
+
+export interface HudLife {
+  alive: () => boolean;
+  end: () => void;
+  job: (kind: string, run: SimJob["run"]) => SimJob;
+}
+
+let hudMounts = 0;
+
+/**
+ * One mount of the Mayor HUD. The shared queue outlives the HUD (a 2D/3D switch only pauses it), so a job still
+ * waiting for the call budget must not run against the unmounted HUD's simulation: it skips the call (refunding
+ * its slot) and the key is per mount so it cannot shadow the remounted HUD's request.
+ */
+export function hudLife(): HudLife {
+  const id = ++hudMounts;
+  let alive = true;
+  return {
+    alive: () => alive,
+    end: () => {
+      alive = false;
+    },
+    job: (kind, run) => ({
+      key: `city:${id}:${kind}`,
+      kind: "chat",
+      run: (signal) => (alive ? run(signal) : Promise.resolve(false)),
+    }),
+  };
+}
 
 export const mayorOn = (spec: WorldSpec): boolean => cityOf(spec) !== null;
 export const cityQueueRate = (spec: WorldSpec): number =>
