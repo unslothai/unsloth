@@ -152,6 +152,23 @@ def read_model_files(
     return FlmModelFiles(folder = folder, files = tuple(files))
 
 
+def model_folder_checkpoints(flm_binary: Optional[Path]) -> tuple[Optional[str], dict[str, str]]:
+    """FastFlowLM's models subfolder and each model folder's checkpoint, from its manifest."""
+    if flm_binary is None:
+        return None, {}
+    try:
+        listing = _load(flm_binary.parent / "model_list.json")
+        names = {
+            str(entry["name"]): f"{family}:{size}"
+            for family, sizes in listing["models"].items()
+            for size, entry in sizes.items()
+        }
+        return str(listing["model_path"]), names
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        logger.debug("Could not read FastFlowLM's model list: %s", exc)
+        return None, {}
+
+
 def _hasher(file: FlmFile):
     if file.lfs:
         return hashlib.sha256()

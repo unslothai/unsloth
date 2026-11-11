@@ -328,3 +328,30 @@ test("a model larger than the NPU memory window gets a warning naming both figur
     assert.equal(api.npuMemoryTag(model(fits)), null);
   }
 });
+
+test("Storage deletes an NPU folder by its checkpoint, which the backend resolves", async () => {
+  const { api, requests } = client(() =>
+    Response.json({ status: "deleted", model: "qwen3-0.6b-FLM" }),
+  );
+  assert.equal(
+    await api.deleteNpuModelByCheckpoint("qwen3:0.6b"),
+    "qwen3-0.6b-FLM",
+  );
+  assert.deepEqual(
+    requests.map((request) => [request.path, request.init?.method]),
+    [["/api/npu/checkpoints/qwen3%3A0.6b", "DELETE"]],
+  );
+});
+
+test("a refused Storage delete surfaces the backend's reason", async () => {
+  const { api } = client(() =>
+    Response.json(
+      { detail: "Lemonade has no FastFlowLM model for gone:1b." },
+      { status: 409 },
+    ),
+  );
+  await assert.rejects(
+    api.deleteNpuModelByCheckpoint("gone:1b"),
+    /no FastFlowLM model for gone:1b/,
+  );
+});

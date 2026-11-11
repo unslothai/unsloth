@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from typing import Optional
+from contextlib import contextmanager
+from typing import Iterable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -16,7 +17,12 @@ from starlette.concurrency import iterate_in_threadpool
 
 from auth import policy
 from auth.authentication import get_current_subject
-from core.inference.npu_backend import NpuDownloadCancelled, NpuError, get_npu_backend
+from core.inference.npu_backend import (
+    NpuBusy,
+    NpuDownloadCancelled,
+    NpuError,
+    get_npu_backend,
+)
 from hub.services.models import account_access
 from loggers import get_logger
 
@@ -84,12 +90,46 @@ _downloads: dict[str, _Download] = {}
 _downloads_lock = threading.Lock()
 
 
+# Each running delete's model ids; None reserves every model (Storage's Clear).
+_deleting: list[Optional[frozenset[str]]] = []
+
+
+@contextmanager
+def downloads_held(model_ids: Optional[Iterable[str]] = None):
+    """Keeps new pulls of model_ids (every model when None) out while a delete runs. The lock
+    is held only to check and mark, so a pull asked for meanwhile is refused, not blocked.
+    Raises NpuBusy if one of them is already pulling."""
+    ids = None if model_ids is None else frozenset(model_ids)
+    with _downloads_lock:
+        for model_id, job in _downloads.items():
+            if not job.finished and (ids is None or model_id in ids):
+                raise NpuBusy(f"Cancel the download of {model_id} before deleting it.")
+        _deleting.append(ids)
+    try:
+        yield
+    finally:
+        with _downloads_lock:
+            _deleting.remove(ids)
+
+
+def _delete_checkpoint(checkpoint: str) -> str:
+    return get_npu_backend().delete_checkpoint(checkpoint, downloads_held)
+
+
+def _forget_storage_size() -> None:
+    """Settings > Storage remembers folder sizes for a minute; a pull or delete changes this one."""
+    from utils.cache_inventory import invalidate_cache_size
+    invalidate_cache_size("npu_models")
+
+
 def _start_download(npu, model_id: str) -> _Download:
     """The model's running pull, or a new one; a second request follows the first."""
     with _downloads_lock:
         job = _downloads.get(model_id)
         if job is not None and not job.finished:
             return job
+        if any(ids is None or model_id in ids for ids in _deleting):
+            raise NpuBusy(f"{model_id} is being deleted. Download it again once that finishes.")
         job = _Download()
         _downloads[model_id] = job
 
@@ -113,6 +153,7 @@ def _start_download(npu, model_id: str) -> _Download:
             logger.exception(f"NPU model download of {model_id} failed{_progress()}")
             job.publish({"event": "error", "error": f"Downloading {model_id} failed: {exc}"})
         finally:
+            _forget_storage_size()
             with job.changed:
                 job.finished = True
                 job.changed.notify_all()
@@ -179,7 +220,11 @@ async def download_npu_model(model_id: str):
 
     Disconnecting stops progress updates, not the download.
     """
-    return _event_stream(_start_download(get_npu_backend(), model_id))
+    try:
+        job = _start_download(get_npu_backend(), model_id)
+    except NpuBusy as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from None
+    return _event_stream(job)
 
 
 @router.get("/models/{model_id}/download", dependencies = [Depends(_require_installation_owner)])
@@ -211,4 +256,18 @@ async def delete_npu_model(model_id: str):
         await asyncio.to_thread(get_npu_backend().delete, model_id)
     except NpuError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
+    finally:
+        _forget_storage_size()
+    return {"status": "deleted", "model": model_id}
+
+
+@router.delete("/checkpoints/{checkpoint}", dependencies = [Depends(_require_installation_owner)])
+async def delete_npu_checkpoint(checkpoint: str):
+    """Settings > Storage's delete: its folders know their FastFlowLM checkpoint, not lemond's id."""
+    try:
+        model_id = await asyncio.to_thread(_delete_checkpoint, checkpoint)
+    except NpuError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from None
+    finally:
+        _forget_storage_size()
     return {"status": "deleted", "model": model_id}

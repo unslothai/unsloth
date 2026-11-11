@@ -12,9 +12,10 @@ import re
 import subprocess
 import sys
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, ContextManager, Iterator, Optional
 
 import structlog
 
@@ -23,6 +24,7 @@ from core.inference.flm_files import (
     FlmDownloadError,
     FlmModelFiles,
     download_files,
+    model_folder_checkpoints,
     read_model_files,
     read_model_repo,
 )
@@ -85,6 +87,10 @@ DRIVER_HELP_URL = {
 
 class NpuError(RuntimeError):
     """An NPU operation failed; the message is safe to show the user."""
+
+
+class NpuBusy(NpuError):
+    """A delete and a pull of the same model would write the same folder."""
 
 
 class NpuLoadCancelled(NpuError):
@@ -246,6 +252,11 @@ def _pinned_flm_version() -> Optional[str]:
 def _npu_root() -> Path:
     from utils.paths.storage_roots import studio_root
     return studio_root() / "lemonade"
+
+
+def npu_model_dir() -> Path:
+    """FastFlowLM's FLM_MODEL_PATH. Fixed under the Unsloth Studio home; not movable yet."""
+    return _npu_root() / "flm"
 
 
 def _error_message(response) -> str:
@@ -692,17 +703,24 @@ class LemonadeNpuBackend:
                 self._state = "idle"
             self._closing.clear()
 
-    def catalog(self) -> list[NpuModel]:
+    def _flm_rows(self) -> list[dict[str, Any]]:
+        """Every FastFlowLM model lemond knows, including the ones the catalog cannot chat with."""
         server = self._ensure_running()
         response = server.request("GET", "/v1/models?show_all=true", timeout = 60.0)
         if _failed(response):
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
+        return [
+            row
+            for row in response.json().get("data") or []
+            if isinstance(row, dict) and row.get("recipe") == "flm"
+        ]
+
+    def catalog(self) -> list[NpuModel]:
+        rows = self._flm_rows()
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
         window_gb = npu_memory_window_gb(_total_ram_gb())
-        for row in response.json().get("data") or []:
-            if not isinstance(row, dict) or row.get("recipe") != "flm":
-                continue
+        for row in rows:
             labels = tuple(str(label) for label in row.get("labels") or ())
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
@@ -829,6 +847,70 @@ class LemonadeNpuBackend:
             response = server.request("POST", "/v1/delete", json_body = {"model_name": model_id})
             if _failed(response):
                 raise NpuError(f"Deleting {model_id} failed: {_error_message(response)}")
+
+    def model_folders(self) -> list[tuple[Path, Optional[str]]]:
+        """Each entry under FLM_MODEL_PATH, with the checkpoint FastFlowLM's manifest gives a model
+        folder. Reads the disk only, so it never starts lemond."""
+        base = self._flm_model_dir
+        subfolder, checkpoints = model_folder_checkpoints(self._flm_binary())
+        models = base / subfolder if subfolder else None
+        rows: list[tuple[Path, Optional[str]]] = []
+        try:
+            children = sorted(base.iterdir()) if base.is_dir() else []
+            for child in children:
+                if models is not None and child == models and child.is_dir():
+                    rows.extend(
+                        (entry, checkpoints.get(entry.name)) for entry in sorted(child.iterdir())
+                    )
+                else:
+                    rows.append((child, None))
+        except OSError as exc:
+            logger.debug("Could not list %s: %s", base, exc)
+        return rows
+
+    def delete_checkpoint(
+        self,
+        checkpoint: str,
+        reserve: Callable[[list[str]], ContextManager[Any]] = lambda model_ids: nullcontext(),
+    ) -> str:
+        """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id.
+        reserve(model_ids) keeps pulls of those ids out of the folder until the delete ends."""
+        try:
+            model_ids = [
+                str(row.get("id"))
+                for row in self._flm_rows()
+                if row.get("checkpoint") == checkpoint
+            ]
+        except LemonadeUnavailable as exc:
+            raise NpuError(str(exc)) from exc
+        if not model_ids:
+            raise NpuError(f"Lemonade has no FastFlowLM model for {checkpoint}.")
+        with reserve(model_ids):
+            for model_id in model_ids:
+                self.delete(model_id)
+        return model_ids[0]
+
+    def delete_downloaded(self) -> tuple[int, list[str]]:
+        """Delete every downloaded model through lemond, so its registry matches the disk."""
+        # A failed pull keeps its files to resume, but lemond calls that model not downloaded.
+        on_disk = {checkpoint for _, checkpoint in self.model_folders() if checkpoint is not None}
+        try:
+            model_ids = [
+                str(row.get("id"))
+                for row in self._flm_rows()
+                if row.get("downloaded") or row.get("checkpoint") in on_disk
+            ]
+        except (NpuError, LemonadeUnavailable) as exc:
+            return 0, [str(exc)]
+        deleted = 0
+        errors: list[str] = []
+        for model_id in model_ids:
+            try:
+                self.delete(model_id)
+                deleted += 1
+            except (NpuError, LemonadeUnavailable) as exc:
+                errors.append(str(exc))
+        return deleted, errors
 
     def load(
         self,

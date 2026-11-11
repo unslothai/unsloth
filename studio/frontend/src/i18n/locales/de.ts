@@ -2837,6 +2837,8 @@ export const de = {
             "Das ist der Modell-Cache. Wenn Sie ihn leeren, werden diese Modelle beim nächsten Verwenden erneut heruntergeladen.",
           datasetsCost:
             "Wenn Sie das leeren, werden diese Datensätze beim nächsten Verwenden erneut heruntergeladen.",
+          npuCost:
+            "Das sind Ihre heruntergeladenen NPU-Modelle. Beim Leeren werden sie gelöscht, und Sie laden sie zum Verwenden erneut aus dem Hub herunter.",
           blocked: "Nicht geleert: {reason}",
           cleared: "{size} geleert",
           partial: "Einige Cache-Dateien konnten nicht entfernt werden",
@@ -2858,6 +2860,7 @@ export const de = {
             hfAssets: "Hugging Face-Asset-Cache",
             hfDatasets: "Hugging Face-Datensatz-Cache",
             hfHub: "Hugging Face-Modell-Cache",
+            npuModels: "AMD-NPU-Modelle",
           },
         },
         lowDisk: {

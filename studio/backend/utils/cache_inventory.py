@@ -399,6 +399,33 @@ def _purge_unsloth_compiled() -> PurgeOutcome:
 _GENERATED_MODULE_PATTERNS = ("unsloth_compiled_module_*.py",)
 
 
+def _npu_model_dirs() -> list[Path]:
+    from core.inference.npu_backend import npu_model_dir
+    return [npu_model_dir()]
+
+
+def _purge_npu_models() -> PurgeOutcome:
+    """Through lemond, never rmtree: it keeps its own record of which models are downloaded."""
+    from contextlib import nullcontext
+
+    from core.inference.npu_backend import NpuBusy, get_npu_backend
+
+    try:
+        from routes.npu import downloads_held
+    except ImportError as exc:
+        logger.debug(f"Could not read the NPU downloads: {exc}")
+        downloads_held = nullcontext
+    roots = _npu_model_dirs()
+    before = sum(_measure_root(root)[0] for root in roots)
+    try:
+        with downloads_held():
+            deleted, errors = get_npu_backend().delete_downloaded()
+    except NpuBusy:
+        return PurgeOutcome(errors = [_PURGE_BUSY])
+    after = sum(_measure_root(root)[0] for root in roots)
+    return PurgeOutcome(freed_bytes = max(0, before - after), removed_entries = deleted, errors = errors)
+
+
 CACHE_DEFINITIONS: tuple[CacheDefinition, ...] = (
     CacheDefinition("uv", GROUP_PACKAGES, False, _uv_dirs),
     CacheDefinition("pip", GROUP_PACKAGES, False, _pip_dirs),
@@ -425,6 +452,9 @@ CACHE_DEFINITIONS: tuple[CacheDefinition, ...] = (
     CacheDefinition("hf_assets", GROUP_MODELS, False, _hf_assets_dirs),
     CacheDefinition("hf_datasets", GROUP_MODELS, True, _hf_datasets_dirs),
     CacheDefinition("hf_hub", GROUP_MODELS, True, _hf_hub_dirs),
+    CacheDefinition(
+        "npu_models", GROUP_MODELS, True, _npu_model_dirs, custom_purge = _purge_npu_models
+    ),
 )
 
 CACHE_KEYS: tuple[str, ...] = tuple(definition.key for definition in CACHE_DEFINITIONS)
@@ -937,9 +967,34 @@ def _model_cache_action(root: Path, entry: os.DirEntry) -> dict:
         return refused
 
 
+def _npu_breakdown() -> dict:
+    from core.inference.npu_backend import get_npu_backend
+
+    rows = []
+    for path, checkpoint in get_npu_backend().model_folders():
+        try:
+            if path.is_symlink() or _is_junction(path):
+                continue
+            size = (
+                _measure_root(path)[0]
+                if path.is_dir()
+                else os.stat(path, follow_symlinks = False).st_size
+            )
+        except OSError:
+            continue
+        row = {"name": path.name, "path": str(path), "size_bytes": size}
+        # The Hub's NPU delete takes a lemond id; the browser maps this checkpoint to one.
+        if checkpoint is not None:
+            row["checkpoint"] = checkpoint
+        rows.append({**row, "delete_allowed": checkpoint is not None})
+    return {"entries": sorted(rows, key = lambda row: (-row["size_bytes"], row["path"]))}
+
+
 def cache_breakdown(key: str) -> dict:
+    if key == "npu_models":
+        return _npu_breakdown()
     if key not in {"hf_hub", "hf_datasets", "hf_xet", "hf_assets"}:
-        raise ValueError("Only Hugging Face caches have a directory breakdown.")
+        raise ValueError("Only Hugging Face caches and NPU models have a directory breakdown.")
     rows = []
     occupancy = _OccupancyLedger()
     definition = definition_for(key)
