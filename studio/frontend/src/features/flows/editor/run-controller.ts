@@ -80,6 +80,8 @@ export function detachRun(): void {
   follower = null;
   checkedModels.clear();
   editorSession += 1;
+  // A start still pending belongs to the flow just left; it must not block Run in the next one.
+  starting = false;
 }
 
 export interface RunOptions {
@@ -164,7 +166,7 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
       error instanceof Error ? error.message : "Could not start the run",
     );
   } finally {
-    starting = false;
+    if (session === editorSession) starting = false;
   }
 }
 
