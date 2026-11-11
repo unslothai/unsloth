@@ -92,6 +92,14 @@ def test_an_idle_npu_reads_zero(host):
     assert hw.npu_load_percent() == 0.0
 
 
+def test_an_infinite_sample_is_not_a_full_load(host):
+    host["counters"] = (
+        "pid_10_luid_0x00000000_0x0001a5c9_phys_0_eng_0_engtype_Compute|Infinity\n"
+        "pid_10_luid_0x00000000_0x0001a5c9_phys_0_eng_1_engtype_Compute|7\n"
+    )
+    assert hw.npu_load_percent() == 7.0
+
+
 def test_polls_inside_the_window_share_one_sample(host):
     assert hw.npu_load_percent() == 42.5
     spawned = len(host["calls"])

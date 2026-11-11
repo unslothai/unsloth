@@ -3823,7 +3823,7 @@ def _npu_engine_load(luid: int) -> Optional[float]:
             value = float(raw)
         except ValueError:
             continue
-        if engine is None or value != value or value < 0:
+        if engine is None or value != value or value == float("inf") or value < 0:
             continue
         by_engine[engine.group(1)] = by_engine.get(engine.group(1), 0.0) + value
     # Per engine, processes add up; the adapter is as busy as its busiest engine, as in Task Manager.
