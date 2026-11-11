@@ -141,16 +141,6 @@ def test_video_joins_the_projector_requirement_before_switching():
     assert start < source.index("_request_has_video(payload)", start) < switch
 
 
-def test_an_external_provider_refuses_video_rather_than_ignoring_it():
-    """input_video is llama.cpp's own part type, so the proxy cannot carry the clip."""
-    source = _inference_source()
-    start = source.index("if payload.provider_id or payload.provider_type:")
-    branch = source[start : source.index("_proxy_to_external_provider(payload", start)]
-    # Both spellings through one predicate, so a video_url part cannot reach the proxy either.
-    assert "_request_has_video(payload)" in branch
-    assert "_VIDEO_INPUT_REFUSAL" in branch
-
-
 def _model_info(**fields):
     return {"is_vision": True, **fields}
 
@@ -221,7 +211,7 @@ def test_token_counting_refuses_video_like_image_and_audio():
 def test_both_video_checks_share_one_rule():
     """Pre-switch and post-load size checks must agree, or a load is wasted on a refused clip."""
     source = _inference_source()
-    assert source.count("= _request_video_rejection(payload)") == 3
+    assert source.count("= _request_video_rejection(payload)") == 4
 
 
 def _video_url_request(

@@ -1843,7 +1843,7 @@ def batch_thread_messages(
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
     by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
     search_view = payload.view == "search"
-    for m in list_chat_messages_for_threads(payload.threadIds):
+    for m in list_chat_messages_for_threads(payload.threadIds, include_metadata = not search_view):
         tid = m["threadId"]
         if tid in by_thread:
             by_thread[tid].append(ChatMessage(**(_search_view_message(m) if search_view else m)))

@@ -459,6 +459,43 @@ def test_an_external_provider_refuses_either_spelling(monkeypatch, body):
 
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+@pytest.mark.parametrize("provider_type", ["custom", "vllm"])
+def test_a_custom_connection_is_handed_the_clip_like_an_image(monkeypatch, body, provider_type):
+    import httpx
+    from core.inference import external_provider as ep_mod
+    from .test_external_provider_sampling_over_the_wire import _Server
+
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(trust_env = False))
+    with _Server() as server, _client(monkeypatch, _VideoGguf()) as client:
+        body = {
+            **body,
+            "stream": True,
+            "provider_type": provider_type,
+            "provider_base_url": server.base_url,
+        }
+        response = client.post("/v1/chat/completions", json = body)
+        assert response.status_code == 200, response.text
+        sent = server.bodies[-1]["messages"][-1]["content"]
+    assert {"type": "video_url", "video_url": {"url": _DATA_URI}} in sent
+    assert {"type": "text", "text": "what happens here?"} in sent
+
+
+@pytest.mark.parametrize(
+    "connection",
+    [
+        {"provider_type": "anthropic"},
+        {"provider_type": "custom", "provider_api_type": "responses"},
+    ],
+)
+def test_a_connection_that_cannot_place_a_clip_still_refuses_it(monkeypatch, connection):
+    body = {**_field_body(), **connection, "provider_base_url": "http://127.0.0.1:9/v1"}
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 400
+    assert response.json()["detail"] == inference_route._VIDEO_INPUT_REFUSAL
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
 def test_token_counting_refuses_either_spelling(monkeypatch, body):
     """llama-server samples the frames at completion time, so counting here undercounts."""
     body = {k: v for k, v in body.items() if k != "stream"}

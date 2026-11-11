@@ -4495,18 +4495,11 @@ function Install-UnslothStudio {
             if ($script:UnslothVerbose) {
                 # Merge stderr into stdout without flipping $? (5.1 treats stderr records as errors).
                 # Redact per record, verbose mode included.
-                if ($NoMirror -or -not $env:_UNSLOTH_MIRROR_SPARE) {
-                    & $Command 2>&1 | ForEach-Object {
-                        Write-UvDownloadMarker "$_"
-                        Redact-InstallOutput "$_"
-                    } | Out-Host
-                } else {
-                    & $Command 2>&1 | ForEach-Object {
-                        [void]$collected.AppendLine("$_")
-                        Write-UvDownloadMarker "$_"
-                        Redact-InstallOutput "$_"
-                    } | Out-Host
-                }
+                & $Command 2>&1 | ForEach-Object {
+                    [void]$collected.AppendLine("$_")
+                    Write-UvDownloadMarker "$_"
+                    Redact-InstallOutput "$_"
+                } | Out-Host
             } else {
                 # Streamed, not collected, so a marker reaches the app mid-download.
                 & $Command 2>&1 | ForEach-Object {
@@ -4520,6 +4513,7 @@ function Install-UnslothStudio {
                 }
             }
             $exitCode = [int]$LASTEXITCODE
+            $script:LastInstallOutput = if ($exitCode -eq 0) { "" } else { $collected.ToString() }
             if ($exitCode -eq 0) {
                 Clear-TauriInstallError "$Label recovered"
             } else {
@@ -4562,6 +4556,27 @@ function Install-UnslothStudio {
         return $code
     }
 
+    # uv reuses a damaged cached wheel on every run, --refresh included (#17375).
+    function Repair-UvDamagedWheels {
+        param([string]$Output, [hashtable]$Cleaned)
+        $names = @(foreach ($m in [regex]::Matches("$Output", '(?m)Failed to install: \S+ \(([A-Za-z0-9][A-Za-z0-9._-]*)(?:==| @ )[^\r\n]*\r?\n\s*(?:cause|Caused by): The wheel is invalid')) {
+            $n = $m.Groups[1].Value.ToLowerInvariant()
+            if (-not $Cleaned.ContainsKey($n) -and $Cleaned.Count -lt 50) { $Cleaned[$n] = $true; $n }
+        })
+        if (-not $names) { return $false }
+        substep "clearing damaged uv cache entries for $($names -join ', ')..." "Yellow"
+        # Another uv process may hold the cache lock.
+        $prevLock = $env:UV_LOCK_TIMEOUT
+        if (-not $prevLock) { $env:UV_LOCK_TIMEOUT = "60" }
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { & $script:UvExe cache clean @names 2>&1 | Out-Null } finally {
+            $ErrorActionPreference = $prevEap
+            $env:UV_LOCK_TIMEOUT = $prevLock
+        }
+        return ($LASTEXITCODE -eq 0)
+    }
+
     function Invoke-InstallCommandRetry {
         param(
             [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
@@ -4578,9 +4593,13 @@ function Install-UnslothStudio {
             $delay = $parsedDelay
         }
         $attempt = 1
+        $cleaned = @{}
         while ($true) {
+            $script:LastInstallOutput = ""
             $code = Invoke-InstallCommand -Command $Command -Label $Label -NoMirror:($attempt -lt $maxAttempts)
             if ($code -eq 0) { return 0 }
+            # Not an attempt: uv names one damaged package per run.
+            if (Repair-UvDamagedWheels -Output $script:LastInstallOutput -Cleaned $cleaned) { continue }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
             Start-Sleep -Seconds $delay
@@ -9945,7 +9964,7 @@ main()
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
     $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.11.3" }
-    $_unslothZooInstallSpec = "unsloth-zoo>=2026.11.3"
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.11.4"
     # typer 0.29 imports pydantic, so `unsloth studio setup` would hold pydantic_core's .pyd open while
     # the Studio requirements re-pin pydantic, and Windows refuses to replace a loaded .pyd.
     $_typerCapSpec = "typer<0.29"

@@ -2735,15 +2735,7 @@ def _delete_scope_without_vec(
     try:
         conn = rag_db.get_metadata_connection()
         documents = conn.execute(*_scope_select(scope, created_before)).fetchall()
-        for row in documents:
-            conn.execute(
-                "DELETE FROM chunks_fts WHERE chunk_id IN "
-                "(SELECT id FROM chunks WHERE document_id=?)",
-                (row["id"],),
-            )
-            conn.execute("DELETE FROM chunks WHERE document_id=?", (row["id"],))
-            conn.execute("DELETE FROM documents WHERE id=?", (row["id"],))
-        conn.commit()
+        store.delete_documents(conn, [row["id"] for row in documents], vec = False)
         removed = [row["stored_path"] for row in documents]
     except Exception:
         logger.warning(
@@ -2863,9 +2855,9 @@ def _delete_scope(
         except Exception:
             # No vec0 here. Delete what can be deleted rather than nothing at all.
             return _delete_scope_without_vec(scope, thread_id, created_before = created_before)
-        for row in conn.execute(*_scope_select(scope, created_before)).fetchall():
-            store.delete_document(conn, row["id"])
-            removed.append(row["stored_path"])
+        documents = conn.execute(*_scope_select(scope, created_before)).fetchall()
+        store.delete_documents(conn, [row["id"] for row in documents])
+        removed = [row["stored_path"] for row in documents]
     except Exception:
         logger.warning("conversation_archive.delete_failed thread_id=%s", thread_id, exc_info = True)
     finally:

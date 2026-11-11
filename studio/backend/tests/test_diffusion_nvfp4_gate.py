@@ -16,6 +16,7 @@ from core.inference.diffusion_nvfp4_gate import (
     GATE_RECORD_PATH,
     GATE_RECORD_VERSION,
     RECORD_KEY_FIELDS,
+    REFINED_FIELD,
     load_gate_records,
     nvfp4_gate_backend,
     nvfp4_gate_backends,
@@ -36,7 +37,7 @@ def _record(**overrides):
         "checkpoint_sha256": "a" * 64,
         "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
         "filename": "Z-Image-Turbo-NVFP4.safetensors",
-        "gptq": False,
+        "refined": False,
         "all_pass": True,
         "num_pairs": 28,
         "num_passed": 28,
@@ -141,7 +142,7 @@ def test_two_artifacts_gated_on_different_backends_both_read_as_covered(tmp_path
     path = _gate_file(
         tmp_path,
         _record(),
-        _record(checkpoint_sha256 = "b" * 64, gptq = True, backend = "torchao"),
+        _record(checkpoint_sha256 = "b" * 64, refined = True, backend = "torchao"),
     )
     assert nvfp4_gate_backends("z-image", ZIMAGE_BASE, path = path) == ("flashinfer", "torchao")
     assert nvfp4_gate_backends("Z-Image", ZIMAGE_BASE, path = path) == ("flashinfer", "torchao")
@@ -236,3 +237,24 @@ def test_a_rewritten_file_is_re_read_rather_than_served_from_the_cache(tmp_path)
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is False
     _gate_file(tmp_path, _record())
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is True
+
+
+def _string_values(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _string_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _string_values(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def test_shipped_records_use_the_current_field_and_name_no_local_path():
+    for record in load_gate_records():
+        assert REFINED_FIELD in record, record
+        assert "results_path" not in record, record
+        strings = list(_string_values(record))
+        assert not [
+            value for value in strings if value.startswith(("/", "~")) or ":\\" in value
+        ], record

@@ -13,7 +13,6 @@ import threading
 from typing import Any, Optional
 
 H3_CHUNKED_REF_ENCODE_ENV = "UNSLOTH_H3_CHUNKED_REF_ENCODE"
-_ENCODERS_MODULE = "diffusers.modular_pipelines.minimax_h3.encoders"
 _FUNC = "encode_vae_condition"
 
 # sha256[:16] of inspect.getsource of the mirrored functions (diffusers 0.42.1).

@@ -3050,10 +3050,11 @@ class InferenceOrchestrator:
         instead."""
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
+            if tools:
+                raise ValueError("Tools are unavailable for this optional engine profile.")
             return managed.count_tokens(
                 messages,
                 system_prompt,
-                tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
