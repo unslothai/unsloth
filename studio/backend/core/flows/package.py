@@ -300,6 +300,12 @@ async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[byte
             node["params"] = _drop_local(node.get("params") or {})
         if doc.get("params"):
             doc["params"] = _drop_local(doc["params"])
+        if "cover" in meta:
+            cover = _drop_local(meta["cover"])
+            if cover is None or _local_url(cover):
+                meta.pop("cover")
+            else:
+                meta["cover"] = cover
         return json.dumps(doc, indent = 1).encode(), f"{slug}.json", "application/json"
     files: dict[str, tuple[bytes, str]] = {}
     for node in doc.get("nodes", []):

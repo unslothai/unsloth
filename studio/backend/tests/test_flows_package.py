@@ -394,3 +394,19 @@ async def test_export_stops_before_the_package_outgrows_the_import_limit(monkeyp
     monkeypatch.setattr(package.schema, "MAX_PACKAGE_BYTES", 2500)
     with pytest.raises(PackageError, match = "larger than"):
         await package.export_flow(d, "package", read_media)
+
+
+@run_async
+async def test_json_export_drops_a_machine_local_cover():
+    async def read_media(media):
+        raise AssertionError("a JSON export reads no media")
+
+    for cover in (
+        {"kind": "image", "ref": "image:abc", "url": "/api/inference/images/gallery/abc/file"},
+        "/api/inference/images/gallery/abc/file",
+    ):
+        d = doc([node("a", "input.text", value = "hi")])
+        d["meta"] = {"cover": cover}
+        data, _, _ = await package.export_flow(d, "json", read_media)
+        assert "cover" not in json.loads(data)["meta"]
+        assert "image:abc" not in data.decode() and "gallery/abc" not in data.decode()
