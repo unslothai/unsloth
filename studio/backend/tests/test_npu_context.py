@@ -232,7 +232,12 @@ class _Server:
     def output_mark(self):
         return 0
 
-    def output_since(self, mark, lines = 40, settle = 0.5):
+    def output_since(
+        self,
+        mark,
+        lines = 40,
+        settle = 0.5,
+    ):
         return []
 
     def request(
