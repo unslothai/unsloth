@@ -2823,8 +2823,8 @@ export const id = {
         memory: "Memori GPU",
         sharedWithSystemRam: "Dibagi dengan RAM sistem",
         estimatedAvailable: "Perkiraan tersedia: {value}",
-        sharedEstimatedAvailable:
-          "RAM sistem bersama: perkiraan {value} tersedia",
+        alsoSystemRam: "Juga dapat meminjam hingga {value} RAM sistem",
+        llamaCppBuild: "Build {backend} llama.cpp",
         ggufInference: "Memori model GGUF",
         unavailable: "tidak tersedia",
         detecting: "Memeriksa GPU...",

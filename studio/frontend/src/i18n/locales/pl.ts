@@ -2854,8 +2854,8 @@ export const pl = {
         memory: "Pamięć GPU",
         sharedWithSystemRam: "Współdzielona z systemową pamięcią RAM",
         estimatedAvailable: "Szacunkowo dostępne: {value}",
-        sharedEstimatedAvailable:
-          "Współdzielona systemowa pamięć RAM: szacunkowo dostępne {value}",
+        alsoSystemRam: "Może dodatkowo pożyczyć do {value} systemowej pamięci RAM",
+        llamaCppBuild: "llama.cpp, kompilacja {backend}",
         ggufInference: "Pamięć modeli GGUF",
         unavailable: "niedostępne",
         detecting: "Wyszukiwanie procesorów GPU...",

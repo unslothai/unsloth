@@ -2709,8 +2709,8 @@ export const th = {
         memory: "หน่วยความจำ GPU",
         sharedWithSystemRam: "ใช้ร่วมกับ RAM ของระบบ",
         estimatedAvailable: "พร้อมใช้งานโดยประมาณ: {value}",
-        sharedEstimatedAvailable:
-          "RAM ของระบบที่ใช้ร่วมกัน: พร้อมใช้งานประมาณ {value}",
+        alsoSystemRam: "ยืม RAM ของระบบเพิ่มได้สูงสุด {value}",
+        llamaCppBuild: "llama.cpp รุ่น {backend}",
         ggufInference: "หน่วยความจำโมเดล GGUF",
         unavailable: "ไม่พร้อมใช้งาน",
         detecting: "กำลังตรวจหา GPU...",

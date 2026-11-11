@@ -106,6 +106,59 @@ export function deviceSharedMemorySplitGb(
   return totals.shared > 0 ? totals : null;
 }
 
+export interface CarveOutVramGb {
+  totalGb: number;
+  freeGb: number | null;
+  /** RAM the GPU can still borrow: what is left of the shared pool, capped by RAM's own free reading. */
+  borrowableGb: number;
+}
+
+/** A carve-out APU (Strix Halo with a large VGM) read as VRAM = the carve-out alone, since its shared part is RAM the
+ * RAM tile already counts. null unless the carve-out is the larger part: a small UMA slice beside a big shared pool
+ * keeps the pool as its GPU memory. */
+export function carveOutVramGb(
+  devices: (MemoryTotalDevice & VramReportingDevice)[],
+  usedGb: number | null,
+  ramAvailableGb: number | null,
+): CarveOutVramGb | null {
+  // Judged on the shared devices alone: discrete VRAM beside a small UMA slice must not make it a carve-out.
+  const apu = gpuMemoryTotalsGb(devices.filter(sharesHostMemoryDevice));
+  if (!(apu.shared > 0 && apu.dedicated >= apu.shared)) return null;
+  const totals = gpuMemoryTotalsGb(devices);
+  const ram =
+    ramAvailableGb !== null && Number.isFinite(ramAvailableGb) && ramAvailableGb >= 0
+      ? ramAvailableGb
+      : Number.POSITIVE_INFINITY;
+  // Usage past a carve-out already sits in shared RAM. With a discrete card beside the APU only per-device readings
+  // say whose usage it is; an aggregate alone leaves free and the spill unknown.
+  const perDevice = devices.every((device) => Number.isFinite(device.vram_used_gb));
+  const aggregate = usedGb !== null && Number.isFinite(usedGb) ? usedGb : null;
+  let freeGb: number | null = null;
+  let spilled = 0;
+  if (perDevice) {
+    freeGb = 0;
+    for (const device of devices) {
+      const own = gpuMemoryTotalsGb([device]).dedicated;
+      const used = device.vram_used_gb as number;
+      freeGb += Math.max(0, own - used);
+      if (sharesHostMemoryDevice(device)) spilled += Math.max(0, used - own);
+    }
+  } else if (aggregate !== null) {
+    // Past every card's dedicated memory it has spilled at least that much; free is only known with no discrete card.
+    spilled = Math.max(0, aggregate - totals.dedicated);
+    if (apu.dedicated === totals.dedicated) {
+      freeGb = Math.max(0, totals.dedicated - aggregate);
+    }
+  }
+  return {
+    totalGb: totals.dedicated,
+    freeGb: freeGb === null ? null : roundToDevicePrecision(freeGb),
+    borrowableGb: roundToDevicePrecision(
+      Math.max(0, Math.min(apu.shared - spilled, ram)),
+    ),
+  };
+}
+
 /** About-tab memory for a hardware row: an iGPU's own carve-out, else its whole total (borrowable RAM is not VRAM). */
 export function hardwareGpuMemoryGb(gpu: {
   vramTotalGb: number | null;

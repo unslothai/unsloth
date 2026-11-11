@@ -11,9 +11,9 @@ const resourcesTab = readSrc("features/settings/tabs/resources-tab.tsx");
 test("Resources separates dedicated VRAM from shared GPU memory", () => {
   assert.match(resourcesTab, /gpuMemoryTotalsGb\(usageDevices\)/);
   assert.match(resourcesTab, /metrics\.vramShared > 0/);
+  // The tile divides a carve-out APU's usage by its carve-out; the device row still names both parts.
+  assert.match(resourcesTab, /carveOutVramGb\(\s*usageDevices,/);
   assert.match(resourcesTab, /environment\.vramWithShared/);
-  assert.match(resourcesTab, /vram: formatGiB\(metrics\.vramDedicated\)/);
-  assert.match(resourcesTab, /shared: formatGiB\(metrics\.vramShared\)/);
   assert.match(resourcesTab, /\$\{vramCapacityLabel\}/);
 });
 
@@ -27,7 +27,7 @@ test("a pool with no dedicated VRAM shows the shared total alone, with its headr
   );
   assert.match(
     resourcesTab,
-    /formatGiB\(unifiedPool \? metrics\.vramShared : metrics\.vramTotal\)/,
+    /unifiedPool\s*\?\s*metrics\.vramShared\s*:\s*\(metrics\.vramCarveOut\?\.totalGb \?\? metrics\.vramTotal\)/,
   );
   assert.match(resourcesTab, /memoryDisplay\.unifiedAvailableGb !== null/);
   assert.match(

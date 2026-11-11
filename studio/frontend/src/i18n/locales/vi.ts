@@ -2824,8 +2824,8 @@ export const vi = {
         memory: "Bộ nhớ GPU",
         sharedWithSystemRam: "Dùng chung với RAM hệ thống",
         estimatedAvailable: "Ước tính còn trống: {value}",
-        sharedEstimatedAvailable:
-          "RAM hệ thống dùng chung: ước tính còn trống {value}",
+        alsoSystemRam: "Có thể mượn thêm tối đa {value} RAM hệ thống",
+        llamaCppBuild: "llama.cpp bản {backend}",
         ggufInference: "Bộ nhớ cho mô hình GGUF",
         unavailable: "không khả dụng",
         detecting: "Đang kiểm tra GPU...",
