@@ -52,6 +52,7 @@ from utils.hardware import clear_gpu_cache
 from .diffusion_content import (
     assert_local_pick_is_dit,
     content_variant_hint,
+    inspect_checkpoint,
     local_pick_file,
     whole_pipeline_gguf_family,
 )
@@ -10112,9 +10113,15 @@ class DiffusionBackend:
                                 or _cached_while_hub_unreachable(
                                     fetch_base, "transformer/config.json"
                                 ),
-                                # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
+                                # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t.
+                                # The header variant leads: the config must match the file's tensors, not its name.
                                 **transformer_config_overrides_for(
-                                    fam, gguf_filename, repo_id, display_repo_id, base
+                                    fam,
+                                    inspect_checkpoint(single_file_path).variant,
+                                    gguf_filename,
+                                    repo_id,
+                                    display_repo_id,
+                                    base,
                                 ),
                             }
                             # Before the prefix shim, which cannot wrap an unregistered class.
