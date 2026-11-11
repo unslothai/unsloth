@@ -952,7 +952,7 @@ def _assert_video_precision_for_target(
     if (
         te_mode == "int8"
         and model_kind in ("pipeline", "single_file")
-        and family_te_int8_convrot(fam, "text_encoder") is not None
+        and family_te_int8_convrot(fam, "text_encoder", include_pending = True) is not None
         and int8_convrot_te_runs_on(target)
     ):
         # An unpublished file otherwise failed inside the load, after the eviction.
