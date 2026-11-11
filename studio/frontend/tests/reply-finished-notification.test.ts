@@ -37,6 +37,10 @@ type Env = {
 
 type Control = {
   sent: { title: string; body?: string }[];
+  actions: ((event: {
+    actionId: string;
+    notification: { extra?: Record<string, unknown> } | null;
+  }) => void)[];
   granted: boolean;
   mode: string;
   requests: number;
@@ -78,11 +82,20 @@ async function load(env: Env) {
     pluginGranted = false,
     backend,
   } = env;
-  const created: { title: string; options?: NotificationOptions }[] = [];
+  const assignedUrls: string[] = [];
+  const created: {
+    title: string;
+    options?: NotificationOptions;
+    notification: { close: () => void; onclick: (() => void) | null };
+  }[] = [];
   const storage = memoryStorage();
   define("localStorage", storage);
   const windowStub: Record<string, unknown> = {
-    location: { protocol: tauri ? "tauri:" : "http:" },
+    location: {
+      protocol: tauri ? "tauri:" : "http:",
+      href: "http://localhost/",
+      assign: (url: string) => assignedUrls.push(url),
+    },
     localStorage: storage,
     focus() {},
     addEventListener() {},
@@ -92,8 +105,9 @@ async function load(env: Env) {
   }
   if (permission !== "absent") {
     const api = function (title: string, options?: NotificationOptions) {
-      created.push({ title, options });
-      return { close() {}, onclick: null };
+      const notification = { close() {}, onclick: null as (() => void) | null };
+      created.push({ title, options, notification });
+      return notification;
     } as unknown as {
       permission: string;
       requestPermission: () => Promise<string>;
@@ -111,9 +125,11 @@ async function load(env: Env) {
     hasFocus: () => focused,
   });
 
-  const control = ((globalThis as Record<string, unknown>)
-    .__TAURI_NOTIFICATION_STUB__ ??= {}) as Control;
+  const control = ((
+    globalThis as Record<string, unknown>
+  ).__TAURI_NOTIFICATION_STUB__ ??= {}) as Control;
   control.sent = [];
+  control.actions = [];
   control.granted = pluginGranted;
   control.mode = "ok";
   control.requests = 0;
@@ -123,12 +139,12 @@ async function load(env: Env) {
   const store = await import(`${STORE}?bust=${generation}`);
   store.useChatPreferencesStore.setState({ notifyWhenReplyFinishes: enabled });
   const mod = (await import(`${MODULE}?bust=${generation}`)) as {
-    notifyReplyFinished: () => void;
+    notifyReplyFinished: (threadId?: string | null) => void;
     cancelReplyFinishedNotification: () => void;
     requestReplyFinishedPermission: () => Promise<boolean>;
     REPLY_SETTLE_MS: number;
   };
-  return { mod, control, created };
+  return { mod, control, created, assignedUrls };
 }
 
 mock.timers.enable({ apis: ["setTimeout"] });
@@ -145,9 +161,7 @@ async function settle(sent: () => number = () => 0, expected = 0) {
 }
 
 test("off by default, including installs that never saw the setting", async () => {
-  const { useChatPreferencesStore } = await import(
-    `${STORE}?bust=default`
-  );
+  const { useChatPreferencesStore } = await import(`${STORE}?bust=default`);
   assert.equal(
     useChatPreferencesStore.getInitialState().notifyWhenReplyFinishes,
     false,
@@ -186,6 +200,24 @@ test("Desktop sends one native notification per reply finished in the background
   assert.equal(control.sent.length, 2, "one per settled reply");
   assert.equal(control.sent[0].title, "Reply finished");
   assert.equal(control.requests, 0, "a finished reply never prompts");
+});
+
+test("clicking a Desktop reply notification opens the completed thread", async () => {
+  const env = await load({
+    tauri: true,
+    enabled: true,
+    pluginGranted: true,
+  });
+  env.mod.notifyReplyFinished("native-thread");
+  await settle(() => env.control.sent.length, 1);
+  assert.equal(env.control.actions.length, 1);
+  env.control.actions[0]({
+    actionId: "tap",
+    notification: { extra: { threadId: "native-thread" } },
+  });
+  assert.deepEqual(env.assignedUrls, [
+    "http://localhost/chat?thread=native-thread",
+  ]);
 });
 
 test("nothing fires until the settle window passes", async () => {
@@ -319,6 +351,21 @@ test("the browser notifies only with permission already granted", async () => {
   }
 });
 
+test("clicking a browser reply notification opens the completed thread", async () => {
+  const env = await load({
+    tauri: false,
+    enabled: true,
+    permission: "granted",
+  });
+  env.mod.notifyReplyFinished("thread/with spaces");
+  await settle(() => env.created.length, 1);
+  assert.equal(env.created.length, 1);
+  env.created[0].notification.onclick?.();
+  assert.deepEqual(env.assignedUrls, [
+    "http://localhost/chat?thread=thread%2Fwith+spaces",
+  ]);
+});
+
 test("turning the switch on asks for permission and reports the answer", async () => {
   const asked = await load({
     tauri: false,
@@ -356,10 +403,13 @@ test("the run adapter cancels on start and notifies once after the stream ends, 
   const body = source.slice(start, source.indexOf("\nfunction ", start + 1));
   assert.match(
     body,
-    /yield\* result;\n\s*\} else \{\n\s*yield await result;\n\s*\}\n\s*if \(!options\.abortSignal\?\.aborted\) \{\n\s*notifyReplyFinished\(\);/,
+    /yield\* result;\n\s*\} else \{\n\s*yield await result;\n\s*\}\n\s*if \(!options\.abortSignal\?\.aborted\) \{\n\s*notifyReplyFinished\(\s*options\.unstable_threadId \?\?\s*adoptedThreadId \?\?\s*persistedRunThreadIds\[0\] \?\?\s*null,\s*\);/,
   );
-  assert.equal(body.match(/notifyReplyFinished\(\)/g)?.length, 1);
-  assert.match(body, /async \*run\(options\) \{\n\s*cancelReplyFinishedNotification\(\);/);
+  assert.equal(body.match(/notifyReplyFinished\(/g)?.length, 1);
+  assert.match(
+    body,
+    /async \*run\(options\) \{\n\s*cancelReplyFinishedNotification\(\);/,
+  );
 });
 
 test("the setting is a searchable switch in Chat settings that reverts when refused", async () => {
@@ -371,8 +421,7 @@ test("the setting is a searchable switch in Chat settings that reverts when refu
   assert.match(row, /requestReplyFinishedPermission\(\)/);
   assert.match(row, /setNotifyWhenReplyFinishes\(false\)/);
   const { SETTINGS_SEARCH_INDEX } = await import(
-    new URL("../src/features/settings/settings-search.ts", import.meta.url)
-      .href
+    new URL("../src/features/settings/settings-search.ts", import.meta.url).href
   );
   assert.ok(
     SETTINGS_SEARCH_INDEX.chat.includes("settings.chat.replyNotification"),
