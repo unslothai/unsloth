@@ -322,6 +322,17 @@ def compile_flow(doc: dict) -> Plan:
                 )
             elif not dspec["flow_in"]:
                 errors.append(issue(f"{dspec['title']} cannot be a story step", edge_id = eid))
+            elif any(
+                f["source"] == src and f["source_port"] == edge["source_port"] for f in flow_edges
+            ):
+                # The story follows one link per exit, so a second would never be reached.
+                errors.append(
+                    issue(
+                        f"{sspec['title']} story exit {edge['source_port']} already leads somewhere",
+                        edge_id = eid,
+                        node_id = src,
+                    )
+                )
             else:
                 flow_edges.append(edge)
             continue

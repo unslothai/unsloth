@@ -139,6 +139,16 @@ def test_flow_edges_only_between_story_handles():
     assert "no story exit" in issues[0]["message"]
 
 
+def test_one_story_exit_cannot_lead_to_two_steps():
+    issues = _issues(
+        doc(
+            [node("s", "story.start"), node("a", "story.scene"), node("b", "story.scene")],
+            [edge("s", "next", "a", "in", "flow"), edge("s", "next", "b", "in", "flow")],
+        )
+    )
+    assert any("already leads somewhere" in i["message"] for i in issues), issues
+
+
 def test_for_each_body_ordering_collect_and_escape_rules():
     nodes = [
         node("items", "input.list", items = ["a", "b"]),
