@@ -666,6 +666,42 @@ def test_an_idle_ollama_model_keeps_the_window_it_last_loaded(monkeypatch):
     assert server.gets == ["/api/ps", "/api/ps"]
 
 
+def test_a_failed_ollama_read_keeps_the_window_it_last_loaded(monkeypatch):
+    monkeypatch.setattr(ep_mod, "_SERVED_WINDOW_TTL_S", 0.0)
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = None
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [4_096, 4_096]
+
+
+def test_a_custom_miss_on_the_same_server_does_not_hide_ollamas_window():
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            for provider_type in ("custom", "ollama"):
+                client = ep_mod.ExternalProviderClient(
+                    provider_type = provider_type, base_url = upstream.base_url, api_key = None
+                )
+                windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [None, 4_096]
+
+
 def test_a_bare_ollama_model_name_matches_its_latest_tag():
     server = _served(
         ps = [{"name": "qwen3:latest", "model": "qwen3:latest", "context_length": 4_096}]

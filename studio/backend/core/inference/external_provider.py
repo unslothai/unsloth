@@ -81,11 +81,11 @@ _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
 _GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
-_served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+_served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
 # outlives the TTL: Ollama unloads an idle model after keep_alive and reloads it at the same window.
-_ollama_last_windows: dict[tuple[str, str, str], int] = {}
+_ollama_last_windows: dict[tuple[str, str, str, str], int] = {}
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -7633,27 +7633,29 @@ class ExternalProviderClient:
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()
-        key = (self.base_url, self._credential_digest(), model)
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
         cached = _served_windows.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
-        window = None
+        window, failed = None, False
         try:
             # both reads share one deadline because the first token waits for them.
             window = await asyncio.wait_for(
                 self._read_served_window(model), timeout = _SERVED_WINDOW_TIMEOUT_S
             )
-            if self.provider_type == "ollama":
-                # /api/ps lists a model only while it is loaded.
-                if window is None:
-                    return _ollama_last_windows.get(key)
-                _ollama_last_windows[key] = window
         except httpx.ConnectError as exc:
             # retry a down or restarting server next turn instead of caching the miss for a minute.
             logger.info("No served context window from %s: %s", self.provider_type, exc)
-            return None
+            return _ollama_last_windows.get(key)
         except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
             logger.info("No served context window from %s: %r", self.provider_type, exc)
+            failed = True
+        if self.provider_type == "ollama":
+            if window is not None:
+                _ollama_last_windows[key] = window
+            elif key in _ollama_last_windows or not failed:
+                # /api/ps lists a model only while it is loaded.
+                return _ollama_last_windows.get(key)
         for stale in [k for k, (expiry, _) in _served_windows.items() if expiry <= now]:
             del _served_windows[stale]
         _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
