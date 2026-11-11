@@ -4,12 +4,13 @@
 // Mirrors SOURCE_QUANTS in backend core/export/q4nx.py; any other quant is dequantized and rounded again.
 const DIRECT_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
 
-// GGUF general.architecture values the pinned ROCm/FLM_Q4NX_Converter maps (q4nx_converter_pins.json),
-// with the caveat when only some sizes of that architecture convert.
+// GGUF general.architecture values the pinned ROCm/FLM_Q4NX_Converter accepts (q4nx_converter_pins.json),
+// with the caveat when it only takes some models of that architecture. Some (qwen35, qwen2vl) it
+// matches by general.basename prefix rather than by architecture.
 const Q4NX_ARCHITECTURES: Record<string, string | null> = {
   llama: null,
   qwen2: null,
-  qwen2vl: null,
+  qwen2vl: "Only Qwen2.5-VL converts.",
   qwen3: null,
   qwen3vl: null,
   qwen35: "Only Qwen3.5 0.8B, 2B, 4B, 9B and Omni convert.",
@@ -57,8 +58,13 @@ export type Q4nxArchFit =
   | { status: "supported"; note: string | null }
   | { status: "unsupported" | "unknown"; note: string };
 
+// The converter finds no qwen2vl architecture name, so a Qwen2-VL basename falls to the dense qwen2 prefix.
+const QWEN2_VL_NAME = /(^|[/\\])qwen2[-_]?vl/i;
+
+/** `name` is the repo id or file path, used to refuse models the converter would misroute. */
 export function q4nxArchFit(
   architecture: string | null | undefined,
+  name?: string | null,
 ): Q4nxArchFit {
   const arch = architecture?.trim().toLowerCase();
   if (!arch) {
@@ -71,6 +77,12 @@ export function q4nxArchFit(
     return {
       status: "unsupported",
       note: `The Q4NX converter does not support the ${arch} architecture.`,
+    };
+  }
+  if (arch === "qwen2vl" && QWEN2_VL_NAME.test(name ?? "")) {
+    return {
+      status: "unsupported",
+      note: "The Q4NX converter does not support Qwen2-VL. Only Qwen2.5-VL converts.",
     };
   }
   return { status: "supported", note: Q4NX_ARCHITECTURES[arch] };

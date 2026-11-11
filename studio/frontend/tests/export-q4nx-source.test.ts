@@ -51,13 +51,32 @@ test("the original model comes from the card's base_model, else the repo without
   assert.equal(q4nxBaseModel("", null), "");
 });
 
-test("architectures the pinned converter maps are supported, with size caveats", () => {
+test("architectures the pinned converter accepts are supported, with size caveats", () => {
   assert.deepEqual(q4nxArchFit("qwen3"), { status: "supported", note: null });
   assert.deepEqual(q4nxArchFit("LLAMA"), { status: "supported", note: null });
   assert.equal(q4nxArchFit("gpt-oss").status, "supported");
   const qwen35 = q4nxArchFit("qwen35");
   assert.equal(qwen35.status, "supported");
   assert.match(qwen35.note ?? "", /0\.8B, 2B, 4B, 9B/);
+});
+
+test("qwen2vl is Qwen2.5-VL only; a Qwen2-VL name is refused", () => {
+  // The converter would send Qwen2-VL to the dense qwen2 converter by basename.
+  const vl25 = q4nxArchFit("qwen2vl", "unsloth/Qwen2.5-VL-7B-Instruct-GGUF");
+  assert.equal(vl25.status, "supported");
+  assert.match(vl25.note ?? "", /Only Qwen2\.5-VL/);
+  assert.equal(q4nxArchFit("qwen2vl").status, "supported");
+  for (const name of [
+    "unsloth/Qwen2-VL-7B-Instruct-GGUF",
+    "bartowski/qwen2vl-2b-GGUF",
+    "C:\\models\\Qwen2_VL-2B.Q4_0.gguf",
+  ]) {
+    const fit = q4nxArchFit("qwen2vl", name);
+    assert.equal(fit.status, "unsupported", name);
+    assert.match(fit.note, /Qwen2-VL/);
+  }
+  // Only qwen2vl GGUFs are checked by name; a dense Qwen2 repo is untouched.
+  assert.equal(q4nxArchFit("qwen2", "Qwen/Qwen2-VL-ish").status, "supported");
 });
 
 test("a known unsupported architecture is refused, an unknown one only warned about", () => {

@@ -221,7 +221,9 @@ export function Q4nxConvertCard() {
   );
   const hubIds = useMemo(() => {
     const ids = hubResults
-      .filter((r) => q4nxArchFit(r.ggufArchitecture).status !== "unsupported")
+      .filter(
+        (r) => q4nxArchFit(r.ggufArchitecture, r.id).status !== "unsupported",
+      )
       .map((r) => r.id);
     if (repoId && !ids.includes(repoId)) ids.unshift(repoId);
     return ids;
@@ -344,14 +346,17 @@ export function Q4nxConvertCard() {
         ? q4nxBaseModel(
             localRow.model_id ??
               (localRow.source === "hf_cache" ? localRow.id : ""),
-            localRow.base_model ?? detectBaseModel(localRow.tags),
+            null,
           )
         : "";
   const effectiveBase = baseModel ?? autoBase;
 
   const archFit =
     source === "hub" && repoId
-      ? q4nxArchFit(hubResult?.ggufArchitecture ?? looked?.architecture)
+      ? q4nxArchFit(
+          hubResult?.ggufArchitecture ?? looked?.architecture,
+          repoId,
+        )
       : localRow
         ? q4nxArchFit(null)
         : null;
