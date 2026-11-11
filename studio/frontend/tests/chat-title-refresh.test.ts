@@ -181,6 +181,16 @@ test("a locally answered chat is never sent to a selected external provider", ()
   assert.equal(titleCheckpoint(external, LOCAL), external);
 });
 
+test("a chat on the NPU is titled without asking the NPU model", () => {
+  const npu = "lemonade:qwen3.8-FLM";
+  // One conversation cache on the NPU: a title request would evict the chat's prefill.
+  assert.equal(titleCheckpoint("", npu), "");
+  assert.equal(titleCheckpoint(npu, npu), "");
+  // An external answer still goes to its own connection.
+  const external = buildExternalModelId("prov-1", "gpt-x");
+  assert.equal(titleCheckpoint(external, npu), external);
+});
+
 const DRIFTED: MessageRecord[] = [
   message(0, "user", text("Help me write a short follow-up email to a client after our kickoff meeting.")),
   message(1, "assistant", text("Sure! **Subject:** Follow-Up on Our Kickoff Meeting. Dear client, thanks for the meeting.")),
