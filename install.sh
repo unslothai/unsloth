@@ -299,22 +299,18 @@ _run_install_cmd_once() {
     if _is_verbose; then
         _rcf=$(mktemp)
         tauri_stream_log stdout "OUTPUT_CLEAR" "$_label"
-        _log=""
-        if [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ]; then
-            _log=$(mktemp)
-            _ric_run "$@" | _ric_tee "$_log" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
-        else
-            _ric_run "$@" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
-        fi
+        _log=$(mktemp)
+        _ric_run "$@" | _ric_tee "$_log" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
         _rc=${_rc:-1}
         if [ "$_rc" -eq 0 ] 2>/dev/null; then
-            [ -z "$_log" ] || rm -f "$_log"
+            rm -f "$_log"
             tauri_clear_install_error "$_label recovered"
             return 0
         fi
-        _ric_log=$_log
+        _ric_damaged=$(_uv_damaged_wheels "$_log")
+        if [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ]; then _ric_log=$_log; else rm -f "$_log"; fi
         tauri_stream_log stdout "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
@@ -341,8 +337,37 @@ _run_install_cmd_once() {
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
     tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
+    _ric_damaged=$(_uv_damaged_wheels "$_log")
     if [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ]; then _ric_log=$_log; else rm -f "$_log"; fi
     return $_rc
+}
+
+# uv reuses a damaged cached wheel on every run, --refresh included (#17375).
+_uv_damaged_wheels() {
+    [ -f "$1" ] || return 0
+    awk '
+        p != "" && /^[ \t]*(cause|Caused by): The wheel is invalid/ { print tolower(p) }
+        { p = "" }
+        /Failed to install: [^ ]+ \(/ {
+            p = $0; sub(/.*Failed to install: [^ ]+ \(/, "", p); sub(/(==| @ ).*/, "", p)
+            if (p !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) p = ""
+        }' "$1"
+}
+
+_repair_uv_damaged_wheels() {
+    _rudw_new=""
+    for _rudw_n in ${_ric_damaged:-}; do
+        case "$_ricr_cleaned" in *" $_rudw_n "*) continue ;; esac
+        [ "$_ricr_cleaned_n" -lt 50 ] || break
+        _ricr_cleaned="$_ricr_cleaned$_rudw_n "
+        _ricr_cleaned_n=$((_ricr_cleaned_n + 1))
+        _rudw_new="$_rudw_new $_rudw_n"
+    done
+    [ -n "$_rudw_new" ] || return 1
+    substep "clearing damaged uv cache entries for$_rudw_new..." "$C_WARN"
+    # Another uv process may hold the cache lock.
+    # shellcheck disable=SC2086
+    UV_LOCK_TIMEOUT=${UV_LOCK_TIMEOUT:-60} uv cache clean $_rudw_new >/dev/null 2>&1
 }
 
 : "${UNSLOTH_INSTALL_RETRIES:=3}"
@@ -359,10 +384,15 @@ run_install_cmd_retry() {
         *) if [ "${#UNSLOTH_INSTALL_RETRY_DELAY}" -le 4 ] && [ "$UNSLOTH_INSTALL_RETRY_DELAY" -ge 0 ] 2>/dev/null && [ "$UNSLOTH_INSTALL_RETRY_DELAY" -le 3600 ] 2>/dev/null; then _ricr_delay=$UNSLOTH_INSTALL_RETRY_DELAY; else _ricr_delay=3; fi ;;
     esac
     _ricr_attempt=1
+    _ricr_cleaned=" "
+    _ricr_cleaned_n=0
     while :; do
+        _ric_damaged=""
         # AND-OR (not `if`) preserves the real failure code for the rollback path.
         _run_install_cmd_once "$@" && return 0
         _ricr_rc=$?
+        # Not an attempt: uv names one damaged package per run.
+        _repair_uv_damaged_wheels && continue
         if [ "$_ricr_attempt" -ge "$_ricr_max" ]; then
             _mirror_retry_install "$_ricr_rc" "$@" && return 0
             return $?
@@ -7582,7 +7612,7 @@ if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
 _unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.3}"
-_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.3"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.4"
 
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.

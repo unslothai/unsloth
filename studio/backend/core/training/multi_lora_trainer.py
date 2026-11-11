@@ -23,7 +23,6 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-_OPTIMIZERS = ("adamw_8bit", "adamw_torch", "adamw_torch_fused")
 
 
 @dataclass

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { formatDate as formatCachedDate } from "@/lib/intl-cache";
 import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -772,15 +773,16 @@ function groupedTime(
 ): string {
   const date = new Date(ts);
   if (bucket === "today" || bucket === "yesterday") {
-    return date.toLocaleTimeString(
+    return formatCachedDate(
+      date,
       locale,
       withTimeFormat({ hour: "numeric", minute: "2-digit" }, locale),
     );
   }
   if (bucket === "week") {
-    return date.toLocaleDateString(locale, { weekday: "long" });
+    return formatCachedDate(date, locale, { weekday: "long" });
   }
-  return date.toLocaleDateString(locale, {
+  return formatCachedDate(date, locale, {
     month: "short",
     day: "numeric",
     year:
