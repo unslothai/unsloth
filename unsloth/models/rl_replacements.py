@@ -6377,7 +6377,11 @@ def _unsloth_gkd_tokenizer(processing_class):
 def _unsloth_gkd_probe_ids(tokenizer, text):
     try:
         encoded = tokenizer(text, add_special_tokens = False)
-        ids = encoded["input_ids"] if isinstance(encoded, dict) else getattr(encoded, "input_ids", encoded)
+        ids = (
+            encoded["input_ids"]
+            if isinstance(encoded, dict)
+            else getattr(encoded, "input_ids", encoded)
+        )
         if hasattr(ids, "tolist"):
             ids = ids.tolist()
         while ids and isinstance(ids[0], (list, tuple)):

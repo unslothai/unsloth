@@ -158,7 +158,11 @@ class _ProbeTokenizer:
     def __init__(self, offset = 0):
         self.offset = offset
 
-    def __call__(self, text, add_special_tokens = True):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+    ):
         del add_special_tokens
         return {"input_ids": [ord(char) + self.offset for char in text]}
 
