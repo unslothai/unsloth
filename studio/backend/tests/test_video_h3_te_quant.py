@@ -64,6 +64,7 @@ def _mps_target():
 
 
 def test_only_int8_has_a_hosted_conditioner():
+    # (the 4-bit file is an automatic low-RAM pick, never a request value: test_h3_te_4bit.py)
     assert h3_te_quant_scheme("int8") == "int8"
     assert h3_te_quant_scheme("INT8") == "int8"
     for mode in ("fp8", "fp8_dynamic", "nvfp4", "fp8-dynamic", "", None):
@@ -86,7 +87,8 @@ def test_the_hosted_filename_comes_from_an_unsloth_repo():
 
 def test_every_hosted_scheme_is_a_valid_text_encoder_quant_request():
     from core.inference.diffusion_precision import normalize_te_quant
-    for scheme in H3_TE_QUANT_FILES:
+    from core.inference.video_minimax_h3_te import H3_TE_AUTO_ONLY_SCHEMES
+    for scheme in set(H3_TE_QUANT_FILES) - H3_TE_AUTO_ONLY_SCHEMES:
         assert normalize_te_quant(scheme) == scheme
 
 
