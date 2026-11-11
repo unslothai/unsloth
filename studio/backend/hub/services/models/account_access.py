@@ -515,7 +515,6 @@ def account_hf_token(token):
         return token
     try:
         from storage import credential_secrets
-
         saved = credential_secrets.get_hf_token()
     except Exception:  # noqa: BLE001 - an unreadable credential must fail closed
         saved = None
