@@ -292,14 +292,15 @@ class LemonadeNpuBackend:
             self._hardware = detect_amd_npu()
         return self._hardware
 
-    def _on_strix_halo(self) -> bool:
-        """A supported NPU beside a Strix Halo iGPU, where llama.cpp on the GPU is the faster path."""
+    def _on_strix_halo(self) -> Optional[bool]:
+        """A supported NPU beside a Strix Halo iGPU, where llama.cpp on the GPU is the faster path.
+        None while the GPU inventory has not answered, so a caller can ask again."""
         if not self.hardware().get("supported"):
             return False
         if self._strix_halo is None:
             # An unanswered probe stays None and is asked again; the inventory caches its own passes.
             self._strix_halo = _strix_halo_gpu()
-        return bool(self._strix_halo)
+        return self._strix_halo
 
     @property
     def is_loaded(self) -> bool:

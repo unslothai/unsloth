@@ -123,7 +123,8 @@ def test_no_supported_npu_means_no_hint_and_no_gpu_probe(tmp_path, monkeypatch):
 
 def test_an_unknown_answer_is_asked_again_and_a_known_one_is_kept(tmp_path, monkeypatch):
     backend = _backend(tmp_path, monkeypatch, [None, True])
-    assert backend.status()["gpu_recommended"] is False
+    # None, not False: the page caches a status, so "not yet" has to be told apart from "no".
+    assert backend.status()["gpu_recommended"] is None
     assert backend.status()["gpu_recommended"] is True
     # The iterator is spent: a third probe would raise StopIteration.
     assert backend.status()["gpu_recommended"] is True
@@ -174,8 +175,9 @@ def test_the_catalog_tags_the_qwen_tags_that_fail_to_load_on_strix_halo(tmp_path
     }
 
 
-def test_the_catalog_tags_nothing_off_strix_halo(tmp_path, monkeypatch):
-    tags = _known_issues(_backend(tmp_path, monkeypatch, False), monkeypatch)
+@pytest.mark.parametrize("strix_halo", [False, None])
+def test_the_catalog_tags_nothing_off_strix_halo(tmp_path, monkeypatch, strix_halo):
+    tags = _known_issues(_backend(tmp_path, monkeypatch, strix_halo), monkeypatch)
     assert set(tags.values()) == {None}
 
 

@@ -180,6 +180,19 @@ test("a PC whose GPU outruns its NPU gets one note, and the NPU stays offered", 
   assert.equal(api.npuGpuHint(null), null);
 });
 
+test("a status read before the GPU scan answered is provisional, an answer is not", () => {
+  const { api } = client(() => new Response(null));
+  const status = (gpu_recommended?: boolean | null) =>
+    ({ gpu_recommended }) as Parameters<typeof api.npuStatusIsProvisional>[0];
+  assert.equal(api.npuStatusIsProvisional(status(null)), true);
+  assert.equal(api.npuGpuHint(status(null)), null);
+  assert.equal(api.npuStatusIsProvisional(status(true)), false);
+  assert.equal(api.npuStatusIsProvisional(status(false)), false);
+  // An older server sends no flag and never will.
+  assert.equal(api.npuStatusIsProvisional(status()), false);
+  assert.equal(api.npuStatusIsProvisional(null), false);
+});
+
 test("a model with a known FastFlowLM issue on this PC is tagged", () => {
   const { api } = client(() => new Response(null));
   const model = (known_issue_url?: string | null) =>

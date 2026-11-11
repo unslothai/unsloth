@@ -44,8 +44,8 @@ export interface NpuStatus {
   loading_model: string | null;
   /** Installed runtime versions; absent from servers that predate them. */
   versions?: { lemonade: string | null; fastflowlm: string | null };
-  /** This PC's GPU outruns its NPU (Strix Halo); absent from servers that predate it. */
-  gpu_recommended?: boolean;
+  /** This PC's GPU outruns its NPU (Strix Halo); null until the GPU scan answers, absent from servers that predate it. */
+  gpu_recommended?: boolean | null;
 }
 
 export interface NpuModel {
@@ -102,6 +102,11 @@ export function npuGpuHint(status: NpuStatus | null): string | null {
   return status?.gpu_recommended
     ? "The GPU in this PC runs the same models several times faster. The NPU is still available."
     : null;
+}
+
+/** A status read before the backend's GPU scan finished: worth one more read for the hint. */
+export function npuStatusIsProvisional(status: NpuStatus | null): boolean {
+  return status?.gpu_recommended === null;
 }
 
 export function npuKnownIssueLabel(model: NpuModel): string | null {
