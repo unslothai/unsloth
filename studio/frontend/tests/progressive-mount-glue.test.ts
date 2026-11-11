@@ -86,10 +86,11 @@ test("the window is only ever advanced through widen", () => {
     const ok =
       call === "null" ||
       call.startsWith("initialWindow(") ||
-      call.includes("widen(current, count, chunk)");
+      call.includes("widen(current, count, chunk)") ||
+      call === "filled";
     assert.ok(
       ok,
-      `setMountWindow(${call}) is not one of null / initialWindow / widen`,
+      `setMountWindow(${call}) is not one of null / initialWindow / widen / fillWindow`,
     );
   }
 });

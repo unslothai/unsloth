@@ -4,8 +4,12 @@
 // Widen-only mount window. Not a virtualizer: unmounting breaks find-in-page, selection, copy,
 // screen readers, print and export. The window only grows; nothing is ever unmounted.
 
-/** Indices `[start, count)` may mount; `null` means no restriction (settled or short thread). */
-export type MountWindow = { start: number } | null;
+/**
+ * Indices `[start, count)` may mount; `null` means no restriction (settled or short thread).
+ * `fillTo` is set only on a first commit that mounted less than INITIAL_MESSAGES: before the first
+ * paint the glue may widen it toward `fillTo` until the rows fill the viewport (see fillWindow).
+ */
+export type MountWindow = { start: number; fillTo?: number } | null;
 
 /** Below this many messages the whole thread mounts in one commit. */
 export const MIN_PROGRESSIVE_MESSAGES = 40;
@@ -59,25 +63,92 @@ export function watchProgressiveScroll(
 /** Caps the tail walk so a tail of non-rendering messages cannot mount the whole thread. */
 export const MAX_INITIAL_SPAN = INITIAL_MESSAGES * 4;
 
-/** A running thread opens unrestricted: widening and streaming write the same scroll position. */
+/**
+ * Renderable rows the first commit mounts before measuring. Usually enough to fill the viewport;
+ * when not, fillWindow widens toward INITIAL_MESSAGES in the same task, before the first paint.
+ */
+export const PROBE_MESSAGES = 4;
+
+/**
+ * Px of mounted rows required above the top of the bottom-pinned viewport, in viewport heights,
+ * before the first paint. 0 would already paint the same rows; one viewport keeps the runway a
+ * reader scrolling up meets before the first widening (input pauses it, see watchProgressiveScroll)
+ * and absorbs rows that shrink after the first paint.
+ */
+export const FILL_RUNWAY_VIEWPORTS = 1;
+
+/**
+ * A running thread opens unrestricted: widening and streaming write the same scroll position.
+ * With `probe`, the window starts at the last `probe` renderable rows and carries the
+ * INITIAL_MESSAGES start as `fillTo`; without it, it is the INITIAL_MESSAGES window itself.
+ */
 export function initialWindow(
   count: number,
   isRunning: boolean,
   isRenderable?: (index: number) => boolean,
+  probe?: number,
 ): MountWindow {
   if (isRunning || count < MIN_PROGRESSIVE_MESSAGES) return null;
+  const probeRows = probe != null && probe > 0 && probe < INITIAL_MESSAGES ? probe : null;
+  const withProbe = (start: number, probeStart: number | null): MountWindow =>
+    probeStart != null && probeStart > start ? { start: probeStart, fillTo: start } : { start };
   // Sized on rows that render (system messages paint nothing); without isRenderable, count-based.
-  if (!isRenderable) return { start: Math.max(0, count - INITIAL_MESSAGES) };
+  if (!isRenderable) {
+    return withProbe(
+      Math.max(0, count - INITIAL_MESSAGES),
+      probeRows == null ? null : count - probeRows,
+    );
+  }
   // Never walk past MAX_INITIAL_SPAN, or a tail dense with non-rendering rows mounts everything.
   const floor = Math.max(0, count - MAX_INITIAL_SPAN);
   let renderable = 0;
+  let probeStart: number | null = null;
   for (let index = count - 1; index >= floor; index -= 1) {
     if (!isRenderable(index)) continue;
     renderable += 1;
-    if (renderable >= INITIAL_MESSAGES) return { start: index };
+    if (renderable === probeRows) probeStart = index;
+    if (renderable >= INITIAL_MESSAGES) return withProbe(index, probeStart);
   }
-  if (floor > 0) return { start: floor };
+  if (floor > 0) return withProbe(floor, probeStart);
   return null;
+}
+
+/** Geometry read in the commit that mounted `current`, before its first paint. */
+export type FillSample = {
+  /** Px from the first mounted row's top down to the top of the bottom-pinned viewport. */
+  runwayPx: number;
+  clientHeight: number;
+  /** Height of the mounted rows, first row top to last row bottom. */
+  rowsPx: number;
+};
+
+/**
+ * Pre-paint widening of a probe window. Returns `current` itself once the mounted rows reach
+ * FILL_RUNWAY_VIEWPORTS above the viewport (nothing to commit), otherwise a wider window: an
+ * estimate from the mounted rows' mean height, never past `fillTo`, which it drops on arrival.
+ * Unknown geometry (no rows, hidden viewport) goes straight to `fillTo`: the window it replaces.
+ */
+export function fillWindow(
+  current: MountWindow,
+  count: number,
+  sample: FillSample | null,
+): MountWindow {
+  if (current?.fillTo == null) return current;
+  if (current.start <= current.fillTo || current.start >= count) return { start: current.fillTo };
+  const valid =
+    sample != null &&
+    sample.clientHeight > 0 &&
+    Number.isFinite(sample.runwayPx) &&
+    Number.isFinite(sample.rowsPx) &&
+    sample.rowsPx > 0;
+  if (!valid) return { start: current.fillTo };
+  const missing = sample.clientHeight * FILL_RUNWAY_VIEWPORTS - sample.runwayPx;
+  if (!(missing > 0)) return current;
+  const perMessage = sample.rowsPx / (count - current.start);
+  // Even and at least a pair, so a user turn and its reply arrive together.
+  const add = Math.max(2, 2 * Math.ceil(missing / perMessage / 2));
+  const start = current.start - add;
+  return start <= current.fillTo ? { start: current.fillTo } : { start, fillTo: current.fillTo };
 }
 
 export function isCovered(current: MountWindow): boolean {
