@@ -70,7 +70,6 @@ def require_converter_deps() -> None:
 # Header scans that skip the vocab arrays: gguf.GGUFReader parses them all (~7 s on a 9B).
 def _gguf_architecture(gguf_path: str) -> str:
     from utils.models.gguf_metadata import read_gguf_architecture
-
     return read_gguf_architecture(str(gguf_path)) or ""
 
 
@@ -170,7 +169,6 @@ def _fetch_base_file(base_model: str, name: str, token) -> Optional[Path]:
 
 def _gguf_chat_template(gguf_path: Path) -> Optional[str]:
     from utils.models.gguf_metadata import read_gguf_chat_template
-
     return read_gguf_chat_template(str(gguf_path))
 
 

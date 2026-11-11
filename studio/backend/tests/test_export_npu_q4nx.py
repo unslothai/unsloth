@@ -133,7 +133,12 @@ def test_without_the_flag_nothing_is_converted(monkeypatch, tmp_path):
     assert not (save_dir / "npu-q4nx").exists()
 
 
-def _real_gguf(path: Path, architecture: str, vocab: int = 0, template = None) -> str:
+def _real_gguf(
+    path: Path,
+    architecture: str,
+    vocab: int = 0,
+    template = None,
+) -> str:
     import gguf
 
     path.parent.mkdir(parents = True, exist_ok = True)
