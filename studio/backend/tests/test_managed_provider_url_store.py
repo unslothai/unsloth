@@ -78,8 +78,7 @@ def test_two_managed_accounts_see_one_installation_wide_answer(as_account):
 
 
 def test_managed_account_write_still_targets_the_owner_db(as_account):
-    """The route is owner-only, but the setter must not silently write the wrong DB
-    if it is ever called from a managed context."""
+    """Owner-only route, but the setter must not write the wrong DB from a managed context."""
     as_account(ALICE)
     mpu.set_managed_private_provider_urls_allowed(True)
     reset_account(bind_account(OWNER))
@@ -105,8 +104,7 @@ def test_read_failure_fails_closed(monkeypatch):
 
 
 def test_account_path_would_have_raised_without_the_owner_hop(as_account):
-    """Documents why the run_as hop exists: the owner's DB path is not reachable
-    from a managed context by the ordinary accessor."""
+    """run_as hop: the ordinary accessor cannot reach the owner's DB from a managed context."""
     as_account(ALICE)
     with pytest.raises(ValueError):
         storage_roots.account_path("../../studio.db")

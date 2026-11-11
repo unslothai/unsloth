@@ -116,8 +116,7 @@ def _find_mtp_source(
     config,
     repo_id: Optional[str] = None,
 ) -> Optional[str]:
-    """`repo_id` is the model id when `source` is a pinned snapshot path, whose name has lost the
-    quantized suffix the original-repo fallback strips."""
+    """repo_id is the model id for a pinned snapshot path; its name lost the quantized suffix."""
     from unsloth_zoo.speculative.mtp import find_mtp_tensor_names
 
     candidates = _mtp_source_candidates(source)
@@ -186,9 +185,8 @@ _PROBE_LOCKS_GUARD = threading.Lock()
 
 
 def drafter_capability(model_name: str, hf_token = None) -> dict:
-    """The capability, probed in a child process: importing unsloth_zoo in the API server races its
-    background torch warm-up (import deadlock in torch._dynamo) and patches the server process.
-    One probe per key at a time (later callers wait for its cached answer), at most two at once."""
+    """Probed in a child (importing unsloth_zoo in the server races torch warm-up); one probe per
+    key at a time, at most two at once; later callers wait for the cached answer."""
     # Keyed on the token itself: one caller's private-model answer is never served to another.
     token_key = hashlib.sha256(hf_token.encode()).hexdigest() if hf_token else hf_token
     key = (model_name, token_key)
@@ -417,8 +415,7 @@ def _marker_end(ids: list[int], marker: list[int]) -> Optional[int]:
 
 
 def _prompt_end(ids: list[int], labels: list[int], markers) -> Optional[int]:
-    """Where the answer starts: the first trained label, or (rows trained on the whole sequence) after
-    the last response marker found."""
+    """Answer start: the first trained label, else after the last response marker."""
     first = next((i for i, t in enumerate(labels) if t != -100), None)
     if first:
         return first

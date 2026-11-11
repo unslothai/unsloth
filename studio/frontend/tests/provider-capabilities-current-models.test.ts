@@ -566,6 +566,11 @@ test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they wer
   );
   assert.equal(providerModelReplaysReasoning("kimi", "kimi-k3"), true);
 
+  assert.deepEqual(getExternalReasoningCapabilities("kimi", "kimi-k3.1-pro"), k3);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k3.1-pro")?.presencePenalty, false);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k3.1-pro"), false);
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k3.1-pro"), true);
+
   const k26 = getExternalReasoningCapabilities("kimi", "kimi-k2.6");
   assert.equal(k26.reasoningStyle, "enable_thinking");
   assert.equal(k26.supportsReasoningOff, true);

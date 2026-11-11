@@ -530,6 +530,80 @@ def test_xlsx_reads_shared_inline_dates_and_gaps(tmp_path):
     )
 
 
+def _xlsx_strings(path, runs, cached):
+    return _zip(
+        path,
+        {
+            "xl/workbook.xml": f'<workbook {S}><sheets><sheet name="Text" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            "xl/_rels/workbook.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+            "xl/sharedStrings.xml": f"<sst {S}><si>{runs}</si></sst>",
+            "xl/worksheets/sheet1.xml": f'<worksheet {S}><sheetData><row r="1">'
+            '<c r="A1" t="s"><v>0</v></c>'
+            f'<c r="B1" t="inlineStr"><is>{runs}</is></c>'
+            f'<c r="C1" t="str"><f>A1</f><v>{cached}</v></c>'
+            '<c r="D1"><v>42</v></c><c r="E1" t="e"><v>#VALUE!</v></c>'
+            "</row></sheetData></worksheet>",
+        },
+    )
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "encoded, expected",
+    [
+        ("First_x000D_\nSecond_x0009_End", "First\r\nSecond\tEnd"),
+        ("Smile _xD83D__xDE00_", "Smile \U0001f600"),
+        ("_x005F_x000D_", "_x000D_"),
+        ("_x005f_x005F_x000D_", "_x005F_x000D_"),
+        ("&amp;_x0041_ _xZZZZ_", "&A _xZZZZ_"),
+        ("_X0000_ _x00aB_ _x005F_x0041_", "_X0000_ \u00ab _x0041_"),
+        ("A_xD83D_B_xDE00_C", "A\ufffdB\ufffdC"),
+        ("plain text", "plain text"),
+    ],
+)
+def test_xlsx_decodes_escaped_cell_strings(tmp_path, strict, encoded, expected):
+    path = _xlsx_strings(tmp_path / "text.xlsx", f"<t>{encoded}</t>", encoded)
+    if strict:
+        path = _strict(path, tmp_path / "strict.xlsx")
+    assert office_formats.xlsx(str(path)) == [
+        (f"Sheet: Text\n{expected} | {expected} | {expected} | 42 | #VALUE!", None)
+    ]
+
+
+def test_xlsx_decodes_each_run_before_joining_surrogate_pairs(tmp_path):
+    runs = (
+        "<r><t>_x00</t></r><r><t>0D_</t></r>"
+        "<r><t>_xD83D_</t></r><r><t>_xDE00_</t></r>"
+        "<rPh><t>ignored_x0041_</t></rPh>"
+    )
+    path = _xlsx_strings(tmp_path / "rich.xlsx", runs, "cached")
+    assert (
+        _text(path) == "Sheet: Text\n_x000D_\U0001f600 | _x000D_\U0001f600 | cached | 42 | #VALUE!"
+    )
+
+
+@pytest.mark.parametrize("extension", [".xlsx", ".xlsm", ".xltx", ".xltm"])
+def test_escaped_xlsx_uploads_are_searchable(rag_home, stub_embeddings, tmp_path, extension):
+    if not rag_db.rag_available():
+        pytest.skip("sqlite-vec unavailable here")
+    encoded = "Zebra_x006D_arker _xD83D__xDE00_"
+    source = _xlsx_strings(tmp_path / f"escaped{extension}", f"<t>{encoded}</t>", encoded)
+    stored, filename, _hash = _save_upload(
+        UploadFile(file = io.BytesIO(source.read_bytes()), filename = source.name)
+    )
+    scope = store.thread_scope("escaped-office")
+    doc_id, job = ingestion.start_ingestion(
+        scope, None, "escaped-office", filename, stored, background = False
+    )
+    assert ingestion.get_job_status(job)["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id)["status"] == "completed"
+        assert store.search_lexical(conn, scope, "zebramarker", 5)
+    finally:
+        conn.close()
+
+
 def test_pptx_reads_slides_in_order_with_tables_and_notes(tmp_path):
     pages = parsers.parse(str(build_pptx(tmp_path / "deck.pptx")))
     assert [(p.page_number, p.text) for p in pages] == [
@@ -936,6 +1010,121 @@ def test_xls_reads_continued_strings_numbers_formulas_and_dates(tmp_path):
         "Sheet: Revenue\nRegion | 1200.5\nZebramarker€ | -7\n3 | 4\nformula text | TRUE"
         "\n2026-03-31 | 2026-04-01"
     )
+
+
+def _xls_continued_cell(
+    path,
+    fragments,
+    *,
+    formula = False,
+):
+    count = sum(len(raw) // (2 if wide else 1) for wide, raw in fragments)
+    first = struct.pack("<HB", count, fragments[0][0]) + fragments[0][1]
+    continued = b"".join(_record(0x003C, bytes([wide]) + raw) for wide, raw in fragments[1:])
+    bof = _record(0x0809, struct.pack("<HH", 0x0600, 0x0005) + b"\0" * 12)
+    boundsheet = _record(0x0085, b"\0" * 6 + b"\x04\0Text")
+    strings = b"" if formula else _record(0x00FC, struct.pack("<II", 1, 1) + first) + continued
+    globals_ = bof + boundsheet + strings + _record(0x000A, b"")
+    if formula:
+        reference = b"\x44" + struct.pack("<HH", 1, 0)
+        cell = _record(
+            0x0006,
+            struct.pack("<HHH", 0, 0, 0)
+            + b"\0" * 6
+            + b"\xff\xff"
+            + b"\0" * 6
+            + struct.pack("<H", len(reference))
+            + reference,
+        )
+        cell += _record(0x0207, first) + continued
+    else:
+        cell = _record(0x00FD, struct.pack("<HHHI", 0, 0, 0, 0))
+    sheet = _record(0x0809, struct.pack("<HH", 0x0600, 0x0010) + b"\0" * 12)
+    stream = bytearray(globals_ + sheet + cell + _record(0x000A, b""))
+    struct.pack_into("<I", stream, len(bof) + 4, len(globals_))
+    path.write_bytes(compound_file({("Workbook",): bytes(stream)}))
+    return path
+
+
+@pytest.mark.parametrize("formula", [False, True], ids = ["shared", "formula"])
+@pytest.mark.parametrize(
+    "fragments, expected",
+    [
+        ([(1, b"A\0=\xd8"), (1, b"\0\xdeB\0")], "A\U0001f600B"),
+        ([(1, b"A\0\x42\xd8"), (1, b"\xb7\xdf\xce\x91")], "A\U00020bb7\u91ce"),
+        (
+            [(0, b"Before "), (1, b"=\xd8"), (1, b"\0\xde"), (0, b" caf\xe9")],
+            "Before \U0001f600 caf\u00e9",
+        ),
+        ([(0, b"A"), (1, "\u6771\u4eac".encode("utf-16-le")), (0, b"B")], "A\u6771\u4eacB"),
+        ([(0, b"A"), (1, b"=\xd8")], "A\ufffd"),
+        ([(1, b"\0\xde"), (0, b"B")], "\ufffdB"),
+    ],
+    ids = ["emoji", "cjk", "width-switch", "bmp", "trailing-high", "leading-low"],
+)
+def test_xls_preserves_unicode_across_continuations(tmp_path, formula, fragments, expected):
+    path = _xls_continued_cell(tmp_path / "unicode.xls", fragments, formula = formula)
+    assert _text(path) == f"Sheet: Text\n{expected}"
+
+
+@pytest.mark.parametrize("formula", [False, True], ids = ["shared", "formula"])
+def test_xls_preserves_surrogates_at_the_full_record_boundary(tmp_path, formula):
+    prefix = 4109 if formula else 4105
+    text = "A" * prefix + "\U0001f600tail"
+    raw = text.encode("utf-16-le")
+    split = (prefix + 1) * 2
+    path = _xls_continued_cell(
+        tmp_path / "long.xls", [(1, raw[:split]), (1, raw[split:])], formula = formula
+    )
+    assert _text(path) == f"Sheet: Text\n{text}"
+
+
+def test_xls_does_not_pair_surrogates_from_separate_strings():
+    data = struct.pack("<HB", 2, 1) + b"A\0=\xd8"
+    data += struct.pack("<HB", 1, 1) + b"\0\xde"
+    first, seg, pos = office_formats._xls_string([data], 0, 0)
+    second, seg, pos = office_formats._xls_string([data], seg, pos)
+    assert (first, second, seg, pos) == ("A\ufffd", "\ufffd", 0, len(data))
+
+
+def test_xls_string_metadata_can_continue_without_a_width_flag():
+    first = struct.pack("<HBH", 1, 0x09, 1) + b"A\0"
+    second = struct.pack("<HH", 0, 0) + struct.pack("<HB", 1, 0) + b"B"
+    text, seg, pos = office_formats._xls_string([first, second], 0, 0)
+    following, seg, pos = office_formats._xls_string([first, second], seg, pos)
+    assert (text, following, seg, pos) == ("A", "B", 1, len(second))
+
+
+def test_xls_string_realigns_after_a_record_ends_mid_character():
+    first = struct.pack("<HB", 4, 1) + b"A\0B"
+    second = b"\x01" + "CD".encode("utf-16-le")
+    text, seg, pos = office_formats._xls_string([first, second], 0, 0)
+    assert (text, seg, pos) == ("A\ufffdCD", 1, len(second))
+
+
+@pytest.mark.parametrize("formula", [False, True], ids = ["shared", "formula"])
+def test_continued_xls_uploads_preserve_searchable_names(
+    rag_home, stub_embeddings, tmp_path, formula
+):
+    if not rag_db.rag_available():
+        pytest.skip("sqlite-vec unavailable here")
+    name = "\U00020bb7\u91ce"
+    fragments = [(1, "Person ".encode("utf-16-le") + b"\x42\xd8"), (1, b"\xb7\xdf\xce\x91")]
+    source = _xls_continued_cell(tmp_path / "names.xls", fragments, formula = formula)
+    stored, filename, _hash = _save_upload(
+        UploadFile(file = io.BytesIO(source.read_bytes()), filename = source.name)
+    )
+    scope = store.thread_scope("unicode-office")
+    doc_id, job = ingestion.start_ingestion(
+        scope, None, "unicode-office", filename, stored, background = False
+    )
+    assert ingestion.get_job_status(job)["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id)["status"] == "completed"
+        assert store.search_lexical(conn, scope, name, 5)
+    finally:
+        conn.close()
 
 
 def test_xls_refuses_a_workbook_past_the_cell_ceiling(tmp_path, monkeypatch):

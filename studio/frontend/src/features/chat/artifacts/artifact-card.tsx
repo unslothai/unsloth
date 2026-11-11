@@ -27,10 +27,10 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
 import {
+  CodeXmlIcon,
   Download01Icon,
   InternetIcon,
   LinkSquare02Icon,
-  SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -272,7 +272,7 @@ export function ArtifactCard({
           className="pointer-events-none relative flex size-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(11%*var(--contrast-wash-gain,1)),transparent)]"
         >
           <HugeiconsIcon
-            icon={isReact ? SourceCodeIcon : InternetIcon}
+            icon={isReact ? CodeXmlIcon : InternetIcon}
             strokeWidth={1.75}
             className="size-6 text-control-accent"
           />
@@ -336,7 +336,7 @@ export function ArtifactCard({
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => open("source")}>
                 {/* </> draws small, so one size up. */}
-                <MenuGlyph icon={SourceCodeIcon} className="size-4.5" />
+                <MenuGlyph icon={CodeXmlIcon} className="size-4.5" />
                 Code view
               </DropdownMenuItem>
               <DropdownMenuSeparator />

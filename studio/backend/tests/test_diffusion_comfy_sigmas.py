@@ -246,8 +246,7 @@ def test_families_already_matching_comfy_are_unchanged():
         comfy_flow_shift_for(detect_family("Tongyi-MAI/Z-Image-Turbo"), "Tongyi-MAI/Z-Image-Turbo")
         == 3.0
     )
-    # FLUX.2 dev / klein: ComfyUI's Flux2Scheduler is the same token-count mu as diffusers, so the
-    # shipped scheduler stays.
+    # FLUX.2: Flux2Scheduler matches diffusers' token-count mu, so the shipped one stays.
     for repo in ("black-forest-labs/FLUX.2-dev", "black-forest-labs/FLUX.2-klein-4B"):
         assert comfy_flow_shift_for(detect_family(repo), repo) is None
 

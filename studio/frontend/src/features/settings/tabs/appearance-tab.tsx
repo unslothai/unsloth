@@ -11,7 +11,6 @@ import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
-import { useChatPreferencesStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
@@ -23,6 +22,8 @@ import {
   CodeFontRow,
   CodeFontSizeRow,
   ComposerOutlineSliderRow,
+  ElementOutlineSliderRow,
+  ComposerPositionSliderRow,
   ContrastSliderRow,
   FontSmoothingSwitch,
   HeadingFontRow,
@@ -163,12 +164,6 @@ function GpuRenderingRow() {
 export function AppearanceTab() {
   const t = useT();
   const { pinned, setPinned } = useSidebarPin();
-  const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerAtBottom,
-  );
-  const setComposerAtBottom = useChatPreferencesStore(
-    (s) => s.setNewChatComposerAtBottom,
-  );
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -253,6 +248,12 @@ export function AppearanceTab() {
         >
           <InterfaceScaleRow />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.elementOutline.label")}
+          description={t("settings.appearance.custom.elementOutline.description")}
+        >
+          <ElementOutlineSliderRow />
+        </SettingsRow>
         <GreetingSettingsRows />
         <SettingsRow
           label={t("settings.appearance.custom.pointerCursors.label")}
@@ -286,14 +287,10 @@ export function AppearanceTab() {
           <ChatWidthSelect />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.composerAtBottom")}
-          description={t("settings.chat.composerAtBottomDescription")}
+          label={t("settings.chat.composerPosition")}
+          description={t("settings.chat.composerPositionDescription")}
         >
-          <Switch
-            aria-label={t("settings.chat.composerAtBottom")}
-            checked={composerAtBottom}
-            onCheckedChange={setComposerAtBottom}
-          />
+          <ComposerPositionSliderRow />
         </SettingsRow>
         <SettingsRow label={t("chatBackground.outline")}>
           <ComposerOutlineSliderRow />

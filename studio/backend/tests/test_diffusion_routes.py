@@ -689,6 +689,64 @@ def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
         assert leak not in detail
 
 
+def test_generate_native_job_failure_names_an_oom_from_its_log_tail(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[E] ggml: allocating 2304.00 MiB on device 0: cudaMalloc failed: out of memory"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("cudaMalloc", "2304", "generate_image"):
+        assert leak not in detail
+
+
+def test_generate_native_render_short_of_device_memory_names_the_shortfall(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n"
+            "[E] MOSS-Image segment 2/43 (moss_image.layers.1) failed during weight preparation\n"
+            "[E] sampling for image 1/1 failed after 0.87s\n"
+            "[W] model manager cannot make enough memory available on CUDA0: need 1223.37 MB device / 759.59 MB "
+            "budget, available 1187.75 MB device / 935.29 MB budget"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("CUDA0", "1223", "segment"):
+        assert leak not in detail
+
+
+def test_generate_failure_tail_echoing_a_prompt_word_is_not_an_oom(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[I] prompt: a cozy room with a broom, zoomed in"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Image generation failed."
+
+
 def test_generate_native_process_death_names_the_engine_not_its_output(client, monkeypatch):
     # Metal hosts: the native renderer aborts inside its text encoder
     backend = diffusion_module.get_diffusion_backend()
@@ -1841,8 +1899,7 @@ def test_the_native_plan_refuses_the_same_request_the_native_load_would(client, 
 
 
 def test_the_native_plan_refuses_an_explicit_precision_while_training_runs(client, monkeypatch):
-    # Value-only, so it is not gated on training like the diffusers probe: the plan must not stage a native load
-    # /images/load refuses once training ends.
+    # Value-only, not training-gated: plan must not stage a native load /images/load refuses.
     import core.inference.diffusion_engine_router as engine_router
     import routes.inference as inference_routes
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
@@ -1869,8 +1926,7 @@ def test_the_plan_still_answers_when_nothing_was_promised(client):
 
 
 def test_the_native_refusal_is_waived_by_the_fallback_escape_hatch(client, monkeypatch):
-    """Same escape hatch as every other precision refusal, or this one becomes the only
-    unbypassable member of the family."""
+    """Same escape hatch as other precision refusals, or this one alone is unbypassable."""
     import core.inference.diffusion_engine_router as engine_router
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
@@ -2362,6 +2418,8 @@ def _pipeline_precision_gate(monkeypatch, **memory):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
@@ -2385,8 +2443,7 @@ def test_balanced_memory_refuses_a_pipeline_precision(monkeypatch):
 
 
 def test_a_measured_memory_mode_is_not_refused_by_the_precision_gate(monkeypatch):
-    """fast and auto decide their policy from the MEASURED footprint, so they are not knowable
-    network-free and this gate has no business refusing them."""
+    """fast and auto set policy from the measured footprint, so the gate must not refuse them."""
     from core.inference.diffusion import _memory_request_forces_offload
 
     assert _memory_request_forces_offload("fast", False) is False
@@ -2446,8 +2503,7 @@ def test_an_offloading_memory_request_refuses_a_torchao_text_encoder(monkeypatch
 
 
 def test_layerwise_fp8_survives_an_offloading_memory_request(monkeypatch):
-    """fp8 is a dtype cast, not a torchao tensor subclass, so offload does not rule it out and
-    refusing it would reject a load the runtime runs."""
+    """fp8 is a dtype cast, not a torchao subclass, so offload does not rule it out."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2497,8 +2553,7 @@ def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(mon
 
 
 def test_layerwise_fp8_does_not_need_torchao(monkeypatch):
-    """fp8 is a plain dtype cast, so a host without torchao still runs it and refusing it would
-    reject a load that works."""
+    """fp8 is a plain dtype cast, so a host without torchao still runs it."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2676,6 +2731,8 @@ def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
@@ -2762,6 +2819,8 @@ def test_a_transformer_family_still_reaches_the_scheme_check(monkeypatch):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     seen: list = []
     monkeypatch.setattr(
         diffusion_module,
@@ -2838,9 +2897,8 @@ def test_a_process_that_cannot_compile_refuses_a_pipeline_precision_up_front(mon
 
 
 def test_the_plan_route_refuses_an_unrecognised_model_before_planning(client):
-    """The route validates exactly as /images/load does, on purpose: an unloadable pick has to fail
-    HERE rather than after a multi-GB download. So an unrecognised repo never reaches the planner,
-    and Download only surfaces the reason instead of fetching a model nothing can open."""
+    """The plan route validates as /images/load does, so an unloadable pick fails before a multi-GB
+    download and never reaches the planner."""
     resp = _post_download_plan(
         client,
         model_path = "someone/mixed-gguf-collection",

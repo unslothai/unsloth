@@ -305,7 +305,91 @@ def _case_dora(rank, world, tmp, ckpt):
     return out
 
 
-CASES = {"parity": _case, "refusals": _case_refusals, "dora": _case_dora}
+def _lora_factors(model):
+    return {
+        n: _full_tensor(p)
+        for n, p in model.named_parameters()
+        if ".lora_A." in n or ".lora_B." in n
+    }
+
+
+def _full_tensor(t):
+    t = t.full_tensor() if hasattr(t, "full_tensor") else t
+    return t.detach().clone()
+
+
+def _one_step(native, model, ids):
+    """One forward / backward / AdamW step: (loss, clipped grad norm, full grads, full trained factors)."""
+    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-2)
+    loss = model(input_ids = ids, labels = ids).loss
+    loss.backward()
+    norm = float(native.native_clip_grad_norm_(model.parameters(), 1.0))
+    grads = {
+        n: _full_tensor(p.grad)
+        for n, p in model.named_parameters()
+        if p.requires_grad and p.grad is not None
+    }
+    opt.step()
+    return float(loss), norm, grads, _lora_factors(model)
+
+
+def _case_random_init(rank, world, tmp, ckpt, init):
+    """A random LoRA init under sharded loading vs one process (a full load, no FSDP2) from the same seed.
+    Rank 1 draws from another seed: shard_model's first-rank sync must make every rank agree."""
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    native, loading = _load_module()
+    kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
+    lora = lambda r = 4, i = init: LoraConfig(
+        r = r, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = i
+    )
+    ids = torch.randint(0, 100, (2, 7), generator = torch.Generator().manual_seed(1))
+    out = {}
+
+    torch.manual_seed(1)
+    ref = get_peft_model(AutoModelForCausalLM.from_pretrained(ckpt, **kw), lora())
+    out["init_ref"] = _lora_factors(ref)
+    out["step_ref"] = _one_step(native, ref, ids)
+
+    with loading.fsdp2_sharded_loading():
+        model = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
+    torch.manual_seed(1 + rank)
+    model = get_peft_model(model, lora())
+    out["init_local"] = _lora_factors(model)  # before shard_model: this rank's own draw, full size
+    out["sliced"] = sum(
+        1 for p in model.parameters() if getattr(p, loading._PRELOAD, None) is not None
+    )
+    config = native.FSDP2Config(param_dtype = torch.float32, device = "cpu")
+    out["error"] = _raised(lambda: native.shard_model(model, config))
+    if out["error"] is None:
+        out["init_sharded"] = _lora_factors(model)
+        out["step"] = _one_step(native, model, ids)
+
+    for name, kwargs in (
+        ("odd_r", dict(r = 3, i = "orthogonal")),
+        ("pissa", dict(i = "pissa")),
+        ("olora", dict(i = "olora")),
+    ):
+        with loading.fsdp2_sharded_loading():
+            other = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
+
+        def attempt():
+            peft_model = get_peft_model(other, lora(**kwargs))
+            native.shard_model(
+                peft_model, native.FSDP2Config(param_dtype = torch.float32, device = "cpu")
+            )
+
+        out[name] = _raised(attempt)
+    return out
+
+
+CASES = {
+    "parity": _case,
+    "refusals": _case_refusals,
+    "dora": _case_dora,
+    "random_init": _case_random_init,
+}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -435,6 +519,44 @@ def test_sharded_loading_refuses_dora():
     for res in results:
         assert res["full"] is None, res["full"]
         assert "use_dora" in (res["dora"] or "") and "full" in res["dora"], res["dora"]
+
+
+@pytest.mark.parametrize("init", ["orthogonal", "gaussian", True])
+def test_sharded_loading_random_lora_init_matches_one_process(init):
+    """Random LoRA inits read only the full in / out features and the weight dtype, never the sharded-loaded
+    rows: the factors are full size, and after shard_model's first-rank sync every rank holds exactly the
+    one-process init from rank 0's seed; one AdamW step then matches the one-process run."""
+    with tempfile.TemporaryDirectory() as ckpt:
+        _save("llama", ckpt, {"intermediate_size": 37})
+        results = _spawn("random_init", ckpt = ckpt, init = init)
+    for rank, res in enumerate(results):
+        assert res["sliced"] > 0
+        assert res["error"] is None, res["error"]
+        ref = res["init_ref"]
+        assert set(res["init_local"]) == set(res["init_sharded"]) == set(ref) and ref
+        for name, full in ref.items():
+            assert res["init_local"][name].shape == full.shape, name
+            if rank == 0:  # same seed as the one-process run: the sharded rows change nothing
+                assert torch.equal(res["init_local"][name], full), name
+            assert torch.equal(res["init_sharded"][name], full), name
+        if init == "orthogonal":
+            for name, A in ref.items():
+                if ".lora_A." in name:
+                    B = ref[name.replace(".lora_A.", ".lora_B.")]
+                    assert A.abs().sum() > 0 and B.abs().sum() > 0, name
+                    torch.testing.assert_close(B @ A, torch.zeros_like(B @ A), rtol = 0, atol = 1e-6)
+        loss_ref, norm_ref, grads_ref, step_ref = res["step_ref"]
+        loss, norm, grads, step = res["step"]
+        assert loss == pytest.approx(loss_ref, rel = 1e-6)
+        assert norm == pytest.approx(norm_ref, rel = 1e-5)
+        assert set(grads) == set(grads_ref) and grads
+        for name in grads_ref:
+            torch.testing.assert_close(grads[name], grads_ref[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        for name in step_ref:
+            torch.testing.assert_close(step[name], step_ref[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        assert "rank to be even" in (res["odd_r"] or ""), res["odd_r"]
+        for name in ("pissa", "olora"):
+            assert "reads the base weight" in (res[name] or ""), (name, res[name])
 
 
 def test_chunk_rows_match_fully_shard():

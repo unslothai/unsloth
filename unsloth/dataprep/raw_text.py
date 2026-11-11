@@ -130,13 +130,8 @@ class RawTextDataLoader:
         stride,
         return_tokenized = True,
     ):
-        """
-        Intelligent chunking that:
-        1. Respects sentence/paragraph boundaries
-        2. Handles various text formats (.txt, .md, .json, etc.)
-        3. Maintains context with stride overlap
-        4. Returns tokenized chunks directly (more efficient) or text chunks
-        """
+        """Chunks text at sentence or paragraph boundaries with stride overlap, returning tokenized
+        chunks (more efficient) or text chunks; handles .txt, .md, .json and other text formats."""
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
         if stride < 0:
@@ -360,10 +355,12 @@ class TextPreprocessor:
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
-    _CHAPTER_PATTERN = re.compile(r"^# (.+)$", re.MULTILINE)
-    _SECTION_PATTERN = re.compile(r"^## (.+)$", re.MULTILINE)
-    _SUBSECTION_PATTERN = re.compile(r"^### (.+)$", re.MULTILINE)
-    _CODE_BLOCK_PATTERN = re.compile(r"```(\w*)\n(.*?)\n```", re.DOTALL)
+    # One pass, so a "# comment" inside a fenced block stays code instead of becoming a heading.
+    _STRUCTURE_PATTERN = re.compile(
+        r"```(\w*)\n((?s:.*?))\n```|^(#{1,3}) (.+)$",
+        re.MULTILINE,
+    )
+    _HEADING_TAGS = {1: "chapter", 2: "section", 3: "subsection"}
 
     def clean_text(self, text):
         """Remove unwanted characters, normalize whitespace"""
@@ -386,24 +383,22 @@ class TextPreprocessor:
 
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
-        text = self._CHAPTER_PATTERN.sub(r"<|chapter|>\1<|/chapter|>", text)
-        text = self._SECTION_PATTERN.sub(r"<|section|>\1<|/section|>", text)
-        text = self._SUBSECTION_PATTERN.sub(r"<|subsection|>\1<|/subsection|>", text)
-        text = self._CODE_BLOCK_PATTERN.sub(r"<|code|\1|>\2<|/code|>", text)
-        return text
+
+        def tag(match):
+            if match[3] is None:
+                return f"<|code|{match[1]}|>{match[2]}<|/code|>"
+            name = self._HEADING_TAGS[len(match[3])]
+            return f"<|{name}|>{match[4]}<|/{name}|>"
+
+        return self._STRUCTURE_PATTERN.sub(tag, text)
 
     def validate_dataset(
         self,
         dataset,
         tokenizer = None,
     ):
-        """
-        Check for:
-        - Minimum/maximum sequence lengths
-        - Character encoding issues
-        - Repeated content
-        - Empty chunks
-        """
+        """Checks a dataset for min and max sequence lengths, character encoding issues, repeated
+        content and empty chunks."""
         stats = {
             "total_samples": len(dataset),
             "empty_samples": 0,
