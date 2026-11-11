@@ -417,7 +417,7 @@ def _system_message(
     return TraceMessage(id = f"{thread['id']}:system", role = "system", text = text)
 
 
-def chat_to_trace(
+def session_to_trace(
     thread: dict,
     messages: list[dict],
     *,
@@ -457,14 +457,14 @@ def chat_to_trace(
     )
 
 
-def load_chat_trace(thread_id: str, *, head_id: Optional[str] = None) -> ChatTrace:
+def load_session_trace(thread_id: str, *, head_id: Optional[str] = None) -> ChatTrace:
     """Load a saved Studio thread from the database and turn it into a coding trace; head_id
-    works as in chat_to_trace."""
+    works as in session_to_trace."""
     thread = studio_db.get_chat_thread(thread_id)
     if thread is None:
         raise ChatTraceError(f"Thread {thread_id!r} does not exist")
     project_id = thread.get("projectId")
     project = studio_db.get_chat_project(project_id) if project_id else None
-    return chat_to_trace(
+    return session_to_trace(
         thread, studio_db.list_chat_messages(thread_id), project = project, head_id = head_id
     )

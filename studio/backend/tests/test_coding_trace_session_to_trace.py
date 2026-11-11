@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import storage.studio_db as studio_db
-from core.coding_traces.from_chat import chat_to_trace, load_chat_trace
+from core.coding_traces.session_to_trace import load_session_trace, session_to_trace
 from core.coding_traces.schema import TRACE_SOURCE, ChatTraceError
 from core.external_import import claude, run_import, thread_id_for
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
@@ -82,7 +82,7 @@ def _call(
 
 
 def _assistant(parts):
-    return chat_to_trace(
+    return session_to_trace(
         {"id": "t"},
         [_row("u", "user", _text("go"), None, 1), _row("a", "assistant", parts, "u", 2)],
     )
@@ -125,7 +125,7 @@ def test_claude_import_merges_reply_rows_around_the_tool_result(claude_home):
     )
     run_import(claude.SOURCE)
 
-    trace = load_chat_trace(thread_id_for(claude.SOURCE, "s1"))
+    trace = load_session_trace(thread_id_for(claude.SOURCE, "s1"))
 
     assert trace.source == TRACE_SOURCE
     assert trace.project_name and "Claude" in trace.project_name
@@ -152,7 +152,7 @@ def test_native_thread_follows_the_newest_branch_unless_a_head_is_given():
         ],
     )
 
-    newest = load_chat_trace("t1")
+    newest = load_session_trace("t1")
     assert [m.text for m in newest.messages][1:] == ["Write a parser", "First try", "Thanks"]
     assert newest.model_id == "unsloth/model"
     assert [w.code for w in newest.warnings] == ["other_branches_dropped"]
@@ -160,9 +160,9 @@ def test_native_thread_follows_the_newest_branch_unless_a_head_is_given():
 
     # A saved head resolves to its newest leaf, the same way the chat UI opens it; the inner node
     # a1 sorts last but never wins.
-    other = load_chat_trace("t1", head_id = "a2")
+    other = load_session_trace("t1", head_id = "a2")
     assert [m.text for m in other.messages] == ["Be brief.", "Write a parser", "Second try"]
-    assert load_chat_trace("t1", head_id = "u1").messages[-1].text == "Thanks"
+    assert load_session_trace("t1", head_id = "u1").messages[-1].text == "Thanks"
 
 
 def test_rows_from_a_service_need_no_database():
@@ -180,7 +180,7 @@ def test_rows_from_a_service_need_no_database():
         _row("s1", "tool", _text("stray"), "a1", 3, attachments = [{"content": _text("file")}]),
     ]
 
-    trace = chat_to_trace(thread, messages)
+    trace = session_to_trace(thread, messages)
     assistant, tool = trace.messages[1], trace.messages[2]
     assert assistant.reasoning == "plan"
     assert [(c.id, c.arguments) for c in assistant.tool_calls[:2]] == [("k", {}), ("k#2", raw)]
@@ -193,17 +193,19 @@ def test_rows_from_a_service_need_no_database():
 
 def test_unreadable_threads_and_cut_branches():
     with pytest.raises(ChatTraceError, match = "does not exist"):
-        load_chat_trace("missing")
+        load_session_trace("missing")
     _native_thread("empty", [])
     with pytest.raises(ChatTraceError, match = "no messages"):
-        load_chat_trace("empty")
+        load_session_trace("empty")
     rows = [_row("u1", "user", _text("hi"), None, 1)]
     with pytest.raises(ChatTraceError, match = "not in this thread"):
-        chat_to_trace({"id": "t"}, rows, head_id = "nope")
+        session_to_trace({"id": "t"}, rows, head_id = "nope")
     with pytest.raises(ChatTraceError, match = "no usable content"):
-        chat_to_trace({"id": "t"}, [_row("u1", "user", [{"type": "image"}], None, 1)])
+        session_to_trace({"id": "t"}, [_row("u1", "user", [{"type": "image"}], None, 1)])
 
-    trace = chat_to_trace({"id": "t"}, rows + [_row("a1", "assistant", _text("lost"), "gone", 2)])
+    trace = session_to_trace(
+        {"id": "t"}, rows + [_row("a1", "assistant", _text("lost"), "gone", 2)]
+    )
     assert [m.text for m in trace.messages] == ["lost"]
     assert _codes(trace) == ["missing_parent", "other_branches_dropped", "no_user_message"]
 
@@ -259,7 +261,7 @@ def test_adjacent_rows_alternate_calls_and_results():
         _row("a3", "assistant", reasoning + _text("done"), "a2", 4),
         _row("a4", "assistant", _text("more"), "a3", 5),
     ]
-    trace = chat_to_trace({"id": "t"}, rows)
+    trace = session_to_trace({"id": "t"}, rows)
     assert _shape(trace)[1:] == [
         ("assistant", ["A"]),
         ("tool", "A"),
@@ -327,7 +329,7 @@ def _turn(custom, content):
         _row("u2", "user", _text("again"), "a", 3),
         _row("a2", "assistant", _text("fine"), "u2", 4),
     ]
-    return chat_to_trace({"id": "t"}, rows)
+    return session_to_trace({"id": "t"}, rows)
 
 
 _STOPPED = {"incomplete": {"reason": "cancelled"}}
@@ -413,7 +415,7 @@ def test_user_attachments_are_model_input():
         {**_row("a", "assistant", _text("ok"), "u", 2), "attachments": attachments},
         {**_row("u2", "user", [], "a", 3), "attachments": attachments[:1]},
     ]
-    trace = chat_to_trace({"id": "t"}, rows)
+    trace = session_to_trace({"id": "t"}, rows)
     assert [m.text for m in trace.messages] == ["Fix this\ndef f(): pass", "ok", "\ndef f(): pass"]
     assert _codes(trace).count("unsupported_part") == 1
 
@@ -455,7 +457,7 @@ def test_user_attachments_are_model_input():
 )
 def test_the_stored_system_prompt_comes_first(settings, project, text, codes):
     thread = {"id": "t", "settings": settings}
-    trace = chat_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)], project = project)
+    trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)], project = project)
     if text is None:
         assert [m.role for m in trace.messages] == ["user"]
     else:
