@@ -388,7 +388,6 @@ async def run_benchmark(
         return await run_recipe_heldout(request, http_request, credential, via_api_key)
     backend = get_benchmark_backend()
 
-    api_key_raw: str | None = None
     api_key_id: int | None = None
     run_seq: int | None = None
     started = False
@@ -472,7 +471,6 @@ async def run_benchmark(
                 expires_at = expires_at,
                 internal = True,
             )
-            api_key_raw = raw_key
             api_key_id = row["id"]
             # StudioGGUFLM sends it as a bearer header on every request.
             lm_eval_kwargs["model_args"]["api_key"] = raw_key
