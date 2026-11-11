@@ -157,6 +157,35 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
   assert.deepEqual(ids(false, " GEMMA "), ["gemma3-4b-FLM"]);
   assert.deepEqual(ids(true, "gemma"), []);
   assert.deepEqual(api.npuRowsFor(null, { onDevice: false, query: "" }), []);
+
+  // Lemonade's order, with real FastFlowLM checkpoints.
+  const backendOrder = [
+    ["d3-edge-FLM", "d3:edge"],
+    ["gemma3-4b-FLM", "gemma3:4b"],
+    ["lfm3-1.7b-FLM", "lfm3:1.7b"],
+    ["qwen3-4b-FLM", "qwen3:4b"],
+    ["qwen3.5-0.8b-FLM", "qwen3.5:0.8b"],
+    ["qwen3.5-4b-FLM", "qwen3.5:4b"],
+    ["qwen3.5-9b-FLM", "qwen3.5:9b"],
+    ["qwen3.6-moe-35b-a3b-FLM", "qwen3.6-moe:35b-a3b"],
+    ["qwen3.8-mtp-27b-FLM", "qwen3.8-mtp:27b"],
+  ].map(([id, checkpoint]) => ({ ...model(id, false), checkpoint }));
+  assert.deepEqual(
+    api
+      .npuRowsFor(backendOrder, { onDevice: false, query: "" })
+      .map((m) => m.id),
+    [
+      "qwen3.5-9b-FLM",
+      "qwen3.5-4b-FLM",
+      "lfm3-1.7b-FLM",
+      "qwen3.5-0.8b-FLM",
+      "d3-edge-FLM",
+      "gemma3-4b-FLM",
+      "qwen3-4b-FLM",
+      "qwen3.6-moe-35b-a3b-FLM",
+      "qwen3.8-mtp-27b-FLM",
+    ],
+  );
 });
 
 test("an interrupted NPU download says how much it kept", () => {
