@@ -251,7 +251,7 @@ test("what an owner shows beside its slider follows the drag", () => {
   const picker = readSrc("features/model-picker/components/model-config-page.tsx");
   assert.match(picker, /onDraft=\{setDraftPercent\}/);
   assert.match(picker, /\{shownPercent !== defaultPercent && \(/, "the VRAM advice contradicted the dragged percent");
-  assert.match(picker, /displayValue=\{isMlx && windowUnknown && !dragging \? "—" : undefined\}/, "an unknown MLX window showed a dash for the whole drag");
+  assert.match(picker, /displayValue=\{isMlx && windowUnknown && !dragging \? unknownLabel : undefined\}/, "an unknown MLX window showed a dash for the whole drag");
   assert.match(picker, /\{renderWarning\(shown\)\}/);
   const music = readSrc("features/audio/components/music-edit-inputs.tsx");
   assert.match(music, /onDraft=\{setDraggedExtendS\}/);
