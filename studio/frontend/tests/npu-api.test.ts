@@ -193,6 +193,15 @@ test("a status read before the GPU scan answered is provisional, an answer is no
   assert.equal(api.npuStatusIsProvisional(null), false);
 });
 
+test("only a pending GPU scan that came back yes asks for a new listing", () => {
+  const { api } = client(() => new Response(null));
+  assert.equal(api.npuGpuHintArrived(null, true), true);
+  assert.equal(api.npuGpuHintArrived(null, false), false);
+  assert.equal(api.npuGpuHintArrived(null, null), false);
+  assert.equal(api.npuGpuHintArrived(undefined, true), false);
+  assert.equal(api.npuGpuHintArrived(true, true), false);
+});
+
 test("a model with a known FastFlowLM issue on this PC is tagged", () => {
   const { api } = client(() => new Response(null));
   const model = (known_issue_url?: string | null) =>

@@ -109,6 +109,14 @@ export function npuStatusIsProvisional(status: NpuStatus | null): boolean {
   return status?.gpu_recommended === null;
 }
 
+/** A catalog listed while the GPU scan was pending has no known-issue tags; list again once it says yes. */
+export function npuGpuHintArrived(
+  before: NpuStatus["gpu_recommended"],
+  now: NpuStatus["gpu_recommended"],
+): boolean {
+  return before === null && now === true;
+}
+
 export function npuKnownIssueLabel(model: NpuModel): string | null {
   return model.known_issue_url ? "Known FastFlowLM issue on this PC" : null;
 }
