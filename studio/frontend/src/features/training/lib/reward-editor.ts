@@ -27,7 +27,6 @@ const BUNDLED_PRESET: Partial<Record<RuleType, string>> = {
   regex: "strict-xml-format",
 };
 
-/** A starting rule for a type: the bundled reward of that type when there is one. */
 export function defaultRewardRule(
   type: RuleType,
   library: RewardRecord[],

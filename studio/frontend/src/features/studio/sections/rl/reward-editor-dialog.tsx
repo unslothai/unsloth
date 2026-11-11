@@ -74,7 +74,6 @@ function NumberInput({
   );
 }
 
-/** Keeps the typed text (a trailing comma included) and sends the parsed keys. */
 function KeyListInput({
   label,
   keys,
