@@ -13,6 +13,7 @@ import pytest
 from models.inference import ChatCompletionRequest, ChatMessage
 from routes.inference import openai_chat_completions
 from core.inference.api_monitor import ApiMonitor
+from core.inference.mcp_images import count_image_parts
 
 
 # #12382: with the date setting on and no system prompt, the chat's first message opens with
@@ -2106,7 +2107,13 @@ class _TrimmingBackend(_FittedToolLoopBackend):
     def compact_chat_context(self, messages, **kwargs):
         self.fits.append(kwargs)
         event = {"type": "context_truncated", "dropped_messages": len(messages) - 1, "fits": True}
-        return {"messages": messages[-1:], "system_prompt": "fitted", "events": [event]}
+        orphaned = bool(kwargs.get("images")) and not count_image_parts(messages[-1:], "image")
+        return {
+            "messages": messages[-1:],
+            "system_prompt": "fitted",
+            "events": [event],
+            "dropped_images": [0] if orphaned else [],
+        }
 
 
 def _texts(messages):
@@ -2140,12 +2147,19 @@ def test_every_choice_of_an_mlx_request_starts_from_one_fit(monkeypatch, slots):
     assert body["context_truncated"]["dropped_messages"] == 2
 
 
-def test_an_mlx_prompt_carrying_a_picture_is_sent_unfitted(monkeypatch):
+@pytest.mark.parametrize("owner", [0, 2], ids = ["old_turn", "newest_turn"])
+def test_an_mlx_prompt_carrying_a_picture_is_fitted_and_loses_it_with_its_turn(monkeypatch, owner):
     backend = _TrimmingBackend(_fixed("done"))
     backend.models["sf-model"].update(is_mlx = True, is_vision = True)
-    _call(_overflowing(image_base64 = _PNG_1x1), monkeypatch, backend)
+    backend.models["sf-model"]["chat_template_info"]["renders_image"] = True
+    payload = _overflowing()
+    payload.messages[owner] = _image_message(payload.messages[owner].content)
+    _call(payload, monkeypatch, backend)
 
-    assert backend.fits == [] and len(backend.calls[0]["messages"]) == 3
+    [fit], [call] = backend.fits, backend.calls
+    assert len(fit["images"]) == 1 and len(call["messages"]) == 1
+    assert (call["image"] is None) is (owner == 0)
+    assert count_image_parts(call["messages"], "image") == (owner == 2)
 
 
 def test_a_nudge_retry_extends_the_fitted_prompt_and_is_not_refitted(monkeypatch):
