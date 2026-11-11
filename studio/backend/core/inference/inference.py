@@ -1809,6 +1809,17 @@ class InferenceBackend:
             else:
                 logger.warning(f"use_adapter='{use_adapter}' but model is not a PeftModel")
 
+    @contextlib.contextmanager
+    def _adapter_scope(self, use_adapter: Optional[Union[bool, str]]):
+        """Must hold _generation_lock. A base-model (False) request re-enables the LoRA on exit: plain requests keep the adapter state."""
+        try:
+            self._apply_adapter_state(use_adapter)
+            yield
+        finally:
+            model = (self.models.get(self.active_model_name) or {}).get("model")
+            if use_adapter is False and isinstance(model, PeftModel):
+                model.base_model.enable_adapter_layers()
+
     def generate_with_adapter_control(
         self,
         use_adapter: Optional[Union[bool, str]] = None,
@@ -2263,10 +2274,13 @@ class InferenceBackend:
                 kwargs["stopping_criteria"] = stopping_criteria
             return generate(*args, **kwargs)
 
-        with tempfile.TemporaryDirectory() as tmp, self._generation_lock:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            self._generation_lock,
+            self._adapter_scope(_adapter_state),
+        ):
             path = str(Path(tmp) / "image.png")
             picture.convert("RGB").save(path)
-            self._apply_adapter_state(_adapter_state)
             owner.generate = bounded_generate
             try:
                 # Gundam preset from each model card: 640 px tiles for v1, 768 for OCR-2.
@@ -2581,9 +2595,8 @@ class InferenceBackend:
             gen_outputs: dict = {}
 
             def generate_fn():
-                with self._generation_lock:
+                with self._generation_lock, self._adapter_scope(_adapter_state):
                     try:
-                        self._apply_adapter_state(_adapter_state)
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
@@ -2791,10 +2804,8 @@ class InferenceBackend:
             gen_outputs: dict = {}
 
             def generate_fn():
-                with self._generation_lock:
+                with self._generation_lock, self._adapter_scope(use_adapter):
                     try:
-                        # Apply under the lock so Base-vs-LoRA compare does not run the adapter on both sides.
-                        self._apply_adapter_state(use_adapter)
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
@@ -2945,10 +2956,9 @@ class InferenceBackend:
             stopper = _speech_stop_streamer(cancel_event)
             kwargs.update(streamer = stopper, audio_streamer = stopper)
         timer = GenerationTimer()
-        with self._generation_lock:
+        with self._generation_lock, self._adapter_scope(use_adapter):
             if cancel_event is not None and cancel_event.is_set():
                 return None
-            self._apply_adapter_state(use_adapter)
             timer.start()
             try:
                 out = model.generate(**kwargs)
@@ -3000,14 +3010,8 @@ class InferenceBackend:
             for index, clip in enumerate(clips):
                 if cancel_event is not None and cancel_event.is_set():
                     return
-                with self._generation_lock:
-                    self._apply_adapter_state(use_adapter)
-                    try:
-                        result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
-                    finally:
-                        # Plain requests keep the adapter state, so turn the LoRA back on.
-                        if use_adapter is False and isinstance(model_info.get("model"), PeftModel):
-                            model_info["model"].base_model.enable_adapter_layers()
+                with self._generation_lock, self._adapter_scope(use_adapter):
+                    result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
 
                 text = result.get("text", "") if isinstance(result, dict) else str(result)
                 if text:
@@ -3155,9 +3159,7 @@ class InferenceBackend:
                     model_info["model"], model_info["tokenizer"], messages is not None
                 ),
             )
-        with self._generation_lock:
-            # None too: it turns the LoRA back on after an adapter-off request.
-            self._apply_adapter_state(_adapter_state)
+        with self._generation_lock, self._adapter_scope(_adapter_state):
             try:
                 text = generate_text(
                     model_info["model"],
@@ -3297,10 +3299,8 @@ class InferenceBackend:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
 
             def generate_fn():
-                with self._generation_lock:
+                with self._generation_lock, self._adapter_scope(_adapter_state):
                     try:
-                        # None too: it turns the LoRA back on after an adapter-off request.
-                        self._apply_adapter_state(_adapter_state)
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count.
@@ -3446,11 +3446,9 @@ class InferenceBackend:
 
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
-        with self._generation_lock:
+        with self._generation_lock, self._adapter_scope(use_adapter):
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Audio generation cancelled")
-            # None too: it turns the LoRA back on after an adapter-off request.
-            self._apply_adapter_state(use_adapter)
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
             self.last_generation_stats = None
 

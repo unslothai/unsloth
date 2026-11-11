@@ -337,6 +337,7 @@ class VideoFamily:
     unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
+    supports_video_continuation: bool = False
     # Guidance-distilled families expose neither CFG nor a negative prompt.
     supports_cfg: bool = True
     # True when Unsloth can TRAIN a LoRA on this family (every such name must resolve through get_trainer).
@@ -487,16 +488,16 @@ _HUNYUAN15_INT8_EXCLUDES = (
 )
 # Measured failing the NVFP4 accuracy gate (LPIPS mean vs bf16 <= 0.25), so nvfp4 is denied outright, as the image
 # families deny an ungated base. HunyuanVideo-1.5: hosted 480p / 720p 0.62 / 0.59 (Studio main, 20 steps); the 50-step
-# campaign put GPTQ NVFP4 at 0.44 and fp8 itself at 0.35 to 0.37, so no NVFP4 rebuild clears the bar.
+# campaign put the best NVFP4 rebuild at 0.44 and fp8 itself at 0.35 to 0.37, so no NVFP4 rebuild clears the bar.
 # Wan2.2-TI2V-5B: hosted 0.29; weight-only 4-bit (bf16 activations) is already 0.29 at the default grid, and the
 # layer keep-sets that come near 0.25 save about 10% of fp8's bytes, where fp8 (0.17) already passes.
 _NVFP4_GATE_FAILED = frozenset({"nvfp4"})
 # What a refused explicit nvfp4 request says for those families: measured and failed, not merely unmeasured.
 NVFP4_GATE_FAILURES: dict[str, str] = {
     "hunyuanvideo-1.5": "the hosted NVFP4 build measured LPIPS 0.62 against bf16 (bar 0.25), and no NVFP4 rebuild "
-    "clears it: GPTQ reached 0.44 and fp8 itself 0.35 to 0.37",
-    "hunyuanvideo-1.5-720p": "the hosted NVFP4 build (RTN) measured LPIPS 0.59 against bf16 (bar 0.25), and no NVFP4 "
-    "rebuild clears it: on the 480p weights GPTQ reached 0.44 and fp8 itself 0.35 to 0.37",
+    "clears it: the best rebuild reached 0.44 and fp8 itself 0.35 to 0.37",
+    "hunyuanvideo-1.5-720p": "the hosted NVFP4 build measured LPIPS 0.59 against bf16 (bar 0.25), and no NVFP4 "
+    "rebuild clears it: on the 480p weights the best rebuild reached 0.44 and fp8 itself 0.35 to 0.37",
     "wan2.2-ti2v-5b": "the hosted NVFP4 build measured LPIPS 0.29 to 0.30 against bf16 (bar 0.25); weight-only 4-bit is "
     "already 0.29, while fp8 passes at 0.17",
 }
@@ -987,7 +988,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
         unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
-        # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
+        # The 720p transformer is separately trained, so it ships its own plain NVFP4 build.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
@@ -1049,6 +1050,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
         i2v_fits_first_frame = False,
+        # Nano only: Edge's card lists text, image and action input, no video.
+        supports_video_continuation = True,
         scheduler_overrides = _COSMOS3_NANO_SCHEDULER,
         cudnn_benchmark = False,
         vae_fused_encoder = False,
@@ -1098,7 +1101,17 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 # named "fastwan", "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun
 # release puts it.
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
+_H3_IMAGE_NOT_VIDEO = (
+    "MiniMax-H3-Image is a text-to-image and image-editing model, not a video model. Load it on the Images page "
+    "instead."
+)
 _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
+    (
+        # MiniMax-H3-Image carries the "minimax-h3" token of the video family but is an image model (no audio, PDD
+        # heads): it loads on the Images page, never as a video pick.
+        r"(?:^|[/\\])(?=[^/\\]*minimax[-_ .]?h3[-_ .]?image)[^/\\]*[/\\]*$",
+        _H3_IMAGE_NOT_VIDEO,
+    ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
         "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
@@ -1160,6 +1173,8 @@ def unsupported_video_checkpoint_reason(
         for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
             if re.search(pattern, needle):
                 return message
+    if any(is_minimax_h3_image_folder(str(identifier)) for identifier in identifiers if identifier):
+        return _H3_IMAGE_NOT_VIDEO
     return None
 
 
@@ -1208,6 +1223,54 @@ def _detect_video_family_memo() -> dict:
         memo = {}
         _detect_video_family_memo_state = (_FAMILIES, _UNSUPPORTED_VIDEO_CHECKPOINTS, memo)
     return memo
+
+
+# What a MiniMax-H3-Image folder declares about itself (the image partition of the H3 release: no audio, PDD heads).
+_H3_IMAGE_CLASSES = frozenset(
+    (
+        "MiniMaxH3ImagePipeline",
+        "MiniMaxH3ImageModularPipeline",
+        "MiniMaxH3ImageBlocks",
+        "MiniMaxH3ImageTransformer2DModel",
+    )
+)
+
+
+def is_minimax_h3_image_folder(path: Optional[str]) -> bool:
+    """True for a local folder whose own metadata says MiniMax-H3-Image, whatever the folder is called: its
+    model_index / modular index (class, blocks, or the release's ``_minimax_h3.partition == "image"``) or its
+    diffusers transformer config. Such a folder is an Images-page model even though it shares the video family's
+    "minimax-h3" / "h3" tokens."""
+    import json
+
+    root = (path or "").strip()
+    if not root or not os.path.isdir(root):
+        return False
+    for name in (
+        "model_index.json",
+        "modular_model_index.json",
+        os.path.join("transformer_diffusers", "config.json"),
+        os.path.join("transformer", "config.json"),
+    ):
+        try:
+            target = os.path.join(root, name)
+            if not os.path.isfile(target) or os.path.getsize(target) > 1_000_000:
+                continue
+            with open(target, encoding = "utf-8-sig") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, RecursionError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if (
+            payload.get("_class_name") in _H3_IMAGE_CLASSES
+            or payload.get("_blocks_class_name") in _H3_IMAGE_CLASSES
+        ):
+            return True
+        h3 = payload.get("_minimax_h3")
+        if isinstance(h3, dict) and str(h3.get("partition", "")).strip().lower() == "image":
+            return True
+    return False
 
 
 def _detect_video_family_by_name(repo_id: str) -> Optional[VideoFamily]:
@@ -1676,6 +1739,41 @@ def validate_video_keyframe_conditioning(
             "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "
             "rather than keyframes. Load a minimax_h3_fl2va checkpoint to generate from a first "
             "or last frame."
+        )
+
+
+VIDEO_CONTINUATION_KEEP = ("last", "first")
+DEFAULT_VIDEO_CONTINUATION_KEEP = "last"
+# Pixel frames the pipeline keeps clean: latent indexes (0, 1) under the Wan2.2 VAE's 4x temporal compression.
+COSMOS3_CONTINUATION_FRAMES = 5
+
+
+def validate_video_continuation(
+    fam: VideoFamily,
+    *,
+    has_video: bool,
+    keep: Optional[str] = None,
+    has_keyframes: bool = False,
+    has_references: bool = False,
+    num_frames: Optional[int] = None,
+) -> None:
+    """Pure, so the route can judge an auto-switch target before evicting anything."""
+    if not has_video:
+        if keep is not None:
+            raise ValueError("continuation_keep needs a continuation_video.")
+        return
+    if not fam.supports_video_continuation:
+        raise ValueError(f"{fam.name} takes no input video, so it cannot continue a clip.")
+    if keep is not None and keep not in VIDEO_CONTINUATION_KEEP:
+        raise ValueError("continuation_keep must be 'last' or 'first'.")
+    if has_keyframes or has_references:
+        raise ValueError(
+            "A clip to continue cannot be combined with a start frame, end frame or references."
+        )
+    if num_frames is not None and num_frames <= COSMOS3_CONTINUATION_FRAMES:
+        raise VideoShapeError(
+            f"Continuing a clip keeps its {COSMOS3_CONTINUATION_FRAMES} frames, so the length must be more than "
+            f"{COSMOS3_CONTINUATION_FRAMES} frames to generate anything; got {num_frames}."
         )
 
 

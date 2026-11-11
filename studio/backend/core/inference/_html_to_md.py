@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import html
 import itertools
 import operator
 import re
@@ -353,6 +352,11 @@ _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 _WHITESPACE_RUN = re.compile(r"\s+")
+# browsers collapse only ASCII whitespace, so text indented with &nbsp; or &emsp; keeps its indent
+_COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
+# a space run holding a kept Unicode space; the lookbehind starts it only at a run's first char, keeping it linear
+_KEPT_SPACE_RUN = re.compile(r"(?<![^\S\n])[ \t\r\f\v]*[^\S \t\n\r\f\v][^\S\n]*")
+_KEPT_SPACE = re.compile(r"[^\S \t\n\r\f\v]")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -829,7 +833,8 @@ class _MarkdownRenderer(HTMLParser):
         site_links: SiteLinks | None = None,
         page_span_limit: int | None = None,
     ):
-        super().__init__(convert_charrefs = False)
+        # charrefs must decode inside their text run: decoded apart, they left <pre> and gained a stray ';' (#17199)
+        super().__init__(convert_charrefs = True)
         self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
@@ -960,6 +965,8 @@ class _MarkdownRenderer(HTMLParser):
             if frame is not None and self._site_links is not None
             else text
         )
+        if frame is not None:
+            measured = _fold_kept_spaces(measured)
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(measured.strip())
@@ -1384,6 +1391,8 @@ class _MarkdownRenderer(HTMLParser):
         if not self._header_stack or self._heading_marks:
             return
         frame = self._header_stack[-1]
+        if not text.isascii():
+            text = _WHITESPACE_RUN.sub(" ", text)
         chars = len(text.strip())
         frame.text_chars += chars
         # anchors without usable hrefs render as prose
@@ -2025,38 +2034,21 @@ class _MarkdownRenderer(HTMLParser):
             self._count_header_text(data)
             self._emit(data)
             return
-        # Collapse all whitespace (including newlines) per HTML rules.
-        text = _WHITESPACE_RUN.sub(" ", data)
+        # Collapse ASCII whitespace (including newlines) per HTML rules.
+        text = _COLLAPSIBLE_RUN.sub(" ", data)
         # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
-        # Suppress whitespace-only nodes between table elements (source indentation).
-        if self._in_table and not self._in_cell and not text.strip():
+        # Drop whitespace-only nodes between table elements, except a caption's &nbsp; (Javadoc tab separators).
+        if (
+            self._in_table
+            and not self._in_cell
+            and not text.strip()
+            and not (self._open_at.get("caption") and not text.isascii())
+        ):
             return
         # Source indentation between <li> and its first block must not end the marker line.
         if self._li_marker_pending and not text.strip():
             return
-        self._emit(text)
-
-    def handle_entityref(self, name: str) -> None:
-        if self._record is not None:
-            self._record.append((3, name))
-        text = html.unescape(f"&{name};")
-        if self._title_scan is not None:
-            self._title_scan.data(text)
-        if self._text_suppressed():
-            return
-        self._count_header_text(text)
-        self._emit(text)
-
-    def handle_charref(self, name: str) -> None:
-        if self._record is not None:
-            self._record.append((4, name))
-        text = html.unescape(f"&#{name};")
-        if self._title_scan is not None:
-            self._title_scan.data(text)
-        if self._text_suppressed():
-            return
-        self._count_header_text(text)
         self._emit(text)
 
     def replay(self, events: list) -> None:
@@ -2068,12 +2060,8 @@ class _MarkdownRenderer(HTMLParser):
             elif kind == 0:
                 tag, attrs, self.lineno, self.offset = arg
                 start(tag, list(attrs))
-            elif kind == 1:
-                end(arg)
-            elif kind == 3:
-                self.handle_entityref(arg)
             else:
-                self.handle_charref(arg)
+                end(arg)
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
@@ -2219,8 +2207,8 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
 
 class _TokenLog:
     """Handler calls of one document, recorded by the first fed pass and replayed by later ones.
-    Sound only while the renderer overrides just these five handlers and reads parser state only
-    via ``getpos()`` in ``handle_starttag``."""
+    Sound only while the renderer overrides just ``handle_starttag``, ``handle_endtag`` and
+    ``handle_data`` and reads parser state only via ``getpos()`` in ``handle_starttag``."""
 
     __slots__ = ("events", "armed")
 
@@ -2332,6 +2320,7 @@ def _select_main_scope_render(
         )
         if site_links is not None:
             scored = site_links.clean(scored)
+        scored = _fold_kept_spaces(scored)
         visible = _visible_chars(scored)
         prose = visible - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
@@ -2379,8 +2368,17 @@ def _render_main_document(
     return _visible_chars(scored), rendered
 
 
+def _fold_kept_spaces(text: str) -> str:
+    """Scoring view of *text*: a space run holding U+00A0 or another kept Unicode space is layout
+    padding, so it counts as one space, while pure ASCII runs (code indentation) stay as rendered."""
+    if text.isascii() or not _KEPT_SPACE.search(text):
+        return text
+    return _KEPT_SPACE_RUN.sub(" ", text)
+
+
 def _visible_chars(text: str) -> int:
     """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
+    text = _fold_kept_spaces(text)
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
@@ -2471,6 +2469,16 @@ _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 # absent text = no generated span cells, so a pass needs no span-free scoring re-render
 _SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
+# html.unescape raises once a decimal reference has more digits, leading zeros included, than
+# int()'s limit, which Python never sets below 640
+_LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
+
+
+def _short_decimal_ref(match: re.Match[str]) -> str:
+    """The reference without its leading zeros, or &#65533 (U+FFFD, what html.unescape gives past
+    U+10FFFF) when 8 or more digits remain."""
+    digits = match.group(1).lstrip("0") or "0"
+    return "&#" + (digits if len(digits) < 8 else "65533")
 
 
 def html_to_markdown(
@@ -2482,6 +2490,7 @@ def html_to_markdown(
 ) -> str:
     """convert HTML to Markdown; main_content prefers a dominant article or main subtree, site_links records same-site links without changing output, and max_span_chars limits generated table cells."""
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
+    source_html = _LONG_DECIMAL_REF.sub(_short_decimal_ref, source_html)
     span_limit = 2 * len(source_html)
     if max_span_chars is not None:
         span_limit = min(span_limit, max_span_chars)

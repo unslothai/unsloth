@@ -247,30 +247,32 @@ def test_selection_installs_the_cuda_build(monkeypatch):
 
 
 _PINNED_RELEASE_ASSETS = [
-    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
-    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
-    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
-    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64.zip",
-    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-24.04-aarch64.zip",
-    "sd-master-982-0518b34-uba6ac30-bin-win-cpu-x64.zip",
-    "sd-master-982-0518b34-uba6ac30-bin-win-cuda12-x64.zip",
-    "sd-master-982-0518b34-uba6ac30-bin-win-cuda13-x64.zip",
-    "sd-master-982-0518b34-uba6ac30-bin-win-vulkan-x64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-24.04-aarch64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-cpu-arm64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-cpu-x64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-cuda12-x64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-cuda13-x64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-vulkan-x64.zip",
 ]
 
 
 @pytest.mark.parametrize(
     "system,machine,major,expected",
     [
-        ("Windows", "AMD64", "13", "sd-master-982-0518b34-uba6ac30-bin-win-cuda13-x64.zip"),
-        ("Windows", "AMD64", "12", "sd-master-982-0518b34-uba6ac30-bin-win-cuda12-x64.zip"),
+        ("Windows", "AMD64", "13", "sd-master-982-0518b34-ueb0e729-bin-win-cuda13-x64.zip"),
+        ("Windows", "AMD64", "12", "sd-master-982-0518b34-ueb0e729-bin-win-cuda12-x64.zip"),
         (
             "Linux",
             "x86_64",
             "13",
-            "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
+            "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
         ),
         ("Linux", "aarch64", "13", None),
+        ("Windows", "ARM64", "13", None),
     ],
 )
 def test_the_pinned_release_has_the_cuda_bundle_it_routes_to(system, machine, major, expected):
@@ -282,6 +284,27 @@ def test_the_pinned_release_has_the_cuda_bundle_it_routes_to(system, machine, ma
             machine = machine,
             accelerator = "cuda",
             cuda_major = major,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "machine,expected",
+    [
+        ("ARM64", "sd-master-982-0518b34-ueb0e729-bin-win-cpu-arm64.zip"),
+        ("AMD64", "sd-master-982-0518b34-ueb0e729-bin-win-cpu-x64.zip"),
+    ],
+)
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+def test_the_pinned_release_gives_windows_arm64_its_native_cpu_bundle(
+    machine, expected, accelerator
+):
+    """The pin ships a native Windows arm64 CPU bundle; an arm64 host takes it, an x64 host keeps the x64 one."""
+    inst = sd_cpp_backend._installer_module()
+    assert (
+        inst.resolve_release_asset(
+            _PINNED_RELEASE_ASSETS, system = "Windows", machine = machine, accelerator = accelerator
         )
         == expected
     )

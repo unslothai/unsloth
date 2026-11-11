@@ -1061,8 +1061,9 @@ def _all_builders(binary, extra_args = None):
 @pytest.mark.parametrize(
     "tag, expected",
     [
-        ("master-982-0518b34-uba6ac30", True),  # the pinned bundle
-        ("master-982-0518b34-uaba3a1c", True),  # the previous pin
+        ("master-982-0518b34-ueb0e729", True),  # the pinned bundle
+        ("master-982-0518b34-uba6ac30", True),  # the previous pin
+        ("master-982-0518b34-uaba3a1c", True),  # an older pin
         ("master-982-0518b34-ud331c66", True),  # an older pin
         ("master-968-8cd731e-ubdb47d1", True),  # the pin before it
         ("master-951-f89d9b1-uafac7a7", True),  # an older pin
@@ -1129,7 +1130,7 @@ def _cpu_install(
     binary = root / "bin" / "sd-cli"
     binary.write_text("")
     (root / ".unsloth-sd-cpp-install.json").write_text(
-        json.dumps({"tag": "master-982-0518b34-uba6ac30", "accelerator": accelerator})
+        json.dumps({"tag": "master-982-0518b34-ueb0e729", "accelerator": accelerator})
     )
     for fn in (
         _sd_cpp_args_module._installed_sd_cpp_tag,

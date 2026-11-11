@@ -38,6 +38,8 @@ _LICENCE_BLOCKED: dict[str, str] = {
 _UNMIRRORED: dict[str, str] = {
     "lodestones/chroma1-hd": "Chroma",
     "circlestone-labs/anima-base-v1.0-diffusers": "Anima",
+    # Native-layout release read by Studio's own loader; no unsloth mirror of it exists yet.
+    "minimaxai/minimax-h3-image": "MiniMax-H3-Image",
 }
 
 # Third-party DENOISER artifacts the catalog still offers. Not a companion fetch and not licence-blocked: there is

@@ -656,7 +656,6 @@ _CP_DP = {k: v for k, v in _CP_TP.items() if k != "block_swap"}
 _CP_DP.update(tp = (1,), moe = (False,))
 _FSDP2_CP = _GLOO + "test_cp_with_native_fsdp2_matches_one_process"
 _HYBRID_FSDP2_CP = _GLOO + "test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process"
-_MOE_CP = _GLOO + "test_moe_without_aux_loss_under_cp_matches_one_process"
 # Packed rows under generic Ulysses (HF attention, DDP over cp).
 _PACKED_CP = {
     "trainer": ("sft",),

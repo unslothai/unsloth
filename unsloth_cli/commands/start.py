@@ -6088,12 +6088,13 @@ def _set_hermes_provider(
     legacy = providers.get(_HERMES_LEGACY_PROVIDER)
     if isinstance(legacy, dict) and legacy.get("key_env") == _HERMES_ENV_KEY:
         del providers[_HERMES_LEGACY_PROVIDER]
-    providers[_HERMES_PROVIDER] = {
-        "base_url": f"{base}/v1",
-        "api_mode": "openai",
-        "key_env": _HERMES_ENV_KEY,
-        **({"extra_body": request_body} if request_body else {}),
-    }
+    # Merge, not replace: Hermes refuses to resume a session once a field it froze on this entry (a user's api_key) is gone.
+    provider = _subdict(providers, _HERMES_PROVIDER)
+    provider.update(base_url = f"{base}/v1", api_mode = "openai", key_env = _HERMES_ENV_KEY)
+    if request_body:
+        provider["extra_body"] = request_body
+    else:
+        provider.pop("extra_body", None)
 
 
 def _hermes_mcp_manifest(home: Path) -> tuple:
