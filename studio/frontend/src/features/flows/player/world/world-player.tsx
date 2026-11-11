@@ -399,6 +399,11 @@ export function WorldPlayer({
   const host = useRef<HTMLDivElement>(null);
   const game = useRef<WorldGameHandle | null>(null);
   const worldRef = useRef<WorldMap | null>(null);
+  // The running game's map: the 3D editor swaps its props and blockers, the generated `map` never changes.
+  const liveMap = useCallback(
+    () => (worldRef.current?.tiles === map.tiles ? worldRef.current : map),
+    [map],
+  );
   const [ws, setWs] = useState<WorldState>(() => initialWorldState(baseSpec));
   const wsRef = useRef(ws);
   wsRef.current = ws;
@@ -941,7 +946,13 @@ export function WorldPlayer({
           ...(h ? [h.playerTile()] : []),
         ];
         const now = wsRef.current;
-        const added = applyPatch(specRef.current, map, now, patch, occupied);
+        const added = applyPatch(
+          specRef.current,
+          liveMap(),
+          now,
+          patch,
+          occupied,
+        );
         if (!added) return;
         setWs(added.state);
         for (const n of added.npcs) h?.addNpc(n, n);
@@ -957,7 +968,7 @@ export function WorldPlayer({
         if (directorRun.current === run) directorRun.current = null;
       }
     },
-    [api, baseSpec, flowId, growing, map, replyEntry, toast],
+    [api, baseSpec, flowId, growing, liveMap, map, replyEntry, toast],
   );
   useEffect(() => {
     if (ready && started) void direct(false);
@@ -1354,12 +1365,13 @@ export function WorldPlayer({
       if (!g || lockedRef.current) return;
       const played = specRef.current;
       const added = wsRef.current.additions ?? noAdditions();
+      const here = liveMap();
       const chestHeld = new Set(
-        heldInChests(map.props ?? [], wsRef.current.props ?? {}),
+        heldInChests(here.props ?? [], wsRef.current.props ?? {}),
       );
       const ground: Ground = {
         spec: played,
-        map,
+        map: here,
         areas,
         items: Object.fromEntries(
           Object.entries({
@@ -1415,7 +1427,7 @@ export function WorldPlayer({
     return () => {
       ticks.current[2] = null;
     };
-  }, [autoOn, ready, started, map, areas, toast, shooterOn, tickWs]);
+  }, [autoOn, ready, started, map, liveMap, areas, toast, shooterOn, tickWs]);
 
   const deal = (
     fn: (st: WorldState) => { state: WorldState; note: string } | null,
