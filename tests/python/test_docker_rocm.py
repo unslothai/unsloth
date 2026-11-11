@@ -455,7 +455,6 @@ class TestBuildShRocm:
         moved = set()
         for job in ("tag", "tag-studio"):
             meta = next(s for s in jobs[job]["steps"] if s.get("id") == "meta")
-            # metadata-action's default latest=auto adds :latest to every v* push.
             assert meta["with"].get("flavor") == "latest=false", job
             for line in meta["with"]["tags"].splitlines():
                 m = re.fullmatch(r"\s*type=raw,value=([\w-]+),enable=\$\{\{(.*)\}\}\s*", line)

@@ -260,8 +260,8 @@ jobs:
             UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}
             UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
 
-  # Tag only after both digests exist, so paired tags always move onto the same base.
-  # :latest/:studio follow v* releases; :nightly/:nightly-studio follow main (cron or dispatch).
+  # Tag only after both digests exist, so :latest and :studio always move onto the same base.
+  # :latest/:studio follow v* releases; :nightly/:nightly-studio follow main.
   tag:
     runs-on: ubuntu-latest
     needs: [prepare, build, build-studio]
@@ -372,7 +372,7 @@ jobs:
           echo "$ENV_JSON" | jq -e 'map(select(startswith("UNSLOTH_ALLOW_CPU="))) | length == 0' >/dev/null \
             || { echo "::error::Studio image env carries UNSLOTH_ALLOW_CPU, which disables Unsloth's TRL patches on GPU hosts"; exit 1; }
 
-  # After tag, so a -studio tag never points past its base tag.
+  # After tag, so a :studio never points past its :latest.
   tag-studio:
     runs-on: ubuntu-latest
     needs: [prepare, build-studio, tag]
