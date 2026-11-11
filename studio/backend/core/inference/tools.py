@@ -18237,7 +18237,8 @@ def _check_signal_escape_patterns(code: str):
                 and not isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del))
             ):
                 self._flag_shell_reference(self._shell_func_of, node)
-            return super().visit(node)
+            # Dispatched here: super().visit() costs a stack frame per nesting level.
+            return getattr(self, "visit_" + type(node).__name__, self.generic_visit)(node)
 
         def visit_Assign(self, node):
             for tgt in node.targets:

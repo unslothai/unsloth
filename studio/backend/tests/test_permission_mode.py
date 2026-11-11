@@ -1559,6 +1559,25 @@ def test_shell_function_passed_by_reference_is_high_risk(code, refused):
     assert (_check_code_safety(code) is not None) is refused
 
 
+def test_long_expression_chain_is_classified():
+    import threading
+
+    code = "value = " + "+".join(["1"] * 400)
+    errors = []
+
+    def classify():
+        try:
+            is_high_risk_tool_call("python", {"code": code})
+        except RecursionError as exc:
+            errors.append(exc)
+
+    # A fresh thread starts at stack depth zero, so the margin does not depend on pytest's own frames.
+    thread = threading.Thread(target = classify)
+    thread.start()
+    thread.join()
+    assert not errors
+
+
 def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call("web_search", {"query": "hi"}) is False
     assert is_high_risk_tool_call("search_knowledge_base", {}) is False
