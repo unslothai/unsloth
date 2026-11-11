@@ -1888,7 +1888,8 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
     )
     npu_power_mode: Optional[str] = Field(
-        None, description = "FastFlowLM power mode the NPU load asked for; null is FastFlowLM's default"
+        None,
+        description = "FastFlowLM power mode the NPU load asked for; null is FastFlowLM's default",
     )
     npu_prefill_chunk_len: Optional[int] = Field(
         None, description = "FastFlowLM prefill chunk length the NPU load used"

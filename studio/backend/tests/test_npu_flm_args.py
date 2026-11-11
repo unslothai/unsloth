@@ -101,7 +101,13 @@ class _Server:
     def __init__(self):
         self.bodies = []
 
-    def request(self, method, path, json_body = None, timeout = None):
+    def request(
+        self,
+        method,
+        path,
+        json_body = None,
+        timeout = None,
+    ):
         if path == "/v1/load":
             self.bodies.append(json_body)
         return _Response()
@@ -140,7 +146,12 @@ def test_the_load_body_carries_flm_args_only_when_set(backend):
     assert npu._loaded.flm_args == "--pmode turbo"
 
 
-def _route_npu(model, *, resident_flm_args = None, resident_ctx = None):
+def _route_npu(
+    model,
+    *,
+    resident_flm_args = None,
+    resident_ctx = None,
+):
     class _Npu:
         requested = resident_ctx
         loads: list = []
@@ -165,7 +176,12 @@ def _route_npu(model, *, resident_flm_args = None, resident_ctx = None):
         def loadable_model(self, model_id):
             return model
 
-        def load(self, model_id, ctx, flm_args = None):
+        def load(
+            self,
+            model_id,
+            ctx,
+            flm_args = None,
+        ):
             self.loads.append((ctx, flm_args))
             self.requested = ctx
             self._loaded = nb._Loaded(
@@ -258,10 +274,12 @@ def test_an_invalid_flm_setting_is_a_400_before_any_load(monkeypatch, fields, me
 
 def test_the_saved_override_keeps_valid_npu_settings_only():
     from utils.openai_auto_switch_settings import normalize_model_override
-
     assert normalize_model_override(
         {"npu_power_mode": "turbo", "npu_prefill_chunk_len": 2048, "npu_img_pre_resize": 0}
     ) == {"npu_power_mode": "turbo", "npu_prefill_chunk_len": 2048, "npu_img_pre_resize": 0}
-    assert normalize_model_override(
-        {"npu_power_mode": "default", "npu_prefill_chunk_len": 0, "npu_img_pre_resize": 7}
-    ) == {}
+    assert (
+        normalize_model_override(
+            {"npu_power_mode": "default", "npu_prefill_chunk_len": 0, "npu_img_pre_resize": 7}
+        )
+        == {}
+    )
