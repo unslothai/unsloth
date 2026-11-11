@@ -131,6 +131,31 @@ def test_strided_processor_matches_stock_bit_for_bit(monkeypatch, qk_rope):
     assert torch.equal(_run(stock, inputs), _run(model, inputs))
 
 
+@pytest.mark.parametrize(
+    "resident, image_env, video_env, want",
+    [
+        (False, None, None, False),
+        (True, None, None, True),
+        (False, "1", None, True),
+        (True, "0", None, False),
+        (True, None, "0", False),
+        (False, "1", "0", False),
+    ],
+)
+def test_fused_qk_rope_default_follows_the_tier(monkeypatch, resident, image_env, video_env, want):
+    for env, value in ((S.QK_ROPE_ENV, image_env), ("UNSLOTH_H3_QK_ROPE", video_env)):
+        if value is None:
+            monkeypatch.delenv(env, raising = False)
+        else:
+            monkeypatch.setenv(env, value)
+    monkeypatch.setattr(
+        "core.inference.video_minimax_h3_qknorm.qk_norm_rope_op", lambda: None, raising = False
+    )
+    model = _model()
+    assert A.install_strided_attention(model, qk_rope = S.image_qk_rope_enabled(resident)) == 4
+    assert model.transformer_blocks[0].attn.processor._unsloth_qk_rope is want
+
+
 def test_strided_processor_defers_to_stock_for_an_unpinned_backend():
     model = _model()
     stock = copy.deepcopy(model)

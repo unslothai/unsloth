@@ -256,8 +256,13 @@ def _h3_attention_modules(transformer: Any) -> list:
     return [m for m in modules() if h3_processor_base(m) is not None]
 
 
-def install_strided_attention(transformer: Any, logger: Any = None) -> int:
-    """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count."""
+def install_strided_attention(
+    transformer: Any,
+    logger: Any = None,
+    qk_rope: Optional[bool] = None,
+) -> int:
+    """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count.
+    ``qk_rope=False`` keeps the stock q/k norm + rope; ``None`` follows UNSLOTH_H3_QK_ROPE."""
     if not _enabled(STRIDED_ATTN_ENV):
         return 0
     modules = _h3_attention_modules(transformer)
@@ -265,7 +270,7 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
         return 0
     from .video_minimax_h3_qknorm import qk_norm_rope_op, qk_rope_enabled
 
-    qk_rope_on = qk_rope_enabled()
+    qk_rope_on = qk_rope_enabled() and qk_rope is not False
     if qk_rope_on:
         try:
             qk_norm_rope_op()

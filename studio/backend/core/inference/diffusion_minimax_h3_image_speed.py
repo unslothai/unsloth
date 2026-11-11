@@ -16,7 +16,10 @@ Exact (bit-identical outputs):
 * the attention pin itself (``attention=_native_flash`` on sm80 / sm89): torch's default SDPA dispatch already picks
   flash there for bf16 head_dim 128, so the pin only fixes the kernel the strided path calls.
 Tolerance-level:
-* ``h3_qk_rope``: fused q/k RMSNorm + RoPE (Triton), rstd may differ in the last fp32 bit (UNSLOTH_H3_QK_ROPE=0);
+* ``h3_qk_rope``: fused q/k RMSNorm + RoPE (Triton), rstd may differ in the last fp32 bit, which the 6-step sampler
+  carries into a different image. Each tier ships the set that held its bf16-reference gate: on by default on the
+  resident tiers (with the fused SwiGLU), off by default on the streamed tier, whose other levers are exact.
+  UNSLOTH_H3_IMAGE_QK_ROPE=1 / 0 forces it on / off on every tier; UNSLOTH_H3_QK_ROPE=0 still keeps it off;
 * ``h3_fused_swiglu``: the down projection's activation quantization reads silu(gate) * value from the projection
   halves (not bit-exact) (UNSLOTH_H3_FUSED_SWIGLU=0);
 * ``UNSLOTH_H3_ATTN_ARCH=0`` keeps the automatic cuDNN pick instead of flash on sm80 / sm89 (other arithmetic);
@@ -34,6 +37,7 @@ from typing import Any, Optional
 
 SPEED_ENV = "UNSLOTH_H3_IMAGE_SPEED"
 COMPILE_ENV = "UNSLOTH_H3_IMAGE_COMPILE"
+QK_ROPE_ENV = "UNSLOTH_H3_IMAGE_QK_ROPE"
 LEVERS_ATTR = "_unsloth_h3_speed_levers"
 _RESIDENT_PLACEMENTS = ("resident", "dit_resident")
 
@@ -44,6 +48,16 @@ def speed_enabled() -> bool:
 
 def compile_enabled() -> bool:
     return (os.environ.get(COMPILE_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def image_qk_rope_enabled(resident: bool = False) -> bool:
+    """The fused q/k norm + rope for H3-Image: forced by UNSLOTH_H3_IMAGE_QK_ROPE, else on for the resident tiers."""
+    value = (os.environ.get(QK_ROPE_ENV) or "").strip().lower()
+    if value in ("1", "on", "true", "yes"):
+        return True
+    if value in ("0", "off", "false", "no"):
+        return False
+    return bool(resident)
 
 
 def _row_pads(transformer: Any) -> list:
@@ -159,13 +173,17 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     if engaged:
         levers.append(f"attention={engaged}")
     if engaged in ("_native_cudnn", "_native_flash") and install_strided_attention(
-        transformer, logger = logger
+        transformer, logger = logger, qk_rope = image_qk_rope_enabled(resident)
     ):
         levers.append("h3_strided_attn")
         from .video_minimax_h3_qknorm import qk_rope_enabled
 
         procs = [getattr(m, "processor", None) for m in transformer.modules()]
-        if qk_rope_enabled() and any(getattr(p, "_unsloth_qk_rope", False) for p in procs):
+        if (
+            image_qk_rope_enabled(resident)
+            and qk_rope_enabled()
+            and any(getattr(p, "_unsloth_qk_rope", False) for p in procs)
+        ):
             levers.append("h3_qk_rope")
         if shared_qkv_count(transformer):
             levers.append("h3_shared_qkv_quant")
