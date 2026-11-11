@@ -11510,7 +11510,9 @@ def _missing_cuda_runtime_wheels(install_dir: Path) -> tuple[str, ...]:
     """The wheels to install when this CUDA install has no cudart of its major anywhere, else ()."""
     meta = load_prebuilt_metadata(install_dir) or {}
     match = re.search(r"cuda-?(\d+)", str(meta.get("asset") or ""))
-    wheels = _CUDA_RUNTIME_WHEELS.get((meta.get("install_kind"), int(match.group(1)) if match else 0))
+    wheels = _CUDA_RUNTIME_WHEELS.get(
+        (meta.get("install_kind"), int(match.group(1)) if match else 0)
+    )
     if not wheels:
         return ()
     major = match.group(1)
@@ -11518,7 +11520,9 @@ def _missing_cuda_runtime_wheels(install_dir: Path) -> tuple[str, ...]:
     name = f"cudart64_{major}.dll" if windows else f"libcudart.so.{major}"
     site_packages = Path(sysconfig.get_paths()["purelib"])
     roots = [install_dir, site_packages / "torch" / "lib", site_packages / "nvidia"]
-    cuda_home = os.environ.get("CUDA_PATH" if windows else "CUDA_HOME") or ("" if windows else "/usr/local/cuda")
+    cuda_home = os.environ.get("CUDA_PATH" if windows else "CUDA_HOME") or (
+        "" if windows else "/usr/local/cuda"
+    )
     if cuda_home:
         roots.append(Path(cuda_home))
     for root in roots:
@@ -11549,7 +11553,9 @@ def ensure_cuda_runtime_wheels(install_dir: Path) -> None:
         log(f"no CUDA runtime found for this llama.cpp install; installing {', '.join(wheels)}")
         result = subprocess.run([*cmd, "--only-binary", ":all:", *wheels], timeout = 1800)
         if result.returncode != 0:
-            log(f"CUDA runtime wheel install failed (exit {result.returncode}); llama.cpp will run on the CPU")
+            log(
+                f"CUDA runtime wheel install failed (exit {result.returncode}); llama.cpp will run on the CPU"
+            )
     except Exception as exc:
         log(f"CUDA runtime wheel step skipped: {exc}")
 

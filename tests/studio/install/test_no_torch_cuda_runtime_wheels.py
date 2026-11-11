@@ -37,9 +37,21 @@ def _no_host_runtime(monkeypatch, tmp_path_factory):
 @pytest.mark.parametrize(
     "asset, kind, wheels",
     [
-        ("app-b1-windows-x64-cuda13-newer.zip", "windows-cuda", ("nvidia-cuda-runtime", "nvidia-cublas")),
-        ("app-b1-windows-x64-cuda12-newer.zip", "windows-cuda", ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12==12.9.2.10")),
-        ("app-b1-linux-x64-cuda12-newer.tar.gz", "linux-cuda", ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12")),
+        (
+            "app-b1-windows-x64-cuda13-newer.zip",
+            "windows-cuda",
+            ("nvidia-cuda-runtime", "nvidia-cublas"),
+        ),
+        (
+            "app-b1-windows-x64-cuda12-newer.zip",
+            "windows-cuda",
+            ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12==12.9.2.10"),
+        ),
+        (
+            "app-b1-linux-x64-cuda12-newer.tar.gz",
+            "linux-cuda",
+            ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"),
+        ),
         ("app-b1-windows-x64-cpu.zip", "windows-cpu", ()),
         ("app-b1-windows-arm64-cuda13-portable.zip", "windows-arm64-cuda", ()),
     ],
