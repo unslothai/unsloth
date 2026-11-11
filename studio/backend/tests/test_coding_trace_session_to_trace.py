@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+"""A saved Studio thread becomes the trace the chat UI would send to the model on replay."""
+
 import json
 from pathlib import Path
 
