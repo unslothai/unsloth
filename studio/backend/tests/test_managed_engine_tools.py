@@ -278,6 +278,13 @@ def test_a_tool_request_cap_is_fitted_to_the_window(native, monkeypatch, stream)
     assert counted[-1]["tools"] == [route_test.LOOKUP_TOOL]
     run(route_test._request(max_tokens = 64, **request))
     assert requests[-1]["max_tokens"] == 64
+    counts = len(counted)
+    backend.models["sf-model"]["is_vision"] = True
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}
+    parts = [{"type": "text", "text": "hi"}, image]
+    looking = [route_test.ChatMessage(role = "user", content = parts)]
+    run(route_test._request(max_tokens = 2000, messages = looking, **request))
+    assert requests[-1]["max_tokens"] == 2000 and len(counted) == counts
 
 
 def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch):

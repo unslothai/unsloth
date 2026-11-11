@@ -181,6 +181,15 @@ def _message_fitter(
     return fit
 
 
+def _has_image(messages) -> bool:
+    return any(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+
+
 def _with_model(line: str, public: str) -> str:
     if not line.startswith("data:") or '"model"' not in line:
         return line
@@ -340,7 +349,8 @@ async def managed_tool_chat(
     }
 
     async def cap_reply(request_body):
-        if request_body.get("max_tokens"):
+        # As in ManagedEngine.generate, an image prompt is left to the engine to judge.
+        if request_body.get("max_tokens") and not _has_image(request_body["messages"]):
             request_body["max_tokens"] = await asyncio.to_thread(
                 engine._reply_cap_in_window,
                 request_body["messages"],
