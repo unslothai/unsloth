@@ -2666,6 +2666,8 @@ export const en = {
         segmentUsed: "Used by GPU",
         segmentSystem: "Used by system",
         segmentAvailable: "Available",
+        powerAdvisory:
+          "GPU power is near its configured limit. If the system reboots under inference load, check PSU and thermal headroom or lower the limit with your GPU vendor's control panel.",
       },
       llamaBackend: {
         title: "GGUF inference engine",
