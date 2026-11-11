@@ -164,6 +164,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
   "unsloth_chat_full_access",
+  "unsloth_chat_full_access_code_off",
   "unsloth_chat_sandbox_level",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",

@@ -491,10 +491,12 @@ test("multi-user policy resets full while preserving other permission modes", ()
   const b = browserWith({
     unsloth_chat_permission_mode: "full",
     unsloth_chat_full_access: "true",
+    unsloth_chat_full_access_code_off: "true",
   });
   resetFullAccessForMultiUser(b.browser.localStorage);
   assert.equal(b.data.get("unsloth_chat_permission_mode"), "auto");
   assert.equal(b.data.has("unsloth_chat_full_access"), false);
+  assert.equal(b.data.has("unsloth_chat_full_access_code_off"), false);
   for (const mode of ["ask", "auto", "off"]) {
     b.data.set("unsloth_chat_permission_mode", mode);
     resetFullAccessForMultiUser(b.browser.localStorage);

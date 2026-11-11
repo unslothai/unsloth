@@ -28,6 +28,7 @@ async function restart(name: string, server: Record<string, unknown> = {}) {
 
 function resetStorage(level = "auto") {
   browser.store.delete(FLAG);
+  browser.store.delete("unsloth_chat_full_access_code_off");
   browser.store.set(LEVEL, level);
 }
 
@@ -52,6 +53,42 @@ test("Full access picked in settings is restored after a restart", async () => {
   second.state().setPermissionMode("off");
   assert.equal(second.state().confirmToolCalls, false);
   assert.equal(second.state().bypassPermissions, false);
+});
+
+test("Code switched off under Full access stays off after a restart", async () => {
+  resetStorage();
+  const first = await restart("code-declined");
+  first.state().setPermissionMode("full");
+  first.state().setCodeToolsEnabled(false);
+  assert.equal(first.state().codeToolsDeclinedUnderFullAccess, true);
+
+  const second = await restart("code-declined-restart");
+  assert.equal(second.state().permissionMode, "full");
+  assert.equal(second.state().codeToolsDeclinedUnderFullAccess, true);
+
+  second.state().setCodeToolsEnabled(true);
+  const third = await restart("code-enabled-restart");
+  assert.equal(third.state().codeToolsDeclinedUnderFullAccess, false);
+});
+
+test("Code that Full access turned on comes back on after a restart", async () => {
+  resetStorage();
+  browser.store.set("unsloth_chat_code_tools_enabled", "false");
+  const first = await restart("code-implicit");
+  first.state().setPermissionMode("full");
+  assert.equal(first.state().codeToolsDeclinedUnderFullAccess, false);
+  const second = await restart("code-implicit-restart");
+  assert.equal(second.state().permissionMode, "full");
+  assert.equal(second.state().codeToolsDeclinedUnderFullAccess, false);
+});
+
+test("a server restore of Full access keeps Code off when its switch is off", async () => {
+  resetStorage();
+  browser.store.set("unsloth_chat_code_tools_enabled", "false");
+  const { state } = await restart("server-code-off", { fullAccess: true, codeToolsEnabled: false });
+  await state().hydratePersistedSettings();
+  assert.equal(state().permissionMode, "full");
+  assert.equal(state().codeToolsDeclinedUnderFullAccess, true);
 });
 
 test("ask, auto and off still restore as before and never turn on Full access", async () => {

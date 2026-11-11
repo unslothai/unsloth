@@ -185,6 +185,7 @@ export function resetFullAccessForMultiUser(storage: Storage): void {
     storage.setItem("unsloth_chat_permission_mode", "auto");
   }
   storage.removeItem("unsloth_chat_full_access");
+  storage.removeItem("unsloth_chat_full_access_code_off");
 }
 
 const IMPORTED_FONT_SELECTIONS = [

@@ -187,6 +187,9 @@ export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
 /** App-wide Full access, kept apart from the per-chat level so a chat snapshot never holds it. */
 export const CHAT_FULL_ACCESS_KEY = "unsloth_chat_full_access";
+/** Code switched off under that Full access. Browser-only: a server restore keeps Code off unless
+ *  its own switch is on. */
+export const CHAT_FULL_ACCESS_CODE_OFF_KEY = "unsloth_chat_full_access_code_off";
 export const CHAT_SANDBOX_LEVEL_KEY = "unsloth_chat_sandbox_level";
 
 /** "ask" every call, "auto" high-risk only, "off" never, "full" no sandbox. */
@@ -1991,9 +1994,14 @@ function loadFullAccess(): boolean {
 }
 
 /** The only writer of the app-wide flag. Not chat-scoped, so a pick with a chat open still lands. */
-function rememberFullAccess(on: boolean): void {
+function rememberFullAccess(on: boolean, codeDeclined = false): void {
   if (on && !getFullAccessAllowed()) return;
   saveBool(CHAT_FULL_ACCESS_KEY, on);
+  rememberFullAccessCodeOff(on && codeDeclined);
+}
+
+function rememberFullAccessCodeOff(off: boolean): void {
+  writeStorageValue(CHAT_FULL_ACCESS_CODE_OFF_KEY, off ? "true" : "false");
 }
 
 const INITIAL_FULL_ACCESS = loadFullAccess();
@@ -2003,6 +2011,12 @@ function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
   return state.permissionMode === "full"
     ? state.codeToolsDeclinedUnderFullAccess
     : false;
+}
+
+/** Full access restored from the server on a browser that never held it is not a fresh grant
+ *  either: Code runs only when its own switch is on. */
+function codeDeclinedOnRestore(codeToolsEnabled: boolean): boolean {
+  return !codeToolsEnabled;
 }
 
 /** Read the level live: Full access outlives a chat switch but codeToolsEnabled does not. */
@@ -3618,7 +3632,10 @@ function getHydratedSettingsState(
   }
   if (serverFullAccess === true) {
     Object.assign(nextState, appFullAccessState(), {
-      codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
+      codeToolsDeclinedUnderFullAccess:
+        state.permissionMode === "full"
+          ? codeDeclinedOnEnteringFullAccess(state)
+          : codeDeclinedOnRestore(nextState.codeToolsEnabled ?? state.codeToolsEnabled),
     });
   } else if (leavesAppFullAccess) {
     const permissionMode =
@@ -4275,7 +4292,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   localImageModelReady: false,
   localVideoModelReady: false,
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, pillDefault("codeToolsEnabled")),
-  codeToolsDeclinedUnderFullAccess: false,
+  codeToolsDeclinedUnderFullAccess:
+    INITIAL_FULL_ACCESS && loadOptionalBool(CHAT_FULL_ACCESS_CODE_OFF_KEY) === true,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
@@ -5480,6 +5498,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
       if (codeToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      if (state.permissionMode === "full" && state.chatFullAccessPreviousMode === null) {
+        rememberFullAccessCodeOff(!codeToolsEnabled);
+      }
       return {
         ...(codeToolsEnabled
           ? { codeToolsEnabled, deepResearchEnabled: false }
@@ -5632,7 +5653,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setPermissionMode: (permissionMode) =>
     set((state) => {
       savePermissionMode(permissionMode);
-      rememberFullAccess(permissionMode === "full");
+      rememberFullAccess(
+        permissionMode === "full",
+        permissionMode === "full" && codeDeclinedOnEnteringFullAccess(state),
+      );
       if (permissionMode === "full") {
         // Full access sends confirm_tool_calls=false; keep the store flag in sync.
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
@@ -5660,7 +5684,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setBypassPermissions: (bypassPermissions) =>
     set((state) => {
-      rememberFullAccess(bypassPermissions);
+      rememberFullAccess(
+        bypassPermissions,
+        bypassPermissions && codeDeclinedOnEnteringFullAccess(state),
+      );
       if (bypassPermissions) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
