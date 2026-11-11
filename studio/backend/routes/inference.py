@@ -6004,7 +6004,26 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
     return scopes
 
 
+# The roster SQL calls roster_name per document every RAG turn (three times per row for the count), and
+# the result depends only on the stored filename, so cleaned names are kept; bounded, cleared when full.
+_ROSTER_NAME_MEMO: dict[str, str] = {}
+_ROSTER_NAME_MEMO_MAX = 65536
+
+
 def _roster_name(raw: object) -> str:
+    # str keys only: 1 and 1.0 hash alike but str() them differently.
+    if type(raw) is not str:
+        return _roster_name_uncached(raw)
+    name = _ROSTER_NAME_MEMO.get(raw)
+    if name is None:
+        name = _roster_name_uncached(raw)
+        if len(_ROSTER_NAME_MEMO) >= _ROSTER_NAME_MEMO_MAX:
+            _ROSTER_NAME_MEMO.clear()
+        _ROSTER_NAME_MEMO[raw] = name
+    return name
+
+
+def _roster_name_uncached(raw: object) -> str:
     """Linked-folder names are raw disk paths; newlines, quotes and direction overrides are neutralized."""
     name = _re.sub(r"\s+", " ", str(raw or "").translate(_ROSTER_STRIP)).strip()
     if len(name) > _RAG_ROSTER_MAX_NAME_CHARS:
