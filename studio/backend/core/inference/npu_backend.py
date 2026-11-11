@@ -20,6 +20,7 @@ from core.inference.flm_files import (
     FlmModelFiles,
     download_files,
     read_model_files,
+    read_model_repo,
 )
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
 from utils.hardware.npu import detect_amd_npu
@@ -82,6 +83,8 @@ class NpuModel:
     labels: tuple[str, ...]
     max_context_length: Optional[int]
     resume_percent: Optional[int] = None
+    hf_repo: Optional[str] = None
+    hf_revision: Optional[str] = None
 
     @property
     def vision(self) -> bool:
@@ -112,6 +115,8 @@ class NpuModel:
             "supports_tools": self.tools,
             "max_context_length": self.max_context_length,
             "resume_percent": self.resume_percent,
+            "hf_repo": self.hf_repo,
+            "hf_revision": self.hf_revision,
         }
 
 
@@ -607,6 +612,7 @@ class LemonadeNpuBackend:
             checkpoint = str(row.get("checkpoint") or "")
             downloaded = bool(row.get("downloaded"))
             files = None if downloaded else self._model_files(checkpoint, flm_binary)
+            hf_repo, hf_revision = read_model_repo(flm_binary, checkpoint)
             models.append(
                 NpuModel(
                     id = str(row.get("id")),
@@ -618,6 +624,8 @@ class LemonadeNpuBackend:
                         checkpoint, row.get("max_context_window")
                     ),
                     resume_percent = files.resume_percent() if files else None,
+                    hf_repo = hf_repo,
+                    hf_revision = hf_revision,
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))

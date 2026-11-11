@@ -7,6 +7,8 @@ export {
   NPU_MODEL_PREFIX,
   type NpuModel,
   type NpuStatus,
+  npuCapabilities,
+  npuContextLabel,
   npuDownloadLabel,
   npuResumeLabel,
   npuRowsFor,

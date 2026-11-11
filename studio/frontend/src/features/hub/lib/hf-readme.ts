@@ -11,7 +11,7 @@ export type ReadmeKind = "model" | "dataset";
 
 export interface FetchedReadme {
   markdown: string;
-  branch: "main" | "master";
+  branch: string;
 }
 
 interface ReadmeCacheEntry {
@@ -33,7 +33,7 @@ function readmePrefix(kind: ReadmeKind): string {
 export function readmeBaseUrl(
   repoId: string,
   kind: ReadmeKind,
-  branch: "main" | "master" = "main",
+  branch = "main",
 ): string {
   return `${getHfEndpoint()}/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
 }
@@ -42,15 +42,16 @@ async function fetchReadmeOnce(
   repoId: string,
   kind: ReadmeKind,
   token: string | null,
+  revision: string | null,
 ): Promise<FetchedReadme | null> {
   const prefix = readmePrefix(kind);
   const headers: HeadersInit = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   let transient = false;
-  for (const branch of ["main", "master"] as const) {
+  for (const branch of revision ? [revision] : ["main", "master"]) {
     try {
       // /resolve, not /raw: /raw is a web route a mirror need not serve, and README.md is never LFS.
-      const url = `${getHfEndpoint()}/${prefix}${repoId}/resolve/${branch}/README.md`;
+      const url = `${getHfEndpoint()}/${prefix}${repoId}/resolve/${encodeURIComponent(branch)}/README.md`;
       const res = await fetchWithTimeout(
         url,
         {
@@ -77,9 +78,10 @@ export function fetchReadme(
   repoId: string,
   kind: ReadmeKind = "model",
   token: string | null = null,
+  revision: string | null = null,
 ): Promise<FetchedReadme | null> {
   // Endpoint in the key: cards never expire, so a default-host entry would hide the mirror.
-  const key = `${getHfEndpoint()}::${kind}::${repoId}::${fingerprintToken(token)}`;
+  const key = `${getHfEndpoint()}::${kind}::${repoId}${revision ? `@${revision}` : ""}::${fingerprintToken(token)}`;
   const cached = cache.get(key);
   if (cached && Date.now() < cached.staleAt) return cached.promise;
 
@@ -87,7 +89,7 @@ export function fetchReadme(
     promise: Promise.resolve(null),
     staleAt: Number.POSITIVE_INFINITY,
   };
-  entry.promise = fetchReadmeOnce(repoId, kind, token)
+  entry.promise = fetchReadmeOnce(repoId, kind, token, revision)
     .then((result) => {
       if (result === null) entry.staleAt = Date.now() + README_NEGATIVE_TTL_MS;
       return result;

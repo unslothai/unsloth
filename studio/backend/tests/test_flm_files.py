@@ -293,3 +293,36 @@ def test_the_file_list_comes_from_fastflowlm_manifests(tmp_path):
     )
     assert ff.read_model_files(flm, tmp_path / "flm", "gemma3:4b") is None
     assert ff.read_model_files(None, tmp_path / "flm", "llama3.2:1b") is None
+
+
+def test_the_model_card_repo_comes_from_fastflowlm_model_list(tmp_path):
+    flm = tmp_path / "flm.exe"
+    url = "https://huggingface.co/FastFlowLM/{}"
+    (tmp_path / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {"0.6b": {"url": url.format("Qwen3-0.6B-NPU2")}},
+                    "qwen3.5": {
+                        "9b": {"url": url.format("Qwen3.5-9B-NPU2/resolve/flm_q4k_high_precision")}
+                    },
+                    "llama3.2": {"1b": {"url": url.format("Llama-3.2-1B-NPU2/")}},
+                    "mirror": {"1b": {"url": "https://example.com/FastFlowLM/Mirror-1B-NPU2"}},
+                    "tree": {"1b": {"url": url.format("Tree-1B-NPU2/tree/main")}},
+                },
+            }
+        )
+    )
+    assert ff.read_model_repo(flm, "qwen3:0.6b") == ("FastFlowLM/Qwen3-0.6B-NPU2", None)
+    assert ff.read_model_repo(flm, "qwen3.5:9b") == (
+        "FastFlowLM/Qwen3.5-9B-NPU2",
+        "flm_q4k_high_precision",
+    )
+    assert ff.read_model_repo(flm, "llama3.2:1b") == ("FastFlowLM/Llama-3.2-1B-NPU2", None)
+    assert ff.read_model_repo(flm, "mirror:1b") == (None, None)
+    assert ff.read_model_repo(flm, "tree:1b") == (None, None)
+    assert ff.read_model_repo(flm, "gemma3:4b") == (None, None)
+    assert ff.read_model_repo(flm, "no-size") == (None, None)
+    assert ff.read_model_repo(None, "qwen3:0.6b") == (None, None)
+    assert ff.read_model_repo(tmp_path / "elsewhere" / "flm.exe", "qwen3:0.6b") == (None, None)
