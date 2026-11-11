@@ -255,49 +255,63 @@ export function setProviderModelCatalog(
   notifyCatalogChange();
 }
 
-/** Merge context windows advertised by an OpenAI-compatible /models endpoint into the live catalog. */
-export function learnProviderModelContextLengths(
+// Kept out of LIVE_CATALOG: a live entry would shadow snapshot reasoning and feed compaction.
+const SERVED_WINDOWS_KEY = "unsloth_chat_served_context_windows";
+let servedWindows: Record<string, Record<string, number>> | null = null;
+
+function loadServedWindows(): Record<string, Record<string, number>> {
+  if (servedWindows) return servedWindows;
+  let loaded: Record<string, Record<string, number>> = {};
+  if (canUseStorage()) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SERVED_WINDOWS_KEY) ?? "{}");
+      if (parsed && typeof parsed === "object") loaded = parsed;
+    } catch {
+      // Invalid browser state; the next model listing rewrites it.
+    }
+  }
+  servedWindows = loaded;
+  return loaded;
+}
+
+/** Remembers the window a self-hosted server reports in its model listing. */
+export function learnServedContextWindows(
   providerType: string,
   models: readonly ProviderModelInfo[],
-  fetchedAt: number = Date.now(),
 ): void {
-  const normalizedProvider = providerType.trim().toLowerCase();
-  if (!normalizedProvider) return;
-  hydrateLiveCatalog();
-  const current = LIVE_CATALOG.get(normalizedProvider);
-  const entries: Record<string, ModelCatalogEntry> = {
-    ...(current?.models ?? {}),
-  };
+  const provider = providerType.trim().toLowerCase();
+  if (!provider) return;
+  const all = loadServedWindows();
+  const windows = { ...(all[provider] ?? {}) };
   let changed = false;
   for (const model of models) {
     const id = model.id?.trim().toLowerCase();
-    const contextLength =
-      typeof model.context_length === "number" &&
-      Number.isFinite(model.context_length) &&
-      model.context_length > 0
-        ? Math.floor(model.context_length)
-        : null;
-    if (!id || contextLength === null) continue;
-    const previous = entries[id];
-    if (previous?.contextLength === contextLength) continue;
-    entries[id] = {
-      reasoning: previous?.reasoning ?? false,
-      efforts: previous?.efforts ?? [],
-      mandatory: previous?.mandatory ?? false,
-      defaultEffort: previous?.defaultEffort ?? null,
-      inputModalities: previous?.inputModalities ?? null,
-      maxOutputTokens: previous?.maxOutputTokens ?? null,
-      contextLength,
-    };
+    const served = model.served_context_window;
+    if (!id || typeof served !== "number" || !Number.isFinite(served) || served <= 0) continue;
+    if (windows[id] === Math.floor(served)) continue;
+    windows[id] = Math.floor(served);
     changed = true;
   }
   if (!changed) return;
-  LIVE_CATALOG.set(normalizedProvider, {
-    fetchedAt: current?.fetchedAt ?? fetchedAt,
-    models: entries,
-  });
-  persistLiveCatalog();
+  all[provider] = windows;
+  if (canUseStorage()) {
+    try {
+      localStorage.setItem(SERVED_WINDOWS_KEY, JSON.stringify(all));
+    } catch {
+      // Storage failures leave the in-memory copy valid for this session.
+    }
+  }
   notifyCatalogChange();
+}
+
+export function servedContextWindow(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  const provider = providerType?.trim().toLowerCase();
+  const id = modelId?.trim().toLowerCase();
+  if (!provider || !id) return null;
+  return loadServedWindows()[provider]?.[id] ?? null;
 }
 
 export function clearProviderModelCatalog(providerType: string): void {

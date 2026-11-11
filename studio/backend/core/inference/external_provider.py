@@ -98,6 +98,12 @@ def _reported_window(entry: dict[str, Any]) -> Optional[int]:
     )
 
 
+def served_window_from_listing(
+    provider_type: Optional[str], entry: dict[str, Any]
+) -> Optional[int]:
+    return _reported_window(entry) if provider_type in _SERVED_WINDOW_PROVIDERS else None
+
+
 # llama-server expects repeat_penalty rather than repetition_penalty.
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
 

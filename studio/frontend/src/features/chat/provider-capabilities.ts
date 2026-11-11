@@ -12,6 +12,7 @@ import {
   type ReasoningEffortLevel,
   resolveModelCatalogEntry,
   resolveModelCatalogEntryByName,
+  servedContextWindow,
   sortReasoningEfforts,
 } from "./model-catalog";
 
@@ -129,8 +130,8 @@ export function resolveExternalReasoningEffort(opts: {
 }
 
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
-/** Reserve half of an advertised context window for the prompt by default. */
-export const EXTERNAL_CONTEXT_OUTPUT_FRACTION = 0.5;
+// Only self-hosted listings report the served window; hosted catalogs list context, not output caps.
+const SERVED_WINDOW_PROVIDERS = new Set(["vllm", "llama_cpp", "custom"]);
 
 const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   providerType: string;
@@ -219,15 +220,18 @@ export function getExternalMaxOutputTokens(
 ): number {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
   const documented = _documentedMaxOutputTokens(providerType, modelId);
-  const contextDerived = _contextDerivedMaxOutputTokens(providerType, modelId);
-  const resolved =
+  const served = _servedWindow(providerType, modelId);
+  // Half the window, as the backend's context fitter leaves for the prompt.
+  let resolved =
     documented != null
       ? Math.min(documented, override ?? documented)
-      : (override ?? contextDerived ?? EXTERNAL_MAX_OUTPUT_TOKENS);
+      : (override ?? (served != null ? Math.floor(served / 2) : EXTERNAL_MAX_OUTPUT_TOKENS));
+  // vLLM 400s a max_tokens above max_model_len, so the served window bounds the override too.
+  if (served != null) resolved = Math.min(resolved, served);
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
 
-/** Null unless a published cap, advertised context, or user override grounds it. */
+/** Null unless a published cap, served window, or user override grounds it. */
 export function getGroundedExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -237,7 +241,7 @@ export function getGroundedExternalMaxOutputTokens(
   if (
     override == null &&
     _publishedMaxOutputTokens(providerType, modelId) == null &&
-    _contextDerivedMaxOutputTokens(providerType, modelId) == null
+    _servedWindow(providerType, modelId) == null
   ) {
     return null;
   }
@@ -250,7 +254,7 @@ export function externalMaxOutputTokensNeedsConnectionCap(
 ): boolean {
   return (
     _publishedMaxOutputTokens(providerType, modelId) == null &&
-    _contextDerivedMaxOutputTokens(providerType, modelId) == null
+    _servedWindow(providerType, modelId) == null
   );
 }
 
@@ -309,22 +313,13 @@ function _documentedMaxOutputTokens(
   return null;
 }
 
-function _contextDerivedMaxOutputTokens(
+function _servedWindow(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): number | null {
-  const contextLength = resolveModelCatalogEntry(providerType, modelId)?.contextLength;
-  if (
-    typeof contextLength !== "number" ||
-    !Number.isFinite(contextLength) ||
-    contextLength <= 0
-  ) {
-    return null;
-  }
-  return Math.max(
-    1,
-    Math.floor(contextLength * EXTERNAL_CONTEXT_OUTPUT_FRACTION),
-  );
+  return providerType && SERVED_WINDOW_PROVIDERS.has(providerType)
+    ? servedContextWindow(providerType, modelId)
+    : null;
 }
 
 /** Only lowers and is persisted; no provider means unknown, not the 32,768 fallback. */

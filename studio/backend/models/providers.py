@@ -308,6 +308,10 @@ class ProviderModelInfo(BaseModel):
         None,
         description = "Per-model capability names (Ollama /api/tags: thinking, tools, vision, ...)",
     )
+    served_context_window: Optional[int] = Field(
+        None,
+        description = "Window a self-hosted server serves (vLLM max_model_len, llama-server meta.n_ctx)",
+    )
 
 
 class ProviderModelReasoningInfo(BaseModel):

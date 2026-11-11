@@ -42,7 +42,7 @@ from core.inference.providers import (
     validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import ExternalProviderClient, served_window_from_listing
 
 from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
@@ -1372,6 +1372,7 @@ async def list_provider_models(
                 context_length = m.get("context_length") or m.get("context_window"),
                 owned_by = m.get("owned_by"),
                 capabilities = _model_capability_names(m),
+                served_context_window = served_window_from_listing(payload.provider_type, m),
             )
             for m in models
         ]

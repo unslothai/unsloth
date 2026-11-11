@@ -296,3 +296,27 @@ test("the published ceiling is reported without the override folded in", () => {
     null,
   );
 });
+
+test("a self-hosted server's listed window sets the default cap and bounds the override", async () => {
+  const { learnServedContextWindows } = await import("../src/features/chat/model-catalog.ts");
+  learnServedContextWindows("vllm", [
+    { id: "Qwen/Qwen3-8B", display_name: "Qwen/Qwen3-8B", served_context_window: 16384 },
+    { id: "big", display_name: "big", served_context_window: 262144 },
+    { id: "no-window", display_name: "no-window", context_length: 131072 },
+  ]);
+  learnServedContextWindows("openrouter", [
+    { id: "x/y", display_name: "x/y", served_context_window: 262144 },
+  ]);
+
+  assert.equal(getExternalMaxOutputTokens("vllm", "qwen/qwen3-8b"), 8192);
+  assert.equal(getExternalMaxOutputTokens("vllm", "big"), 131072);
+  assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", 262144), 16384);
+  assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", 4096), 4096);
+  assert.equal(getGroundedExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B"), 8192);
+  assert.equal(externalMaxOutputTokensNeedsConnectionCap("vllm", "Qwen/Qwen3-8B"), false);
+  // A hosted context length is not an output bound, and only served-window providers read one.
+  assert.equal(getExternalMaxOutputTokens("vllm", "no-window"), EXTERNAL_MAX_OUTPUT_TOKENS);
+  assert.equal(getExternalMaxOutputTokens("openrouter", "x/y"), EXTERNAL_MAX_OUTPUT_TOKENS);
+  assert.equal(getExternalMaxOutputTokens("llama_cpp", "Qwen/Qwen3-8B"), EXTERNAL_MAX_OUTPUT_TOKENS);
+  assert.ok(store.get("unsloth_chat_served_context_windows")?.includes("qwen/qwen3-8b"));
+});
