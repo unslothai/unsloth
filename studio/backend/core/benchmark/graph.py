@@ -4,7 +4,7 @@
 """Generate benchmark comparison charts using matplotlib."""
 
 import io
-from typing import Any
+from typing import Any, Optional
 
 import matplotlib
 
@@ -111,43 +111,54 @@ def _make_label(run: dict[str, Any]) -> str:
     return f"{task}\n{short_model}\n{date_str}"
 
 
-def _get_metric_score(metrics: list[dict], metric_name: str) -> float:
+def _as_percent(raw: Any) -> Optional[float]:
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return None
+    return raw * 100.0 if 0.0 <= raw <= 1.0 else float(raw)
+
+
+def _get_metric_score(metrics: list[dict], metric_name: str) -> Optional[float]:
     """Find the score for a given metric name.
 
     Returns the score as a value suitable for display on a percentage axis.
     If the raw score is in ratio form (0–1), it is scaled to 0–100.
     If it is already in percentage form (>1), it is returned as-is.
+    None when the run does not report the metric: charting it as 0% would read as measured.
     """
     raw = None
     lower = metric_name.lower()
     for m in metrics:
         if m.get("name") == metric_name:
-            raw = m.get("score", 0.0)
+            raw = m.get("score")
             break
     if raw is None:
         for m in metrics:
             if lower in m.get("name", "").lower():
-                raw = m.get("score", 0.0)
+                raw = m.get("score")
                 break
-    if raw is None:
-        return 0.0
-    if 0.0 <= raw <= 1.0:
-        return raw * 100.0
-    return raw
+    return _as_percent(raw)
 
 
-def _resolve_accuracy(run: dict[str, Any]) -> float:
-    """Return the primary metric score for a run (0–100 scale)."""
+def _resolve_accuracy(run: dict[str, Any]) -> Optional[float]:
+    """Return the primary metric score for a run (0–100 scale), None if it has none."""
     default = run.get("default_metric", "")
     if default:
         for m in run.get("metrics", []):
             if m.get("name") == default:
-                raw = m.get("score", 0.0)
-                return raw * 100.0 if 0.0 <= raw <= 1.0 else raw
-    return 0.0
+                return _as_percent(m.get("score"))
+    return None
 
 
-def _get_score_for_metric(run: dict[str, Any], metric_name: str) -> float:
+def _measured(scores: list[Optional[float]]) -> list[float]:
+    return [s for s in scores if s is not None]
+
+
+def _plotted(scores: list[Optional[float]]) -> list[float]:
+    # NaN leaves a gap where a run lacks the metric instead of drawing a 0% bar or point.
+    return [np.nan if s is None else s for s in scores]
+
+
+def _get_score_for_metric(run: dict[str, Any], metric_name: str) -> Optional[float]:
     """Get the score for a run, handling the special __accuracy__ metric."""
     if metric_name == "__accuracy__":
         return _resolve_accuracy(run)
@@ -188,13 +199,13 @@ def _bar_chart_inner(
     colors = _resolve_palette(theme, len(runs))
 
     x = np.arange(len(labels))
-    bars = ax.bar(x, scores, color = colors, width = 0.6, edgecolor = "none", zorder = 3)
+    bars = ax.bar(x, _plotted(scores), color = colors, width = 0.6, edgecolor = "none", zorder = 3)
 
     for bar, score in zip(bars, scores):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.5,
-            f"{score:.1f}%",
+            (score or 0.0) + 0.5,
+            "n/a" if score is None else f"{score:.1f}%",
             ha = "center",
             va = "bottom",
             fontsize = 9,
@@ -206,7 +217,8 @@ def _bar_chart_inner(
     ax.set_ylabel("Score (%)", fontsize = 10)
     title = "Accuracy" if metric_name == "__accuracy__" else metric_name
     ax.set_title(f"Benchmark Comparison — {title}", fontsize = 12, fontweight = "bold", pad = 12)
-    ax.set_ylim(0, max(max(scores) * 1.15, 10) if scores else 10)
+    measured = _measured(scores)
+    ax.set_ylim(0, max(max(measured) * 1.15, 10) if measured else 10)
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     fig.tight_layout()
     return fig, ax
@@ -229,12 +241,12 @@ def _line_chart_inner(
     colors = _resolve_palette(theme, len(runs))
 
     x = np.arange(len(labels))
-    ax.plot(x, scores, marker = "o", color = colors[0], linewidth = 2, markersize = 8, zorder = 3)
+    ax.plot(x, _plotted(scores), marker = "o", color = colors[0], linewidth = 2, markersize = 8, zorder = 3)
 
     for i, score in enumerate(scores):
         ax.annotate(
-            f"{score:.1f}%",
-            (x[i], score),
+            "n/a" if score is None else f"{score:.1f}%",
+            (x[i], score or 0.0),
             textcoords = "offset points",
             xytext = (0, 10),
             ha = "center",
@@ -247,8 +259,10 @@ def _line_chart_inner(
     ax.set_ylabel("Score (%)", fontsize = 10)
     title = "Accuracy" if metric_name == "__accuracy__" else metric_name
     ax.set_title(f"Benchmark Trend — {title}", fontsize = 12, fontweight = "bold", pad = 12)
+    measured = _measured(scores)
     ax.set_ylim(
-        min(min(scores) * 0.9, 0) if scores else 0, max(max(scores) * 1.15, 10) if scores else 10
+        min(min(measured) * 0.9, 0) if measured else 0,
+        max(max(measured) * 1.15, 10) if measured else 10,
     )
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     fig.tight_layout()
@@ -291,7 +305,7 @@ def _grouped_bar_chart_inner(
     """Grouped bar: tasks on x-axis, models as grouped bars within each task."""
     fig, ax = plt.subplots(figsize = (width, height))
 
-    task_model: dict[str, dict[str, float]] = {}
+    task_model: dict[str, dict[str, Optional[float]]] = {}
     for r in runs:
         task = r.get("task", "???")
         model = str(r.get("model", "???"))
@@ -309,11 +323,14 @@ def _grouped_bar_chart_inner(
     x = np.arange(n_tasks)
 
     for j, model in enumerate(models):
-        scores = [task_model[t].get(model, 0.0) for t in tasks]
+        scores = [task_model[t].get(model) for t in tasks]
         offset = (j - n_models / 2 + 0.5) * bar_width
+        for i, score in enumerate(scores):
+            if score is None:
+                ax.text(x[i] + offset, 0.5, "n/a", ha = "center", va = "bottom", fontsize = 7)
         ax.bar(
             x + offset,
-            scores,
+            _plotted(scores),
             width = bar_width,
             color = colors[j],
             label = legend[model],
@@ -342,7 +359,7 @@ def _radar_chart_inner(
     runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
     """Radar: tasks as axes, each model as its own ring."""
-    task_model: dict[str, dict[str, float]] = {}
+    task_model: dict[str, dict[str, Optional[float]]] = {}
     for r in runs:
         task = r.get("task", "???")
         model = str(r.get("model", "???"))
@@ -367,11 +384,12 @@ def _radar_chart_inner(
 
     colors = _resolve_palette(theme, len(models))
     for i, model in enumerate(models):
-        scores = [task_model[t].get(model, 0.0) for t in tasks]
+        scores = [task_model[t].get(model) for t in tasks]
         scores += scores[:1]
         color = colors[i % len(colors)]
-        ax.plot(angles, scores, marker = "o", linewidth = 2, label = legend[model], color = color)
-        ax.fill(angles, scores, alpha = 0.1, color = color)
+        ax.plot(angles, _plotted(scores), marker = "o", linewidth = 2, label = legend[model], color = color)
+        if None not in scores:
+            ax.fill(angles, scores, alpha = 0.1, color = color)
 
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(tasks, fontsize = 7)

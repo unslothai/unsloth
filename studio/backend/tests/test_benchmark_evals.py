@@ -696,3 +696,21 @@ def test_a_task_specific_filter_still_heads_the_run(name):
     assert pick_default_metric(metrics) == name
     # Exact names keep their priority over a family match.
     assert pick_default_metric([*metrics, {"name": "acc_norm", "score": 0.5}]) == "acc_norm"
+
+
+def test_chart_marks_a_missing_metric_instead_of_scoring_it_zero():
+    from core.benchmark.graph import _bar_chart_inner, _get_score_for_metric, _line_chart_inner
+
+    with_acc = {"task": "arc", "model": "a", "metrics": [{"name": "acc,none", "score": 0.5}]}
+    exact_only = {
+        "task": "gsm8k",
+        "model": "b",
+        "metrics": [{"name": "exact_match,strict-match", "score": 0.3}],
+    }
+    assert _get_score_for_metric(exact_only, "acc,none") is None
+    assert _get_score_for_metric(exact_only, "__accuracy__") is None
+    assert _get_score_for_metric(with_acc, "acc,none") == 50.0
+    for inner in (_bar_chart_inner, _line_chart_inner):
+        fig, ax = inner([with_acc, exact_only], "acc,none", 6, 4, "dark")
+        texts = [t.get_text() for t in ax.texts]
+        assert "50.0%" in texts and "n/a" in texts and "0.0%" not in texts
