@@ -561,11 +561,22 @@ _QWEN_XML_TEMPLATE = (
     "{% for t in tools %}{{ t.arguments }}{% endfor %}{% endif %}"
     "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
 )
+_GEMMA4_TEMPLATE = (
+    "{% if tools %}<|tool>{{ tools | tojson }}<tool|>{% endif %}"
+    "{% for m in messages %}<|turn>{{ m.role }}\n{{ m.content }}"
+    "{% for c in m.tool_calls %}{{ '<|tool_call>call:' + c.function.name + '{}<tool_call|>' }}"
+    "{% endfor %}<turn|>\n{% endfor %}"
+)
 _ARGS = {"lookup": ("q", "cats"), "search": ("query", "dogs")}
 
 
 def _model_that_answers_in_prose(messages, tools):
     opener = messages[-1]["content"] if messages[-1]["role"] == "assistant" else ""
+    if opener.startswith("<|tool_call>call:"):
+        name = opener[len("<|tool_call>call:") :].rstrip("{") or "lookup"
+        key, value = _ARGS[name]
+        body = f'{key}:<|"|>{value}<|"|>}}<tool_call|>'
+        return [body if opener.endswith("{") else f"{name}{{{body}"]
     if opener.startswith("<tool_call>\n<function="):
         name = opener[len("<tool_call>\n<function=") :].rstrip(">\n") or "lookup"
         key, value = _ARGS[name]
@@ -580,7 +591,9 @@ def _model_that_answers_in_prose(messages, tools):
 
 
 @pytest.mark.parametrize(
-    "template", [_HERMES_TEMPLATE, _QWEN_XML_TEMPLATE], ids = ["hermes", "qwen_xml"]
+    "template",
+    [_HERMES_TEMPLATE, _QWEN_XML_TEMPLATE, _GEMMA4_TEMPLATE],
+    ids = ["hermes", "qwen_xml", "gemma4"],
 )
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
@@ -633,7 +646,9 @@ def test_auto_tool_choice_leaves_the_reply_to_the_model(monkeypatch):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
-    "template", [_HERMES_TEMPLATE, _QWEN_XML_TEMPLATE], ids = ["hermes", "qwen_xml"]
+    "template",
+    [_HERMES_TEMPLATE, _QWEN_XML_TEMPLATE, _GEMMA4_TEMPLATE],
+    ids = ["hermes", "qwen_xml", "gemma4"],
 )
 def test_an_empty_reply_to_a_forced_call_is_not_a_call(monkeypatch, template, stream):
     backend = _ScriptedBackend(_fixed(""))
@@ -673,6 +688,8 @@ def test_forced_call_prefix_is_added_after_the_context_fit(monkeypatch):
         ({"lookup", "search"}, [_HERMES_TEMPLATE, None], '<tool_call>\n{"name":'),
         ({"lookup"}, [_QWEN_XML_TEMPLATE], "<tool_call>\n<function=lookup>\n"),
         ({"lookup", "search"}, [{"tool_use": _QWEN_XML_TEMPLATE}], "<tool_call>\n<function="),
+        ({"lookup"}, [_GEMMA4_TEMPLATE], "<|tool_call>call:lookup{"),
+        ({"lookup", "search"}, [_GEMMA4_TEMPLATE, None], "<|tool_call>call:"),
         # Bodies disagreeing on the format, or a format with no opener, are not forced.
         ({"lookup"}, [_HERMES_TEMPLATE, _QWEN_XML_TEMPLATE], ""),
         ({"lookup"}, ["{% if tools %}[TOOL_CALLS]{% endif %}"], ""),
