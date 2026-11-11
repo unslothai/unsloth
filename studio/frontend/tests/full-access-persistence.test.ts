@@ -197,6 +197,11 @@ test("an install with other accounts neither saves nor restores Full access", as
     await second.state().hydratePersistedSettings();
     assert.equal(second.state().permissionMode, "auto");
     assert.equal(browser.store.get(FLAG), "false", "the cached server copy is cleared too");
+
+    const third = await restart("multi-pick-during-load", { fullAccess: false });
+    third.state().setPermissionMode("full");
+    await third.state().hydratePersistedSettings();
+    assert.equal(third.state().permissionMode, "full", "a session-only pick survives the load");
     await new Promise((resolve) => setTimeout(resolve, 600));
     assert.ok(
       settingsHttp.puts.some((put) => put.fullAccess === false),

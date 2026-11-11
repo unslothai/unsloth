@@ -3584,10 +3584,12 @@ function getHydratedSettingsState(
     notePreserveThinkingPreference(settings.preserveThinking);
   }
   // The server's Full access answer, unless a pick made while this response was out is newer.
+  // Where Full access is not allowed to persist it is session-only, so the saved value has no say.
   const serverFullAccess =
     settings.fullAccess !== undefined &&
-    scalarSettingMutationVersions.fullAccess === versions.scalarSettings.fullAccess
-      ? settings.fullAccess && getFullAccessAllowed()
+    scalarSettingMutationVersions.fullAccess === versions.scalarSettings.fullAccess &&
+    getFullAccessAllowed()
+      ? settings.fullAccess
       : undefined;
   const leavesAppFullAccess =
     serverFullAccess === false &&
