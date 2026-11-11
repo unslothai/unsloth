@@ -3,6 +3,8 @@
 
 // Sliding mount window maths; the DOM and React glue is progressive-messages.tsx.
 
+import { findCodeBlockRegions } from "../../lib/latex.ts";
+
 /** `pins` (ascending): rows outside `[start, end)` the reader is working in, kept where they are. */
 export type RowWindow = { start: number; end: number; pins?: readonly number[] };
 
@@ -65,10 +67,20 @@ export function messageWeight(content: readonly Part[] | undefined): number {
 }
 
 const NUMBERED_ENV = /\\begin\{(equation|multline|align|gather|alignat|flalign|eqnarray)\}([\s\S]*?)\\end\{\1\}/g;
-/** Code renders verbatim, so an environment in it is an example, not math. */
-const CODE = /(^|\n) {0,3}(`{3,}|~{3,})[\s\S]*?(?:\n {0,3}\2[`~]*(?=[ \t]*(?:\n|$))|$)|`[^`\n]*`/g;
 /** Display math only: KaTeX refuses these environments inline. */
 const DISPLAY_MATH = /\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]/g;
+
+/** Code renders verbatim, so an environment in it is an example, not math. The markdown
+ *  pipeline's own regions: fenced (in containers too), indented and inline. */
+function withoutCode(text: string): string {
+  let prose = "";
+  let cursor = 0;
+  for (const [start, end] of findCodeBlockRegions(text)) {
+    prose += `${text.slice(cursor, start)}\n`;
+    cursor = end;
+  }
+  return prose + text.slice(cursor);
+}
 
 const UNNUMBERED = /\\(?:notag|nonumber|tag)\b/;
 const ENV_EDGE = /\\(begin|end)\{[^}]*\}/y;
@@ -109,7 +121,7 @@ export function numberedEquations(content: readonly Part[] | undefined): number 
   let total = 0;
   for (const part of content ?? []) {
     if (part.type !== "text" || !part.text?.includes("\\begin{")) continue;
-    const prose = part.text.replace(CODE, "$1");
+    const prose = withoutCode(part.text);
     for (const [, dollars, brackets] of prose.matchAll(DISPLAY_MATH)) {
       for (const [, env, body] of (dollars ?? brackets).matchAll(NUMBERED_ENV)) {
         const rows = env === "equation" || env === "multline" ? [body] : topLevelRows(body);

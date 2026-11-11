@@ -588,7 +588,7 @@ test("a mounted row that shrinks or re-wraps wakes the window, and growth does n
     /const column = viewport\.querySelector<HTMLElement>\(ROW_SELECTOR\);\s*if \(column\) heights\.relayout\(rowLayout\(column\)\);/,
   );
   const layout = section(GLUE, "function rowLayout(row: HTMLElement): string {", "\n}");
-  for (const part of ["row.clientWidth", "style.fontFamily", "style.fontSize", "style.letterSpacing", '"--custom-code-font"']) {
+  for (const part of ["row.clientWidth", "style.fontFamily", "style.fontSize", "style.letterSpacing", '"--custom-code-font"', '"--custom-code-font-size"']) {
     assert.ok(layout.includes(part), `the row layout key lost ${part}`);
   }
   assert.doesNotMatch(GLUE, /heights\.re(?:size|layout)\(viewport\.clientWidth\)/);

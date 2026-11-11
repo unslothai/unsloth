@@ -549,6 +549,8 @@ test("numbered equations are counted where KaTeX's page-wide counters would coun
     1,
   );
   assert.equal(numberedEquations(text("~~~\n$$\\begin{equation}a\\end{equation}$$")), 0);
+  assert.equal(numberedEquations(text("Example:\n\n    $$\\begin{equation}a\\end{equation}$$\n")), 0);
+  assert.equal(numberedEquations(text("> ~~~\n> $$\\begin{equation}a\\end{equation}$$\n> ~~~")), 0);
   assert.equal(numberedEquations([{ type: "reasoning", text: "\\begin{equation}a\\end{equation}" }]), 0);
 });
 

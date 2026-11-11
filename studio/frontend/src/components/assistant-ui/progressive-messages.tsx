@@ -376,7 +376,7 @@ function isPinned(row: Element, selection: Range | null): boolean {
 }
 
 /** What a row's wrapping depends on. The column, not the viewport: Chat width moves only the
- *  column, and the chat font, text size and code font change no width at all. */
+ *  column, and the chat font, text size and code font and size change no width at all. */
 function rowLayout(row: HTMLElement): string {
   const style = getComputedStyle(row);
   return [
@@ -385,6 +385,7 @@ function rowLayout(row: HTMLElement): string {
     style.fontSize,
     style.letterSpacing,
     style.getPropertyValue("--custom-code-font"),
+    style.getPropertyValue("--custom-code-font-size"),
   ].join("\n");
 }
 
