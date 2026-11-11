@@ -16,6 +16,7 @@ import threading
 import time
 import weakref
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -46,6 +47,9 @@ _CONFIG_OVERRIDES: dict[str, Any] = {
     "auto_check_model_updates": False,
     "auto_update_models": False,
     "log_file": "disabled",
+    # backend_output() raises it over /internal/set, which saves it; a crash mid-load must not
+    # leave it there.
+    "log_level": "info",
     "host": "127.0.0.1",
     "max_loaded_models": 1,
 }
@@ -59,6 +63,11 @@ _PORT_TAKEN = re.compile(
     r"|(?:winerror|errno|error)\s*:?\s*10048\b",
     re.IGNORECASE,
 )
+
+
+# How lemond relays a backend's own stdout and stderr: "<date> <time> [Info] (Process) <line>".
+_BACKEND_LINE = re.compile(r"\[\w+\] \(Process\) ")
+_ANSI_COLOR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class LemonadeUnavailable(RuntimeError):
@@ -108,6 +117,7 @@ class LemonadeServer:
         self._lines_seen = 0
         self._tail_lock = threading.Lock()
         self._windows: weakref.WeakSet[OutputWindow] = weakref.WeakSet()
+        self._keep_backend_output = False
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         # stop() sets it without the lock, which start() holds while waiting for readiness.
@@ -171,6 +181,35 @@ class LemonadeServer:
             tail = list(self._tail)
             count = min(self._lines_seen - mark, lines)
         return tail[-count:] if count > 0 else []
+
+    @contextmanager
+    def backend_output(self):
+        """Keep the backend's own output (FastFlowLM's reason for a failed load) while this is open.
+        lemond only relays it for a backend started at debug, where lemond also logs chat content,
+        and flm prints part of every prompt, so both stay off outside a load."""
+        self._set_log_level("debug")
+        self._keep_backend_output = True
+        try:
+            yield
+        finally:
+            self._keep_backend_output = False
+            self._set_log_level("info")
+
+    def _set_log_level(self, level: str) -> None:
+        if not self.is_alive():
+            return
+        try:
+            response = self._client.post(
+                f"{self.base_url}/internal/set",
+                json = {"log_level": level},
+                headers = self.headers(),
+                timeout = 10.0,
+            )
+            failure = None if response.status_code == 200 else f"HTTP {response.status_code}"
+        except Exception as exc:  # noqa: BLE001 -- the load goes ahead either way
+            failure = str(exc)
+        if failure:
+            logger.warning("Could not set Lemonade's log level to %s: %s", level, failure)
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -343,8 +382,8 @@ class LemonadeServer:
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
-                line = raw.rstrip()
-                if line:
+                line = _ANSI_COLOR.sub("", raw).rstrip()
+                if line and (self._keep_backend_output or not _BACKEND_LINE.search(line)):
                     with self._tail_lock:
                         self._tail.append(line)
                         self._lines_seen += 1
