@@ -11518,7 +11518,7 @@ def _x64_cuda_install_kind(asset: str) -> str | None:
 
 
 def _missing_cuda_runtime_wheels(install_dir: Path) -> tuple[str, ...]:
-    """The wheels to install when this CUDA install has no cudart of its major anywhere, else ()."""
+    """The wheels to install when this CUDA install lacks cudart or cublas of its major, else ()."""
     asset = str((load_prebuilt_metadata(install_dir) or {}).get("asset") or "")
     match = re.search(r"cuda-?(\d+)", asset)
     kind = _x64_cuda_install_kind(asset)
@@ -11530,18 +11530,28 @@ def _missing_cuda_runtime_wheels(install_dir: Path) -> tuple[str, ...]:
         # The detector selection uses: a second, narrower scan would call a runtime that
         # selection found (an Ollama or versioned toolkit dir) missing.
         return () if f"cuda{major}" in detected_linux_runtime_lines()[0] else wheels
-    name = f"cudart64_{major}.dll"
     site_packages = Path(sysconfig.get_paths()["purelib"])
     roots = [install_dir, site_packages / "torch" / "lib", site_packages / "nvidia"]
     cuda_home = os.environ.get("CUDA_PATH")
     if cuda_home:
         roots.append(Path(cuda_home))
-    for root in roots:
-        try:
-            if root.is_dir() and next(root.rglob(name), None) is not None:
-                return ()
-        except OSError:
-            continue
+    # The loader's own dirs (PATH, Program Files toolkit): checked flat, PATH holds System32.
+    flat_dirs = [Path(d) for d in windows_runtime_dirs()]
+
+    def _found(name: str) -> bool:
+        if any((d / name).is_file() for d in flat_dirs):
+            return True
+        for root in roots:
+            try:
+                if root.is_dir() and next(root.rglob(name), None) is not None:
+                    return True
+            except OSError:
+                continue
+        return False
+
+    # ggml-cuda needs both; a runtime-only toolkit has cudart but no cublas.
+    if _found(f"cudart64_{major}.dll") and _found(f"cublas64_{major}.dll"):
+        return ()
     return wheels
 
 

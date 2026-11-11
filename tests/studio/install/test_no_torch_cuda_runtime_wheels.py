@@ -56,6 +56,7 @@ def _no_host_runtime(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(ip.sysconfig, "get_paths", lambda: {"purelib": str(site)})
     monkeypatch.delenv("CUDA_PATH", raising = False)
     monkeypatch.setattr(ip, "detected_linux_runtime_lines", lambda: ([], {}))
+    monkeypatch.setattr(ip, "windows_runtime_dirs", lambda: [])
     return site
 
 
@@ -89,12 +90,14 @@ def test_bundled_cudart_needs_nothing(tmp_path):
     install = _install(tmp_path, "app-b1-windows-x64-cuda13-newer.zip", "windows-cuda")
     (install / "build" / "bin" / "Release").mkdir(parents = True)
     (install / "build" / "bin" / "Release" / "cudart64_13.dll").touch()
+    (install / "build" / "bin" / "Release" / "cublas64_13.dll").touch()
     assert ip._missing_cuda_runtime_wheels(install) == ()
 
 
 def test_torch_runtime_needs_nothing(tmp_path, _no_host_runtime):
     (_no_host_runtime / "torch" / "lib").mkdir(parents = True)
     (_no_host_runtime / "torch" / "lib" / "cudart64_12.dll").touch()
+    (_no_host_runtime / "torch" / "lib" / "cublas64_12.dll").touch()
     install = _install(tmp_path, "app-b1-windows-x64-cuda12-newer.zip", "windows-cuda")
     assert ip._missing_cuda_runtime_wheels(install) == ()
 
@@ -206,3 +209,26 @@ def test_a_failing_wheel_step_does_not_stop_the_install(monkeypatch):
         persist_rocm_gfx = None,
     )
     ip.ensure_linux_cuda_runtime_before_selection(route)
+
+
+def test_cudart_without_cublas_still_installs(tmp_path, monkeypatch):
+    toolkit = tmp_path / "toolkit"
+    (toolkit / "bin").mkdir(parents = True)
+    (toolkit / "bin" / "cudart64_13.dll").touch()
+    monkeypatch.setenv("CUDA_PATH", str(toolkit))
+    install = tmp_path / "install"
+    install.mkdir()
+    _install(install, "app-b1-windows-x64-cuda13-newer.zip", "windows-cuda")
+    assert ip._missing_cuda_runtime_wheels(install) == ("nvidia-cuda-runtime", "nvidia-cublas")
+
+
+def test_windows_loader_dirs_count(tmp_path, monkeypatch):
+    on_path = tmp_path / "on_path"
+    on_path.mkdir()
+    (on_path / "cudart64_13.dll").touch()
+    (on_path / "cublas64_13.dll").touch()
+    monkeypatch.setattr(ip, "windows_runtime_dirs", lambda: [str(on_path)])
+    install = tmp_path / "install"
+    install.mkdir()
+    _install(install, "app-b1-windows-x64-cuda13-newer.zip", "windows-cuda")
+    assert ip._missing_cuda_runtime_wheels(install) == ()
