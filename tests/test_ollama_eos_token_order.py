@@ -44,7 +44,7 @@ def _extract_source():
     raise AssertionError("get_ollama_eos_tokens not found in chat_templates.py")
 
 
-def _run(seed):
+def _run(seed, tokens = _TOKENS, bos = _BOS):
     environment = dict(os.environ, PYTHONHASHSEED = str(seed))
     completed = subprocess.run(
         [
@@ -52,8 +52,8 @@ def _run(seed):
             "-c",
             _RUNNER,
             json.dumps(_extract_source()),
-            json.dumps(_TOKENS),
-            json.dumps(_BOS),
+            json.dumps(tokens),
+            json.dumps(bos),
         ],
         capture_output = True,
         text = True,
@@ -74,3 +74,30 @@ def test_ollama_eos_tokens_do_not_depend_on_hash_seed():
 def test_ollama_eos_tokens_keep_unk_beside_an_unused_family():
     for seed in range(8):
         assert _run(seed) == ["<eos>", "<unk>", "<unused"]
+
+
+def test_ollama_eos_tokens_keep_short_tokens_whole():
+    # A 3-char token probes one character: "<" or "</" sits inside every special token, so
+    # collapsing it rewrote the whole list and shipped zero usable stops.
+    for seed in range(8):
+        assert _run(seed, ["<pad>", "<eos>", "<eot>", "<s>"], "<pad>") == [
+            "<eos>", "<eot>", "<s>",
+        ]
+        assert _run(seed, ["<pad>", "</a>", "</b>", "</c>", "<eos>"], "<pad>") == [
+            "</a>", "</b>", "</c>", "<eos>",
+        ]
+
+
+def test_ollama_eos_tokens_keep_unrelated_characters():
+    # "e" is a substring of four tokens but is nobody's family prefix; stripping it left
+    # "abc" plus a stop of "e", which ends generation at the first e it meets.
+    for seed in range(8):
+        assert _run(seed, ["<pad>", "eop", "ezz", "abc", "def"], "<pad>") == [
+            "abc", "def", "eop", "ezz",
+        ]
+
+
+def test_ollama_eos_tokens_still_collapse_real_families():
+    # Members sharing more than half the token still merge into one stop.
+    for seed in range(8):
+        assert _run(seed, ["<pad>", "<eos>", "<eot>", "<eom>", "eop"], "<pad>") == ["<eo", "eop"]

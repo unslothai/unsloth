@@ -3190,9 +3190,12 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
             for j in range(n//2+1, n):
                 if joined_text.count(token[:j]) < repeated_counts:
                     j -= 1
-                    # Remove repeated tokens to reduce search space
-                    joined_text = joined_text.replace(token[:j], "")
-                    repeated_tokens.append(token[:j])
+                    # Remove repeated tokens to reduce search space, but only past half the token:
+                    # a shared run that stops at n//2 ("<", "</", "e") is a delimiter inside
+                    # unrelated tokens, and removing it rewrites every one of them.
+                    if j > n // 2:
+                        joined_text = joined_text.replace(token[:j], "")
+                        repeated_tokens.append(token[:j])
                     break
 
     split = joined_text.split("\x01\x00")
