@@ -202,6 +202,29 @@ def test_window_probe_sends_the_templated_headers_of_the_run(research_home, monk
     assert max(longest.values()) / _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN <= WINDOW
 
 
+def test_window_probe_reads_the_connection_under_its_config_guard(research_home, monkeypatch):
+    from routes import provider_credentials
+    from storage import credential_secrets
+
+    guarded = []
+    read_key = credential_secrets.get_provider_api_key
+
+    def guarded_read(provider_id):
+        locks = [
+            lock
+            for per_loop in list(provider_credentials._provider_config_locks.values())
+            for lock in per_loop.values()
+        ]
+        guarded.append(any(lock.locked() for lock in locks))
+        return read_key(provider_id)
+
+    monkeypatch.setattr(credential_secrets, "get_provider_api_key", guarded_read)
+    with _server(_llama_server(WINDOW)) as url:
+        _prompt_chars(monkeypatch, "llama_cpp", url + "/v1")
+
+    assert guarded and all(guarded)
+
+
 def test_connection_keeps_the_full_budget_when_its_server_reports_no_window(
     research_home, monkeypatch
 ):

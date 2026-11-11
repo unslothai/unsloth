@@ -379,12 +379,26 @@ def _saved_connection_client(run: dict) -> ExternalProviderClient | None:
     return client
 
 
+async def _guarded_connection_client(run: dict) -> ExternalProviderClient | None:
+    from routes.provider_credentials import provider_config_guard
+
+    provider_id = _run_inference_request(run)["providerId"]
+    provider = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    if provider is None:
+        return None
+    # A concurrent edit must not pair the old endpoint with the new key.
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(provider.get("shared_by_owner"))
+    ):
+        return await asyncio.to_thread(_saved_connection_client, run)
+
+
 async def _refresh_served_context_length(run: dict) -> None:
     inference = _run_inference_request(run)
     window = None
     if inference.get("providerType") in _SERVED_WINDOW_PROVIDERS:
         try:
-            client = await asyncio.to_thread(_saved_connection_client, run)
+            client = await _guarded_connection_client(run)
             if client is not None:
                 window = await client.served_context_window(inference["externalModel"])
         except Exception:
