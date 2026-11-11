@@ -377,10 +377,22 @@ function isPinned(row: Element, selection: Range | null): boolean {
   return false;
 }
 
+/** Appearance flags on the root that re-wrap rows without moving any root typography value. */
+const LAYOUT_FLAGS = [
+  "data-chat-font",
+  "data-ui-font",
+  "data-ui-font-size",
+  "data-code-font-size",
+  "data-code-wrap",
+  "data-code-line-numbers",
+  "data-code-no-ligatures",
+];
+
 /** What a row's wrapping depends on. The column, not the viewport: Chat width moves only the
- *  column, and the chat font, text size and code font and size change no width at all. */
+ *  column, and the appearance settings change no width at all. */
 function rowLayout(row: HTMLElement): string {
   const style = getComputedStyle(row);
+  const root = document.documentElement;
   return [
     row.clientWidth,
     style.fontFamily,
@@ -388,6 +400,7 @@ function rowLayout(row: HTMLElement): string {
     style.letterSpacing,
     style.getPropertyValue("--custom-code-font"),
     style.getPropertyValue("--custom-code-font-size"),
+    LAYOUT_FLAGS.map((name) => (root.hasAttribute(name) ? "1" : "0")).join(""),
   ].join("\n");
 }
 
@@ -875,7 +888,10 @@ function useThreadWindow(
     const activity = watchProgressiveScroll(viewport);
     scrollActivity.current = activity;
     const flags = new MutationObserver(schedule);
-    flags.observe(document.documentElement, { attributes: true, attributeFilter: [FIND_FLAG] });
+    flags.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: [FIND_FLAG, ...LAYOUT_FLAGS],
+    });
     const resize = new ResizeObserver(schedule);
     resize.observe(viewport);
     // A mounted row that shrinks (a code block collapsed) can bare a spacer with no scroll to

@@ -337,7 +337,7 @@ test("the whole document is mounted for the readers that need it", () => {
     step,
     /const readerHolds =\s*printingRef\.current \|\|\s*fullMountHolds\.size > 0 \|\|\s*document\.documentElement\.hasAttribute\(FIND_FLAG\);\s*if \(readerHolds\) modeRef\.current = "fill";/,
   );
-  assert.match(GLUE, /attributeFilter: \[FIND_FLAG\]/);
+  assert.match(GLUE, /attributeFilter: \[FIND_FLAG, \.\.\.LAYOUT_FLAGS\]/);
   const print = section(GLUE, "const beforePrint = () => {", "};");
   // Synchronous: the print dialog opens when this handler returns.
   assert.match(print, /commit\(null, true\);/);
@@ -591,6 +591,12 @@ test("a mounted row that shrinks or re-wraps wakes the window, and growth does n
   for (const part of ["row.clientWidth", "style.fontFamily", "style.fontSize", "style.letterSpacing", '"--custom-code-font"', '"--custom-code-font-size"']) {
     assert.ok(layout.includes(part), `the row layout key lost ${part}`);
   }
+  assert.match(layout, /LAYOUT_FLAGS\.map\(\(name\) => \(root\.hasAttribute\(name\) \? "1" : "0"\)\)/);
+  for (const flag of ["data-code-wrap", "data-code-line-numbers", "data-chat-font", "data-ui-font-size", "data-code-font-size"]) {
+    assert.ok(section(GLUE, "const LAYOUT_FLAGS = [", "];").includes(`"${flag}"`), `${flag} left the layout key`);
+  }
+  // A flag flip wakes the window: an idle reader has no scroll to step it.
+  assert.match(GLUE, /attributeFilter: \[FIND_FLAG, \.\.\.LAYOUT_FLAGS\]/);
   assert.doesNotMatch(GLUE, /heights\.re(?:size|layout)\(viewport\.clientWidth\)/);
   // Rows come and go: removed ones are let go, so the observer holds no detached row.
   assert.match(GLUE, /rowResize\.unobserve\(node\)/);
