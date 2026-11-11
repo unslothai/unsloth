@@ -369,8 +369,8 @@ def test_yue2_instrumental_sends_the_instrumental_tag_not_its_style():
     b = _backend(_model("yue2"))
     _run(b, text = "ambient piano", lyrics = "[Verse] words", instrumental = True, duration_s = 20)
     request = _request(b)
-    assert request["text"] == "[Instrumental]"
-    assert request["options"]["lyrics"] == "[Instrumental]"
+    assert request["text"] == "[instrumental]"
+    assert request["options"]["lyrics"] == "[instrumental]"
     assert request["options"]["style"] == "ambient piano"
     assert "semantic_max_tokens" not in request["options"]
 
@@ -688,7 +688,7 @@ def test_legacy_requests_keep_their_bodies_with_the_finding_7_fixes():
     }
     yue = _backend(_model("yue2"))
     yue.generate_audio_response("", instructions = "ambient")
-    assert _request(yue)["options"]["lyrics"] == "[Instrumental]"
+    assert _request(yue)["options"]["lyrics"] == "[instrumental]"
     assert "ambient" not in _request(yue)["text"]
 
 
