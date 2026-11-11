@@ -28,7 +28,7 @@ from _playwright_robust import (  # noqa: E402
 PORT = int(os.environ.get("SMOKE_PORT", "5217"))
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip().rstrip("/")
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
-# Under MIN_PROGRESSIVE_MESSAGES (40), so the whole history mounts in one commit.
+# The harness page holds every row mounted, so the whole history is in the DOM.
 MESSAGES = 30
 CHUNKS = 60
 

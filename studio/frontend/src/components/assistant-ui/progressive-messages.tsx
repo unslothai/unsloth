@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Widen-only mount window glue; see progressive-mount-controller.ts. One shared propless slot
-// element lets React skip unchanged rows; a components object would re-render every row.
+// Sliding mount window glue; the window maths is in thread-window.ts. Only the rows near the
+// reader are mounted and two spacers stand in for the rest, so a thread's cost follows what is on
+// screen, not its length. One shared propless slot element lets React skip unchanged rows; a
+// components object would re-render every row.
 
 import { AuiProvider, useAui, useAuiState } from "@assistant-ui/react";
 import {
@@ -24,36 +26,90 @@ import { createRowNotificationGate } from "@/components/assistant-ui/row-notific
 import { MessageByIndexProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import {
   type AnchorSample,
-  type MountWindow,
   CHUNK_MESSAGES,
   anchorCorrection,
-  alignAnchorCorrection,
-  initialWindow,
   nextMountChunk,
   watchProgressiveScroll,
-  widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
+import {
+  type MountedRow,
+  type RowMeta,
+  type RowWindow,
+  RowHeights,
+  WINDOW_REACH_PX,
+  absorbShift,
+  initialRowWindow,
+  messageWeight,
+  planEngage,
+  planFill,
+  planSlide,
+  sameWindow,
+  spacerHeights,
+} from "@/components/assistant-ui/thread-window";
 import {
   type ThreadMessageRole,
   rendersAsRow,
 } from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
-import { REACH as WINDOW_REACH } from "@/components/assistant-ui/message-window-controller";
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 
 const WEBKIT_GTK = typeof navigator !== "undefined"
   && isWebKitGTK(navigator.platform, navigator.userAgent);
-const MOUNT_CHUNK = WEBKIT_GTK ? 2 : CHUNK_MESSAGES;
-const ANCHOR_PRECISION = WEBKIT_GTK ? 1 / 64 : 1;
+/** Rows a scroll step mounts. Each is a main-thread commit, so WebKitGTK (which commits inside
+ *  the frame) takes fewer. */
+const SLIDE_STEP = WEBKIT_GTK ? 2 : 8;
+const FILL_CHUNK = WEBKIT_GTK ? 2 : CHUNK_MESSAGES;
+/** Sub-pixel shifts are real here: the spacer takes them, where scrollTop would round them. */
+const ANCHOR_PRECISION = 1 / 64;
+/** A full mount asked for by a DOM reader is kept this long after its last request. */
+const FILL_RELEASE_MS = 3000;
+/** How soon a settle that found the reader still scrolling looks again. */
+const SETTLE_RETRY_MS = 350;
+/** How often a full mount nothing announces the end of is checked for release. */
+const HOLD_RECHECK_MS = 1000;
+const FIND_FLAG = "data-find-bar-open";
+const ROW_SELECTOR = "[data-role][data-message-id]";
+const PINNED_CONTENT = "textarea, [contenteditable=true]";
 
 /** Module-level: consumers are imperative DOM readers, and a thread can mount twice (Compare). */
-interface ActiveCompleter {
+interface ActiveWindow {
+  /** Mounts every row; resolves once they have painted. */
   complete: () => Promise<void>;
+  /** Mounts the row for a message if the window left it out. */
+  reveal: (messageId: string) => boolean;
+  withholding: () => boolean;
+  filling: () => boolean;
+  /** Looks again on the next frame; a hold was taken or released. */
+  wake: () => void;
   viewportRef: RefObject<HTMLElement | null>;
 }
 
-const activeCompleters = new Set<ActiveCompleter>();
+const activeWindows = new Set<ActiveWindow>();
+const rowListeners = new Set<() => void>();
+const fullMountHolds = new Set<symbol>();
+
+/**
+ * Keeps every row of every thread mounted until the returned release is called, for a reader that
+ * needs the whole conversation in the DOM for as long as it runs rather than for one read (which
+ * `completeProgressiveMounts` serves). The window reopens once the last hold is gone.
+ */
+export function holdProgressiveMounts(): () => void {
+  const hold = Symbol("full mount");
+  fullMountHolds.add(hold);
+  for (const entry of activeWindows) entry.wake();
+  return () => {
+    if (fullMountHolds.delete(hold)) for (const entry of activeWindows) entry.wake();
+  };
+}
+
+/** Runs after a commit that mounted or unmounted rows, for readers that hold row elements. */
+export function subscribeMountedRows(listener: () => void): () => void {
+  rowListeners.add(listener);
+  return () => {
+    rowListeners.delete(listener);
+  };
+}
 
 /** DOM readers (not store readers) must await this, or they see a short conversation. */
 export const PROGRESSIVE_MOUNT_SEARCH_MS = 400;
@@ -63,11 +119,10 @@ export async function completeProgressiveMounts(
   wants?: (viewport: HTMLElement | null) => boolean,
 ): Promise<void> {
   const wanted = () =>
-    wants === undefined
-      ? [...activeCompleters]
-      : [...activeCompleters].filter((entry) => wants(entry.viewportRef.current));
-  // An empty completer set is only believed after SEARCH_MS: a thread still loading history also
-  // looks empty. A set that was non-empty and drained is believed immediately.
+    [...activeWindows].filter((entry) =>
+      wants === undefined || wants(entry.viewportRef.current));
+  // An empty set is only believed after SEARCH_MS: a thread still loading history also looks
+  // empty. A set that was non-empty and drained is believed immediately.
   const deadline = Date.now() + PROGRESSIVE_MOUNT_SEARCH_MS;
   let observed = false;
   for (;;) {
@@ -79,15 +134,30 @@ export async function completeProgressiveMounts(
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
-    // Filtered set: an unwanted completer would otherwise hold the loop open forever.
-    if (wanted().length === 0 && (observed || Date.now() >= deadline)) {
+    // Filtered set: an unwanted window would otherwise hold the loop open forever.
+    if (
+      !wanted().some((entry) => entry.withholding()) &&
+      (observed || Date.now() >= deadline)
+    ) {
       return;
     }
   }
 }
 
+/** True only while a full mount is in progress; a settled window withholds rows without being
+ *  pending. */
 export function hasPendingProgressiveMounts(): boolean {
-  return activeCompleters.size > 0;
+  for (const entry of activeWindows) if (entry.filling()) return true;
+  return false;
+}
+
+/** Mounts the row for a message the window left out, so a jump can scroll to it. Resolves false
+ *  when no mounted thread under `viewport` holds the message. */
+export function revealProgressiveRow(viewport: HTMLElement, messageId: string): boolean {
+  for (const entry of activeWindows) {
+    if (entry.viewportRef.current === viewport) return entry.reveal(messageId);
+  }
+  return false;
 }
 
 /** Clears only an empty inline declaration so the viewport carries no stray `style=""`. */
@@ -183,305 +253,599 @@ function frontierAbove(viewport: HTMLElement | null): number | null {
   return viewport.getBoundingClientRect().top - first.getBoundingClientRect().top;
 }
 
-function isAnchorVisible(viewport: HTMLElement, element: Element): boolean {
-  const box = element.getBoundingClientRect();
-  const fold = viewport.getBoundingClientRect().top;
-  return box.bottom > fold && box.top < fold + viewport.clientHeight;
+type ThreadMessage = {
+  id?: string;
+  role?: ThreadMessageRole;
+  content?: readonly { type?: string; text?: string }[];
+  composer?: { isEditing?: boolean };
+};
+
+type Metas = {
+  metas: RowMeta[];
+  index: Map<string, number>;
+};
+
+/** Message objects are immutable, so a meta lives as long as its message does. */
+const metaCache = new WeakMap<object, RowMeta>();
+
+function metaOf(message: ThreadMessage, index: number): RowMeta {
+  const cached = metaCache.get(message);
+  if (cached) return cached;
+  const meta: RowMeta = {
+    id: message.id ?? `#${index}`,
+    role: message.role ?? "assistant",
+    weight: messageWeight(message.content),
+    // Unknown shapes count as rendering: room for a row that turns out empty costs nothing.
+    renders:
+      message.role == null ||
+      rendersAsRow(message.role, message.composer?.isEditing === true),
+  };
+  metaCache.set(message, meta);
+  return meta;
 }
 
-function useProgressiveMountWindow(
+/** The messages array is replaced, never edited, so it keys what was derived from it. */
+const metasCache = new WeakMap<readonly ThreadMessage[], Metas>();
+
+function metasOf(messages: readonly ThreadMessage[]): Metas {
+  const cached = metasCache.get(messages);
+  if (cached) return cached;
+  const metas = messages.map(metaOf);
+  const index = new Map<string, number>();
+  metas.forEach((meta, at) => index.set(meta.id, at));
+  const derived = { metas, index };
+  metasCache.set(messages, derived);
+  return derived;
+}
+
+/** Heights outlive a thread switch, so coming back to a thread opens on measured spacers. */
+const threadHeights = new Map<string, RowHeights>();
+const REMEMBERED_THREADS = 8;
+
+function heightsFor(key: string | undefined): RowHeights {
+  if (key === undefined) return new RowHeights();
+  let heights = threadHeights.get(key);
+  if (heights) threadHeights.delete(key);
+  else heights = new RowHeights();
+  threadHeights.set(key, heights);
+  if (threadHeights.size > REMEMBERED_THREADS) {
+    const oldest = threadHeights.keys().next().value;
+    if (oldest !== undefined) threadHeights.delete(oldest);
+  }
+  return heights;
+}
+
+type Measured = {
+  rows: MountedRow[];
+  elements: Map<number, HTMLElement>;
+  topSpacerTop: number;
+  bottomSpacerTop: number;
+};
+
+/** One pass of layout reads over the mounted rows, which also records each row's height: its top
+ *  to the next row's top, so margins between rows are counted. */
+function measureRows(
+  viewport: HTMLElement,
+  top: HTMLElement | null,
+  bottom: HTMLElement | null,
+  lookup: Metas,
+  heights: RowHeights,
+): Measured {
+  const origin = viewport.getBoundingClientRect().top;
+  const rows: MountedRow[] = [];
+  const elements = new Map<number, HTMLElement>();
+  for (const child of viewport.children) {
+    if (!(child instanceof HTMLElement) || !child.matches(ROW_SELECTOR)) continue;
+    const index = lookup.index.get(child.getAttribute("data-message-id") ?? "");
+    if (index === undefined) continue;
+    const box = child.getBoundingClientRect();
+    rows.push({ index, top: box.top - origin, bottom: box.bottom - origin });
+    elements.set(index, child);
+  }
+  const bottomSpacerTop = bottom ? bottom.getBoundingClientRect().top - origin : null;
+  for (let at = 0; at < rows.length; at += 1) {
+    const nextTop =
+      at + 1 < rows.length ? rows[at + 1].top : (bottomSpacerTop ?? rows[at].bottom);
+    heights.measure(lookup.metas[rows[at].index], Math.max(0, nextTop - rows[at].top));
+  }
+  return {
+    rows,
+    elements,
+    topSpacerTop: top ? top.getBoundingClientRect().top - origin : 0,
+    bottomSpacerTop: bottomSpacerTop ?? 0,
+  };
+}
+
+/** A row the reader is working in keeps its state: focus, an open edit, media that is playing. */
+function isPinned(row: HTMLElement | undefined): boolean {
+  if (!row) return false;
+  if (row.contains(document.activeElement)) return true;
+  if (row.querySelector(PINNED_CONTENT) !== null) return true;
+  for (const media of row.querySelectorAll<HTMLMediaElement>("video, audio")) {
+    if (!media.paused) return true;
+  }
+  return false;
+}
+
+/** A selection reaching into the thread keeps its rows: unmounting one would cut the range. */
+function selectionHeld(viewport: HTMLElement): boolean {
+  const selection = document.getSelection();
+  return (
+    selection !== null &&
+    !selection.isCollapsed &&
+    selection.rangeCount > 0 &&
+    selection.getRangeAt(0).intersectsNode(viewport)
+  );
+}
+
+/**
+ * A list that leaves rows out of the DOM has to say how long it is and where each row sits
+ * (WAI-ARIA), or assistive technology counts only what is mounted. Written here and not by the
+ * rows: the total changes on every append, and a row must not re-render for it. A full mount
+ * publishes nothing.
+ */
+function publishOrdinals(viewport: HTMLElement, lookup: Metas, windowed: boolean): void {
+  const total = String(lookup.metas.length);
+  for (const child of viewport.children) {
+    if (!child.matches(ROW_SELECTOR)) continue;
+    const index = windowed
+      ? lookup.index.get(child.getAttribute("data-message-id") ?? "")
+      : undefined;
+    if (index === undefined) {
+      child.removeAttribute("aria-posinset");
+      child.removeAttribute("aria-setsize");
+      continue;
+    }
+    const position = String(index + 1);
+    if (child.getAttribute("aria-posinset") !== position) {
+      child.setAttribute("aria-posinset", position);
+    }
+    if (child.getAttribute("aria-setsize") !== total) child.setAttribute("aria-setsize", total);
+  }
+}
+
+function useThreadWindow(
   count: number,
   resetKey: string | undefined,
   viewportRef: RefObject<HTMLElement | null>,
-  alignmentRef: RefObject<HTMLDivElement | null>,
-): MountWindow {
+  topRef: RefObject<HTMLDivElement | null>,
+  bottomRef: RefObject<HTMLDivElement | null>,
+): RowWindow | null {
   const aui = useAui();
   const adjustScroll = useAdjustForContentInsertedAbove();
-  const adjustForContentInsertedAbove = useCallback((shift: number) => {
-    const spacer = alignmentRef.current;
-    if (spacer) {
-      // WebKit rounds scrollTop. Align the inserted height instead of moving text
-      // between two fractional positions on every background prepend.
-      const aligned = alignAnchorCorrection(shift, Number.parseFloat(spacer.style.height) || 0);
-      spacer.style.height = `${aligned.inset}px`;
-      return adjustScroll(aligned.scroll);
-    }
-    return adjustScroll(shift);
-  }, [adjustScroll, alignmentRef]);
 
-  // Imperative, so run start/stop does not re-render and rebuild the row array.
-  const isRunningNow = useCallback(
-    () => aui.thread().getState().isRunning === true,
+  // Read imperatively: a useAuiState selector on messages would walk the thread every keystroke.
+  const readMetas = useCallback(
+    (): Metas =>
+      metasOf(aui.thread().getState().messages as unknown as readonly ThreadMessage[]),
     [aui],
   );
 
-  // Read imperatively: a useAuiState selector on messages would walk the thread every keystroke.
-  const renderableAt = useCallback(() => {
-    const messages = aui.thread().getState().messages as ReadonlyArray<{
-      role?: ThreadMessageRole;
-      composer?: { isEditing?: boolean };
-    }>;
-    return (index: number) => {
-      const message = messages[index];
-      // Unknown shapes count as renderable, degrading to the count-based window rather than none.
-      if (message?.role == null) return true;
-      return rendersAsRow(message.role, message.composer?.isEditing === true);
-    };
-  }, [aui]);
+  const heights = useMemo(() => heightsFor(resetKey), [resetKey]);
 
-  const [mountWindow, setMountWindow] = useState<MountWindow>(() =>
-    initialWindow(count, isRunningNow(), renderableAt()),
-  );
+  const open = useCallback((): RowWindow | null => {
+    const { metas } = readMetas();
+    const view = typeof window === "undefined" ? 900 : window.innerHeight;
+    return initialRowWindow(
+      metas.length,
+      (index) => heights.heightOf(metas[index]),
+      view + WINDOW_REACH_PX,
+    );
+  }, [readMetas, heights]);
+
+  const [win, setWin] = useState<RowWindow | null>(open);
+  const winRef = useRef(win);
+  /** "fill" mounts every row for a DOM reader (find, print, select all); "slide" follows the reader. */
+  const modeRef = useRef<"slide" | "fill">("slide");
+  /** Px the leading spacer carries beyond its rows' heights; see absorbShift. */
+  const slackRef = useRef(0);
+  const releaseAtRef = useRef(0);
+  const printingRef = useRef(false);
+  const anchorRef = useRef<HeldAnchor | null>(null);
+  /** A commit is in flight; its layout effect owns the correction. */
+  const pendingRef = useRef(false);
+  const frameRef = useRef(0);
+  const chunkRef = useRef(0);
+  const waitersRef = useRef<Array<() => void>>([]);
+  const scrollActivity = useRef<ReturnType<typeof watchProgressiveScroll> | null>(null);
+  const stepRef = useRef<() => void>(() => undefined);
+  const settleTimerRef = useRef(0);
+  /** Rows carry ordinals, so the next full mount has them to clear. */
+  const ordinalsRef = useRef(false);
 
   // Re-arm per thread during render. Unexercised while an ancestor key remounts on switch, but
   // needed if that key is removed.
   const [previousKey, setPreviousKey] = useState(resetKey);
   if (previousKey !== resetKey) {
     setPreviousKey(resetKey);
-    setMountWindow(initialWindow(count, isRunningNow(), renderableAt()));
+    setWin(open());
   }
 
-  // Arm on the commit that first brings rows into an empty tree: history arrives after mount, and
-  // gating on the threshold instead would window a thread the reader is in the middle of.
   const [previousCount, setPreviousCount] = useState(count);
   if (previousCount !== count) {
     setPreviousCount(count);
     if (previousCount === 0 && count > 0) {
-      setMountWindow(initialWindow(count, isRunningNow(), renderableAt()));
+      // History arrives after mount: open on the commit that first brings rows in.
+      setWin(open());
+    } else if (win != null) {
+      // A window that reached the tail follows it; one past a shorter thread is clamped.
+      if (win.end >= previousCount && count > win.end) setWin({ start: win.start, end: count });
+      else if (win.start >= count) setWin(null);
+      else if (win.end > count) setWin({ start: win.start, end: count });
     }
   }
 
-  // Reconcile a thread that shrank past the window here, or a later widen unmounts rows.
-  if (mountWindow != null && mountWindow.start >= count) {
-    setMountWindow(null);
-  }
+  // Read on render: the component renders when the count changes, which is when rows are added.
+  const { metas } = readMetas();
+  const spacers = useMemo(() => spacerHeights(heights, metas, win), [heights, metas, win]);
 
-  // A run starting mid-widening drops the window: streaming and widening write the same scrollTop.
-  const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  useEffect(() => {
-    if (threadIsRunning && mountWindow != null) setMountWindow(null);
-  }, [threadIsRunning, mountWindow]);
+  const schedule = useCallback(() => {
+    if (frameRef.current) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = 0;
+      stepRef.current();
+    });
+  }, []);
 
-  // Captured against the scroll container; the correction assumes native anchoring is off.
-  const anchorRef = useRef<
-    | ({
-        element: Element;
-        row: Element | null;
-        rowSample: AnchorSample | null;
-      } & AnchorSample)
-    | null
-  >(null);
-  const idleRef = useRef<HeldAnchor | null>(null);
-  const chunkRef = useRef(0);
-  const scrollActivity = useRef<ReturnType<typeof watchProgressiveScroll> | null>(null);
+  const commit = useCallback(
+    (next: RowWindow | null, sync: boolean) => {
+      const viewport = viewportRef.current;
+      if (viewport) {
+        // Off before the capture: native anchoring would correct the same shift a second time.
+        viewport.style.setProperty("overflow-anchor", "none");
+        const element = pickAnchorRow(viewport);
+        anchorRef.current = element ? holdAnchor(viewport, element) : null;
+      }
+      pendingRef.current = true;
+      const apply = () => setWin(next);
+      // Keep the commit and its correction inside the same WebKit rendering frame.
+      if (sync) flushSync(apply);
+      else startTransition(apply);
+    },
+    [viewportRef],
+  );
+
+  const flushWaiters = useCallback(() => {
+    const waiters = waitersRef.current;
+    waitersRef.current = [];
+    for (const resolve of waiters) resolve();
+  }, []);
+
+  const ordinals = useCallback(
+    (viewport: HTMLElement, lookup: Metas) => {
+      const windowed = winRef.current != null;
+      if (!windowed && !ordinalsRef.current) return;
+      publishOrdinals(viewport, lookup, windowed);
+      ordinalsRef.current = windowed;
+    },
+    [],
+  );
+
+  /**
+   * The window is where the reader needs it. Once input has gone quiet, fold what the leading
+   * spacer took on (see absorbShift) into scrollTop, so the spacer is its rows' heights again and
+   * the scroll range tracks the estimates as they improve. A write no one can see: the anchor
+   * stays put, and nothing is scrolling for it to interrupt.
+   */
+  const settle = useCallback(
+    (viewport: HTMLElement, current: RowWindow, lookup: Metas) => {
+      const top = topRef.current;
+      window.clearTimeout(settleTimerRef.current);
+      if (!top || current.start <= 0) {
+        restoreScrollAnchoring(viewport);
+        return;
+      }
+      const wanted = spacerHeights(heights, lookup.metas, current).top;
+      const now = Number.parseFloat(top.style.height) || 0;
+      if (Math.abs(now - wanted) < 1) {
+        slackRef.current = now - wanted;
+        restoreScrollAnchoring(viewport);
+        return;
+      }
+      if (scrollActivity.current?.blocked(inputPointerHeld())) {
+        settleTimerRef.current = window.setTimeout(schedule, SETTLE_RETRY_MS);
+        return;
+      }
+      viewport.style.setProperty("overflow-anchor", "none");
+      const element = pickAnchorRow(viewport);
+      const held = element ? holdAnchor(viewport, element) : null;
+      top.style.height = `${wanted}px`;
+      slackRef.current = 0;
+      const shift = held
+        ? anchorCorrection(held.sample, sampleAnchor(viewport, held.element), ANCHOR_PRECISION)
+        : null;
+      adjustScroll(shift ?? 0);
+      restoreScrollAnchoring(viewport);
+    },
+    [adjustScroll, heights, schedule, topRef],
+  );
+
+  const step = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || pendingRef.current) return;
+    // Another route keeps the chat page alive but hidden. Nothing has a box there: every row
+    // would measure zero and the window would walk the whole thread looking for its reach. The
+    // resize observer steps again when the viewport is shown.
+    if (viewport.clientHeight === 0) return;
+    const lookup = readMetas();
+    const total = lookup.metas.length;
+    const current = winRef.current;
+    const measured = measureRows(viewport, topRef.current, bottomRef.current, lookup, heights);
+    // Also here: a row can replace its root (an edit opening) without the window committing.
+    ordinals(viewport, lookup);
+
+    const readerHolds =
+      printingRef.current ||
+      fullMountHolds.size > 0 ||
+      document.documentElement.hasAttribute(FIND_FLAG);
+    if (readerHolds) modeRef.current = "fill";
+    else if (
+      modeRef.current === "fill" &&
+      current == null &&
+      performance.now() >= releaseAtRef.current
+    ) {
+      modeRef.current = "slide";
+    }
+
+    if (current == null) {
+      if (waitersRef.current.length > 0) {
+        // Resolve after a paint; the request keeps the full mount a little longer.
+        releaseAtRef.current = performance.now() + FILL_RELEASE_MS;
+        requestAnimationFrame(flushWaiters);
+      }
+      const next = planEngage(measured.rows, total, viewport.clientHeight);
+      const held =
+        modeRef.current === "fill" || selectionHeld(viewport) || inputPointerHeld();
+      if (next == null || held) {
+        restoreScrollAnchoring(viewport);
+        // A reader's hold wakes the window when it ends. The others end silently (the release
+        // time passing, a selection cleared, a pointer lifted), so look again.
+        if (next != null && !readerHolds) {
+          window.clearTimeout(settleTimerRef.current);
+          settleTimerRef.current = window.setTimeout(schedule, HOLD_RECHECK_MS);
+        }
+        return;
+      }
+      commit(next, true);
+      return;
+    }
+
+    let next: RowWindow | null;
+    if (modeRef.current === "fill") {
+      // A commit also interrupts native wheel momentum, so a full mount waits for a quiet moment.
+      if (scrollActivity.current?.blocked(inputPointerHeld())) {
+        schedule();
+        return;
+      }
+      const chunk = WEBKIT_GTK
+        ? (chunkRef.current = nextMountChunk(
+            chunkRef.current, frontierAbove(viewport), FILL_CHUNK, WINDOW_REACH_PX))
+        : FILL_CHUNK;
+      next = planFill(current, total, chunk);
+    } else {
+      chunkRef.current = 0;
+      const running = aui.thread().getState().isRunning === true;
+      next = planSlide({
+        win: current,
+        count: total,
+        rows: measured.rows,
+        viewHeight: viewport.clientHeight,
+        topSpacerTop: measured.topSpacerTop,
+        bottomSpacerTop: measured.bottomSpacerTop,
+        slack: slackRef.current,
+        heightOf: (index) => heights.heightOf(lookup.metas[index]),
+        maxStep: SLIDE_STEP,
+        trim: !selectionHeld(viewport) && !inputPointerHeld(),
+        // The reply being written keeps its row: its effects run the stream.
+        pinned: (index) =>
+          (running && index === total - 1) || isPinned(measured.elements.get(index)),
+      });
+    }
+    if (sameWindow(next, current)) {
+      settle(viewport, current, lookup);
+      return;
+    }
+    const trimOnly = next != null && next.start >= current.start && next.end <= current.end;
+    commit(next, WEBKIT_GTK || trimOnly);
+  }, [aui, commit, flushWaiters, heights, ordinals, readMetas, schedule, settle, viewportRef, topRef, bottomRef]);
+  useLayoutEffect(() => {
+    stepRef.current = step;
+  }, [step]);
+
+  // Declared before the commit effect below, which reads what this resets.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the thread these belong to
+  useLayoutEffect(() => {
+    modeRef.current = "slide";
+    slackRef.current = 0;
+  }, [resetKey]);
+
+  // Runs in the commit that changed the window, before paint: size the spacers, then put the
+  // reader's anchor back where it was.
+  useLayoutEffect(() => {
+    winRef.current = win;
+    const captured = anchorRef.current;
+    anchorRef.current = null;
+    const committed = pendingRef.current;
+    pendingRef.current = false;
+    const viewport = viewportRef.current;
+    const top = topRef.current;
+    const bottom = bottomRef.current;
+    if (!viewport || !top || !bottom) return;
+    const atFirstRow = win == null || win.start <= 0;
+    let spacer = atFirstRow ? 0 : Math.max(0, spacers.top + slackRef.current);
+    top.style.height = `${spacer}px`;
+    bottom.style.height = `${spacers.bottom}px`;
+    let scroll = 0;
+    if (captured) {
+      const [element, baseline] = captured.element.isConnected
+        ? [captured.element, captured.sample]
+        : captured.row?.isConnected && captured.rowSample
+          ? [captured.row, captured.rowSample]
+          : [null, null];
+      const shift =
+        element && baseline
+          ? anchorCorrection(baseline, sampleAnchor(viewport, element), ANCHOR_PRECISION)
+          : null;
+      if (shift !== null) {
+        // The spacer takes the shift, so scrollTop (and a wheel's momentum, or a held scrollbar
+        // thumb) is left alone unless the spacer has nothing left to give.
+        const taken = absorbShift(spacer, shift, atFirstRow);
+        spacer = taken.spacer;
+        scroll = taken.scroll;
+        top.style.height = `${spacer}px`;
+      }
+    }
+    slackRef.current = atFirstRow ? 0 : spacer - spacers.top;
+    // Called with zero too: the hook owns scrollTop and resyncs its bookkeeping on every commit.
+    adjustScroll(scroll);
+    ordinals(viewport, readMetas());
+    if (committed) for (const listener of rowListeners) listener();
+    schedule();
+  }, [win, spacers, adjustScroll, ordinals, readMetas, schedule, viewportRef, topRef, bottomRef]);
+
+  const complete = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        modeRef.current = "fill";
+        releaseAtRef.current = performance.now() + FILL_RELEASE_MS;
+        if (winRef.current == null) {
+          resolve();
+          return;
+        }
+        waitersRef.current.push(resolve);
+        schedule();
+      }),
+    [schedule],
+  );
+
+  const reveal = useCallback(
+    (messageId: string): boolean => {
+      const lookup = readMetas();
+      const index = lookup.index.get(messageId);
+      if (index === undefined) return false;
+      const current = winRef.current;
+      if (current == null || (index >= current.start && index < current.end)) return true;
+      // No anchor: the caller scrolls to the row, so there is no reading position to keep.
+      viewportRef.current?.style.setProperty("overflow-anchor", "none");
+      anchorRef.current = null;
+      pendingRef.current = true;
+      flushSync(() =>
+        setWin({ start: index, end: Math.min(lookup.metas.length, index + SLIDE_STEP) }),
+      );
+      return true;
+    },
+    [readMetas, viewportRef],
+  );
+
+  useLayoutEffect(() => {
+    const entry: ActiveWindow = {
+      complete,
+      reveal,
+      withholding: () => winRef.current != null,
+      filling: () => modeRef.current === "fill" && winRef.current != null,
+      wake: schedule,
+      viewportRef,
+    };
+    activeWindows.add(entry);
+    return () => {
+      activeWindows.delete(entry);
+    };
+  }, [complete, reveal, schedule, viewportRef]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const activity = watchProgressiveScroll(viewport);
     scrollActivity.current = activity;
+    const flags = new MutationObserver(schedule);
+    flags.observe(document.documentElement, { attributes: true, attributeFilter: [FIND_FLAG] });
+    const resize = new ResizeObserver(schedule);
+    resize.observe(viewport);
+    const media = window.matchMedia("print");
+    const beforePrint = () => {
+      printingRef.current = true;
+      modeRef.current = "fill";
+      // Print lays out what is mounted, so everything mounts before the dialog opens.
+      if (winRef.current != null && !pendingRef.current) commit(null, true);
+    };
+    const afterPrint = () => {
+      printingRef.current = media.matches;
+      releaseAtRef.current = performance.now();
+      schedule();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Select all means the whole conversation, so the rows it should cover start mounting.
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("input, textarea, [contenteditable=true]")) return;
+      void complete();
+    };
+    const onCopy = () => {
+      // The clipboard takes what the selection holds in the DOM. A selection that runs across a
+      // spacer (select all pressed a moment ago, or a range set by script) would copy a short
+      // conversation, so the rows mount before the copy is read: one slow copy over lost text.
+      if (winRef.current == null) return;
+      const selection = document.getSelection();
+      if (!selection || selection.isCollapsed) return;
+      const top = topRef.current;
+      const bottom = bottomRef.current;
+      const standsIn = (spacer: HTMLElement | null) =>
+        spacer !== null && spacer.offsetHeight > 0 && selection.containsNode(spacer, true);
+      const fromTop = standsIn(top);
+      const toBottom = standsIn(bottom);
+      if (!fromTop && !toBottom) return;
+      modeRef.current = "fill";
+      releaseAtRef.current = performance.now() + FILL_RELEASE_MS;
+      commit(null, true);
+      // WebKit serialises the selection it resolved before the rows mounted, even where the range
+      // it reports has grown to hold them, so the selection is set again; and an end it had moved
+      // off a spacer onto the next row goes back to the spacer, which the new rows are inside of.
+      if (selection.rangeCount !== 1) return;
+      const range = selection.getRangeAt(0).cloneRange();
+      const edge = document.createRange();
+      if (fromTop && top) {
+        edge.setStartBefore(top);
+        edge.collapse(true);
+        if (range.compareBoundaryPoints(Range.START_TO_START, edge) > 0) range.setStartBefore(top);
+      }
+      if (toBottom && bottom) {
+        edge.setStartAfter(bottom);
+        edge.collapse(true);
+        if (range.compareBoundaryPoints(Range.END_TO_END, edge) < 0) range.setEndAfter(bottom);
+      }
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    viewport.addEventListener("scroll", schedule, { passive: true });
+    document.addEventListener("copy", onCopy, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("beforeprint", beforePrint);
+    window.addEventListener("afterprint", afterPrint);
+    schedule();
     return () => {
       activity.dispose();
       scrollActivity.current = null;
-    };
-  }, [viewportRef]);
-
-  const captureAnchor = useCallback(() => {
-    const viewport = viewportRef.current;
-    // Disarm native anchoring right before the capture. A layout effect is too early: as a descendant,
-    // this runs before the viewport ref callback on the mounting commit.
-    if (viewport) viewport.style.setProperty("overflow-anchor", "none");
-    // Preserve the last compensated position, including reflows between widening frames.
-    const held = idleRef.current;
-    if (viewport && held?.element.isConnected && isAnchorVisible(viewport, held.element)) {
-      anchorRef.current = {
-        element: held.element,
-        ...held.sample,
-        row: held.row,
-        rowSample: held.rowSample,
-      };
-      return;
-    }
-    const anchor = viewport ? pickAnchorRow(viewport) : null;
-    // Fall back to the row: the anchor is often a `<pre>` replaced when Shiki finishes.
-    const row = anchor?.closest("[data-role]") ?? null;
-    anchorRef.current =
-      viewport && anchor
-        ? {
-            element: anchor,
-            ...sampleAnchor(viewport, anchor),
-            row,
-            rowSample: row ? sampleAnchor(viewport, row) : null,
-          }
-        : null;
-  }, [viewportRef]);
-
-  useEffect(() => {
-    if (mountWindow == null) return;
-    let frame = 0;
-    const advance = () => {
-      // Re-check: a run can start between the commit and this frame.
-      if (isRunningNow()) {
-        setMountWindow(null);
-        return;
-      }
-      // A prepend's instant anchor correction also interrupts native wheel momentum.
-      if (scrollActivity.current?.blocked(inputPointerHeld())) {
-        frame = requestAnimationFrame(advance);
-        return;
-      }
-      captureAnchor();
-      // Read after the capture's layout reads, so this forces no extra layout.
-      const chunk = WEBKIT_GTK
-        ? (chunkRef.current = nextMountChunk(
-            chunkRef.current, frontierAbove(viewportRef.current), MOUNT_CHUNK, WINDOW_REACH))
-        : MOUNT_CHUNK;
-      const commit = () => {
-        setMountWindow((current) => widen(current, count, chunk));
-      };
-      // Keep the prepend and its scroll correction inside the same WebKit rendering frame.
-      if (WEBKIT_GTK) flushSync(commit);
-      else startTransition(commit);
-    };
-    frame = requestAnimationFrame(advance);
-    return () => cancelAnimationFrame(frame);
-  }, [mountWindow, count, captureAnchor, isRunningNow, viewportRef]);
-
-  // mountWindow is a trigger: this must run in the commit that widened the window, before paint.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mountWindow is a trigger, see above
-  useLayoutEffect(() => {
-    const captured = anchorRef.current;
-    anchorRef.current = null;
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    if (!captured) {
-      // The initial tail has no earlier anchor. Pin it before its first paint,
-      // just as later prepends are corrected in this commit.
-      adjustForContentInsertedAbove(0);
-      return;
-    }
-    const [element, baseline] = captured.element.isConnected
-      ? [captured.element, captured as AnchorSample]
-      : captured.row?.isConnected && captured.rowSample
-        ? [captured.row, captured.rowSample]
-        : [null, null];
-    if (!element || !baseline) return;
-    const shift = anchorCorrection(baseline, sampleAnchor(viewport, element), ANCHOR_PRECISION);
-    // Call even with zero shift: it resyncs the hook's scroll bookkeeping.
-    adjustForContentInsertedAbove(shift ?? 0);
-    // Keep a post-correction baseline; nulling it folds an in-between reflow into the next one.
-    idleRef.current = holdAnchor(viewport, element);
-  }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
-
-  // Compensate reflows between prepends while native anchoring is off.
-  useEffect(() => {
-    if (mountWindow == null) {
-      idleRef.current = null;
-      // The next thread's first steps start small again.
-      chunkRef.current = 0;
-      return;
-    }
-    let frame = 0;
-    const tick = () => {
-      frame = requestAnimationFrame(tick);
-      const viewport = viewportRef.current;
-      // A pending widening capture owns the correction; stepping in would correct twice.
-      if (!viewport || anchorRef.current) return;
-      if (scrollActivity.current?.blocked(inputPointerHeld())) {
-        idleRef.current = null;
-        return;
-      }
-      const held = idleRef.current;
-      if (!held) {
-        const element = pickAnchorRow(viewport);
-        idleRef.current = element ? holdAnchor(viewport, element) : null;
-        return;
-      }
-      // Fall back to the row if replaced; re-picking would re-base after the replacement's reflow.
-      const [element, baseline] = held.element.isConnected
-        ? [held.element, held.sample]
-        : held.row?.isConnected && held.rowSample
-          ? [held.row, held.rowSample]
-          : [null, null];
-      if (!element || !baseline) {
-        const replacement = pickAnchorRow(viewport);
-        idleRef.current = replacement
-          ? holdAnchor(viewport, replacement)
-          : null;
-        return;
-      }
-      // Tested by the row's box, not its top: a tall row just off screen can keep its top near the fold.
-      if (!isAnchorVisible(viewport, element)) {
-        // Re-pick in this frame; a baseline-free frame folds a reflow into the next baseline.
-        const replacement = pickAnchorRow(viewport);
-        idleRef.current = replacement
-          ? holdAnchor(viewport, replacement)
-          : null;
-        return;
-      }
-      const shift = anchorCorrection(baseline, sampleAnchor(viewport, element), ANCHOR_PRECISION);
-      if (shift !== null) adjustForContentInsertedAbove(shift);
-      // Re-base every frame: anchorCorrection's clamp term reads the baseline scrollTop.
-      idleRef.current = holdAnchor(viewport, element);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
-
-  // Restore native anchoring when the window closes or on unmount; it is turned off at capture.
-  useLayoutEffect(() => {
-    if (mountWindow != null) return;
-    restoreScrollAnchoring(viewportRef.current);
-  }, [mountWindow, viewportRef]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: unmount-only cleanup
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current;
-    return () => {
+      flags.disconnect();
+      resize.disconnect();
+      viewport.removeEventListener("scroll", schedule);
+      document.removeEventListener("copy", onCopy, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("beforeprint", beforePrint);
+      window.removeEventListener("afterprint", afterPrint);
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = 0;
+      window.clearTimeout(settleTimerRef.current);
       restoreScrollAnchoring(viewport);
     };
-  }, [viewportRef]);
-
-  // Registered only while rows are withheld, so completeProgressiveMounts is free when settled.
-  const isWithholding = mountWindow != null;
-  const completionWaiters = useRef<Array<() => void>>([]);
-  useLayoutEffect(() => {
-    if (!isWithholding) return;
-    const complete = () =>
-      new Promise<void>((resolve) => {
-        completionWaiters.current.push(resolve);
-        setMountWindow(null);
-      });
-    const entry: ActiveCompleter = { complete, viewportRef };
-    activeCompleters.add(entry);
-    return () => {
-      activeCompleters.delete(entry);
-    };
-  }, [isWithholding, viewportRef]);
-
-  // Resolve after the commit that dropped the window, then a paint; a bare timer raced the commit.
-  const flushCompletionWaiters = useCallback(() => {
-    const waiters = completionWaiters.current;
-    completionWaiters.current = [];
-    for (const resolve of waiters) resolve();
-  }, []);
-
-  useEffect(() => {
-    if (mountWindow != null || completionWaiters.current.length === 0) return;
-    // Waiters are emptied only when the frame fires, so a cancelled frame keeps them.
-    const frame = requestAnimationFrame(() =>
-      requestAnimationFrame(flushCompletionWaiters),
-    );
-    return () => cancelAnimationFrame(frame);
-  }, [mountWindow, flushCompletionWaiters]);
+  }, [viewportRef, topRef, bottomRef, schedule, commit, complete]);
 
   // Settle waiters on unmount, or a DOM capture racing a thread switch waits forever.
-  useEffect(() => flushCompletionWaiters, [flushCompletionWaiters]);
+  useEffect(() => flushWaiters, [flushWaiters]);
 
-  return mountWindow;
+  return win;
 }
 
-/** Drop-in for `ThreadPrimitive.Messages` that bounds a long thread's first commit to the tail. */
+/** Drop-in for `ThreadPrimitive.Messages` that mounts only the rows near the reader. */
 export const ProgressiveMessages: FC<{
   renderMessage: () => ReactElement;
   resetKey: string | undefined;
@@ -489,32 +853,33 @@ export const ProgressiveMessages: FC<{
 }> = memo(
   ({ renderMessage, resetKey, viewportRef }) => {
     const count = useAuiState(({ thread }) => thread.messages.length);
-    const alignmentRef = useRef<HTMLDivElement>(null);
-    const mountWindow = useProgressiveMountWindow(count, resetKey, viewportRef, alignmentRef);
+    const topRef = useRef<HTMLDivElement>(null);
+    const bottomRef = useRef<HTMLDivElement>(null);
+    const win = useThreadWindow(count, resetKey, viewportRef, topRef, bottomRef);
     const aui = useAui();
     const gate = useMemo(() => createRowNotificationGate(aui), [aui]);
 
     return useMemo(() => {
       if (count === 0) return null;
-      // A thread that shrank under a live window: drop the restriction now; clamping would emit nothing.
-      const first =
-        mountWindow == null || mountWindow.start >= count
-          ? 0
-          : Math.max(mountWindow.start, 0);
+      const first = win == null ? 0 : Math.max(0, Math.min(win.start, count));
+      const last = win == null ? count : Math.max(first, Math.min(win.end, count));
       const message = renderMessage();
       const rows: ReactElement[] = [];
-      for (let index = first; index < count; index += 1) {
+      for (let index = first; index < last; index += 1) {
         rows.push(
           <AuiProvider key={index} value={gate.row(index)}>
             <MessageByIndexProvider index={index}>{message}</MessageByIndexProvider>
           </AuiProvider>,
         );
       }
+      // Heights are written in the window's layout effect, never by React: it also moves them to
+      // hold the reader's anchor, and a re-render must not put the old value back.
       return <>
-        {WEBKIT_GTK && <div ref={alignmentRef} aria-hidden="true" style={{ height: 0, flexShrink: 0 }} />}
+        <div ref={topRef} data-thread-spacer="top" aria-hidden="true" style={{ flexShrink: 0 }} />
         {rows}
+        <div ref={bottomRef} data-thread-spacer="bottom" aria-hidden="true" style={{ flexShrink: 0 }} />
       </>;
-    }, [count, mountWindow, renderMessage, gate]);
+    }, [count, win, renderMessage, gate]);
   },
   (prev, next) =>
     prev.resetKey === next.resetKey &&

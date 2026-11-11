@@ -2352,12 +2352,11 @@ export const Thread: FC<{
 
           <TurnNavigator viewportRef={viewportElRef} />
 
-          {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
-          the tail and mounts the rest over the following frames. Nothing unmounts and the
-          document converges to the tree this rendered before; consumers that cannot wait call
-          completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
-          reason: React's bail-out needs one shared element per row. See
-          progressive-mount-controller.ts. */}
+          {/* Drop-in for ThreadPrimitive.Messages that mounts only the rows near the reader, with a
+          spacer for the rows on either side, so a thread costs what is on screen and not its
+          length. Readers of the whole document (find, print, select all) call
+          completeProgressiveMounts. It takes the propless slot #9042 introduced: React's bail-out
+          needs one shared element per row. See thread-window.ts. */}
           <ProgressiveMessages
             renderMessage={renderThreadMessage}
             resetKey={runtimeThreadId}

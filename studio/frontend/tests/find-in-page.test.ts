@@ -2497,9 +2497,10 @@ test("only threads this search can read are forced to finish mounting", async ()
   const progressive = await readSrcAsync(
     "components/assistant-ui/progressive-messages.tsx",
   );
+  // Re-read on every pass and filtered, so a thread this search cannot read never holds it open.
   assert.match(
     progressive,
-    /if \(wanted\(\)\.length === 0 && \(observed \|\| Date\.now\(\) >= deadline\)\)/,
+    /!wanted\(\)\.some\(\(entry\) => entry\.withholding\(\)\) &&\s*\(observed \|\| Date\.now\(\) >= deadline\)/,
   );
 });
 

@@ -4,6 +4,7 @@
 // Harness for tests/studio/playwright_thread_weight.py: the real Thread and real markdown bodies,
 // seeded via thread.import on a local runtime (only it backs export/import used by delete).
 
+import { holdProgressiveMounts } from "@/components/assistant-ui/progressive-messages";
 import { Thread } from "@/components/assistant-ui/thread";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -290,6 +291,10 @@ function ThreadWeightApi({
       messageCount(): number {
         return document.querySelectorAll("[data-role]").length;
       },
+      /** The conversation's length, where messageCount() is how much of it is mounted. */
+      threadLength(): number {
+        return aui.thread().getState().messages.length;
+      },
       counts(): {
         messages: number;
         assistantMessages: number;
@@ -375,6 +380,13 @@ function ThreadWeightApi({
   }, [aui, setThreadMounted]);
 
   return null;
+}
+
+// The checks on this page measure what a whole thread costs in the DOM (the state an open find bar
+// or a print puts the app in), so every row stays mounted. `?window=1` leaves the thread as the
+// app opens it: only the rows near the reader are mounted.
+if (new URLSearchParams(window.location.search).get("window") !== "1") {
+  holdProgressiveMounts();
 }
 
 // `?shell=1`: the ancestors the app puts around the thread (root layout + chat page), so CSS
