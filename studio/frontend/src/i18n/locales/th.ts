@@ -960,6 +960,7 @@ export const th = {
       hub: "ฮับโมเดล",
       train: "เทรน",
       recipes: "สูตร",
+      flows: "โฟลว์",
       images: "รูปภาพ",
       video: "วิดีโอ",
       audio: "เสียง",

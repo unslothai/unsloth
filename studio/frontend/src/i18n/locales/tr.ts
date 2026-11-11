@@ -1007,6 +1007,7 @@ export const tr = {
       hub: "Model merkezi",
       train: "Eğit",
       recipes: "Tarifler",
+      flows: "Akışlar",
       images: "Görseller",
       video: "Video",
       audio: "Ses",

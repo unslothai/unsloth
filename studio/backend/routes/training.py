@@ -1937,6 +1937,11 @@ def _background_video_generation_active() -> bool:
 
 async def _prepare_training_request(request: TrainingStartRequest, via_api_key: bool) -> None:
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
+    from core.inference import gpu_arbiter
+
+    leased = gpu_arbiter.lease_refusal()
+    if leased is not None:
+        raise leased.as_http_exception()
     if request.drafter is not None and request.drafter.enabled:
         from core.training.training import should_use_mlx_training_backend
         if should_use_mlx_training_backend():
@@ -2433,6 +2438,10 @@ async def start_training(
 
         # before_spawn hook: runs only after start_training's guards pass.
         def _free_vram_for_training() -> None:
+            from core.inference import gpu_arbiter
+
+            # Re-check: a lease taken during the awaited preflights must still stop the teardown.
+            gpu_arbiter.raise_if_leased()
             try:
                 from core.export import get_export_backend
                 exp_backend = get_export_backend()
@@ -2524,7 +2533,7 @@ async def start_training(
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
-        from core.inference.gpu_arbiter import SegmenterStillRunningError
+        from core.inference.gpu_arbiter import GpuLeaseHeldError, SegmenterStillRunningError
         from core.training.provenance import ExactResumeResourcesUnavailable
         from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
@@ -2544,6 +2553,7 @@ async def start_training(
                 ExactResumeResourcesUnavailable,
                 ManagedEngineStillRunning,
                 SegmenterStillRunningError,
+                GpuLeaseHeldError,
             ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
@@ -2600,6 +2610,8 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
+        except GpuLeaseHeldError as exc:
+            raise exc.as_http_exception()
         except (
             ExactResumeResourcesUnavailable,
             ManagedEngineStillRunning,
@@ -3549,6 +3561,9 @@ def _free_restyle_for_training() -> None:
 
 def _free_gpu_for_diffusion_training() -> None:
     """Frees resident GPU models first; the trainer's SDXL pipeline would OOM beside them."""
+    from core.inference import gpu_arbiter
+
+    gpu_arbiter.raise_if_leased()
     try:
         from core.export import get_export_backend
         exp_backend = get_export_backend()
@@ -3706,7 +3721,13 @@ async def start_diffusion_training(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Start an SDXL LoRA training job from an image + caption dataset."""
+    from core.inference import gpu_arbiter
     from core.training.diffusion_training_service import get_diffusion_training_service
+
+    # It frees the GPU below, so an operation holding the GPU lease (a benchmark, an eval) refuses it like LLM training.
+    leased = gpu_arbiter.lease_refusal()
+    if leased is not None:
+        raise leased.as_http_exception()
 
     # API-key auth: refuse while a request is in flight, since freeing GPU kills the stream.
     if via_api_key is True:

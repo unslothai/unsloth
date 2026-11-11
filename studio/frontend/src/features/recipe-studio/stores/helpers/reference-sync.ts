@@ -7,7 +7,7 @@ import type {
   NodeConfig,
   SamplerConfig,
 } from "../../types";
-import { removeRef, replaceRef } from "../../utils/refs";
+import { removeRef, renameRoot, replaceRef } from "../../utils/refs";
 
 function updateTemplateFields(
   config: NodeConfig,
@@ -66,6 +66,22 @@ export function applyRenameToConfig(
       subcategory_parent: to,
     };
   }
+  if (config.kind === "sampler" && config.conditional_params) {
+    // A sampler rule's condition (`topic == 'science'`) names columns too; its params stay.
+    const rules = Object.entries(config.conditional_params);
+    const renamed = rules.map(
+      ([condition, params]) =>
+        [renameRoot(condition, from, to), params] as const,
+    );
+    if (renamed.some(([condition], i) => condition !== rules[i][0])) {
+      const base = next as SamplerConfig;
+      next = {
+        ...base,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        conditional_params: Object.fromEntries(renamed),
+      };
+    }
+  }
   if (
     config.kind === "sampler" &&
     config.sampler_type === "timedelta" &&
@@ -89,6 +105,14 @@ export function applyRenameToConfig(
   if (config.kind === "llm" && config.tool_alias === from) {
     const base = next as LlmConfig;
     next = { ...base, tool_alias: to };
+  }
+  if (config.kind === "llm" && config.image_context?.column_name === from) {
+    const base = next as LlmConfig;
+    // biome-ignore lint/style/useNamingConvention: api schema
+    next = {
+      ...base,
+      image_context: { ...config.image_context, column_name: to },
+    };
   }
   if (config.kind === "validator") {
     const targets = config.target_columns ?? [];

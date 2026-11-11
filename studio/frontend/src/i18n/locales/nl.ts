@@ -1023,6 +1023,7 @@ export const nl = {
       hub: "Modelhub",
       train: "Trainen",
       recipes: "Recepten",
+      flows: "Flows",
       images: "Afbeeldingen",
       video: "Video",
       audio: "Audio",

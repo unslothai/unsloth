@@ -18999,7 +18999,15 @@ async def _load_model_impl(
     speech_codec_path: Optional[str] = None,
 ):
     from core.inference.npu_backend import is_npu_model_path
+    from core.benchmark.hold import scoring_active
 
+    if scoring_active():
+        # Every load comes through here, a chat request's automatic model switch included: a
+        # held-out scoring answers with the loaded model, so a switch mid-run would mix models.
+        raise HTTPException(
+            status_code = 409,
+            detail = "A benchmark is scoring the loaded model. Stop it or let it finish, then try again.",
+        )
     if is_npu_model_path(request.model_path):
         return await _load_npu_model(
             request,
@@ -21753,8 +21761,16 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     )
 
 
+def _refuse_while_leased() -> None:
+    from core.inference import gpu_arbiter
+    leased = gpu_arbiter.lease_refusal()
+    if leased is not None:
+        raise leased.as_http_exception()
+
+
 async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     """Routes the unload to llama-server for GGUF models and to Unsloth otherwise."""
+    _refuse_while_leased()
     extra = (
         await _route_to_extra_slot(request.model_path)
         if request.cancel_load_request_id is None
@@ -39259,6 +39275,46 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
 # =====================================================================
 
+# llama.cpp tokenize passthrough  (/tokenize → llama-server /tokenize)
+# =====================================================================
+
+
+@router.post("/tokenize")
+@account_access.gpu_busy_route
+async def llama_tokenize(request: Request, current_subject: str = Depends(get_current_subject)):
+    """llama.cpp ``/tokenize`` passthrough (GGUF only); lm_eval's gguf backend needs exact token boundaries."""
+    body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    # After the switch: a body naming a model kept beside the primary routes to that slot's server.
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body) if isinstance(body, dict) else None,
+            request,
+            status = 503,
+        )
+        raise HTTPException(status_code = _status, detail = _detail)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    try:
+        async with _LlamaUpstream(llama_backend, "/tokenize", request = request) as upstream:
+            _resp = await upstream.post(body, timeout = 30)
+    except _NonStreamingRequestCancelled as _exc:
+        raise _openai_admission_http_exception(_exc, status_code = 499)
+    except httpx.RequestError as _exc:
+        raise HTTPException(status_code = 502, detail = _friendly_error(_exc))
+    if _resp.status_code != 200:
+        raise _openai_passthrough_error(_resp.status_code, _resp.text)
+    return Response(
+        content = _resp.content,
+        status_code = _resp.status_code,
+        media_type = "application/json",
+    )
+
+
+# =====================================================================
+
 # OpenAI Responses API  (/responses → /v1/responses)
 # =====================================================================
 
@@ -50309,7 +50365,9 @@ async def _generate_diffusion_image_run(
     from core.inference.diffusion_memory import (
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
+        IMAGE_REFUSAL_STREAMED_LORA,
         ImageActivationShortfallError,
+        StreamedLoraWeightsFixedError,
         unified_memory_refusal_code,
     )
     from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
@@ -50437,6 +50495,12 @@ async def _generate_diffusion_image_run(
                 status_code = 400,
                 detail = str(exc),
                 headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_MEMORY_ESTIMATE},
+            )
+        except StreamedLoraWeightsFixedError as exc:
+            raise HTTPException(
+                status_code = 400,
+                detail = str(exc),
+                headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_STREAMED_LORA},
             )
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))
@@ -51418,6 +51482,8 @@ async def unload_diffusion_model(
         account_access.require_resident_control("diffusion")
     from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release_if, DIFFUSION
+
+    _refuse_while_leased()
 
     if not expected_load_id and account_access.managed_account():
         account_access.require_resident_control(

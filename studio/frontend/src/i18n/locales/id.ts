@@ -1011,6 +1011,7 @@ export const id = {
       hub: "Hub model",
       train: "Latih",
       recipes: "Resep",
+      flows: "Alur",
       images: "Gambar",
       video: "Video",
       audio: "Audio",

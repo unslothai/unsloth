@@ -209,6 +209,7 @@ from .diffusion_memory import (
     ACTIVATION_TILE,
     DeviceMemory,
     ImageActivationShortfallError,
+    StreamedLoraWeightsFixedError,
     OFFLOAD_GROUP,
     OFFLOAD_MODEL,
     OFFLOAD_NONE,
@@ -649,7 +650,7 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     later generate, so such a load keeps its baked weights until a reload."""
     handles = getattr(state, "cuda_graphs", ()) or ()
     if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
-        raise ValueError(
+        raise StreamedLoraWeightsFixedError(
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
             "model is reloaded. Reload the model with the new adapter weights."
         )
@@ -1669,6 +1670,23 @@ def _active_component_summary() -> Optional[dict]:
     return overrides.summary() if overrides is not None and overrides.files else None
 
 
+# The physical gpu_ids a load request named (None: automatic), set on the load's own thread and committed with its
+# state, so a reload asks for the same cards rather than ranking every visible one.
+_REQUESTED_GPU_IDS: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
+    "unsloth_diffusion_requested_gpu_ids", default = None
+)
+
+
+def _active_component_specs() -> Optional[dict]:
+    """This load's text-encoder / VAE files, so a reload rebuilds the same model rather than re-ranking the folder."""
+    from .diffusion_comfy_components import active_component_overrides
+
+    overrides = active_component_overrides()
+    if overrides is None or not overrides.files:
+        return None
+    return {c: ref.named_path or ref.local_path or ref.spec for c, ref in overrides.files.items()}
+
+
 @dataclass(frozen = True)
 class _LoadState:
     """Everything about the currently-loaded pipeline, swapped as one unit."""
@@ -1730,6 +1748,8 @@ class _LoadState:
     # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
     component_files: Optional[dict] = None
+    component_specs: Optional[dict] = None
+    requested_gpu_ids: Optional[tuple] = None
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick. Committed WITH the
     # pipeline, so a load in flight never moves the resident model's card.
     gpu_ordinal: Optional[int] = None
@@ -5724,6 +5744,7 @@ class DiffusionBackend:
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
+                _requested_gpu_ids = tuple(gpu_ids) if gpu_ids else None,
                 _hub_token = hub_token,
                 _nvfp4_route = nvfp4_route,
             ),
@@ -5740,6 +5761,7 @@ class DiffusionBackend:
     @vram_budget_scope("image", load = True)
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
+        _REQUESTED_GPU_IDS.set(kwargs.pop("_requested_gpu_ids", None))
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         # API-initiated loads must download nothing; read local_files_only, do not pop it, since load_pipeline reads it too.
@@ -11687,6 +11709,8 @@ class DiffusionBackend:
                         resolved = resolved,
                         gguf_filename = gguf_filename,
                         component_files = _active_component_summary(),
+                        component_specs = _active_component_specs(),
+                        requested_gpu_ids = _REQUESTED_GPU_IDS.get(),
                         variant_hint = _image_variant_hint(
                             fam.name,
                             Path(single_file_path).name if single_file_path else None,
@@ -16315,6 +16339,8 @@ class DiffusionBackend:
             "model_kind": state.kind,
             "gguf_filename": state.gguf_filename,
             "component_files": state.component_files,
+            "component_specs": getattr(state, "component_specs", None),
+            "gpu_ids": list(getattr(state, "requested_gpu_ids", None) or ()) or None,
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)
                 if state.kind == "gguf" and state.gguf_filename

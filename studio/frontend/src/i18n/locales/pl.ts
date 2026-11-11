@@ -1018,6 +1018,7 @@ export const pl = {
       hub: "Centrum modeli",
       train: "Trenowanie",
       recipes: "Przepisy",
+      flows: "Przepływy",
       images: "Obrazy",
       video: "Wideo",
       audio: "Audio",

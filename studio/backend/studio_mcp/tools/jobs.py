@@ -23,7 +23,7 @@ from studio_mcp.tools import READ_ONLY, WRITES, as_dict, opt_text, route_json
 
 async def get_job(
     kind: Literal[
-        "video", "recipe", "export", "training", "diffusion_training", "load", "download"
+        "video", "recipe", "export", "training", "diffusion_training", "load", "download", "flow"
     ],
     id: Optional[str] = None,
     wait_s: Annotated[

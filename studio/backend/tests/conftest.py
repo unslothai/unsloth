@@ -1574,3 +1574,31 @@ def _kernel_lock_dir(tmp_path_factory):
 def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
     # Tests never take (or create) the environment's real kernel install locks.
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)
+
+
+@pytest.fixture
+def flows_client(monkeypatch):
+    """The Flows routes on a TestClient with a fresh engine (input.text + output.result handlers).
+
+    Requested by name only, so it costs nothing outside the flows tests; see tests/_flows_helpers.py.
+    """
+    from ._flows_helpers import flows_test_client
+    with flows_test_client(monkeypatch) as client:
+        yield client
+
+
+@pytest.fixture
+def fast_recipe_poll(monkeypatch):
+    """Flows recipe jobs are polled with no wait between status reads (requested by the recipe test modules)."""
+    from core.flows.nodes import data
+    monkeypatch.setattr(data, "POLL_S", 0)
+
+
+@pytest.fixture
+def no_gpu_lease(monkeypatch):
+    """The GPU arbiter starts with no lease, no owner and no residents (requested by the flows lease tests)."""
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_lease", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_residents", {})

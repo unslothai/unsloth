@@ -2604,6 +2604,8 @@ def test_begin_load_hands_the_picked_cards_to_the_load_thread(monkeypatch, modul
 
     def first_load_step(*args, **kwargs):
         seen["selection"] = mg.current_selection()
+        if module_name == "diffusion":
+            seen["requested"] = backend_mod._REQUESTED_GPU_IDS.get()
         raise RuntimeError("stop after the selection is read")
 
     class InlineThread:
@@ -2643,6 +2645,9 @@ def test_begin_load_hands_the_picked_cards_to_the_load_thread(monkeypatch, modul
 
     backend_cls().begin_load("org/model", gpu_ids = [0, 1])
     assert seen["selection"] == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    if module_name == "diffusion":
+        # The physical ids as asked, committed with the state for a reload to ask again.
+        assert seen["requested"] == (0, 1)
     # and only for that load
     assert mg.current_selection() is None
 

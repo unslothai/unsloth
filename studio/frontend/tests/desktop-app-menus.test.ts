@@ -72,6 +72,7 @@ test("the menus and the renderer name the same actions", () => {
     "go-hub",
     "go-train",
     "go-recipes",
+    "go-flows",
     "go-images",
     "go-video",
     "go-audio",

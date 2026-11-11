@@ -957,6 +957,7 @@ export const zhTW = {
       hub: "模型中心",
       train: "訓練",
       recipes: "配方",
+      flows: "流程",
       images: "圖片",
       video: "影片",
       audio: "音訊",

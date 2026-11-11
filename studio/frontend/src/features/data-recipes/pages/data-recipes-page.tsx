@@ -36,6 +36,7 @@ import {
   CookBookIcon,
   Database02Icon,
   DocumentAttachmentIcon,
+  FlowConnectionIcon,
   FunctionIcon,
   GithubIcon,
   Plant01Icon,
@@ -53,6 +54,7 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
+import { openRecipeInFlows } from "../data/open-in-flows";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildDataRecipesTourSteps } from "../tour";
 
@@ -536,6 +538,20 @@ export function DataRecipesPage(): ReactElement {
                       </p>
                     </div>
                   </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      openRecipeInFlows(recipe.id, navigate).catch(
+                        () => undefined,
+                      );
+                    }}
+                    title="Edit this recipe column by column in Flows. It stays here too."
+                  >
+                    <HugeiconsIcon icon={FlowConnectionIcon} className="size-4" />
+                    Open in Flows
+                  </Button>
                   <Button
                     type="button"
                     variant="ghost"

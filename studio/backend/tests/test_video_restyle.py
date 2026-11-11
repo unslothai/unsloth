@@ -855,6 +855,31 @@ def test_start_refuses_while_a_create_model_loads(weights, monkeypatch):
     assert exc.value.status_code == 409 and acquired == []
 
 
+def test_start_answers_409_while_another_operation_holds_the_gpu_lease(weights, monkeypatch):
+    import time
+
+    import core.inference.gpu_arbiter as arb
+    import core.inference.video as video_module
+    import utils.multi_model_settings as mms
+    from fastapi import HTTPException
+
+    from routes import video_restyle as route
+
+    monkeypatch.setattr(mms, "get_multi_model_mode", lambda: "off")
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Video(loaded = False))
+    monkeypatch.setattr(video_module, "generation_account_in_flight", lambda: None)
+    lease = {
+        "kind": "benchmark",
+        "holder": "a-flow-run",
+        "label": "A benchmark",
+        "expires": time.monotonic() + 60,
+    }
+    monkeypatch.setattr(arb, "_lease", lease)
+    with pytest.raises(HTTPException) as exc:
+        route._take_the_gpu()
+    assert exc.value.status_code == 409 and exc.value.detail["error"] == "gpu_leased"
+
+
 def test_gpu_acquire_is_refused_while_a_restyle_runs(weights, monkeypatch):
     import core.inference.gpu_arbiter as arb
 

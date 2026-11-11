@@ -1017,6 +1017,7 @@ export const es419 = {
       hub: "Centro de modelos",
       train: "Entrenar",
       recipes: "Recetas",
+      flows: "Flujos",
       images: "Imágenes",
       video: "Video",
       audio: "Audio",

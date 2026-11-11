@@ -31,6 +31,7 @@ def test_chat_withholds_each_tool_by_its_facts_and_never_names_one():
         "start_training",
         "export_model",
         "cancel",
+        "run_flow",
     }
     tools = _texts(CHAT)
     assert not absent & set(tools)
@@ -57,7 +58,7 @@ def test_agent_text_still_points_at_load_model():
 
 def test_a_profile_withholds_by_the_facts_tools_declare():
     narrow = CallerProfile("narrow", refused = frozenset({OUTLIVES_CALL}))
-    assert surface(narrow) == surface(AGENT) - {"start_training", "export_model"}
+    assert surface(narrow) == surface(AGENT) - {"start_training", "export_model", "run_flow"}
 
 
 @pytest.mark.parametrize(

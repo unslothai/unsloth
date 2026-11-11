@@ -14,6 +14,7 @@ import {
   Alert02Icon,
   CookBookIcon,
   FloppyDiskIcon,
+  FlowConnectionIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, type ReactElement, useState } from "react";
@@ -37,6 +38,7 @@ type RecipeStudioHeaderProps = {
   onWorkflowNameChange: (value: string) => void;
   onViewChange: (view: RecipeStudioView) => void;
   onSaveRecipe: () => void;
+  onOpenInFlows?: () => void;
 };
 
 const STATUS_MESSAGE_CLASS: Record<StatusTone, string> = {
@@ -55,6 +57,7 @@ export function RecipeStudioHeader({
   onWorkflowNameChange,
   onViewChange,
   onSaveRecipe,
+  onOpenInFlows,
 }: RecipeStudioHeaderProps): ReactElement {
   const [editingWorkflowName, setEditingWorkflowName] = useState(false);
 
@@ -184,6 +187,19 @@ export function RecipeStudioHeader({
               </ul>
             </PopoverContent>
           </Popover>
+        )}
+        {onOpenInFlows && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onOpenInFlows}
+            disabled={saveLoading}
+            title="Save, then edit this recipe column by column in Flows. It stays here too."
+          >
+            <HugeiconsIcon icon={FlowConnectionIcon} className="size-3.5" />
+            Open in Flows
+          </Button>
         )}
         <Button
           type="button"

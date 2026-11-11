@@ -75,6 +75,8 @@ HOST_PATH_LIST_FIELDS = frozenset(
 
 # Referenced entry by entry: emptying leaves a resumable checkpoint with no dataset to resume on.
 HOST_PATH_HANDLE_LIST_FIELDS = frozenset({"local_datasets", "local_eval_datasets"})
+# {name: path} maps a caller sends back as written (image status `component_specs`): each path a handle.
+HOST_PATH_HANDLE_MAP_FIELDS = frozenset({"component_specs"})
 
 # A path on the inventory objects and a repo id elsewhere, so never redacted by field name alone.
 HOST_PATH_AMBIGUOUS_FIELD = "path"
@@ -380,6 +382,14 @@ def _redact(
                     for item in value
                 ]
                 continue
+            if key in HOST_PATH_HANDLE_MAP_FIELDS and isinstance(value, Mapping):
+                out[key] = {
+                    name: _referenced_identity(item)
+                    if _identity_value_is_a_path(item) and not _echoed(item, echo)
+                    else item
+                    for name, item in value.items()
+                }
+                continue
             if key in HOST_PATH_LIST_FIELDS:
                 out[key] = []
                 continue
@@ -449,6 +459,11 @@ def _find_leak(
                     item_text = _as_text(item)
                     if item_text and _looks_absolute(item_text):
                         return f"{key}[]={item_text}"
+            if key in HOST_PATH_HANDLE_MAP_FIELDS and isinstance(value, Mapping):
+                for name, item in value.items():
+                    item_text = _as_text(item)
+                    if item_text and _looks_absolute(item_text):
+                        return f"{key}.{name}={item_text}"
             if text and any(needle in text for needle in needles):
                 return f"{key}={text}"
             found = _find_leak(value, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore)

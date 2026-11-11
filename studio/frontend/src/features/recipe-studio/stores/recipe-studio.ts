@@ -42,13 +42,12 @@ import {
   centerModelInfraNodes,
   optimizeModelInfraEdgeHandles,
 } from "./helpers/model-infra-layout";
+import { syncConfigsForPatch } from "./helpers/config-patch";
 import { applyEdgeRemovals, applyNodeRemovals } from "./helpers/removals";
 import {
   applyLayoutDirectionToNodes,
-  applyRenameToConfigs,
   buildNodeUpdate,
   syncEdgesForConfigPatch,
-  syncSubcategoryConfigsForCategoryUpdate,
   updateNodeData,
 } from "./recipe-studio-helpers";
 
@@ -763,61 +762,24 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         return state;
       }
       const next = { ...current, ...patch } as NodeConfig;
-      const oldName = current.name;
-      const newName = next.name;
-      const nameChanged = oldName !== newName;
-      let configs: Record<string, NodeConfig> = {
-        ...state.configs,
-        [id]: next,
-      };
       const nodes = updateNodeData(
         state.nodes,
         id,
         next,
         state.layoutDirection,
       );
+      const withNext: Record<string, NodeConfig> = {
+        ...state.configs,
+        [id]: next,
+      };
       const edges = syncEdgesForConfigPatch(
         current,
         patch,
-        configs,
+        withNext,
         state.edges,
         state.layoutDirection,
       );
-      configs = syncSubcategoryConfigsForCategoryUpdate(
-        current,
-        next,
-        configs,
-        oldName,
-        newName,
-        nameChanged,
-      );
-
-      if (nameChanged) {
-        configs = applyRenameToConfigs(configs, oldName, newName);
-      }
-
-      // Keep linked model_config nodes in sync when a provider toggles local/external.
-      if (current.kind === "model_provider" && next.kind === "model_provider") {
-        const prevIsLocal = current.is_local === true;
-        const nextIsLocal = next.is_local === true;
-        if (prevIsLocal !== nextIsLocal) {
-          const providerName = next.name;
-          for (const [cfgId, cfg] of Object.entries(configs)) {
-            if (cfg.kind !== "model_config" || cfg.provider !== providerName) {
-              continue;
-            }
-            configs = {
-              ...configs,
-              [cfgId]: {
-                ...cfg,
-                model: "",
-                // biome-ignore lint/style/useNamingConvention: api schema
-                gguf_variant: undefined,
-              },
-            };
-          }
-        }
-      }
+      const configs = syncConfigsForPatch(withNext, current, next);
 
       return { configs, nodes, edges };
     };

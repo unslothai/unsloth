@@ -38,6 +38,7 @@ export type AppMenuAction =
   | "go-hub"
   | "go-train"
   | "go-recipes"
+  | "go-flows"
   | "go-images"
   | "go-video"
   | "go-audio"
@@ -67,6 +68,7 @@ export const MENU_CHORDS: Partial<
   "go-hub": { shortcut: "switchToHub", chord: "Ctrl+Digit3" },
   "go-train": { shortcut: "switchToTrain", chord: "Ctrl+Digit4" },
   "go-recipes": { shortcut: "switchToRecipes", chord: "Ctrl+Digit5" },
+  "go-flows": {},
   "go-images": { shortcut: "switchToImages", chord: "Ctrl+Digit6" },
   "go-video": { shortcut: "switchToVideo", chord: "Ctrl+Digit7" },
   "go-audio": { shortcut: "switchToAudio", chord: "Ctrl+Digit8" },

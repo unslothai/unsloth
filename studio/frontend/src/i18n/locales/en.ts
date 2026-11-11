@@ -913,6 +913,7 @@ export const en = {
       hub: "Model hub",
       train: "Train",
       recipes: "Recipes",
+      flows: "Flows",
       images: "Images",
       video: "Video",
       audio: "Audio",

@@ -88,7 +88,6 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   type ComponentType,
   lazy,
-
   type ReactNode,
   Suspense,
   useCallback,
@@ -96,7 +95,6 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-
   useState,
 } from "react";
 import { FIND_SCOPE_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
@@ -240,6 +238,13 @@ const AudioPage = lazy(() =>
   import("@/features/audio").then((m) => ({ default: m.AudioPage })),
 );
 
+// Lazy like the other pages; it mounts only on its own route (see RootLayout).
+const FlowPlayerPage = lazy(() =>
+  import("@/features/flows/player/flow-player-page").then((m) => ({ default: m.FlowPlayerPage })),
+);
+
+const FLOW_PLAY_ROUTE = /^\/flows\/([^/]+)\/play\/?$/;
+
 // Enabled once the session settles: a read refused mid password change would never retry until reload.
 function PersonalizationSyncMount() {
   useRouterState({ select: (s) => s.location.pathname });
@@ -376,6 +381,7 @@ function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   if (pathname === "/audio" || pathname.startsWith("/audio/")) return true;
   if (pathname === "/video" || pathname.startsWith("/video/")) return true;
+  if (pathname === "/flows" || pathname.startsWith("/flows/")) return true;
   return false;
 }
 
@@ -492,7 +498,12 @@ function RootLayout() {
     setAudioMounted(true);
   }
   const shouldMountAudio = isAudioRoute || audioMounted;
+  // The Flows player mounts only on its route: unmounting stops its music, narration and game loop (stories autosave).
+  const playFlowId = FLOW_PLAY_ROUTE.exec(pathname)?.[1] ?? null;
+  const isFlowPlayRoute = playFlowId !== null;
+  const isFlowEditorRoute = !isFlowPlayRoute && pathname.startsWith("/flows/");
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
+  const fillsViewport = isChatLike || isFlowPlayRoute || isFlowEditorRoute;
   const mobileShell = useIsMobileShell();
   const nonChatTopInset = mobileShell
     ? "pt-14"
@@ -642,6 +653,7 @@ function RootLayout() {
     "go-hub": goAction(routeShortcutEnabled, goTo("/hub")),
     "go-train": goAction(routeShortcutEnabled && !trainBlocked, goTo("/studio")),
     "go-recipes": goAction(routeShortcutEnabled, goTo("/data-recipes")),
+    "go-flows": goAction(routeShortcutEnabled, goTo("/flows")),
     "go-images": goAction(routeShortcutEnabled, goTo("/images")),
     "go-video": goAction(routeShortcutEnabled && !videoDisabled, goTo("/video")),
     "go-audio": goAction(routeShortcutEnabled, goTo("/audio")),
@@ -741,7 +753,7 @@ function RootLayout() {
           )}
           <SidebarInset
             className={
-              isChatLike
+              fillsViewport
                 ? "overflow-hidden"
                 :
                   isLibraryRoute
@@ -753,7 +765,7 @@ function RootLayout() {
             <div
               ref={findScopeRef}
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${fillsViewport ? "overflow-hidden" : "overflow-visible"} ${fillsViewport ? "" : nonChatTopInset}`}
             >
               <FindInPage enabled={routeShortcutEnabled} />
               {/* Keep generation mounted across routes; active closes hidden page overlays. */}
@@ -823,8 +835,16 @@ function RootLayout() {
                   </Suspense>
                 </div>
               )}
+              {/* Keyed by flow so switching games starts fresh. */}
+              {playFlowId && (
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                  <Suspense fallback={<RouteFallback />}>
+                    <FlowPlayerPage key={playFlowId} flowId={playFlowId} />
+                  </Suspense>
+                </div>
+              )}
               {/* wait mode froze navigation behind slow page exits (#5850). */}
-              {!isChatRoute && !isImagesRoute && !isVideoRoute && !isAudioRoute && (
+              {!isChatRoute && !isImagesRoute && !isVideoRoute && !isAudioRoute && !isFlowPlayRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}

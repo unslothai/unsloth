@@ -1758,10 +1758,12 @@ class InferenceBackend:
             return False
 
     def _apply_adapter_state(self, use_adapter: Optional[Union[bool, str]]) -> None:
-        """Must hold _generation_lock. use_adapter: None keeps, False base, True current, str named adapter."""
-        if use_adapter is None:
-            return
+        """Apply adapter state before generation (must hold _generation_lock).
 
+        Toggles PEFT enable/disable_adapter_layers, so nothing is reloaded. use_adapter: None = the
+        loaded adapter (back on if a request turned it off), False = base model, True = current
+        adapter, str = named adapter.
+        """
         base = self.active_model_name
         if not base or base not in self.models:
             return
@@ -1771,12 +1773,22 @@ class InferenceBackend:
         if model is None:
             return
 
+        if use_adapter is None:
+            # A request that asked for the base model (Compare's base pane, a benchmark's adapter-off
+            # baseline) does not leave it on for the next plain request, a chat queued between them.
+            if getattr(self, "_adapter_left_off", False):
+                self._adapter_left_off = False
+                if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+                    model.base_model.enable_adapter_layers()
+            return
+
         if use_adapter is False:
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(
                     f"Compare mode: disabling adapters on '{base}' for base model generation"
                 )
                 model.base_model.disable_adapter_layers()
+                self._adapter_left_off = True
             else:
                 logger.info(f"Compare mode: model '{base}' is not a PeftModel, already base")
 
@@ -1784,6 +1796,7 @@ class InferenceBackend:
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(f"Compare mode: enabling adapters on '{base}' for LoRA generation")
                 model.base_model.enable_adapter_layers()
+                self._adapter_left_off = False
             else:
                 logger.warning("use_adapter=true but model is not a PeftModel")
 
@@ -1791,6 +1804,7 @@ class InferenceBackend:
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(f"Compare mode: enabling adapter '{use_adapter}' on '{base}'")
                 model.base_model.enable_adapter_layers()
+                self._adapter_left_off = False
                 self.set_active_adapter(base, use_adapter)
             else:
                 logger.warning(f"use_adapter='{use_adapter}' but model is not a PeftModel")

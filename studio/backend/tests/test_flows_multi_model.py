@@ -1,0 +1,396 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A flow with two chat models under Keep multiple models loaded: the second loads alongside the first and each
+request names the model it means; with the setting off nothing changes. Also how many status reads one
+residency check costs."""
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from core.flows import engine as engine_mod
+from core.flows.engine import GpuLease, NeedsExclusiveGpu
+from core.flows.nodes import _common
+from core.flows.registry import FlowNodeError
+from studio_mcp import loading
+
+from ._flows_helpers import wait_until
+
+BIG = "unsloth/Qwen3-14B-GGUF"
+SMALL = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
+
+
+def _fakes(
+    monkeypatch,
+    mode,
+    serving,
+    kept_variant = None,
+    refuse = None,
+):
+    loads = []
+    state = {"serving": list(serving)}
+
+    async def fake_load_llm(caller, ctx, **kwargs):
+        if refuse:
+            raise RuntimeError(refuse)
+        loads.append(kwargs)
+        if kwargs.get("alongside"):
+            state["serving"].append(kwargs["model"])
+        else:
+            state["serving"] = [kwargs["model"]]
+
+    async def fake_slots(caller):
+        return {"llm": state["serving"]}
+
+    async def fake_resident(caller):
+        status = {"gguf_variant": None, "is_gguf": True, "serving": state["serving"]}
+        if mode is not None:
+            status["multi_model_mode"] = mode
+        return {"llm": state["serving"]}, status
+
+    async def fake_read_json(caller, path):
+        assert path.startswith("/api/inference/status?model=")
+        return {"gguf_variant": kept_variant}
+
+    monkeypatch.setattr(loading, "load_llm", fake_load_llm)
+    monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(loading, "_resident", fake_resident)
+    monkeypatch.setattr(loading, "_read_json", fake_read_json)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: None)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {})
+    monkeypatch.setattr(_common, "_ALONGSIDE_OPTIONS", {})
+    return loads, state
+
+
+class _Ctx:
+    def __init__(self):
+        self.resident, self.spec, self.gpu_shared = {}, {}, False
+
+    def set_status(
+        self,
+        status,
+        message = None,
+    ):
+        pass
+
+    def on_cancel(self, fn):
+        pass
+
+
+async def _body(ctx):
+    return await _common._chat_body(
+        ctx,
+        system = "s",
+        prompt = "p",
+        temperature = 0.5,
+        max_tokens = 8,
+        images = None,
+        thinking = False,
+        seed = None,
+        stream = False,
+    )
+
+
+def test_off_replaces_the_primary_and_names_the_default_model(monkeypatch):
+    loads, state = _fakes(monkeypatch, "off", [BIG])
+    ctx = _Ctx()
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}))
+    assert "alongside" not in loads[0] and state["serving"] == [SMALL]
+    assert asyncio.run(_body(ctx))["model"] == "default"
+    loads, _ = _fakes(monkeypatch, None, [BIG])
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}))
+    assert "alongside" not in loads[0]
+
+
+@pytest.mark.parametrize("mode", ["fit", "always"])
+def test_a_second_model_loads_alongside_and_requests_name_it(monkeypatch, mode):
+    loads, state = _fakes(monkeypatch, mode, [BIG])
+    ctx = _Ctx()
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL, "variant": "Q4_K_M"}))
+    assert len(loads) == 1 and loads[0]["alongside"] is True
+    assert state["serving"] == [BIG, SMALL]
+    assert asyncio.run(_body(ctx))["model"] == f"{SMALL}:Q4_K_M"
+    primary = _Ctx()
+    asyncio.run(_common.ensure_model(primary, "chat", {"repo": BIG}))
+    assert asyncio.run(_body(primary))["model"] == "default"
+    again = _Ctx()
+    asyncio.run(_common.ensure_model(again, "chat", {"repo": SMALL, "variant": "Q4_K_M"}))
+    assert len(loads) == 1 and asyncio.run(_body(again))["model"] == f"{SMALL}:Q4_K_M"
+
+
+def test_a_model_loaded_alongside_is_recorded_for_unload_after_run(monkeypatch):
+    _fakes(monkeypatch, "always", [BIG])
+    noted = []
+    ctx = _Ctx()
+    ctx.note_loaded = lambda slot, repo: noted.append((slot, repo))
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}))
+    assert noted == [("llm", SMALL)]
+    kept = _Ctx()
+    kept.note_loaded = lambda slot, repo: noted.append((slot, repo))
+    asyncio.run(_common.ensure_model(kept, "chat", {"repo": SMALL}))
+    assert noted == [("llm", SMALL)]
+
+
+def test_two_quantizations_of_one_model_are_refused(monkeypatch):
+    loads, _ = _fakes(monkeypatch, "fit", [BIG, SMALL], kept_variant = "Q8_0")
+    with pytest.raises(FlowNodeError, match = "already loaded alongside as Q8_0"):
+        asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL, "variant": "Q4_K_M"}))
+    assert not loads
+
+
+def test_always_surfaces_studios_refusal_and_never_replaces(monkeypatch):
+    loads, state = _fakes(monkeypatch, "always", [BIG], refuse = "Not enough GPU memory to keep both")
+    with pytest.raises(FlowNodeError, match = "alongside .*Not enough GPU memory"):
+        asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}))
+    assert state["serving"] == [BIG]
+
+
+def test_a_shared_step_hands_the_alongside_load_to_an_exclusive_rerun(monkeypatch):
+    loads, _ = _fakes(monkeypatch, "fit", [BIG])
+    ctx = _Ctx()
+    ctx.gpu_shared = True
+    with pytest.raises(NeedsExclusiveGpu):
+        asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}))
+    assert not loads
+
+
+def _parked(lease: GpuLease) -> int:
+    """Callers asleep in the lease's admission wait: queued, not admitted."""
+    return len(lease._cond._waiters)
+
+
+def test_each_kept_model_has_its_own_slots_in_the_lease():
+    async def go():
+        lease = GpuLease()
+        inside, done = [], asyncio.Event()
+
+        async def call(name, model):
+            async with lease.shared(slots = 1, model = model):
+                inside.append(name)
+                await done.wait()
+
+        tasks = [
+            asyncio.create_task(call("big", None)),
+            asyncio.create_task(call("small", SMALL.lower())),
+            asyncio.create_task(call("big2", None)),
+        ]
+        await wait_until(lambda: len(inside) == 2 and _parked(lease) == 1, what = "big2 to queue")
+        assert sorted(inside) == ["big", "small"]
+        done.set()
+        await asyncio.gather(*tasks)
+        assert sorted(inside) == ["big", "big2", "small"]
+        assert not lease.locked()
+
+    asyncio.run(go())
+
+
+def test_the_lease_key_and_slot_count_follow_the_kept_model(monkeypatch):
+    from core.inference import model_slots
+
+    kept = SimpleNamespace(
+        llama = SimpleNamespace(model_identifier = SMALL, is_loaded = True, effective_parallel_slots = 2)
+    )
+    monkeypatch.setattr(model_slots, "visible", lambda: [kept])
+    assert engine_mod.chat_model_key({"model": {"repo": SMALL}}) == SMALL.lower()
+    assert engine_mod.chat_slots(SMALL.lower()) == 2
+    assert engine_mod.chat_model_key({"model": {"repo": BIG}}) is None
+    assert engine_mod.chat_model_key({}) is None
+
+
+def test_a_call_queued_behind_an_alongside_load_counts_against_the_new_model():
+    async def go():
+        lease = GpuLease()
+        kept = {"small": False}
+        loading, inside, done = asyncio.Event(), [], asyncio.Event()
+
+        async def load():
+            async with lease:
+                await loading.wait()
+                kept["small"] = True
+
+        def key():
+            return SMALL.lower() if kept["small"] else None
+
+        async def call(name, model):
+            async with lease.shared(slots = 1, model = model):
+                inside.append(name)
+                await done.wait()
+
+        loader = asyncio.create_task(load())
+        await wait_until(lease.locked, what = "the load to take the lease")
+        first = asyncio.create_task(call("first", key))
+        await wait_until(lambda: _parked(lease) == 1, what = "first to queue behind the load")
+        loading.set()
+        await wait_until(lambda: inside == ["first"], what = "first to be admitted")
+        second = asyncio.create_task(call("second", SMALL.lower()))
+        await wait_until(lambda: _parked(lease) == 1, what = "second to queue")
+        assert inside == ["first"]
+        done.set()
+        await asyncio.gather(loader, first, second)
+        assert inside == ["first", "second"]
+
+    asyncio.run(go())
+
+
+def test_a_card_with_load_settings_still_loads_alongside(monkeypatch):
+    loads, state = _fakes(monkeypatch, "fit", [BIG])
+    ctx = _Ctx()
+    options = {"max_seq_length": 8192, "cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}, options = options))
+    assert len(loads) == 1 and loads[0]["alongside"] is True
+    assert loads[0]["max_seq_length"] == 8192 and loads[0]["extra_body"] == {
+        "cache_type_kv": "q8_0"
+    }
+    assert state["serving"] == [BIG, SMALL]
+
+
+def test_a_kept_model_is_reused_only_with_the_settings_it_was_loaded_with(monkeypatch):
+    loads, state = _fakes(monkeypatch, "fit", [BIG])
+    options = {"max_seq_length": 8192, "cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = options))
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = dict(options)))
+    assert len(loads) == 1
+    for other in ({"max_seq_length": 32768}, None):
+        with pytest.raises(FlowNodeError, match = "other load settings"):
+            asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = other))
+    assert len(loads) == 1
+    # Kept by Chat rather than a flow: its settings are unknown, so only a card without its own may bind.
+    state["serving"] = [BIG, "unsloth/gemma-3-4b-it-GGUF"]
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": "unsloth/gemma-3-4b-it-GGUF"}))
+    state["serving"] = [BIG, SMALL]
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}))
+    with pytest.raises(FlowNodeError, match = "other load settings"):
+        asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = options))
+    assert len(loads) == 1
+
+
+def test_a_reload_outside_the_flow_forgets_the_settings_a_kept_model_had(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    loads, state = _fakes(monkeypatch, "fit", [BIG])
+    count = [5]
+    monkeypatch.setattr(gpu_arbiter, "load_count", lambda owner = None: count[0])
+    real_load = loading.load_llm
+
+    async def counted_load(caller, ctx, **kwargs):
+        await real_load(caller, ctx, **kwargs)
+        count[0] += 1
+
+    monkeypatch.setattr(loading, "load_llm", counted_load)
+    options = {"max_seq_length": 8192}
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = options))
+    # The flow's own loads, alongside or primary, keep what it knows.
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = dict(options)))
+    assert len(loads) == 1
+    # Chat unloads and reloads the kept model with its own settings.
+    count[0] += 2
+    with pytest.raises(FlowNodeError, match = "other load settings"):
+        asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = options))
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}))
+
+
+def test_unload_after_run_matches_a_gguf_listed_with_its_variant(monkeypatch):
+    from core.flows import engine
+    from studio_mcp import loading
+
+    unloaded = []
+
+    async def resident(_caller):
+        return {"llm": [BIG, f"{SMALL}:Q4_K_M"]}
+
+    async def unload(_caller, name):
+        unloaded.append(name)
+
+    monkeypatch.setattr(loading, "resident_slots", resident)
+    monkeypatch.setattr(loading, "unload_llm", unload)
+
+    class _Rs:
+        caller = object()
+        initial_resident = {"llm": [BIG]}
+
+        def emit(self, *a, **k):
+            pass
+
+    asyncio.run(engine.FlowEngine._unload_loaded(None, _Rs(), {SMALL.lower(): "n1"}))
+    assert unloaded == [f"{SMALL}:Q4_K_M"]
+
+
+# How many status GETs one model step costs: the residency checks of a step share one read.
+
+
+class _ReadCtx:
+    def __init__(self, spec = None):
+        self.resident, self.spec, self.gpu_shared = {}, spec or {}, False
+        self.caller = object()
+        self.params = {}
+
+    def set_status(
+        self,
+        status,
+        message = None,
+    ):
+        pass
+
+
+def _status_fakes(
+    monkeypatch,
+    serving,
+    mode = None,
+):
+    gets = []
+    state = {"serving": list(serving)}
+
+    async def fake_read_json(caller, path):
+        gets.append(path)
+        if path == "/api/inference/status":
+            status = {"serving": state["serving"], "loaded": state["serving"], "is_gguf": True}
+            status["model_identifier"] = state["serving"][0] if state["serving"] else None
+            status["gguf_variant"] = "Q4_K_M"
+            if mode:
+                status["multi_model_mode"] = mode
+            return status
+        return {"loaded": False}
+
+    async def fake_load_llm(caller, ctx, **kwargs):
+        state["serving"] = [kwargs["model"]]
+
+    monkeypatch.setattr(loading, "_read_json", fake_read_json)
+    monkeypatch.setattr(loading, "load_llm", fake_load_llm)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {})
+    monkeypatch.setattr(_common, "_ALONGSIDE_OPTIONS", {})
+    return gets
+
+
+@pytest.mark.parametrize(
+    "serving, requires, mode, expected",
+    [
+        # Resident already, with a backend requirement and a variant to compare.
+        ([SMALL], ["gguf"], None, 3),
+        # Another model resident: one read before the load, one after it.
+        ([BIG], ["gguf"], None, 6),
+        # Keep multiple models loaded is on but the step replaces nothing it can keep.
+        ([SMALL], None, "fit", 3),
+    ],
+)
+def test_one_model_check_reads_status_once_per_residency(
+    monkeypatch, serving, requires, mode, expected
+):
+    gets = _status_fakes(monkeypatch, serving, mode)
+    ctx = _ReadCtx({"requires": requires} if requires else {})
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL, "variant": "Q4_K_M"}))
+    assert len(gets) == expected, gets
+
+
+def test_a_card_on_the_loaded_model_reads_its_name_and_quant_once(monkeypatch):
+    from core.flows.nodes import text
+
+    gets = _status_fakes(monkeypatch, [SMALL])
+    ctx = _ReadCtx()
+    ctx.params = {"model": None, "load": {"max_seq_length": 4096}}
+    choice, _ = asyncio.run(text._model_and_load(ctx, "chat"))
+    assert choice == {"repo": SMALL, "variant": "Q4_K_M"}
+    assert len(gets) == 3, gets

@@ -538,3 +538,21 @@ register(
         needs_id = "the dataset's repo_id",
     )
 )
+
+
+async def _read_flow(caller: Caller, job_id: Optional[str], **_unused: Any) -> ToolResult:
+    if not job_id:
+        raise ToolError('get_job(kind="flow") needs id: the run id run_flow returned.')
+    from studio_mcp.tools.flows import read_run
+    return media_result([], await read_run(caller, job_id))
+
+
+register(
+    Kind(
+        "flow",
+        read = _read_flow,
+        cancel = _route_cancel("/api/flows/runs/{id}/cancel", None, _recipe_cancelling),
+        poll_after_s = 10,
+        needs_id = "the run id run_flow returned",
+    )
+)

@@ -1013,6 +1013,7 @@ export const cs = {
       hub: "Centrum modelů",
       train: "Trénovat",
       recipes: "Recepty",
+      flows: "Toky",
       images: "Obrázky",
       video: "Video",
       audio: "Zvuk",

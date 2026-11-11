@@ -25,6 +25,7 @@ CancelKind = Literal[
     "chat",
     "dataset_download",
     "model_download",
+    "flow",
 ]
 
 
@@ -44,6 +45,7 @@ async def cancel(
     "audio" stops the generate_audio run whose cancel_id is ``id``; takes it already finished stay in Audio history.
     "dataset_download" stops downloading the dataset ``id`` (its repo id).
     "model_download" stops the model download ``id`` that download_model returned; a speech-to-text download can't be stopped here.
+    "flow" stops the flow run ``id`` (run_flow returns it); steps already finished keep their results.
     ``cancelled`` says whether this call stopped something.
     """
     return await jobs.cancel(current_caller(), kind, id, save)

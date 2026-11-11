@@ -14731,6 +14731,24 @@ def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
     assert dropped == [pipe, pipe]
 
 
+def test_status_names_the_gpu_ids_the_load_asked_for(fake_runtime, tmp_path):
+    # A reload (a Flows LoRA bake) asks for the same physical cards, not an automatic pick over every visible one.
+    import contextvars
+
+    from core.inference import diffusion as dmod
+    from models.inference import DiffusionStatusResponse
+
+    def load(ids):
+        dmod._REQUESTED_GPU_IDS.set(ids)
+        return _load_into(DiffusionBackend(), tmp_path, gguf_filename = "model.safetensors")
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    status = contextvars.copy_context().run(load, (3,))
+    assert status["gpu_ids"] == [3]
+    assert DiffusionStatusResponse(**status).gpu_ids == [3]
+    assert contextvars.copy_context().run(load, None)["gpu_ids"] is None
+
+
 class _PinProbePipe(_FakePipe):
     """Enters the denoise loop and decoder like diffusers, and runs out of memory on its first attempt."""
 

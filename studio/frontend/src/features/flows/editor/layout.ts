@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import type { InternalNode } from "@xyflow/react";
+import { getSpec } from "../stores/catalog-store";
+import { type DocGraph, useDocStore } from "../stores/doc-store";
+import { setupLayout } from "../recipe/recipe-setup";
+import { useUiStore } from "../stores/ui-store";
+import { CARD_MIN_WIDTH } from "./card-size";
+import { inHandle, outHandle } from "./connection-rules";
+import type { LayoutRequest, LayoutResult } from "./layout-core";
+import { foldLayout, tidyGraph } from "./super-cards";
+import {
+  type TidyContext,
+  fittedCardSize,
+  tidyPatch,
+  tidyRequest,
+} from "./tidy";
+
+let worker: Worker | null = null;
+let nextId = 0;
+const pending = new Map<
+  number,
+  { resolve: (r: LayoutResult) => void; reject: (e: Error) => void }
+>();
+
+function getWorker(): Worker {
+  if (worker) return worker;
+  worker = new Worker(new URL("./layout.worker.ts", import.meta.url), {
+    type: "module",
+  });
+  worker.onmessage = (
+    event: MessageEvent<{ id: number; result?: LayoutResult; error?: string }>,
+  ) => {
+    const entry = pending.get(event.data.id);
+    if (!entry) return;
+    pending.delete(event.data.id);
+    if (event.data.error) entry.reject(new Error(event.data.error));
+    else entry.resolve(event.data.result ?? {});
+  };
+  return worker;
+}
+
+// A closed card's blocks leave React Flow, so it no longer knows their sizes; layout reads the
+// mounted canvas's own size map, so it folds the same notes the card does.
+let remembered: ReadonlyMap<string, { width: number; height: number }> =
+  new Map();
+
+/** A fitted card size kept inside its frame. The frame only limits growth: a card already sticking out keeps the size it has. */
+export function clampFitToFrame(
+  fit: [number, number],
+  size: { width: number; height: number },
+  pos: [number, number],
+  frame: [number, number, number, number],
+  pad = 12,
+): [number, number] {
+  return [
+    Math.max(
+      Math.min(fit[0], frame[0] + frame[2] - pos[0] - pad),
+      Math.min(fit[0], size.width),
+    ),
+    Math.max(
+      Math.min(fit[1], frame[1] + frame[3] - pos[1] - pad),
+      Math.min(fit[1], size.height),
+    ),
+  ];
+}
+
+export function rememberSizes(
+  sizes: ReadonlyMap<string, { width: number; height: number }>,
+): void {
+  remembered = sizes;
+}
+
+export function sizeLookup(
+  getInternalNode: (id: string) => InternalNode | undefined,
+): (id: string) => { width?: number; height?: number } | undefined {
+  return (id) => getInternalNode(id)?.measured ?? remembered.get(id);
+}
+
+function runLayout(request: LayoutRequest): Promise<LayoutResult> {
+  const id = ++nextId;
+  return new Promise<LayoutResult>((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    getWorker().postMessage({ id, request });
+  });
+}
+
+function rfElement(id: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `.react-flow__node[data-id="${CSS.escape(id)}"]`,
+  );
+}
+
+function hiddenBelow(root: HTMLElement): number {
+  let hidden = root.scrollHeight - root.clientHeight;
+  for (const el of root.querySelectorAll<HTMLElement>("*"))
+    if (el.clientHeight) hidden = Math.max(hidden, el.scrollHeight - el.clientHeight);
+  return hidden;
+}
+
+function slackBelow(grow: HTMLElement): number {
+  let bottom = 0;
+  for (const child of grow.children)
+    bottom = Math.max(
+      bottom,
+      (child as HTMLElement).offsetTop + (child as HTMLElement).offsetHeight,
+    );
+  return grow.clientHeight - (bottom - grow.offsetTop);
+}
+
+/** Output grows a card (capped), oversized ones shrink, empty ones go auto; a grouped card stays inside its frame. */
+function fitCards(
+  graph: DocGraph,
+  measured: (id: string) => { width: number; height: number } | undefined,
+): Record<string, [number, number] | null> {
+  const out: Record<string, [number, number] | null> = {};
+  for (const id of graph.nodeOrder) {
+    const node = graph.nodes[id];
+    const size = measured(id);
+    const card = rfElement(id);
+    // Zoomed far out a card draws no body, so there is nothing to measure.
+    if (node.collapsed || !size || !card?.querySelector("[data-card-body]"))
+      continue;
+    const grow = card.querySelector<HTMLElement>("[data-card-grow]");
+    if (!grow) {
+      if (node.size) out[id] = null;
+      continue;
+    }
+    const spec = getSpec(node.type);
+    let fit = fittedCardSize(
+      size,
+      hiddenBelow(grow),
+      node.size ? slackBelow(grow) : 0,
+      spec ? CARD_MIN_WIDTH : 0,
+    );
+    if (!fit) continue;
+    const frame = node.group ? graph.groups[node.group]?.rect : undefined;
+    if (frame) {
+      fit = clampFitToFrame(fit, size, node.pos, frame);
+      if (fit[0] < size.width && fit[1] < size.height && !node.size) continue;
+    }
+    out[id] = fit;
+  }
+  return out;
+}
+
+/** Tidy up: fit cards to their output, lay out cards and groups, then move notes and put reroutes back. Frames and notes keep their sizes. */
+export async function autoLayout(
+  getInternalNode: (id: string) => InternalNode | undefined,
+  direction: "LR" | "TB" = "LR",
+): Promise<void> {
+  const { graph } = useDocStore.getState();
+  const measured = (id: string) => {
+    const m = getInternalNode(id)?.measured;
+    return m?.width && m.height ? { width: m.width, height: m.height } : undefined;
+  };
+  const sizes = fitCards(graph, measured);
+  const ctx: TidyContext = {
+    direction,
+    // A recipe frame grows to hold its setup cards; Tidy moves it whole at that height, cards and all.
+    graph: withSetupHeights(graph),
+    wireStyle: useUiStore.getState().wireStyle,
+    size: (id) => {
+      const fit = sizes[id];
+      return fit
+        ? { width: fit[0], height: fit[1] }
+        : (measured(id) ?? { width: 260, height: 140 });
+    },
+    portY: (id, port, side) => {
+      const handle = getInternalNode(id)?.internals.handleBounds?.[
+        side === "out" ? "source" : "target"
+      ]?.find((h) => h.id === (side === "out" ? outHandle(port) : inHandle(port)));
+      return handle ? handle.y + handle.height / 2 : undefined;
+    },
+  };
+  // A closed super card is laid out as one block; its blocks move with it. The layout sees the grown
+  // recipe frames that the patch places.
+  const folded = foldLayout(
+    tidyRequest({ ...ctx, graph: tidyGraph(ctx.graph, useDocStore.getState().meta.editor) }),
+    useDocStore.getState(),
+    sizeLookup(getInternalNode),
+  );
+  const result = folded.unfold(await runLayout(folded.request));
+  const patch = tidyPatch(ctx, result, sizes);
+  useDocStore.getState().applyTidy(patch);
+}
+
+function withSetupHeights(graph: DocGraph): DocGraph {
+  const { heights } = setupLayout(graph, null, new Map());
+  if (!Object.keys(heights).length) return graph;
+  const groups = { ...graph.groups };
+  for (const [id, height] of Object.entries(heights)) {
+    const rect = groups[id]?.rect;
+    if (rect && height > rect[3])
+      groups[id] = { ...groups[id], rect: [rect[0], rect[1], rect[2], height] };
+  }
+  return { ...graph, groups };
+}

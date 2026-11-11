@@ -1012,6 +1012,7 @@ export const vi = {
       hub: "Trung tâm mô hình",
       train: "Huấn luyện",
       recipes: "Công thức",
+      flows: "Luồng",
       images: "Hình ảnh",
       video: "Video",
       audio: "Âm thanh",

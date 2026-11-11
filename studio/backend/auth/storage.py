@@ -1948,6 +1948,19 @@ def revoke_internal_api_key(key_id: int) -> bool:
         conn.close()
 
 
+def internal_api_key_active(key_id: int) -> bool:
+    """Whether an internal key minted ahead is still usable: an account credential reset deletes its keys."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM api_keys WHERE id = ? AND is_internal = 1 AND is_active = 1",
+            (key_id,),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def delete_internal_api_key(key_id: int) -> bool:
     """Delete an internal key row and its account copy. For keys minted per call, which would
     otherwise leave one inactive row behind for every call."""

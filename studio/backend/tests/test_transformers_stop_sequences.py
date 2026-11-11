@@ -421,3 +421,15 @@ def test_harmony_stream_waits_for_split_multibyte_characters(stop):
         streamer.put(torch.tensor([token]))
     streamer.end()
     assert "".join(streamer) == f"<think>{body}\ufffd</think>{body}\ufffd"
+
+
+def test_a_plain_text_request_reaches_the_adapter_reset():
+    # After a benchmark's adapter-off request, a plain one must reach the reset that turns it back on.
+    backend, _ = _backend(["Hello"], _Tokenizer())
+    applied = []
+    backend._apply_adapter_state = applied.append
+
+    list(backend.generate_stream("PROMPT", max_new_tokens = 8))
+    list(backend.generate_stream("PROMPT", max_new_tokens = 8, _adapter_state = False))
+
+    assert applied == [None, False]

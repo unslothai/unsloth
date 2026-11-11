@@ -1291,6 +1291,40 @@ def test_a_second_load_does_not_hand_back_the_resident_path(monkeypatch):
     assert resident in _loaded("browser", False)
 
 
+def test_the_image_status_names_supplied_component_files_by_handle():
+    # A reload rebuilds the resident model from these, so an API caller gets handles a load request takes back.
+    from models.inference import DiffusionLoadRequest, DiffusionStatusResponse
+
+    encoder = f"{HOST_ROOT}/text_encoders/t5xxl.safetensors"
+    vae = f"{HOST_ROOT}/vae/ae.safetensors"
+    status = DiffusionStatusResponse(
+        loaded = True,
+        repo_id = "org/flux-gguf",
+        component_specs = {
+            "text_encoder_2": encoder,
+            "vae": vae,
+            "text_encoder": "org/te/clip_l.safetensors",
+        },
+    )
+    shown = host_paths.redact_host_paths(status, via_api_key = True)
+    assert HOST_ROOT not in json.dumps(shown), shown
+    assert host_paths.response_leaks_host_path(shown) is None
+    assert (
+        host_paths.response_leaks_host_path(status.model_dump())
+        == f"component_specs.text_encoder_2={encoder}"
+    )
+    specs = shown["component_specs"]
+    assert specs["text_encoder"] == "org/te/clip_l.safetensors"
+    request = DiffusionLoadRequest(
+        model_path = "org/flux-gguf",
+        text_encoder_file = [specs["text_encoder_2"], specs["text_encoder"]],
+        vae_file = specs["vae"],
+    )
+    assert request.text_encoder_file == [encoder, "org/te/clip_l.safetensors"]
+    assert request.vae_file == vae
+    assert host_paths.redact_host_paths(status, via_api_key = False) is status
+
+
 def test_every_route_that_answers_with_a_persisted_record_redacts():
     from routes import inference as inference_routes
     from routes import training_history as training_routes

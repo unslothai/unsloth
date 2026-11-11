@@ -1005,6 +1005,7 @@ export const fa = {
       hub: "مرکز مدل‌ها",
       train: "آموزش",
       recipes: "دستورالعمل‌ها",
+      flows: "جریان‌ها",
       images: "تصاویر",
       video: "ویدیو",
       audio: "صدا",

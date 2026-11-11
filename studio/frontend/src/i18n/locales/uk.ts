@@ -1018,6 +1018,7 @@ export const uk = {
       hub: "Центр моделей",
       train: "Навчання",
       recipes: "Рецепти",
+      flows: "Потоки",
       images: "Зображення",
       video: "Відео",
       audio: "Аудіо",

@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { readFlowsSrc } from "./helpers/flows.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const kinds = await import("../src/features/flows/editor/value-kinds.ts");
+const { typesCompatible } = await import("../src/features/flows/editor/connection-rules.ts");
+const { STRUCTURED_KINDS, structuredKind, structuredSummary, sortRows, tableToCsv, tableToMarkdown } = kinds;
+const { tensorAsHeatmap, numericStats } = kinds;
+/** The `key` column of `rows` after sorting by it. */
+const sortedBy = (rows: Record<string, unknown>[], key: string, desc: boolean) =>
+  sortRows(rows, key, desc).map((r) => r[key]);
+
+const table = {
+  kind: "table" as const,
+  columns: [
+    { id: "quant", label: "Quant", type: "text" },
+    { id: "tps", label: "Speed", type: "number", unit: "tok/s" },
+  ],
+  rows: [
+    { quant: "Q8_0", tps: 70 },
+    { quant: "Q4_K_M", tps: 100.25 },
+    { quant: 'odd, "name"|x', tps: null },
+  ],
+};
+
+test("structured values dispatch by kind; everything else falls through", () => {
+  for (const [value, kind] of [
+    [table, "table"],
+    [{ kind: "chart", type: "bar", x: [], series: [] }, "chart"],
+    [{ kind: "heatmap", rows: [], cols: [], values: [] }, "heatmap"],
+    [{ kind: "heatmap", rows: [], cols: [], ref: "sha256:0" }, "heatmap"],
+    [{ kind: "tensor", shape: [2, 2] }, "tensor"],
+  ] as const)
+    assert.equal(structuredKind(value), kind, JSON.stringify(value));
+  for (const other of [
+    null,
+    "text",
+    3,
+    [table],
+    { kind: "image", ref: "sha256:0", url: "/x" },
+    { kind: "table" },
+    { kind: "mystery", rows: [] },
+    { a: 1 },
+  ]) {
+    assert.equal(structuredKind(other), null, JSON.stringify(other));
+  }
+});
+
+test("every structured kind has a lazy viewer, and recharts stays out of the startup bundle", () => {
+  const registry = readFlowsSrc("editor/value-viewers.tsx");
+  for (const kind of STRUCTURED_KINDS)
+    assert.match(registry, new RegExp(`\\b${kind}: lazy\\(`));
+  assert.doesNotMatch(registry, /from "recharts"/);
+  assert.match(registry, /import\("\.\/value-viewers-full"\)/);
+});
+
+for (const type of STRUCTURED_KINDS)
+  for (const [to, ok] of [["json", true], ["any", true], [type, true], ["image", false]] as const)
+    test(`a ${type} port ${ok ? "connects" : "does not connect"} to a ${to} port`, () => {
+      assert.equal(typesCompatible({ id: "o", type, label: "" }, { id: "i", type: to, label: "" }), ok);
+    });
+
+test("tables sort numerically with empty cells last and export as CSV and markdown", () => {
+  const rows = table.rows as Record<string, unknown>[];
+  assert.deepEqual(sortedBy(rows, "tps", true), [100.25, 70, null]);
+  assert.deepEqual(sortedBy(rows, "tps", false), [70, 100.25, null]);
+  assert.equal(tableToCsv(table), 'Quant,Speed (tok/s)\nQ8_0,70\nQ4_K_M,100.25\n"odd, ""name""|x",');
+  assert.equal(
+    tableToMarkdown(table),
+    '| Quant | Speed (tok/s) |\n| --- | ---: |\n| Q8_0 | 70 |\n| Q4_K_M | 100.3 |\n| odd, "name"\\|x |  |',
+  );
+});
+
+test("summaries count truncated tables by row_count, and 2-D tensors view as heatmaps", () => {
+  assert.equal(structuredSummary({ ...table, row_count: 5000 }), "Table: 5000 rows x 2 columns");
+  const h = tensorAsHeatmap({ kind: "tensor" as const, shape: [2, 3], data: [1, 2, 3, 4, Number.NaN, 6] });
+  assert.ok(h);
+  assert.deepEqual(h.values, [[1, 2, 3], [4, null, 6]]);
+  assert.equal(tensorAsHeatmap({ kind: "tensor", shape: [2, 2, 2], data: [] }), null);
+  assert.deepEqual(numericStats(h.values), { min: 1, max: 6, mean: 16 / 5, count: 5 });
+});
+
+test("lookalike JSON with the wrong element shapes keeps the JSON view", () => {
+  assert.equal(structuredKind({ kind: "chart", x: [1], series: [{}] }), null);
+  assert.equal(structuredKind({ kind: "table", columns: ["a"], rows: [1] }), null);
+  assert.equal(structuredKind({ kind: "heatmap", rows: [], cols: [], values: [1, 2] }), null);
+  assert.equal(structuredKind({ kind: "chart", x: [1], series: [{ name: "a", y: [1] }] }), "chart");
+});
+
+test("line charts over numbers use a numeric x axis; bars and text stay categorical", () => {
+  assert.equal(kinds.numericChartX({ type: "line", x: [1024, 2048, 32768] }), true);
+  assert.equal(kinds.numericChartX({ type: "bar", x: [1, 2, 3] }), false);
+  assert.equal(kinds.numericChartX({ type: "line", x: ["q4", "q8"] }), false);
+  assert.equal(kinds.numericChartX({ type: "line", x: [] }), false);
+});
+
+test("numbers stored as text sort by value, not character by character", () => {
+  const rows = [{ n: "10" }, { n: "2" }, { n: "1.9" }, { n: "1.10" }];
+  assert.deepEqual(sortedBy(rows, "n", false), ["1.10", "1.9", "2", "10"]);
+});
+
+test("a column mixing numbers and words sorts as text, consistently", () => {
+  const rows = [{ v: "15x" }, { v: "2" }, { v: "10" }];
+  const once = sortedBy(rows, "v", false);
+  assert.deepEqual(once, ["10", "15x", "2"]);
+  assert.deepEqual(sortedBy([...rows].reverse(), "v", false), once);
+});
+
+test("a card with no output ports (Preview, Result) draws what the run returned", () => {
+  assert.deepEqual(kinds.shownOutputIds([], { value: ["a", "b"] }), ["value"]);
+  assert.deepEqual(kinds.shownOutputIds([{ id: "text" }], { text: "x", extra: 1 }), ["text"]);
+});

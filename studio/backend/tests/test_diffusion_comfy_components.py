@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import types
 from pathlib import Path
 
@@ -69,6 +70,42 @@ def test_status_summary_names_the_supplied_basename_of_a_symlinked_cache_file(tm
         "../snapshots/rev/ae.safetensors", model_path = str(tmp_path / "blobs")
     )
     assert rel.name == "ae.safetensors"
+    # A reload names the symlink, not the extensionless blob it points at, and it parses again.
+    from core.inference import diffusion
+
+    for one in (ref, rel):
+        token = C.set_active_component_overrides(C.ComponentOverrides(files = {"vae": one}))
+        try:
+            spec = diffusion._active_component_specs()["vae"]
+        finally:
+            C.reset_active_component_overrides(token)
+        assert os.path.isabs(spec) and spec.endswith("ae.safetensors"), spec
+        assert C.parse_component_file(spec, what = "vae_file").local_path == ref.local_path
+
+
+def test_a_reload_names_a_dotdot_component_through_a_symlinked_directory(tmp_path):
+    # links/diffusion_models -> actual/diffusion_models: `..` must stay, normalised away it names links/text_encoders.
+    from core.inference import diffusion
+
+    te = _save(tmp_path / "actual" / "text_encoders" / "clip_l.safetensors", {"x": torch.zeros(1)})
+    (tmp_path / "actual" / "diffusion_models").mkdir()
+    (tmp_path / "links").mkdir()
+    try:
+        (tmp_path / "links" / "diffusion_models").symlink_to(
+            tmp_path / "actual" / "diffusion_models"
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    ref = C.parse_component_file(
+        "../text_encoders/clip_l.safetensors",
+        model_path = str(tmp_path / "links" / "diffusion_models"),
+    )
+    token = C.set_active_component_overrides(C.ComponentOverrides(files = {"text_encoder": ref}))
+    try:
+        spec = diffusion._active_component_specs()["text_encoder"]
+    finally:
+        C.reset_active_component_overrides(token)
+    assert C.parse_component_file(spec).local_path == str(Path(te).resolve())
 
 
 def test_parse_existing_subpath_under_model_dir_is_local(tmp_path):
@@ -1101,3 +1138,35 @@ def test_hidream_standalone_llama_slot_refused_by_name():
         C.assign_components(
             [(ref, header)], None, {"text_encoder_4": "LlamaForCausalLM"}, family = "hidream-i1"
         )
+
+
+def test_status_names_the_supplied_files_as_a_reload_takes_them():
+    # A reload (a Flows LoRA bake) rebuilds the same model from these.
+    from core.inference import diffusion
+
+    overrides = C.ComponentOverrides(
+        files = {
+            "text_encoder": C.ComponentFileRef(
+                spec = "../te/clip_l.safetensors", local_path = "/m/te/clip_l.safetensors"
+            ),
+            "vae": C.ComponentFileRef(
+                spec = "org/vae/ae.safetensors", repo_id = "org/vae", filename = "ae.safetensors"
+            ),
+        }
+    )
+    token = C.set_active_component_overrides(overrides)
+    try:
+        assert diffusion._active_component_specs() == {
+            "text_encoder": "/m/te/clip_l.safetensors",
+            "vae": "org/vae/ae.safetensors",
+        }
+        assert diffusion._active_component_summary() == {
+            "text_encoder": "clip_l.safetensors",
+            "vae": "ae.safetensors",
+        }
+        # Found beside a DiT: named too, or discovery under the reload's pinned precision may pick another file.
+        overrides.discovered = True
+        assert diffusion._active_component_specs()["text_encoder"] == "/m/te/clip_l.safetensors"
+    finally:
+        C.reset_active_component_overrides(token)
+    assert diffusion._active_component_specs() is None

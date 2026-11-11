@@ -67,3 +67,50 @@ export function stubJsxRuntime(): Record<string, unknown> {
   });
   return { jsx, jsxs: jsx, Fragment: Symbol.for("Fragment") };
 }
+
+/** Stub table for `loadWithStubs` where any import not in `overrides` is an inert module of named no-op functions. */
+export function stubEveryImport(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const inert = (specifier: string) => {
+    const named = new Map<PropertyKey, unknown>();
+    return new Proxy({} as Record<PropertyKey, unknown>, {
+      get(_target, key) {
+        if (key === "__esModule") return true;
+        if (!named.has(key)) {
+          const name = String(key);
+          const fn = { [name]: (..._args: unknown[]) => null }[name];
+          named.set(key, Object.assign(fn, { stubOf: specifier }));
+        }
+        return named.get(key);
+      },
+    });
+  };
+  const made = new Map<string, unknown>();
+  return new Proxy(overrides, {
+    has: () => true,
+    get(target, key) {
+      if (typeof key !== "string") return undefined;
+      if (key in target) return target[key];
+      if (!made.has(key)) made.set(key, inert(key));
+      return made.get(key);
+    },
+  });
+}
+
+/** Every stub element in a rendered tree, depth first (does not call nested components). */
+export function elementsOf(tree: unknown): StubElement[] {
+  const out: StubElement[] = [];
+  const walk = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== "object" || !("props" in value)) return;
+    const element = value as StubElement;
+    out.push(element);
+    walk(element.props?.children);
+  };
+  walk(tree);
+  return out;
+}
