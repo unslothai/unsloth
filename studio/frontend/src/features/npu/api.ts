@@ -71,12 +71,22 @@ export function npuRowsFor(
   },
 ): NpuModel[] {
   const needle = query.trim().toLowerCase();
-  return (models ?? []).filter(
-    (model) =>
-      (!onDevice || model.downloaded) &&
-      (!needle ||
-        `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
-  );
+  return (models ?? [])
+    .filter(
+      (model) =>
+        (!onDevice || model.downloaded) &&
+        (!needle ||
+          `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
+    )
+    .sort((a, b) => qwenVersion(b.id) - qwenVersion(a.id));
+}
+
+const QWEN_VERSION = /^qwen(\d+(?:\.\d+)?)/i;
+
+// Newest Qwen first; everything else keeps the backend's order after them.
+function qwenVersion(id: string): number {
+  const match = QWEN_VERSION.exec(id);
+  return match ? Number(match[1]) : -1;
 }
 
 /** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */

@@ -157,6 +157,36 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
   assert.deepEqual(ids(false, " GEMMA "), ["gemma3-4b-FLM"]);
   assert.deepEqual(ids(true, "gemma"), []);
   assert.deepEqual(api.npuRowsFor(null, { onDevice: false, query: "" }), []);
+
+  const backendOrder = [
+    "d3-edge-FLM",
+    "gemma3-4b-FLM",
+    "qwen2.5-it-3b-FLM",
+    "qwen3-4b-FLM",
+    "qwen3.5-0.8b-FLM",
+    "qwen3.5-9b-FLM",
+    "qwen3.6-moe-35b-a3b-FLM",
+    "qwen3.8-dflash2-27b-FLM",
+    "qwen3.8-mtp-27b-FLM",
+    "qwen3vl-it-4b-FLM",
+  ].map((id) => model(id, false));
+  assert.deepEqual(
+    api
+      .npuRowsFor(backendOrder, { onDevice: false, query: "" })
+      .map((m) => m.id),
+    [
+      "qwen3.8-dflash2-27b-FLM",
+      "qwen3.8-mtp-27b-FLM",
+      "qwen3.6-moe-35b-a3b-FLM",
+      "qwen3.5-0.8b-FLM",
+      "qwen3.5-9b-FLM",
+      "qwen3-4b-FLM",
+      "qwen3vl-it-4b-FLM",
+      "qwen2.5-it-3b-FLM",
+      "d3-edge-FLM",
+      "gemma3-4b-FLM",
+    ],
+  );
 });
 
 test("an interrupted NPU download says how much it kept", () => {
