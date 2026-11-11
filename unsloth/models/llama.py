@@ -2459,7 +2459,9 @@ def _decode_rotary_seq_len(rotary_emb, kv_seq_len, position_ids):
 
 
 class _PerDeviceRopeCache:
-    """Build position-independent rows lazily on the consuming device."""
+    """cos/sin built lazily per device with only the rows asked for, so torchrun ranks do not
+    allocate on their peers. A row depends only on its position, so a shorter cache matches the
+    full one row for row."""
 
     _rope_rows_pick_factors = False
 
@@ -2477,8 +2479,10 @@ class _PerDeviceRopeCache:
                     getattr(self, "scaling_factor", 1.0), dtype = torch.float32, device = "cpu"
                 )
             )
+        # Bumped whenever the eager code rebuilt every device (growth), so stale devices rebuild.
         self._rope_cache_version = 0
         self._rope_cache_versions = [None] * DEVICE_COUNT
+        # Rows each device can serve without bookkeeping; reset on growth. Read per layer per decode step.
         self._rope_rows_ready = [0] * DEVICE_COUNT
         # A compiled grad-off build may hold inference tensors (AOTAutograd drops
         # inference_mode(False)); rebuilt on the next grad-enabled read, off the fast path.
@@ -2563,6 +2567,7 @@ class _PerDeviceRopeCache:
         seq_len = None,
     ):
         if position_ids is not None and seq_len is None:
+            # Stock transformers call (a plain model built after the patch): per-position cos/sin.
             if torch.compiler.is_compiling() and not self._rope_rows_pick_factors:
                 return self._compiled_position_embeddings(x, position_ids)
             rows = int(position_ids.max()) + 1
@@ -2619,6 +2624,8 @@ class _PerDeviceRopeCache:
         seq_len,
         materialize_len = None,
     ):
+        # seq_len moves current_rope_size and the dtype as before; materialize_len (default seq_len)
+        # is how many rows x's device needs now.
         rows = seq_len if materialize_len is None else materialize_len
         if seq_len <= self.current_rope_size:
             device_index = x.device.index
@@ -2643,7 +2650,10 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         config = None,
     ):
         super().__init__()
+        # cos/sin multiplier (1.0 except yarn / longrope); set before any cache build.
         self.attention_scaling = 1.0
+        # Derive inv_freq from the config like transformers so rope_scaling is not dropped; scaled
+        # subclasses are excluded to avoid double-scaling.
         if config is not None:
             base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
@@ -2660,6 +2670,7 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self.base = base
         # Kept so the v5 rope repair can rebuild the scaled inv_freq (#2405).
         self._unsloth_rope_config = config
+        # Dynamic RoPE starts at a max of 4 * 8192 tokens and grows iteratively in increments of 8192.
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
         self.multi_gpu_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
@@ -2669,6 +2680,7 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self._unsloth_inv_freq_cpu = inv_freq.detach().clone()
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
+        # Built per device on first use, not for every visible GPU here.
         self._init_rope_cache_state(torch.get_default_dtype())
 
         self.cos_cached = torch.empty(
@@ -2692,6 +2704,7 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         return inv_freq
 
     def _unsloth_recompute_inv_freq(self):
+        # Config scaling (llama3/yarn) first, else vanilla plus subclass scaling; shared with the v5 rope repair
         config = getattr(self, "_unsloth_rope_config", None)
         config_inv_freq = None
         rope_scaling = getattr(config, "rope_scaling", None) if config is not None else None
