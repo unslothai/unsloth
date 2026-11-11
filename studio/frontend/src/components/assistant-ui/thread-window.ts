@@ -94,6 +94,18 @@ export class RowHeights {
   private densities = new Map<string, Density>();
   /** What each measured row added to its role's density, so a re-measure replaces it. */
   private counted = new Map<string, { role: string; lines: number; px: number }>();
+  private width = 0;
+
+  /** A new column width re-wraps every row, so every height is forgotten. */
+  resize(width: number): void {
+    if (width === this.width) return;
+    if (this.width > 0) {
+      this.measured.clear();
+      this.densities.clear();
+      this.counted.clear();
+    }
+    this.width = width;
+  }
 
   measure(meta: RowMeta, height: number): void {
     if (!(height >= 0)) return;
@@ -435,6 +447,20 @@ export function planEngage(
 
 function samePins(a: readonly number[] = [], b: readonly number[] = []): boolean {
   return a.length === b.length && a.every((pin, at) => pin === b[at]);
+}
+
+/** Rows a tail window may grow by to reach the prompt it answers. */
+export const TAIL_TURN_MAX_ROWS = 4;
+
+/** A tail window also holds the last prompt: a reply taller than the keep distance would drop it. */
+export function holdTailTurn(
+  win: RowWindow | null,
+  count: number,
+  tailTurn: number,
+): RowWindow | null {
+  if (win == null || win.end < count || tailTurn < 0 || win.start <= tailTurn) return win;
+  if (win.start - tailTurn > TAIL_TURN_MAX_ROWS) return win;
+  return withPins({ start: tailTurn, end: win.end }, win.pins ?? [], count);
 }
 
 export const sameWindow = (a: RowWindow | null, b: RowWindow | null): boolean =>

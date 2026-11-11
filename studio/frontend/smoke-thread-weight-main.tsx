@@ -294,6 +294,16 @@ function ThreadWeightApi({
       messageCount(): number {
         return document.querySelectorAll("[data-role]").length;
       },
+      /** Opens the last user prompt's editor; returns its message id. */
+      editLastPrompt(): string | null {
+        const messages = aui.thread().getState().messages;
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          if (messages[index].role !== "user") continue;
+          aui.thread().message({ index }).composer().beginEdit();
+          return messages[index].id;
+        }
+        return null;
+      },
       /** The conversation's length, where messageCount() is how much of it is mounted. */
       threadLength(): number {
         return aui.thread().getState().messages.length;

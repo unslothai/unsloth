@@ -18,7 +18,9 @@ import {
   WINDOW_MIN_ROWS,
   WINDOW_MIN_TOTAL_PX,
   WINDOW_REACH_PX,
+  TAIL_TURN_MAX_ROWS,
   absorbShift,
+  holdTailTurn,
   followCount,
   initialRowWindow,
   messageWeight,
@@ -486,4 +488,40 @@ test("only what the spacer cannot take is left for a scroll correction", () => {
 
 test("the reach and keep distances leave hysteresis between mounting and unmounting", () => {
   assert.ok(WINDOW_KEEP_PX >= WINDOW_REACH_PX * 1.5);
+});
+
+test("a window holding the tail also holds the prompt its reply answers", () => {
+  assert.deepEqual(holdTailTurn({ start: 9, end: 10 }, 10, 8), { start: 8, end: 10 });
+  assert.deepEqual(holdTailTurn({ start: 5, end: 10 }, 10, 8), { start: 5, end: 10 });
+  assert.deepEqual(holdTailTurn({ start: 9, end: 10 }, 10, -1), { start: 9, end: 10 });
+  // A window away from the tail is the reader's, not the tail's.
+  assert.deepEqual(holdTailTurn({ start: 2, end: 6 }, 10, 1), { start: 2, end: 6 });
+  assert.equal(holdTailTurn(null, 10, 8), null);
+  // A prompt many rows up (a long agent turn) is not worth mounting everything between.
+  const far = { start: 50, end: 60 };
+  assert.deepEqual(holdTailTurn(far, 60, 50 - TAIL_TURN_MAX_ROWS - 1), far);
+  assert.deepEqual(holdTailTurn(far, 60, 50 - TAIL_TURN_MAX_ROWS), {
+    start: 50 - TAIL_TURN_MAX_ROWS,
+    end: 60,
+  });
+  // A pin the widened window now covers is no longer a pin.
+  assert.deepEqual(holdTailTurn({ start: 9, end: 10, pins: [2, 8] }, 10, 7), {
+    start: 7,
+    end: 10,
+    pins: [2],
+  });
+  const held = holdTailTurn({ start: 9, end: 10 }, 10, 8);
+  assert.deepEqual(holdTailTurn(held, 10, 8), held);
+});
+
+test("a new column width forgets every height, since every row re-wraps", () => {
+  const heights = new RowHeights();
+  const row = meta(1);
+  heights.resize(800);
+  heights.measure(row, 900);
+  heights.resize(800);
+  assert.equal(heights.heightOf(row), 900, "the same width keeps them");
+  heights.resize(400);
+  assert.equal(heights.has(row.id), false);
+  assert.notEqual(heights.heightOf(row), 900);
 });

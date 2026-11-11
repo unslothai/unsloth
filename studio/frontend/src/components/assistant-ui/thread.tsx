@@ -9304,8 +9304,16 @@ const ScheduledTaskSource: FC = () => {
   );
 };
 
+/** Prompts already shown: the thread window remounts rows, and a remount must not replay the arrival. */
+const shownPrompts = new Set<string>();
+
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
+  const id = useAuiState(({ message }) => message.id);
+  const [arriving] = useState(() => !shownPrompts.has(id));
+  useEffect(() => {
+    shownPrompts.add(id);
+  }, [id]);
   const promptRef = focusReveal.ref;
   const adjustAbove = useAdjustForContentInsertedAbove();
   useEffect(() => {
@@ -9317,7 +9325,10 @@ const UserMessage: FC = () => {
   );
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
+      className={cn(
+        "aui-user-message-root mx-auto flex w-full max-w-(--thread-content-max-width) flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]",
+        arriving && "fade-in slide-in-from-bottom-1 animate-in duration-150",
+      )}
       data-role="user"
       tabIndex={0}
       {...focusReveal}

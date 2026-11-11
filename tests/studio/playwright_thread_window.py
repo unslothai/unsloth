@@ -24,6 +24,8 @@ holds every row mounted). Structure only, never a timing:
   9. A reply streamed into the windowed thread lands at the tail with the reader following it.
  10. Mounting everything (select all) goes in passes bounded by height, so very long replies do
      not land thirty-two to a commit.
+ 11. The window at the tail holds the last prompt too, and a prompt being edited (a row with no
+     `data-role`) keeps its editor, focus and draft across jumps to both ends.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ ENGINES = [e for e in os.environ.get("SMOKE_ENGINES", "chromium").split(",") if 
 SMALL = 80
 LARGE = 400
 STREAM_CHUNKS = 20
+DRAFT = "unsaved draft for the windowed thread"
 SEED = {"agent": {"rounds": 2, "compactionEvery": 10, "sources": True, "rich": True}}
 # Same allowance studiobench gives a windowed arm (analysis/behaviour.py).
 EXTENT_TOLERANCE = 0.10
@@ -586,6 +589,31 @@ def check_engine(playwright, engine: str) -> None:
                 f"one pass of the full mount added {entry['rows']} rows, {entry['px']}px of them: "
                 f"the height budget ({FILL_BUDGET_PX}px) is not bounding it"
             )
+        assert not errors, errors
+        page.close()
+
+        # 11. The last prompt is mounted with its reply, and an open prompt editor keeps its draft.
+        page, errors = open_thread(context, LARGE, windowed = True)
+        last_user = page.evaluate(
+            "() => [...document.querySelectorAll('[data-role]')].filter("
+            "(row) => row.dataset.role === 'user').length"
+        )
+        assert last_user >= 1, "the window at the tail left out the prompt its reply answers"
+        edited = page.evaluate("() => window.__threadWeight.editLastPrompt()")
+        editor = page.locator(f'[data-message-id="{edited}"] textarea')
+        editor.fill(DRAFT)
+        # Wheeled, not scrolled by script: a programmatic scroll is not the reader leaving the tail.
+        box = page.locator(".aui-thread-viewport").bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        for _ in range(20):
+            page.mouse.wheel(0, -WHEEL_PX)
+            page.wait_for_timeout(WHEEL_GAP_MS)
+        away = settle(page)
+        assert editor.count() == 1 and editor.evaluate("(e) => e === document.activeElement"), (
+            f"a prompt being edited lost its editor or focus {away['scrollHeight'] - away['scrollTop']}"
+            f"px up the thread"
+        )
+        assert editor.input_value() == DRAFT, "a prompt being edited lost its draft"
         assert not errors, errors
         page.close()
         info(f"{engine}: ok " + json.dumps({"small": small["mounted"], "large": opened["mounted"]}))

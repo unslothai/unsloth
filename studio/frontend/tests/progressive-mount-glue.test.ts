@@ -91,7 +91,10 @@ test("the window is only ever set to what a planner returned", () => {
   const step = section(GLUE, "const step = useCallback(", "stepRef.current = step;");
   assert.match(step, /next = planFill\(current, total, chunk, heightOf\);/);
   assert.match(step, /next = planSlide\(\{/);
-  assert.match(step, /const next = planEngage\(/);
+  assert.match(step, /const next = holdTailTurn\(\s*planEngage\(/);
+  // A window at the tail holds the last prompt too, from the first open on.
+  assert.match(step, /next = holdTailTurn\(next, total, lookup\.tailTurn\);/);
+  assert.match(GLUE, /return holdTailTurn\(opened, metas\.length, tailTurn\);/);
   assert.match(step, /if \(sameWindow\(next, current\)\)/);
   const reveal = section(GLUE, "const reveal = useCallback(", "[aui, readMetas, viewportRef],");
   assert.match(reveal, /const next = keepPinned\(\s*viewport,\s*lookup,\s*\{ start: index, end: Math\.min\(total, index \+ SLIDE_STEP\) \},\s*tail,\s*\);/);
@@ -118,7 +121,7 @@ test("rows the reader is working in are not unmounted", () => {
   assert.match(GLUE, /const PINNED_CONTENT = "textarea, \[contenteditable=true\]";/);
   assert.match(pinned, /if \(selection\?\.intersectsNode\(row\)\) return true;/);
   // A selection reaching into the thread, or a held pointer, holds every mounted row.
-  assert.match(GLUE, /trim: heldSelection\(viewport\) === null && !inputPointerHeld\(\),/);
+  assert.match(GLUE, /trim: \(trim = heldSelection\(viewport\) === null && !inputPointerHeld\(\)\),/);
   assert.match(
     section(GLUE, "function heldSelection(", "\n}\n"),
     /selection\.isCollapsed \|\|[\s\S]*?range\.intersectsNode\(viewport\) \? range : null/,
@@ -185,7 +188,7 @@ test("a step runs on a frame, and WebKit commits inside it", () => {
   assert.match(commit, /if \(sync\) flushSync\(apply\);\s*else startTransition\(apply\);/);
   // A trim is cheap and must not lag the measurement it was planned from.
   assert.match(GLUE, /const trimOnly = next != null && next\.start >= current\.start && next\.end <= current\.end;/);
-  assert.match(GLUE, /commit\(next, WEBKIT_GTK \|\| trimOnly\);/);
+  assert.match(GLUE, /commit\(next, WEBKIT_GTK \|\| trimOnly \|\| exposed\);/);
   // One commit at a time: its layout effect owns the correction.
   assert.match(GLUE, /if \(!viewport \|\| pendingRef\.current\) return;/);
 });

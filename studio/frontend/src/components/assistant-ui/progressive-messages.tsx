@@ -40,6 +40,7 @@ import {
   WINDOW_REACH_PX,
   absorbShift,
   followCount,
+  holdTailTurn,
   initialRowWindow,
   messageWeight,
   planEngage,
@@ -74,7 +75,8 @@ const SETTLE_RETRY_MS = 350;
 /** How often a full mount nothing announces the end of is checked for release. */
 const HOLD_RECHECK_MS = 1000;
 const FIND_FLAG = "data-find-bar-open";
-const ROW_SELECTOR = "[data-role][data-message-id]";
+// Not `[data-role]`: a prompt being edited renders as an EditComposer, which has no role.
+const ROW_SELECTOR = "[data-message-id]";
 const SPACER_ATTRIBUTE = "data-thread-spacer";
 const PINNED_CONTENT = "textarea, [contenteditable=true]";
 
@@ -262,6 +264,8 @@ type ThreadMessage = {
 type Metas = {
   metas: RowMeta[];
   index: Map<string, number>;
+  /** The last user prompt that renders, or -1. */
+  tailTurn: number;
 };
 
 /** Message objects are immutable, so a meta lives as long as its message does. */
@@ -291,8 +295,12 @@ function metasOf(messages: readonly ThreadMessage[]): Metas {
   if (cached) return cached;
   const metas = messages.map(metaOf);
   const index = new Map<string, number>();
-  metas.forEach((meta, at) => index.set(meta.id, at));
-  const derived = { metas, index };
+  let tailTurn = -1;
+  metas.forEach((meta, at) => {
+    index.set(meta.id, at);
+    if (meta.role === "user" && meta.renders) tailTurn = at;
+  });
+  const derived = { metas, index, tailTurn };
   metasCache.set(messages, derived);
   return derived;
 }
@@ -407,8 +415,11 @@ function publishOrdinals(viewport: HTMLElement, lookup: Metas, windowed: boolean
     if (index === undefined) {
       child.removeAttribute("aria-posinset");
       child.removeAttribute("aria-setsize");
+      if (child.getAttribute("role") === "article") child.removeAttribute("role");
       continue;
     }
+    // Ordinals need a role that supports them: a focusable message in a feed is an article.
+    if (!child.hasAttribute("role")) child.setAttribute("role", "article");
     const position = String(index + 1);
     if (child.getAttribute("aria-posinset") !== position) {
       child.setAttribute("aria-posinset", position);
@@ -437,13 +448,14 @@ function useThreadWindow(
   const heights = useMemo(() => heightsFor(resetKey), [resetKey]);
 
   const open = useCallback((): RowWindow | null => {
-    const { metas } = readMetas();
+    const { metas, tailTurn } = readMetas();
     const view = typeof window === "undefined" ? 900 : window.innerHeight;
-    return initialRowWindow(
+    const opened = initialRowWindow(
       metas.length,
       (index) => heights.heightOf(metas[index]),
       view + WINDOW_REACH_PX,
     );
+    return holdTailTurn(opened, metas.length, tailTurn);
   }, [readMetas, heights]);
 
   const [win, setWin] = useState<RowWindow | null>(open);
@@ -585,6 +597,7 @@ function useThreadWindow(
     const lookup = readMetas();
     const total = lookup.metas.length;
     const current = winRef.current;
+    heights.resize(viewport.clientWidth);
     const measured = measureRows(viewport, lookup, heights);
     // Also here: a row can replace its root (an edit opening) without the window committing.
     ordinals(viewport, lookup);
@@ -611,7 +624,11 @@ function useThreadWindow(
         releaseAtRef.current = performance.now() + FILL_RELEASE_MS;
         requestAnimationFrame(flushWaiters);
       }
-      const next = planEngage(measured.rows, total, viewport.clientHeight);
+      const next = holdTailTurn(
+        planEngage(measured.rows, total, viewport.clientHeight),
+        total,
+        lookup.tailTurn,
+      );
       const held =
         modeRef.current === "fill" || heldSelection(viewport) !== null || inputPointerHeld();
       if (next == null || held) {
@@ -633,6 +650,7 @@ function useThreadWindow(
     );
     const heightOf = (index: number) => heights.heightOf(lookup.metas[index]);
     let next: RowWindow | null;
+    let trim = true;
     if (modeRef.current === "fill") {
       // A commit also interrupts native wheel momentum, so a full mount waits for a quiet moment.
       if (scrollActivity.current?.blocked(inputPointerHeld())) {
@@ -657,16 +675,29 @@ function useThreadWindow(
         slack: slackRef.current,
         heightOf,
         maxStep: SLIDE_STEP,
-        trim: heldSelection(viewport) === null && !inputPointerHeld(),
+        trim: (trim = heldSelection(viewport) === null && !inputPointerHeld()),
       });
+      next = holdTailTurn(next, total, lookup.tailTurn);
     }
     if (next != null) next = keepPinned(viewport, lookup, next, tail);
     if (sameWindow(next, current)) {
       settle(viewport, current, lookup);
+      // A held selection or pointer kept rows; nothing announces its end, so look again.
+      if (!trim) {
+        window.clearTimeout(settleTimerRef.current);
+        settleTimerRef.current = window.setTimeout(schedule, HOLD_RECHECK_MS);
+      }
       return;
     }
     const trimOnly = next != null && next.start >= current.start && next.end <= current.end;
-    commit(next, WEBKIT_GTK || trimOnly);
+    // A spacer in view is blank screen: not behind an interruptible transition.
+    const first = inWindow[0];
+    const last = inWindow[inWindow.length - 1];
+    const exposed =
+      !first ||
+      (current.start > 0 && first.top > 0) ||
+      (current.end < total && last.bottom < viewport.clientHeight);
+    commit(next, WEBKIT_GTK || trimOnly || exposed);
   }, [aui, commit, flushWaiters, heights, ordinals, readMetas, schedule, settle, viewportRef]);
   useLayoutEffect(() => {
     stepRef.current = step;
@@ -827,8 +858,8 @@ function useThreadWindow(
     const beforePrint = () => {
       printingRef.current = true;
       modeRef.current = "fill";
-      // Print lays out what is mounted, so everything mounts before the dialog opens.
-      if (winRef.current != null && !pendingRef.current) commit(null, true);
+      // Print lays out only what is mounted, even over a commit in flight.
+      if (winRef.current != null) commit(null, true);
     };
     const afterPrint = () => {
       printingRef.current = media.matches;
@@ -840,6 +871,8 @@ function useThreadWindow(
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
       const target = event.target as Element | null;
       if (target?.closest?.("input, textarea, [contenteditable=true]")) return;
+      // A thread behind another route is not what select all selects.
+      if (viewport.clientHeight === 0 || viewport.closest("[inert]")) return;
       void complete();
     };
     const onCopy = () => {
