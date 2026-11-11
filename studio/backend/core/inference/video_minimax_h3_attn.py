@@ -96,10 +96,8 @@ def _diffusers_h3_processor() -> Any:
 
 
 def strided_processor_class(base: Any = None) -> Any:
-    """Strided subclass of the H3-layout processor ``base`` (diffusers' ``MiniMaxH3AttnProcessor`` when None, or any
-    processor of that layout whose module defines ``_apply_rotary_emb``, e.g. the vendored H3-Image one). One class per
-    base: dynamo guards on the class id, so a class per call would retrace every block. Masks, context parallelism and
-    other backends take the stock ``__call__``."""
+    """Strided subclass of the H3-layout processor ``base`` (diffusers' when None). One cached class per base: dynamo
+    guards on the class id, so a class per call would retrace every block."""
     return _strided_processor_for(_diffusers_h3_processor() if base is None else base)
 
 
@@ -217,10 +215,8 @@ def _params(fn: Any) -> tuple:
 
 
 def h3_processor_base(module: Any) -> Any:
-    """The stock H3-layout processor class of ``module``, or None. Gated on structure, not on a class: an attention
-    module whose forward is ``(hidden_states, rotary_emb, attention_mask)``, with per-head RMSNorm ``norm_q`` /
-    ``norm_k``, ``to_out``, separate or fused QKV, and a default processor of the same call signature whose module
-    defines ``_apply_rotary_emb`` (diffusers' MiniMax-H3 and the vendored MiniMax-H3-Image)."""
+    """The stock H3-layout processor class of ``module``, or None. Gated on structure (forward signature, norms, QKV,
+    a processor module defining ``_apply_rotary_emb``), not class, so the vendored H3-Image attention matches too."""
     import sys
 
     from torch import nn

@@ -4060,13 +4060,11 @@ def install_hunyuan_attention_trim(
     return engaged
 
 
-# Attention a checkpoint declares for its DiT blocks (e.g. "int8"), mapped to the Studio backend of the same
-# arithmetic class. That backend still has to pass its own probe on the card where it engages.
+# declared checkpoint attention -> Studio backend of the same arithmetic (still probe-gated)
 CHECKPOINT_ATTENTION_BACKENDS = {"int8": "sage"}
 
 
 def checkpoint_attention_backend(declared: Any) -> Optional[str]:
-    """The Studio backend for a declared attention kind ("int8", case-insensitive), or None (unset or unknown)."""
     if not isinstance(declared, str):
         return None
     return CHECKPOINT_ATTENTION_BACKENDS.get(declared.strip().lower())

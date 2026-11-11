@@ -11815,7 +11815,6 @@ class DiffusionBackend:
         )
         report = pipe._unsloth_h3_report
         plan = report.plan
-        # Same in-memory conditioning cache as every other load: a repeated prompt skips the 27 GB encoder.
         prompt_cache.install(
             pipe,
             identity = {

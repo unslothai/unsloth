@@ -1348,21 +1348,12 @@ def cross_forward_step(
                 pf.armed = False  # the expert switches after the next step: carry nothing past it
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# One streamer for custom loaders: a ModuleList whose tail streams through the device, each streamed member one
-# diffusers ModuleGroup (pinned, slab-packed host copies, a copy stream), driven by the GroupPrefetcher above.
-# ---------------------------------------------------------------------------------------------------------------------
-
 LIST_STREAM_DEPTH = 1
 
 
 class PrefetchedListStreamer:
-    """Streams ``blocks[resident:]`` through ``device``: members before ``resident`` move to the device; each later
-    member gets pinned host copies (packed into slabs) and an event-fenced copy on its own stream, queued ``depth``
-    members ahead of the compute from the second forward of ``owner`` on (the first records the order). A forward of
-    ``owner`` that raises part way (an encoder read stopped at a layer) still releases every copy it queued.
-
-    Build it with ``stream_module_list``; ``remove()`` drops the hooks and the host copies' references."""
+    """Streams ``blocks[resident:]`` via pinned slabs and event-fenced copies ``depth`` members ahead, from the second
+    forward on (the first records the order); a forward that raises still releases its queued copies."""
 
     def __init__(self) -> None:
         self.handles: list = []
@@ -1371,7 +1362,7 @@ class PrefetchedListStreamer:
         self.streamed = 0
         self.pinned_bytes = 0
         self.arena: Any = None
-        # Same surface as the pageable ModuleListStreamer (its release path clears ``_host``).
+        # matches ModuleListStreamer, whose release path clears ``_host``
         self._host: dict = {}
 
     def stats(self) -> dict:
@@ -1425,12 +1416,8 @@ def stream_module_list(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
 ) -> Optional[PrefetchedListStreamer]:
-    """A ``PrefetchedListStreamer`` over ``blocks`` (members of ``owner``), or None with nothing changed when it does
-    not apply here (kill switch, no CUDA, no pinning on this device / OS, a diffusers without ``ModuleGroup``, a
-    failure while pinning, more bytes to pin than host RAM can lock): the caller keeps its own streamer then.
-    The pinned copies are new locked host memory (the pageable ones may be file-backed pages): they must fit
-    ``diffusion_memory._pin_budget_mib`` (free host RAM, cgroup aware, less max(4 GiB, 15%)) less ``reserve_bytes``
-    (what a later, more valuable stream will pin), and ``max_pin_bytes`` when the caller's own host plan caps them."""
+    """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
+    Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given."""
     import torch
 
     refused = _list_stream_refusal(device)
@@ -1478,8 +1465,7 @@ def stream_module_list(
     try:
         from .diffusion_memory import install_group_offload_buffer_restore
 
-        # diffusers' stream offload restores only parameters: a member whose weights are buffers (int8 encoder
-        # projections) would keep every streamed copy on the device
+        # diffusers restores only parameters; buffer weights (int8 encoder) would otherwise stay on the device
         install_group_offload_buffer_restore()
         from .diffusion_pinned_arena import packable_bytes, pinned_arena_for_group_offload
 
@@ -1504,7 +1490,6 @@ def stream_module_list(
                     record_stream = True,
                     low_cpu_mem_usage = False,
                 )
-                # every tensor reads its pinned copy from here on (the pageable one is dropped)
                 type(group).offload_(group)
                 streamer.groups.append(group)
         streamer.arena = arena

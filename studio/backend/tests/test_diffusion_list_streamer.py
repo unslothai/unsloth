@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The shared ModuleList streamer (pinned host copies + event-fenced prefetch): CPU checks the refusals and the
-H3-Image fallback; CUDA checks bit identity against the resident stack over repeated, interrupted and reordered
-forwards, the prefetch engaging from the second forward, and that remove() leaves the members usable."""
+"""The shared pinned ModuleList streamer: CPU refusals, plus CUDA parity / prefetch / remove() checks."""
 
 from __future__ import annotations
 
@@ -18,8 +16,6 @@ class _Stop(Exception):
 
 
 class _BufferLinear(torch.nn.Module):
-    """Weights held as buffers (an int8 projection and its scale), as the hosted int8 encoder stores them."""
-
     def __init__(self, width: int) -> None:
         super().__init__()
         self.register_buffer("weight", torch.randint(-127, 127, (width, width), dtype = torch.int8))
@@ -96,15 +92,14 @@ def test_a_stream_larger_than_the_pin_budget_is_refused(monkeypatch):
     stack = _Stack()
     went_on = []
     monkeypatch.setattr(op, "_list_stream_refusal", lambda device: None)
-    # the first step after the budget check: the refusal must come from the budget, before any pinning
+    # the refusal must come from the budget, before any pinning
     monkeypatch.setattr(
         dm, "install_group_offload_buffer_restore", lambda: went_on.append(1) or 1 / 0
     )
-    # a stream far under 1 MiB still does not fit a 0 MiB budget (compared in bytes, not rounded MiB)
+    # compared in bytes, not rounded MiB
     monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 0)
     assert op.stream_module_list(stack, stack.layers, "cuda", 2) is None
     assert not went_on and not stack.layers[3]._forward_pre_hooks
-    # one that fits goes past the check (the stub then fails, so nothing is installed)
     monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1)
     assert op.stream_module_list(stack, stack.layers, "cuda", 2) is None
     assert went_on == [1] and not stack.layers[3]._forward_pre_hooks
@@ -145,7 +140,6 @@ def test_streamed_stack_is_bit_identical_and_prefetches(resident):
         before = torch.cuda.memory_allocated()
         for _ in range(3):
             assert torch.equal(stack(x), want)
-        # an interrupted forward (an encoder read stopping at a layer) releases what it queued
         stack.stop_after = 3
         with pytest.raises(_Stop):
             stack(x)
@@ -157,10 +151,7 @@ def test_streamed_stack_is_bit_identical_and_prefetches(resident):
     assert streamer.prefetcher.inflight_bytes == 0 and not streamer.prefetcher.ready
     for layer in stack.layers[resident:]:
         assert all(p.device.type == "cpu" for p in layer.parameters())
-        assert all(
-            b.device.type == "cpu" for b in layer.buffers()
-        )  # buffers return to their host copy too
-    # nothing streamed stays on the device between forwards
+        assert all(b.device.type == "cpu" for b in layer.buffers())
     assert torch.cuda.memory_allocated() <= before + (1 << 20)
     streamer.remove()
     assert not stack._forward_pre_hooks and not stack._forward_hooks
@@ -178,9 +169,7 @@ def test_a_stream_over_the_callers_host_cap_is_refused_before_pinning(monkeypatc
     monkeypatch.setattr(
         dm, "install_group_offload_buffer_restore", lambda: went_on.append(1) or 1 / 0
     )
-    monkeypatch.setattr(
-        dm, "_pin_budget_mib", lambda: 1 << 20
-    )  # plenty of free RAM: the host plan still caps
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1 << 20)
     assert op.stream_module_list(stack, stack.layers, "cuda", 2, max_pin_bytes = 0) is None
     assert not went_on
 
@@ -240,8 +229,7 @@ def test_pins_fit_the_plans_host_room(host, dit_room, te_pinned):
 
 
 def test_a_small_host_streams_pageable_and_still_renders(monkeypatch):
-    """40 GB host, stream tier (32 GB is refused by the planner before and after this change: about 37 GB is the
-    floor): the DiT gets no pin room, falls back to the pageable streamer, and the model runs."""
+    """40 GB host, stream tier (about 37 GB is the planner floor): the DiT gets no pin room and runs pageable."""
     h3i = _h3()
     import core.inference.diffusion_offload_prefetch as opf
 

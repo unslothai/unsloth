@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3-Image speed levers (diffusion_minimax_h3_image_speed) on a tiny random H3-Image DiT, CPU: the H3 video
-attention levers recognise the vendored attention by structure, stay bit-identical to the stock processor, fuse the
-int8 QKV through the row pads exactly, and every switch keeps the stock path."""
+"""MiniMax-H3-Image speed levers on a tiny random H3-Image DiT (CPU)."""
 
 from __future__ import annotations
 
@@ -105,13 +103,11 @@ def _quantized_padded(model):
 def test_the_vendored_attention_is_recognised_by_structure():
     model = _model()
     mods = A._h3_attention_modules(model)
-    # 2 blocks + 2 token-refiner blocks
     assert len(mods) == 4
     base = A.h3_processor_base(mods[0])
     assert base is type(model.transformer_blocks[0].attn.processor)
     cls = A.strided_processor_class(base)
     assert issubclass(cls, base) and cls is A.strided_processor_class(base)
-    # unrelated modules are not taken
     assert A.h3_processor_base(model.transformer_blocks[0].ff) is None
     assert A.h3_processor_base(torch.nn.Linear(2, 2)) is None
 
@@ -177,7 +173,7 @@ def test_int8_qkv_fuses_through_the_row_pads_exactly():
     model = _quantized_padded(_model())
     stock = copy.deepcopy(model)
     fused = S._fuse_qkv(model, None)
-    assert fused == 2  # the dense token refiner stays as it was
+    assert fused == 2
     attn = model.transformer_blocks[0].attn
     assert attn.fused_projections and not hasattr(attn, "to_q")
     assert type(attn.to_qkv).__name__ == "H3ImageRowPad"
@@ -233,7 +229,6 @@ def test_the_loader_installs_the_levers_once_and_reports_them():
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "install_h3_image_speed"
     ]
     assert len(calls) == 1
-    # after placement: the streamer and the device moves come first
     assert src.index("install_h3_image_speed(") > src.rindex("early_streamer.remove()")
     assert src.index("install_h3_image_speed(") < src.index("H3ImageLoadReport(")
     assert "speed_levers" in h3i.H3ImageLoadReport.__dataclass_fields__

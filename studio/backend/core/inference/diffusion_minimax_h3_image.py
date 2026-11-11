@@ -113,8 +113,7 @@ ADALN_TABLE_ENV = "UNSLOTH_H3_IMAGE_ADALN_TABLE"
 PLACEMENT_ENV = "UNSLOTH_H3_IMAGE_PLACEMENT"
 VRAM_BUDGET_ENV = "UNSLOTH_H3_IMAGE_VRAM_GB"
 HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
-# "0": streamed DiT blocks / encoder layers move from pageable host memory on the compute stream (ModuleListStreamer)
-# instead of the shared pinned, event-fenced prefetch streamer (diffusion_offload_prefetch.stream_module_list).
+# "0": stream from pageable memory (ModuleListStreamer) instead of the pinned prefetch streamer
 PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
 
 QUANT_SCHEMES = ("int8", "fp8")
@@ -788,7 +787,7 @@ class H3ImagePlan:
     # False: the encoder is loaded for each encode and freed after (host RAM cannot hold it beside the DiT)
     te_kept_on_host: bool = True
     reasons: list = field(default_factory = list)
-    # host RAM (GB) the plan holds once placed: host-side DiT blocks + the encoder + 4 GB; None without a host budget
+    # host GB held once placed (host DiT blocks + encoder + 4 GB); None without a host budget
     host_need_gb: Optional[float] = None
 
     def as_dict(self) -> dict:
@@ -811,11 +810,9 @@ def pinned_stream_enabled() -> bool:
 
 
 def stream_inflight() -> int:
-    """Streamed members on the device at once: the running one plus the prefetched ones."""
     if not pinned_stream_enabled():
         return 1
     from .diffusion_offload_prefetch import LIST_STREAM_DEPTH
-
     return 1 + LIST_STREAM_DEPTH
 
 
@@ -919,9 +916,7 @@ def plan_placement(
         reasons.append(f"{plan.te_resident_layers}/{te_layers} encoder layers stay on the device")
     elif choice == PLACE_STREAM:
         spare = vram_gb - act - margin - vae_gb - DIT_TOP_GB - TE_TOP_GB - block_gb
-        spare -= (inflight - 1) * max(
-            block_gb, layer_gb
-        )  # the prefetched DiT block / encoder layer
+        spare -= (inflight - 1) * max(block_gb, layer_gb)
         plan.dit_resident_blocks = max(0, min(num_blocks, int(spare / block_gb)))
         # The resident blocks hold their room through the encode, so every encoder layer streams.
         plan.te_resident_layers = 0
@@ -1168,9 +1163,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         prompt: str,
         vision_images: Optional[list] = None,
     ) -> tuple:
-        """(prompt_embeds (1, n, 5120), per-row text tags) for one presentation. Named like every diffusers pipeline's
-        encoder entry point so ``diffusion_prompt_cache.install`` wraps it: a repeated prompt (new seed, batch) with the
-        same reference pixels reuses the conditioning. The VAE reference latents are never cached (seeded sample)."""
+        """(prompt_embeds, per-row text tags). Named like diffusers' encoder entry point so ``diffusion_prompt_cache``
+        wraps it; VAE reference latents are never cached (seeded sample)."""
         import torch
 
         tokenizer = self.tokenizer
@@ -1219,7 +1213,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         return self.encode_prompt(prompt, vision_images)
 
     def _streamer_stats(self) -> dict:
-        """Per role: pinned prefetch counters (copies, prefetched, missed), or {"pageable": n} for the stock one."""
+        """Per role: pinned prefetch counters, or {"pageable": n}."""
         out = {}
         for streamer in self._unsloth_h3_streamers:
             role = getattr(streamer, "_unsloth_role", "?")
@@ -2374,10 +2368,8 @@ def load_h3_image_text_encoder(
 
 
 def pin_room_bytes(plan: H3ImagePlan, pinned: Sequence[Any] = ()) -> Optional[int]:
-    """Host bytes the plan leaves for pinned copies: its host budget less what it already holds (host-side DiT
-    blocks, the encoder, 4 GB) less what ``pinned`` streamers already locked. Pinned copies are counted on top of the
-    pageable ones they replace (those may be file-backed pages that stay cached), so a host the plan fits still
-    fits with every pin. None without a host budget (only the free-RAM budget then applies)."""
+    """Host bytes left for pins: host budget less what the plan holds less ``pinned`` streamers' locks. Pins count on
+    top of the pageable copies they replace (those may stay cached). None without a host budget."""
     if plan.host_gb is None or plan.host_need_gb is None:
         return None
     room = int((float(plan.host_gb) - float(plan.host_need_gb)) * 1e9)
@@ -2396,9 +2388,7 @@ def make_list_streamer(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
 ) -> Any:
-    """A streamer for ``members[resident:]`` (children of ``owner``): the shared pinned, event-fenced prefetch
-    streamer where it applies and fits ``max_pin_bytes`` (``pin_room_bytes``), else the pageable
-    ``ModuleListStreamer``."""
+    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``."""
     streamer = None
     if pinned and pinned_stream_enabled():
         from .diffusion_offload_prefetch import stream_module_list
@@ -2451,7 +2441,7 @@ def _place_streamed_dit(
     plan: H3ImagePlan,
     pinned_already: Sequence[Any] = (),
 ) -> Any:
-    """Placed before the encoder loads, so the DiT blocks (streamed every step) get the host pin budget first."""
+    """Placed before the encoder so the DiT blocks (streamed every step) get the pin budget first."""
     vae.to(device)
     for name, child in transformer.named_children():
         if name != "transformer_blocks":
@@ -2469,24 +2459,17 @@ def _place_streamed_dit(
     return streamer
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# INT8 attention as the checkpoint asks for it.
-# ---------------------------------------------------------------------------------------------------------------------
-
-# "0": native attention on every block; "1": INT8 attention (Studio's probe-gated SageAttention) on the DiT blocks
-# whatever the DiT scheme; unset: as the checkpoint declares.
+# "0": native attention; "1": probe-gated SageAttention on the DiT blocks; unset: as the checkpoint declares
 INT8_ATTENTION_ENV = "UNSLOTH_H3_IMAGE_INT8_ATTENTION"
-# Where a checkpoint's declared attention is recorded (a hosted file's ``attention`` metadata).
 CHECKPOINT_ATTENTION_ATTR = "_unsloth_checkpoint_attention"
-# MiniMax-H3-Image's INT8 DiT checkpoint runs INT8 attention on its 50 DiT blocks (not the token refiner), so a DiT at
-# this scheme declares it unless its file says otherwise.
+# the INT8 DiT checkpoint runs INT8 attention on its DiT blocks unless its file says otherwise
 SCHEME_ATTENTION = {"int8": "int8"}
 ATTENTION_SAVED_ATTR = "_unsloth_h3_attention_saved"
 _LOG = logger
 
 
 def checkpoint_attention_wanted(transformer: Any, scheme: Optional[str]) -> Optional[str]:
-    """The backend the checkpoint (or the env switch) asks the DiT blocks to run: "sage" or None."""
+    """The DiT blocks' attention backend ("sage" or None) per the env switch or checkpoint."""
     from .diffusion_attention import checkpoint_attention_backend
 
     raw = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower()
@@ -2513,9 +2496,8 @@ def install_checkpoint_attention(
     scheme: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Route the DiT blocks' attention to the backend the checkpoint declares (INT8: Studio's SageAttention, which
-    has to pass its accuracy probe on this card first); the token refiner keeps its backend. Returns the engaged
-    backend, or None with every processor as it was. ``remove_checkpoint_attention`` undoes it."""
+    """Route the DiT blocks to the declared backend (SageAttention must pass its probe here first); the token refiner
+    keeps its own. Returns the engaged backend, or None with every processor unchanged."""
     import torch
 
     log = logger if logger is not None else _LOG
@@ -2586,9 +2568,8 @@ def _place_text_encoder(
     reserve_bytes: int = 0,
     pinned_already: Sequence[Any] = (),
 ) -> Any:
-    """``per_prompt``: the low-host tier loads the encoder for each prompt and frees it after, so pinning its layers
-    would cost a 27 GB host-to-pinned copy per prompt: those stream from pageable memory. ``pinned_already``: the
-    streamers whose pins count against the plan's host room first (the DiT, placed before the encoder)."""
+    """``per_prompt`` (low-host tier, encoder reloaded each prompt) streams pageable: pinning would copy 27 GB per
+    prompt. ``pinned_already``: streamers whose pins count against the host room first."""
     if encoder is None:
         return None
     if plan.placement == PLACE_RESIDENT:
@@ -2847,7 +2828,6 @@ def load_minimax_h3_image_pipeline(
 
         pipe._unsloth_h3_te_loader = _te_loader
     else:
-        # The streamed DiT was placed (and pinned) before the encoder loaded, so it already holds its pin budget.
         _place_text_encoder(pipe, text_encoder, plan, device, pinned_already = [early_streamer])
     if plan.placement != PLACE_SEQUENTIAL:
         vae.to(device)

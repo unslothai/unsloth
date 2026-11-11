@@ -1,33 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3-Image speed levers: the MiniMax-H3 video ones, engaged through the structural gates of
-``video_minimax_h3_attn`` (the vendored H3-Image attention has the same layout). ``UNSLOTH_H3_IMAGE_SPEED=0`` keeps
-every one of them off; each also honours its video switch.
+"""MiniMax-H3-Image speed levers, reusing the MiniMax-H3 video ones (same attention layout).
+``UNSLOTH_H3_IMAGE_SPEED=0`` disables all; each also honours its video switch.
 
-Exact (bit-identical outputs):
-* ``h3_int8_gemm``: Studio's fused-dequant int8 GEMM on the resident INT8 DiT (UNSLOTH_DIFFUSION_INT8_GEMM=0); the row
-  pads around the Linears it serves are dropped (its kernel takes any row count, each row is its own);
-* ``h3_fused_qkv``: one row-concatenated int8 ``to_qkv`` per block, resident INT8 only, self-checked bit for bit
-  (UNSLOTH_H3_FUSED_QKV=0);
-* ``h3_strided_attn``: SDPA on permuted views, no copies (UNSLOTH_H3_STRIDED_ATTN=0);
-* ``h3_shared_qkv_quant``: unfused Q / K / V share one activation quantization (UNSLOTH_H3_SHARED_QKV_QUANT=0); only where
-  QKV is not fused, so it engages when UNSLOTH_H3_FUSED_QKV=0;
-* the attention pin itself (``attention=_native_flash`` on sm80 / sm89): torch's default SDPA dispatch already picks
-  flash there for bf16 head_dim 128, so the pin only fixes the kernel the strided path calls.
-Tolerance-level:
-* ``h3_qk_rope``: fused q/k RMSNorm + RoPE (Triton), rstd may differ in the last fp32 bit, which the 6-step sampler
-  carries into a different image. Each tier ships the set that held its bf16-reference gate: on by default on the
-  resident tiers (with the fused SwiGLU), off by default on the streamed tier, whose other levers are exact.
-  UNSLOTH_H3_IMAGE_QK_ROPE=1 / 0 forces it on / off on every tier; UNSLOTH_H3_QK_ROPE=0 still keeps it off;
-* ``h3_fused_swiglu``: the down projection's activation quantization reads silu(gate) * value from the projection
-  halves (not bit-exact) (UNSLOTH_H3_FUSED_SWIGLU=0);
-* ``UNSLOTH_H3_ATTN_ARCH=0`` keeps the automatic cuDNN pick instead of flash on sm80 / sm89 (other arithmetic);
-* ``h3_compiled``: regional torch.compile of the blocks, resident tiers only, opt-in (UNSLOTH_H3_IMAGE_COMPILE=1):
-  its workspace is unmeasured beside the A100-40 dit_resident peak (37.5 of 40 GB), and a new packed sequence length
-  recompiles once before dynamo marks it dynamic.
-The streamed tier gets the attention levers only: its blocks move per forward, so nothing that needs hook-free,
-resident projections (int8 GEMM swap, fused QKV, fused SwiGLU) engages there."""
+Exact: h3_int8_gemm, h3_fused_qkv, h3_strided_attn, h3_shared_qkv_quant, the _native_flash pin on sm80 / sm89.
+Tolerance-level: h3_qk_rope (last-bit rstd drift changes the 6-step image, so off by default on the streamed tier;
+UNSLOTH_H3_IMAGE_QK_ROPE forces it), h3_fused_swiglu, h3_compiled (opt-in via UNSLOTH_H3_IMAGE_COMPILE=1: workspace
+unmeasured beside the 37.5 GB A100-40 dit_resident peak). The streamed tier gets attention levers only: its blocks
+move per forward, so resident-projection levers cannot engage."""
 
 from __future__ import annotations
 
@@ -61,7 +42,6 @@ def image_qk_rope_enabled(resident: bool = False) -> bool:
 
 
 def _row_pads(transformer: Any) -> list:
-    """(parent, leaf, wrapper) of every H3-Image row pad under the blocks."""
     out = []
     for parent in transformer.modules():
         for leaf, child in list(parent._modules.items()):
@@ -82,8 +62,7 @@ def _unwrap(pads: list, keep: Any = None) -> int:
 
 
 def _fuse_qkv(transformer: Any, logger: Any) -> int:
-    """fuse_h3_qkv_ needs the bare projections: unwrap the Q / K / V pads, fuse, pad the fused ``to_qkv`` (and any
-    projection left unfused) again, so the stock int8 path keeps its supported row multiple."""
+    """fuse_h3_qkv_ needs bare projections: unwrap, fuse, re-pad so the int8 path keeps its row multiple."""
     from .diffusion_minimax_h3_image import wrap_row_multiple
     from .video_minimax_h3_attn import fuse_h3_qkv_
 
@@ -115,8 +94,7 @@ def install_h3_image_speed(
     device: Any,
     logger: Any = None,
 ) -> tuple:
-    """Engage the levers on ``pipe.transformer`` after placement, before the first forward. Returns (and records on
-    the pipe as ``_unsloth_h3_speed_levers``) the engaged names; never raises."""
+    """Engage the levers after placement, before the first forward; returns the engaged names, never raises."""
     levers: list = []
     try:
         levers = _install(pipe, plan, device, logger)
@@ -149,7 +127,6 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     if resident:
         from . import diffusion_int8_gemm as int8_gemm
         if int8_gemm.install(transformer, logger):
-            # its kernel takes any row count: the pads around the Linears it serves only cost a copy
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
             levers.append("h3_int8_gemm")
     from .diffusion_attention import apply_attention_backend, select_attention_backend

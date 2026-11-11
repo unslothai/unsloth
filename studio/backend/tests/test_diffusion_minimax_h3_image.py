@@ -1151,9 +1151,6 @@ def test_the_per_prompt_encoder_refuses_a_bf16_fallback(h3i, release, tmp_path, 
     pipe.release()
 
 
-# -- conditioning cache ------------------------------------------------------------------------------------------
-
-
 def _cached_pipe(h3i, release):
     from core.inference import diffusion_prompt_cache as prompt_cache
 
@@ -1198,7 +1195,6 @@ def test_a_repeated_prompt_reuses_the_conditioning_bitwise(h3i, release, monkeyp
     assert torch.equal(first, hit)
     _latents(p, "a blue bicycle", 5)
     assert len(calls) == 2 and not p._unsloth_h3_last_stats["encode_cached"]
-    # The cache off (its kill switch) encodes every time and renders the same latents.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PROMPT_CACHE", "0")
     from core.inference import diffusion_prompt_cache as prompt_cache
 
@@ -1244,9 +1240,6 @@ def test_every_backend_loader_installs_the_prompt_cache():
                 "prompt_cache.install" in calls
             ), f"{node.name} commits a load without the prompt cache"
     assert {"load_pipeline", "_load_h3_image_locked"} <= set(loaders), loaders
-
-
-# -- INT8 attention from the checkpoint ------------------------------------------------------------------------------
 
 
 def test_a_declared_int8_attention_maps_to_sage():
@@ -1298,11 +1291,10 @@ def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, m
     for m in mods:
         want = "sage" if id(m) in blocks else before[id(m)]
         assert m.processor._attention_backend == want
-    assert any(id(m) not in blocks for m in mods)  # the token refiner keeps its backend
-    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None  # once
+    assert any(id(m) not in blocks for m in mods)
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
     assert h3i.remove_checkpoint_attention(p) == len(mods)
     assert {id(m): m.processor._attention_backend for m in mods} == before
-    # a probe that refuses: everything as it was
     monkeypatch.setattr(
         da, "apply_attention_backend", lambda *a, **k: fake_apply(a[0], None) and None
     )
