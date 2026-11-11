@@ -837,9 +837,11 @@ def activation_gb(
 
 
 def dit_gb_for(scheme: Optional[str], table: bool = True) -> float:
+    dense_adaln_gb = 0.0 if table else H3_IMAGE_DIT_BF16_GB - H3_IMAGE_DIT_TABLE_BF16_GB
     if scheme in QUANT_SCHEMES:
-        return H3_IMAGE_DIT_TABLE_INT8_GB
-    return H3_IMAGE_DIT_TABLE_BF16_GB if table else H3_IMAGE_DIT_BF16_GB
+        # The AdaLN projections are never quantized: without the table they stay dense bf16.
+        return H3_IMAGE_DIT_TABLE_INT8_GB + dense_adaln_gb
+    return H3_IMAGE_DIT_TABLE_BF16_GB + dense_adaln_gb
 
 
 def te_gb_for(scheme: Optional[str]) -> float:

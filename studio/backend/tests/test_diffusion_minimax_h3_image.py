@@ -529,6 +529,21 @@ def test_planner_tiers(h3i, vram, host, te, placement, te_kept):
         assert 0 <= plan.te_resident_layers <= 50
 
 
+def test_a_quantized_dit_without_the_adaln_table_budgets_the_dense_adaln(h3i):
+    dense = h3i.H3_IMAGE_DIT_BF16_GB - h3i.H3_IMAGE_DIT_TABLE_BF16_GB
+    assert h3i.dit_gb_for("int8") == h3i.H3_IMAGE_DIT_TABLE_INT8_GB
+    assert h3i.dit_gb_for("int8", table = False) == pytest.approx(
+        h3i.H3_IMAGE_DIT_TABLE_INT8_GB + dense
+    )
+    assert h3i.dit_gb_for(None, table = False) == pytest.approx(h3i.H3_IMAGE_DIT_BF16_GB)
+    # A100 40 GB: the table-form int8 DiT stays resident, the dense-AdaLN one (~48 GB) has to stream.
+    args = dict(vram_gb = 39.5, host_gb = 83.5, te_gb = 27.2)
+    assert h3i.plan_placement(dit_gb = h3i.dit_gb_for("int8"), **args).placement == "dit_resident"
+    assert (
+        h3i.plan_placement(dit_gb = h3i.dit_gb_for("int8", table = False), **args).placement == "stream"
+    )
+
+
 def test_auto_scheme_is_bf16_only_when_it_fits(h3i, monkeypatch):
     import torch
 
