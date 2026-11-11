@@ -160,3 +160,29 @@ def test_completion_cut_by_server_context_is_truncated(name, server):
     prompts = [[7] * 480, [7] * 480, [7] * 480, [7] * 20]
     trainer = _server_trainer(128, **server)
     assert _is_truncated(name, completions, trainer, prompts) == [True, False, False, True]
+
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("status", [200, 404])
+def test_server_mode_reads_the_served_max_model_len_once(name, status, monkeypatch):
+    import requests
+
+    calls = []
+
+    def fake_get(url, timeout = None):
+        calls.append(url)
+        return types.SimpleNamespace(
+            status_code = status, json = lambda: {"data": [{"max_model_len": 500}]}
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    trainer = _server_trainer(128)  # max_position_embeddings = 512
+    trainer.args.vllm_server_base_url = None
+    trainer.args.vllm_server_host, trainer.args.vllm_server_port = "10.0.0.1", 8000
+    completions = [[5] * 20, [5] * 20, [5] * 19 + [EOS]]
+    prompts = [[7] * 480, [7] * 470, [7] * 480]
+    # 480 + 20 reaches the served 500; the 404 fallback (512) does not. EOS is never truncated.
+    expected = [status == 200, False, False]
+    assert _is_truncated(name, completions, trainer, prompts) == expected
+    assert _is_truncated(name, completions, trainer, prompts) == expected
+    assert calls == ["http://10.0.0.1:8000/v1/models"]
