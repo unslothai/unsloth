@@ -11,6 +11,13 @@ const page = readFileSync(
   new URL("../src/features/export/export-page.tsx", import.meta.url),
   "utf8",
 );
+const card = readFileSync(
+  new URL(
+    "../src/features/export/components/q4nx-convert-card.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("the export page does not read NPU status", () => {
   assert.doesNotMatch(page, /useNpuStatus|npuStatus|hasNpu/);
@@ -38,7 +45,9 @@ test("the Q4NX toggle depends only on the quant and the destination", () => {
   assert.doesNotMatch(page.slice(0, row).trimEnd(), /&& \($/);
 });
 
-test("the toggle copy does not say this machine needs an NPU", () => {
-  assert.doesNotMatch(page, /Only supported on AMD NPUs/);
-  assert.match(page, /converting works on any machine/);
+test("the toggle and card copy do not say this machine needs an NPU", () => {
+  for (const source of [page, card]) {
+    assert.doesNotMatch(source, /Only supported on AMD NPUs/);
+    assert.match(source, /converting works on any machine/);
+  }
 });

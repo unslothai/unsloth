@@ -90,7 +90,7 @@ export function Q4nxConvertCard() {
       icon={CpuIcon}
       chipTint="var(--chart-1)"
       title="Convert a GGUF to Q4NX (AMD NPU)"
-      description="Convert a Q4_0, Q4_1 or Q4_K_M GGUF to Q4NX. Only supported on AMD NPUs."
+      description="Convert a Q4_0, Q4_1 or Q4_K_M GGUF to Q4NX. Runs on AMD Ryzen AI NPUs; converting works on any machine."
       titleAction={
         <SegmentedControl
           value={source}
