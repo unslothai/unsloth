@@ -158,12 +158,22 @@ export function NpuModelActions({
 
   if (model.id in catalog.downloads) {
     return (
-      <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
-        {npuDownloadLabel(
-          catalog.downloads[model.id],
-          model.id in catalog.reconnecting,
-        )}
-      </span>
+      <>
+        <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
+          {npuDownloadLabel(
+            catalog.downloads[model.id],
+            model.id in catalog.reconnecting,
+            catalog.phases[model.id],
+          )}
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => void catalog.cancel(model)}
+        >
+          Cancel
+        </Button>
+      </>
     );
   }
   if (!model.downloaded) {

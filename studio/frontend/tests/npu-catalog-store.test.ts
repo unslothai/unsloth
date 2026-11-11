@@ -30,6 +30,7 @@ function harness() {
   const activity: boolean[] = [];
   const running: { model: string; percent: number | null }[] = [];
   const backend = { reachable: true };
+  const cancelled: string[] = [];
   const pull = (follow: boolean) => (id: string, onProgress: Progress) =>
     new Promise<void>((resolve, reject) => {
       pulls.push({
@@ -53,6 +54,10 @@ function harness() {
       },
       "./api": {
         NpuDownloadError,
+        NpuDownloadCancelled,
+        cancelNpuModelDownload: async (id: string) => {
+          cancelled.push(id);
+        },
         listNpuDownloads: async () => {
           if (!backend.reachable) throw new Error("Failed to fetch");
           return running;
@@ -70,12 +75,22 @@ function harness() {
       },
     },
   );
-  return { store, pulls, listings, toasts, activity, running, backend };
+  return {
+    store,
+    pulls,
+    listings,
+    toasts,
+    activity,
+    running,
+    backend,
+    cancelled,
+  };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 class NpuDownloadError extends Error {}
+class NpuDownloadCancelled extends NpuDownloadError {}
 
 type Clock = {
   enable: (options: { apis: "setTimeout"[] }) => void;
@@ -307,6 +322,42 @@ test("progress outlives the picker and one stream serves every follower", async 
   const state = store.useNpuCatalogStore.getState();
   assert.deepEqual(state.progress, {});
   assert.deepEqual(state.models, [{ id: "qwen3-0.6b-FLM" }]);
+});
+
+test("verifying and finishing show as phases, and progress clears them", async () => {
+  const { store, pulls, listings } = harness();
+  const id = "qwen3.6-moe-35b-a3b-FLM";
+  const job = store.followNpuDownload(id);
+  const phase = () => store.useNpuCatalogStore.getState().phases[id];
+  pulls[0].onProgress({ event: "verifying", percent: 30 });
+  assert.equal(phase(), "verifying");
+  pulls[0].onProgress({ event: "progress", percent: 31 });
+  assert.equal(phase(), undefined);
+  pulls[0].onProgress({ event: "finishing", percent: 99 });
+  assert.equal(phase(), "finishing");
+  pulls[0].onProgress({ event: "complete", percent: 100 });
+  pulls[0].finish();
+  await until(() => listings.length === 1);
+  listings[0].resolve([{ id, downloaded: true }] as never);
+  assert.equal(await job, true);
+  assert.deepEqual(store.useNpuCatalogStore.getState().phases, {});
+});
+
+test("a cancelled pull ends quietly and is not followed again", async () => {
+  const { store, pulls, listings, toasts, activity, running, cancelled } =
+    harness();
+  const id = "gemma3-4b-FLM";
+  running.push({ model: id, percent: 50 });
+  const job = store.followNpuDownload(id);
+  await store.cancelNpuDownload(id);
+  assert.deepEqual(cancelled, [id]);
+  pulls[0].finish(new NpuDownloadCancelled("The download was cancelled"));
+  await until(() => listings.length === 1);
+  listings[0].resolve([{ id, downloaded: false }] as never);
+  assert.equal(await job, false);
+  assert.equal(pulls.length, 1);
+  assert.deepEqual(toasts, []);
+  assert.equal(activity.at(-1), false);
 });
 
 test("a repeated percent leaves the store untouched", () => {

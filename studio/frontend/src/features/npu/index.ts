@@ -4,6 +4,7 @@
 export {
   isNpuModelId,
   NPU_MODEL_PREFIX,
+  type NpuDownloadPhase,
   type NpuModel,
   type NpuStatus,
   npuCapabilities,
