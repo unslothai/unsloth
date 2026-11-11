@@ -11549,8 +11549,8 @@ def _missing_cuda_runtime_wheels(install_dir: Path) -> tuple[str, ...]:
                 continue
         return False
 
-    # ggml-cuda needs both; a runtime-only toolkit has cudart but no cublas.
-    if _found(f"cudart64_{major}.dll") and _found(f"cublas64_{major}.dll"):
+    # ggml-cuda needs all three, as windows_runtime_line_info does; a runtime-only toolkit has cudart alone.
+    if all(_found(f"{lib}64_{major}.dll") for lib in ("cudart", "cublas", "cublasLt")):
         return ()
     return wheels
 
