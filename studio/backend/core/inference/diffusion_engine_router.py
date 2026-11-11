@@ -298,9 +298,8 @@ _VENDOR_ICD_NEEDLES = {"amd": ("radeon", "radv", "amd"), "intel": ("intel",)}
 
 
 def _hardware_vulkan_driver(vendors) -> bool:
-    """Whether the loader, under its active filters, would load a driver for one of ``vendors``.
-    Windows registers drivers in ways the manifest walk may not read, so an empty walk there is no
-    evidence."""
+    """Whether the loader, under its active filters, would load a driver for one of vendors; Windows
+    registers drivers the manifest walk may not read, so an empty walk there is no evidence."""
     try:
         from utils.hardware.amd import _loadable_icd_manifests, _vulkan_icd_manifest_paths
 
@@ -419,10 +418,6 @@ def mlx_mode() -> str:
     if raw in _ENABLE_TOKENS:
         return MLX_FORCE
     return MLX_OFF
-
-
-def _mlx_requested() -> bool:
-    return mlx_mode() != MLX_OFF
 
 
 def _mlx_host_refusal() -> Optional[str]:

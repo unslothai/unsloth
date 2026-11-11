@@ -166,8 +166,7 @@ def test_a_uhd_beside_an_arc_needs_the_arcs_own_node(monkeypatch, arc_node_reach
 @pytest.mark.parametrize(
     "arc_node_reachable, drivers, expected",
     [
-        # The Arc node is not mounted and only the Intel driver loads: Intel Vulkan sees the UHD alone and the AMD
-        # card has no driver, so the iGPU would render.
+        # With the Arc unmounted, only Intel's driver loads, so the UHD alone would render.
         (False, {"intel"}, "auto"),
         # The AMD card's own driver loads: it renders, whatever the Arc's node.
         (False, {"amd"}, "vulkan"),
@@ -354,13 +353,14 @@ def test_selection_installs_the_vulkan_build(monkeypatch):
 
 
 _PINNED_RELEASE_ASSETS = [
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-24.04-aarch64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-win-cpu-x64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-win-cuda12-x64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-win-vulkan-x64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-24.04-aarch64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-cpu-arm64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-cpu-x64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-cuda12-x64.zip",
+    "sd-master-982-0518b34-ueb0e729-bin-win-vulkan-x64.zip",
 ]
 
 
@@ -370,10 +370,11 @@ _PINNED_RELEASE_ASSETS = [
         (
             "Linux",
             "x86_64",
-            "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+            "sd-master-982-0518b34-ueb0e729-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
         ),
-        ("Windows", "AMD64", "sd-master-982-0518b34-uaba3a1c-bin-win-vulkan-x64.zip"),
+        ("Windows", "AMD64", "sd-master-982-0518b34-ueb0e729-bin-win-vulkan-x64.zip"),
         ("Linux", "aarch64", None),
+        ("Windows", "ARM64", None),
     ],
 )
 def test_the_pinned_release_has_the_vulkan_bundle_it_routes_to(system, machine, expected):
