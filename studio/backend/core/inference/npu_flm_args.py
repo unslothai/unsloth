@@ -25,10 +25,7 @@ def _int(value: Any) -> Optional[int]:
 
 
 def build_flm_args(
-    *,
-    power_mode: Optional[str],
-    prefill_chunk_len: Optional[int],
-    img_pre_resize: Optional[int],
+    *, power_mode: Optional[str], prefill_chunk_len: Optional[int], img_pre_resize: Optional[int]
 ) -> Optional[str]:
     """The ``flm_args`` string, or None when every setting is the default. Raises ValueError.
     The prefill chunk is held to the context by the load (clamp_prefill_chunk)."""

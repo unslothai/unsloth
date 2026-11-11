@@ -18845,7 +18845,11 @@ async def _managed_engine_options(request, config, hf_token) -> dict:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
-def _npu_load_response(resident, status: str, flm_args: Optional[str] = None) -> LoadResponse:
+def _npu_load_response(
+    resident,
+    status: str,
+    flm_args: Optional[str] = None,
+) -> LoadResponse:
     from core.inference.npu_flm_args import flm_args_status
     model = resident.model
     return LoadResponse(
