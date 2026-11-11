@@ -29,7 +29,9 @@ _FAST_BIAS_MAX_NUMEL = 2**31 - 1
 if _HAVE_TRITON:
 
     @triton.jit
-    def _bias_add_kernel(ptr, bias_ptr, n_elements, n_cols: "tl.constexpr", BLOCK: "tl.constexpr"):
+    def _bias_add_kernel(
+        ptr, bias_ptr, n_elements, n_cols: "tl.constexpr", BLOCK: "tl.constexpr"
+    ):  # n_cols out features, BLOCK block size
         pid = tl.program_id(0)
         offsets = pid * BLOCK + tl.arange(0, BLOCK)
         mask = offsets < n_elements

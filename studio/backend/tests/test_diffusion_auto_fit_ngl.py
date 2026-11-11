@@ -126,13 +126,12 @@ def test_fit_leaves_an_ngl_override_alone(monkeypatch):
 
 
 def test_diffusion_load_settles_vram_outside_the_lock():
-    # The fit reads free VRAM; a just-killed runner still holds it. Waiting under the
-    # lock would block /unload for the whole settle.
+    # Settle outside the lock: a just-killed runner still holds VRAM, and /unload would wait.
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)
     branch = src[src.index("if self._is_diffusion:") :]
-    settle = branch.index("self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)")
+    settle = branch.index("self._wait_for_vram_settle(")
     assert settle < branch.index("with self._lock:") < branch.index("_start_diffusion_server(")
 
 

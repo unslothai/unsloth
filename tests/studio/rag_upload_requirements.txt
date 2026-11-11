@@ -53,6 +53,7 @@ tqdm==4.70.0
 typing-extensions==4.16.0
 typing-inspection==0.4.4
 urllib3==2.8.0
+usearch==2.26.6
 hypothesis==6.167.1
 playwright==1.62.0
 selenium==4.48.0

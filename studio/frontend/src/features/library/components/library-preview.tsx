@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { CodeSourceView } from "@/components/code-source-view";
 import { DocumentView, documentKind, isMarkdown, sheetDelimiter } from "@/components/file-viewer";
@@ -163,6 +164,7 @@ const READ_ONLY_REASONS: Record<NoteReadOnlyReason, TranslationKey> = {
 function ModelDetails({ item }: { item: LibraryItem }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const unknown = t("library.preview.unknown");
   const rows: [string, string][] = [
     [t("library.preview.type"), t(modelLabelKey(item) ?? "library.modelKind.model")],
@@ -508,6 +510,7 @@ export function LibraryPreview({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const [codeFor, setCodeFor] = useState<string | null>(null);
   const showCode = item !== null && codeFor === item.id;
   const body = item ? bodyFor(item) : "none";

@@ -312,7 +312,8 @@ test("a models[] row states every flag the seed gate reads", () => {
 test("saving a preset takes the seed being typed, not the one before it", () => {
   const panel = readText("../src/features/chat/chat-settings-sheet.tsx");
   // React has not re-rendered by onClick after blur, so Save must read the committed seed.
-  assert.match(panel, /params: toPresetParams\(paramsWithCommittedSeed\)/);
+  assert.match(panel, /const saved = seedDraft === null \? live : \{ \.\.\.live, seed: committedSeed \};/);
+  assert.match(panel, /params: toPresetParams\(saved\)/);
   const unsaved = slice(panel, "const hasUnsavedPresetChanges", "const presetSaveState");
   assert.match(unsaved, /isSamePresetConfig\(\s*activePresetDefinition\.params,\s*paramsWithCommittedSeed,/);
   assert.match(unsaved, /committedSeed !== \(params\.seed \?\? null\)/);

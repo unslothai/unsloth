@@ -507,3 +507,81 @@ def test_a_store_holding_load_options_is_read_without_them_and_keeps_them(monkey
     kept = stored["image_generation_presets"]
     assert kept["currentLoadConfig"] == {"speedMode": "max"}
     assert kept["customPresets"][0]["loadConfig"] == {"memoryMode": "low_vram"}
+
+
+def test_a_video_preset_keeps_its_frame_rate(monkeypatch):
+    # A Cosmos3 preset saved at 10 fps must render at 10 fps when loaded, not at whatever rate is picked.
+    client = _client(monkeypatch)
+    preset = {"name": "Nano slow", "params": {"durationSeconds": 7.875, "fps": 10}}
+    assert (
+        client.put("/api/settings/generation-presets/video/custom", json = preset).status_code == 200
+    )
+    video = client.get("/api/settings/generation-presets/video").json()
+    assert video["customPresets"][0]["params"]["fps"] == 10
+    assert video["currentParams"]["fps"] is None
+    for fps in (0, 121):
+        assert (
+            client.put(
+                "/api/settings/generation-presets/video/custom",
+                json = {"name": "Bad rate", "params": {"fps": fps}},
+            ).status_code
+            == 422
+        ), fps
+
+
+_TRAINING_RECIPE = {
+    "familyName": "z-image",
+    "baseChoice": "__custom__",
+    "customBase": "D:/models/Z-Image-De-Turbo",
+    "steps": 1500,
+    "learningRate": 0.0002,
+    "rank": 32,
+    "flowShiftMode": "custom",
+    "flowShift": 4.5,
+    "basePrecision": "bf16",
+}
+
+
+def test_training_presets_round_trip_a_local_base_and_hyperparameters(monkeypatch):
+    stored = {}
+    client = _client(monkeypatch, stored)
+    preset = {"name": "My Z-Image LoRA", "params": _TRAINING_RECIPE}
+    assert (
+        client.put("/api/settings/generation-presets/training/custom", json = preset).status_code
+        == 200
+    )
+    state = {"currentParams": _TRAINING_RECIPE, "activePreset": "My Z-Image LoRA"}
+    assert client.put("/api/settings/generation-presets/training", json = state).status_code == 200
+    # Idempotent: the same writes again leave one preset and the same selection.
+    client.put("/api/settings/generation-presets/training/custom", json = preset)
+    client.put("/api/settings/generation-presets/training", json = state)
+
+    training = client.get("/api/settings/generation-presets/training").json()
+    assert training["activePreset"] == "My Z-Image LoRA"
+    assert [p["name"] for p in training["customPresets"]] == ["My Z-Image LoRA"]
+    params = training["customPresets"][0]["params"]
+    assert params["customBase"] == "D:/models/Z-Image-De-Turbo"
+    assert params["steps"] == 1500 and params["rank"] == 32 and params["flowShift"] == 4.5
+    assert params["seed"] == 42, "fields the preset omits read back as the form defaults"
+    assert set(stored) == {"training_generation_presets"}
+    assert client.get("/api/settings/generation-presets/image").json()["customPresets"] == []
+
+    response = client.delete(
+        "/api/settings/generation-presets/training/custom", params = {"name": "My Z-Image LoRA"}
+    )
+    assert response.status_code == 200
+    assert client.get("/api/settings/generation-presets/training").json()["customPresets"] == []
+
+
+def test_training_state_accepts_mid_edit_numbers_but_rejects_unknown_fields(monkeypatch):
+    client = _client(monkeypatch)
+    # The form autosaves while a field is being typed; Start validates the numbers, not this store.
+    mid_edit = {
+        "currentParams": {"rank": 0, "learningRate": 0, "steps": 2.5},
+        "activePreset": "Default",
+    }
+    assert client.put("/api/settings/generation-presets/training", json = mid_edit).status_code == 200
+    for bad in ({"hf_token": "hf_x"}, {"dataDir": "/data"}, {"lrScheduler": "nope"}):
+        payload = {"currentParams": bad, "activePreset": "Default"}
+        response = client.put("/api/settings/generation-presets/training", json = payload)
+        assert response.status_code == 422, bad

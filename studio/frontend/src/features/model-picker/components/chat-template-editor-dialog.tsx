@@ -156,12 +156,11 @@ export function ChatTemplateEditorDialog({
             <>
               <Button
                 type="button"
-                variant="ghost"
+                variant="outline"
                 onClick={() => setDraft(defaultTemplate ?? "")}
                 disabled={
                   defaultLoading || renderedDraft === (defaultTemplate ?? "")
                 }
-                className="text-muted-foreground"
               >
                 {defaultLoading ? (
                   <Spinner className="size-3.5" />

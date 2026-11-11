@@ -64,7 +64,7 @@ test("the disclosure sits with the name it opens", () => {
 test("the row menu edits a project rather than only renaming it", () => {
   assert.match(PAGE, /import \{ EditProjectDialog \} from "\.\/components\/edit-project-dialog";/);
   assert.match(PAGE, /onEdit=\{\(\) => setEditing\(project\)\}/);
-  assert.match(readSrc("features/chat/components/project-menu-items.tsx"), /<Item icon=\{Settings02Icon\} onSelect=\{onEdit\}>/);
+  assert.match(readSrc("features/chat/components/project-menu-items.tsx"), /<Item icon=\{Settings01Icon\} onSelect=\{onEdit\}>/);
   assert.match(PAGE, /<EditProjectDialog\n\s*project=\{editing\}/);
   assert.match(PAGE, /onDelete=\{\(project\) => openProjectDelete\(project\)\}/);
   assert.ok(!PAGE.includes("Rename project"));

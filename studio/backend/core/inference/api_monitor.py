@@ -351,8 +351,7 @@ class ApiMonitor:
 
     @property
     def enabled(self) -> bool:
-        """Whether rows are being recorded. Read-only: the kill switch is a
-        startup env var, so nothing may flip it on a live monitor."""
+        """Read-only; the kill switch is a startup env var, so live monitors cannot flip it."""
         return self._enabled
 
     def set_terminal_callback(self, callback: Optional[TerminalCallback]) -> None:
