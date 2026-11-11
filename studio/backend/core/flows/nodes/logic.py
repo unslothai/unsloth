@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import random
 import re
 from typing import Any
@@ -66,7 +67,10 @@ async def random_number(ctx: NodeContext) -> dict:
     if high < low:
         low, high = high, low
     if ctx.params.get("integer", True):
-        return {"value": rng.randint(int(low), int(high))}
+        lo, hi = math.ceil(low), math.floor(high)
+        if hi < lo:
+            raise FlowNodeError(f"No whole number lies between {low:g} and {high:g}")
+        return {"value": rng.randint(lo, hi)}
     return {"value": rng.uniform(low, high)}
 
 
