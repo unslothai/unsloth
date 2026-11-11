@@ -13,5 +13,5 @@ SNAPSHOT = (
 
 def test_frontend_catalog_snapshot_matches_the_registry():
     assert (
-        json.loads(SNAPSHOT.read_text()) == catalog()
+        json.loads(SNAPSHOT.read_text(encoding = "utf-8")) == catalog()
     ), "refresh it: cd studio/backend && python -m core.flows.specs > ../frontend/tests/fixtures/flows-catalog.json"

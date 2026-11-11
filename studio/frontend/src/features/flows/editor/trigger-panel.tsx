@@ -49,7 +49,7 @@ export function TriggerPanel({
     >
       <h3 className="font-semibold uppercase">Trigger</h3>
       <p className="rounded-lg border border-border/60 bg-muted/10 px-3 py-2">
-        Runs only while Unsloth Studio is open; a time missed while it was
+        Runs only while Unsloth is open; a time missed while it was
         closed is not made up. It starts on its own once you approve triggers
         for this flow.
       </p>
