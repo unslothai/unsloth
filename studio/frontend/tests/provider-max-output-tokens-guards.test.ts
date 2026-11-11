@@ -474,4 +474,9 @@ test("saving a connection with a new Base URL forgets the old server's windows",
   assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-move"), 8192);
   useExternalProvidersStore.getState().setProviders([row("http://new/v1")]);
   assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-move"), EXTERNAL_MAX_OUTPUT_TOKENS);
+  // The same rule holds when another tab saved the move.
+  assert.match(
+    readSrc("features/chat/stores/external-providers-store.ts"),
+    /const providers = loadExternalProviders\(\);\s*forgetMovedConnections\(/,
+  );
 });
