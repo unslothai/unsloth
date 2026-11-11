@@ -4,9 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { modelInfo } from "@huggingface/hub";
 import {
   localGgufPath,
   packsDirectly,
+  Q4NX_INFO_FIELDS,
   q4nxArchFit,
   q4nxBaseModel,
   q4nxQuantLabel,
@@ -161,4 +163,28 @@ test("the file list follows the active source, not a folder left picked on the o
     localDirPath: "/models/qwen",
   });
   assert.deepEqual(q4nxVariantLookup("local", "x/y", null), { key: null, localDirPath: null });
+});
+
+test("a typed repo's lookup asks the Hub for its GGUF architecture", async () => {
+  let url = "";
+  const fakeFetch = (async (input: string | URL | Request) => {
+    url = String(input);
+    return new Response(
+      JSON.stringify({
+        _id: "x",
+        id: "acme/Mixtral-GGUF",
+        tags: ["base_model:mistralai/Mixtral-8x7B-v0.1"],
+        gguf: { architecture: "llama", total: 1 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  const info = (await modelInfo({
+    name: "acme/Mixtral-GGUF",
+    fetch: fakeFetch,
+    additionalFields: Q4NX_INFO_FIELDS,
+  })) as { gguf?: { architecture?: string }; tags?: string[] };
+  assert.ok(new URL(url).searchParams.getAll("expand").includes("gguf"), url);
+  assert.equal(info.gguf?.architecture, "llama");
+  assert.ok(info.tags?.length);
 });

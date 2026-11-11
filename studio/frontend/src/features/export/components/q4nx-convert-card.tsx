@@ -23,7 +23,6 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  cachedModelInfo,
   detectBaseModel,
   type GgufVariantDetail,
   type LocalModelInfo,
@@ -33,8 +32,10 @@ import {
   useHubModelSearch,
 } from "@/features/hub";
 import { useDebouncedValue } from "@/hooks";
+import { hubFetch } from "@/lib/hub-fetch";
 import { FolderSearchIcon } from "@/lib/folder-icons";
 import { CpuIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import { modelInfo } from "@huggingface/hub";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertGgufToQ4nx } from "../api/export-api";
@@ -45,6 +46,7 @@ import {
 import {
   localGgufPath,
   packsDirectly,
+  Q4NX_INFO_FIELDS,
   q4nxArchFit,
   q4nxBaseModel,
   q4nxQuantLabel,
@@ -317,15 +319,20 @@ export function Q4nxConvertCard() {
   useEffect(() => {
     if (source !== "hub" || !repoId || hubResult) return;
     let cancelled = false;
-    void cachedModelInfo({ name: repoId, accessToken })
+    // Not cachedModelInfo: its shared cache never asks for the gguf expansion this gate reads.
+    void modelInfo({
+      name: repoId,
+      accessToken,
+      fetch: hubFetch,
+      additionalFields: Q4NX_INFO_FIELDS,
+    })
       .then((info) => {
         if (cancelled) return;
+        const typed = info as { tags?: string[]; gguf?: { architecture?: string } };
         setCardInfo({
           repoId,
-          baseModel: detectBaseModel(info.tags),
-          architecture:
-            (info as { gguf?: { architecture?: string } }).gguf?.architecture ??
-            null,
+          baseModel: detectBaseModel(typed.tags),
+          architecture: typed.gguf?.architecture ?? null,
         });
       })
       .catch(() => undefined);

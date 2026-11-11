@@ -36,7 +36,6 @@ export {
   HUB_CAPABILITY_FILTERS,
   type HubCapabilityFilter,
 } from "./lib/model-capabilities";
-export { cachedModelInfo } from "./lib/hf-cache";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
 export { isHuggingFaceOffline } from "./lib/network";

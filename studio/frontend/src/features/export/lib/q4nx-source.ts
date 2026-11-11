@@ -23,6 +23,9 @@ const Q4NX_ARCHITECTURES: Record<string, string | null> = {
   nanbeige: null,
 };
 
+// modelInfo fields for a typed repo. "gguf" is outside the SDK's expandable-key type but is forwarded to expand= as is.
+export const Q4NX_INFO_FIELDS = ["tags", "gguf"] as unknown as "tags"[];
+
 export interface Q4nxVariant {
   filename: string;
   quant: string;
