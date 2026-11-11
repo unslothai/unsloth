@@ -1918,9 +1918,10 @@ def _swap_on(
     from .diffusion_convrot_quant import rotquant_device_config
 
     f16_card = tuple(torch.cuda.get_device_capability(index)) == (7, 5)
-    recs = [(m, r) for m, r in recs if _card_dtypes_ok(m, r, f16_card)]
-    if not recs:
-        return 0
+    if f16_card:
+        recs = [(m, r) for m, r in recs if _card_dtypes_ok(m, r, True)]
+        if not recs:
+            return 0
     gemm = device_config(index) is not None
     triton_gemm = gemm
     rotated = any(r[1] is not None for _, r in recs)
@@ -1945,7 +1946,9 @@ def _swap_on(
         )
     if any(r[0] == "v1" for _, r in recs) and not _v1_act_quant_matches(index):
         recs = [(m, r) for m, r in recs if r[0] != "v1"]
-    plan = _cutlass_plan(index, recs, triton_gemm, logger) if recs else {}
+    # bf16 cards: the Triton path takes any bias dtype; only the prebuilt kernel needs bf16 bias
+    cut_recs = [(m, r) for m, r in recs if f16_card or _card_dtypes_ok(m, r, False)]
+    plan = _cutlass_plan(index, cut_recs, triton_gemm, logger) if cut_recs else {}
     cut_fused: dict = {}
     if plan:
         import torch as _torch
@@ -1953,7 +1956,7 @@ def _swap_on(
         dev = _torch.device("cuda", index)
         xs_seen: dict = {}
         act = _torch.float16 if f16_card else _torch.bfloat16
-        for m, r in recs:
+        for m, r in cut_recs:
             wq, ws_ = _payload(r[0], r[3])
             k = int(wq.shape[1])
             if (r[0], k) not in xs_seen:
