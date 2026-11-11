@@ -189,6 +189,23 @@ def test_a_flow_output_inside_a_for_each_is_refused():
     ), issues
 
 
+def test_an_outer_for_each_cannot_collect_from_a_nested_loop_body():
+    nodes = [
+        node("items", "input.list", items = ["a", "b"]),
+        node("outer", "logic.for_each"),
+        node("inner", "logic.for_each", group = "outer"),
+        node("t", "text.template", group = "inner", template = "<{{values}}>"),
+    ]
+    edges = [
+        edge("items", "items", "outer", "items"),
+        edge("outer", "item", "inner", "items"),
+        edge("inner", "item", "t", "values"),
+        edge("t", "text", "outer", "collect"),
+    ]
+    issues = _issues(doc(nodes, edges))
+    assert any("not from inside a nested loop" in i["message"] for i in issues), issues
+
+
 def test_for_each_waits_for_outside_inputs_of_its_body():
     nodes = [
         node("items", "input.list", items = ["a"]),

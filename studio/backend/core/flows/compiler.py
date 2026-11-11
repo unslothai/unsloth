@@ -362,6 +362,14 @@ def compile_flow(doc: dict) -> Plan:
                 errors.append(
                     issue("For Each collects only from a node inside its group", edge_id = eid)
                 )
+            elif owner.get(src) != dst:
+                # A nested loop's steps run in that loop's scope, so this loop would collect nothing.
+                errors.append(
+                    issue(
+                        "For Each collects only from its own steps, not from inside a nested loop; collect that loop's results",
+                        edge_id = eid,
+                    )
+                )
             elif dst in collect:
                 errors.append(issue("For Each collects from one node", edge_id = eid))
             else:
