@@ -386,7 +386,7 @@ def test_an_unknown_failure_gets_no_advice(tmp_path, monkeypatch, log):
     )
 
 
-def test_flm_output_is_kept_only_while_a_load_is_open(tmp_path):
+def test_flm_output_is_kept_only_while_a_load_is_open(tmp_path, monkeypatch):
     server = LemonadeServer(
         tmp_path / "lemond",
         cache_dir = tmp_path / "cache",
@@ -395,6 +395,7 @@ def test_flm_output_is_kept_only_while_a_load_is_open(tmp_path):
         log_dir = tmp_path / "logs" / "lemonade",
     )
     handle = server._open_log_file(4242)
+    _level_calls(server, monkeypatch)
     # flm prints part of every chat request; lemond relays it for a backend started at debug.
     prompt = _flm("Info", '        "content": "my secret ...lan for today"')
     loading = _flm("Info", "[FLM]  Loading model: Qwen3.6-35B-A3B-NPU2")
@@ -516,3 +517,17 @@ def test_content_is_filtered_while_either_level_change_is_in_flight(tmp_path, mo
     back = _line("Info", "Server", "Logging configuration updated (level=info, file=disabled)")
     _prints(server, back, "a line with no tag", content)
     assert server.output_since(0, settle = 0) == [back, "a line with no tag"]
+
+
+def test_flm_output_drained_after_lemond_died_mid_load_is_kept(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    alive = [True]
+    _level_calls(server, monkeypatch)
+    monkeypatch.setattr(server, "is_alive", lambda: alive[0])
+    reason = _flm("Error", "[ERROR]  Failed to load model: bad allocation")
+
+    with server.backend_output(server.open_window()):
+        alive[0] = False
+    _prints(server, reason)
+
+    assert server.output_since(0, settle = 0) == [reason]

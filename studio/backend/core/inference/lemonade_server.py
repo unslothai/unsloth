@@ -121,8 +121,8 @@ class LemonadeServer:
         self._tail_lock = threading.Lock()
         self._windows: weakref.WeakSet[OutputWindow] = weakref.WeakSet()
         self._load_window: Optional[OutputWindow] = None
-        # Set once the load is over, until lemond is seen back at info.
-        self._load_ends: Optional[float] = None
+        # Set once a load is over, until lemond is seen back at info.
+        self._filter_until: Optional[float] = None
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         # stop() sets it without the lock, which start() holds while waiting for readiness.
@@ -198,31 +198,35 @@ class LemonadeServer:
             return
         # The window goes up before debug and comes down after it: a chat that opens one while
         # either level change is in flight must already be filtered.
-        self._load_ends = None
+        self._filter_until = None
         self._load_window = window
         self._set_log_level("debug")
         try:
             yield
         finally:
-            self._load_ends = time.monotonic() + 5.0
-            if not self._set_log_level("info"):
-                self._load_window = self._load_ends = None
+            # A lemond that died prints no chat and its pipe may still hold flm's reason, so the
+            # capture stays up until the next start.
+            if self.is_alive():
+                self._filter_until = time.monotonic() + 5.0
+                self._load_window = None
+                if not self._set_log_level("info") and self.is_alive():
+                    # Maybe still at debug.
+                    self._filter_until = float("inf")
 
     def _keeps(self, line: str) -> bool:
         window = self._load_window
-        if window is not None and self._load_ends is None and not window.shared:
+        if window is not None and not window.shared:
             return True
         match = _LEMOND_LINE.search(line)
         severity, tag = match.groups() if match else ("", "")
         own = tag != "Process" and severity not in ("Trace", "Debug")
-        if window is None:
+        until = self._filter_until
+        if window is None and until is None:
             return own
         # A chat joined the load, or the load is over and lemond may still be at debug: only
         # lemond's own lines at info and up, since debug content can run onto untagged lines.
-        if self._load_ends is not None and (
-            _BACK_AT_INFO.search(line) or time.monotonic() > self._load_ends
-        ):
-            self._load_window = self._load_ends = None
+        if until is not None and (_BACK_AT_INFO.search(line) or time.monotonic() > until):
+            self._filter_until = None
         return bool(match) and own
 
     def _set_log_level(self, level: str) -> bool:
@@ -321,7 +325,7 @@ class LemonadeServer:
         with self._tail_lock:
             self._tail.clear()
         # A new lemond starts at info.
-        self._load_window = self._load_ends = None
+        self._load_window = self._filter_until = None
         log_file = self._open_log_file(port, cmd)
 
         def _spawn() -> subprocess.Popen:
