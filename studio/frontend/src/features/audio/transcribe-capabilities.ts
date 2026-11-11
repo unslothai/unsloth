@@ -9,6 +9,8 @@ export interface SttCapabilities {
   /** on_request: only when asked (Qwen3-ASR with its aligner); always: every run has them. */
   timestamps: "on_request" | "always" | "unsupported";
   speakers: boolean;
+  /** Whether a speaker accent hint reaches the model; missing from an older backend. */
+  accent_hint?: boolean;
   aligner: {
     downloaded: boolean;
     size_bytes: number;
@@ -28,12 +30,41 @@ export interface TranscribeSwitch {
   always?: boolean;
 }
 
+export interface TranscribeAccent {
+  /** True when the model cannot take the hint: the field is read-only and nothing is sent. */
+  disabled: boolean;
+  hint: string;
+}
+
 export interface TranscribeSwitches {
   timestamps: TranscribeSwitch;
   speakers: TranscribeSwitch;
+  accent: TranscribeAccent;
   notice: string | null;
-  request: { timestamps: boolean; speakers: boolean };
+  request: { timestamps: boolean; speakers: boolean; speakerAccent: string };
   sourceHint: string;
+}
+
+const ACCENT_HINT =
+  "Describe how the speaker sounds. The transcript stays in the spoken language, and the hint may not always help.";
+
+const ACCENT_UNSUPPORTED =
+  "This model cannot use an accent hint, so none is sent. Whisper, Qwen3-ASR (llama.cpp) and connections can use one.";
+
+/** The accent field, and the hint a run sends: none when the model cannot take it. */
+function accentFor(
+  supported: boolean,
+  speakerAccent: string,
+): { accent: TranscribeAccent; speakerAccent: string } {
+  if (!supported)
+    return {
+      accent: { disabled: true, hint: ACCENT_UNSUPPORTED },
+      speakerAccent: "",
+    };
+  return {
+    accent: { disabled: false, hint: ACCENT_HINT },
+    speakerAccent: speakerAccent.trim().replace(/\s+/g, " ").slice(0, 200),
+  };
 }
 
 export const SPEAKERS_MODEL_NAME = "MOSS-Transcribe-Diarize";
@@ -126,10 +157,12 @@ export function connectionTranscribeModels(
 const OPENAI_UNTIMED_MODEL = /^gpt-(?:[\w.]+-)*transcribe(?:-[\w-]+)?$/i;
 
 export function connectionTranscribeSwitches(
-  prefs: { timestamps: boolean },
+  prefs: { timestamps: boolean; speakerAccent?: string },
   model: string,
 ): TranscribeSwitches {
   const untimed = OPENAI_UNTIMED_MODEL.test(model);
+  // OpenAI-compatible endpoints take a text prompt with the audio.
+  const { accent, speakerAccent } = accentFor(true, prefs.speakerAccent ?? "");
   return {
     timestamps: untimed
       ? {
@@ -147,15 +180,20 @@ export function connectionTranscribeSwitches(
       disabled: true,
       hint: "A connection returns no speaker labels.",
     },
+    accent,
     notice: null,
-    request: { timestamps: !untimed && prefs.timestamps, speakers: false },
+    request: {
+      timestamps: !untimed && prefs.timestamps,
+      speakers: false,
+      speakerAccent,
+    },
     sourceHint: transcribeSourceHint(null),
   };
 }
 
 export function transcribeSwitches(
   caps: SttCapabilities | null,
-  prefs: { timestamps: boolean; speakers: boolean },
+  prefs: { timestamps: boolean; speakers: boolean; speakerAccent?: string },
   state: { loading: boolean; hasModel: boolean },
 ): TranscribeSwitches {
   if (!caps) {
@@ -168,8 +206,9 @@ export function transcribeSwitches(
     return {
       timestamps: off,
       speakers: off,
+      accent: { disabled: true, hint },
       notice: null,
-      request: { timestamps: false, speakers: false },
+      request: { timestamps: false, speakers: false, speakerAccent: "" },
       sourceHint: transcribeSourceHint(null),
     };
   }
@@ -211,9 +250,14 @@ export function transcribeSwitches(
         hint: `Only ${SPEAKERS_MODEL_NAME} and VibeVoice-ASR can tell speakers apart.`,
         suggestSpeakersModel: true,
       };
+  const { accent, speakerAccent } = accentFor(
+    caps.accent_hint === true,
+    prefs.speakerAccent ?? "",
+  );
   const request = {
     timestamps: onRequest && prefs.timestamps,
     speakers: speakers.checked,
+    speakerAccent,
   };
   const aligner = !request.timestamps
     ? null
@@ -228,6 +272,7 @@ export function transcribeSwitches(
   return {
     timestamps,
     speakers,
+    accent,
     notice,
     request,
     sourceHint: transcribeSourceHint(caps.max_seconds),

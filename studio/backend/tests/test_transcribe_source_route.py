@@ -380,3 +380,89 @@ def test_a_connection_refuses_a_source_past_its_cap_before_upload(stub, connecti
     assert response.status_code == 413
     assert response.json()["detail"].startswith("A connection takes up to 0 minutes of audio.")
     assert connection == [] and not (stub.loads or stub.bytes)
+
+
+@pytest.mark.parametrize(
+    "model,engine",
+    [("small", "transformers"), ("small", "gguf"), ("qwen3-asr-0.6b", "mtmd")],
+)
+def test_a_speaker_accent_reaches_an_engine_that_takes_a_prompt(stub, monkeypatch, model, engine):
+    calls = []
+    original = stub.transcribe
+
+    def transcribe(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stub, "transcribe", transcribe)
+    source = {"input_id": _input(ALICE)}
+    with _client(ALICE) as client:
+        response, events = _post(
+            client,
+            model = model,
+            engine = engine,
+            source = source,
+            language = "en",
+            speaker_accent = "  Chinese-accented\n English ",
+        )
+    assert response.status_code == 200, response.text
+    assert events[-1]["type"] == "complete", events
+    assert calls[0]["prompt"] == "Speaker accent: Chinese-accented English."
+    # The transcript stays in the selected language: the hint changes nothing else.
+    assert events[-1]["language"] == "en"
+
+
+def test_no_accent_sends_no_prompt(stub, monkeypatch):
+    calls = []
+    monkeypatch.setattr(stub, "transcribe", lambda *a, **k: calls.append(k) or {"text": "x"})
+    with _client(ALICE) as client:
+        response, _ = _post(
+            client,
+            model = "small",
+            engine = "transformers",
+            source = {"input_id": _input(ALICE)},
+            speaker_accent = "   ",
+        )
+    assert response.status_code == 200, response.text
+    assert "prompt" not in calls[0]
+
+
+@pytest.mark.parametrize("model", [MOSS, QWEN3])
+def test_an_accent_for_a_model_that_cannot_take_it_is_422_not_ignored(stub, model):
+    body = {"model": model, "source": {"input_id": _input(ALICE)}}
+    with _client(ALICE) as client:
+        response, _ = _post(client, **body, speaker_accent = "Indian English")
+    assert response.status_code == 422
+    assert "cannot take a speaker accent hint" in response.json()["detail"]
+    assert not stub.paths and not stub.bytes and not stub.loads
+
+
+def test_an_accent_longer_than_200_characters_is_422(stub):
+    with _client(ALICE) as client:
+        response, _ = _post(
+            client, model = "small", engine = "transformers",
+            source = {"input_id": _input(ALICE)}, speaker_accent = "x" * 201,
+        )
+    assert response.status_code == 422 and not stub.bytes
+
+
+def test_a_connection_gets_the_accent_as_its_prompt(stub, connection):
+    with _client(ALICE) as client:
+        response, events = _post(
+            client,
+            provider_id = "conn-1",
+            model = "gpt-4o-transcribe",
+            source = {"input_id": _input(ALICE)},
+            speaker_accent = "Japanese-accented English",
+        )
+    assert response.status_code == 200, response.text
+    (call,) = connection
+    assert call["data"]["prompt"] == "Speaker accent: Japanese-accented English."
+    assert events[-1]["type"] == "complete"
+
+
+def test_a_connection_without_an_accent_gets_no_prompt(stub, connection):
+    with _client(ALICE) as client:
+        _post(client, provider_id = "conn-1", model = "whisper-1", source = {"input_id": _input(ALICE)})
+    (call,) = connection
+    assert "prompt" not in call["data"]

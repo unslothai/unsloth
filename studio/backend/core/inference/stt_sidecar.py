@@ -382,6 +382,11 @@ def can_translate(model: Optional[str]) -> bool:
     only and answer in the source language when asked to translate, as do mlx-audio checkpoints."""
     if "turbo" in (model or DEFAULT_STT_MODEL).lower():
         return False
+    return runs_whisper(model)
+
+
+def runs_whisper(model: Optional[str]) -> bool:
+    """Whether the Transformers engine serves ``model`` as Whisper, not as an mlx-audio checkpoint."""
     from core.inference.stt_mlx import mlx_stt_available
 
     if not model or model in STT_MODELS or not mlx_stt_available():
@@ -1674,8 +1679,10 @@ class WhisperSttSidecar:
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
         task: str = "transcribe",
+        prompt: Optional[str] = None,
     ) -> dict:
-        """Accepts any container PyAV can decode; task=translate returns English text."""
+        """Accepts any container PyAV can decode; task=translate returns English text. ``prompt`` is
+        Whisper's text prompt (the Transcribe page's speaker accent hint)."""
         ensure_stt_available()
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1710,6 +1717,9 @@ class WhisperSttSidecar:
         if fast:
             # Short voiced clips: greedy decoding drops beam search for latency.
             generate_kwargs["num_beams"] = 1
+        if prompt and prompt.strip():
+            # Text, not token ids: the worker tokenizes it with the loaded model's own processor.
+            generate_kwargs["prompt"] = prompt.strip()
         with self._lock:
             try:
                 if on_progress is not None:
