@@ -3788,6 +3788,80 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
         return None
 
 
+# The NPU is an MCDM adapter: Task Manager's NPU graph reads the same GPU Engine counters, keyed by
+# the LUID its PnP node carries as DEVPKEY_GPU_LUID. Linux amdxdna has no busy counter in sysfs.
+_NPU_LUID_PS = (
+    "$d=Get-PnpDevice -InstanceId 'PCI\\VEN_1022&DEV_17F0*' -PresentOnly"
+    " -ErrorAction SilentlyContinue|Select-Object -First 1;"
+    "if($d){(Get-PnpDeviceProperty -InstanceId $d.InstanceId"
+    " -KeyName '{60b193cb-5276-4d0f-96fc-f173abad3ec6} 2' -ErrorAction SilentlyContinue).Data}"
+)
+_NPU_LOAD_TTL_S = 3.0
+_npu_load_lock = threading.Lock()
+_npu_hardware: Optional[Dict[str, Any]] = None
+_npu_luid: Optional[int] = None
+# (completed_at, spawn seconds, load)
+_npu_load_cache: Optional[tuple[float, float, Optional[float]]] = None
+
+
+def _npu_engine_load(luid: int) -> Optional[float]:
+    ps = (
+        f"$s=(Get-Counter '\\GPU Engine(*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*)"
+        "\\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples;"
+        "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
+    )
+    stdout = _rocm_windows_counter_stdout_uncached(ps) or ""
+    by_engine: dict[str, float] = {}
+    for line in stdout.splitlines():
+        instance, sep, raw = line.strip().rpartition("|")
+        if not sep or _engine_instance_luid(instance) != luid:
+            continue
+        engine = re.search(r"_eng_(\d+)", instance)
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if engine is None or value != value or value < 0:
+            continue
+        by_engine[engine.group(1)] = by_engine.get(engine.group(1), 0.0) + value
+    # Per engine, processes add up; the adapter is as busy as its busiest engine, as in Task Manager.
+    return round(min(max(by_engine.values()), 100.0), 1) if by_engine else None
+
+
+def npu_load_percent() -> Optional[float]:
+    """The supported NPU's utilization, or None where no counter reports it (Linux, no NPU, no LUID)."""
+    global _npu_hardware, _npu_luid, _npu_load_cache
+    if platform.system() != "Windows":
+        return None
+    try:
+        with _npu_load_lock:
+            if _npu_hardware is None:
+                from utils.hardware.npu import detect_amd_npu
+
+                _npu_hardware = detect_amd_npu()
+            if not _npu_hardware.get("supported"):
+                return None
+            now = time.monotonic()
+            cached = _npu_load_cache
+            if cached is not None and now - cached[0] < max(_NPU_LOAD_TTL_S, 4 * cached[1]):
+                return cached[2]
+            try:
+                if _npu_luid is None:
+                    raw = (_rocm_windows_counter_stdout_uncached(_NPU_LUID_PS) or "").strip()
+                    _npu_luid = int(raw) if raw.isdigit() and int(raw) else None
+                load = _npu_engine_load(_npu_luid) if _npu_luid is not None else None
+            except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
+                load = None
+            if load is None:
+                # Windows reassigns LUIDs on a driver restart: look it up again next time.
+                _npu_luid = None
+            done = time.monotonic()
+            _npu_load_cache = (done, done - now, load)
+            return load
+    except Exception:
+        return None
+
+
 def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
     """System-wide AMD GPU VRAM from /sys/class/drm/card*/device/mem_info_vram_*, which the kernel updates across all processes. Returns (used_gb, total_gb), or (None, None) on failure."""
     if platform.system() != "Linux":

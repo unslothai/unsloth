@@ -2,9 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
-import { holdsModelsInVram, shortCardName, vramCards } from "../src/components/monitor-cards.ts";
+import { holdsModelsInVram, npuCard, shortCardName, vramCards } from "../src/components/monitor-cards.ts";
+import type { LoadedModelEntry } from "../src/features/loaded-models/loaded-models-sources.ts";
+import type { NpuStatus } from "../src/features/npu/api.ts";
 import type { GpuDevice } from "../src/hooks/use-system.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -83,4 +86,71 @@ test("an APU's carve-out keeps its models in the RAM split, in the monitor and i
 test("card rows use the visible ordinal the detail rows use", () => {
   const masked = [{ ...r9700(2, 1), visible_ordinal: 0 }, { ...r9700(3, 2), visible_ordinal: 1 }] as GpuDevice[];
   assert.deepEqual(vramCards(masked, { devices: masked }).rows.map((row) => row.label), ["GPU 0", "GPU 1"]);
+});
+
+// A Ryzen AI 9 HX 370 laptop as /api/npu/status reports it on Windows.
+const hx370 = {
+  supported: true,
+  hardware: { present: true, supported: true, family: "XDNA2", name: "AMD Ryzen AI 9 HX 370 NPU",
+    driver: "installed", driver_version: "32.0.203.280" },
+} as NpuStatus;
+const npuRow = (extra: Partial<LoadedModelEntry> = {}): LoadedModelEntry => ({
+  id: "chat:qwen3.5-9b-FLM", kind: "text", source: "chat", name: "qwen3.5-9b-FLM", detail: "NPU",
+  residentMib: 6656, residentOnGpu: false, ...extra,
+});
+
+test("no supported NPU, no card: this PC's absent XDNA 1 entry included", () => {
+  assert.equal(npuCard(null, [npuRow()], 10), null);
+  const ghost = { supported: false, hardware: { present: true, supported: false, family: "XDNA1",
+    name: "NPU Compute Accelerator Device", driver: "installed", driver_version: "32.0.20102.3930" } } as NpuStatus;
+  assert.equal(npuCard(ghost, [npuRow()], 10), null);
+});
+
+test("the NPU card names the device, its driver, and the model resident in system RAM", () => {
+  assert.deepEqual(npuCard(hx370, [npuRow({ detail: "NPU · Vision" })], 12.4), {
+    name: "AMD Ryzen AI 9 HX 370 NPU",
+    driver: "32.0.203.280",
+    model: "qwen3.5-9b-FLM",
+    residentGb: 6.5,
+    loadPercent: 12.4,
+  });
+});
+
+test("the NPU card only takes the NPU's own row, and a missing load stays unknown", () => {
+  const gguf = npuRow({ id: "chat:gemma", name: "unsloth/gemma-3-4b-it-GGUF", detail: "GGUF · Q4_K_M" });
+  const card = npuCard(hx370, [gguf, npuRow({ detail: "Loading", loading: true })], null);
+  assert.equal(card?.model, null);
+  assert.equal(card?.residentGb, null);
+  assert.equal(card?.loadPercent, null);
+  assert.equal(npuCard(hx370, [], Number.NaN)?.loadPercent, null);
+  // Unsized (an older /status): the model is named, its size is not guessed.
+  assert.equal(npuCard(hx370, [npuRow({ residentMib: undefined })], 0)?.residentGb, null);
+  assert.equal(npuCard(hx370, [], 0)?.loadPercent, 0);
+});
+
+test("Linux names the amdxdna driver module with its version", () => {
+  const linux = { ...hx370, hardware: { ...hx370.hardware, driver: "amdxdna", driver_version: null } } as NpuStatus;
+  assert.equal(npuCard(linux, [], null)?.driver, "amdxdna");
+});
+
+test("Settings and the floating monitor both build the NPU card through npuCard", () => {
+  for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
+    const source = readSrc(file);
+    assert.match(source, /npuCard\(/, file);
+    assert.match(source, /settings\.resources\.liveMonitor\.npu"/, file);
+  }
+  assert.match(readSrc("components/floating-monitor.tsx"), /testId="floating-monitor-npu"/);
+  assert.match(readSrc("hooks/use-system.ts"), /npu_load_percent\?: number \| null/);
+});
+
+test("every locale labels the NPU card", () => {
+  const dir = new URL("../src/i18n/locales/", import.meta.url);
+  const locales = readdirSync(dir).filter((name) => name.endsWith(".ts"));
+  assert.equal(locales.length, 25);
+  for (const name of locales) {
+    const source = readFileSync(new URL(name, dir), "utf8");
+    for (const key of ["npu", "npuDriver", "npuModelInRam"]) {
+      assert.match(source, new RegExp(String.raw`\n\s+${key}: "`), `${name} lacks liveMonitor.${key}`);
+    }
+  }
 });

@@ -8,6 +8,8 @@ import {
   type VramReportingGpu,
 } from "../hooks/gpu-vram.ts";
 import type { GpuDevice } from "../hooks/use-system.ts";
+import type { LoadedModelEntry } from "../features/loaded-models/loaded-models-sources.ts";
+import type { NpuStatus } from "../features/npu/api.ts";
 
 export interface CardUsage {
   key: string;
@@ -64,4 +66,39 @@ export function vramCards(
 
 export function holdsModelsInVram(cards: readonly GpuDevice[]): boolean {
   return cards.some((card) => card.shared_memory !== true && card.unified_memory !== true);
+}
+
+export interface NpuCard {
+  name: string;
+  driver: string | null;
+  model: string | null;
+  residentGb: number | null;
+  loadPercent: number | null;
+}
+
+/** null hides the card. The NPU has no memory of its own: its model's size is system RAM. */
+export function npuCard(
+  status: Pick<NpuStatus, "hardware"> | null,
+  entries: readonly LoadedModelEntry[],
+  loadPercent: number | null | undefined,
+): NpuCard | null {
+  const hardware = status?.hardware;
+  if (!hardware?.supported) return null;
+  // describeInferenceStatus leads an NPU row's detail with its runtime.
+  const row = entries.find(
+    (entry) => !entry.loading && entry.detail.split(" · ")[0] === "NPU",
+  );
+  const driver = [
+    hardware.driver === "installed" ? null : hardware.driver,
+    hardware.driver_version,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    name: hardware.name || "NPU",
+    driver: driver || null,
+    model: row ? row.label || row.name : null,
+    residentGb: row?.residentMib ? row.residentMib / 1024 : null,
+    loadPercent: Number.isFinite(loadPercent) ? (loadPercent as number) : null,
+  };
 }
