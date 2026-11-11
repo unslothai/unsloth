@@ -9,6 +9,7 @@ import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 import pytest
 
@@ -50,10 +51,13 @@ def research_home(tmp_path, monkeypatch):
 
 
 @contextmanager
-def _server(routes: dict[str, dict]):
+def _server(routes: dict[str, dict], required_headers: dict[str, str] | None = None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             body = routes.get(self.path.split("?", 1)[0])
+            for name, value in (required_headers or {}).items():
+                if unquote(self.headers.get(name, "")) != value:
+                    body = None
             raw = json.dumps(body if body is not None else {"error": "not found"}).encode()
             self.send_response(200 if body is not None else 404)
             self.send_header("Content-Type", "application/json")
@@ -92,7 +96,12 @@ def _web_results(step: int) -> str:
     )
 
 
-def _prompt_chars(monkeypatch, provider_type: str, base_url: str) -> dict[str, int]:
+def _prompt_chars(
+    monkeypatch,
+    provider_type: str,
+    base_url: str,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, int]:
     from core import research_runs as worker
 
     providers_db.create_provider(
@@ -101,6 +110,7 @@ def _prompt_chars(monkeypatch, provider_type: str, base_url: str) -> dict[str, i
         display_name = "Connection",
         base_url = base_url,
         models = [MODEL],
+        extra_headers = extra_headers,
     )
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     research_db.create_run(
@@ -174,6 +184,21 @@ def test_connection_prompts_fit_the_window_its_server_reports(
         longest = _prompt_chars(monkeypatch, provider_type, url + path)
 
     assert {"decision", "synthesis"} <= set(longest)
+    assert max(longest.values()) / _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN <= WINDOW
+
+
+def test_window_probe_sends_the_templated_headers_of_the_run(research_home, monkeypatch):
+    from core.research_runs import _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN
+
+    required = {"X-Model": MODEL, "X-Session": "research:run-1"}
+    with _server(_llama_server(WINDOW), required) as url:
+        longest = _prompt_chars(
+            monkeypatch,
+            "llama_cpp",
+            url + "/v1",
+            {"X-Model": "{{MODEL}}", "X-Session": "{{CHAT_SESSION_ID}}"},
+        )
+
     assert max(longest.values()) / _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN <= WINDOW
 
 

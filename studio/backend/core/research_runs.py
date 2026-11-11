@@ -361,25 +361,30 @@ def _served_window_key(inference: dict[str, Any]) -> tuple[Any, Any]:
     return inference.get("providerId"), inference.get("externalModel")
 
 
-def _saved_connection_client(provider_id: str) -> ExternalProviderClient | None:
+def _saved_connection_client(run: dict) -> ExternalProviderClient | None:
+    inference = _run_inference_request(run)
+    provider_id = inference["providerId"]
     provider = providers_db.get_provider(provider_id)
     if provider is None or not provider["is_enabled"]:
         return None
     headers = provider.get("extra_headers")
-    return ExternalProviderClient(
+    client = ExternalProviderClient(
         provider_type = provider["provider_type"],
         base_url = validate_provider_base_url(provider["base_url"]),
         api_key = credential_secrets.get_provider_api_key(provider_id) or "",
         api_type = provider.get("api_type", "chat_completions"),
         **({"extra_headers": headers} if headers else {}),
     )
+    client.set_header_context(f"research:{run['id']}", inference["externalModel"])
+    return client
 
 
-async def _refresh_served_context_length(inference: dict[str, Any]) -> None:
+async def _refresh_served_context_length(run: dict) -> None:
+    inference = _run_inference_request(run)
     window = None
     if inference.get("providerType") in _SERVED_WINDOW_PROVIDERS:
         try:
-            client = await asyncio.to_thread(_saved_connection_client, inference["providerId"])
+            client = await asyncio.to_thread(_saved_connection_client, run)
             if client is not None:
                 window = await client.served_context_window(inference["externalModel"])
         except Exception:
@@ -2271,7 +2276,7 @@ class ResearchSupervisor:
             _planner_system_prompt(max_steps, run["config"].get("websitePolicy")),
             run["config"],
         )
-        await _refresh_served_context_length(_run_inference_request(run))
+        await _refresh_served_context_length(run)
         # The question needs its own budget: a pasted document arrives verbatim and would overflow planning.
         planning_total = _prompt_char_budget(
             _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
@@ -2351,7 +2356,7 @@ class ResearchSupervisor:
         tool_timeout = int(budgets["toolTimeoutSeconds"])
         # default 0 preserves behavior for runs created before auto-scrape.
         max_auto_scrape = int(budgets.get("maxAutoScrape", 0))
-        await _refresh_served_context_length(_run_inference_request(run))
+        await _refresh_served_context_length(run)
         # prompt overhead fills tiny context windows, so use snippets alone.
         if max_auto_scrape > 0:
             loaded_ctx = _loaded_context_length(_run_inference_request(run))
@@ -2503,7 +2508,7 @@ class ResearchSupervisor:
                 _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
                 run["config"],
             )
-            await _refresh_served_context_length(_run_inference_request(run))
+            await _refresh_served_context_length(run)
             # A fixed 60k tail dwarfs small contexts and runs every step; overflow kills the run pre-synthesis.
             decision_total = _prompt_char_budget(
                 _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
@@ -2884,7 +2889,7 @@ class ResearchSupervisor:
             f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
             for index, source in enumerate(document_sources, 1)
         ]
-        await _refresh_served_context_length(_run_inference_request(run))
+        await _refresh_served_context_length(run)
         # Model-derived JSON shares the evidence budget; history gets only what the fixed scaffold leaves.
         total_budget = _prompt_char_budget(
             _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
