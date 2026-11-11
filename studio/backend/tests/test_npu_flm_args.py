@@ -261,6 +261,8 @@ def test_image_pre_resize_reaches_vision_models_only(monkeypatch):
         ({"npu_power_mode": "ludicrous"}, "Power mode"),
         ({"npu_prefill_chunk_len": 0}, "Prefill chunk length"),
         ({"npu_img_pre_resize": 9}, "Image pre-resize"),
+        ({"npu_prefill_chunk_len": True}, "Prefill chunk length"),
+        ({"npu_img_pre_resize": True}, "Image pre-resize"),
     ],
 )
 def test_an_invalid_flm_setting_is_a_400_before_any_load(monkeypatch, fields, message):
@@ -283,3 +285,11 @@ def test_the_saved_override_keeps_valid_npu_settings_only():
         )
         == {}
     )
+
+
+@pytest.mark.parametrize("field", ["npu_prefill_chunk_len", "npu_img_pre_resize"])
+def test_the_override_payload_refuses_a_boolean(field):
+    from pydantic import ValidationError
+    from routes.settings import ModelOverridePayload
+    with pytest.raises(ValidationError):
+        ModelOverridePayload(model_id = "lemonade:qwen3.5-9b-FLM", **{field: True})

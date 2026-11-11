@@ -1205,8 +1205,8 @@ class ModelOverridePayload(BaseModel):
     npu_power_mode: Optional[
         Literal["default", "powersaver", "balanced", "performance", "turbo"]
     ] = None
-    npu_prefill_chunk_len: Optional[int] = Field(default = None, ge = 1, le = 1048576)
-    npu_img_pre_resize: Optional[int] = Field(default = None, ge = 0, le = 4)
+    npu_prefill_chunk_len: Optional[StrictInt] = Field(default = None, ge = 1, le = 1048576)
+    npu_img_pre_resize: Optional[StrictInt] = Field(default = None, ge = 0, le = 4)
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None

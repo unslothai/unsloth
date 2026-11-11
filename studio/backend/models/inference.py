@@ -258,6 +258,7 @@ class LoadRequest(BaseModel):
         _mlx_offload_amount
     )
     # Checked by the NPU load (core/inference/npu_flm_args.py), which answers a bad value with a 400.
+    # Untyped so pydantic can't coerce JSON true to 1 first.
     npu_power_mode: Optional[str] = Field(
         None,
         description = (
@@ -265,14 +266,14 @@ class LoadRequest(BaseModel):
             "performance or turbo. Null or default leaves FastFlowLM's own. Changing it reloads."
         ),
     )
-    npu_prefill_chunk_len: Optional[int] = Field(
+    npu_prefill_chunk_len: Optional[Any] = Field(
         None,
         description = (
             "AMD NPU only: tokens FastFlowLM reads per prefill step, capped at the context length. "
             "Null leaves FastFlowLM's default. Changing it reloads."
         ),
     )
-    npu_img_pre_resize: Optional[int] = Field(
+    npu_img_pre_resize: Optional[Any] = Field(
         None,
         description = (
             "AMD NPU vision models only: FastFlowLM image pre-resize level, 0 (original size) to 4. "
