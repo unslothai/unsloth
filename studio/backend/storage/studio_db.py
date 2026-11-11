@@ -12,6 +12,7 @@ import binascii
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
 import re
