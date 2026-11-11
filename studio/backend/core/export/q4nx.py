@@ -60,10 +60,81 @@ def require_converter_deps() -> None:
         )
 
 
-def _gguf_architecture(gguf_path: str) -> str:
+def _gguf_header(gguf_path: str) -> dict:
     import gguf
-    field = gguf.GGUFReader(gguf_path).fields.get("general.architecture")
-    return field.contents() if field is not None else ""
+
+    fields = gguf.GGUFReader(gguf_path).fields
+    arch = fields["general.architecture"].contents() if "general.architecture" in fields else ""
+    geometry = ("block_count", "embedding_length", "expert_count", "nextn_predict_layers")
+    keys = ("general.basename", "general.name", *(f"{arch}.{k}" for k in geometry))
+    return {"general.architecture": arch, **{k: fields[k].contents() for k in keys if k in fields}}
+
+
+# (layers, hidden size, experts) of the models FastFlowLM ships AIE2P kernels for
+# (src/xclbins/*-NPU2, geometry from each catalog model's config.json), by GGUF architecture.
+# The architecture alone is not enough: FLM has no kernels for Llama 3.3 70B or Gemma 4 31B,
+# and the converter applies the 35B-A3B config to any qwen35moe.
+_NPU_SHAPES = {
+    "llama": {
+        (16, 2048, 0): "Llama 3.2 1B",
+        (28, 3072, 0): "Llama 3.2 3B",
+        (32, 2560, 0): "Nanbeige4.1 3B",
+        (32, 4096, 0): "Llama 3.1 8B",
+    },
+    "qwen2": {(36, 2048, 0): "Qwen2.5 3B"},
+    "qwen2vl": {(36, 2048, 0): "Qwen2.5-VL 3B"},
+    "qwen3": {
+        (28, 1024, 0): "Qwen3 0.6B",
+        (28, 2048, 0): "Qwen3 1.7B",
+        (36, 2560, 0): "Qwen3 4B",
+        (36, 4096, 0): "Qwen3 8B",
+    },
+    "qwen3vl": {(36, 2560, 0): "Qwen3-VL 4B"},
+    "qwen35": {
+        (24, 1024, 0): "Qwen3.5 0.8B",
+        (24, 2048, 0): "Qwen3.5 2B",
+        (32, 2560, 0): "Qwen3.5 4B",
+        (32, 4096, 0): "Qwen3.5 9B",
+    },
+    "qwen35moe": {(40, 2048, 256): "Qwen3.5 / 3.6 35B-A3B"},
+    "gemma3": {(26, 1152, 0): "Gemma 3 1B", (34, 2560, 0): "Gemma 3 4B"},
+    "gemma4": {
+        (35, 1536, 0): "Gemma 4 E2B",
+        (42, 2560, 0): "Gemma 4 E4B",
+        (48, 3840, 0): "Gemma 4 12B",
+    },
+    "lfm2": {(16, 2048, 0): "LFM2 1.2B", (30, 2048, 0): "LFM2 2.6B"},
+    "phi3": {(32, 3072, 0): "Phi-4 mini"},
+    "gpt-oss": {(24, 2880, 32): "gpt-oss 20B"},
+}
+
+
+def require_npu_geometry(header: dict) -> None:
+    """Refuse a GGUF whose size FastFlowLM has no NPU kernels for, before converting it."""
+    raw_arch = header.get("general.architecture") or ""
+    arch = raw_arch.lower()
+    shapes = _NPU_SHAPES.get(arch)
+    if shapes is None:
+        return
+    # Omni is matched by name in the converter; its catalog config is not published.
+    names = [str(header.get(k, "")).lower() for k in ("general.basename", "general.name")]
+    if arch == "qwen35" and any("omni" in n for n in names):
+        return
+    layers = header.get(f"{raw_arch}.block_count")
+    hidden = header.get(f"{raw_arch}.embedding_length")
+    if layers is None or hidden is None:
+        return
+    # The MTP block is not a decoder layer FLM runs (the converter subtracts it too).
+    layers -= header.get(f"{raw_arch}.nextn_predict_layers") or 0
+    experts = header.get(f"{raw_arch}.expert_count") or 0
+    if (layers, hidden, experts) in shapes:
+        return
+    nearest = sorted(shapes, key = lambda s: (abs(s[1] - hidden), abs(s[0] - layers)))
+    shape = f"{layers} layers, hidden size {hidden}" + (f", {experts} experts" if experts else "")
+    raise RuntimeError(
+        f"FastFlowLM has no AMD NPU kernels for this {arch} model ({shape}). "
+        f"The {arch} sizes it runs, nearest first: {', '.join(shapes[s] for s in nearest)}."
+    )
 
 
 # convert.py's __main__ overwrites sys.argv and importing it first is circular.
@@ -104,8 +175,10 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     from utils.paths.storage_roots import studio_root
 
     require_converter_deps()
+    header = _gguf_header(gguf_path)
+    require_npu_geometry(header)
     installer = _installer()
-    name = installer.converter_for_architecture(_gguf_architecture(gguf_path))
+    name = installer.converter_for_architecture(header["general.architecture"])
     script = installer.install(studio_root() / "q4nx_converter", name = name)
     out_dir.mkdir(parents = True, exist_ok = True)
     logger.info(
