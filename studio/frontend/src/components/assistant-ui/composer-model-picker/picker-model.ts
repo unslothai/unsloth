@@ -96,6 +96,68 @@ export interface PickerRow {
   onDevice?: boolean;
   groups?: string[];
   section?: ListSection;
+  sizeBytes?: number;
+  /** When it landed on disk, in the listing's own units. */
+  updatedAt?: number;
+}
+
+export type DeviceSort = "recent" | "size" | "name" | "downloaded";
+export const DEVICE_SORT_LABEL: Record<DeviceSort, string> = {
+  recent: "Recent",
+  size: "Size",
+  name: "Name",
+  downloaded: "Downloaded",
+};
+export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
+export const FORMAT_FILTER_LABEL: Record<FormatFilter, string> = {
+  all: "All",
+  gguf: "GGUF",
+  mlx: "MLX",
+  safetensors: "Safetensors",
+  npu: "NPU",
+};
+
+export function matchesFormat(
+  row: Pick<PickerRow, "format" | "kind">,
+  filter: FormatFilter,
+): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "npu":
+      return row.kind === "npu";
+    case "gguf":
+      return row.format === "gguf";
+    case "mlx":
+      return row.format === "mlx";
+    case "safetensors":
+      return row.format === "checkpoint" || row.format === "adapter";
+  }
+}
+
+/** The header picker's On Device sort: last load, size, name, or download date. */
+export function sortDeviceRows<T extends PickerRow>(
+  rows: readonly T[],
+  key: DeviceSort,
+  lastLoaded: (row: T) => number,
+): T[] {
+  const byDate = (a: T, b: T) =>
+    (b.updatedAt ?? -1) - (a.updatedAt ?? -1) || a.label.localeCompare(b.label);
+  return [...rows].sort((a, b) => {
+    if (key === "name") {
+      return a.label.localeCompare(b.label);
+    }
+    if (key === "size") {
+      return (
+        (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1) ||
+        a.label.localeCompare(b.label)
+      );
+    }
+    if (key === "recent") {
+      return lastLoaded(b) - lastLoaded(a) || byDate(a, b);
+    }
+    return byDate(a, b);
+  });
 }
 
 const norm = (value: string | null | undefined): string =>

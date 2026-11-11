@@ -3,6 +3,7 @@
 
 import type {
   DeletedModelRef,
+  ExternalConnectionRef,
   ExternalModelOption,
   LoraModelOption,
   ModelConfigHandoffRequest,
@@ -18,6 +19,9 @@ export interface ComposerModelPickerSource {
   externalModels: readonly ExternalModelOption[];
   onPick: (id: string, meta: ModelSelectorChangeMeta) => void;
   eject: (modelId?: string) => void;
+  ejectAll: () => void;
+  /** Every connection, so a model whose connection is gone still shows its own name. */
+  externalConnections: readonly ExternalConnectionRef[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Run settings asked for from elsewhere (the Hub's Run, the API page). */

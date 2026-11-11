@@ -100,7 +100,10 @@ export function ModelRowMenu({
   runSettings,
   update,
   del,
+  details,
 }: {
+  /** A read-only block about the model, above the actions. */
+  details?: ReactNode;
   ariaLabel: string;
   buttonClassName?: string;
   iconClassName?: string;
@@ -247,8 +250,17 @@ export function ModelRowMenu({
           side="bottom"
           align="end"
           sideOffset={2}
-          className="unsloth-plus-menu menu-flat-destructive w-48"
+          className={cn(
+            "unsloth-plus-menu menu-flat-destructive",
+            details ? "w-60" : "w-48",
+          )}
         >
+          {details ? (
+            <>
+              {details}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           {pin && (
             <DropdownMenuItem
               onSelect={(e) => {

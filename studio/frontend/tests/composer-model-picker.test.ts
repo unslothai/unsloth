@@ -392,3 +392,96 @@ test("quant lookups send the HF token and keep partial quants in download offers
   );
   assert.match(picker, /\(v\) => target\.remote \|\| v\.partial !== true/);
 });
+
+test("On Device sort and format filter follow the header picker's options", async () => {
+  const { matchesFormat, sortDeviceRows } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  const row = (
+    label: string,
+    format: "gguf" | "mlx" | "checkpoint" | undefined,
+    sizeBytes: number,
+    updatedAt: number,
+  ) => ({
+    key: label,
+    id: label,
+    label,
+    tab: DEVICE_TAB,
+    kind: "gguf" as const,
+    format,
+    sizeBytes,
+    updatedAt,
+  });
+  const rows = [
+    row("b", "gguf", 5, 1),
+    row("a", "mlx", 9, 3),
+    row("c", "checkpoint", 1, 2),
+  ];
+  assert.deepEqual(
+    sortDeviceRows(rows, "name", () => -1).map((r) => r.label),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(
+    sortDeviceRows(rows, "size", () => -1).map((r) => r.label),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(
+    sortDeviceRows(rows, "downloaded", () => -1).map((r) => r.label),
+    ["a", "c", "b"],
+  );
+  assert.deepEqual(
+    sortDeviceRows(rows, "recent", (r) => (r.label === "c" ? 10 : -1)).map(
+      (r) => r.label,
+    ),
+    ["c", "a", "b"],
+  );
+  assert.deepEqual(
+    rows.filter((r) => matchesFormat(r, "safetensors")).map((r) => r.label),
+    ["c"],
+  );
+  assert.equal(matchesFormat({ kind: "npu", format: undefined }, "npu"), true);
+  assert.equal(matchesFormat({ kind: "gguf", format: "gguf" }, "mlx"), false);
+});
+
+test("the composer picker carries the header picker's remaining row actions", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // Own models delete and reveal.
+  assert.match(picker, /deleteFineTunedModel\(/);
+  assert.match(picker, /revealFineTunedModel\(/);
+  assert.match(picker, /DELETABLE_LOCAL_SOURCES\.has\(local\.source\)/);
+  // Interrupted downloads stay listed and resume.
+  assert.match(picker, /isDownloaded: !row\.partial/);
+  assert.match(picker, /remote: row\.partial === true/);
+  // GGUF updates go through the download manager.
+  assert.match(picker, /downloadManager\.requestStart\(/);
+  assert.match(picker, /<TransportConflictDialog/);
+  // Eject all, connected info and copy, the Hub hint and a removed connection's name.
+  assert.match(picker, /source\?\.ejectAll\(\)/);
+  assert.match(picker, /<ConnectedModelInfoDialog/);
+  assert.match(picker, /Copy model ID/);
+  assert.match(picker, /<HubFailureHint/);
+  assert.match(picker, /missingExternalModel\(/);
+  // MLX repos list their variants and pick as checkpoints.
+  assert.match(picker, /mlx: res\?\.variant_format === "mlx"/);
+  // Load times are stamped here now that Chat has no header picker.
+  assert.match(
+    picker,
+    /useModelLoadTimes\(loadStampId\(checkpoint, source\?\.loaded\)\)/,
+  );
+});
+
+test("on-device row menus open with the model's details", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /<ModelFacts facts=\{modelFacts\(row, onDisk\)\} \/>/);
+  for (const label of ["Format", "Size", "Parameters", "From"]) {
+    assert.match(picker, new RegExp(`\\["${label}"`));
+  }
+  const menu = readSrc(
+    "features/model-picker/components/model-selector/model-row-menu.tsx",
+  );
+  assert.match(menu, /details \? "w-60" : "w-48"/);
+});

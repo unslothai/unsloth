@@ -11,8 +11,11 @@ const MIN_THUMB = 24;
 
 export function ListScrollbar({
   target,
+  edge = false,
 }: {
   target: RefObject<HTMLDivElement | null>;
+  /** Hug the panel edge, for a pane with no rounded rows to clear. */
+  edge?: boolean;
 }) {
   const [thumb, setThumb] = useState<{ top: number; height: number } | null>(
     null,
@@ -109,7 +112,10 @@ export function ListScrollbar({
     >
       <div
         className={cn(
-          "composer-list-thumb absolute inset-y-0 right-[calc(5px*var(--ui-space-scale,1))] w-[calc(5px*var(--ui-space-scale,1))] rounded-full opacity-0 transition-[width,opacity] duration-150 group-hover/bar:w-[calc(7px*var(--ui-space-scale,1))]",
+          "composer-list-thumb absolute inset-y-0 w-[calc(5px*var(--ui-space-scale,1))] rounded-full opacity-0 transition-[width,opacity] duration-150 group-hover/bar:w-[calc(7px*var(--ui-space-scale,1))]",
+          edge
+            ? "right-[calc(3px*var(--ui-space-scale,1))]"
+            : "right-[calc(5px*var(--ui-space-scale,1))]",
           (listHover || barHover || dragging) && "opacity-100",
         )}
       />

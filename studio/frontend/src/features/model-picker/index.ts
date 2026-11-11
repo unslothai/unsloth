@@ -104,6 +104,15 @@ export { usePinnedConnectedModelsStore } from "./components/model-selector/pinne
 export { isMediaCatalogRepo } from "./components/model-selector/model-catalog";
 export { ModelLoadSettingsAction } from "./components/model-selector/model-load-settings-action";
 export { ConnectedModelSettingsDialog } from "./components/model-selector/connected-model-settings-dialog";
+export { ConnectedModelInfoDialog } from "./components/model-selector/connected-model-info-dialog";
+export { detectCapabilities } from "./components/model-selector/model-capabilities";
+export { missingExternalModel } from "./components/model-selector/missing-external-model";
+export {
+  type ModelLoadTimes,
+  loadStampId,
+  loadedAt,
+  useModelLoadTimes,
+} from "./components/model-selector/model-usage";
 export {
   chatGgufFit,
   estimateQuantBytes,

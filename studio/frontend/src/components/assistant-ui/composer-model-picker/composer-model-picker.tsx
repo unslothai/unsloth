@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -14,10 +21,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import type {
-  CachedGgufRepo,
-  CachedModelRepo,
-  GgufVariantDetail,
+import {
+  type CachedGgufRepo,
+  type CachedModelRepo,
+  type GgufVariantDetail,
+  deleteFineTunedModel,
+  revealFineTunedModel,
 } from "@/features/chat";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import {
@@ -28,20 +37,29 @@ import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
+  DELETABLE_LOCAL_SOURCES,
+  HubFailureHint,
   OwnerAvatar,
   TrainIcon,
+  TransportConflictDialog,
   deleteCachedModel,
+  deleteLocalModel,
+  downloadManager,
   formatBytes,
   hfApiToken,
+  jobKeyOf,
   listGgufVariants,
   matchesRecommendedBrowse,
   resolveOwnerProviderLogo,
+  revealLocalModel,
+  useDownloadManagerStore,
   useHfTokenStore,
   useHubInfiniteScroll,
   useHubModelSearch,
   useOnlineStatus,
 } from "@/features/hub";
 import {
+  ConnectedModelInfoDialog,
   ConnectedModelSettingsDialog,
   type LoraModelOption,
   type ModelConfigFocus,
@@ -56,9 +74,13 @@ import {
   chatGgufFit,
   estimateQuantBytes,
   isMediaCatalogRepo,
+  detectCapabilities,
   isOverBudget,
   isRecommendableFormat,
+  loadStampId,
+  loadedAt,
   loraOptionLabel,
+  missingExternalModel,
   modelConfigInstanceKey,
   modelConfigTarget,
   modelConfigTargetIsResident,
@@ -66,6 +88,7 @@ import {
   paramsFromId,
   pinDropAnchor,
   useChatPickerInventory,
+  useModelLoadTimes,
   usePinnedConnectedModelsStore,
   usePinnedModelsStore,
   usePinnedRowDrag,
@@ -86,8 +109,13 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Folder02Icon } from "@/lib/folder-icons";
+import { SortIcon } from "@/lib/sort-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { extractParamLabel } from "@/lib/model-size";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   CloudIcon,
@@ -107,6 +135,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Fragment,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
@@ -121,8 +150,12 @@ import { useCustomFolders } from "./custom-folders";
 import { EffortSlider } from "./effort-slider";
 import { ListScrollbar } from "./list-scrollbar";
 import {
+  DEVICE_SORT_LABEL,
   DEVICE_TAB,
+  type DeviceSort,
   FAVORITES_TAB,
+  FORMAT_FILTER_LABEL,
+  type FormatFilter,
   type FormatTone,
   type ListSection,
   type PickerRow,
@@ -135,9 +168,11 @@ import {
   findChosenRow,
   isChatTask,
   localSection,
+  matchesFormat,
   orderBySection,
   pinCoversId,
   repoSection,
+  sortDeviceRows,
 } from "./picker-model";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
@@ -150,6 +185,22 @@ interface Row extends PickerRow {
   hub?: ModelOption;
   npu?: NpuModel;
   loadedQuant?: string | null;
+  /** An interrupted download: picking it downloads again, resuming where it can. */
+  partial?: boolean;
+  resumable?: boolean;
+}
+
+/** A cached repo, or a partial one, as the pick that loads or resumes it. */
+function cachedMeta(row: Row): ModelSelectorChangeMeta {
+  return {
+    source: "hub",
+    isLora: false,
+    // An incomplete snapshot has no load identity.
+    loadId: row.partial ? undefined : (row.cached?.load_id ?? undefined),
+    isDownloaded: !row.partial,
+    isGguf: false,
+    pipelineTag: row.cached?.task ?? null,
+  };
 }
 
 const EXT_PREFIX = "ext:";
@@ -269,6 +320,7 @@ function ggufMeta(
   row: Row,
   variant: GgufVariantDetail,
   onDisk: boolean,
+  isGguf = true,
 ): ModelSelectorChangeMeta {
   return {
     source: rowSource(row),
@@ -278,7 +330,8 @@ function ggufMeta(
     ggufFilename: variant.filename,
     isDownloaded: onDisk,
     expectedBytes: quantBytes(variant),
-    isGguf: true,
+    // An MLX repo's variants pick the same way, as checkpoints.
+    isGguf,
     pipelineTag: row.gguf?.task ?? null,
   };
 }
@@ -296,13 +349,18 @@ function quantTarget(row: Row): QuantTarget | null {
       id: row.id,
       localPath: row.gguf.load_id || row.gguf.cache_path || null,
       local: false,
-      remote: false,
+      // A partial repo has no clean quant on disk: list them all, so its own can resume.
+      remote: row.partial === true,
     };
   }
   if (row.kind === "localGguf") {
     return { id: row.id, localPath: null, local: true, remote: false };
   }
-  if (row.kind === "hub" && row.hub?.isGguf) {
+  // An MLX repo (listed on a Mac only) may ship several variants, as a GGUF ships quants.
+  if (
+    row.kind === "hub" &&
+    (row.hub?.isGguf || (row.format === "mlx" && !row.onDevice))
+  ) {
     return { id: row.id, localPath: null, local: false, remote: true };
   }
   return null;
@@ -311,6 +369,7 @@ function quantTarget(row: Row): QuantTarget | null {
 async function rowQuants(target: QuantTarget): Promise<{
   quants: GgufVariantDetail[];
   defaultVariant: string | null;
+  mlx: boolean;
 }> {
   // The user's token, as search sends it: a gated or private repo lists nothing anonymously.
   const token = useHfTokenStore.getState().token || undefined;
@@ -331,6 +390,7 @@ async function rowQuants(target: QuantTarget): Promise<{
       typeof res?.default_variant === "string" && res.default_variant
         ? res.default_variant
         : null,
+    mlx: res?.variant_format === "mlx",
   };
 }
 
@@ -419,6 +479,18 @@ function useLogoFit(src: string): string | undefined {
   return fit || undefined;
 }
 
+// Every mark fills its box (useLogoFit), but a spiky one still reads small: these scale to the
+// ink coverage of the solid marks (Google, OpenAI), measured at 4x on the tab strip.
+const OPTICAL_SCALE: Readonly<Record<string, number>> = {
+  qwen: 1.05,
+  anthropic: 1.06,
+};
+
+function opticalStyle(id: string | undefined): CSSProperties | undefined {
+  const k = id ? OPTICAL_SCALE[id] : undefined;
+  return k ? { scale: String(k) } : undefined;
+}
+
 function MakerMark({
   provider,
   className,
@@ -428,7 +500,9 @@ function MakerMark({
     provider.treatment === "original" && provider.id === "google"
       ? `${base}provider-logos/google-g.svg`
       : `${base}${provider.logoPath.slice(1)}`;
-  const transform = useLogoFit(src);
+  const fit = useLogoFit(src);
+  const k = OPTICAL_SCALE[provider.id];
+  const transform = k ? `scale(${k}) ${fit ?? ""}`.trim() : fit;
   if (provider.treatment !== "original") {
     const url = `url(${src})`;
     return (
@@ -490,7 +564,9 @@ function RowMark({
   }
   if (row?.kind === "external") {
     return row.providerType ? (
-      <ApiProviderLogo providerType={row.providerType} className={size} />
+      <span className="flex shrink-0" style={opticalStyle(row.providerType)}>
+        <ApiProviderLogo providerType={row.providerType} className={size} />
+      </span>
     ) : (
       <HugeiconsIcon icon={CloudIcon} strokeWidth={1.75} className={size} />
     );
@@ -607,6 +683,24 @@ function QuantPill({ quant }: { quant: string }) {
   );
 }
 
+function AmberTag({ label, hint }: { label: string; hint: string }) {
+  return (
+    <Hint label={hint}>
+      <span className="shrink-0 text-ui-11 font-medium text-amber-700 dark:text-amber-300">
+        {label}
+      </span>
+    </Hint>
+  );
+}
+
+const PARTIAL_HINT = {
+  resumable: "Download incomplete. Picking it resumes the download.",
+  restart: "Download incomplete. Picking it downloads it again.",
+  variant: "Download incomplete. Picking it finishes the download.",
+};
+const UPDATE_HINT =
+  "A newer upload is on Hugging Face. Update it from the menu.";
+
 /** The Studio tooltip, in place of the browser's own `title`. */
 function Hint({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -678,6 +772,98 @@ function SwitchRow({
   );
 }
 
+// The sort menu, sized to the picker's own rows rather than the app's full menus.
+const MENU_ITEM =
+  "min-h-0 gap-2 py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
+const MENU_LABEL =
+  "px-2.5 pt-[calc(6px*var(--ui-space-scale,1))] pb-[calc(3px*var(--ui-space-scale,1))] text-ui-10";
+// The header picker's format colours.
+const FORMAT_DOT: Partial<Record<FormatFilter, string>> = {
+  gguf: "bg-format-gguf",
+  mlx: "bg-format-mlx",
+  safetensors: "bg-format-checkpoint",
+  npu: "bg-format-npu",
+};
+
+const FORMAT_NAME: Record<FormatTone, string> = {
+  gguf: "GGUF",
+  mlx: "MLX",
+  checkpoint: "Safetensors",
+  adapter: "LoRA adapter",
+};
+
+/** What the ⋮ menu says about an on-device model, above its actions. */
+function ModelFacts({ facts }: { facts: readonly [string, string][] }) {
+  return (
+    <dl className="flex flex-col gap-1 px-2.5 pt-1.5 pb-2 text-ui-12">
+      {facts.map(([label, value]) => (
+        <div key={label} className="flex items-baseline justify-between gap-3">
+          <dt className="shrink-0 text-muted-foreground">{label}</dt>
+          <dd className="min-w-0 truncate text-right text-foreground">
+            {value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function modelFacts(
+  row: Row,
+  onDisk: readonly GgufVariantDetail[],
+): [string, string][] {
+  const facts: [string, string][] = [];
+  const format =
+    row.kind === "npu" ? "NPU" : row.format ? FORMAT_NAME[row.format] : null;
+  if (format) {
+    facts.push(["Format", format]);
+  }
+  if (onDisk.length === 1) {
+    facts.push(["Quant", onDisk[0].quant]);
+  } else if (onDisk.length > 1) {
+    facts.push(["Quants", `${onDisk.length} on disk`]);
+  }
+  const size = onDisk.length === 1 ? quantBytes(onDisk[0]) : row.sizeBytes;
+  if (size && size > 0) {
+    facts.push(["Size", formatBytes(size)]);
+  }
+  const params = extractParamLabel(row.lora?.baseModel ?? row.id);
+  if (params) {
+    facts.push(["Parameters", params]);
+  }
+  const task = row.gguf?.task ?? row.cached?.task ?? undefined;
+  const caps = detectCapabilities({
+    id: row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id,
+    pipelineTag: task ?? undefined,
+  });
+  const vision =
+    row.npu?.supports_vision ?? row.gguf?.has_vision ?? caps.vision;
+  const reasoning = row.npu?.supports_reasoning ?? caps.reasoning;
+  facts.push([
+    "Supports",
+    [
+      "Text",
+      vision && "Vision",
+      caps.audio && "Audio",
+      reasoning && "Reasoning",
+    ]
+      .filter(Boolean)
+      .join(", "),
+  ]);
+  if (row.section) {
+    facts.push(["From", SECTION_LABEL[row.section]]);
+  }
+  if (row.partial) {
+    facts.push(["Download", "Incomplete"]);
+  } else if (row.loaded) {
+    facts.push([
+      "Status",
+      row.loadedQuant ? `Loaded (${row.loadedQuant})` : "Loaded",
+    ]);
+  }
+  return facts;
+}
+
 const SECTION_GLYPH = "size-[calc(12px*var(--ui-space-scale,1))]";
 const SECTION_ICON: Partial<Record<ListSection, ReactNode>> = {
   other: (
@@ -722,7 +908,8 @@ function SectionHeader({
     <div
       className={cn(
         "flex shrink-0 flex-col",
-        divider && "mt-1 border-t border-border pt-1",
+        // Space, not a rule, sets each group off from the rows above it.
+        divider && "mt-[calc(10px*var(--ui-space-scale,1))]",
       )}
     >
       <div className="flex h-[calc(28px*var(--ui-space-scale,1))] items-center gap-1 pr-[calc(6px*var(--ui-space-scale,1))] pl-3">
@@ -795,8 +982,20 @@ export function ComposerModelPicker({
   const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
   const [configStandalone, setConfigStandalone] = useState(false);
   // A connected model's own settings (prompt, output cap, effort pin), as the header picker offered.
-  const [connectedSettings, setConnectedSettings] = useState<Row | null>(null);
+  const [connectedSettings, setConnectedSettings] = useState<{
+    row: Row;
+    view: "settings" | "info";
+  } | null>(null);
   const providers = useExternalProvidersStore((s) => s.providers);
+  // A GGUF update goes through the download manager, which may ask to keep or switch transport.
+  const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
+    null,
+  );
+  const updateConflict = useDownloadManagerStore((state) =>
+    updateConflictKey
+      ? (state.conflicts[updateConflictKey]?.info ?? null)
+      : null,
+  );
   const openConfig = (target: ModelPickTarget) => {
     setConfigTarget(target);
     setConfigFocus(null);
@@ -835,6 +1034,7 @@ export function ComposerModelPicker({
     quants: GgufVariantDetail[] | null;
     defaultVariant: string | null;
     failed: boolean;
+    mlx?: boolean;
   } | null>(null);
   const [quants, setQuants] = useState<{
     key: string;
@@ -960,7 +1160,7 @@ export function ComposerModelPicker({
   const rows = useMemo<Row[]>(() => {
     const device: Row[] = [];
     for (const repo of inventory.cachedGguf) {
-      if (repo.partial || !isChatTask(repo.task)) {
+      if (!isChatTask(repo.task)) {
         continue;
       }
       device.push({
@@ -974,10 +1174,14 @@ export function ComposerModelPicker({
         format: "gguf",
         aliases: [repo.load_id ?? "", repo.cache_path],
         gguf: repo,
+        sizeBytes: repo.size_bytes,
+        updatedAt: repo.last_modified,
+        partial: repo.partial === true,
+        resumable: repo.partial_resumable === true,
       });
     }
     for (const repo of inventory.cachedModels) {
-      if (repo.partial || repo.companion || !isChatTask(repo.task)) {
+      if (repo.companion || !isChatTask(repo.task)) {
         continue;
       }
       device.push({
@@ -991,6 +1195,10 @@ export function ComposerModelPicker({
         format: isMlxId(repo.repo_id) ? "mlx" : "checkpoint",
         aliases: [repo.load_id ?? "", repo.cache_path ?? ""],
         cached: repo,
+        sizeBytes: repo.size_bytes,
+        updatedAt: repo.last_modified,
+        partial: repo.partial === true,
+        resumable: repo.partial_resumable === true,
       });
     }
     for (const lora of loraModels ?? []) {
@@ -1006,6 +1214,8 @@ export function ComposerModelPicker({
         kind: loraNeedsQuant(lora) ? "localGguf" : "local",
         section: localSection(lora.source, lora.baseModel),
         format: loraFormat(lora),
+        sizeBytes: lora.sizeBytes ?? undefined,
+        updatedAt: lora.updatedAt,
         lora,
       });
     }
@@ -1021,6 +1231,7 @@ export function ComposerModelPicker({
         kind: "npu",
         section: "npu",
         npu: model,
+        sizeBytes: model.size_gb != null ? model.size_gb * 1e9 : undefined,
       });
     }
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
@@ -1077,7 +1288,10 @@ export function ComposerModelPicker({
     const loadedIds = new Set(
       marked.filter((row) => row.loaded).map((row) => row.id.toLowerCase()),
     );
-    const onDisk = new Set(marked.map((row) => row.id.toLowerCase()));
+    // A partial copy is not on the device yet, so its Discover row still offers the download.
+    const onDisk = new Set(
+      marked.filter((row) => !row.partial).map((row) => row.id.toLowerCase()),
+    );
     const hub: Row[] = (recommended ?? [])
       .filter((m) => !isMediaCatalogRepo(m.id))
       .map((m) => ({
@@ -1138,6 +1352,7 @@ export function ComposerModelPicker({
     const wanted = rows.filter(
       (row) =>
         (row.kind === "gguf" || row.kind === "localGguf") &&
+        !row.partial &&
         quantsReadAt.current.get(row.key) !== quantsEpoch,
     );
     if (wanted.length === 0) {
@@ -1241,7 +1456,9 @@ export function ComposerModelPicker({
         value: `${EXT_PREFIX}${m.providerId}`,
         label: m.providerName,
         icon: (
-          <ApiProviderLogo providerType={m.providerType} className="size-4" />
+          <span className="flex shrink-0" style={opticalStyle(m.providerType)}>
+            <ApiProviderLogo providerType={m.providerType} className="size-4" />
+          </span>
         ),
       });
     }
@@ -1266,8 +1483,16 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [pending, chosen?.id, modelLoading]);
   const shown = pending ?? chosen;
+  // A connected model whose connection is gone keeps its own name, as the header picker showed it.
   const chosenName =
-    shown?.label ?? (checkpoint ? modelDisplayName(checkpoint) : null);
+    shown?.label ??
+    (checkpoint
+      ? (missingExternalModel(
+          checkpoint,
+          externalModels ?? [],
+          source?.externalConnections ?? [],
+        )?.modelName ?? modelDisplayName(checkpoint))
+      : null);
   const chosenMark: Parameters<typeof RowMark>[0]["row"] =
     shown ??
     (isExternalModelId(checkpoint)
@@ -1304,6 +1529,22 @@ export function ComposerModelPicker({
     },
     [pinned, pinnedConnected],
   );
+  // On Device's sort and format filter, as the header picker offered them.
+  const [deviceSort, setDeviceSort] = useState<DeviceSort>("recent");
+  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  // Stamped here too: the header picker that used to record chat loads is gone from Chat.
+  const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
+  const foundRows = useMemo(() => {
+    const found = filterRows(rows, viewed, query, isFavorite);
+    if (viewed !== DEVICE_TAB) {
+      return found;
+    }
+    return sortDeviceRows(
+      found.filter((row) => matchesFormat(row, formatFilter)),
+      deviceSort,
+      (row) => loadedAt(loadTimes, row.id),
+    );
+  }, [rows, viewed, query, isFavorite, formatFilter, deviceSort, loadTimes]);
   const [collapsedSections, setCollapsedSections] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -1321,8 +1562,7 @@ export function ComposerModelPicker({
   // On Device and Discover group their rows under headers, in the header picker's order.
   const listSections = useMemo<ListSection[]>(() => {
     if (viewed === DEVICE_TAB) {
-      const found = filterRows(rows, viewed, query, isFavorite);
-      const present = new Set(found.map((row) => row.section));
+      const present = new Set(foundRows.map((row) => row.section));
       // Always there, as in the header picker: where training output and added folders land.
       present.add("fineTuned");
       present.add("custom");
@@ -1333,16 +1573,15 @@ export function ComposerModelPicker({
       ).map(({ section }) => section);
     }
     if (viewed === RECOMMENDED_TAB && npuCatalog) {
-      const found = filterRows(rows, viewed, query, isFavorite);
       const npuShown =
-        found.some((row) => row.section === "npu") ||
+        foundRows.some((row) => row.section === "npu") ||
         (!npuCatalog.ready && !query);
       return npuShown ? ["npu", "recommended"] : [];
     }
     return [];
-  }, [rows, viewed, query, isFavorite, npuCatalog]);
+  }, [foundRows, viewed, query, npuCatalog]);
   const shownRows = useMemo(() => {
-    const found = filterRows(rows, viewed, query, isFavorite);
+    const found = foundRows;
     if (listSections.length > 0) {
       return orderBySection(found).filter(
         (row) =>
@@ -1360,15 +1599,13 @@ export function ComposerModelPicker({
     };
     return [...found].sort((a, b) => rank(a) - rank(b));
   }, [
-    rows,
     viewed,
-    query,
-    isFavorite,
     favoriteKeyOf,
     pinned,
     pinnedConnected,
     listSections,
     collapsedSections,
+    foundRows,
   ]);
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
@@ -1466,7 +1703,7 @@ export function ComposerModelPicker({
     if (!source) {
       return;
     }
-    const { quants: list, defaultVariant } = await rowQuants(target);
+    const { quants: list, defaultVariant, mlx } = await rowQuants(target);
     if (pickSeq.current !== seq) {
       return;
     }
@@ -1484,7 +1721,7 @@ export function ComposerModelPicker({
     }
     source.onPick(
       row.id,
-      ggufMeta(row, quant, target.local || quant.downloaded === true),
+      ggufMeta(row, quant, target.local || quant.downloaded === true, !mlx),
     );
   };
 
@@ -1499,28 +1736,53 @@ export function ComposerModelPicker({
       defaultVariant: null,
       failed: false,
     });
+    const mlxRepo = row.kind === "hub" && !row.hub?.isGguf;
+    // An MLX repo with no variant listing is one checkpoint, as the header picker loads it.
+    const pickWhole = () => {
+      if (pickSeq.current !== seq || !source) {
+        return;
+      }
+      setOffer(null);
+      if (row.id !== chosen?.id) {
+        setPending(row);
+      }
+      source.onPick(row.id, { source: "hub", isLora: false, isGguf: false });
+      resetView();
+    };
     try {
-      const { quants: list, defaultVariant } = await rowQuants(target);
+      const { quants: list, defaultVariant, mlx } = await rowQuants(target);
+      if (mlxRepo && !(mlx && list.length > 0)) {
+        pickWhole();
+        return;
+      }
       if (list.length === 1) {
         if (pickSeq.current === seq) {
           setOffer(null);
-          pickOfferQuant(row, list[0]);
+          pickOfferQuant(row, list[0], !mlx);
         }
         return;
       }
       setOffer((now) =>
         now?.key === row.key
-          ? { key: row.key, quants: list, defaultVariant, failed: false }
+          ? { key: row.key, quants: list, defaultVariant, failed: false, mlx }
           : now,
       );
     } catch {
+      if (mlxRepo) {
+        pickWhole();
+        return;
+      }
       setOffer((now) =>
         now?.key === row.key ? { ...now, quants: [], failed: true } : now,
       );
     }
   };
 
-  const pickOfferQuant = (row: Row, variant: GgufVariantDetail) => {
+  const pickOfferQuant = (
+    row: Row,
+    variant: GgufVariantDetail,
+    isGguf = true,
+  ) => {
     if (!source) {
       return;
     }
@@ -1528,7 +1790,10 @@ export function ComposerModelPicker({
       setPending(row);
     }
     supersede();
-    source.onPick(row.id, ggufMeta(row, variant, variant.downloaded === true));
+    source.onPick(
+      row.id,
+      ggufMeta(row, variant, variant.downloaded === true, isGguf),
+    );
     resetView();
   };
 
@@ -1609,14 +1874,7 @@ export function ComposerModelPicker({
     } else if (row.kind === "local" && row.lora) {
       source.onPick(row.id, loraMeta(row.lora));
     } else if (row.kind === "cached") {
-      source.onPick(row.id, {
-        source: "hub",
-        isLora: false,
-        loadId: row.cached?.load_id ?? undefined,
-        isDownloaded: true,
-        isGguf: false,
-        pipelineTag: row.cached?.task ?? null,
-      });
+      source.onPick(row.id, cachedMeta(row));
     } else if (row.kind === "loaded") {
       source.onPick(row.id, residentMeta(row));
     } else if (row.kind === "hub") {
@@ -1782,20 +2040,28 @@ export function ComposerModelPicker({
   };
 
   const chipLabel = chosenName ?? "Select model";
+  // The header showed the loaded format and quant; the chip keeps them on hover.
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
+  const chipDetail =
+    activeVariant && chosenLoaded && !pending
+      ? `${loadedIsMlx ? "MLX" : "GGUF"} · ${activeVariant}`
+      : null;
+  // Several resident models (Keep models loaded): one press frees them all, as the header picker did.
+  const ejectsAll = loadedModels.length > 1;
 
   const settingsMeta = async (
     row: Row,
   ): Promise<ModelSelectorChangeMeta | null> => {
     const target = quantTarget(row);
     if (target) {
-      const { quants: list, defaultVariant } = await rowQuants(target);
+      const { quants: list, defaultVariant, mlx } = await rowQuants(target);
       const quant = chooseQuant(list, [
         row.loadedQuant,
         row.id === chosen?.id ? activeVariant : null,
         defaultVariant,
       ]);
       return quant
-        ? ggufMeta(row, quant, target.local || quant.downloaded === true)
+        ? ggufMeta(row, quant, target.local || quant.downloaded === true, !mlx)
         : null;
     }
     if (row.kind === "local" && row.lora) {
@@ -1810,14 +2076,7 @@ export function ComposerModelPicker({
       };
     }
     if (row.kind === "cached") {
-      return {
-        source: "hub",
-        isLora: false,
-        loadId: row.cached?.load_id ?? undefined,
-        isDownloaded: true,
-        isGguf: false,
-        pipelineTag: row.cached?.task ?? null,
-      };
+      return cachedMeta(row);
     }
     if (row.kind === "loaded") {
       return residentMeta(row);
@@ -1853,13 +2112,180 @@ export function ComposerModelPicker({
     openConfig(modelConfigTarget(row.id, meta, row.label));
   };
 
-  const openConnectedSettings = (row: Row) => {
+  const startUpdate = async (
+    repoId: string,
+    variant: GgufVariantDetail,
+  ): Promise<void> => {
+    const outcome = await downloadManager.requestStart({
+      kind: "model",
+      repoId,
+      variant: variant.quant,
+      expectedBytes: quantBytes(variant),
+    });
+    if (outcome === "conflict") {
+      setUpdateConflictKey(jobKeyOf("model", repoId, variant.quant));
+    } else if (outcome === "busy") {
+      toast.info("A download for this model is already in progress", {
+        description: "Try updating again once it finishes.",
+      });
+    } else if (outcome === "error") {
+      throw new Error("Failed to start update");
+    }
+  };
+
+  const updateFor = (row: Row, variant: GgufVariantDetail | undefined) =>
+    variant?.update_available && row.gguf
+      ? {
+          title: "Update cached model?",
+          description: (
+            <>
+              This will update{" "}
+              <span className="font-medium text-foreground">
+                {row.id} ({variant.quant})
+              </span>
+              .
+            </>
+          ),
+          repoId: row.id,
+          variant: variant.quant,
+          disabled: source?.deleteDisabled,
+          onConfirm: () => startUpdate(row.id, variant),
+          onUpdated: () => {
+            void inventory.refreshInventory();
+          },
+        }
+      : undefined;
+
+  const deleteQuantFor = (row: Row, variant: GgufVariantDetail) => {
+    const repo = row.gguf;
+    if (!repo) {
+      return undefined;
+    }
+    const inMemory =
+      Boolean(row.loaded) &&
+      variant.quant.toLowerCase() === row.loadedQuant?.toLowerCase();
+    return {
+      title: "Delete cached model?",
+      impact: {
+        repoId: repo.repo_id,
+        variant: variant.quant,
+        cachePath: variant.cache_ref ?? variant.cache_path,
+      },
+      description: (
+        <>
+          This will remove{" "}
+          <span className="font-medium text-foreground">
+            {repo.repo_id} ({variant.quant})
+          </span>{" "}
+          from disk. You can re-download it later.
+        </>
+      ),
+      successMessage: `Deleted ${repo.repo_id} ${variant.quant}`,
+      disabled: inMemory || source?.deleteDisabled,
+      onConfirm: async () => {
+        await deleteCachedModel(
+          repo.repo_id,
+          variant.quant,
+          useHfTokenStore.getState().token || undefined,
+          variant.cache_ref ?? variant.cache_path ?? undefined,
+        );
+      },
+      onDeleted: () => {
+        void inventory.refreshInventory();
+      },
+    };
+  };
+
+  const openConnectedSettings = (
+    row: Row,
+    view: "settings" | "info" = "settings",
+  ) => {
     // The dialog sits outside the panel, which would take its clicks as a dismiss.
     setOpen(false);
-    setConnectedSettings(row);
+    setConnectedSettings({ row, view });
+  };
+  // Not navigator.clipboard: undefined in the desktop shell and over plain HTTP.
+  const copyModelId = async (row: Row) => {
+    const modelId = parseExternalModelId(row.id)?.modelId ?? row.label;
+    if (await copyToClipboard(modelId)) {
+      toast.success(`Copied ${modelId}`);
+    } else {
+      toast.error("Could not copy the model ID");
+    }
+  };
+
+  // Folder models carry their store and path only in the inventory listing.
+  const localInfo = useMemo(
+    () => new Map(inventory.localModels.map((m) => [m.id, m])),
+    [inventory.localModels],
+  );
+  const fineTunedSource = (row: Row): "training" | "exported" | null =>
+    row.lora?.source === "training" || row.lora?.source === "exported"
+      ? row.lora.source
+      : null;
+
+  const revealFor = (row: Row): (() => Promise<void>) | undefined => {
+    const trained = fineTunedSource(row);
+    if (trained) {
+      return () => revealFineTunedModel(row.id, trained);
+    }
+    const local =
+      row.lora?.source === "local" ? localInfo.get(row.id) : undefined;
+    return local ? () => revealLocalModel(local.path, local.id) : undefined;
   };
 
   const deleteFor = (row: Row) => {
+    const lora = row.lora;
+    const trained = fineTunedSource(row);
+    // An exported GGUF deletes per quant, as the header picker does.
+    if (
+      lora &&
+      trained &&
+      !(trained === "exported" && lora.exportType === "gguf")
+    ) {
+      return {
+        title: "Delete fine-tuned model?",
+        description: (
+          <>
+            This will remove{" "}
+            <span className="font-medium text-foreground">{row.label}</span>{" "}
+            from disk. This cannot be undone.
+          </>
+        ),
+        successMessage: `Deleted ${row.label}`,
+        disabled: row.loaded || source?.deleteDisabled,
+        onConfirm: async () => {
+          await deleteFineTunedModel({
+            modelPath: row.id,
+            source: trained,
+            exportType: lora.exportType,
+          });
+          unpinRepo(row.id);
+        },
+        onDeleted: () => source?.onModelsChange({ id: row.id }),
+      };
+    }
+    const local = lora?.source === "local" ? localInfo.get(row.id) : undefined;
+    if (local && DELETABLE_LOCAL_SOURCES.has(local.source)) {
+      return {
+        title: "Delete local model?",
+        description: (
+          <>
+            This will permanently remove{" "}
+            <span className="font-medium text-foreground">{row.label}</span>{" "}
+            from{" "}
+            <span className="break-all font-mono text-xs">{local.path}</span>.
+          </>
+        ),
+        successMessage: `Deleted ${row.label}`,
+        disabled: row.loaded || source?.deleteDisabled,
+        onConfirm: () => deleteLocalModel(local.path, local.id),
+        onDeleted: () => {
+          void inventory.refreshInventory();
+          source?.onFoldersChange();
+        },
+      };
+    }
     const npu = row.npu;
     if (npu?.downloaded && npuCatalog) {
       return {
@@ -1984,6 +2410,14 @@ export function ComposerModelPicker({
             <LoadedDot label={row.label} onEject={() => eject(row)} />
           ) : null}
         </span>
+        {row.partial ? (
+          <AmberTag
+            label="Partial"
+            hint={row.resumable ? PARTIAL_HINT.resumable : PARTIAL_HINT.restart}
+          />
+        ) : onDisk.some((v) => v.update_available) ? (
+          <AmberTag label="Update" hint={UPDATE_HINT} />
+        ) : null}
         {soleQuant ? <QuantPill quant={soleQuant} /> : null}
         {npuProgress || (npuOffer && row.npu?.size_gb != null) ? (
           <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
@@ -2017,6 +2451,13 @@ export function ComposerModelPicker({
                 cachePath={
                   row.gguf || row.cached ? { repoId: row.id } : undefined
                 }
+                onReveal={revealFor(row)}
+                details={
+                  row.tab === DEVICE_TAB ? (
+                    <ModelFacts facts={modelFacts(row, onDisk)} />
+                  ) : undefined
+                }
+                update={soleQuant ? updateFor(row, onDisk[0]) : undefined}
                 pin={
                   canStar
                     ? {
@@ -2103,6 +2544,30 @@ export function ComposerModelPicker({
                       />
                     ),
                     onSelect: () => openConnectedSettings(row),
+                  },
+                  {
+                    key: "model-info",
+                    label: "Model info",
+                    icon: (
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        strokeWidth={1.75}
+                        className="size-icon"
+                      />
+                    ),
+                    onSelect: () => openConnectedSettings(row, "info"),
+                  },
+                  {
+                    key: "copy-id",
+                    label: "Copy model ID",
+                    icon: (
+                      <HugeiconsIcon
+                        icon={Copy01Icon}
+                        strokeWidth={1.75}
+                        className="size-icon"
+                      />
+                    ),
+                    onSelect: () => void copyModelId(row),
                   },
                 ]}
                 buttonClassName={cn(ACTION_DOTS, actionClass)}
@@ -2193,6 +2658,16 @@ export function ComposerModelPicker({
       "opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100";
     return (
       <span className="flex shrink-0 items-center">
+        {onDisk && row.gguf ? (
+          <ModelRowMenu
+            ariaLabel={`More options for ${row.label} ${variant.quant}`}
+            cachePath={{ repoId: row.id, variant: variant.quant }}
+            update={updateFor(row, variant)}
+            del={deleteQuantFor(row, variant)}
+            buttonClassName={cn(ACTION_DOTS, reveal)}
+            iconClassName="composer-row-dots"
+          />
+        ) : null}
         <ModelLoadSettingsAction
           ariaLabel={`Run settings for ${row.label} ${variant.quant}`}
           tooltip="Load settings"
@@ -2266,6 +2741,9 @@ export function ComposerModelPicker({
                 className="flex h-full min-w-0 flex-1 items-center gap-2 pr-2 pl-[calc(40px*var(--ui-space-scale,1))] text-left"
               >
                 <QuantPill quant={variant.quant} />
+                {variant.update_available ? (
+                  <AmberTag label="Update" hint={UPDATE_HINT} />
+                ) : null}
                 {inMemory ? (
                   <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success" />
                 ) : null}
@@ -2315,7 +2793,7 @@ export function ComposerModelPicker({
             >
               <button
                 type="button"
-                onClick={() => pickOfferQuant(row, variant)}
+                onClick={() => pickOfferQuant(row, variant, !offer.mlx)}
                 className="flex h-full min-w-0 flex-1 items-center gap-2 pr-2 pl-[calc(40px*var(--ui-space-scale,1))] text-left text-ui-13"
               >
                 <span
@@ -2325,6 +2803,9 @@ export function ComposerModelPicker({
                   )}
                 >
                   <QuantPill quant={variant.quant} />
+                  {variant.partial ? (
+                    <AmberTag label="Partial" hint={PARTIAL_HINT.variant} />
+                  ) : null}
                   {variant.quant.toLowerCase() === recommendedQuant ? (
                     <span className="shrink-0 text-ui-11 text-muted-foreground">
                       Recommended
@@ -2357,9 +2838,33 @@ export function ComposerModelPicker({
     );
   };
 
-  const renderConnectedSettings = (row: Row) => {
+  const renderConnectedSettings = (row: Row, view: "settings" | "info") => {
     const parsed = parseExternalModelId(row.id);
     const provider = providers.find((p) => p.id === parsed?.providerId);
+    const reasoningConfig =
+      provider?.backendProviderType === "custom" && !provider.decisionsOnly
+        ? provider.reasoningConfig
+        : undefined;
+    if (view === "info") {
+      return (
+        <ConnectedModelInfoDialog
+          open={true}
+          onOpenChange={(next) => {
+            if (!next) {
+              setConnectedSettings(null);
+            }
+          }}
+          modelId={parsed?.modelId ?? row.label}
+          displayName={row.label}
+          providerName={row.providerName ?? provider?.name ?? ""}
+          providerType={row.providerType ?? provider?.providerType ?? ""}
+          apiType={provider?.apiType}
+          baseUrl={provider?.baseUrl ?? null}
+          isReasoningProvider={provider?.isReasoningModel === true}
+          reasoningConfig={reasoningConfig}
+        />
+      );
+    }
     return (
       <ConnectedModelSettingsDialog
         open={true}
@@ -2375,11 +2880,7 @@ export function ComposerModelPicker({
         apiType={provider?.apiType}
         baseUrl={provider?.baseUrl ?? null}
         isReasoningProvider={provider?.isReasoningModel === true}
-        reasoningConfig={
-          provider?.backendProviderType === "custom" && !provider.decisionsOnly
-            ? provider.reasoningConfig
-            : undefined
-        }
+        reasoningConfig={reasoningConfig}
         connectionMaxOutputTokens={provider?.maxOutputTokens ?? null}
       />
     );
@@ -2403,6 +2904,24 @@ export function ComposerModelPicker({
   };
 
   const renderList = () => {
+    // Discover with no Hub listing: say why, as the header picker did.
+    const hubHint =
+      viewed === RECOMMENDED_TAB &&
+      hubResults.length === 0 &&
+      (!online || hubSearch.error) ? (
+        <HubFailureHint
+          key="hub-failure"
+          message={hubSearch.error}
+          onRetry={hubSearch.retry}
+        />
+      ) : null;
+    if (hubHint) {
+      return [hubHint, ...[renderSections()].flat()];
+    }
+    return renderSections();
+  };
+
+  const renderSections = () => {
     if (listSections.length === 0) {
       return shownRows.length === 0 ? renderEmpty() : shownRows.map(renderRow);
     }
@@ -2411,9 +2930,7 @@ export function ComposerModelPicker({
     const anyRows = listSections.some(
       (section) =>
         section !== "custom" &&
-        filterRows(rows, viewed, query, isFavorite).some(
-          (row) => row.section === section,
-        ),
+        foundRows.some((row) => row.section === section),
     );
     if (!anyRows) {
       out.push(renderEmpty());
@@ -2470,67 +2987,138 @@ export function ComposerModelPicker({
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild={true}>
-        <button
-          type="button"
-          className={cn(
-            "unsloth-thinking-pill composer-model-chip group/chip",
-            !(chosenName || modelLoading || pending) &&
-              "composer-model-chip-empty",
-          )}
-          data-pill-label={chipLabel}
-          data-tour="chat-model-selector"
-          aria-label={`Model: ${chipLabel}${reasoning.chipLabel ? `, ${reasoning.chipLabel}` : ""}`}
-        >
-          {modelLoading || pending ? (
-            <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-          ) : chosenName && chosenLoaded ? (
-            <Hint label="Eject model">
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
-              <span
-                aria-hidden={true}
-                data-eject-hit={true}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (chosen) {
-                    eject(chosen);
-                  } else if (checkpoint) {
-                    source?.eject(checkpoint);
-                  }
-                }}
-                className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+      {chipDetail ? (
+        <Tooltip delayDuration={400}>
+          <TooltipTrigger asChild={true}>
+            <PopoverTrigger asChild={true}>
+              <button
+                type="button"
+                className={cn(
+                  "unsloth-thinking-pill composer-model-chip group/chip",
+                  !(chosenName || modelLoading || pending) &&
+                    "composer-model-chip-empty",
+                )}
+                data-pill-label={chipLabel}
+                data-tour="chat-model-selector"
+                aria-label={`Model: ${chipLabel}${reasoning.chipLabel ? `, ${reasoning.chipLabel}` : ""}`}
               >
-                <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
+                {modelLoading || pending ? (
+                  <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
+                ) : chosenName && chosenLoaded ? (
+                  <Hint label="Eject model">
+                    {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
+                    <span
+                      aria-hidden={true}
+                      data-eject-hit={true}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (chosen) {
+                          eject(chosen);
+                        } else if (checkpoint) {
+                          source?.eject(checkpoint);
+                        }
+                      }}
+                      className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                    >
+                      <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
+                        <RowMark row={chosenMark} />
+                      </span>
+                      <HugeiconsIcon
+                        icon={RemoveCircleIcon}
+                        strokeWidth={1.75}
+                        className="invisible col-start-1 row-start-1 size-[calc(14px*var(--ui-space-scale,1))] composer-eject-tone group-hover/chip:visible"
+                      />
+                    </span>
+                  </Hint>
+                ) : chosenName ? (
                   <RowMark row={chosenMark} />
+                ) : null}
+                <span className="unsloth-thinking-label composer-model-chip-name truncate">
+                  {chipLabel}
                 </span>
-                <HugeiconsIcon
-                  icon={RemoveCircleIcon}
-                  strokeWidth={1.75}
-                  className="invisible col-start-1 row-start-1 size-[calc(14px*var(--ui-space-scale,1))] composer-eject-tone group-hover/chip:visible"
-                />
-              </span>
-            </Hint>
-          ) : chosenName ? (
-            <RowMark row={chosenMark} />
-          ) : null}
-          <span className="unsloth-thinking-label composer-model-chip-name truncate">
-            {chipLabel}
-          </span>
-          {chosenName || modelLoading || pending ? null : (
-            <HugeiconsIcon
-              icon={ChevronDownStandardIcon}
-              strokeWidth={1.75}
-              className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
-            />
-          )}
-          {reasoning.chipLabel ? (
-            <span className="unsloth-thinking-label composer-model-chip-detail shrink-0">
-              {reasoning.chipLabel}
+                {chosenName || modelLoading || pending ? null : (
+                  <HugeiconsIcon
+                    icon={ChevronDownStandardIcon}
+                    strokeWidth={1.75}
+                    className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+                  />
+                )}
+                {reasoning.chipLabel ? (
+                  <span className="unsloth-thinking-label composer-model-chip-detail shrink-0">
+                    {reasoning.chipLabel}
+                  </span>
+                ) : null}
+              </button>
+            </PopoverTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="tooltip-compact">
+            {chipDetail}
+          </TooltipContent>
+        </Tooltip>
+      ) : (
+        <PopoverTrigger asChild={true}>
+          <button
+            type="button"
+            className={cn(
+              "unsloth-thinking-pill composer-model-chip group/chip",
+              !(chosenName || modelLoading || pending) &&
+                "composer-model-chip-empty",
+            )}
+            data-pill-label={chipLabel}
+            data-tour="chat-model-selector"
+            aria-label={`Model: ${chipLabel}${reasoning.chipLabel ? `, ${reasoning.chipLabel}` : ""}`}
+          >
+            {modelLoading || pending ? (
+              <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
+            ) : chosenName && chosenLoaded ? (
+              <Hint label="Eject model">
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
+                <span
+                  aria-hidden={true}
+                  data-eject-hit={true}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (chosen) {
+                      eject(chosen);
+                    } else if (checkpoint) {
+                      source?.eject(checkpoint);
+                    }
+                  }}
+                  className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                >
+                  <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
+                    <RowMark row={chosenMark} />
+                  </span>
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className="invisible col-start-1 row-start-1 size-[calc(14px*var(--ui-space-scale,1))] composer-eject-tone group-hover/chip:visible"
+                  />
+                </span>
+              </Hint>
+            ) : chosenName ? (
+              <RowMark row={chosenMark} />
+            ) : null}
+            <span className="unsloth-thinking-label composer-model-chip-name truncate">
+              {chipLabel}
             </span>
-          ) : null}
-        </button>
-      </PopoverTrigger>
+            {chosenName || modelLoading || pending ? null : (
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                strokeWidth={1.75}
+                className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+              />
+            )}
+            {reasoning.chipLabel ? (
+              <span className="unsloth-thinking-label composer-model-chip-detail shrink-0">
+                {reasoning.chipLabel}
+              </span>
+            ) : null}
+          </button>
+        </PopoverTrigger>
+      )}
       <PopoverContent
         side={side}
         align="end"
@@ -2565,7 +3153,8 @@ export function ComposerModelPicker({
           <>
             <div
               ref={settingsRef}
-              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7"
+              // Tighter sides than the header picker's; the footer bleeds by the same variables.
+              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[var(--run-settings-pad-r)] pb-4.5 pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(16px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(16px*var(--ui-space-scale,1))]"
             >
               <ModelConfigPage
                 key={modelConfigInstanceKey(
@@ -2596,7 +3185,7 @@ export function ComposerModelPicker({
                 }
               />
             </div>
-            <ListScrollbar target={settingsRef} />
+            <ListScrollbar target={settingsRef} edge={true} />
           </>
         ) : isExpanded ? (
           <>
@@ -2625,12 +3214,20 @@ export function ComposerModelPicker({
               {chosenLoaded && !pending && !modelLoading ? (
                 <button
                   type="button"
-                  aria-label={`Eject ${chosenName ?? "model"}`}
-                  onClick={() =>
-                    chosen
-                      ? eject(chosen)
-                      : source?.eject(checkpoint ?? undefined)
+                  aria-label={
+                    ejectsAll
+                      ? "Eject all models"
+                      : `Eject ${chosenName ?? "model"}`
                   }
+                  onClick={() => {
+                    if (ejectsAll) {
+                      source?.ejectAll();
+                    } else if (chosen) {
+                      eject(chosen);
+                    } else {
+                      source?.eject(checkpoint ?? undefined);
+                    }
+                  }}
                   className="ml-auto flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors hover:bg-sidebar-accent"
                 >
                   <HugeiconsIcon
@@ -2638,7 +3235,7 @@ export function ComposerModelPicker({
                     strokeWidth={1.75}
                     className="size-[calc(14px*var(--ui-space-scale,1))]"
                   />
-                  Eject
+                  {ejectsAll ? "Eject all" : "Eject"}
                 </button>
               ) : null}
               {chosenName ? (
@@ -2653,7 +3250,7 @@ export function ComposerModelPicker({
                     <HugeiconsIcon
                       icon={ChevronDownStandardIcon}
                       strokeWidth={1.5}
-                      className="size-4 translate-x-[-0.4px] translate-y-[-0.4px] rotate-180"
+                      className="size-4 translate-x-[0.4px] translate-y-[0.4px]"
                     />
                   </button>
                 </Hint>
@@ -2683,6 +3280,79 @@ export function ComposerModelPicker({
                 aria-controls="composer-model-picker-list"
                 className="min-w-0 flex-1 bg-transparent text-ui-14 outline-none placeholder:text-muted-foreground"
               />
+              {viewed === DEVICE_TAB ? (
+                <NonModalDropdownMenu
+                  align="end"
+                  className="w-auto min-w-[calc(140px*var(--ui-space-scale,1))]"
+                  trigger={(ref) => (
+                    <button
+                      ref={ref}
+                      type="button"
+                      aria-label={`Sort and filter: ${DEVICE_SORT_LABEL[deviceSort]}, ${FORMAT_FILTER_LABEL[formatFilter]}`}
+                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent"
+                    >
+                      <HugeiconsIcon
+                        icon={SortIcon}
+                        strokeWidth={1.75}
+                        className="size-[calc(14px*var(--ui-space-scale,1))]"
+                      />
+                      {formatFilter !== "all" ? (
+                        <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
+                      ) : null}
+                    </button>
+                  )}
+                >
+                  <DropdownMenuLabel className={MENU_LABEL}>
+                    Sort
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={deviceSort}
+                    onValueChange={(next) => setDeviceSort(next as DeviceSort)}
+                  >
+                    {(Object.keys(DEVICE_SORT_LABEL) as DeviceSort[]).map(
+                      (key) => (
+                        <DropdownMenuRadioItem
+                          key={key}
+                          value={key}
+                          className={MENU_ITEM}
+                        >
+                          {DEVICE_SORT_LABEL[key]}
+                        </DropdownMenuRadioItem>
+                      ),
+                    )}
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className={MENU_LABEL}>
+                    Format
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={formatFilter}
+                    onValueChange={(next) =>
+                      setFormatFilter(next as FormatFilter)
+                    }
+                  >
+                    {(Object.keys(FORMAT_FILTER_LABEL) as FormatFilter[])
+                      .filter((key) => key !== "npu" || npuCatalog !== null)
+                      .map((key) => (
+                        <DropdownMenuRadioItem
+                          key={key}
+                          value={key}
+                          className={MENU_ITEM}
+                        >
+                          {FORMAT_DOT[key] ? (
+                            <span
+                              className={cn(
+                                "size-1.5 shrink-0 rounded-full",
+                                FORMAT_DOT[key],
+                              )}
+                            />
+                          ) : null}
+                          {FORMAT_FILTER_LABEL[key]}
+                        </DropdownMenuRadioItem>
+                      ))}
+                  </DropdownMenuRadioGroup>
+                </NonModalDropdownMenu>
+              ) : null}
               {source && connectionId ? (
                 <Hint label="Connection settings">
                   <button
@@ -2703,7 +3373,8 @@ export function ComposerModelPicker({
                     />
                   </button>
                 </Hint>
-              ) : source ? (
+              ) : source && viewed !== DEVICE_TAB ? (
+                // On Device puts its sort here instead.
                 <Hint label="Model hub">
                   <button
                     type="button"
@@ -2780,43 +3451,48 @@ export function ComposerModelPicker({
               ) : null}
             </button>
             {!pending && chosenLoaded && !modelLoading ? (
-              <Hint label="Eject">
-                <button
-                  type="button"
-                  aria-label={`Eject ${chosenName}`}
-                  onClick={() =>
-                    chosen
-                      ? eject(chosen)
-                      : source?.eject(checkpoint ?? undefined)
-                  }
-                  className="flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-ui-12 text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-                >
-                  <HugeiconsIcon
-                    icon={RemoveCircleIcon}
-                    strokeWidth={1.75}
-                    className="composer-row-icon"
-                  />
-                  Eject
-                </button>
-              </Hint>
+              <button
+                type="button"
+                aria-label={`Eject ${chosenName}`}
+                onClick={() =>
+                  chosen
+                    ? eject(chosen)
+                    : source?.eject(checkpoint ?? undefined)
+                }
+                // The tab row's Eject pill, on a wash since this bar is already the muted tone.
+                className="flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+              >
+                <HugeiconsIcon
+                  icon={RemoveCircleIcon}
+                  strokeWidth={1.75}
+                  className="size-[calc(14px*var(--ui-space-scale,1))]"
+                />
+                Eject
+              </button>
             ) : null}
             <button
               type="button"
               tabIndex={-1}
               aria-hidden={true}
               onClick={expand}
-              className="grid size-[calc(28px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground"
+              className="ml-1 grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
             >
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
                 strokeWidth={1.5}
-                className="size-4"
+                className="size-4 translate-x-[-0.4px] translate-y-[-0.4px] rotate-180"
               />
             </button>
           </div>
         )}
         {hasFoot && !configTarget ? (
-          <div className="flex shrink-0 flex-col gap-0.5 border-t border-border pt-1">
+          <div
+            className={cn(
+              "flex shrink-0 flex-col gap-0.5",
+              // Collapsed, the chosen-model bar already sets the controls off.
+              isExpanded ? "border-t border-border pt-1" : "pt-1",
+            )}
+          >
             {showQuantRow ? (
               <Popover open={quantsOpen} onOpenChange={setQuantsOpen}>
                 <PopoverTrigger asChild={true}>
@@ -2925,7 +3601,30 @@ export function ComposerModelPicker({
           </div>
         ) : null}
       </PopoverContent>
-      {connectedSettings ? renderConnectedSettings(connectedSettings) : null}
+      {connectedSettings
+        ? renderConnectedSettings(connectedSettings.row, connectedSettings.view)
+        : null}
+      <TransportConflictDialog
+        conflict={updateConflict}
+        onCancel={() => {
+          if (updateConflictKey) {
+            downloadManager.cancelConflict(updateConflictKey);
+          }
+          setUpdateConflictKey(null);
+        }}
+        onKeepTransport={() => {
+          if (updateConflictKey) {
+            downloadManager.resumeConflict(updateConflictKey);
+          }
+          setUpdateConflictKey(null);
+        }}
+        onSwitchTransport={() => {
+          if (updateConflictKey) {
+            downloadManager.restartConflict(updateConflictKey);
+          }
+          setUpdateConflictKey(null);
+        }}
+      />
     </Popover>
   );
 }
