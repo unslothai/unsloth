@@ -248,7 +248,7 @@ test("native scroll anchoring is off for a commit and handed back when the windo
   );
   // Between commits the browser compensates late reflows above the reader (images, fonts).
   const step = section(GLUE, "const step = useCallback(", "stepRef.current = step;");
-  assert.match(step, /if \(sameWindow\(next, current\)\) \{\s*settle\(viewport, current, lookup\);/);
+  assert.match(step, /if \(sameWindow\(next, current\)\) \{[\s\S]{0,200}?settle\(viewport, current, lookup\);/);
   assert.match(section(GLUE, "const settle = useCallback(", "[adjustScroll, heights, schedule, topRef],"), /restoreScrollAnchoring\(viewport\);/);
   // removeProperty alone leaves `style=""` behind.
   assert.match(
@@ -585,7 +585,7 @@ test("a mounted row that shrinks or re-wraps wakes the window, and growth does n
   // chat font, text size and code font move no width.
   assert.match(
     GLUE,
-    /const column = viewport\.querySelector<HTMLElement>\(ROW_SELECTOR\);\s*if \(column\) heights\.relayout\(rowLayout\(column\)\);/,
+    /const column = viewport\.querySelector<HTMLElement>\(ROW_SELECTOR\);[\s\S]{0,120}?column != null && heights\.relayout\(`\$\{rowLayout\(column\)\}/,
   );
   const layout = section(GLUE, "function rowLayout(row: HTMLElement): string {", "\n}");
   for (const part of ["row.clientWidth", "style.fontFamily", "style.fontSize", "style.letterSpacing", '"--custom-code-font"', '"--custom-code-font-size"']) {
@@ -611,4 +611,14 @@ test("only a rendered reply's equations count toward the spacers", () => {
     GLUE,
     /equations: renders && role === "assistant" \? numberedEquations\(message\.content\) : 0,/,
   );
+});
+
+test("a relayout re-renders every spacer even when the window holds", () => {
+  assert.match(
+    GLUE,
+    /if \(relaid\) \{\s*commit\(\{ \.\.\.current \}, true\);\s*return;/,
+  );
+  // The expanded settings move every row and feed the estimate, so both key the caches.
+  assert.match(GLUE, /heights\.relayout\(`\$\{rowLayout\(column\)\}\\n\$\{thinking\}\\n\$\{tools\}`\)/);
+  assert.match(GLUE, /metasOf\(aui\.thread\(\)\.getState\(\)\.messages as unknown as readonly ThreadMessage\[\], expanded\)/);
 });

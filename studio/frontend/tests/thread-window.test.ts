@@ -518,11 +518,11 @@ test("a window holding the tail also holds the prompt its reply answers", () => 
 test("a new row layout forgets every height, since every row re-wraps", () => {
   const heights = new RowHeights();
   const row = meta(1);
-  heights.relayout("800 Inter 15px");
+  assert.equal(heights.relayout("800 Inter 15px"), false, "the first layout forgets nothing");
   heights.measure(row, 900);
-  heights.relayout("800 Inter 15px");
+  assert.equal(heights.relayout("800 Inter 15px"), false);
   assert.equal(heights.heightOf(row), 900, "the same layout keeps them");
-  heights.relayout("800 Inter 18px");
+  assert.equal(heights.relayout("800 Inter 18px"), true);
   assert.equal(heights.has(row.id), false);
   assert.notEqual(heights.heightOf(row), 900);
 });
@@ -564,4 +564,17 @@ test("a spacer carries the equation counts of the rows it stands for", () => {
   assert.deepEqual(heights.equationsIn(metas, 2, 2), { html: 0, mathml: 0 });
   assert.equal(heights.measure(metas[0], 100), true);
   assert.equal(heights.measure(metas[0], 100), false, "an unchanged height is not a change");
+});
+
+test("always expanded thinking and tool cards count their text", () => {
+  const trace = "step\n".repeat(40);
+  const content = [
+    { type: "reasoning", text: trace },
+    { type: "tool-call", argsText: '{"q": 1}', result: "row\n".repeat(20) },
+    { type: "text", text: "answer" },
+  ];
+  const collapsed = messageWeight(content);
+  assert.equal(collapsed, messageWeight(content, { reasoning: false, tools: false }));
+  assert.ok(messageWeight(content, { reasoning: true, tools: false }) >= collapsed + 40);
+  assert.ok(messageWeight(content, { reasoning: false, tools: true }) >= collapsed + 20);
 });

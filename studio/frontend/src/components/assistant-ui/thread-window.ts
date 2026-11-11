@@ -40,7 +40,11 @@ const CHARS_PER_LINE = 90;
 const COLLAPSED_PART_LINES = 2;
 const MEDIA_PART_LINES = 12;
 
-type Part = { type?: string; text?: string };
+type Part = { type?: string; text?: string; argsText?: string; result?: unknown };
+
+/** Thinking and tool cards the "Always expanded" settings open on every message. */
+export type Expanded = { reasoning: boolean; tools: boolean };
+const COLLAPSED: Expanded = { reasoning: false, tools: false };
 
 /** Lines, not characters: code (many short lines) must not be estimated as a paragraph. */
 function textLines(text: string): number {
@@ -55,13 +59,25 @@ function textLines(text: string): number {
   }
 }
 
-export function messageWeight(content: readonly Part[] | undefined): number {
+export function messageWeight(
+  content: readonly Part[] | undefined,
+  expanded: Expanded = COLLAPSED,
+): number {
   if (!content) return 0;
   let weight = 0;
   for (const part of content) {
     if (part.type === "text") weight += part.text ? textLines(part.text) : 0;
     else if (part.type === "image" || part.type === "file") weight += MEDIA_PART_LINES;
-    else if (part.type !== "source") weight += COLLAPSED_PART_LINES;
+    else if (part.type === "source") continue;
+    else {
+      weight += COLLAPSED_PART_LINES;
+      if (part.type === "reasoning" && expanded.reasoning && part.text) {
+        weight += textLines(part.text);
+      } else if (part.type === "tool-call" && expanded.tools) {
+        if (part.argsText) weight += textLines(part.argsText);
+        if (typeof part.result === "string") weight += textLines(part.result);
+      }
+    }
   }
   return weight;
 }
@@ -147,15 +163,17 @@ export class RowHeights {
   private counted = new Map<string, { role: string; lines: number; px: number }>();
   private layout: string | null = null;
 
-  /** A new column width or typography re-wraps every row, so every height is forgotten. */
-  relayout(layout: string): void {
-    if (layout === this.layout) return;
-    if (this.layout !== null) {
-      this.measured.clear();
-      this.densities.clear();
-      this.counted.clear();
-    }
+  /** A new column width or typography re-wraps every row, so every height is forgotten. True
+   *  when they were. */
+  relayout(layout: string): boolean {
+    if (layout === this.layout) return false;
+    const was = this.layout;
     this.layout = layout;
+    if (was === null) return false;
+    this.measured.clear();
+    this.densities.clear();
+    this.counted.clear();
+    return true;
   }
 
   private equations = new Map<string, Equations>();

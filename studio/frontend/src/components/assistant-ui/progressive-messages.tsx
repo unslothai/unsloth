@@ -31,6 +31,7 @@ import {
   watchProgressiveScroll,
 } from "@/components/assistant-ui/progressive-mount-controller";
 import {
+  type Expanded,
   type MountedRow,
   type RowMeta,
   type RowWindow,
@@ -56,6 +57,7 @@ import {
   rendersAsRow,
 } from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 
@@ -255,11 +257,11 @@ type Metas = {
   tailTurn: number;
 };
 
-const metaCache = new WeakMap<object, RowMeta>();
+const metaCache = new WeakMap<object, { expanded: Expanded; meta: RowMeta }>();
 
-function metaOf(message: ThreadMessage, index: number): RowMeta {
+function metaOf(message: ThreadMessage, index: number, expanded: Expanded): RowMeta {
   const cached = metaCache.get(message);
-  if (cached) return cached;
+  if (cached?.expanded === expanded) return cached.meta;
   const role = message.role ?? "assistant";
   // Unknown shapes count as rendering: room for a row that turns out empty costs nothing.
   const renders =
@@ -267,21 +269,21 @@ function metaOf(message: ThreadMessage, index: number): RowMeta {
   const meta: RowMeta = {
     id: message.id ?? `#${index}`,
     role,
-    weight: messageWeight(message.content),
+    weight: messageWeight(message.content, expanded),
     // Only replies render markdown math: a prompt shows its source as text.
     equations: renders && role === "assistant" ? numberedEquations(message.content) : 0,
     renders,
   };
-  metaCache.set(message, meta);
+  metaCache.set(message, { expanded, meta });
   return meta;
 }
 
-const metasCache = new WeakMap<readonly ThreadMessage[], Metas>();
+const metasCache = new WeakMap<readonly ThreadMessage[], { expanded: Expanded; derived: Metas }>();
 
-function metasOf(messages: readonly ThreadMessage[]): Metas {
+function metasOf(messages: readonly ThreadMessage[], expanded: Expanded): Metas {
   const cached = metasCache.get(messages);
-  if (cached) return cached;
-  const metas = messages.map(metaOf);
+  if (cached?.expanded === expanded) return cached.derived;
+  const metas = messages.map((message, at) => metaOf(message, at, expanded));
   const index = new Map<string, number>();
   let tailTurn = -1;
   metas.forEach((meta, at) => {
@@ -289,7 +291,7 @@ function metasOf(messages: readonly ThreadMessage[]): Metas {
     if (meta.role === "user" && meta.renders) tailTurn = at;
   });
   const derived = { metas, index, tailTurn };
-  metasCache.set(messages, derived);
+  metasCache.set(messages, { expanded, derived });
   return derived;
 }
 
@@ -448,10 +450,17 @@ function useThreadWindow(
   const adjustScroll = useAdjustForContentInsertedAbove();
 
   // Read imperatively: a useAuiState selector on messages would walk the thread every keystroke.
+  const thinking = useChatPreferencesStore((state) => state.thinkingVisibility);
+  const tools = useChatPreferencesStore((state) => state.toolVisibility);
+  // One object per setting pair: the meta caches compare it by identity.
+  const expanded = useMemo(
+    (): Expanded => ({ reasoning: thinking === "expanded", tools: tools === "expanded" }),
+    [thinking, tools],
+  );
   const readMetas = useCallback(
     (): Metas =>
-      metasOf(aui.thread().getState().messages as unknown as readonly ThreadMessage[]),
-    [aui],
+      metasOf(aui.thread().getState().messages as unknown as readonly ThreadMessage[], expanded),
+    [aui, expanded],
   );
 
   const heights = useMemo(() => heightsFor(resetKey), [resetKey]);
@@ -596,7 +605,9 @@ function useThreadWindow(
     const total = lookup.metas.length;
     const current = winRef.current;
     const column = viewport.querySelector<HTMLElement>(ROW_SELECTOR);
-    if (column) heights.relayout(rowLayout(column));
+    // Opening every trace or card moves every row too.
+    const relaid =
+      column != null && heights.relayout(`${rowLayout(column)}\n${thinking}\n${tools}`);
     const measured = measureRows(viewport, lookup, heights);
     // Also here: a row can replace its root (an edit opening) without the window committing.
     ordinals(viewport, lookup);
@@ -681,6 +692,11 @@ function useThreadWindow(
     }
     if (next != null) next = keepPinned(viewport, lookup, next, tail);
     if (sameWindow(next, current)) {
+      // Every height moved: the trailing spacer and gaps are sized only by a render.
+      if (relaid) {
+        commit({ ...current }, true);
+        return;
+      }
       settle(viewport, current, lookup);
       if (!trim) {
         window.clearTimeout(settleTimerRef.current);
@@ -697,7 +713,7 @@ function useThreadWindow(
       (current.start > 0 && first.top > 0) ||
       (current.end < total && last.bottom < viewport.clientHeight);
     commit(next, WEBKIT_GTK || trimOnly || exposed);
-  }, [aui, commit, flushWaiters, heights, ordinals, readMetas, schedule, settle, viewportRef]);
+  }, [aui, commit, flushWaiters, heights, ordinals, readMetas, schedule, settle, thinking, tools, viewportRef]);
   useLayoutEffect(() => {
     stepRef.current = step;
   }, [step]);
