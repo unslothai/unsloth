@@ -24,6 +24,7 @@ import {
   followCount,
   initialRowWindow,
   messageWeight,
+  numberedEquations,
   planEngage,
   planFill,
   planSlide,
@@ -524,4 +525,25 @@ test("a new column width forgets every height, since every row re-wraps", () => 
   heights.resize(400);
   assert.equal(heights.has(row.id), false);
   assert.notEqual(heights.heightOf(row), 900);
+});
+
+test("numbered equations are counted where KaTeX's page-wide counters would count them", () => {
+  const text = (value: string) => [{ type: "text", text: value }];
+  assert.equal(numberedEquations(text("$$x$$ and \\begin{equation*}y\\end{equation*}")), 0);
+  assert.equal(numberedEquations(text("\\begin{equation}a=b\\end{equation}")), 1);
+  assert.equal(numberedEquations(text("\\begin{align}a\\\\b \\notag\\\\c\\end{align}")), 2);
+  assert.equal(numberedEquations(text("\\begin{equation}a\\tag{*}\\end{equation}")), 0);
+  assert.equal(numberedEquations([{ type: "reasoning", text: "\\begin{equation}a\\end{equation}" }]), 0);
+});
+
+test("a spacer carries the equation counts of the rows it stands for", () => {
+  const heights = new RowHeights();
+  const metas = [0, 1, 2].map((index) => ({ ...meta(index), equations: index }));
+  // Estimated from the text until a row is counted in the DOM.
+  assert.deepEqual(heights.equationsIn(metas, 0, 3), { html: 3, mathml: 3 });
+  heights.countEquations("m2", { html: 5, mathml: 0 });
+  assert.deepEqual(heights.equationsIn(metas, 1, 3), { html: 6, mathml: 1 });
+  assert.deepEqual(heights.equationsIn(metas, 2, 2), { html: 0, mathml: 0 });
+  assert.equal(heights.measure(metas[0], 100), true);
+  assert.equal(heights.measure(metas[0], 100), false, "an unchanged height is not a change");
 });

@@ -106,6 +106,8 @@ type SeedOptions = {
    * `sources` adds six URL source parts after every web_search call.
    */
   agent?: { rounds: number; compactionEvery?: number; sources?: boolean; rich?: boolean };
+  /** Each default reply also carries a numbered equation, which KaTeX counts page-wide. */
+  numbered?: boolean;
 };
 
 const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
@@ -204,7 +206,10 @@ function buildMessages(
           type: "text" as const,
           text: isPlain((index - 1) / 2, options)
             ? plainAssistantMarkdown(index)
-            : assistantMarkdown(index),
+            : assistantMarkdown(index) +
+              (options?.numbered
+                ? `\n\n$$\n\\begin{equation}E_{${index}} = mc^2\\end{equation}\n$$`
+                : ""),
         },
       ],
     };

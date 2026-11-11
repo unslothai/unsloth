@@ -40,6 +40,7 @@ import {
   followCount,
   holdTailTurn,
   initialRowWindow,
+  numberedEquations,
   messageWeight,
   planEngage,
   planFill,
@@ -259,6 +260,7 @@ function metaOf(message: ThreadMessage, index: number): RowMeta {
     id: message.id ?? `#${index}`,
     role: message.role ?? "assistant",
     weight: messageWeight(message.content),
+    equations: numberedEquations(message.content),
     // Unknown shapes count as rendering: room for a row that turns out empty costs nothing.
     renders:
       message.role == null ||
@@ -317,19 +319,32 @@ function measureRows(viewport: HTMLElement, lookup: Metas, heights: RowHeights):
   const rows: MountedRow[] = [];
   let threadTop: number | null = null;
   let open: MountedRow | null = null;
+  let openRow: Element | null = null;
+  const close = (height: number) => {
+    if (!open || !openRow) return;
+    const meta = lookup.metas[open.index];
+    // A re-render that changed the row's equations changed its height too.
+    if (heights.measure(meta, Math.max(0, height))) {
+      heights.countEquations(meta.id, {
+        html: openRow.querySelectorAll(".eqn-num").length,
+        mathml: openRow.querySelectorAll(".mml-eqn-num").length,
+      });
+    }
+  };
   for (const child of viewport.children) {
     const index = rowIndex(child, lookup);
     if (index === undefined && !child.hasAttribute(SPACER_ATTRIBUTE)) continue;
     const box = child.getBoundingClientRect();
     const top = box.top - origin;
     threadTop ??= top;
-    if (open) heights.measure(lookup.metas[open.index], Math.max(0, top - open.top));
+    if (open) close(top - open.top);
     open = null;
     if (index === undefined) continue;
     open = { index, top, bottom: box.bottom - origin };
+    openRow = child;
     rows.push(open);
   }
-  if (open) heights.measure(lookup.metas[open.index], Math.max(0, open.bottom - open.top));
+  if (open) close(open.bottom - open.top);
   return { rows, threadTop: threadTop ?? 0 };
 }
 
@@ -399,7 +414,11 @@ function useThreadWindow(
   viewportRef: RefObject<HTMLElement | null>,
   topRef: RefObject<HTMLDivElement | null>,
   bottomRef: RefObject<HTMLDivElement | null>,
-): { win: RowWindow | null; gapHeight: (from: number, to: number) => number } {
+): {
+  win: RowWindow | null;
+  gapHeight: (from: number, to: number) => number;
+  counterIncrement: (from: number, to: number) => string | undefined;
+} {
   const aui = useAui();
   const adjustScroll = useAdjustForContentInsertedAbove();
 
@@ -799,6 +818,34 @@ function useThreadWindow(
     flags.observe(document.documentElement, { attributes: true, attributeFilter: [FIND_FLAG] });
     const resize = new ResizeObserver(schedule);
     resize.observe(viewport);
+    // A mounted row that shrinks (a code block collapsed) can bare a spacer with no scroll to
+    // wake the window. Only a shrink: a streamed reply grows on every chunk.
+    const rowHeights = new WeakMap<Element, number>();
+    const rowResize = new ResizeObserver((entries) => {
+      let shrank = false;
+      for (const entry of entries) {
+        const height = entry.contentRect.height;
+        const before = rowHeights.get(entry.target);
+        rowHeights.set(entry.target, height);
+        if (before !== undefined && height < before - 1) shrank = true;
+      }
+      if (shrank) schedule();
+    });
+    const watchRows = (nodes: Iterable<Node>) => {
+      for (const node of nodes) {
+        if (node instanceof Element && node.matches(ROW_SELECTOR)) rowResize.observe(node);
+      }
+    };
+    const rowsChanged = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.removedNodes) {
+          if (node instanceof Element) rowResize.unobserve(node);
+        }
+        watchRows(record.addedNodes);
+      }
+    });
+    rowsChanged.observe(viewport, { childList: true });
+    watchRows(viewport.children);
     const media = window.matchMedia("print");
     const beforePrint = () => {
       printingRef.current = true;
@@ -833,23 +880,36 @@ function useThreadWindow(
         ...viewport.querySelectorAll<HTMLElement>(`:scope > [${SPACER_ATTRIBUTE}="gap"]`),
       ].some(standsIn);
       if (!fromTop && !toBottom && !acrossGap) return;
+      const lookup = readMetas();
+      const { topFrom, bottomTo } = spacerRows(winRef.current, lookup.metas.length);
       modeRef.current = "fill";
       releaseAtRef.current = performance.now() + FILL_RELEASE_MS;
       commit(null, true);
       // WebKit serialises the selection resolved before the mount, so set it again, with an end
-      // it moved off a spacer put back on the spacer.
+      // it moved off a spacer put on the first (or last) row that spacer stood for. Rows, not the
+      // spacers: a spacer keyed by a pin is replaced by the mount.
       if (selection.rangeCount !== 1) return;
+      const rowAt = (from: number, step: 1 | -1): Element | null => {
+        for (let index = from; index >= 0 && index < lookup.metas.length; index += step) {
+          const id = lookup.metas[index].id;
+          const row = viewport.querySelector(`:scope > [data-message-id="${CSS.escape(id)}"]`);
+          if (row) return row;
+        }
+        return null;
+      };
       const range = selection.getRangeAt(0).cloneRange();
       const edge = document.createRange();
-      if (fromTop && top) {
-        edge.setStartBefore(top);
+      const first = fromTop ? rowAt(topFrom, 1) : null;
+      if (first) {
+        edge.setStartBefore(first);
         edge.collapse(true);
-        if (range.compareBoundaryPoints(Range.START_TO_START, edge) > 0) range.setStartBefore(top);
+        if (range.compareBoundaryPoints(Range.START_TO_START, edge) > 0) range.setStartBefore(first);
       }
-      if (toBottom && bottom) {
-        edge.setStartAfter(bottom);
+      const last = toBottom ? rowAt(bottomTo - 1, -1) : null;
+      if (last) {
+        edge.setStartAfter(last);
         edge.collapse(true);
-        if (range.compareBoundaryPoints(Range.END_TO_END, edge) < 0) range.setEndAfter(bottom);
+        if (range.compareBoundaryPoints(Range.END_TO_END, edge) < 0) range.setEndAfter(last);
       }
       selection.removeAllRanges();
       selection.addRange(range);
@@ -867,6 +927,8 @@ function useThreadWindow(
       scrollActivity.current = null;
       flags.disconnect();
       resize.disconnect();
+      rowResize.disconnect();
+      rowsChanged.disconnect();
       viewport.removeEventListener("scroll", schedule);
       viewport.removeEventListener("focusout", schedule);
       document.removeEventListener("copy", onCopy, true);
@@ -878,7 +940,7 @@ function useThreadWindow(
       window.clearTimeout(settleTimerRef.current);
       restoreScrollAnchoring(viewport);
     };
-  }, [viewportRef, topRef, bottomRef, schedule, commit, complete]);
+  }, [viewportRef, topRef, bottomRef, schedule, commit, complete, readMetas]);
 
   // Settle waiters on unmount, or a DOM capture racing a thread switch waits forever.
   useEffect(() => flushWaiters, [flushWaiters]);
@@ -896,7 +958,16 @@ function useThreadWindow(
     [readMetas, heights],
   );
 
-  return { win, gapHeight };
+  /** Equation counter increments of rows `[from, to)`, for the spacer standing in for them. */
+  const counterIncrement = useCallback(
+    (from: number, to: number): string | undefined => {
+      const { html, mathml } = heights.equationsIn(readMetas().metas, from, to);
+      return html || mathml ? `katexEqnNo ${html} mmlEqnNo ${mathml}` : undefined;
+    },
+    [readMetas, heights],
+  );
+
+  return { win, gapHeight, counterIncrement };
 }
 
 /** Drop-in for `ThreadPrimitive.Messages` that mounts only the rows near the reader. */
@@ -909,7 +980,13 @@ export const ProgressiveMessages: FC<{
     const count = useAuiState(({ thread }) => thread.messages.length);
     const topRef = useRef<HTMLDivElement>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
-    const { win, gapHeight } = useThreadWindow(count, resetKey, viewportRef, topRef, bottomRef);
+    const { win, gapHeight, counterIncrement } = useThreadWindow(
+      count,
+      resetKey,
+      viewportRef,
+      topRef,
+      bottomRef,
+    );
     const aui = useAui();
     const gate = useMemo(() => createRowNotificationGate(aui), [aui]);
 
@@ -930,22 +1007,26 @@ export const ProgressiveMessages: FC<{
         // Heights are written in the layout effect, never by React: a re-render must not undo them.
         if (slot.name === "top") {
           const key = slot.from === 0 ? "top" : `top:${slot.from}`;
-          return <div key={key} ref={topRef} data-thread-spacer="top" aria-hidden="true" style={{ flexShrink: 0 }} />;
+          return <div key={key} ref={topRef} data-thread-spacer="top" aria-hidden="true" style={{ flexShrink: 0, counterIncrement: counterIncrement(slot.from, slot.to) }} />;
         }
         if (slot.name === "bottom") {
           const key = slot.to === count ? "bottom" : `bottom:${slot.to}`;
-          return <div key={key} ref={bottomRef} data-thread-spacer="bottom" aria-hidden="true" style={{ flexShrink: 0 }} />;
+          return <div key={key} ref={bottomRef} data-thread-spacer="bottom" aria-hidden="true" style={{ flexShrink: 0, counterIncrement: counterIncrement(slot.from, slot.to) }} />;
         }
         return (
           <div
             key={`gap:${slot.from}`}
             data-thread-spacer="gap"
             aria-hidden="true"
-            style={{ flexShrink: 0, height: gapHeight(slot.from, slot.to) }}
+            style={{
+              flexShrink: 0,
+              height: gapHeight(slot.from, slot.to),
+              counterIncrement: counterIncrement(slot.from, slot.to),
+            }}
           />
         );
       });
-    }, [count, win, renderMessage, gate, gapHeight]);
+    }, [count, win, renderMessage, gate, gapHeight, counterIncrement]);
   },
   (prev, next) =>
     prev.resetKey === next.resetKey &&

@@ -159,7 +159,7 @@ test("a spacer is keyed by where it sits among the rows", () => {
   assert.match(GLUE, /const key = slot\.to === count \? "bottom" : `bottom:\$\{slot\.to\}`;/);
   assert.match(GLUE, /key=\{`gap:\$\{slot\.from\}`\}/);
   // A gap between pins is sized by React from the same heights the other two are.
-  assert.match(GLUE, /style=\{\{ flexShrink: 0, height: gapHeight\(slot\.from, slot\.to\) \}\}/);
+  assert.match(GLUE, /height: gapHeight\(slot\.from, slot\.to\),\s*counterIncrement: counterIncrement\(slot\.from, slot\.to\),/);
   // The leading spacer holds no slack where it stands for no rows: at the first row, or at a pin.
   assert.match(GLUE, /const atFirstRow = win == null \|\| win\.start <= spacerRows\(win, count\)\.topFrom;/);
   // A spacer node this commit created is sized before any row's layout effect can read layout,
@@ -280,8 +280,9 @@ test("the leading spacer takes a height surprise before scrollTop does", () => {
   // React must not own the heights: a re-render would put the pre-correction value back.
   assert.match(effect, /top\.style\.height = `\$\{spacer\}px`;/);
   assert.match(effect, /bottom\.style\.height = `\$\{spacers\.bottom\}px`;/);
-  assert.match(GLUE, /data-thread-spacer="top" aria-hidden="true" style=\{\{ flexShrink: 0 \}\}/);
-  assert.match(GLUE, /data-thread-spacer="bottom" aria-hidden="true" style=\{\{ flexShrink: 0 \}\}/);
+  // React owns only flexShrink and the equation counters on these two, never their heights.
+  assert.match(GLUE, /data-thread-spacer="top" aria-hidden="true" style=\{\{ flexShrink: 0, counterIncrement: counterIncrement\(slot\.from, slot\.to\) \}\}/);
+  assert.match(GLUE, /data-thread-spacer="bottom" aria-hidden="true" style=\{\{ flexShrink: 0, counterIncrement: counterIncrement\(slot\.from, slot\.to\) \}\}/);
   // What the spacer took on is folded into scrollTop only once input has gone quiet.
   const settle = section(GLUE, "const settle = useCallback(", "[adjustScroll, heights, schedule, topRef],");
   assert.match(settle, /if \(scrollActivity\.current\?\.blocked\(inputPointerHeld\(\)\)\) \{/);
@@ -377,8 +378,10 @@ test("a copy that runs across a spacer mounts the rows it stands in for first", 
   // WebKit serialises the selection it resolved before the mount (measured: 19,434 characters
   // of a 1,985,002 character thread), so the selection is set again, ends back on the spacers.
   assert.match(copy, /range\.compareBoundaryPoints\(Range\.START_TO_START, edge\) > 0/);
-  assert.match(copy, /range\.setStartBefore\(top\);/);
-  assert.match(copy, /range\.setEndAfter\(bottom\);/);
+  // Rows, read after the mount: a spacer keyed by a pin is replaced by it.
+  assert.match(copy, /const \{ topFrom, bottomTo \} = spacerRows\(winRef\.current, lookup\.metas\.length\);\s*modeRef/);
+  assert.match(copy, /range\.setStartBefore\(first\);/);
+  assert.match(copy, /range\.setEndAfter\(last\);/);
   assert.match(copy, /selection\.removeAllRanges\(\);\s*selection\.addRange\(range\);/);
   // Capture, on the document: the thread's own copy handler must see the full mount.
   assert.match(GLUE, /document\.addEventListener\("copy", onCopy, true\);/);
@@ -464,7 +467,7 @@ test("the row map is memoized on the slot identity", () => {
   // Messages skips re-render only while its children function keeps identity.
   assert.match(
     GLUE,
-    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, win, renderMessage, gate, gapHeight\]\)/,
+    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, win, renderMessage, gate, gapHeight, counterIncrement\]\)/,
   );
   assert.match(
     GLUE,
@@ -552,7 +555,8 @@ test("a row's height is its top to the top of what follows it, read in one pass"
   // What follows is a row or a spacer: a pinned row has a spacer on both sides.
   const measure = section(GLUE, "function measureRows(", "\n}\n");
   assert.match(measure, /if \(index === undefined && !child\.hasAttribute\(SPACER_ATTRIBUTE\)\) continue;/);
-  assert.match(measure, /if \(open\) heights\.measure\(lookup\.metas\[open\.index\], Math\.max\(0, top - open\.top\)\);/);
+  assert.match(measure, /if \(open\) close\(top - open\.top\);/);
+  assert.match(measure, /if \(heights\.measure\(meta, Math\.max\(0, height\)\)\) \{/);
   // Where the thread starts, for the planner to find the row a jump lands on.
   assert.match(measure, /threadTop \?\?= top;/);
   // Rows are the viewport's own children: a nested transcript's rows are not this thread's.
@@ -564,4 +568,13 @@ test("the thread's messages are read imperatively, not through a selector", () =
   assert.doesNotMatch(GLUE, /useAuiState\(\(\{ thread \}\) => thread\.messages\)/);
   assert.match(GLUE, /aui\.thread\(\)\.getState\(\)\.messages/);
   assert.match(GLUE, /const count = useAuiState\(\(\{ thread \}\) => thread\.messages\.length\);/);
+});
+
+test("a mounted row that shrinks wakes the window, and only a shrink does", () => {
+  assert.match(GLUE, /if \(before !== undefined && height < before - 1\) shrank = true;/);
+  assert.match(GLUE, /if \(shrank\) schedule\(\);/);
+  // Rows come and go: removed ones are let go, so the observer holds no detached row.
+  assert.match(GLUE, /rowResize\.unobserve\(node\)/);
+  assert.match(GLUE, /rowsChanged\.observe\(viewport, \{ childList: true \}\);/);
+  assert.match(GLUE, /rowResize\.disconnect\(\);\s*rowsChanged\.disconnect\(\);/);
 });

@@ -26,6 +26,8 @@ holds every row mounted). Structure only, never a timing:
      not land thirty-two to a commit.
  11. The window at the tail holds the last prompt too, and a prompt being edited (a row with no
      `data-role`) keeps its editor, focus and draft across jumps to both ends.
+ 12. The leading spacer carries the KaTeX equation numbers of the rows it stands for, so the
+     page-wide numbering of the mounted rows is the fully mounted thread's.
 """
 
 from __future__ import annotations
@@ -175,6 +177,16 @@ PINNED = """() => {
     gaps: document.querySelectorAll('[data-thread-spacer="gap"]').length,
   };
 }"""
+
+# The first mounted row's ordinal and the counter increments of the spacer standing in for the rest.
+SPACER_EQUATIONS = """() => ({
+  first: Number(document.querySelector('[data-role][aria-posinset]').getAttribute('aria-posinset')),
+  increment: document.querySelector('[data-thread-spacer="top"]').style.counterIncrement,
+})"""
+
+EQUATIONS_BEFORE = """(first) => [...document.querySelectorAll('[data-role]')]
+  .slice(0, first - 1)
+  .reduce((sum, row) => sum + row.querySelectorAll('.eqn-num').length, 0)"""
 
 JUMP = """(top) => {
   const viewport = window.__threadWeight.viewport();
@@ -616,6 +628,23 @@ def check_engine(playwright, engine: str) -> None:
         assert editor.input_value() == DRAFT, "a prompt being edited lost its draft"
         assert not errors, errors
         page.close()
+
+        # 12. Equation numbers continue across the rows the leading spacer stands for.
+        numbered = {"numbered": True}
+        page, errors = open_thread(context, LARGE, windowed = True, seed = numbered)
+        spacer = page.evaluate(SPACER_EQUATIONS)
+        page.close()
+        page, errors = open_thread(context, LARGE, windowed = False, seed = numbered)
+        expected = page.evaluate(EQUATIONS_BEFORE, spacer["first"])
+        page.close()
+        info(
+            f"{engine}: the leading spacer counts {spacer['increment']!r}, rows above hold {expected}"
+        )
+        assert spacer["first"] > 1 and expected > 0, spacer
+        assert spacer["increment"] == f"katexEqnNo {expected} mmlEqnNo {expected}", (
+            f"the leading spacer counts {spacer['increment']!r} for rows that render {expected} "
+            f"numbered equations: equation numbers below it shift with the window"
+        )
         info(f"{engine}: ok " + json.dumps({"small": small["mounted"], "large": opened["mounted"]}))
     finally:
         browser.close()

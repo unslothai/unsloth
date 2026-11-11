@@ -23,6 +23,8 @@ export type RowMeta = {
   /** Expected rendered lines; only its proportion to height matters. */
   weight: number;
   renders: boolean;
+  /** Numbered equations the text is expected to render (see numberedEquations). */
+  equations?: number;
 };
 
 /** Padding, action bar and gap: a row's height before its first line. */
@@ -62,6 +64,30 @@ export function messageWeight(content: readonly Part[] | undefined): number {
   return weight;
 }
 
+const NUMBERED_ENV = /\\begin\{(equation|multline|align|gather|alignat|flalign|eqnarray)\}([\s\S]*?)\\end\{\1\}/g;
+
+/**
+ * KaTeX numbers these on page-wide CSS counters, so a row left out of the DOM must still count
+ * them: one per environment, one per line of the multi-line ones, less untagged lines.
+ */
+export function numberedEquations(content: readonly Part[] | undefined): number {
+  let total = 0;
+  for (const part of content ?? []) {
+    if (part.type !== "text" || !part.text?.includes("\\begin{")) continue;
+    for (const [, env, body] of part.text.matchAll(NUMBERED_ENV)) {
+      const lines =
+        env === "equation" || env === "multline"
+          ? 1
+          : body.split("\\\\").filter((line) => line.trim() !== "").length;
+      total += Math.max(0, lines - (body.match(/\\(?:notag|nonumber|tag)\b/g) ?? []).length);
+    }
+  }
+  return total;
+}
+
+/** KaTeX's HTML and MathML equation counters. */
+export type Equations = { html: number; mathml: number };
+
 type Density = { lines: number; px: number };
 
 /**
@@ -85,9 +111,12 @@ export class RowHeights {
     this.width = width;
   }
 
-  measure(meta: RowMeta, height: number): void {
-    if (!(height >= 0)) return;
-    if (this.measured.get(meta.id) === height) return;
+  private equations = new Map<string, Equations>();
+
+  /** True when the height changed. */
+  measure(meta: RowMeta, height: number): boolean {
+    if (!(height >= 0)) return false;
+    if (this.measured.get(meta.id) === height) return false;
     this.measured.set(meta.id, height);
     let density = this.densities.get(meta.role);
     if (!density) {
@@ -103,6 +132,23 @@ export class RowHeights {
     density.lines += meta.weight;
     density.px += px;
     this.counted.set(meta.id, { role: meta.role, lines: meta.weight, px });
+    return true;
+  }
+
+  countEquations(id: string, counted: Equations): void {
+    this.equations.set(id, counted);
+  }
+
+  /** Counter increments rows `[from, to)` would have made, for the spacer standing in for them. */
+  equationsIn(metas: readonly RowMeta[], from: number, to: number): Equations {
+    const sum = { html: 0, mathml: 0 };
+    for (let index = from; index < Math.min(to, metas.length); index += 1) {
+      const meta = metas[index];
+      const known = this.equations.get(meta.id);
+      sum.html += known ? known.html : (meta.equations ?? 0);
+      sum.mathml += known ? known.mathml : (meta.equations ?? 0);
+    }
+    return sum;
   }
 
   has(id: string): boolean {
