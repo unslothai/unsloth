@@ -661,8 +661,8 @@ function FitBadge({
 const ACTION =
   "relative flex h-[calc(20px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-none text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground dark:hover:bg-transparent before:pointer-events-none before:absolute before:top-1/2 before:left-1/2 before:size-[calc(20px*var(--ui-space-scale,1))] before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:transition-colors before:content-[''] hover:before:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:before:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] data-[state=open]:before:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[state=open]:before:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [&>svg]:relative";
 const ACTION_ROUND = `${ACTION} w-[calc(20px*var(--ui-space-scale,1))]`;
-// The ⋮ ink sits 0.875px left of its box's centre (4x measure), so the circle centres on the ink.
-const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] before:left-[calc(50%-1px)]`;
+// The ⋮ ink sits left of its box's centre: the circle moves 1px and the glyph 0.5px to meet.
+const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] before:left-[calc(50%-1px)] [&>svg]:-translate-x-[0.5px]`;
 
 const FAVORITE_DROP_CUE_BASE =
   "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
