@@ -106,6 +106,41 @@ export function deviceSharedMemorySplitGb(
   return totals.shared > 0 ? totals : null;
 }
 
+export interface CarveOutVramGb {
+  totalGb: number;
+  freeGb: number | null;
+  /** RAM the GPU can still borrow: what is left of the shared pool, capped by RAM's own free reading. */
+  borrowableGb: number;
+}
+
+/** A carve-out APU (Strix Halo with a large VGM) read as VRAM = the carve-out alone, since its shared part is RAM the
+ * RAM tile already counts. null unless the carve-out is the larger part: a small UMA slice beside a big shared pool
+ * keeps the pool as its GPU memory. */
+export function carveOutVramGb(
+  totals: GpuMemoryTotalsGb,
+  usedGb: number | null,
+  ramAvailableGb: number | null,
+): CarveOutVramGb | null {
+  if (!(totals.shared > 0 && totals.dedicated >= totals.shared)) return null;
+  const used = usedGb !== null && Number.isFinite(usedGb) ? usedGb : null;
+  // Usage past the carve-out already sits in shared RAM.
+  const spilled = used === null ? 0 : Math.max(0, used - totals.dedicated);
+  const ram =
+    ramAvailableGb !== null && Number.isFinite(ramAvailableGb) && ramAvailableGb >= 0
+      ? ramAvailableGb
+      : Number.POSITIVE_INFINITY;
+  return {
+    totalGb: totals.dedicated,
+    freeGb:
+      used === null
+        ? null
+        : roundToDevicePrecision(Math.max(0, totals.dedicated - used)),
+    borrowableGb: roundToDevicePrecision(
+      Math.max(0, Math.min(totals.shared - spilled, ram)),
+    ),
+  };
+}
+
 /** About-tab memory for a hardware row: an iGPU's own carve-out, else its whole total (borrowable RAM is not VRAM). */
 export function hardwareGpuMemoryGb(gpu: {
   vramTotalGb: number | null;

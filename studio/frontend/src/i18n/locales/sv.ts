@@ -2745,8 +2745,8 @@ export const sv = {
         memory: "GPU-minne",
         sharedWithSystemRam: "Delas med systemets RAM",
         estimatedAvailable: "Uppskattat tillgängligt: {value}",
-        sharedEstimatedAvailable:
-          "Delat system-RAM: uppskattningsvis {value} tillgängligt",
+        alsoSystemRam: "Kan även låna upp till {value} system-RAM",
+        llamaCppBuild: "llama.cpp {backend}-bygge",
         ggufInference: "Minne för GGUF-modeller",
         unavailable: "otillgänglig",
         detecting: "Kontrollerar GPU:er ...",

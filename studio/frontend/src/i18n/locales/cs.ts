@@ -2837,8 +2837,8 @@ export const cs = {
         memory: "Paměť GPU",
         sharedWithSystemRam: "Sdíleno se systémovou RAM",
         estimatedAvailable: "Odhadem k dispozici: {value}",
-        sharedEstimatedAvailable:
-          "Sdílená systémová RAM: odhadem k dispozici {value}",
+        alsoSystemRam: "Může si navíc půjčit až {value} systémové RAM",
+        llamaCppBuild: "llama.cpp, sestavení {backend}",
         ggufInference: "Paměť modelů GGUF",
         unavailable: "nedostupné",
         detecting: "Hledání GPU...",

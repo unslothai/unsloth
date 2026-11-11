@@ -2846,8 +2846,8 @@ export const uk = {
         memory: "Пам’ять GPU",
         sharedWithSystemRam: "Спільна із системною RAM",
         estimatedAvailable: "Орієнтовно доступно: {value}",
-        sharedEstimatedAvailable:
-          "Спільна системна RAM: орієнтовно доступно {value}",
+        alsoSystemRam: "Може додатково позичити до {value} системної RAM",
+        llamaCppBuild: "llama.cpp, збірка {backend}",
         ggufInference: "Пам’ять моделей GGUF",
         unavailable: "недоступно",
         detecting: "Пошук GPU...",

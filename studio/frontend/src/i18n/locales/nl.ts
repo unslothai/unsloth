@@ -2859,8 +2859,8 @@ export const nl = {
         memory: "GPU-geheugen",
         sharedWithSystemRam: "Gedeeld met systeem-RAM",
         estimatedAvailable: "Geschat beschikbaar: {value}",
-        sharedEstimatedAvailable:
-          "Gedeeld systeem-RAM: naar schatting {value} beschikbaar",
+        alsoSystemRam: "Kan daarnaast tot {value} systeem-RAM lenen",
+        llamaCppBuild: "llama.cpp {backend}-build",
         ggufInference: "Geheugen voor GGUF-modellen",
         unavailable: "niet beschikbaar",
         detecting: "Zoeken naar GPU's...",

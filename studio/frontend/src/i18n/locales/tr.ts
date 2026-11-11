@@ -2816,8 +2816,8 @@ export const tr = {
         memory: "GPU belleği",
         sharedWithSystemRam: "Sistem RAM'iyle paylaşılıyor",
         estimatedAvailable: "Tahmini kullanılabilir: {value}",
-        sharedEstimatedAvailable:
-          "Paylaşılan sistem RAM'i: tahmini {value} kullanılabilir",
+        alsoSystemRam: "Sistem RAM'inden {value} kadar daha ödünç alabilir",
+        llamaCppBuild: "llama.cpp {backend} derlemesi",
         ggufInference: "GGUF model belleği",
         unavailable: "kullanılamıyor",
         detecting: "GPU'lar denetleniyor...",

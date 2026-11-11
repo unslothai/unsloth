@@ -2863,8 +2863,8 @@ export const es419 = {
         memory: "Memoria de GPU",
         sharedWithSystemRam: "Compartida con la RAM del sistema",
         estimatedAvailable: "Disponible estimado: {value}",
-        sharedEstimatedAvailable:
-          "RAM compartida del sistema: {value} disponibles (estimado)",
+        alsoSystemRam: "Puede usar además hasta {value} de RAM del sistema",
+        llamaCppBuild: "llama.cpp, compilación {backend}",
         ggufInference: "Memoria para modelos GGUF",
         unavailable: "no disponible",
         detecting: "Buscando GPU...",
