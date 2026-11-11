@@ -476,7 +476,7 @@ test("on-device row menus open with the model's details", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /<ModelFacts facts=\{modelFacts\(row, onDisk\)\} \/>/);
+  assert.match(picker, /<ModelFacts\s+facts=\{modelFacts\(/);
   for (const label of ["Format", "Size", "Parameters", "From"]) {
     assert.match(picker, new RegExp(`\\["${label}"`));
   }
@@ -505,4 +505,14 @@ test("an MLX variant's gear keeps its format, and exported GGUFs delete per quan
     picker,
     /source: "exported",\s+exportType: "gguf",\s+ggufVariant: variant\.quant,/,
   );
+});
+
+test("the details menu lists every modality, preferring the backend's flags", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /known\?\.hasVideoInput/);
+  assert.match(picker, /known\?\.speaks/);
+  assert.match(picker, /known\?\.hasAudioInput \|\| known\?\.isAudio/);
+  assert.match(picker, /"diffusion",\s+"embedding",/);
 });

@@ -24,6 +24,7 @@ import { usePlatformStore } from "@/config/env";
 import {
   type CachedGgufRepo,
   type CachedModelRepo,
+  type ChatModelSummary,
   type GgufVariantDetail,
   deleteFineTunedModel,
   revealFineTunedModel,
@@ -124,6 +125,9 @@ import {
   DashboardCircleIcon,
   Download01Icon,
   Flag01Icon,
+  TextFontIcon,
+  Video01Icon,
+  VolumeHighIcon,
   FlashIcon,
   InformationCircleIcon,
   LaptopIcon,
@@ -133,7 +137,7 @@ import {
   Settings02Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Fragment,
@@ -779,16 +783,22 @@ const FORMAT_DOT: Partial<Record<FormatFilter, string>> = {
   npu: "bg-format-npu",
 };
 
+// Modalities in, then out, then what the model does; Multilingual and Conversational are not modalities.
 const CAPABILITY_ORDER: readonly Capability["key"][] = [
   "vision",
   "audio",
   "reasoning",
   "tools",
   "code",
+  "diffusion",
+  "embedding",
 ];
 const SHOWN_CAPABILITIES: ReadonlySet<Capability["key"]> = new Set(
   CAPABILITY_ORDER,
 );
+const VIDEO_TONE = "text-[oklch(0.5_0.1_55)] dark:text-[oklch(0.78_0.09_60)]";
+const SPEECH_TONE =
+  "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]";
 
 const FORMAT_NAME: Record<FormatTone, string> = {
   gguf: "GGUF",
@@ -819,6 +829,7 @@ function ModelFacts({ facts }: { facts: readonly [string, ReactNode][] }) {
 function modelFacts(
   row: Row,
   onDisk: readonly GgufVariantDetail[],
+  known: ChatModelSummary | undefined,
 ): [string, ReactNode][] {
   const facts: [string, ReactNode][] = [];
   const format =
@@ -841,8 +852,11 @@ function modelFacts(
   }
   const task = row.gguf?.task ?? row.cached?.task ?? undefined;
   const id = row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id;
-  // A GGUF's projector or the NPU listing knows vision for sure; the name only guesses.
-  const vision = row.npu?.supports_vision ?? row.gguf?.has_vision;
+  // The backend's own flags (projector, audio and video towers) beat the name, which only guesses.
+  const vision =
+    row.npu?.supports_vision ??
+    row.gguf?.has_vision ??
+    (known?.isVision ? true : undefined);
   const found = detectHubCapabilities(undefined, task, id).filter(
     (c) =>
       SHOWN_CAPABILITIES.has(c.key) &&
@@ -852,23 +866,44 @@ function modelFacts(
   if (vision === true && !has("vision")) {
     found.push({ key: "vision", label: "Vision" });
   }
+  if ((known?.hasAudioInput || known?.isAudio) && !has("audio")) {
+    found.push({ key: "audio", label: "Audio" });
+  }
   if (row.npu?.supports_reasoning && !has("reasoning")) {
     found.push({ key: "reasoning", label: "Reasoning" });
   }
   found.sort(
     (a, b) => CAPABILITY_ORDER.indexOf(a.key) - CAPABILITY_ORDER.indexOf(b.key),
   );
-  facts.push([
-    "Supports",
-    found.length > 0
-      ? found.map((c) => (
-          <span key={c.key} className="inline-flex items-center gap-1">
-            <CapabilityGlyph capability={c} />
-            {c.label}
-          </span>
-        ))
-      : "Text",
-  ]);
+  const mark = (key: string, glyph: ReactNode, label: string) => (
+    <span key={key} className="inline-flex items-center gap-1">
+      {glyph}
+      {label}
+    </span>
+  );
+  const icon = (glyph: IconSvgElement, tone: string) => (
+    <HugeiconsIcon
+      icon={glyph}
+      strokeWidth={1.75}
+      className={cn("size-3 shrink-0", tone)}
+    />
+  );
+  const pill = (c: Capability) =>
+    mark(c.key, <CapabilityGlyph capability={c} />, c.label);
+  const inputs = new Set<Capability["key"]>(["vision", "audio"]);
+  // What it reads, what it says, then what it does.
+  const supports: ReactNode[] = [
+    mark("text", icon(TextFontIcon, "text-muted-foreground"), "Text"),
+    ...found.filter((c) => inputs.has(c.key)).map(pill),
+    ...(known?.hasVideoInput
+      ? [mark("video", icon(Video01Icon, VIDEO_TONE), "Video")]
+      : []),
+    ...(known?.speaks
+      ? [mark("speech", icon(VolumeHighIcon, SPEECH_TONE), "Speech")]
+      : []),
+    ...found.filter((c) => !inputs.has(c.key)).map(pill),
+  ];
+  facts.push(["Supports", supports]);
   if (row.section) {
     facts.push(["From", SECTION_LABEL[row.section]]);
   }
@@ -975,6 +1010,8 @@ export function ComposerModelPicker({
   const activeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  // The backend's per-model capability flags, for the details menu.
+  const chatModels = useChatRuntimeStore((s) => s.models);
   const pinned = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
@@ -2485,7 +2522,17 @@ export function ComposerModelPicker({
                 onReveal={revealFor(row)}
                 details={
                   row.tab === DEVICE_TAB ? (
-                    <ModelFacts facts={modelFacts(row, onDisk)} />
+                    <ModelFacts
+                      facts={modelFacts(
+                        row,
+                        onDisk,
+                        chatModels.find(
+                          (m) =>
+                            m.id.toLowerCase() ===
+                            (row.loadedId ?? row.id).toLowerCase(),
+                        ),
+                      )}
+                    />
                   ) : undefined
                 }
                 update={soleQuant ? updateFor(row, onDisk[0]) : undefined}
@@ -3498,7 +3545,7 @@ export function ComposerModelPicker({
                     ? eject(chosen)
                     : source?.eject(checkpoint ?? undefined)
                 }
-                  // A wash, since this bar is already the muted tone.
+                // A wash, since this bar is already the muted tone.
                 className="flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
