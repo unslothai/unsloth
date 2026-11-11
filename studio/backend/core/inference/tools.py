@@ -8831,6 +8831,7 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONUNBUFFERED": "1",
         # A GUI backend opens a native window and blocks plt.show() until closed.
         "MPLBACKEND": "Agg",
         # Remaps ChatGPT code-interpreter paths (/mnt/data) onto the sandbox cwd.
@@ -9019,6 +9020,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
         if var in os.environ:
             env[var] = workdir
     env.setdefault("MPLBACKEND", "Agg")
+    env["PYTHONUNBUFFERED"] = "1"
     return env
 
 
