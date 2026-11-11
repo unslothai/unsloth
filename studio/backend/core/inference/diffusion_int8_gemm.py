@@ -38,6 +38,9 @@ _MARK = "_unsloth_i8_gemm_prev"
 _FWD = "_unsloth_i8_gemm_fwd"
 # on a SwiGLU MLP whose down projection takes its codes from the gate / value halves
 _FF_MARK = "_unsloth_i8_gemm_swiglu_prev"
+# fp16 input runs the sm75 prebuilt kernel
+_F16 = "_unsloth_i8_gemm_f16"
+_OP16_NAME = "int8_mm_dequant_f16"
 _SWIGLU_FF_CLASSES = ("QwenImage21SwiGLUFeedForward",)
 _NO_PREV = object()
 _LOCK = threading.Lock()
@@ -483,11 +486,18 @@ def tma_tile_for(index: Any, m: int) -> Optional[tuple]:
 
 
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
-    """Op body: the probed tile for this device and shape, else (launch failure, ``_aligned`` false) the stock
-    epilogue."""
+    """Op body: race-won CUTLASS tile, else probed Triton tile, else the stock epilogue."""
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     index = a.device.index
+    tile = _cutlass_tile(index, a, w, xs, ws, bias)
+    if tile is not None:
+        import torch
+        from . import diffusion_int8_cutlass as cut
+        try:
+            return cut.launch(a, w, xs, ws, bias, _CUT_FAMILY[index], tile, torch.bfloat16)
+        except Exception:  # noqa: BLE001 - drops the prebuilt kernel on this card
+            _CUT_PLAN.pop(index, None)
     cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
     if cfg is not None and w.stride(-1) == 1 and w.device == a.device and _aligned(a, w):
         tma = tma_tile_for(index, a.shape[0])
@@ -508,6 +518,345 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
             if index in _UNLISTED_CARDS:
                 _UNLISTED_PROBE[index] = False
     return reference(a, w, xs, ws, bias)
+
+
+# index -> {(N, K, xs dtype, ws dtype, bias): {race M: tile or None}}; a large-M tile runs ``_cutlass_fused``
+_CUT_PLAN: dict = {}
+_CUT_FAMILY: dict = {}
+_CUT_RACES: dict = {}
+# index -> every shape key already planned (winners and losers), so a later load races only new shapes
+_CUT_DONE: dict = {}
+_CUT_LARGE_M = 1024
+_CUT_CACHE_NAME = "diffusion_int8_cutlass_race.json"
+_CUT_CACHE_MAX = 512
+
+
+def _cut_key(n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> tuple:
+    return (int(n), int(k), str(xs_dtype), str(ws_dtype), bool(bias))
+
+
+def _cutlass_tile(
+    index: Any,
+    a: Any,
+    w: Any,
+    xs: Any,
+    ws: Any,
+    bias: Any,
+    out_dtype: Any = None,
+) -> Optional[int]:
+    plan = _CUT_PLAN.get(index)
+    if not plan:
+        return None
+    entry = plan.get(_cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None))
+    if not entry:
+        return None
+    from . import diffusion_int8_cutlass as cut
+
+    tile = entry.get(max(cut._RACE_M) if a.shape[0] >= _CUT_LARGE_M else min(cut._RACE_M))
+    if tile is None:
+        return None
+    import torch
+
+    return tile if cut.eligible(a, w, xs, ws, bias, out_dtype or torch.bfloat16) else None
+
+
+def _cutlass_fused(index: Any, n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> bool:
+    from . import diffusion_int8_cutlass as cut
+    entry = (_CUT_PLAN.get(index) or {}).get(_cut_key(n, k, xs_dtype, ws_dtype, bias))
+    return bool(entry) and entry.get(max(cut._RACE_M)) is not None
+
+
+def cutlass_wanted(capability: Optional[tuple]) -> bool:
+    """The prebuilt kernel could serve this arch (switch, family, library loads); before any probe."""
+    try:
+        from . import diffusion_int8_cutlass as cut
+        return (
+            int8_gemm_mode() != "off"
+            and cut.mode() != "off"
+            and cut.family(capability) in (75, 80)
+            and cut.library() is not None
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _cut_cache_key(index: int) -> Optional[str]:
+    """Card, toolchain, library build and both sources: any change re-races."""
+    try:
+        import hashlib
+
+        import torch
+
+        from . import diffusion_int8_cutlass as cut
+
+        h = hashlib.sha256(open(__file__, "rb").read())
+        h.update(open(cut.__file__, "rb").read())
+        lib = cut.library_path()
+        if lib:
+            h.update(open(lib, "rb").read())
+        try:
+            import triton as _triton
+            tv = _triton.__version__
+        except Exception:  # noqa: BLE001
+            tv = "none"
+        cap = torch.cuda.get_device_capability(index)
+        return "|".join(
+            (
+                torch.cuda.get_device_name(index),
+                f"{cap[0]}.{cap[1]}",
+                torch.__version__,
+                str(torch.version.cuda),
+                tv,
+                os.environ.get(INT8_GEMM_TILES_ENV, ""),
+                os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
+                h.hexdigest()[:20],
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cut_cache_path() -> Optional[Any]:
+    try:
+        from pathlib import Path
+        from utils.paths.storage_roots import cache_root
+        return Path(cache_root()) / _CUT_CACHE_NAME
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cut_cache_read() -> dict:
+    path = _cut_cache_path()
+    try:
+        import json
+        table = (
+            json.loads(path.read_text(encoding = "utf-8"))
+            if path is not None and path.is_file()
+            else {}
+        )
+        return table if isinstance(table, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _cut_cache_write(table: dict) -> None:
+    path = _cut_cache_path()
+    if path is None:
+        return
+    try:
+        import json
+
+        table = dict(list(table.items())[-_CUT_CACHE_MAX:])
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(table), encoding = "utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _xs_dtype(
+    kind: str,
+    weight: Any,
+    k: int,
+    device: Any,
+    dtype: Any = None,
+) -> Any:
+    """Activation-scale dtype of this Linear's act quant, read off a one-row quant."""
+    import torch
+
+    dtype = dtype or torch.bfloat16
+    x = torch.ones((_MIN_ROWS, k), device = device, dtype = dtype)
+    if dtype == torch.float16:
+        from .diffusion_int8_fused import _act_quant
+        return _act_quant(x, weight)[1].dtype
+    _, xs = _act_quant_v1(x) if kind == "v1" else _act_quant_v2(x, weight)
+    return xs.dtype
+
+
+def _cutlass_plan(
+    index: int,
+    recs: list,
+    triton_on: bool,
+    logger: Any = None,
+) -> dict:
+    """Race each int8 weight shape vs today's path, publish winners to ``_CUT_PLAN``; outside any capture."""
+    import torch
+
+    from . import diffusion_int8_cutlass as cut
+
+    try:
+        cap = torch.cuda.get_device_capability(index)
+        if not cutlass_wanted(cap) or torch.cuda.is_current_stream_capturing():
+            return {}
+        if torch.compiler.is_compiling():
+            return {}
+    except Exception:  # noqa: BLE001
+        return {}
+    done = _CUT_DONE.setdefault(index, set())
+    plan: dict = dict(_CUT_PLAN.get(index) or {})
+    races: dict = dict(_CUT_RACES.get(index) or {})
+    try:
+        if not cut.probed_tiles(index):
+            _CUT_PLAN[index] = {}
+            return {}
+        fam = cut.family(cap)
+        act = cut.out_dtype_for(fam)
+        ckey = _cut_cache_key(index)
+        table = _cut_cache_read() if ckey else {}
+        cached = table.get(ckey) if ckey else None
+        cached = cached if isinstance(cached, dict) else {}
+        dev = torch.device("cuda", index)
+        g = torch.Generator(device = "cpu").manual_seed(11)
+        seen: dict = {}
+        for module, rec in recs:
+            kind, weight = rec[0], rec[3]
+            wq, ws = _payload(kind, weight)
+            n, k = int(wq.shape[0]), int(wq.shape[1])
+            bias = getattr(module, "bias", None)
+            if fam == 75 and kind != "v2":
+                continue  # fp16 family: torchao Int8Tensor only
+            xs_dt = seen.get(("xs", kind, k))
+            if xs_dt is None:
+                xs_dt = _xs_dtype(kind, weight, k, dev, act)
+                seen[("xs", kind, k)] = xs_dt
+            key = _cut_key(n, k, xs_dt, ws.dtype, bias is not None)
+            if key in plan or key in done:
+                continue
+            done.add(key)
+            skey = repr(key)
+            hit = cached.get(skey)
+            if isinstance(hit, dict) and all(
+                (v is None or v in cut.probed_tiles(index)) for v in hit.values()
+            ):
+                plan[key] = {int(m): v for m, v in hit.items()}
+                continue
+            # random operands: a streamed weight need not be resident
+            w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
+            wsr = (torch.rand(n, generator = g) * 1e-3 + 1e-5).to(ws.dtype).to(dev)
+            br = (torch.randn(n, generator = g) * 0.1).to(act).to(dev) if bias is not None else None
+            entry = {}
+            for m in cut._RACE_M:
+                if triton_on:
+                    today = lambda a, w_, x_, s_, b_: _launch_or_ref(index, a, w_, x_, s_, b_)  # noqa: E731
+                elif m >= _CUT_LARGE_M:
+                    today = None  # cuBLAS lower bound
+                else:
+                    today = lambda a, w_, x_, s_, b_: cut.reference(a, w_, x_, s_, b_, act)  # noqa: E731
+                r = cut.race(index, w, wsr, br, xs_dt, today, m)
+                if cut.mode() == "force" and r.get("us"):
+                    r["tile"] = min(
+                        (t for t in r["us"] if t.isdigit()), key = lambda t: r["us"][t], default = None
+                    )
+                    r["tile"] = int(r["tile"]) if r["tile"] is not None else None
+                entry[m] = r["tile"]
+                races.setdefault(skey, {})[m] = r
+            plan[key] = entry
+            cached[skey] = {str(m): v for m, v in entry.items()}
+            del w, wsr, br
+        if ckey:
+            table = _cut_cache_read()
+            table.pop(ckey, None)
+            table[ckey] = cached
+            _cut_cache_write(table)
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: prebuilt CUTLASS race failed on cuda:%d (%s)", index, exc
+            )
+        plan = dict(_CUT_PLAN.get(index) or {})
+    plan = {k_: v for k_, v in plan.items() if any(t is not None for t in v.values())}
+    _CUT_PLAN[index] = plan
+    _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
+    _CUT_RACES[index] = races
+    return plan
+
+
+def _launch_or_ref(index: int, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
+    cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
+    if cfg is not None and _aligned(a, w):
+        return _launch(a, w, xs, ws, bias, cfg)
+    return reference(a, w, xs, ws, bias)
+
+
+def cutlass_call_count() -> int:
+    from . import diffusion_int8_cutlass as cut
+    return cut._CALLS[0]
+
+
+def _run16(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
+    """fp16 op body (sm75 family): the race winner, else torchao's fp16 epilogue after cuBLAS."""
+    import torch
+
+    from . import diffusion_int8_cutlass as cut
+
+    _CALLS[0] += 1
+    a = a if a.stride(-1) == 1 else a.contiguous()
+    index = a.device.index
+    tile = _cutlass_tile(index, a, w, xs, ws, bias, torch.float16)
+    if tile is not None:
+        try:
+            return cut.launch(a, w, xs, ws, bias, _CUT_FAMILY[index], tile, torch.float16)
+        except Exception:  # noqa: BLE001
+            _CUT_PLAN.pop(index, None)
+    return cut.reference(a, w, xs, ws, bias, torch.float16)
+
+
+@lru_cache(maxsize = 1)
+def _op16() -> Any:
+    """``unsloth_studio::int8_mm_dequant_f16`` (opaque to Inductor), or None."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    ns = getattr(torch.ops, _OP_NAMESPACE, None)
+    if ns is not None and hasattr(ns, _OP16_NAME):
+        return getattr(ns, _OP16_NAME)
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            f"{_OP_NAMESPACE}::{_OP16_NAME}",
+            mutates_args = (),
+            schema = "(Tensor a, Tensor w, Tensor xs, Tensor ws, Tensor? bias) -> Tensor",
+        )
+        def _int8_mm_dequant_f16(a, w, xs, ws, bias):
+            return _run16(a, w, xs, ws, bias)
+
+        @_int8_mm_dequant_f16.register_fake
+        def _(a, w, xs, ws, bias):
+            return a.new_empty((a.shape[0], w.shape[0]), dtype = torch.float16)
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(torch.ops, _OP_NAMESPACE).int8_mm_dequant_f16
+
+
+def _linear_forward_f16(self: Any, x: Any, rec: tuple) -> Any:
+    """sm75 fp16 forward via the prebuilt kernel, bit for bit the stock forward."""
+    import torch
+
+    kind, group, _rotq, weight, _fused = rec
+    if self.weight is not weight or _OP16_HANDLE is None:
+        return type(self).forward(self, x)
+    wq, ws = _payload(kind, weight)
+    if wq.device != x.device or x.numel() < _MIN_ROWS * x.shape[-1]:
+        return type(self).forward(self, x)
+    lead = x.shape[:-1]
+    if group is not None:
+        from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = x.dtype), group
+        )
+    from .diffusion_int8_fused import _act_quant
+
+    xq, xs = _act_quant(x.reshape(-1, x.shape[-1]), weight)
+    y = _OP16_HANDLE(xq, wq, xs.reshape(-1), ws, self.bias)
+    return y.reshape(*lead, y.shape[-1])
+
+
+_OP16_HANDLE: Any = None
 
 
 @lru_cache(maxsize = 1)
@@ -1055,7 +1404,13 @@ def _linear_forward(self: Any, x: Any) -> Any:
     import torch
 
     rec = self.__dict__.get(_REC)
-    if rec is None or x.dtype != torch.bfloat16 or not x.is_cuda:
+    if rec is None or not x.is_cuda:
+        return type(self).forward(self, x)
+    if self.__dict__.get(_F16):
+        if x.dtype == torch.float16:
+            return _linear_forward_f16(self, x, rec)
+        return type(self).forward(self, x)
+    if x.dtype != torch.bfloat16:
         return type(self).forward(self, x)
     kind, group, rotq, weight, fused = rec
     if self.weight is not weight:  # weight replaced since install (reload / LoRA bake): stock
@@ -1307,10 +1662,20 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
 
     if _OP_HANDLE is None or int8_gemm_mode() == "off" or q.device.index is None:
         return None
-    if _DEVICE_CFG.get(q.device.index) is None:
-        return None
     # The fused MLP already admitted this weight (symmetric, and its stock epilogue ignores the zero point too).
     parts = _v2_parts(weight, check_zero_point = False)
+    if _DEVICE_CFG.get(q.device.index) is None and not (
+        parts is not None
+        and _cutlass_fused(
+            q.device.index,
+            parts[0].shape[0],
+            parts[0].shape[1],
+            xs.dtype,
+            parts[1].dtype,
+            bias is not None,
+        )
+    ):
+        return None
     if (
         parts is None
         or q.shape[0] < _MIN_ROWS
@@ -1353,9 +1718,10 @@ def _eligible(module: Any) -> Optional[tuple]:
     bias = module.bias
     import torch
 
-    if bias is not None and bias.dtype != torch.bfloat16:
+    # fp16 bias only reaches the sm75 kernel (``_swap_on`` filters per card)
+    if bias is not None and bias.dtype not in (torch.bfloat16, torch.float16):
         return None
-    # v1: bf16 scales only; v2 also fp32 (prequant checkpoints). Off-grid K runs masked loads, far slower than cuBLAS.
+    # off-grid K runs masked loads, far slower than cuBLAS
     out_f, in_f = getattr(module, "out_features", 0), getattr(module, "in_features", 0)
     if in_f % _K_ALIGN or out_f % _N_ALIGN:
         return None
@@ -1363,9 +1729,23 @@ def _eligible(module: Any) -> Optional[tuple]:
     if parts is not None and parts[1].dtype == torch.bfloat16:
         return ("v1", group, parts[1], w)
     parts = _v2_parts(w)
-    if parts is not None and parts[1].dtype in (torch.bfloat16, torch.float32):
+    if parts is not None and parts[1].dtype in (torch.bfloat16, torch.float32, torch.float16):
         return ("v2", group, parts[1], w)
     return None
+
+
+def _card_dtypes_ok(module: Any, rec: tuple, f16_card: bool) -> bool:
+    import torch
+
+    bias = getattr(module, "bias", None)
+    if f16_card:
+        return rec[0] == "v2" and (bias is None or bias.dtype == torch.float16)
+    scale_dtype = getattr(rec[2], "dtype", None)
+    return (bias is None or bias.dtype == torch.bfloat16) and scale_dtype in (
+        None,
+        torch.bfloat16,
+        torch.float32,
+    )
 
 
 def candidates(transformer: Any, rotated_only: bool = False) -> int:
@@ -1439,11 +1819,12 @@ def install(
 
         if not torch.cuda.is_available() or is_rocm_torch(torch):
             return 0
-        if not _triton_version_ok() or _kernels() is None:
-            return 0
         cap = torch.cuda.get_device_capability(torch.cuda.current_device())
+        prebuilt = cutlass_wanted(cap)
+        if not prebuilt and (not _triton_version_ok() or _kernels() is None):
+            return 0
         gemm, rotq = _gates(cap)
-        gemm = gemm or unlisted_wanted(cap)
+        gemm = gemm or unlisted_wanted(cap) or prebuilt
         if not (gemm or rotq):
             return 0
     except Exception:  # noqa: BLE001
@@ -1538,7 +1919,13 @@ def _swap_on(
         return 0
     from .diffusion_convrot_quant import rotquant_device_config
 
+    f16_card = tuple(torch.cuda.get_device_capability(index)) == (7, 5)
+    if f16_card:
+        recs = [(m, r) for m, r in recs if _card_dtypes_ok(m, r, True)]
+        if not recs:
+            return 0
     gemm = device_config(index) is not None
+    triton_gemm = gemm
     rotated = any(r[1] is not None for _, r in recs)
     rotq = rotated and rotquant_device_config(index) is not None
     if gemm and rotated and not rotq and index in _UNLISTED_CARDS:
@@ -1559,20 +1946,51 @@ def _swap_on(
             t["fused"],
             t["stock"],
         )
-    if not gemm:
-        # no fused GEMM here: only rotated Linears gain (one kernel instead of rotation GEMM + act quant)
-        recs = [(m, r) for m, r in recs if r[1] is not None] if rotq else []
     if any(r[0] == "v1" for _, r in recs) and not _v1_act_quant_matches(index):
         recs = [(m, r) for m, r in recs if r[0] != "v1"]
+    # bf16 cards: the Triton path takes any bias dtype; only the prebuilt kernel needs bf16 bias
+    cut_recs = [(m, r) for m, r in recs if f16_card or _card_dtypes_ok(m, r, False)]
+    plan = _cutlass_plan(index, cut_recs, triton_gemm, logger) if cut_recs else {}
+    cut_fused: dict = {}
+    if plan:
+        import torch as _torch
+
+        dev = _torch.device("cuda", index)
+        xs_seen: dict = {}
+        act = _torch.float16 if f16_card else _torch.bfloat16
+        for m, r in cut_recs:
+            wq, ws_ = _payload(r[0], r[3])
+            k = int(wq.shape[1])
+            if (r[0], k) not in xs_seen:
+                xs_seen[(r[0], k)] = _xs_dtype(r[0], r[3], k, dev, act)
+            cut_fused[id(m)] = _cutlass_fused(
+                index,
+                wq.shape[0],
+                k,
+                xs_seen[(r[0], k)],
+                ws_.dtype,
+                getattr(m, "bias", None) is not None,
+            )
+        gemm = gemm or any(cut_fused.values())
+    if not triton_gemm:
+        recs = [(m, r) for m, r in recs if (rotq and r[1] is not None) or cut_fused.get(id(m))]
     if not recs:
         return 0
     count = 0
+    global _OP16_HANDLE
     with _LOCK:
-        if gemm:
+        if f16_card:
+            _OP16_HANDLE = _op16()
+            if _OP16_HANDLE is None:
+                return 0
+        elif gemm:
             _OP_HANDLE = _op()
             if _OP_HANDLE is None:
                 return 0
         for module, rec in recs:
+            fused = (triton_gemm or bool(cut_fused.get(id(module)))) and not f16_card
+            if f16_card:
+                module.__dict__[_F16] = True
             if _MARK in module.__dict__:
                 if multi:
                     module.__dict__[_REC] = (
@@ -1580,7 +1998,7 @@ def _swap_on(
                         rec[1],
                         bool(rotq and rec[1] is not None),
                         rec[3],
-                        gemm,
+                        fused,
                     )
                 count += 1
                 continue
@@ -1590,7 +2008,7 @@ def _swap_on(
                 rec[1],
                 bool(rotq and rec[1] is not None),
                 rec[3],
-                gemm,
+                fused,
             )
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
@@ -1604,6 +2022,16 @@ def _swap_on(
             )
             if rotq
             else 0
+        )
+    if logger is not None and plan:
+        n_cut = sum(1 for v in cut_fused.values() if v)
+        logger.info(
+            "diffusion.int8_gemm: %d int8 Linear(s) on cuda:%d run the prebuilt CUTLASS GEMM (%d weight shape(s) "
+            "won the race against %s)",
+            n_cut,
+            index,
+            len(plan),
+            "the Triton kernel" if triton_gemm else "cuBLAS",
         )
     if logger is not None and count:
         from .diffusion_convrot_quant import _H16_DEVICE
@@ -1704,6 +2132,7 @@ def uninstall(transformer: Any = None) -> None:
                 fwd = module.__dict__.get("forward")
                 if getattr(fwd, "__func__", None) is _swiglu_ff_forward:
                     module.__dict__.pop("forward", None)
+            module.__dict__.pop(_F16, None)
             prev = module.__dict__.pop(_MARK, None)
             if prev is None:
                 continue
