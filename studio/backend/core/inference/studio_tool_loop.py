@@ -53,7 +53,6 @@ from core.inference.chat_template_helpers import append_assistant_turn
 from core.inference.context_window import (
     _reply_floor,
     estimate_messages_tokens_conservative,
-    estimate_messages_tokens_dense,
     messages_without_unpriced_media,
     tool_result_budget,
 )
@@ -446,13 +445,13 @@ def _result_budget_tokens(
             "reasoning_content": "".join(turn.reasoning),
         }
     )
-    batch = [{"role": "assistant", "content": json.dumps(calls, default = str)}]
+    batch = [{"role": "assistant", "tool_calls": [call.get("function") for call in calls]}]
     held = estimate_messages_tokens_conservative(results, dense_ascii = True)
     spent = (
         estimate_messages_tokens_conservative(rest)
         + estimate_messages_tokens_conservative(tools or [])
         + held
-        + 2 * estimate_messages_tokens_dense(batch)
+        + estimate_messages_tokens_conservative(batch, dense_ascii = True)
     )
     # Uncounted results get two characters a budget token: fit the window even at one token each.
     room = min(

@@ -55,7 +55,7 @@ def _call_turn(*call_ids):
                         "id": call_id,
                         "function": {
                             "name": "web_search",
-                            "arguments": json.dumps({"query": call_id}),
+                            "arguments": json.dumps({"query": call_id}, ensure_ascii = False),
                         },
                     }
                     for index, call_id in enumerate(call_ids)
@@ -209,4 +209,15 @@ def test_a_result_is_sized_to_the_history_left_after_compaction():
 
     (result,) = _results(messages)
     assert result.startswith(_LONG[:200])
+    assert estimate_messages_tokens_conservative(messages) < 4096
+
+
+def test_non_ascii_call_arguments_do_not_use_up_the_result_room(monkeypatch):
+    reply = "字" * 600
+    monkeypatch.setattr(tools, "_web_search", lambda *a, **k: reply)
+
+    messages = _forwarded([_call_turn("中" * 600), _ANSWER_TURN], served_window = _serves(4096))
+
+    (result,) = _results(messages)
+    assert result.startswith(reply[:200])
     assert estimate_messages_tokens_conservative(messages) < 4096
