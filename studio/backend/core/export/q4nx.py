@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -21,8 +22,10 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# GGUF types FastFlowLM's Q4NX packs directly; any other quant is dequantized and rounded again.
+# GGUF types the Q4NX export accepts; any other quant is dequantized and rounded again.
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
+# What each pinned converter packs without re-quantizing: only the q4k pin reads Q4_K.
+DIRECT_QUANTS = {"q4nx": ("q4_0", "q4_1"), "q4k": SOURCE_QUANTS}
 # Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
 # No config.json is written: without FLM's flm_version, FLM deletes the weights and re-pulls.
@@ -40,14 +43,19 @@ def _installer():
 
 
 def source_gguf(ggufs: List[str], quant_methods: List[str]) -> Optional[str]:
-    """The exported GGUF to convert: the first selected quant Q4NX packs directly."""
-    for quant in quant_methods:
-        if quant not in SOURCE_QUANTS:
-            continue
-        for path in ggufs:
-            if os.path.basename(path).lower().endswith(f".{quant}.gguf"):
-                return path
-    return None
+    """The exported GGUF to convert: the first selected quant this architecture's converter packs directly, else the first accepted one."""
+    candidates = [
+        (quant, path)
+        for quant in quant_methods
+        if quant in SOURCE_QUANTS
+        for path in ggufs
+        if os.path.basename(path).lower().endswith(f".{quant}.gguf")
+    ]
+    if not candidates:
+        return None
+    converter = _installer().converter_for_architecture(_gguf_architecture(candidates[0][1]))
+    direct = DIRECT_QUANTS[converter]
+    return next((path for quant, path in candidates if quant in direct), candidates[0][1])
 
 
 def require_converter_deps() -> None:
@@ -60,14 +68,47 @@ def require_converter_deps() -> None:
         )
 
 
-def _gguf_header(gguf_path: str) -> dict:
-    import gguf
+_GEOMETRY_KEYS = ("block_count", "embedding_length", "expert_count", "nextn_predict_layers")
+_GGUF_INTS = {4: "<I", 5: "<i", 10: "<Q", 11: "<q"}
 
-    fields = gguf.GGUFReader(gguf_path).fields
-    arch = fields["general.architecture"].contents() if "general.architecture" in fields else ""
-    geometry = ("block_count", "embedding_length", "expert_count", "nextn_predict_layers")
-    keys = ("general.basename", "general.name", *(f"{arch}.{k}" for k in geometry))
-    return {"general.architecture": arch, **{k: fields[k].contents() for k in keys if k in fields}}
+
+# Header scans that skip the vocab arrays: gguf.GGUFReader parses them all (~7 s on a 9B).
+def _gguf_architecture(gguf_path: str) -> str:
+    from utils.models.gguf_metadata import read_gguf_architecture
+    return read_gguf_architecture(str(gguf_path)) or ""
+
+
+def _gguf_header(gguf_path: str) -> dict:
+    """Architecture, names and geometry from one walk of the header."""
+    from utils.models.gguf_metadata import _GGUF_MAGIC, _skip_gguf_value
+
+    strings = ("general.architecture", "general.basename", "general.name")
+    suffixes = tuple(f".{k}" for k in _GEOMETRY_KEYS)
+    found: dict = {}
+    try:
+        with open(gguf_path, "rb") as f:
+            magic, _version, _tensors, kv_count = struct.unpack("<IIQQ", f.read(24))
+            for _ in range(kv_count if magic == _GGUF_MAGIC else 0):
+                (key_len,) = struct.unpack("<Q", f.read(8))
+                if key_len > 1 << 20:
+                    break
+                key = f.read(key_len).decode("utf-8", "replace")
+                (vtype,) = struct.unpack("<I", f.read(4))
+                if vtype == 8 and key in strings:
+                    (length,) = struct.unpack("<Q", f.read(8))
+                    if length > 1 << 22:
+                        break
+                    found[key] = f.read(length).decode("utf-8", "replace")
+                elif vtype in _GGUF_INTS and key.endswith(suffixes):
+                    fmt = _GGUF_INTS[vtype]
+                    (found[key],) = struct.unpack(fmt, f.read(struct.calcsize(fmt)))
+                elif not _skip_gguf_value(f, vtype):
+                    break
+    except (OSError, struct.error) as exc:
+        logger.debug(f"Reading the GGUF header of {gguf_path} failed: {exc}")
+    arch = found.get("general.architecture", "")
+    keys = (*strings[1:], *(f"{arch}.{k}" for k in _GEOMETRY_KEYS))
+    return {"general.architecture": arch, **{k: found[k] for k in keys if k in found}}
 
 
 # (layers, hidden size, experts) of the models FastFlowLM ships AIE2P kernels for
@@ -234,9 +275,8 @@ def _fetch_base_file(base_model: str, name: str, token) -> Optional[Path]:
 
 
 def _gguf_chat_template(gguf_path: Path) -> Optional[str]:
-    import gguf
-    field = gguf.GGUFReader(str(gguf_path)).fields.get("tokenizer.chat_template")
-    return field.contents() if field is not None else None
+    from utils.models.gguf_metadata import read_gguf_chat_template
+    return read_gguf_chat_template(str(gguf_path))
 
 
 def _token_ids(value) -> List[int]:
