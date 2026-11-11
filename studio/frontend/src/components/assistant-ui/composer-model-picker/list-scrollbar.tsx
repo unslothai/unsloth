@@ -12,13 +12,18 @@ const MIN_THUMB = 24;
 export function ListScrollbar({
   target,
   edge = false,
+  stopAt,
 }: {
   target: RefObject<HTMLDivElement | null>;
   edge?: boolean;
+  /** A pinned element at the list's foot; the track ends at its top rather than running under it. */
+  stopAt?: string;
 }) {
-  const [thumb, setThumb] = useState<{ top: number; height: number } | null>(
-    null,
-  );
+  const [thumb, setThumb] = useState<{
+    top: number;
+    height: number;
+    track: number;
+  } | null>(null);
   const grab = useRef<{ y: number; scrollTop: number } | null>(null);
   const [listHover, setListHover] = useState(false);
   const [barHover, setBarHover] = useState(false);
@@ -37,7 +42,10 @@ export function ListScrollbar({
         setThumb(null);
         return;
       }
-      const track = el.clientHeight - INSET * 2;
+      // Pinned to the foot, so its own height is what it covers; layout size, not the open animation's scale.
+      const foot = stopAt ? el.querySelector<HTMLElement>(stopAt) : null;
+      const under = foot?.offsetHeight ?? 0;
+      const track = el.clientHeight - under - INSET * 2;
       const height = Math.min(
         track,
         Math.max(MIN_THUMB, (track * el.clientHeight) / el.scrollHeight),
@@ -45,6 +53,7 @@ export function ListScrollbar({
       setThumb({
         top: el.offsetTop + INSET + ((track - height) * el.scrollTop) / max,
         height,
+        track,
       });
     };
     measure();
@@ -65,7 +74,7 @@ export function ListScrollbar({
       observer.disconnect();
       mutations.disconnect();
     };
-  }, [target]);
+  }, [target, stopAt]);
 
   if (!thumb) {
     return null;
@@ -93,7 +102,7 @@ export function ListScrollbar({
         if (!(el && start)) {
           return;
         }
-        const track = el.clientHeight - INSET * 2 - thumb.height;
+        const track = thumb.track - thumb.height;
         const max = el.scrollHeight - el.clientHeight;
         if (track > 0) {
           el.scrollTop =
@@ -112,9 +121,7 @@ export function ListScrollbar({
       <div
         className={cn(
           "composer-list-thumb absolute inset-y-0 w-[calc(5px*var(--ui-space-scale,1))] rounded-full opacity-0 transition-[width,opacity] duration-150 group-hover/bar:w-[calc(7px*var(--ui-space-scale,1))]",
-          edge
-            ? "right-px"
-            : "right-[calc(5px*var(--ui-space-scale,1))]",
+          edge ? "right-px" : "right-[calc(5px*var(--ui-space-scale,1))]",
           (listHover || barHover || dragging) && "opacity-100",
         )}
       />

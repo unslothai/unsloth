@@ -115,7 +115,6 @@ import {
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Folder02Icon } from "@/lib/folder-icons";
-import { SortIcon } from "@/lib/sort-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -124,6 +123,7 @@ import {
   CloudIcon,
   DashboardCircleIcon,
   Download01Icon,
+  FilterMailIcon,
   Flag01Icon,
   FlashIcon,
   InformationCircleIcon,
@@ -2007,9 +2007,13 @@ export function ComposerModelPicker({
     if (highlightRef.current) {
       return;
     }
-    const at = shownRows.findIndex((row) => row.id === chosen?.id);
+    // Discover is a browse list: it opens at its top, not scrolled to the chosen model.
+    const at =
+      viewed === RECOMMENDED_TAB
+        ? -1
+        : shownRows.findIndex((row) => row.id === chosen?.id);
     setActive(at >= 0 ? at : 0);
-  }, [isExpanded, shownRows, chosen?.id]);
+  }, [isExpanded, shownRows, chosen?.id, viewed]);
 
   useEffect(() => {
     if (!isExpanded) {
@@ -3213,7 +3217,7 @@ export function ComposerModelPicker({
             ? `Run settings for ${configTarget.displayName}`
             : undefined
         }
-        className="unsloth-plus-menu composer-model-picker relative w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
+        className="unsloth-plus-menu composer-model-picker relative max-h-[min(calc(520px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))] w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
             requestAnimationFrame(() => searchRef.current?.focus());
@@ -3232,7 +3236,7 @@ export function ComposerModelPicker({
           <>
             <div
               ref={settingsRef}
-              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[var(--run-settings-pad-r)] pb-4.5 pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(22px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(22px*var(--ui-space-scale,1))]"
+              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto overscroll-none pt-4.5 pr-[var(--run-settings-pad-r)] pb-4.5 pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(22px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(22px*var(--ui-space-scale,1))]"
             >
               <ModelConfigPage
                 key={modelConfigInstanceKey(
@@ -3263,7 +3267,11 @@ export function ComposerModelPicker({
                 }
               />
             </div>
-            <ListScrollbar target={settingsRef} edge={true} />
+            <ListScrollbar
+              target={settingsRef}
+              edge={true}
+              stopAt="[data-pinned-footer]"
+            />
           </>
         ) : isExpanded ? (
           <>
@@ -3370,9 +3378,10 @@ export function ComposerModelPicker({
                       className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent"
                     >
                       <HugeiconsIcon
-                        icon={SortIcon}
+                        icon={FilterMailIcon}
                         strokeWidth={1.75}
-                        className="size-[calc(14px*var(--ui-space-scale,1))]"
+                        // The Model Hub's Filters glyph, nudged down as there: its lines narrow downward.
+                        className="size-4 translate-y-px"
                       />
                       {formatFilter !== "all" ? (
                         <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
@@ -3490,7 +3499,7 @@ export function ComposerModelPicker({
               role="listbox"
               tabIndex={-1}
               aria-label={viewedTab?.label}
-              className="composer-model-list flex max-h-[min(calc(360px*var(--ui-space-scale,1)),45vh)] min-h-0 flex-col gap-0.5 overflow-y-auto pt-1.5 pb-1.5"
+              className="composer-model-list flex max-h-[min(calc(296px*var(--ui-space-scale,1)),45vh)] min-h-0 flex-col gap-0.5 overflow-y-auto pt-1.5 pb-1.5"
             >
               {renderList()}
               {viewed === RECOMMENDED_TAB && hubSearch.hasMore ? (

@@ -4378,6 +4378,7 @@ export function ModelConfigPage({
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
       <div
+        data-pinned-footer={variant === "page" || undefined}
         className={cn(
           "mt-5",
           // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
