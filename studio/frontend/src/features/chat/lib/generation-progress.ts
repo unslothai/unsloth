@@ -32,6 +32,20 @@ export function betweenToolRounds(
   return false;
 }
 
+/**
+ * What trails a running reply's parts: 0 nothing, 1 the empty text part assistant-ui shows after a
+ * non-text part (its 1rem top margin is the gap under a running tool), 2 that and the next-round status.
+ */
+export function runningReplyTail(
+  running: boolean,
+  content: readonly { type: string; result?: unknown }[],
+): 0 | 1 | 2 {
+  if (!running || content.length === 0) return 0;
+  const last = content[content.length - 1].type;
+  if (last === "text" || last === "reasoning") return 0;
+  return betweenToolRounds(running, content) ? 2 : 1;
+}
+
 export type GenerationProgressUpdate =
   | { phase: "prefill"; prefill: LivePrefillProgress }
   | { phase: "decode"; decode: LiveDecodeProgress }
