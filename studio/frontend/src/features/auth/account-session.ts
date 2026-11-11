@@ -56,6 +56,15 @@ export function isAccountOwner(): boolean {
 export function useIsAccountOwner(): boolean {
   return useSyncExternalStore(subscribeSession, isAccountOwner, () => false);
 }
+
+/** A signed-in non-owner. A missing token (signing out) is not one: nothing is known yet. */
+export function isKnownNonOwner(): boolean {
+  return sessionAccount(getAuthToken())?.isOwner === false;
+}
+
+export function useIsKnownNonOwner(): boolean {
+  return useSyncExternalStore(subscribeSession, isKnownNonOwner, () => false);
+}
 export function useConfirmedLoginMode() {
   return useSyncExternalStore(
     subscribeLoginMode,

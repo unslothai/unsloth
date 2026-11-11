@@ -171,10 +171,20 @@ export function sameBrowserAccount(
   );
 }
 
+/** The login client's hint, set while this install has other accounts or forbids Full access.
+ *  Spelled out here: the store reads it while loading, before the login client may have. */
+export const FULL_ACCESS_HINT_KEY = "unsloth.auth-login-mode.v1";
+
+/** A saved Full access may come back at startup only when no such hint is stored. */
+export function fullAccessRestorable(read: (key: string) => string | null): boolean {
+  return read(FULL_ACCESS_HINT_KEY) === null;
+}
+
 export function resetFullAccessForMultiUser(storage: Storage): void {
   if (storage.getItem("unsloth_chat_permission_mode") === "full") {
     storage.setItem("unsloth_chat_permission_mode", "auto");
   }
+  storage.removeItem("unsloth_chat_full_access");
 }
 
 const IMPORTED_FONT_SELECTIONS = [

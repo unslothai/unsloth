@@ -44,6 +44,7 @@ const MIRRORED_BOOLEAN_KEYS = [
   "searchImages",
   "mcpEnabledForChat",
   "confirmToolCalls",
+  "fullAccess",
   "ragOcrScanned",
   "ragCaptionFigures",
   "expandQuantizations",
@@ -52,7 +53,7 @@ const MIRRORED_BOOLEAN_KEYS = [
 ] as const satisfies readonly (keyof PersistedChatSettings)[];
 
 const MIRRORED_ENUM_VALUES = {
-  // "full" (Full access) is session-only and never persisted.
+  // "full" is never a stored level; Full access is the separate fullAccess flag.
   permissionMode: ["ask", "auto", "off"],
   sandboxLevel: ["high", "low"],
   ragMode: ["hybrid", "lexical", "dense"],

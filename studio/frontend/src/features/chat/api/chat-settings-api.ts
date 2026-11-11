@@ -65,8 +65,10 @@ export interface PersistedChatSettings {
   researchModelTimeoutSeconds?: number;
   mcpEnabledForChat?: boolean;
   confirmToolCalls?: boolean;
-  /** "full" (Full access) is session-only and never leaves the browser. */
+  /** Never "full": Full access is kept in `fullAccess`. */
   permissionMode?: Exclude<PermissionMode, "full">;
+  /** App-wide Full access the owner picked; restored on the next start. */
+  fullAccess?: boolean;
   sandboxLevel?: SandboxLevel;
   ragSource?: RagSource;
   ragMode?: RagMode;

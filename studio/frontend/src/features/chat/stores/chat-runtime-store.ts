@@ -2,8 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { getFullAccessAllowed } from "@/features/auth/login-client";
+import { fullAccessRestorable } from "@/lib/account-transition";
 import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "@/features/auth/session-events";
 import {
+  appFullAccessState,
   revokeChatFullAccess,
   withChatFullAccess,
   type ChatFullAccessGrant,
@@ -182,9 +185,11 @@ export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
+/** App-wide Full access, kept apart from the per-chat level so a chat snapshot never holds it. */
+export const CHAT_FULL_ACCESS_KEY = "unsloth_chat_full_access";
 export const CHAT_SANDBOX_LEVEL_KEY = "unsloth_chat_sandbox_level";
 
-/** "ask" every call, "auto" high-risk only, "off" never, "full" no sandbox (session-only). */
+/** "ask" every call, "auto" high-risk only, "off" never, "full" no sandbox. */
 export type PermissionMode = "ask" | "auto" | "off" | "full";
 /** "high" adds the OS sandbox (bubblewrap, Seatbelt, MXC) to the software safeguards; "low" uses only those. */
 export type SandboxLevel = "high" | "low";
@@ -793,6 +798,7 @@ const MIRRORED_SETTINGS = {
         ? loadPermissionMode()
         : undefined,
   },
+  fullAccess: { storageKey: CHAT_FULL_ACCESS_KEY, ...BOOLEAN_SETTING },
   sandboxLevel: { storageKey: CHAT_SANDBOX_LEVEL_KEY, ...STRING_SETTING },
   ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
   ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },
@@ -1949,8 +1955,6 @@ export function resolvePreserveThinkingOnLoad(resp: {
 }
 
 
-/** "full" is never restored: it disables the sandbox and every confirmation gate, so it needs
- *  the warning dialog each session. First run derives from the legacy confirm toggle. */
 /** Anything but an explicit "low" (missing, garbled, a newer value) reads as the default, "high". */
 export function normalizeSandboxLevel(raw: unknown): SandboxLevel {
   return raw === "low" ? "low" : "high";
@@ -1960,6 +1964,8 @@ export function loadSandboxLevel(): SandboxLevel {
   return normalizeSandboxLevel(readStorageValue(CHAT_SANDBOX_LEVEL_KEY));
 }
 
+/** The stored level is ask, auto or off; Full access is a separate flag. First run derives from
+ *  the legacy confirm toggle. */
 function loadPermissionMode(): PermissionMode {
   return normalizeStoredPermissionMode(
     readStorageValue(CHAT_PERMISSION_MODE_KEY),
@@ -1973,6 +1979,24 @@ function savePermissionMode(mode: PermissionMode): void {
 }
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
+
+/** Full access picked in an earlier session, restored without the dialog the owner already accepted.
+ *  Never restored while the server says this install has other accounts or forbids it. Runs while
+ *  the module loads, so it reads the stored hint rather than the login client's live state. */
+function loadFullAccess(): boolean {
+  return (
+    loadOptionalBool(CHAT_FULL_ACCESS_KEY) === true &&
+    fullAccessRestorable(readStorageValue)
+  );
+}
+
+/** The only writer of the app-wide flag. Not chat-scoped, so a pick with a chat open still lands. */
+function rememberFullAccess(on: boolean): void {
+  if (on && !getFullAccessAllowed()) return;
+  saveBool(CHAT_FULL_ACCESS_KEY, on);
+}
+
+const INITIAL_FULL_ACCESS = loadFullAccess();
 
 /** Re-picking the level already in force is not a fresh grant, so a manual Tools-off stands. */
 function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
@@ -2811,6 +2835,7 @@ type ScalarSettingKey =
   | "mcpEnabledForChat"
   | "confirmToolCalls"
   | "permissionMode"
+  | "fullAccess"
   | "sandboxLevel"
   | "ragSource"
   | "ragMode"
@@ -2864,6 +2889,7 @@ const SCALAR_SETTING_KEYS = [
   "mcpEnabledForChat",
   "confirmToolCalls",
   "permissionMode",
+  "fullAccess",
   "sandboxLevel",
   "ragSource",
   "ragMode",
@@ -3524,11 +3550,26 @@ function getHydratedSettingsState(
   ) {
     notePreserveThinkingPreference(settings.preserveThinking);
   }
+  // The server's Full access answer, unless a pick made while this response was out is newer.
+  const serverFullAccess =
+    settings.fullAccess !== undefined &&
+    scalarSettingMutationVersions.fullAccess === versions.scalarSettings.fullAccess
+      ? settings.fullAccess && getFullAccessAllowed()
+      : undefined;
+  const leavesAppFullAccess =
+    serverFullAccess === false &&
+    state.permissionMode === "full" &&
+    state.chatFullAccessPreviousMode === null;
+  const endsInFullAccess =
+    serverFullAccess === true ||
+    (state.permissionMode === "full" && !leavesAppFullAccess);
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
-    // Full access is session-only; a stored level must not drop the accepted bypass.
+    // Not a store field: applied below with the state it implies.
+    if (key === "fullAccess") continue;
+    // A stored level must not drop the accepted bypass.
     if (
-      state.permissionMode === "full" &&
+      endsInFullAccess &&
       (key === "permissionMode" || key === "confirmToolCalls")
     ) {
       continue;
@@ -3575,6 +3616,22 @@ function getHydratedSettingsState(
       (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
     }
   }
+  if (serverFullAccess === true) {
+    Object.assign(nextState, appFullAccessState(), {
+      codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
+    });
+  } else if (leavesAppFullAccess) {
+    const permissionMode =
+      nextState.permissionMode ??
+      threadScopedOverride("permissionMode") ??
+      loadPermissionMode();
+    Object.assign(nextState, {
+      permissionMode,
+      bypassPermissions: false,
+      confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+      codeToolsDeclinedUnderFullAccess: false,
+    });
+  }
   // The already-selected model never crossed a transition, so replay its memory here.
   const remembered = (nextState.paramsByModel ?? state.paramsByModel)[
     params.checkpoint
@@ -3618,7 +3675,7 @@ function getHydratedSettingsState(
   return nextState;
 }
 
-function setScalarSettingVersion<K extends ScalarSettingKey>(
+function setScalarSettingVersion<K extends Exclude<ScalarSettingKey, "fullAccess">>(
   key: K,
   value: ChatRuntimeStore[K],
   currentValue: ChatRuntimeStore[K],
@@ -4234,11 +4291,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // mirrors permissionMode so both controls agree on load.
   confirmToolCalls:
     INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
-  // no stored bypass: sandbox and gate removal needs a warning each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
   chatPermissionChoiceVersion: 0,
   chatFullAccessPreviousMode: null,
+  // Full access the owner accepted before: the stored level stays underneath to return to.
+  ...(INITIAL_FULL_ACCESS ? appFullAccessState() : null),
   chatFullAccessGrants: {},
   chatFullAccessPendingRunId: null,
   chatFullAccessThreadByRunId: {},
@@ -5454,6 +5512,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const permissionMode =
         threadScopedOverride("permissionMode") ?? loadPermissionMode();
       if (deepResearchEnabled) {
+        rememberFullAccess(false);
         saveBool(CHAT_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, false);
@@ -5573,15 +5632,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setPermissionMode: (permissionMode) =>
     set((state) => {
       savePermissionMode(permissionMode);
+      rememberFullAccess(permissionMode === "full");
       if (permissionMode === "full") {
         // Full access sends confirm_tool_calls=false; keep the store flag in sync.
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
-          permissionMode,
-          chatFullAccessPreviousMode: null,
-          bypassPermissions: true,
-          confirmToolCalls: false,
-          deepResearchEnabled: false,
+          ...appFullAccessState(),
           codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5603,16 +5659,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setBypassPermissions: (bypassPermissions) =>
-    // Not persisted: a reload must not keep the bypass unaccepted.
     set((state) => {
+      rememberFullAccess(bypassPermissions);
       if (bypassPermissions) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
-          bypassPermissions,
-          permissionMode: "full" as PermissionMode,
-          chatFullAccessPreviousMode: null,
-          confirmToolCalls: false,
-          deepResearchEnabled: false,
+          ...appFullAccessState(),
           codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,

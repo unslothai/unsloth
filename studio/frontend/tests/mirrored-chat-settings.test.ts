@@ -66,9 +66,15 @@ test("a thread RAG source keeps its shape", () => {
   });
 });
 
-// Full access disables the sandbox, so it has to be re-accepted each session.
+// Full access is its own flag, so a chat level can never carry it.
 test("the full permission mode is never persisted", () => {
   assert.deepEqual(sanitized({ permissionMode: "full" }), {});
+});
+
+test("the Full access flag is mirrored only as a boolean", () => {
+  assert.deepEqual(sanitized({ fullAccess: true }), { fullAccess: true });
+  assert.deepEqual(sanitized({ fullAccess: false }), { fullAccess: false });
+  assert.deepEqual(sanitized({ fullAccess: "true" }), {});
 });
 
 test("values outside the backend contract are dropped, not sent", () => {

@@ -134,6 +134,12 @@ def test_sandbox_level_survives_the_payload(level):
     assert payload.model_dump(exclude_unset = True) == {"sandboxLevel": level}
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_full_access_flag_survives_the_payload(value):
+    payload = ChatSettingsPayload.model_validate({"fullAccess": value})
+    assert payload.model_dump(exclude_unset = True) == {"fullAccess": value}
+
+
 def test_max_tool_calls_off_survives_the_payload():
     payload = ChatSettingsPayload.model_validate({"maxToolCallsPerMessage": 0})
     assert payload.model_dump(exclude_unset = True) == {"maxToolCallsPerMessage": 0}
@@ -143,6 +149,7 @@ def test_max_tool_calls_off_survives_the_payload():
     "payload",
     [
         {"permissionMode": "full"},
+        {"fullAccess": "full"},
         {"sandboxLevel": "medium"},
         {"ragTopK": 0},
         {"ragTopK": 51},
