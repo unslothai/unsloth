@@ -904,11 +904,8 @@ const VRAM_VERDICT: Record<PickerFitStatus, FitVerdict | null> = {
   marginal: MIGHT_FIT,
   tight: DEVICE_TIGHT,
   partial: OFFLOADS,
-  ram: {
-    label: "RAM fallback",
-    tone: ORANGE,
-    hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
-  },
+  // `ram` only arises with no GPU: there every model runs from RAM, so marking each one says nothing.
+  ram: null,
   streamed: {
     label: "Fits (lookup tables streamed from disk)",
     tone: AMBER,
