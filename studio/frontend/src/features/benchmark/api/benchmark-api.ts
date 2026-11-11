@@ -27,7 +27,11 @@ export function isRecoverableTransportError(err: unknown): boolean {
   if (err instanceof BenchmarkRequestError) {
     return typeof err.status === "number" ? err.status >= 502 : true;
   }
-  return false;
+  // authFetch tags a dropped connection this way; the run may still finish server-side.
+  return (
+    (err as { unslothTransportFailure?: unknown } | null)
+      ?.unslothTransportFailure === true
+  );
 }
 
 export interface CheckpointInfo {
