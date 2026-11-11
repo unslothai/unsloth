@@ -36,20 +36,20 @@ import {
   type Combat,
   type Pickup,
   type Target,
-  RADIUS,
   STAND_H,
   advance,
   bodyHeight,
   buildActionWorld,
+  buildExemptWorld,
   capsuleOverlapsProp,
-  circleHitsBox,
   combatOf,
   enemiesAct,
   newBody,
   newCombat,
+  overlappedProps,
   placePickups,
-  propBox,
   restoreSpot,
+  releaseExempt,
   respawn,
   shoot,
   takePickup,
@@ -775,27 +775,26 @@ export function createWorld3d(
   const shooter = action && spec.action?.shooter === true;
   const verbs = action && spec.action?.verbs === true;
   const vs = newVerbs();
+  // Props over the player when collisions were built; released (and collided again) once cleared.
+  let exempt: Set<string> = new Set();
   const collide = (z: number): ActionWorld => {
     const all = closedProps(map.props ?? [], propState);
-    const over = new Set(
-      all
-        .map((p) => propBox(p, ground))
-        .filter(
-          (b) =>
-            b &&
-            b.top > z + 1e-3 &&
-            b.bottom < z + STAND_H &&
-            circleHitsBox(b, me.x, me.y, RADIUS),
-        )
-        .map((b) => b?.id),
-    );
-    return buildActionWorld(
+    exempt = overlappedProps(all, ground, me.x, me.y, z);
+    return buildExemptWorld(
       map.width,
       map.height,
       ground,
       wallTile,
-      all.filter((p) => !over.has(p.id)),
+      all,
+      exempt,
     );
+  };
+  const releaseCleared = (b: Body) => {
+    const all = closedProps(map.props ?? [], propState);
+    const next = releaseExempt(exempt, all, ground, b.x, b.y, b.z);
+    if (!next) return;
+    exempt = next;
+    aw = buildExemptWorld(map.width, map.height, ground, wallTile, all, next);
   };
   const feet = Math.max(heightAt(terrain, me.x, me.y), restored.z ?? -Infinity);
   let aw: ActionWorld | null = action ? collide(feet) : null;
@@ -1468,6 +1467,7 @@ export function createWorld3d(
         dt,
         speed,
       );
+      if (exempt.size) releaseCleared(body);
       jumpPressed = false;
       moving = Boolean(ix || iy) && !locked;
       footstep -= dt;

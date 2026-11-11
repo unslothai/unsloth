@@ -311,8 +311,8 @@ test("a prop dropped on the player stays passable for them, director hostiles fi
   const read = (f: string) =>
     readFileSync(new URL(`../src/features/flows/player/world/${f}`, import.meta.url), "utf8");
   const three = read("three-world.ts");
-  assert.match(three, /circleHitsBox\(b, me\.x, me\.y, RADIUS\)/);
-  assert.match(three, /all\.filter\(\(p\) => !over\.has\(p\.id\)\)/);
+  assert.match(three, /exempt = overlappedProps\(all, ground, me\.x, me\.y, z\);/);
+  assert.match(three, /return buildExemptWorld\([^)]*all,\s*exempt,?\s*\)/);
   assert.match(three, /addNpc\(npc: WorldNpc, at: Point\) \{\s*if \(npc\.role === "hostile"\) hostile\.add\(npc\.id\);/);
   assert.match(read("world-player.tsx"), /\(\(kept \? kept\.props : map\.props\) \?\? \[\]\)/);
   const house = A.propBox({ id: "h", kind: "house", x: 5, y: 5, rot: 0, scale: 1, solid: true } as Prop, flat);
@@ -360,7 +360,11 @@ test("a prop the player stands on keeps holding them up when colliders are rebui
     new URL("../src/features/flows/player/world/three-world.ts", import.meta.url),
     "utf8",
   );
-  assert.match(src, /b\.top > z \+ 1e-3 &&\s*b\.bottom < z \+ STAND_H &&\s*circleHitsBox\(b, me\.x, me\.y, RADIUS\)/);
+  assert.match(src, /exempt = overlappedProps\(all, ground, me\.x, me\.y, z\);/);
+  // Standing on top of a crate (z at its top) does not exempt it; standing inside does.
+  const c = crate(5.5, 5.5);
+  assert.equal(A.overlappedProps([c], flat, 5.5, 5.5, 0.51).size, 0);
+  assert.equal(A.overlappedProps([c], flat, 5.5, 5.5, 0).size, 1);
   assert.match(src, /let aw: ActionWorld \| null = action \? collide\(feet\) : null;/);
 });
 
@@ -418,4 +422,32 @@ test("an action save standing on a crate restores on the crate; a rejected save 
   assert.equal(A.capsuleFree(walled, 6.5, 5.5, 0.51), false);
   // Free ground tiles keep the old behaviour.
   assert.deepEqual(A.restoreSpot({ x: 3, y: 3 }, spawn, 0, () => true, w), { at: { x: 3, y: 3 }, z: 0 });
+});
+
+test("a prop placed over the player stays exempt only until the player clears it", () => {
+  const box = crate(5.5, 5.5);
+  const props = [box, crate(12.5, 5.5)];
+  const exempt = A.overlappedProps(props, flat, 5.5, 5.5, 0);
+  assert.deepEqual([...exempt], [box.id]);
+  const w0 = A.buildExemptWorld(20, 20, flat, wallAt, props, exempt);
+  assert.deepEqual(w0.boxes.map((b) => b.id), ["crate-12.5-5.5"]);
+  // Still inside: nothing changes, no rebuild.
+  assert.equal(A.releaseExempt(exempt, props, flat, 5.6, 5.5, 0), null);
+  const b = A.newBody(w0, 5.5, 5.5);
+  run(w0, b, 60, 0.6);
+  assert.ok(b.x > 5.5 + 0.26 + A.RADIUS);
+  const next = A.releaseExempt(exempt, props, flat, b.x, b.y, b.z);
+  assert.ok(next);
+  assert.equal(next.size, 0);
+  const w1 = A.buildExemptWorld(20, 20, flat, wallAt, props, next);
+  assert.ok(w1.boxes.some((x) => x.id === box.id));
+  // Walking back west now stops at the crate instead of passing through it.
+  run(w1, b, 60, 1.5, { ...still, dx: -1 });
+  assert.ok(b.x >= 5.5 + 0.26 + A.RADIUS - 1e-3, `walked into the crate: x=${b.x}`);
+});
+
+test("the 3D world releases cleared prop exemptions every action frame", () => {
+  const src = readFileSync(new URL("../src/features/flows/player/world/three-world.ts", import.meta.url), "utf8");
+  assert.match(src, /if \(exempt\.size\) releaseCleared\(body\);/);
+  assert.match(src, /releaseExempt\(exempt,[^)]*\)[\s\S]{0,80}aw = buildExemptWorld\(/);
 });
