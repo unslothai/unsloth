@@ -559,7 +559,7 @@ test("a spacer carries the equation counts of the rows it stands for", () => {
   const metas = [0, 1, 2].map((index) => ({ ...meta(index), equations: index }));
   // Estimated from the text until a row is counted in the DOM.
   assert.deepEqual(heights.equationsIn(metas, 0, 3), { html: 3, mathml: 3 });
-  heights.countEquations("m2", { html: 5, mathml: 0 });
+  heights.countEquations(metas[2], { html: 5, mathml: 0 });
   assert.deepEqual(heights.equationsIn(metas, 1, 3), { html: 6, mathml: 1 });
   assert.deepEqual(heights.equationsIn(metas, 2, 2), { html: 0, mathml: 0 });
   assert.equal(heights.measure(metas[0], 100), true);
@@ -592,8 +592,21 @@ test("a relayout forgets the equation counts read off the page", () => {
   const heights = new RowHeights();
   const row = { ...meta(1), equations: 0 };
   heights.relayout("thinking expanded");
-  heights.countEquations(row.id, { html: 2, mathml: 2 });
+  heights.countEquations(row, { html: 2, mathml: 2 });
   assert.deepEqual(heights.equationsIn([row], 0, 1), { html: 2, mathml: 2 });
   heights.relayout("thinking collapsed");
   assert.deepEqual(heights.equationsIn([row], 0, 1), { html: 0, mathml: 0 });
+});
+
+test("an edited message's page readings no longer stand for it", () => {
+  const heights = new RowHeights();
+  const before = { ...meta(1), equations: 0, revision: ["old"] };
+  heights.measure(before, 300);
+  heights.countEquations(before, { html: 2, mathml: 2 });
+  assert.equal(heights.heightOf(before), 300);
+  const after = { ...before, weight: 200, equations: 1, revision: ["new"] };
+  assert.notEqual(heights.heightOf(after), 300, "the old height stood for new content");
+  assert.deepEqual(heights.equationsIn([after], 0, 1), { html: 1, mathml: 1 });
+  assert.equal(heights.measure(after, 300), true, "a new revision is a new reading at any height");
+  assert.equal(heights.heightOf(after), 300);
 });

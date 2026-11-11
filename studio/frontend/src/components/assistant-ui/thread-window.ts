@@ -27,6 +27,8 @@ export type RowMeta = {
   renders: boolean;
   /** Numbered equations the text is expected to render (see numberedEquations). */
   equations?: number;
+  /** The content measured: an edit (another tab, a reload) voids what was read off the page. */
+  revision?: unknown;
 };
 
 /** Padding, action bar and gap: a row's height before its first line. */
@@ -163,7 +165,7 @@ type Density = { lines: number; px: number };
  * role. A ratio of sums, not a fitted line: the first rows measured are alike, so a fit is undefined.
  */
 export class RowHeights {
-  private measured = new Map<string, number>();
+  private measured = new Map<string, { height: number; revision: unknown }>();
   private densities = new Map<string, Density>();
   private counted = new Map<string, { role: string; lines: number; px: number }>();
   private layout: string | null = null;
@@ -183,13 +185,16 @@ export class RowHeights {
     return true;
   }
 
-  private equations = new Map<string, Equations>();
+  private equations = new Map<string, { counted: Equations; revision: unknown }>();
 
   /** True when the height changed. */
   measure(meta: RowMeta, height: number): boolean {
     if (!(height >= 0)) return false;
-    if (this.measured.get(meta.id) === height) return false;
-    this.measured.set(meta.id, height);
+    const prior = this.measured.get(meta.id);
+    if (prior !== undefined && prior.height === height && prior.revision === meta.revision) {
+      return false;
+    }
+    this.measured.set(meta.id, { height, revision: meta.revision });
     let density = this.densities.get(meta.role);
     if (!density) {
       density = { lines: PRIOR_LINES, px: PRIOR_LINES * PRIOR_PX_PER_LINE };
@@ -207,8 +212,8 @@ export class RowHeights {
     return true;
   }
 
-  countEquations(id: string, counted: Equations): void {
-    this.equations.set(id, counted);
+  countEquations(meta: RowMeta, counted: Equations): void {
+    this.equations.set(meta.id, { counted, revision: meta.revision });
   }
 
   /** Counter increments rows `[from, to)` would have made, for the spacer standing in for them. */
@@ -216,7 +221,8 @@ export class RowHeights {
     const sum = { html: 0, mathml: 0 };
     for (let index = from; index < Math.min(to, metas.length); index += 1) {
       const meta = metas[index];
-      const known = this.equations.get(meta.id);
+      const entry = this.equations.get(meta.id);
+      const known = entry !== undefined && entry.revision === meta.revision ? entry.counted : null;
       sum.html += known ? known.html : (meta.equations ?? 0);
       sum.mathml += known ? known.mathml : (meta.equations ?? 0);
     }
@@ -230,7 +236,7 @@ export class RowHeights {
   heightOf(meta: RowMeta): number {
     if (!meta.renders) return 0;
     const known = this.measured.get(meta.id);
-    if (known !== undefined) return known;
+    if (known !== undefined && known.revision === meta.revision) return known.height;
     const density = this.densities.get(meta.role);
     const perLine = density ? density.px / density.lines : PRIOR_PX_PER_LINE;
     const base = BASE_PX[meta.role] ?? DEFAULT_BASE_PX;

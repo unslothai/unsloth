@@ -273,6 +273,7 @@ function metaOf(message: ThreadMessage, index: number, expanded: Expanded): RowM
     // Only replies render markdown math: a prompt shows its source as text.
     equations: renders && role === "assistant" ? numberedEquations(message.content, expanded) : 0,
     renders,
+    revision: message.content,
   };
   metaCache.set(message, { expanded, meta });
   return meta;
@@ -333,7 +334,7 @@ function measureRows(viewport: HTMLElement, lookup: Metas, heights: RowHeights):
     const meta = lookup.metas[open.index];
     // A re-render that changed the row's equations changed its height too.
     if (heights.measure(meta, Math.max(0, height))) {
-      heights.countEquations(meta.id, {
+      heights.countEquations(meta, {
         html: openRow.querySelectorAll(".eqn-num").length,
         mathml: openRow.querySelectorAll(".mml-eqn-num").length,
       });
