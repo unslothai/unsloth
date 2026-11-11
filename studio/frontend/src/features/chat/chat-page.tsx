@@ -22,10 +22,16 @@ import {
   SidebarModelConfig,
   useActiveModelConfig,
   useModelConfigHandoffStore,
+  createModelConfigHandoffRequestId,
+  type ModelConfigHandoffRequest,
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import {
+  type ComposerModelPickerSource,
+  ComposerModelPickerContext,
+} from "@/components/assistant-ui/composer-model-picker/context";
 import { rowReachPx } from "@/components/assistant-ui/distant-rows";
 import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
@@ -2857,8 +2863,14 @@ export function ChatPage({
   // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
   // take focus and dismiss them.
   const [handoffOwnsPicker, setHandoffOwnsPicker] = useState(false);
+  const [composerConfigRequest, setComposerConfigRequest] =
+    useState<ModelConfigHandoffRequest | null>(null);
+  const pickerConfigRequest = modelConfigRequest ?? composerConfigRequest;
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
+      setComposerConfigRequest((current) =>
+        current?.requestId === requestId ? null : current,
+      );
       setHandoffOwnsPicker(true);
       setSettingsOpen(false);
       setModelSelectorLocked(false);
@@ -4548,6 +4560,29 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
+  const composerPickerSource = useMemo<ComposerModelPickerSource>(
+    () => ({
+      models,
+      loraModels,
+      externalModels,
+      onPick: handleCheckpointChange,
+      openFullPicker: () => {
+        setModelSelectorLocked(false);
+        setModelSelectorOpen(true);
+      },
+      eject: handleEject,
+      openRunSettings: (id, displayName, meta) =>
+        setComposerConfigRequest({
+          requestId: createModelConfigHandoffRequestId(),
+          newChatId: null,
+          id,
+          displayName,
+          meta,
+        }),
+    }),
+    [models, loraModels, externalModels, handleCheckpointChange, handleEject],
+  );
+
   const selectableModelIds = useMemo(
     () =>
       new Set<string>([
@@ -4765,6 +4800,7 @@ export function ChatPage({
     <ChatComposerFocusableContext.Provider
       value={modelConfigRequest === null && !handoffOwnsPicker}
     >
+    <ComposerModelPickerContext.Provider value={composerPickerSource}>
     <div data-chat-page-root="" className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces escape the hidden wrapper, so gate them on `active`. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -4838,7 +4874,7 @@ export function ChatPage({
                 activeVariantIsMlx={loadedIsMlx === true}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
-                configRequest={modelConfigRequest}
+                configRequest={pickerConfigRequest}
                 onConfigRequestAdopted={handleModelConfigRequestAdopted}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
@@ -4850,7 +4886,7 @@ export function ChatPage({
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
                 open={
-                  active && (modelSelectorOpen || modelConfigRequest !== null)
+                  active && (modelSelectorOpen || pickerConfigRequest !== null)
                 }
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
@@ -5173,6 +5209,7 @@ export function ChatPage({
         externalProviderType={activeExternalProviderType}
       />
     </div>
+    </ComposerModelPickerContext.Provider>
     </ChatComposerFocusableContext.Provider>
     </ChatActiveContext.Provider>
   );

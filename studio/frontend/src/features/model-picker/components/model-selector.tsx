@@ -18,13 +18,14 @@ import { useSettingsDialogStore } from "@/features/settings/stores/settings-dial
 import { isNpuModelId, NPU_MODEL_PREFIX, useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { snapInlinePadding } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
   CloudIcon,
   Download01Icon,
   RemoveCircleIcon,
-  StarIcon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -33,6 +34,7 @@ import {
   type ReactNode,
   useEffect,
   useMemo,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -347,7 +349,7 @@ const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
     label: "Recommended",
-    icon: <HugeiconsIcon icon={StarIcon} className="size-3.5 shrink-0" />,
+    icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5 shrink-0" />,
   },
   {
     value: "downloaded",
@@ -621,11 +623,30 @@ function ModelSelectorContent({
     });
   };
 
+  // Padding snaps once at mount; opened on Run settings it stayed zero after Back, so re-snap.
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const showingConfig = visibleConfigTarget !== null;
+  const lastShowingConfig = useRef(showingConfig);
+  useLayoutEffect(() => {
+    if (lastShowingConfig.current === showingConfig) {
+      return;
+    }
+    lastShowingConfig.current = showingConfig;
+    const surface = surfaceRef.current;
+    if (!surface) {
+      return;
+    }
+    surface.style.removeProperty("padding-left");
+    surface.style.removeProperty("padding-right");
+    snapInlinePadding(surface);
+  }, [showingConfig]);
+
   return (
     <PopoverContent
       align="start"
       alignOffset={10}
       dropdownGlow="picker"
+      ref={surfaceRef}
       // Read by the model list, which sets its right inset against the panel's own.
       data-external={hasExternal || undefined}
       aria-label={

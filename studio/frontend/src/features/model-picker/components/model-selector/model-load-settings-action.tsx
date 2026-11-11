@@ -6,8 +6,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import { Settings01Icon } from "@/lib/hugeicons-derived";
+import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useHasRememberedRunSettings } from "../../model-config/remembered-run-settings";
 import type { ModelPickTarget } from "./types";
@@ -16,12 +16,14 @@ export function ModelLoadSettingsAction({
   ariaLabel,
   onConfigure,
   className,
+  iconClassName,
   tooltip = "Configure run settings before loading model",
   savedFor,
 }: {
   ariaLabel: string;
   onConfigure: () => void;
   className?: string;
+  iconClassName?: string;
   /** Hover copy. The default describes a local load, so Connected rows override it. */
   tooltip?: string;
   savedFor?: ModelPickTarget;
@@ -47,7 +49,7 @@ export function ModelLoadSettingsAction({
           <HugeiconsIcon
             icon={Settings01Icon}
             strokeWidth={1.75}
-            className="size-3"
+            className={cn("size-3", iconClassName)}
           />
         </button>
       </TooltipTrigger>

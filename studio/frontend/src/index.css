@@ -3682,6 +3682,77 @@ html[data-chat-font] .aui-root {
 		cursor: pointer;
 	}
 
+	.composer-model-chip {
+		@apply gap-1.5 text-foreground;
+		max-width: calc(22rem * var(--ui-space-scale, 1));
+	}
+
+	.composer-model-chip-name {
+		min-width: 0;
+	}
+
+	.unsloth-thinking-pill.composer-model-chip-empty {
+		@apply pl-3;
+	}
+
+	.composer-model-chip-detail {
+		@apply text-muted-foreground;
+	}
+
+	.composer-tab-line {
+		background: var(--control-accent);
+	}
+	.composer-list-thumb {
+		background: oklch(0.5 0 0 / 0.54);
+	}
+	.dark .composer-list-thumb {
+		background: oklch(0.67 0 0 / 0.5);
+	}
+	.composer-effort-track {
+		background-color: color-mix(in oklab, var(--foreground) 9%, transparent);
+	}
+
+	.composer-effort-slider:focus-visible .composer-effort-track {
+		box-shadow: 0 0 0 2px var(--ring-soft);
+	}
+
+	.composer-effort-fill {
+		background-color: var(--control-accent);
+	}
+
+	.composer-effort-dot-on {
+		background-color: color-mix(in oklab, var(--control-accent-foreground) 55%, transparent);
+	}
+
+	.composer-effort-dot-off {
+		background-color: color-mix(in oklab, var(--foreground) 32%, transparent);
+	}
+
+	.composer-effort-thumb {
+		background-color: #fff;
+		box-shadow:
+			0 1px 3px rgb(0 0 0 / 0.25),
+			0 0 0 0.5px rgb(0 0 0 / 0.08);
+	}
+
+	.composer-effort-label {
+		animation: composer-effort-roll 160ms var(--ease-out-cubic, ease-out);
+	}
+
+	@keyframes composer-effort-roll {
+		from {
+			opacity: 0;
+			transform: translateY(40%);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.composer-effort-label {
+			animation: none;
+		}
+	}
+
+
 	@container (max-width: 36rem) {
 		.unsloth-thinking-pill {
 			@apply size-8 justify-center gap-0 px-0;
@@ -3695,6 +3766,13 @@ html[data-chat-font] .aui-root {
 
 		.unsloth-thinking-pill[data-pill-label] {
 			position: relative;
+		}
+
+		.unsloth-thinking-pill.composer-model-chip-empty {
+			@apply w-auto gap-1 px-3;
+		}
+		.composer-model-chip-empty .unsloth-thinking-label {
+			display: inline;
 		}
 
 		.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after {
@@ -5030,6 +5108,29 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
+/* Unlayered, so the global scrollbar rule above cannot win. */
+.composer-model-list {
+	scrollbar-width: none;
+}
+.composer-model-list::-webkit-scrollbar {
+	display: none;
+}
+.composer-model-list[data-fade-top] {
+	mask-image: linear-gradient(to bottom, transparent, #000 14px);
+}
+.composer-model-list[data-fade-bottom] {
+	mask-image: linear-gradient(to top, transparent, #000 14px);
+}
+.composer-model-list[data-fade-top][data-fade-bottom] {
+	mask-image: linear-gradient(
+		to bottom,
+		transparent,
+		#000 14px,
+		#000 calc(100% - 14px),
+		transparent
+	);
+}
+
 /* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
 @supports selector(::-webkit-scrollbar) {
 	.aui-thread-root [data-streamdown="code-block-body"] {
@@ -5791,6 +5892,18 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	& svg:is(.size-\[21px\], [class~='size-[calc(21px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg:is(.size-\[22px\], [class~='size-[calc(22px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	/* Must follow size-[NN]. */
+	& svg.composer-row-icon {
+		width: calc(var(--ui-icon-size) * 0.85);
+		height: calc(var(--ui-icon-size) * 0.85);
+	}
+	& svg.composer-eject-icon {
+		width: calc(var(--ui-icon-size) * 0.85);
+		height: calc(var(--ui-icon-size) * 0.85);
+	}
+	& svg.composer-row-dots {
+		width: calc(var(--ui-icon-size) * 0.95);
+		height: calc(var(--ui-icon-size) * 0.95);
+	}
 	& svg.unsloth-dictate-icon {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);

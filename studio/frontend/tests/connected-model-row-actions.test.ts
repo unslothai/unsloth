@@ -239,7 +239,7 @@ test("the connection's own settings hang off the group heading", () => {
   );
   assert.match(
     pickers,
-    /label="Pinned"\s*collapsed=\{pinnedConnectedCollapsed\}\s*onToggle=\{\(\) =>\s*setPinnedConnectedCollapsed/,
+    /label="Favorites"\s*collapsed=\{pinnedConnectedCollapsed\}\s*onToggle=\{\(\) =>\s*setPinnedConnectedCollapsed/,
   );
 });
 

@@ -95,3 +95,22 @@ export {
   SharedRunConfigLinkHandler,
   receiveSharedRunConfigUrls,
 } from "./sharing";
+export { useChatPickerInventory } from "./inventory/use-chat-picker-inventory";
+export { modelDisplayName } from "./model-config/model-identity";
+export { loraOptionLabel } from "./components/model-selector/row-meta";
+export { PillTabs } from "./components/model-selector/pill-tabs";
+export { usePinnedConnectedModelsStore } from "./components/model-selector/pinned-connected-models";
+export { isMediaCatalogRepo } from "./components/model-selector/model-catalog";
+export { ModelLoadSettingsAction } from "./components/model-selector/model-load-settings-action";
+export {
+  chatGgufFit,
+  estimateQuantBytes,
+  paramsFromId,
+} from "./components/model-selector/recommended-fit";
+export {
+  isOverBudget,
+  VRAM_VERDICT,
+} from "./components/model-selector/fit-verdict";
+export type { PickerFitStatus } from "./components/model-selector/media-picker-fit";
+export { pinDropAnchor } from "./components/model-selector/pinned-models";
+export { usePinnedRowDrag } from "./components/model-selector/use-pinned-row-drag";
