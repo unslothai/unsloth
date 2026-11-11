@@ -126,6 +126,23 @@ def test_local_datasets_hash_their_bytes(tmp_path, monkeypatch):
 
 
 @run_async
+async def test_a_reward_saved_again_under_its_name_trains_again(world, monkeypatch):
+    from core.training import rewards
+
+    rule = {"answer": "exact"}
+    monkeypatch.setattr(
+        rewards, "get_reward", lambda name: {"kind": "rule", "rule": dict(rule, name = name)}
+    )
+    eng = _engine(world)
+    await _run(eng, _flow(objective = "grpo"))
+    await _run(eng, _flow(objective = "grpo"))
+    assert len(world["trained"]) == 1
+    rule["answer"] = "numeric"
+    await _run(eng, _flow(objective = "grpo"))
+    assert len(world["trained"]) == 2
+
+
+@run_async
 async def test_new_weights_at_a_local_base_model_path_train_again(world, tmp_path):
     import os
 

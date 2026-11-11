@@ -84,6 +84,56 @@ def test_vision_and_audio_notebooks_pick_the_model_task():
     assert _tune(doc)["task"] == "audio"
 
 
+def test_grpo_notebook_imports_onto_the_fine_tune_node():
+    doc, report = notebook_import.read_notebook(GRPO, "Qwen3_(4B)-GRPO.ipynb")
+    tune = _tune(doc)
+    assert tune["objective"] == "grpo" and tune["max_steps"] == 100
+    assert tune["rewards"] == [
+        {"name": "exact-answer", "weight": 1.0},
+        {"name": "soft-xml-format", "weight": 1.0},
+    ]
+    assert tune["num_generations"] == 6 and tune["system_prompt"].startswith("Answer in")
+    assert tune["max_prompt_length"] == 1024 and tune["max_completion_length"] == 1024
+    assert any("int_reward_func" in line for line in report["approximated"])
+    assert not any("correctness_reward_func" in line for line in report["approximated"])
+
+
+def test_grpo_notebook_without_a_library_reward_is_reported_not_imported():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [game_score], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("game_score" in line for line in report["unsupported"])
+    assert report["colab_url"].endswith("/nb/Qwen3_(4B)-GRPO.ipynb")
+
+
+def test_format_reward_names_win_over_exact_and_an_sft_warm_up_is_refused():
+    assert notebook_import._library_rewards(["match_format_exactly", "check_answer"])[0] == [
+        {"name": "strict-xml-format", "weight": 1.0},
+        {"name": "exact-answer", "weight": 1.0},
+    ]
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = SFTTrainer(model = model, args = SFTConfig(max_steps = 5))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("two training stages" in line for line in report["unsupported"])
+
+
+def test_dpo_notebook_carries_its_beta():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "PatchDPOTrainer()\ndataset = load_dataset('a/prefs', split = 'train')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(beta = 0.2, max_steps = 5))",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert _tune(doc)["objective"] == "dpo" and _tune(doc)["beta"] == 0.2
+
+
 def test_importer_never_executes_notebook_code(tmp_path):
     marker = tmp_path / "ran"
     evil = _nb(
@@ -109,15 +159,15 @@ def test_import_notebook_route(flows_client):
     rl = flows_client.post(
         "/api/flows/import/notebook", content = GRPO, params = {"name": "Qwen3_(4B)-GRPO.ipynb"}
     )
-    assert rl.status_code == 200 and rl.json()["flow"] is None
+    assert rl.status_code == 200 and rl.json()["flow"] is not None
     assert flows_client.post("/api/flows/import/notebook", content = b"{}").status_code == 400
 
 
 def test_catalog_marks_what_studio_can_train():
     entry = catalog._entry("Llama3.1_(8B)-Alpaca.ipynb", {}, {})
     assert entry["category"] == "sft" and entry["studio_task"] == "text"
-    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] is None
-    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] is None
+    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] == "text"
+    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] == "text"
     assert (
         catalog._entry("gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb", {}, {})[
             "studio_task"
@@ -559,6 +609,28 @@ def test_embedding_notebooks_with_another_loss_are_reported():
     assert doc is not None
 
 
+def test_two_rl_stages_are_refused():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_steps = 5))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("more than one RL stage" in line for line in report["unsupported"])
+
+
+def test_two_stages_of_the_same_rl_objective_are_refused():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("GRPO and GRPO" in line for line in report["unsupported"])
+
+
 def test_lora_settings_carry_over_to_the_finetune_node():
     def read(peft_args):
         nb = _nb(
@@ -673,6 +745,94 @@ def test_embedding_lora_targets_carry_over():
     doc, report = notebook_import.read_notebook(nb, "x.ipynb")
     assert doc is not None and _lora_lines(report) == []
     assert len(_tune(doc)["target_modules"]) == 7
+
+
+def test_grpo_reward_weights_carry_over():
+    def read(config):
+        nb = _nb(
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+            "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+            "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []\n"
+            "def soft_format_reward_func(completions, **kwargs):\n    return []",
+            "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func, soft_format_reward_func], "
+            f"args = GRPOConfig(max_steps = 10{config}))",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+        return _tune(doc)["rewards"], [l for l in report["approximated"] if "reward_weights" in l]
+
+    rewards, lines = read(", reward_weights = [0.0, 5.0]")
+    assert rewards == [
+        {"name": "exact-answer", "weight": 0.0},
+        {"name": "soft-xml-format", "weight": 5.0},
+    ]
+    assert lines == []
+    rewards, lines = read(", reward_weights = WEIGHTS")
+    assert [r["weight"] for r in rewards] == [1.0, 1.0] and len(lines) == 1
+    rewards, lines = read("")
+    assert [r["weight"] for r in rewards] == [1.0, 1.0] and lines == []
+
+
+def test_a_preference_notebooks_max_length_caps_the_node_context():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft', max_seq_length = 4096)",
+        "dataset = load_dataset('HuggingFaceH4/ultrafeedback_binarized', split = 'train_prefs')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_length = 1024, max_prompt_length = 512))",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert _tune(doc)["max_seq_length"] == 1024
+
+
+def test_a_dpo_completion_cap_is_reported_not_claimed():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "dataset = load_dataset('a/prefs', split = 'train')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_completion_length = 128))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert "max_completion_length" not in _tune(doc)
+    assert any("max_completion_length = 128" in line for line in report["approximated"])
+
+
+def test_grpo_clipping_and_truncation_masking_are_imported():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func], args = GRPOConfig("
+        "epsilon_high = 0.28, mask_truncated_completions = True))",
+    )
+    tune = _tune(notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")[0])
+    assert tune["epsilon_high"] == pytest.approx(0.28)
+    assert tune["mask_truncated_completions"] is True
+    off = nb.replace(b"True", b"False")
+    assert (
+        _tune(notebook_import.read_notebook(off, "Qwen3_(4B)-GRPO.ipynb")[0])[
+            "mask_truncated_completions"
+        ]
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "loss, reported",
+    [
+        ("'ipo'", True),
+        ("['sigmoid', 'bco_pair']", True),
+        ("LOSS", True),
+        ("'sigmoid'", False),
+        (None, False),
+    ],
+)
+def test_a_dpo_loss_other_than_sigmoid_is_reported(loss, reported):
+    args = f"loss_type = {loss}, max_steps = 5" if loss else "max_steps = 5"
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "dataset = load_dataset('a/prefs', split = 'train')",
+        "LOSS = 'hinge'",
+        f"trainer = DPOTrainer(model = model, args = DPOConfig({args}))",
+    )
+    _doc, report = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert any("loss_type" in line for line in report["approximated"]) is reported
 
 
 @pytest.mark.parametrize("rank", [1, 2, 256])

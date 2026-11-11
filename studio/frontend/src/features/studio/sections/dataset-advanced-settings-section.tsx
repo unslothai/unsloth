@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useTrainingConfigStore } from "@/features/training";
+import { usePlatformStore } from "@/config/env";
+import {
+  effectiveTrainingObjective,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect } from "react";
@@ -32,6 +36,7 @@ export function DatasetAdvancedSettingsSection() {
     setDatasetSliceStart,
     setDatasetStreaming,
     trainOnCompletions,
+    trainingObjective,
   } = useTrainingConfigStore(
     useShallow((state) => ({
       datasetEvalSplit: state.datasetEvalSplit,
@@ -54,6 +59,7 @@ export function DatasetAdvancedSettingsSection() {
       setDatasetSliceStart: state.setDatasetSliceStart,
       setDatasetStreaming: state.setDatasetStreaming,
       trainOnCompletions: state.trainOnCompletions,
+      trainingObjective: effectiveTrainingObjective(state),
     })),
   );
   const streamingBlockers = getDatasetStreamingBlockers({
@@ -68,6 +74,7 @@ export function DatasetAdvancedSettingsSection() {
     isVisionModel,
     maxSteps,
     trainOnCompletions,
+    trainingObjective,
   });
   const isStreamingSupported = streamingBlockers.length === 0;
 

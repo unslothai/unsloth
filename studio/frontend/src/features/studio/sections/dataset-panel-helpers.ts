@@ -15,7 +15,8 @@ export type DatasetStreamingBlocker =
   | "audioModel"
   | "embeddingModel"
   | "imageDataset"
-  | "audioDataset";
+  | "audioDataset"
+  | "rlObjective";
 
 export function getFileExtension(fileName: string): string {
   const extensionStart = fileName.lastIndexOf(".");
@@ -48,6 +49,7 @@ export function getDatasetStreamingBlockers({
   isVisionModel,
   maxSteps,
   trainOnCompletions,
+  trainingObjective = "sft",
 }: {
   datasetEvalSplit: string | null;
   datasetSource: DatasetSource;
@@ -60,6 +62,7 @@ export function getDatasetStreamingBlockers({
   isVisionModel: boolean;
   maxSteps: number;
   trainOnCompletions: boolean;
+  trainingObjective?: string;
 }): DatasetStreamingBlocker[] {
   const blockers: DatasetStreamingBlocker[] = [];
   if (datasetSource !== "huggingface") {
@@ -94,6 +97,9 @@ export function getDatasetStreamingBlockers({
   }
   if (isDatasetAudio) {
     blockers.push("audioDataset");
+  }
+  if (trainingObjective !== "sft") {
+    blockers.push("rlObjective");
   }
   return blockers;
 }

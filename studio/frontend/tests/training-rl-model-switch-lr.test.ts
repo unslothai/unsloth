@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test, { after } from "node:test";
+
+import {
+  installLocalStorageFake,
+  registerStoreStubResolver,
+} from "./helpers/kit.ts";
+
+registerStoreStubResolver();
+installLocalStorageFake();
+
+const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
+const { useTrainingConfigStore } =
+  await import("../src/features/training/stores/training-config-store.ts");
+
+const MODEL_LR = 3e-4;
+
+function config(id: string, embedding: boolean, vision = false) {
+  return {
+    id,
+    config: { training: { learning_rate: MODEL_LR, max_steps: 60 } },
+    is_vision: vision,
+    is_embedding: embedding,
+    is_audio: false,
+    audio_type_known: true,
+    is_lora: false,
+    model_type: embedding ? "embeddings" : "text",
+    model_size_bytes: 0,
+    max_position_embeddings: 32768,
+  };
+}
+
+async function selectWithGrpoStored(
+  id: string,
+  embedding: boolean,
+  objective: "grpo" | "dpo" = "grpo",
+  vision = false,
+) {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.setState({ trainingObjective: objective });
+  setAuthFetchHandler((input) =>
+    Response.json(
+      input.startsWith("/api/models/config/")
+        ? config(id, embedding, vision)
+        : {},
+    ),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel(id, "text");
+  for (let i = 0; i < 100; i += 1) {
+    const s = useTrainingConfigStore.getState();
+    if (!s.isLoadingModelDefaults && s.modelDefaultsAppliedFor === id) {
+      return s;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("model defaults did not settle");
+}
+
+after(() => setAuthFetchHandler(null));
+
+test("an embedding model keeps its own learning rate while GRPO is stored", async () => {
+  const s = await selectWithGrpoStored(
+    "sentence-transformers/all-MiniLM-L6-v2",
+    true,
+  );
+  assert.equal(s.learningRate, MODEL_LR);
+});
+
+test("a vision model keeps its own learning rate while DPO is stored", async () => {
+  const s = await selectWithGrpoStored(
+    "unsloth/gemma-3-4b-it",
+    false,
+    "dpo",
+    true,
+  );
+  assert.equal(s.learningRate, MODEL_LR);
+});
+
+test("a text model with GRPO selected gets the GRPO learning rate", async () => {
+  const s = await selectWithGrpoStored("unsloth/Qwen3-0.6B", false);
+  assert.notEqual(s.learningRate, MODEL_LR);
+});
+
+test("picking another dataset or subset drops the RL column roles", () => {
+  setAuthFetchHandler(() => Response.json({}));
+  const store = useTrainingConfigStore.getState();
+  for (const change of [
+    () => store.setDataset("org/other-preferences"),
+    () => store.setDatasetSubset("other"),
+  ]) {
+    useTrainingConfigStore.setState({
+      rlRoleMapping: { a: "chosen", b: "rejected" },
+    });
+    change();
+    assert.deepEqual(useTrainingConfigStore.getState().rlRoleMapping, {});
+  }
+});
+
+test("switching LoRA / full keeps the RL learning rate while GRPO is selected", () => {
+  const store = useTrainingConfigStore;
+  store.getState().reset();
+  store.getState().setTrainingMethod("full");
+  store.getState().setTrainingObjective("grpo");
+  const rl = store.getState().learningRate;
+  store.getState().setTrainingMethod("lora");
+  assert.equal(store.getState().learningRate, rl);
+  store.getState().setTrainingObjective("sft");
+  assert.notEqual(store.getState().learningRate, rl);
+});
+
+test("a stored RL choice an embedding model cannot use leaves method switches on SFT rates", () => {
+  const store = useTrainingConfigStore;
+  store.getState().reset();
+  store.setState({
+    trainingObjective: "grpo",
+    modelType: "embeddings",
+    isEmbeddingModel: true,
+  });
+  store.getState().setTrainingMethod("full");
+  assert.notEqual(store.getState().learningRate, 5e-6);
+});

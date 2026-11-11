@@ -46,6 +46,7 @@ const DATASET_STREAMING_BLOCKER_KEYS: Record<
   embeddingModel: "studio.dataset.streaming.blockers.embeddingModel",
   imageDataset: "studio.dataset.streaming.blockers.imageDataset",
   audioDataset: "studio.dataset.streaming.blockers.audioDataset",
+  rlObjective: "studio.dataset.streaming.blockers.rlObjective",
 };
 
 export function DatasetAdvancedSettings({

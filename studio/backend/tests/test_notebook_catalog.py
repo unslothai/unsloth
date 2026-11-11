@@ -63,18 +63,10 @@ def test_offline_mode_never_fetches(monkeypatch, fresh_cache):
     assert catalog.build_notebook_catalog()
 
 
-@pytest.mark.parametrize(
-    "name, category",
-    [
-        ("Qwen3_(4B)-GRPO.ipynb", "grpo"),
-        ("Qwen2.5_(3B)-GSPO.ipynb", "grpo"),
-        ("Zephyr_(7B)-DPO.ipynb", "preference"),
-        ("Llama3_(8B)-ORPO.ipynb", "preference"),
-    ],
-)
-def test_grpo_and_preference_recipes_stay_colab_only(name, category):
-    assert catalog._category(name) == category
-    assert catalog.STUDIO_TASKS.get(category) is None
+@pytest.mark.parametrize("name", ["Qwen3_(4B)-GRPO.ipynb", "Qwen2.5_(3B)-GSPO.ipynb"])
+def test_grpo_recipes_import_onto_the_fine_tune_node(name):
+    assert catalog._category(name) == "grpo"
+    assert catalog.STUDIO_TASKS.get("grpo") == "text"
 
 
 @pytest.mark.parametrize(
@@ -89,6 +81,12 @@ def test_grpo_and_preference_recipes_stay_colab_only(name, category):
 def test_other_rl_recipes_stay_colab_only(name):
     assert catalog._category(name) == "rl"
     assert catalog.STUDIO_TASKS.get("rl") is None
+
+
+@pytest.mark.parametrize("name", ["Zephyr_(7B)-DPO.ipynb", "Llama3_(8B)-ORPO.ipynb"])
+def test_preference_recipes_import_onto_the_fine_tune_node(name):
+    assert catalog._category(name) == "preference"
+    assert catalog.STUDIO_TASKS.get("preference") == "text"
 
 
 @pytest.mark.parametrize("name", ["Llama3.1_(8B)-Alpaca.ipynb", "Mistral_Nemo_(12B)-Alpaca.ipynb"])

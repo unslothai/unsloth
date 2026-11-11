@@ -167,6 +167,18 @@ test("every extra setting the form changes reaches the example, and nothing host
     is_embedding: true,
     is_decision: true,
     model_subfolder: "multilingual",
+    objective: "grpo",
+    rl_beta: 0.2,
+    rl_max_prompt_length: 256,
+    grpo_num_generations: 8,
+    grpo_max_completion_length: 512,
+    grpo_temperature: 0.7,
+    rl_system_prompt: "Think first.",
+    grpo_enable_thinking: true,
+    grpo_variant: "dr_grpo",
+    grpo_mask_truncated_completions: true,
+    grpo_epsilon_high: 0.28,
+    grpo_rewards: [{ name: "exact-answer", weight: 2 }],
   };
   const full = payload({
     ...changed,

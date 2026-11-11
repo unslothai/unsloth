@@ -1263,15 +1263,54 @@ def _scored(monkeypatch, row, checkpoint, answer):
     return result["candidate"]["passed"], asked[0]
 
 
-def test_an_assistant_prefill_stays_in_the_prompt(monkeypatch):
+@pytest.mark.parametrize("objective", ["dpo", "orpo"])
+def test_an_implicit_prompt_preference_row_is_scored_as_it_trained(monkeypatch, objective):
+    row = {
+        "chosen": "Human: Capital of France? Assistant: Paris",
+        "rejected": "Human: Capital of France? Assistant: London",
+    }
+    rl = {"rl_objective": objective, "rl_mapping": None}
+    passed, asked = _scored(monkeypatch, row, rl, "Paris")
+    assert passed == 1
+    assert asked[-1]["role"] == "user" and "Capital of France?" in asked[-1]["content"]
+    assert "Paris" not in asked[-1]["content"]
+
+
+def test_a_preferred_reply_in_one_message_object_is_scored_on_its_text(monkeypatch):
+    row = {
+        "prompt": "Capital of France?",
+        "chosen": {"role": "assistant", "content": "Paris"},
+        "rejected": {"role": "assistant", "content": "London"},
+    }
+    passed, _ = _scored(monkeypatch, row, {"rl_objective": "dpo", "rl_mapping": None}, "Paris")
+    assert passed == 1
+
+
+def test_a_grpo_prefill_stays_in_the_prompt(monkeypatch):
     prompt = [
         {"role": "user", "content": "Complete this sequence."},
         {"role": "assistant", "content": "2, 4, 6,"},
     ]
     row = {"prompt": prompt, "answer": "8"}
-    passed, asked = _scored(monkeypatch, row, {}, "8")
+    passed, asked = _scored(monkeypatch, row, {"rl_objective": "grpo", "rl_mapping": None}, "8")
     assert passed == 1
     assert [t["content"] for t in asked] == ["Complete this sequence.", "2, 4, 6,"]
+
+
+def test_a_grpo_row_with_an_empty_system_cell_is_asked_with_training_s_fallback(monkeypatch):
+    rl = {
+        "rl_objective": "grpo",
+        "rl_mapping": None,
+        "system_column": "system",
+        "system_prompt_fallback": "Reason, then answer in <answer> tags.",
+    }
+    row = {"system": "", "prompt": "2+2?", "answer": "4"}
+    passed, asked = _scored(monkeypatch, row, rl, "4")
+    assert passed == 1
+    assert asked[0] == {"role": "system", "content": "Reason, then answer in <answer> tags."}
+    # A row's own system message still wins over the fallback.
+    _, asked = _scored(monkeypatch, {**row, "system": "Answer in French."}, rl, "4")
+    assert asked[0] == {"role": "system", "content": "Answer in French."}
 
 
 def test_benchmark_tells_the_loop_how_it_built_each_question(monkeypatch):
@@ -1292,6 +1331,19 @@ def test_benchmark_tells_the_loop_how_it_built_each_question(monkeypatch):
         ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", **checkpoint}
         return asyncio.run(benchmark.benchmark(ctx))["failures"]["prompt_column"]
 
+    rl = {"rl_objective": "dpo", "rl_mapping": {"ticket": "prompt"}}
+    assert reported({"ticket": "Refund", "chosen": "billing", "rejected": "sales"}, rl) == {
+        "kind": "rl",
+        "objective": "dpo",
+        "mapping": {"ticket": "prompt"},
+    }
+    grpo = {"rl_objective": "grpo", "rl_mapping": None, "system_prompt_fallback": "Be brief."}
+    assert reported({"prompt": "2+2?", "answer": "4"}, grpo) == {
+        "kind": "rl",
+        "objective": "grpo",
+        "mapping": None,
+        "system_prompt": "Be brief.",
+    }
     prefill = [
         {"role": "user", "content": "Complete this sequence."},
         {"role": "assistant", "content": "2, 4, 6,"},

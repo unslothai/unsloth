@@ -5,12 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ParamSpec } from "../src/features/flows/types.ts";
-import { specs } from "./helpers/flows.ts";
+import { readFlowsSrc, specs } from "./helpers/flows.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { trainView, sparklinePath, adapterPathFor, chatHandoffFor } = await import(
+const { trainView, sparklinePath, rewardMax, rewardText, adapterPathFor, chatHandoffFor } = await import(
   "../src/features/flows/editor/train-status.ts"
 );
 const { paramVisible } = await import("../src/features/flows/editor/param-visible.ts");
@@ -32,15 +32,28 @@ const withParams = (extra: Record<string, unknown>) => view({ params: { ...base.
 
 const visible = (values: Record<string, unknown>, simpleOnly = false) =>
   params.filter((p) => !(simpleOnly && p.advanced) && paramVisible(p, values, params)).map((p) => p.id);
+const simpleFor = (objective: string) => visible({ objective }, true);
 
-test("Fine-tune leads with a few fields and keeps the rest under Advanced", () => {
-  assert.deepEqual(visible({}, true), [
+test("Fine-tune leads with a few fields per objective and keeps the rest under Advanced", () => {
+  assert.deepEqual(simpleFor("sft"), [
     "base_model",
+    "objective",
     "prompt_column",
     "response_column",
     "max_steps",
     "holdout_percent",
   ]);
+  assert.deepEqual(simpleFor("grpo"), [
+    "base_model",
+    "objective",
+    "prompt_column",
+    "answer_column",
+    "rewards",
+    "max_steps",
+    "holdout_percent",
+  ]);
+  assert.deepEqual(simpleFor("dpo"), simpleFor("orpo"));
+  assert.ok(simpleFor("dpo").includes("chosen_column"));
   assert.ok(params.length > 15);
   assert.ok(finetune.outputs.some((p: { id: string; type: string }) => p.id === "holdout" && p.type === "dataset"));
 });
@@ -79,6 +92,39 @@ test("sparkline spans the box and stays flat for a constant series", () => {
   assert.ok(!sparklinePath([1, 1, 1], 100, 20).includes("NaN"));
 });
 
+test("GRPO shows the reward against its best, with where it started", () => {
+  assert.equal(withParams({ objective: "grpo", rewards: [] }).detail, "Pick a reward");
+  assert.equal(withParams({ objective: "grpo" }).state, "ready");
+  const live = view({
+    status: "running",
+    partial: {
+      metrics: { steps: 4, total: 40, loss: 0.01, reward: 1, reward_max: 2, reward_history: [0.2, 1] },
+    },
+  });
+  assert.equal(live.detail, "Step 4 of 40 · reward 1.00 / 2");
+  assert.ok(live.reward);
+  assert.deepEqual(live.history, [0.2, 1]);
+  const done = view({
+    status: "done",
+    outputs: {
+      checkpoint: { kind: "checkpoint", name: "run" },
+      metrics: { reward: 1.8, reward_start: 0.4, reward_max: 2.5, reward_history: [0.4, 1.8] },
+    },
+  });
+  assert.equal(done.detail, "reward 1.80 / 2.5 · from 0.40");
+  assert.equal(rewardText(0.5, null), "reward 0.50");
+});
+
+test("reward max is the best weighted sum of the rules", () => {
+  const rules = {
+    "exact-answer": { type: "exact_match", score: { match: 2, miss: 0 }, missing: 0 },
+    "numeric-close": { type: "numeric", bands: [{ within: 0, score: 3 }], else: -1, missing: -2 },
+  };
+  assert.equal(rewardMax([{ name: "exact-answer", weight: 1 }], rules), 2);
+  assert.equal(rewardMax([{ name: "numeric-close", weight: -1 }], rules), 2);
+  assert.equal(rewardMax([{ name: "gone", weight: 1 }], rules), null);
+});
+
 test("Chat with it finds the adapter by the run folder's name", () => {
   const loras = [
     { adapter_path: "/out/run-1/checkpoint-10" },
@@ -113,6 +159,7 @@ test("Advanced holds every Train page setting, grouped in the Train page's order
   }
   assert.deepEqual(groups, [
     "Model", "Dataset", "Training", "LoRA Settings", "Optimization", "Schedule", "Memory",
+    "RL settings",
     "Speculative Decoding Drafter",
   ]);
   const ids = new Set(params.map((p) => p.id));
@@ -121,7 +168,8 @@ test("Advanced holds every Train page setting, grouped in the Train page's order
     "lora_dropout", "lora_variant", "target_modules", "finetune_vision_layers",
     "optim", "lr_scheduler_type", "save_steps", "eval_steps", "early_stopping_patience",
     "random_seed", "packing", "gradient_checkpointing", "offload_layers", "offload_vram_gb",
-    "prefetch_depth", "drafter_enabled", "drafter_draft_steps",
+    "prefetch_depth", "enable_thinking", "epsilon_high", "mask_truncated_completions",
+    "max_prompt_length", "drafter_enabled", "drafter_draft_steps",
   ])
     assert.ok(ids.has(id), id);
 });
@@ -129,6 +177,7 @@ test("Advanced holds every Train page setting, grouped in the Train page's order
 const visibility: [string, Record<string, unknown>, string, boolean][] = [
   ["drafter epochs hidden by default", {}, "drafter_epochs", false],
   ["drafter epochs shown with the drafter on", { drafter_enabled: true }, "drafter_epochs", true],
+  ["drafter hidden for GRPO", { drafter_enabled: true, objective: "grpo" }, "drafter_enabled", false],
   ["LoRA rank hidden for full fine-tuning", { training_type: "full" }, "lora_r", false],
   ["embedding LR shown for CPT", { training_type: "cpt" }, "embedding_learning_rate", true],
   ["vision layers shown for vision", { task: "vision" }, "finetune_vision_layers", true],
@@ -148,4 +197,26 @@ test("a reused adapter says it was not retrained", () => {
   assert.equal(cached.state, "adapter_ready");
   assert.match(String(cached.detail), /^Reused, not retrained/);
   assert.doesNotMatch(String(view({ status: "done", outputs }).detail), /Reused/);
+});
+
+test("Try the rewards reads the reward training uses, not one a user reward shadows", () => {
+  const src = readFlowsSrc("editor/reward-try.tsx");
+  // A private or gated dataset's preview row reads with the picked Hub token.
+  assert.match(src, /\.\.\.hubTokenHeader\(useHfTokenStore\.getState\(\)\.token\)/);
+  assert.match(src, /library\.filter\(\(r\) => !r\.shadowed\)\.map\(\(r\) => \[r\.name, r\.rule\]\)/);
+});
+
+test("Try the rewards reads the columns training reads: the Advanced mapping wins", async () => {
+  const { roleColumn } = await import("../src/features/flows/editor/reward-roles.ts");
+  const params = { answer_column: "draft", custom_format_mapping: { gold: "answer", q: "prompt" } };
+  assert.equal(roleColumn(params, "answer"), "gold");
+  assert.equal(roleColumn(params, "prompt"), "q");
+  assert.equal(roleColumn({ answer_column: "draft" }, "answer"), "draft");
+  assert.equal(roleColumn({ answer_column: "draft", custom_format_mapping: {} }, "answer"), "draft");
+  // With no column named, aliases go in training's order, not the row's: `answer` before `solution`.
+  const { pick, ANSWER_NAMES } = await import("../src/features/flows/editor/reward-roles.ts");
+  const row = { problem: "2+2", solution: "Adding two and two gives four.", answer: "4" };
+  assert.equal(pick(row, undefined, ANSWER_NAMES), "4");
+  assert.equal(pick(row, "solution", ANSWER_NAMES), "Adding two and two gives four.");
+  assert.equal(pick({ Solution: "x" }, "", ANSWER_NAMES), "x");
 });
