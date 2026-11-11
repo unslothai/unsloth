@@ -1213,6 +1213,16 @@ class _CompletedStepTicker:
             self._events.append((enqueued, event))
             self._event_backed = True
 
+    def caught_up(self, lead: int) -> bool:
+        with self._lock:
+            if self._enqueued >= self.total or len(self._events) <= lead:
+                return True
+            event = self._events[-1 - lead][1]
+        try:
+            return bool(event.query())
+        except Exception:  # noqa: BLE001 -- an unqueryable marker counts as finished
+            return True
+
     def completed(self) -> int:
         """Steps the GPU has finished. Never decreases, never exceeds what was enqueued, never
         blocks, and never raises."""

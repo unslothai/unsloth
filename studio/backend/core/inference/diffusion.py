@@ -15481,6 +15481,14 @@ class DiffusionBackend:
                         return
                     _report(ticker.completed())
 
+                def _hold_for_device() -> None:
+                    # The host issues steps far ahead of the GPU, and an issued step cannot be cancelled.
+                    while not cancel.is_set():
+                        with _hold_off_cuda_graph_capture() as clear:
+                            if not clear or chunk_ticker[0].caught_up(1):
+                                return
+                        cancel.wait(0.002)
+
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
                     if static_skip:
                         mark_step_end(state.pipe)
@@ -15495,6 +15503,7 @@ class DiffusionBackend:
                         if clear:
                             chunk_ticker[0].record(step_index + 1)
                             _report(chunk_ticker[0].completed())
+                    _hold_for_device()
                     if cancel.is_set():
                         pipe._interrupt = True
                     cross_forward_step(pipe, step_index)
