@@ -57,8 +57,7 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
 
 
 def _is_hub_repo_id(identifier: str) -> bool:
-    """``org/name``, including Hub repos named ``org/name.gguf``. A file reference
-    carries a repo id plus a filename, so two or more slashes."""
+    """org/name with one slash, including repos named org/name.gguf; a file has more slashes."""
     if identifier.count("/") != 1:
         return False
     stem = (

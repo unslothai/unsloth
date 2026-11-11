@@ -151,9 +151,8 @@ def test_bitsandbytes_guard_is_not_gated_on_use_exact_model_name():
 
 
 def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
-    """A BitsAndBytesConfig in kwargs re-sets the flags downstream, so clearing
-    load_in_4bit/8bit alone still builds the bnb quantizer in Transformers. A
-    non-bnb config (GPTQ/AWQ/fp8) must not be touched."""
+    """A BitsAndBytesConfig in kwargs re-sets the flags downstream, so clearing load_in_4bit and
+    load_in_8bit alone still builds the bnb quantizer; GPTQ, AWQ or fp8 configs stay untouched."""
     _, guards = _bnb_guards()
     for guard in guards:
         # ast.unparse normalises quotes, so match on the call shape instead.

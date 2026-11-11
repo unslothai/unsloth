@@ -132,14 +132,14 @@ if HAS_TRITON:
         stride_wu,
         stride_wk,
         stride_wn,
-        IN_SORTED: tl.constexpr,
-        OUT_SORTED: tl.constexpr,
-        ADD: tl.constexpr,
-        SCALE: tl.constexpr,
-        IEEE: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-        BLOCK_K: tl.constexpr,
+        IN_SORTED: tl.constexpr,  # IN rows in adapter order, per call site
+        OUT_SORTED: tl.constexpr,  # OUT rows in adapter order, per call site
+        ADD: tl.constexpr,  # accumulate into OUT, per call site
+        SCALE: tl.constexpr,  # per-adapter scales given
+        IEEE: tl.constexpr,  # fp32 inputs: ieee dot
+        BLOCK_M: tl.constexpr,  # token tile, fixed 64
+        BLOCK_N: tl.constexpr,  # from N (rank or out_features)
+        BLOCK_K: tl.constexpr,  # from K (in_features or rank)
     ):
         # OUT[rows] (+)= scale_u * IN[rows] @ W_u, W_u read as (K, N) through strides. A row is either the
         # token's position in the sorted order (H, dH live there) or its original row (X, Y, dY, dX).
@@ -210,13 +210,13 @@ if HAS_TRITON:
         stride_ou,
         stride_oi,
         stride_oj,
-        P_SORTED: tl.constexpr,
-        Q_SORTED: tl.constexpr,
-        SCALE: tl.constexpr,
-        IEEE: tl.constexpr,
-        BLOCK_T: tl.constexpr,
-        BLOCK_I: tl.constexpr,
-        BLOCK_J: tl.constexpr,
+        P_SORTED: tl.constexpr,  # P rows in adapter order, per call site
+        Q_SORTED: tl.constexpr,  # Q rows in adapter order, per call site
+        SCALE: tl.constexpr,  # per-adapter scales given
+        IEEE: tl.constexpr,  # fp32 inputs: ieee dot
+        BLOCK_T: tl.constexpr,  # token tile, fixed 64
+        BLOCK_I: tl.constexpr,  # from I (weight dim)
+        BLOCK_J: tl.constexpr,  # from J (weight dim)
     ):
         # OUT_u = scale_u * P[seg_u].T @ Q[seg_u]; an adapter with no tokens stores zeros.
         pid = tl.program_id(0)

@@ -328,8 +328,7 @@ def test_an_invisible_repo_falls_back_to_the_dense_encoder(tmp_path, monkeypatch
 
 
 def test_both_flux3_families_default_to_the_hosted_int8_convrot_encoder():
-    # BFL's ComfyUI templates load qwen3vl_4b_int8_convrot, so an unset request gets the hosted int8 file; "none"
-    # still reaches the released bf16 encoder.
+    # BFL's templates load qwen3vl_4b_int8_convrot, so unset gets int8; none reaches bf16.
     from core.inference.diffusion_families import _FAMILIES as FAMILIES
     from core.inference.diffusion_precision import resolve_te_quant_request
     for name in ("flux.3-klein", "flux.3-klein-base"):
@@ -420,3 +419,26 @@ def test_flux3_assembly_hands_the_staged_dir_to_the_prequant_encoder(tmp_path, m
         "root": staged,
         "te": "enc",
     }
+
+
+def test_released_int8_convrot_encoder_reloads_from_its_own_file(mirror, tmp_path, monkeypatch):
+    """The hosted int8 file is the encoder byte for byte, so releasing it on unified memory writes no snapshot."""
+    from core.inference import diffusion_te_release as te_release
+
+    monkeypatch.delenv(te_release.SOURCE_REUSE_ENV, raising = False)
+    monkeypatch.setattr(te_release, "_MIN_RELEASE_BYTES", 0)
+    monkeypatch.setattr(te_release, "_snapshot_root", lambda: tmp_path / "snap")
+    encoder = _pipe_kwargs("flux.3-klein", "int8")["text_encoder"]
+    _base, repo, stem = VARIANTS["flux.3-klein"]
+    assert getattr(encoder, te_release.WEIGHT_FILES_ATTR) == (str(mirror / repo / _names(stem)[0]),)
+    ids = torch.randint(0, VOCAB, (1, 9))
+    before = _hidden(encoder, ids)
+    releaser = te_release.TextEncoderReleaser([("text_encoder", encoder)])
+    total = releaser.releasable_bytes
+    assert total > 0 and releaser.release() == total
+    unmatched = sorted(set(releaser._slots) - set(releaser._from_source))
+    assert unmatched == []
+    assert not any((tmp_path / "snap").rglob("*.safetensors"))
+    after = _hidden(encoder, ids)
+    assert all(torch.equal(a, b) for a, b in zip(before, after))
+    releaser.close()

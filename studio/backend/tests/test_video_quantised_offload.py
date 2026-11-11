@@ -122,12 +122,13 @@ def _spoof(
     monkeypatch.setattr(tq, "native_quant_host", lambda t: False)
     monkeypatch.setattr(tq, "native_offload_host", lambda t: True)
     monkeypatch.setattr(V, "stored_denoiser_precision", lambda *a, **k: None)
-    spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [])
+    spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [], seed_kw = [])
 
     import core.inference.video_denoiser_prequant as vdp
 
     def _seed(fam, base, *, scheme, **kw):
         spy.seeded.append(scheme)
+        spy.seed_kw.append(kw)
         return {"transformer": object()}
 
     monkeypatch.setattr(vdp, "denoiser_prequant_pipe_kwargs", _seed)
@@ -245,10 +246,52 @@ def test_auto_seeds_the_hosted_artifact_only_where_it_would_quantise(
         assert status["transformer_quant"] == "int8"
 
 
+def _streaming_supported(monkeypatch):
+    """torchao / diffusers versions and host RAM decide streaming; pin them so the host's install does not."""
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "torchao_scheme_streams", lambda scheme, **kw: True)
+    monkeypatch.setattr(dm, "_torchao_stream_pinnable", lambda plan, reclaimable_host_mib = 0: True)
+
+
 def test_explicit_fp8_refused_with_reason_when_the_dit_must_move(fake_runtime, monkeypatch):
+    """UNSLOTH_VIDEO_FP8_STREAM=0 restores the refusal of an fp8 DiT the plan moves."""
+    _streaming_supported(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_VIDEO_FP8_STREAM", "0")
     _spoof(monkeypatch, tier_gib = 16)
     with pytest.raises(RuntimeError, match = r"moves the DiT .*int8 runs torchao-free"):
         VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+
+
+def test_explicit_fp8_refused_where_the_card_has_no_fp8_gemm(fake_runtime, monkeypatch):
+    """Without Studio's fp8 GEMM (sm_80) a moved DiT cannot stream torchao fp8 weights: still refused."""
+    _streaming_supported(monkeypatch)
+    monkeypatch.setitem(SUPPORTED, (8, 0), {"int8"})
+    _spoof(monkeypatch, tier_gib = 16, cap = (8, 0))
+    with pytest.raises(RuntimeError):
+        VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+
+
+def test_explicit_fp8_streams_the_hosted_torchao_dit_when_the_dit_must_move(
+    fake_runtime, monkeypatch
+):
+    """sm_89+: the hosted fp8 checkpoint is seeded and streamed (torchao_offload_plan), not refused, and the dense
+    shards are not quantised at load."""
+    _streaming_supported(monkeypatch)
+    spy = _spoof(monkeypatch, tier_gib = 16, cap = (8, 9))
+    status = VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+    assert status["transformer_quant"] == "fp8"
+    assert spy.seeded == ["fp8"]
+    assert not spy.quant
+    assert spy.plans[-1].offload_policy in ("group", "streaming")
+    # built on the host: the offload hooks move it block by block (on the card first it OOMed a 16 GiB budget)
+    assert spy.seed_kw[0]["placement_device"] == "cpu"
+
+
+def test_resident_fp8_seed_is_built_on_the_card(fake_runtime, monkeypatch):
+    spy = _spoof(monkeypatch, tier_gib = 24)
+    VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+    assert spy.seed_kw[0]["placement_device"] is None
 
 
 def test_explicit_int8_under_streamed_dit_is_torchao_free(fake_runtime, monkeypatch):
@@ -979,3 +1022,19 @@ def test_a_cancel_during_the_background_pin_wait_ends_the_render_promptly(
         )
     assert time.perf_counter() - began < 10
     assert not rendered
+
+
+def test_refine_prices_the_denoise_phase_not_the_decoded_clip():
+    """The whole-module refine charges the DiT the denoise share only: a plan _video_prefer_whole_module kept (10000 MiB
+    DiT at 17000 MiB, 1280x704x121) stays whole-module; the LTX-2.5 Q4 DiT at a 16 GiB budget (OOM on main) streams."""
+    import types
+
+    import core.inference.video as V
+
+    runtime = V.estimate_video_runtime_mib(width = 1280, height = 704, num_frames = 121)
+    plan = types.SimpleNamespace(estimates = {"runtime_headroom_mib": runtime})
+    headroom = V._video_denoise_phase_headroom_mib(plan)
+    assert headroom == V._VIDEO_DENOISE_ACTIVATION_MIB + 2048 < runtime + 2048
+    assert 10000 + headroom <= 17000
+    assert 11642 + headroom > 13396
+    assert V._video_denoise_phase_headroom_mib(types.SimpleNamespace(estimates = {})) == 2048
