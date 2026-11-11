@@ -88,6 +88,17 @@ def test_no_luid_for_the_npu_is_unknown(host):
     assert all("GPU Engine" not in ps for ps in host["calls"])
 
 
+def test_a_missing_luid_is_looked_up_once_a_minute(host):
+    host["luid"] = None
+    for _ in range(5):
+        assert hw.npu_load_percent() is None
+        host["clock"].now += 10.0
+    assert sum("Get-PnpDeviceProperty" in ps for ps in host["calls"]) == 1
+    host["clock"].now += 60.0
+    hw.npu_load_percent()
+    assert sum("Get-PnpDeviceProperty" in ps for ps in host["calls"]) == 2
+
+
 def test_an_idle_npu_reads_zero(host):
     host["counters"] = "pid_10_luid_0x00000000_0x0001a5c9_phys_0_eng_0_engtype_Compute|0\n"
     assert hw.npu_load_percent() == 0.0
