@@ -2790,7 +2790,6 @@ class InferenceBackend:
             gen_outputs: dict = {}
 
             def generate_fn():
-                # Apply under the lock so Base-vs-LoRA compare does not run the adapter on both sides.
                 with self._generation_lock, self._adapter_scope(use_adapter):
                     try:
                         # Started after the adapter swap so only model.generate() is timed.
