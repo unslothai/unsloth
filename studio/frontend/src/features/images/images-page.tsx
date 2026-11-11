@@ -5018,6 +5018,25 @@ export function ImagesPage({
     }
   }, [refreshStatus, dropResidentState]);
 
+  const ejecting = useRef(false);
+  const handleEject = useCallback(async () => {
+    if (ejecting.current) {
+      toast.info("Wait for the model to finish unloading.");
+      return;
+    }
+    ejecting.current = true;
+    const toastId = toast.loading("Unloading model");
+    try {
+      if (await handleUnload()) {
+        toast.success("Model unloaded", { id: toastId, duration: 1200 });
+      } else {
+        toast.dismiss(toastId);
+      }
+    } finally {
+      ejecting.current = false;
+    }
+  }, [handleUnload]);
+
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
     const wasLoading = busy === "loading";
@@ -6256,8 +6275,7 @@ export function ImagesPage({
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
-                onEject={status?.loaded ? handleUnload : undefined}
-                ejecting={busy === "unloading"}
+                onEject={status?.loaded ? handleEject : undefined}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
