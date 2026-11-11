@@ -22171,8 +22171,7 @@ class ApiMonitorSettingsPayload(BaseModel):
 
 @studio_router.post("/monitor/settings")
 async def update_api_monitor_settings(
-    payload: ApiMonitorSettingsPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: ApiMonitorSettingsPayload, current_subject: str = Depends(get_current_subject)
 ):
     """Enable or disable API monitor recording without restarting the server."""
     del current_subject
