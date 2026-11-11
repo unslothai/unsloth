@@ -17,6 +17,10 @@ import unsloth.models._block_compile as BC
 import unsloth.utils.prefix_grouper_kernel as PG
 
 
+@pytest.mark.skipif(
+    not hasattr(torch._dynamo.config, "suppress_errors"),
+    reason = "this torch build has no suppress_errors flag",
+)
 @pytest.mark.parametrize("module", [BC, PG], ids = ["block_compile", "prefix_grouper"])
 def test_strict_region_turns_suppress_errors_off(module, monkeypatch):
     monkeypatch.setattr(torch._dynamo.config, "suppress_errors", True)
