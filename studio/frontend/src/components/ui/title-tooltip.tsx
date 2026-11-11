@@ -25,10 +25,27 @@ function pointIn(el: Element, x: number, y: number): boolean {
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
+const DISABLED_TITLED = `${TITLED}:disabled, ${TITLED}[aria-disabled='true']`;
+
+/** Runs on every pointermove. With the pointer over the chat column's margins the hit is the thread
+ *  viewport, so a subtree query would walk every message (~2.5 ms per move at 200 turns). A hit above
+ *  the message rows means the point is in none of them (a row under it would have been the hit), so
+ *  their subtrees are skipped. */
 function disabledUnder(hit: Element | null, x: number, y: number): HTMLElement | null {
   if (!hit) return null;
-  for (const el of hit.querySelectorAll<HTMLElement>(`${TITLED}:disabled, ${TITLED}[aria-disabled='true']`)) {
-    if (pointIn(el, x, y)) return el;
+  if (!hit.querySelector("[data-role]")) {
+    for (const el of hit.querySelectorAll<HTMLElement>(DISABLED_TITLED)) {
+      if (pointIn(el, x, y)) return el;
+    }
+    return null;
+  }
+  const walker = document.createTreeWalker(hit, NodeFilter.SHOW_ELEMENT, {
+    acceptNode: (node) =>
+      (node as Element).hasAttribute("data-role") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const el = node as HTMLElement;
+    if (el.hasAttribute("title") && el.matches(DISABLED_TITLED) && pointIn(el, x, y)) return el;
   }
   return null;
 }

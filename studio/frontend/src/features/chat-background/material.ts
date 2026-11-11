@@ -28,6 +28,8 @@ import {
   sanitizeStrength,
   sanitizeStrengths,
 } from "./model";
+import { startGlassMotion } from "./glass-motion";
+import { softwareCompositing } from "./software-compositing";
 import { useChatWelcomeShown } from "./welcome";
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
@@ -178,9 +180,9 @@ const WEBKIT_LAYERS =
   typeof navigator !== "undefined" &&
   /AppleWebKit/.test(navigator.userAgent) &&
   !/Chrom|Edg|Android/i.test(navigator.userAgent);
-// WebKitGTK (the Linux app) also runs every backdrop-filter again on each composite, on the CPU, so
-// there glass drops its live blur except the sidebar's (index.css, data-glass-cpu). macOS WebKit
-// composites backdrops on the GPU and keeps real frosted glass.
+// WebKitGTK (the Linux app) paints on the CPU, so two paint costs are swapped out there (index.css,
+// data-glass-cpu): Frosted's grain tile and Liquid 3D's wide blurred glows. Its blur, fills and
+// strength are Glass's own, as on every other platform.
 const WEBKIT_GTK =
   typeof navigator !== "undefined" &&
   isWebKitGTK(navigator.platform, navigator.userAgent);
@@ -228,7 +230,7 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   useEffect(() => {
     document.documentElement.toggleAttribute(
       "data-glass-menus",
-      menus && material !== "solid" && material !== "transparent" && here,
+      menus && material !== "solid" && here,
     );
   }, [menus, material, here]);
   useEffect(() => {
@@ -242,6 +244,23 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
       "data-glass-cpu",
       WEBKIT_GTK && material !== "solid" && material !== "transparent" && here,
     );
+  }, [material, here]);
+  useEffect(() => {
+    // Only where compositing is in software, which recomputes every blur on every frame; with a GPU glass
+    // keeps its blur while things move. The Linux app (WebKitGTK) included, when it renders without a GPU.
+    // Transparent has no blur, except on Windows Desktop, where its menus and dialogs carry one.
+    const root = document.documentElement;
+    const clearBlur =
+      material === "transparent" &&
+      root.classList.contains("tauri") &&
+      root.classList.contains("client-windows");
+    const on =
+      material !== "solid" &&
+      (material !== "transparent" || clearBlur) &&
+      here &&
+      softwareCompositing();
+    document.documentElement.toggleAttribute("data-glass-motion", on);
+    return on ? startGlassMotion().stop : undefined;
   }, [material, here]);
   useEffect(() => {
     const root = document.documentElement;

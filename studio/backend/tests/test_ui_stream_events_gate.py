@@ -82,8 +82,7 @@ def test_background_generation_run_opts_into_control_frames():
 
 
 def test_openai_stream_control_yields_are_gated():
-    # Every raw control-frame yield must sit behind the per-request opt-in; keepalive and
-    # error chunks are plain SSE and exempt.
+    # Control-frame yields need the per-request opt-in; keepalive and error chunks are exempt.
     src = inspect.getsource(produce_openai_chat_completions)
     lines = src.splitlines()
     control_yields = (
@@ -108,8 +107,7 @@ def test_openai_stream_control_yields_are_gated():
 
 
 def test_dropped_frames_still_pace_a_keepalive():
-    # A gated-off frame still restarts the keepalive wait; unpaced, a Cloudflare tunnel
-    # drops the stream at ~100s idle.
+    # Gated-off frames still restart keepalive pacing; unpaced, Cloudflare cuts idle at ~100s.
     keepalive = _DroppedFrameKeepalive(now = 0.0)
     assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S - 0.01) is False
     assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S) is True
@@ -118,8 +116,7 @@ def test_dropped_frames_still_pace_a_keepalive():
 
 
 def test_every_gated_frame_falls_back_to_a_keepalive():
-    # Dropping a frame must never mean writing nothing, so each opt-in branch carries the
-    # paced keepalive on its else side.
+    # Dropped frames must still write: each opt-in branch falls back to the keepalive.
     src = inspect.getsource(produce_openai_chat_completions)
     gates = [
         node
@@ -236,8 +233,7 @@ _LIVE_SMOKE = Path(__file__).resolve().parent / "test_studio_api.py"
 
 
 def test_the_live_tool_smoke_sends_the_shape_the_examples_hand_out():
-    # Example 4 in the live smoke is the same curl the API keys tab shows, so it has to stay
-    # runnable in the same way.
+    # Live smoke example 4 is the API keys tab curl, so that curl must stay runnable.
     src = _LIVE_SMOKE.read_text(encoding = "utf-8")
     body = src[src.index("def test_curl_with_tools") :]
     body = body[: body.index("\ndef ")]
@@ -246,8 +242,7 @@ def test_the_live_tool_smoke_sends_the_shape_the_examples_hand_out():
 
 
 def test_the_bundled_api_examples_are_still_runnable():
-    # API keys tab snippets stream without control frames; without an explicit mode the
-    # gate would refuse them.
+    # API keys tab snippets stream without control frames, so they need an explicit mode.
     src = _USAGE_EXAMPLES.read_text(encoding = "utf-8")
     tool_branches = src.count("enable_tools")
     assert tool_branches, "the tool variants disappeared from the examples"
@@ -337,8 +332,7 @@ def test_a_legacy_function_call_is_left_for_the_caller():
 
 
 def test_a_stop_that_only_looks_final_is_held_back_too():
-    # llama.cpp and vLLM finish good tool calls on "stop"; an empty "stop" chunk would end
-    # a client before the answer.
+    # llama.cpp and vLLM end good tool calls on stop; an empty stop chunk ends clients early.
     stripper = ServerToolCallStripper()
     call = (
         'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, '
@@ -436,8 +430,7 @@ def test_a_turn_with_no_withheld_call_keeps_its_own_stop():
 
 
 def test_a_process_wide_tools_on_flag_does_not_refuse_a_plain_request():
-    # --enable-tools fills the policy OVERRIDE slot, so the narrower default-only predicate
-    # would 400 every ordinary stream on that launcher.
+    # --enable-tools fills the OVERRIDE slot, so a default-only check would 400 plain streams.
     payload = _gate_payload(enable_tools = None, enabled_tools = None)
     for policy in (None, True):
         with mock.patch("state.tool_policy.get_tool_policy", return_value = policy):
@@ -531,8 +524,7 @@ def test_a_withheld_call_always_leaves_the_caller_a_finish_reason():
 
 
 def test_a_removed_reason_owes_a_terminal_even_with_no_call_to_latch_onto():
-    # finish_reason "tool_calls" without an emitted call (llama.cpp/vLLM bugs) must still
-    # leave a debt.
+    # finish_reason tool_calls, no call emitted (llama.cpp/vLLM bugs), still owes a terminal.
     stripper = ServerToolCallStripper()
     stripper.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {"content": "hi"}}]}')
     stripper.strip(

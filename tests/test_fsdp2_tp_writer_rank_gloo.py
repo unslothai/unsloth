@@ -25,6 +25,7 @@ def _case_tp_fsdp2_writer(
     tmp,
     flattened = False,
     layout = None,
+    earlier_model = False,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
@@ -41,6 +42,13 @@ def _case_tp_fsdp2_writer(
         mesh_dim_names = ("dp", "cp", "tp") if flattened else ("dp", "tp"),
     )
     dp = mesh["dp", "cp"]._flatten("dp_cp") if flattened else mesh["dp"]
+    if earlier_model:
+        # An earlier tp x FSDP2 model on an equal mesh in the same process: DTensor ops can hand the
+        # next model's tp parameters that earlier (equal, not identical) mesh.
+        earlier = init_device_mesh("cpu", (2, world // 2), mesh_dim_names = ("dp", "tp"))
+        first = build(LLAMA)
+        tpn.apply_tensor_parallel(first, earlier["tp"])
+        native.shard_model(first, native.FSDP2Config(param_dtype = torch.float32, mesh = earlier["dp"]))
     model = build(LLAMA)
     tpn.apply_tensor_parallel(model, mesh["tp"])
     config = dict(param_dtype = torch.float32, mesh = dp)
@@ -79,6 +87,7 @@ def _spawn(
     world,
     flattened,
     layout = None,
+    earlier_model = False,
 ):
     import tempfile
 
@@ -94,7 +103,7 @@ def _spawn(
                     port,
                     "tp_fsdp2_writer",
                     tmp,
-                    {"flattened": flattened, "layout": layout},
+                    {"flattened": flattened, "layout": layout, "earlier_model": earlier_model},
                 ),
             )
             for r in range(world)
@@ -116,13 +125,15 @@ def _worker(*args):
 
 
 @pytest.mark.parametrize(
-    "flattened, layout",
+    "flattened, layout, earlier_model",
     [
-        (False, None),
-        (True, None),
-        (False, "unsharded"),
-        (False, "ignored"),
-        (False, "ignored_compiled"),
+        (False, None, False),
+        (True, None, False),
+        (False, "unsharded", False),
+        (False, "ignored", False),
+        (False, "ignored_compiled", False),
+        (False, "unsharded", True),
+        (False, "ignored", True),
     ],
     ids = [
         "sharded",
@@ -130,10 +141,12 @@ def _worker(*args):
         "unsharded_eval",
         "all_trainable_ignored",
         "all_trainable_ignored_compiled",
+        "unsharded_eval_after_earlier_model",
+        "all_trainable_ignored_after_earlier_model",
     ],
 )
-def test_tp_fsdp2_model_has_one_writer(flattened, layout):
-    results = _spawn(4, flattened, layout)
+def test_tp_fsdp2_model_has_one_writer(flattened, layout, earlier_model):
+    results = _spawn(4, flattened, layout, earlier_model)
     if results[0].get("unsupported"):
         pytest.skip(reason = "torch < 2.7: no fully_shard(ignored_params)")
     print("fsdp2_save:", results[0]["module"])

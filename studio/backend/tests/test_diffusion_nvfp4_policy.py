@@ -528,7 +528,7 @@ def test_the_metadata_block_records_the_set_that_was_built():
     assert block["counts"] == {BF16: 5, FP8: 195, NVFP4: 76}
     assert len(block["nvfp4_fqns"]) == 76
     assert block["nvfp4_fqns"] == sorted(block["nvfp4_fqns"])
-    assert block["activation_scales_baked"] is False and block["gptq"] is False
+    assert block["activation_scales_baked"] is False and block["refined"] is False
     assert declares_policy({"scheme": "nvfp4", **fragment})
     assert policy_metadata_error({"scheme": "nvfp4", **fragment}) is None
     assert policy_metadata(ZIMG_RG76, assign_precisions(_zimage(), ZIMG_RG76)) == fragment

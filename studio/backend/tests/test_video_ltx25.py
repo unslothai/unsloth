@@ -999,6 +999,42 @@ def test_client_caches_recent_encodes_and_reports_a_dead_worker(monkeypatch):
         client._get(None, "encoding")
 
 
+def test_a_fixed_negative_prompt_stays_cached_across_alternating_prompts():
+    import torch
+
+    client = v25.Ltx25TextEncoderClient(
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
+    client._ready = True
+    sent = []
+
+    def fake_put(msg):
+        sent.append(msg["prompts"][0])
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
+
+    client._cmd.put = fake_put
+    for positive in ("p1", "p2", "p1", "p2"):
+        client.encode([positive], 2)
+        client.encode(["neg"], 2)
+    assert sent == ["p1", "neg", "p2", "p1", "p2"]
+
+
 def test_an_abandoned_encodes_error_does_not_fail_the_next_one():
     import torch
 
@@ -1302,8 +1338,7 @@ def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_t
 @pytest.mark.parametrize("fits", [True, False])
 def test_image_to_video_frees_between_stages_only_when_stage_two_does_not_fit(monkeypatch, fits):
     pytest.importorskip("diffusers")  # the image path builds diffusers' LTX2VideoCondition
-    # The condition pipeline has no hook list, so it never offloads at its stage end: pipe's hooks are reset there
-    # when stage 2 would not fit beside the DiT.
+    # Condition pipeline has no hook list; hooks reset at stage end only if stage 2 won't fit.
     monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: fits)
     pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
     cond = _FakePipe(pipe.scheduler)
@@ -2351,8 +2386,7 @@ def test_offloaded_encoder_is_released_after_each_encode_and_reloaded_for_the_ne
 
 
 def test_offloaded_encoder_borrows_only_budget_the_server_leaves(monkeypatch):
-    """A free card is not enough: the plan did not budget the encoder, so it may only use the load's budget minus what
-    the server holds at encode time."""
+    """Free VRAM is not enough: the encoder may use budget the server leaves at encode time."""
     from core.inference import video_ltx25_te_worker as worker
 
     model = _FakeEncoderModel()  # 2 MiB
