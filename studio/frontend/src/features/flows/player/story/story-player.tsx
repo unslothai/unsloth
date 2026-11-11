@@ -55,6 +55,7 @@ import {
   historyText,
   nextSceneRequest,
   planWriteAhead,
+  requestOnce,
   storyContext,
   writeKey,
 } from "./lookahead";
@@ -73,6 +74,7 @@ import {
   saveFits,
   sceneOf,
   stageAt,
+  stageBackground,
   visibleChoices,
 } from "./reducer";
 import { playCues } from "./sound-cues";
@@ -376,7 +378,7 @@ export function StoryPlayer({
     scene && state.status === "choosing"
       ? visibleChoices(scene, state.vars)
       : [];
-  const bgMedia = backgroundFor(manifest, state, state.sceneId);
+  const bgMedia = stageBackground(manifest, state);
   const bgUrl = useMediaUrl(api, bgMedia);
 
   useEffect(() => {
@@ -425,9 +427,6 @@ export function StoryPlayer({
   const paint = useCallback(
     (target: StoryScene, rev: number, current = false) => {
       if (!artEntry) return;
-      const key = `${rev}:art:${target.id}`;
-      if (requested.current.has(key)) return;
-      requested.current.add(key);
       const prompt = [
         target.background_prompt || target.title || "",
         manifest.style,
@@ -435,12 +434,18 @@ export function StoryPlayer({
         .filter(Boolean)
         .join(", ");
       if (!prompt) return;
-      setPainting((p) => new Set(p).add(target.id));
       const job = () =>
         lanes.current.run("art", () =>
           api.invoke(flowId, artEntry, { prompt }, { rev }),
         );
-      (current ? writeAhead.hold(job) : job())
+      const req = requestOnce(
+        requested.current,
+        `${rev}:art:${target.id}`,
+        () => (current ? writeAhead.hold(job) : job()),
+      );
+      if (!req) return;
+      setPainting((p) => new Set(p).add(target.id));
+      req
         .then((res) => {
           const media = res.outputs.image as MediaValue | undefined;
           if (media)

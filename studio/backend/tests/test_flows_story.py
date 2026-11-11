@@ -10,6 +10,7 @@ from core.flows.story import (
     StoryCompileError,
     compile_story,
     compile_story_report,
+    input_values,
     node_value,
     parse_lines,
     repair_generated,
@@ -355,3 +356,16 @@ def test_latest_run_output_beats_the_baked_value():
     d = {"baked": {"g": {"story": "packaged"}}}
     assert node_value(d, {"g": {"story": "rerolled"}}, "g", "story") == "rerolled"
     assert node_value(d, {}, "g", "story") == "packaged"
+
+
+def test_input_values_skip_a_disabled_source():
+    d = {
+        "nodes": [{"id": "a", "type": "x", "disabled": True}, {"id": "b", "type": "x"}],
+        "edges": [
+            {"source": "a", "source_port": "o", "target": "c", "target_port": "i"},
+            {"source": "b", "source_port": "o", "target": "c", "target_port": "i"},
+        ],
+        "baked": {"a": {"o": "baked-a"}},
+    }
+    outputs = {"a": {"o": "stale-a"}, "b": {"o": "live-b"}}
+    assert input_values(d, outputs, "c", "i") == ["live-b"]

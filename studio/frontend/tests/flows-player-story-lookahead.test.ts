@@ -297,3 +297,23 @@ test("a new playthrough cancels a live miss without letting it end a later hold 
   await held;
   assert.equal(calls.length, 2);
 });
+
+test("a failed request is asked again on a later visit, a finished one is not", async () => {
+  const requested = new Set<string>();
+  let calls = 0;
+  const failing = () => {
+    calls++;
+    return Promise.reject(new Error("no GPU"));
+  };
+  const first = L.requestOnce(requested, "0:art:a", failing);
+  assert.ok(first);
+  assert.equal(L.requestOnce(requested, "0:art:a", failing), null, "no second call while the first is out");
+  await first.catch(() => undefined);
+  await tick();
+  assert.equal(requested.has("0:art:a"), false);
+  await L.requestOnce(requested, "0:art:a", failing)?.catch(() => undefined);
+  assert.equal(calls, 2);
+  await L.requestOnce(requested, "0:art:b", () => Promise.resolve(1));
+  await tick();
+  assert.equal(L.requestOnce(requested, "0:art:b", () => Promise.resolve(2)), null);
+});
