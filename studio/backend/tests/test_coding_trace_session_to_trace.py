@@ -429,6 +429,28 @@ def test_assistant_text_that_python_strips_is_dropped(custom):
     ]
 
 
+@pytest.mark.parametrize(
+    "tool, result, sent",
+    [
+        ("run", {"loss": 1.5e-7, "v": 100.0, "x": 1e21}, '{"loss":1.5e-7,"v":100,"x":1e+21}'),
+        ("run", {"b": 1, "1": 2}, '{"1":2,"b":1}'),
+        ("run", {"n": 12345678901234567890, "m": 10**400}, '{"n":12345678901234567000,"m":null}'),
+        ("run", [0.1, 2.5e-9], "[0.1,2.5e-9]"),
+        (
+            "mcp__s__img",
+            {"text": "t", "images": [], "n": 2e-9},
+            '{"text":"t","images":[],"n":2e-9}',
+        ),
+    ],
+)
+def test_object_tool_results_print_like_json_stringify(tool, result, sent):
+    rows = [
+        _row("u", "user", _text("go"), None, 1),
+        _row("a", "assistant", [_call("c1", tool, result = result), *_text("done")], "u", 2),
+    ]
+    assert session_to_trace({"id": "t"}, rows).messages[2].text == sent
+
+
 @pytest.mark.parametrize("tool", ["generate_image", "generate_video"])
 @pytest.mark.parametrize("text, sent", [("Saved cat.png", "Saved cat.png"), ("", '{"result":""}')])
 def test_media_tool_file_wrapper_replays_its_text(tool, text, sent):

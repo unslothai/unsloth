@@ -36,6 +36,7 @@ from core.rag.conversation_archive import (
     _search_images_result,
     _server_builtin,
     _tool_result_content,
+    _unwrapped,
     _with_attachments,
 )
 from storage import studio_db
@@ -320,8 +321,10 @@ def _tool_message(part: dict, name: str, call_id: str, message: dict) -> TraceMe
     elif _mcp_image_result(result) and not _search_images_result(result):
         image_tool = name == "view_image" or name.startswith("mcp__")  # isImageToolName
         if "ui" in result or not (image_tool or set(result) <= {"text", "images"}):
-            result = json.dumps(result, ensure_ascii = False, separators = (",", ":"))
+            result = _js_json(result)
     wire["content"] = _tool_result_content(result, name)
+    if not isinstance(result, str) and _unwrapped(result, name) is None:
+        wire["content"] = _js_json(result)  # the UI sends JSON.stringify(result)
     suffix = _as_dict(part.get("provenance")).get("model_suffix")
     if isinstance(suffix, str) and suffix:
         wire["extra_content"] = {TOOL_MODEL_SUFFIX_KEY: suffix}
@@ -524,6 +527,11 @@ def _js_json(value: object) -> str:
         return "{" + ",".join(f"{_js_string(k)}:{_js_json(value[k])}" for k in keys) + "}"
     if isinstance(value, list):
         return "[" + ",".join(_js_json(v) for v in value) + "]"
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 2**53:
+        try:  # JSON.parse rounds it to a double
+            value = float(value)
+        except OverflowError:
+            return "null"
     if isinstance(value, float):
         return _js_number(value) if math.isfinite(value) else "null"
     return _js_string(value) if isinstance(value, str) else json.dumps(value)
