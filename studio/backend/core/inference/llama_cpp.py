@@ -489,10 +489,9 @@ from core.inference.mcp_images import (
     is_image_tool as mcp_is_image_tool,
     mentions_images as mcp_images_mentioned_in,
 )
+from core.inference.tool_facts import repeatable
 from core.inference.tool_loop_controller import (
-    _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
-    REPEATABLE_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
@@ -500,6 +499,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    reads_only,
     restore_replayed_tool_results,
     with_appended_text,
     tool_call_limit_nudge,
@@ -1422,17 +1422,6 @@ def _has_unclosed_code_fence(text: str) -> bool:
     return active_char is not None
 
 
-def _has_unclosed_markup_block(text: str) -> bool:
-    """Counted rather than matched, so a closed block followed by an open one still counts as unclosed."""
-    opens_html = len(re.findall(r"<html\b", text, re.IGNORECASE))
-    closes_html = len(re.findall(r"</html\s*>", text, re.IGNORECASE))
-    if opens_html > closes_html:
-        return True
-    opens_svg = len(re.findall(r"<svg\b", text, re.IGNORECASE))
-    closes_svg = len(re.findall(r"</svg\s*>", text, re.IGNORECASE))
-    return opens_svg > closes_svg
-
-
 # "First, I'll create an <html></html> skeleton" is a plan, not a page.
 _EMPTY_MARKUP_SKELETON = re.compile(
     r"<(html|svg)\b[^>]*>\s*</\1\s*>",
@@ -2039,6 +2028,10 @@ def _sticky_compaction_details(
     try:
         from storage import studio_db
 
+        # Boundaries live only in a stored row's contextTruncation; most threads have none.
+        has_truncation = getattr(studio_db, "chat_thread_has_context_truncation", None)
+        if has_truncation is not None and not has_truncation(thread_id):
+            return 0, False, False
         stored = list(studio_db.list_chat_messages(thread_id) or [])
         states = _compaction_branch_states(stored, branch_messages)
         if not states:
@@ -7997,6 +7990,17 @@ def _info_once_per_load(msg: str, *args) -> None:
 # "Probed, no usable answer", kept apart from None = "not probed yet".
 _MISSING = object()
 
+
+def _apple_wired_headroom_bytes_for_load() -> Optional[int]:
+    """One placement asks several times (sysctl + ioreg each); an armed load reuses the first reading."""
+    memo = _load_probe_memo_get("apple_wired", None)
+    if memo is not None:
+        return None if memo is _MISSING else memo
+    wired = _apple_wired_headroom_bytes()
+    _load_probe_memo_put("apple_wired", None, _MISSING if wired is None else wired)
+    return wired
+
+
 # Display reads only (/api/system would spawn the probe per poll); a GPU memory event or fresh_reads() skips it.
 _VULKAN_INVENTORY_TTL_S = 30.0
 _vulkan_inventory_lock = threading.Lock()
@@ -8198,6 +8202,8 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
                 getattr(backend, "_model_identifier", None),
                 id(process),
                 getattr(process, "pid", None),
+                # llama.cpp renders date_string / strftime_now from its clock (Llama 3.x templates print the date)
+                time.strftime("%Y-%m-%d"),
                 *parts,
             ],
             sort_keys = True,
@@ -8654,6 +8660,8 @@ class LlamaCppBackend:
         self._mmproj_accepts_image: bool = True
         # Set in _kill_process (monotonic); load_model reads it to decide whether to wait for VRAM reclaim.
         self._last_kill_monotonic: float = 0.0
+        # {GPU: (free MiB, child's weights MiB)} read just before the last kill.
+        self._last_kill_vram_baseline: Optional[dict[int, tuple[int, float]]] = None
         self._planned_vram_mib: dict[int, int] = {}
         self._pending_plan_mib: dict[int, int] = {}
 
@@ -10248,6 +10256,8 @@ class LlamaCppBackend:
     _build_number_cache: dict[tuple[str, int, int], Optional[int]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
+    # Not on the caps dict: probe_server_capabilities returns a fresh copy on --fit-target builds.
+    _reasoning_budget_value_cache: dict[tuple[str, int, int, int], bool] = {}
     _capability_cache_lock = threading.Lock()
 
     # Older builds take a bare boolean -fa and exit on a following "on".
@@ -10884,27 +10894,47 @@ class LlamaCppBackend:
             value_key = f"supports_reasoning_budget_value:{effective_budget}"
             if value_key not in caps:
                 probe_binary = cls._exec_path_for_launch(binary)
-                probe_env = cls._llama_server_env_for_binary(probe_binary)
-                # llama-server parses LLAMA_ARG_* before argv, so clear stale inherited values.
-                for name in tuple(probe_env):
-                    if name.startswith("LLAMA_ARG_"):
-                        probe_env.pop(name, None)
-                if sys.platform == "darwin":
-                    probe_env["GGML_METAL_DEVICES"] = "0"
                 try:
-                    result = subprocess.run(
-                        [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
-                        capture_output = True,
-                        text = True,
-                        encoding = "utf-8",
-                        errors = "replace",
-                        timeout = 10,
-                        check = False,
-                        env = probe_env,
+                    probe_stat = Path(probe_binary).stat()
+                    value_cache_key = (
+                        str(probe_binary),
+                        probe_stat.st_mtime_ns,
+                        probe_stat.st_size,
+                        effective_budget,
                     )
-                    caps[value_key] = result.returncode == 0
-                except (OSError, subprocess.SubprocessError):
-                    caps[value_key] = False
+                except OSError:
+                    value_cache_key = None
+                with cls._capability_cache_lock:
+                    known = cls._reasoning_budget_value_cache.get(value_cache_key)
+                if known is not None:
+                    caps[value_key] = known
+                else:
+                    probe_env = cls._llama_server_env_for_binary(probe_binary)
+                    # llama-server parses LLAMA_ARG_* before argv, so clear stale inherited values.
+                    for name in tuple(probe_env):
+                        if name.startswith("LLAMA_ARG_"):
+                            probe_env.pop(name, None)
+                    if sys.platform == "darwin":
+                        probe_env["GGML_METAL_DEVICES"] = "0"
+                    try:
+                        result = subprocess.run(
+                            [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
+                            capture_output = True,
+                            text = True,
+                            encoding = "utf-8",
+                            errors = "replace",
+                            timeout = 10,
+                            check = False,
+                            env = probe_env,
+                            **_windows_hidden_subprocess_kwargs(),
+                        )
+                        caps[value_key] = result.returncode == 0
+                        # Spawn errors, timeouts, signals and NTSTATUS crashes (unsigned) probe again.
+                        if value_cache_key is not None and 0 <= result.returncode < 0xC0000000:
+                            with cls._capability_cache_lock:
+                                cls._reasoning_budget_value_cache[value_cache_key] = caps[value_key]
+                    except (OSError, subprocess.SubprocessError):
+                        caps[value_key] = False
             if not caps[value_key]:
                 raise ValueError(
                     f"llama-server at {binary} does not accept positive reasoning budgets. "
@@ -12488,6 +12518,11 @@ class LlamaCppBackend:
         return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
 
     @staticmethod
+    def _cuda_device_info():
+        from utils.hardware import nvidia
+        return nvidia.cuda_device_info_or_torch()
+
+    @staticmethod
     def _integrated_cuda_gpu_ids() -> set[int]:
         """PHYSICAL ids of visible integrated CUDA GPUs; ROCm is left to _rocm_unified_memory_gpu_ids."""
         cached = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
@@ -12503,29 +12538,19 @@ class LlamaCppBackend:
                 return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return set()
+            info = LlamaCppBackend._cuda_device_info()
+            if info is None:
+                return set()
             # Same ordinal-to-physical map as the ROCm twin, so masked CUDA_VISIBLE_DEVICES=2 hosts stay correct.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            integrated: set[int] = set()
-            # An incomplete pass is returned but not cached, so a failed query is retried.
-            complete = True
-            for ordinal in range(torch.cuda.device_count()):
-                try:
-                    props = torch.cuda.get_device_properties(ordinal)
-                except Exception:
-                    complete = False
-                    continue
-                # Both attribute spellings: torch renamed `integrated`.
-                if not (
-                    getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
-                ):
-                    continue
-                integrated.add(
-                    physical_ids[ordinal]
-                    if physical_ids is not None and ordinal < len(physical_ids)
-                    else ordinal
-                )
-            # Cached for the preflight only if the pass reached every device; a torch that raised says nothing.
-            if complete:
+            integrated = {
+                physical_ids[ordinal]
+                if physical_ids is not None and ordinal < len(physical_ids)
+                else ordinal
+                for ordinal, device in enumerate(info)
+                if device is not None and device[1]
+            }
+            if all(device is not None for device in info):
                 LlamaCppBackend._INTEGRATED_CUDA_IDS[
                     LlamaCppBackend._integrated_cuda_mask_key()
                 ] = integrated
@@ -12538,7 +12563,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _integrated_cuda_pool_total_mib() -> dict[int, int]:
-        """Pool MiB per integrated CUDA device, from props.total_memory: what it can actually allocate."""
+        """Pool MiB per integrated CUDA device, from the driver's total memory: what it can actually allocate."""
         key = LlamaCppBackend._integrated_cuda_mask_key()
         cached = LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB.get(key)
         if cached is not None:
@@ -12547,24 +12572,21 @@ class LlamaCppBackend:
         if not integrated:
             return {}
         try:
-            import torch
-
+            info = LlamaCppBackend._cuda_device_info()
+            if info is None:
+                return {}
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             totals: dict[int, int] = {}
-            complete = True
-            for ordinal in range(torch.cuda.device_count()):
+            complete = all(device is not None for device in info)
+            for ordinal, device in enumerate(info):
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                if idx not in integrated:
+                if device is None or idx not in integrated:
                     continue
-                try:
-                    props = torch.cuda.get_device_properties(ordinal)
-                    totals[idx] = int(props.total_memory) // (1024 * 1024)
-                except Exception:
-                    complete = False
+                totals[idx] = int(device[2]) // (1024 * 1024)
             if complete:
                 LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB[key] = totals
             return totals
@@ -12728,17 +12750,16 @@ class LlamaCppBackend:
                 return False  # ROCm reuses torch.cuda.*; not a CUDA part
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            count = torch.cuda.device_count()
+            info = LlamaCppBackend._cuda_device_info() or []
 
             # Mirror _get_gpu_free_memory; unset or unparsable CUDA_VISIBLE_DEVICES keeps physical id == ordinal.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
 
             names_by_id: dict[int, str] = {}
-            for ordinal in range(count):
-                try:
-                    name = (torch.cuda.get_device_properties(ordinal).name or "").lower()
-                except Exception:
+            for ordinal, device in enumerate(info):
+                if device is None:
                     continue
+                name = (device[3] or "").lower()
                 pid = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
@@ -13921,12 +13942,12 @@ class LlamaCppBackend:
     @staticmethod
     def _apple_metal_wired_ceiling_bytes() -> int:
         """Wired GPU memory a Metal load may still take, system-wide; 0 if unknown or used up."""
-        return _apple_wired_headroom_bytes() or 0
+        return _apple_wired_headroom_bytes_for_load() or 0
 
     @staticmethod
     def _apple_metal_wired_headroom_bytes() -> Optional[int]:
         """The same headroom, but None when unknown, so 0 means used up."""
-        return _apple_wired_headroom_bytes()
+        return _apple_wired_headroom_bytes_for_load()
 
     @staticmethod
     def _metal_fit_target_floor_mib() -> float:
@@ -16412,14 +16433,65 @@ class LlamaCppBackend:
     # Skip the wait when the last kill is older than this; the driver has already reclaimed it.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
 
+    # Weights under this on a GPU cannot be told from noise in its free-VRAM figure.
+    _VRAM_RELEASE_MIN_HELD_MIB: float = 512.0
+    # Windows (WDDM) reports a dead child's VRAM as free after it exits. A bound, not a measurement.
+    _VRAM_RELEASE_WAIT_S: float = 10.0
+
+    @staticmethod
+    def _free_vram_counts_only_this_process() -> bool:
+        """Windows ROCm free VRAM excludes other processes; checks torch too, as IS_ROCM is set late."""
+        if sys.platform != "win32":
+            return False
+        from utils.hardware import rocm_windows_free_is_untrusted
+
+        if rocm_windows_free_is_untrusted():
+            return True
+        torch = sys.modules.get("torch")
+        return torch is not None and LlamaCppBackend._torch_is_rocm(torch)
+
+    def _vram_baseline_before_kill(self) -> Optional[dict[int, tuple[int, float]]]:
+        """{GPU: (free MiB, child's weights MiB)} while the child lives; None if any GPU's reading
+        does not count those weights as used (cannot show their release) or on Windows ROCm."""
+        try:
+            if self._free_vram_counts_only_this_process():
+                return None
+            held = {
+                idx: float(gb) * 1024.0
+                for idx, gb in (self.reclaimable_gpu_memory_gb() or {}).items()
+                if float(gb) * 1024.0 >= self._VRAM_RELEASE_MIN_HELD_MIB
+            }
+            if not held:
+                return None
+            from utils.hardware import gpu_query
+
+            with gpu_query.fresh_reads():
+                readings = {
+                    i: (free, total) for i, free, total in LlamaCppBackend._get_gpu_memory()
+                }
+            # Again: the read itself may be what imported torch.
+            if self._free_vram_counts_only_this_process():
+                return None
+            baseline: dict[int, tuple[int, float]] = {}
+            for idx, held_mib in held.items():
+                free, total = readings.get(idx, (0, 0))
+                if total <= 0 or total - free < held_mib / 2.0:
+                    return None
+                baseline[idx] = (int(free), held_mib)
+            return baseline
+        except Exception:
+            return None
+
     @staticmethod
     def _wait_for_vram_settle(
         max_wait: float = 2.0,
         interval: float = 0.25,
         tolerance_mib: int = 256,
         since_kill: float = 0.0,
+        baseline: Optional[dict[int, tuple[int, float]]] = None,
     ) -> None:
-        """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi."""
+        """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi.
+        With ``baseline``, samples count only once the child's VRAM shows freed (up to ``_VRAM_RELEASE_WAIT_S``)."""
         now = time.monotonic()
         if since_kill <= 0.0:
             return
@@ -16439,18 +16511,40 @@ class LlamaCppBackend:
             except Exception:
                 return None
 
+        def _released(sample) -> bool:
+            # Per GPU; half the weights, since another tenant may take some of the freed memory.
+            free = dict(sample)
+            return all(
+                free.get(idx, before) - before >= held / 2.0
+                for idx, (before, held) in baseline.items()
+            )
+
         prev = _probe_or_none()
         if prev is None or not prev:
             return
+        # A GPU the probe no longer lists cannot be tracked.
+        awaiting_release = (
+            bool(baseline) and set(baseline) <= {idx for idx, _free in prev} and not _released(prev)
+        )
+        if awaiting_release:
+            deadline = now + max(max_wait, LlamaCppBackend._VRAM_RELEASE_WAIT_S)
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return
+                break
             # Clip the nap so a near-zero ``max_wait`` is respected.
             time.sleep(min(interval, remaining))
+            if awaiting_release and time.monotonic() >= deadline:
+                break
             curr = _probe_or_none()
             if curr is None or not curr or len(curr) != len(prev):
                 return
+            if awaiting_release:
+                if _released(curr):
+                    awaiting_release = False
+                    deadline = time.monotonic() + max_wait
+                prev = curr
+                continue
             prev_map = dict(prev)
             stable = True
             for idx, free in curr:
@@ -16466,6 +16560,13 @@ class LlamaCppBackend:
             if stable:
                 return
             prev = curr
+        if awaiting_release:
+            logger.warning(
+                "Free VRAM did not rise within %.1f s of stopping the previous llama-server "
+                "(it held about %.0f MiB); the GPU fit that follows uses the reported figure.",
+                max(max_wait, LlamaCppBackend._VRAM_RELEASE_WAIT_S),
+                sum(held for _before, held in baseline.values()),
+            )
 
     # Free-VRAM fraction at which Unsloth pins the GPU instead of deferring to --fit on.
     # Guards fragmentation and per-device context; 0.90 sent 91-94% fits to CPU offload.
@@ -24285,7 +24386,10 @@ class LlamaCppBackend:
                 self._vram_fraction_launched = None
                 # Outside the lock, as for llama-server: the Auto layer fit reads free VRAM,
                 # which a just-killed runner still holds until the driver reclaims it.
-                self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+                self._wait_for_vram_settle(
+                    since_kill = self._last_kill_monotonic,
+                    baseline = getattr(self, "_last_kill_vram_baseline", None),
+                )
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
@@ -24321,7 +24425,10 @@ class LlamaCppBackend:
             self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside self._lock so /unload, /cancel, /status aren't blocked.
-            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+            self._wait_for_vram_settle(
+                since_kill = self._last_kill_monotonic,
+                baseline = getattr(self, "_last_kill_vram_baseline", None),
+            )
 
             # ── Phase 3: start llama-server (under lock) ──────────────
             with self._lock:
@@ -26833,6 +26940,8 @@ class LlamaCppBackend:
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: cap here, or the context stays native and over-commits
                         # unified memory.
+                        # After the download: the wired checks below share one reading for this load.
+                        _arm_load_probe_memo()
                         # llama.cpp's --fit is blind to Unsloth's own footprint and the wired limit.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # With --fit off (argv or LLAMA_ARG_FIT env) nothing reduces what we emit, so hand over the floor the llama.cpp fitter itself would reduce to.
@@ -34549,6 +34658,9 @@ class LlamaCppBackend:
         """Read both before terminate: getpgid fails once the leader is reaped and children reparent on exit; the visual server must be named while the link exists"""
         self._stop_mtp_crash_watchdog()
         self._reset_effective_parallel_slots()
+        if self._process is not None:
+            # While the child still holds its VRAM and its GPU ids; a shutdown has no load to plan for.
+            self._last_kill_vram_baseline = None if teardown else self._vram_baseline_before_kill()
         # _process may be a test stand-in lacking terminate(); skip signalling, fall through to finally.
         self._diffusion_requested_ngl = None
         self._child_gpu_physical_ids = None
@@ -39700,6 +39812,8 @@ class LlamaCppBackend:
                             and _nudge_enabled(nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
+                            # Telling the user what only they can do is the answer, not a stall.
+                            and not tool_controller.awaiting_user
                             and _reprompt_used < _reprompt_cap
                             and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
                             # _stripped is what gets replayed; intent text may be a short tail.
@@ -39927,19 +40041,25 @@ class LlamaCppBackend:
                     for _tc in tool_calls if deduplicate_tool_calls else ():
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                        if _reruns_after_new_work(_fn.get("name")):
+                        # An unseeded generator: two identical calls are two outputs, and each is new work.
+                        if _reruns_after_new_work(_fn.get("name")) and repeatable(_fn.get("name")):
+                            if not reads_only(_fn.get("name")):
+                                _novel_kept += 1
+                            _novel_at_last_keep[_key] = _novel_kept
+                            _last_workspace_key = _key
+                        elif _reruns_after_new_work(_fn.get("name")):
                             if _key == _last_workspace_key:
                                 continue
                             if _key in _seen_keys:
                                 if _novel_kept <= _novel_at_last_keep.get(_key, 0):
                                     continue
-                            elif _fn.get("name") not in _WORKSPACE_READ_TOOLS:
+                            elif not reads_only(_fn.get("name")):
                                 _novel_kept += 1
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
                         # A browser call acts on the page as it is then: two scrolls are two scrolls.
                         # Two identical generate_image calls are two images.
-                        elif _key in _seen_keys and _fn.get("name") not in REPEATABLE_TOOL_NAMES:
+                        elif _key in _seen_keys and not repeatable(_fn.get("name")):
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -40047,6 +40167,7 @@ class LlamaCppBackend:
                         _keys.add(_spec.key)
                         _next += 1
 
+                tool_controller.begin_batch()
                 for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")

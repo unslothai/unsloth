@@ -11,6 +11,12 @@ import sys
 
 import pytest
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
+
 import core.inference.diffusion_prequant as pq
 import core.inference.prequant_safetensors as ps
 from core.inference.diffusion_families import DiffusionFamily
@@ -165,8 +171,7 @@ def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
 
 
 def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypatch):
-    """The preference itself, and the promise that nothing is dropped behind it: an existing
-    .pt-only repo still resolves both of the names it resolves today."""
+    """Safetensors is preferred, and a .pt-only repo still resolves both names."""
     fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
     src = pq.resolve_prequant_source(fam, "fp8")
     assert src.candidate_filenames == (
@@ -178,8 +183,7 @@ def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypa
 
 
 def test_local_scheme_probe_reads_the_header_only(monkeypatch, tmp_path):
-    """The probe must not parse a multi-GB file to learn one string. For safetensors it reads the
-    header, and it must NOT reach the pickle reader on the way."""
+    """The scheme probe reads only the safetensors header, never the pickle reader."""
     path = tmp_path / "local-FP8.safetensors"
     path.write_bytes(b"not really safetensors")
 
@@ -392,6 +396,7 @@ def test_the_windows_rocm_torchao_stub_is_not_safetensors_support(monkeypatch):
     assert restricted_prequant_load_supported("fp8", "Model-FP8.pt") is False
 
 
+@needs_torchao
 def test_a_scheme_this_torchao_cannot_flatten_is_reported_before_the_build(monkeypatch):
     """Importing helpers proves nothing; torchao 0.17 int8 cannot flatten, so report it before building."""
     import torchao.quantization as tq
@@ -428,6 +433,7 @@ def test_a_scheme_this_torchao_cannot_flatten_is_reported_before_the_build(monke
     assert ps.scheme_is_flattenable("cfg") is False
 
 
+@needs_torchao
 def test_the_real_installed_torchao_answers_the_int8_question(monkeypatch):
     """Not a mock: the probe against the torchao actually installed, whichever way it answers."""
     from core.inference.diffusion_transformer_quant import _make_quant_config
@@ -443,6 +449,7 @@ def test_the_real_installed_torchao_answers_the_int8_question(monkeypatch):
         assert answer is not False, f"torchao {torchao.__version__} should flatten int8"
 
 
+@needs_torchao
 def test_a_root_level_plain_tensor_round_trips_instead_of_failing_the_build(tmp_path):
     """Root-level plain tensors are split before flatten and restored after, so z-image builds survive."""
     torch = pytest.importorskip("torch")

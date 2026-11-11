@@ -397,8 +397,21 @@ class AdamWBF16(torch.optim.Optimizer):
                 if original is None:
                     continue
                 state = self.state[p]
+                # The CUDA kernel indexes moments by the parameter's element count and reads step / seed as scalars,
+                # so a mismatched checkpoint must fail here, not read and write out of bounds on the next step.
                 for name in ("exp_avg", "exp_avg_sq"):
-                    state[name] = original[name].to(device = p.device, dtype = torch.float32)
+                    if tuple(original[name].shape) != tuple(p.shape):
+                        raise ValueError(
+                            f"AdamWBF16 state {name} has shape {tuple(original[name].shape)}, "
+                            f"but its parameter has shape {tuple(p.shape)}"
+                        )
+                for name in ("step", "sr_seed"):
+                    if original[name].numel() != 1:
+                        raise ValueError(f"AdamWBF16 state {name} must be a single value")
+                for name in ("exp_avg", "exp_avg_sq"):
+                    state[name] = (
+                        original[name].to(device = p.device, dtype = torch.float32).contiguous()
+                    )
                 state["step"] = original["step"].to(device = p.device, dtype = torch.int64)
                 state["sr_seed"] = original["sr_seed"].to(device = p.device, dtype = torch.int64)
         self._initialize()

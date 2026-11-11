@@ -63,8 +63,7 @@
     }
     return st;
   };
-  // The decoder that last delivered SSE, i.e. the measured stream. Built by newState() so a window
-  // opening before the first stream reads zero, not undefined.
+  // Last decoder to deliver SSE, the measured stream; newState() keeps early windows at zero.
   let active = newState();
   // Marker fragment holder; reported even before its decoder is identified as the stream.
   let markerHold = null;

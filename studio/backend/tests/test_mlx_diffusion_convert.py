@@ -187,6 +187,14 @@ def test_pack_is_byte_identical_to_the_reference(bits, dtype):
     assert conv._pack(edge, bits).tobytes() == _pack_reference(edge, bits).tobytes()
 
 
+@pytest.mark.parametrize("bits", [2, 3, 4, 5, 6, 8])
+def test_pack_takes_fortran_order_and_strided_inputs(bits):
+    q = _rng(bits).integers(0, 1 << bits, size = (300, 64), dtype = np.uint8)
+    ref = _pack_reference(q, bits).tobytes()
+    assert conv._pack(np.asfortranarray(q), bits).tobytes() == ref
+    assert conv._pack(np.ascontiguousarray(q.T).T, bits).tobytes() == ref
+
+
 @pytest.mark.parametrize("bits", [4, 8])
 def test_pack_does_not_widen_to_uint32_per_element(bits):
     import tracemalloc

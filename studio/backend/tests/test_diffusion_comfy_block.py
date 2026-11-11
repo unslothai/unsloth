@@ -582,7 +582,7 @@ def test_backends_are_logged_per_format_present(caplog):
     with caplog.at_level(logging.INFO, logger = "comfy_block_test"):
         out = cb.comfy_block_backends(scan, _target("cpu"), "z-image", logger = logger)
     assert out == {"nvfp4_backend": None, "mxfp8_backend": None}
-    assert "3 nvfp4 layer(s) are dequantized" in caplog.text and "mxfp8" not in caplog.text
+    assert "3 nvfp4 layer(s) have no native runtime" in caplog.text and "mxfp8" not in caplog.text
 
 
 def test_a_failed_mxfp8_probe_is_not_cached(monkeypatch):
@@ -731,7 +731,11 @@ def _rss_anon_bytes():
         ctypes.CDLL("libc.so.6").malloc_trim(0)  # hand freed heap back, so RssAnon is what is live
     except OSError:
         pass
-    with open("/proc/self/status") as status:
+    try:
+        status = open("/proc/self/status")
+    except OSError:  # no procfs (Windows, macOS): callers skip on None
+        return None
+    with status:
         for line in status:
             if line.startswith("RssAnon:"):
                 return int(line.split()[1]) * 1024
@@ -739,10 +743,8 @@ def _rss_anon_bytes():
 
 
 def test_a_many_layer_nvfp4_fallback_load_that_fits_is_not_refused(tmp_path, monkeypatch):
-    """No nvfp4 runtime: every layer is nibble-swapped, its scales untiled, then dequantized, and the
-    swapped codes and plain scales are freed again before the next layer. Free host RAM is modelled
-    from this process's own anonymous RSS, with room for the dense weights plus 10% and one chunk of
-    dequantization intermediates: the load fits and must not be refused for copies already released."""
+    """Without an nvfp4 runtime, each layer is dequantized then freed; free RAM is this process's
+    RssAnon, and the charge is dense plus 10% and one chunk, so a fitting load is not refused."""
     import core.inference.diffusion_single_file_converters as conv
     import core.inference.diffusion_small_host as small_host
 
@@ -869,12 +871,9 @@ print("PEAK " + json.dumps({"seen": seen, "growth": growth}))
 
 @pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
 def test_block_dequant_is_checked_for_its_peak_intermediates(fmt):
-    """The fallback dequantization builds int32 / float32 intermediates several times the bf16 output; the
-    check before it must cover the measured peak, not only the output.
-
-    Measured in a fresh process: RssAnon is process-wide, and in a long-lived pytest worker the
-    allocator state and threads left by earlier tests added a steady ~7 MB to every reading (CI saw
-    0.88 of a growth that measures 0.98-1.07 on its own, for the same torch build)."""
+    """Fallback dequant builds int32/float32 intermediates several times the bf16 output, so check
+    the peak, not the output; measure in a fresh process, since earlier tests in one pytest
+    worker add ~7 MB of RssAnon."""
     import subprocess
     import sys
     from pathlib import Path
@@ -1014,12 +1013,9 @@ def _host_peak_in_a_fresh_process(kind):
 
 @pytest.mark.parametrize("kind", ["int8_convrot", "fp8"])
 def test_int8_fp8_dequant_is_checked_for_its_float32_peak(kind):
-    """int8 / fp8 dequantization holds float32 codes and their float32 product together (and ConvRot's
-    float32 matmul result); the check before it must cover the measured peak, not only the output.
-
-    In a fresh process for the reason given on test_block_dequant_is_checked_for_its_peak_intermediates:
-    in a pytest worker the readings carry whatever earlier tests left behind (CI saw 237.7 MB of growth
-    against a 201.3 MB charge for int8_convrot, which measures under the charge on its own)."""
+    """int8/fp8 dequant holds float32 codes and their product (plus ConvRot's float32 matmul), so
+    the check must cover that peak; run in a fresh process, since worker readings carry earlier
+    tests' memory."""
     if _rss_anon_bytes() is None:
         pytest.skip("needs /proc/self/status RssAnon")
     seen, growth = _host_peak_in_a_fresh_process(kind)
@@ -1027,9 +1023,8 @@ def test_int8_fp8_dequant_is_checked_for_its_float32_peak(kind):
 
 
 def test_a_load_under_the_floor_is_checked_once_its_allocations_reach_it(block_file, monkeypatch):
-    """File and estimate both under the floor (the estimate assumed the mxfp8 runtime keeps every layer),
-    but the runtime filter rejects them all and they are dequantized: once those allocations reach the
-    floor the check must run."""
+    """File and estimate sit under the floor, but the mxfp8 runtime filter rejects every layer, so
+    they are dequantized; the check must still run once allocations reach it."""
     import os
 
     conv = _tight_host(monkeypatch, headroom_mib = 0)
@@ -1065,3 +1060,30 @@ def test_untiling_padded_blocks_checks_both_live_copies(monkeypatch):
     monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
     assert torch.equal(cb.untile_scales(tiled, rows, blocks), plain)
     assert seen == [_ceil(rows, 128) * _ceil(blocks, 4) + rows * blocks]
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
+def test_a_compact_storage_load_holds_block_layers_at_their_file_size(block_file, fmt):
+    """The fp8-storage pick (widening would offload) keeps nvfp4 / mxfp8 layers no runtime takes near their file
+    size, not as a bf16 copy, and their weights stay the dense load's."""
+    path, _tensors, _expected = block_file(fmt)
+    dense = _load(path, dtype = torch.bfloat16)
+    compact = _load(path, dtype = torch.bfloat16, fp8_storage = True)
+    names = [f"blocks.{b}.{n}" for b in range(2) for n in ("to_q", "to_k", "to_v", "to_out")]
+
+    def held(model, name):
+        mod = model.get_submodule(name)
+        tensors = [
+            t for n, t in list(mod.named_parameters()) + list(mod.named_buffers()) if n != "bias"
+        ]
+        return sum(t.numel() * t.element_size() for t in tensors)
+
+    bf16 = sum(held(dense, n) for n in names)
+    kept = sum(held(compact, n) for n in names)
+    assert bf16 == 8 * DIM * DIM * 2
+    assert kept < (0.3 if fmt == "nvfp4" else 0.6) * bf16, (kept, bf16)
+    for name in names:
+        assert torch.equal(
+            compact.get_submodule(name).weight.view(torch.int16),
+            dense.get_submodule(name).weight.view(torch.int16),
+        ), name

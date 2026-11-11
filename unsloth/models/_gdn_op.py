@@ -12,9 +12,8 @@ from torch.autograd.graph import saved_tensors_hooks
 
 
 def _causal_depthwise_conv(x, weight):
-    """F.conv1d(x, weight[:, None], groups = C, padding = K - 1)[..., :T] for x (B, C, T), weight
-    (C, K), as K shifted multiply-adds accumulated in fp32. Inductor's convolution_backward
-    lowering guards on the exact sequence length (a recompile per length); this stays dynamic."""
+    """Causal depthwise conv as K shifted multiply-adds accumulated in fp32 (not conv1d); Inductor
+    conv backward recompiles per exact sequence length, so this stays dynamic"""
     seq_len, padding = x.shape[-1], weight.shape[-1] - 1
     xp = F.pad(x, (padding, 0)).float()
     w = weight.float()

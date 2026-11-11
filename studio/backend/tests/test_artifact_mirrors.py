@@ -264,9 +264,8 @@ def test_a_gguf_artifact_mirror_lists_only_its_gguf_row_which_counts_the_folders
 
 @pytest.mark.parametrize("cached", ["companions", "full"])
 def test_on_device_lists_an_artifact_mirror_as_its_checkpoint_only(tmp_path, cached):
-    """The On Device scan applies the same rule: the GGUF repo shows only its GGUF row (folders counted), and the FP8
-    repo's row is never a loadable or resumable pipeline. A snapshot with no folders is left as released builds
-    listed it."""
+    """On Device shows the GGUF repo only as its GGUF row (folders counted); an FP8 repo row is
+    never loadable or resumable; folder-less snapshots stay as released."""
     from hub.services.models import local_inventory
 
     extra = {**_FOLDERS, **(_DENOISER if cached == "full" else {})}
@@ -466,9 +465,8 @@ def test_a_gguf_and_its_folders_split_across_cache_roots_keep_one_row_per_root(
 
 
 def test_a_custom_folder_with_the_gguf_and_folders_in_two_caches_keeps_one_row_per_cache(tmp_path):
-    """A registered custom scan folder can hold several HF caches; the GGUF in one and the mirror's folders in the
-    other are treated like the top-level roots: the GGUF row counts only its own cache, and any folders row is the
-    GGUF's companion prefetch, never a pick."""
+    """Custom scan folders can hold several HF caches; a GGUF and the mirror's folders in separate
+    caches each keep their own row, and folders are a companion, never a pick."""
     from hub.services.models import local_inventory
 
     repo = "unsloth/Z-Image-GGUF"
@@ -554,9 +552,8 @@ _SHAPES = {
 def test_progress_reaches_expected_exactly_when_every_planned_file_is_cached(
     monkeypatch, tmp_path, shape
 ):
-    """expected_bytes and the progress scan come from ONE list of planned files, so whatever else the repos hold
-    (sibling quants, other prequant schemes, sample renders), downloaded equals expected once every planned file is
-    cached, and stays below it while one is still in flight."""
+    """expected_bytes and the progress scan share one list of planned files, so downloaded equals
+    expected once all are cached and stays below while one is in flight."""
     from core.inference.diffusion import _LoadingState, _planned_progress_files
 
     s = _SHAPES[shape]
@@ -719,9 +716,8 @@ def test_a_stale_incomplete_blob_from_a_cancelled_sibling_is_not_progress(monkey
 def test_a_folders_only_copy_in_the_other_root_is_a_companion_row_and_no_orphan(
     monkeypatch, tmp_path
 ):
-    """The GGUF in one cache root, the mirror's folders in the other: the compatibility cached-models route lists no
-    single-file row for the folders copy, and Free up space does not offer it, since the installed GGUF loads its
-    companions from it."""
+    """The folders copy in another root gets no single-file row, and Free up space does not offer
+    it, since the installed GGUF loads its companions from it."""
     import asyncio
     from types import SimpleNamespace
 

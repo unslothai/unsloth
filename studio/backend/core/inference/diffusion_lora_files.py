@@ -6,6 +6,7 @@ adapter names: :func:`set_adapter_weights` / :func:`unload_adapters` replace dif
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Optional
 
@@ -34,6 +35,48 @@ NORMALIZED_FAMILIES = ("anima", "krea-2", "moss-image")
 def read_lora_file(path: str) -> dict:
     from safetensors.torch import load_file
     return load_file(str(path))
+
+
+# "0": a rewritten file ignores its diffusers lora_adapter_metadata (every module at scale 1, as before).
+REWRITE_METADATA_ENV = "UNSLOTH_DIFFUSION_LORA_REWRITE_METADATA"
+_METADATA_KEY = "lora_adapter_metadata"  # diffusers' LORA_ADAPTER_METADATA_KEY
+
+
+def read_lora_metadata(path: str) -> Optional[dict]:
+    """The transformer's ``LoraConfig`` kwargs diffusers reads from the header on a path load, or None."""
+    import json
+
+    from safetensors import safe_open
+
+    try:
+        with safe_open(str(path), framework = "pt") as handle:
+            raw = (handle.metadata() or {}).get(_METADATA_KEY)
+        metadata = json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001 - unreadable header: no metadata, as diffusers treats it
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    # Every normalised family loads under the "transformer" prefix, so diffusers keeps only those keys.
+    config = {
+        k[len("transformer.") :]: v for k, v in metadata.items() if k.startswith("transformer.")
+    }
+    return config if "lora_alpha" in config else None
+
+
+def _pattern_value(patterns: Any, stem: str, default: Any) -> Any:
+    """PEFT's ``get_pattern_key`` rule: the first key that matches the end of ``stem`` on a dot boundary."""
+    for key, value in (patterns or {}).items():
+        if re.match(rf"(.*\.)?({key})$", stem):
+            return value
+    return default
+
+
+def _metadata_scale(metadata: dict, stem: str, rank: int) -> float:
+    """PEFT's ``scaling`` for module ``stem`` under this config."""
+    import math
+
+    alpha = float(_pattern_value(metadata.get("alpha_pattern"), stem, metadata["lora_alpha"]))
+    return alpha / (math.sqrt(rank) if metadata.get("use_rslora") else rank)
 
 
 def _strip(key: str) -> str:
@@ -69,8 +112,12 @@ def split_lokr(state: dict) -> tuple[dict, dict]:
     return lokr, rest
 
 
-def normalize_lora(state: dict, family: Optional[str]) -> dict:
-    """Plain LoRA tensors as ``lora_A`` / ``lora_B`` with ``.alpha`` folded into ``lora_B`` (alpha / rank)."""
+def normalize_lora(
+    state: dict,
+    family: Optional[str],
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Plain LoRA tensors as ``lora_A`` / ``lora_B``, ``.alpha`` (else ``metadata``'s scale) folded into ``lora_B``."""
     import torch
 
     renamed: dict = {}
@@ -81,13 +128,25 @@ def normalize_lora(state: dict, family: Optional[str]) -> dict:
             continue
         key = key.replace(".lora_down.", ".lora_A.").replace(".lora_up.", ".lora_B.")
         renamed[key] = value
+    scales: dict = {}
     for stem, alpha in alphas.items():
-        a, b = renamed.get(stem + ".lora_A.weight"), renamed.get(stem + ".lora_B.weight")
-        if a is None or b is None:
+        a = renamed.get(stem + ".lora_A.weight")
+        if a is not None:
+            scales[stem] = float(alpha) / int(a.shape[0])
+    if metadata is not None and not metadata.get("use_dora"):
+        for key, a in renamed.items():
+            if key.endswith(".lora_A.weight") and key[: -len(".lora_A.weight")] not in scales:
+                stem = key[: -len(".lora_A.weight")]
+                scales[stem] = _metadata_scale(metadata, _strip(stem), int(a.shape[0]))
+    for stem, scale in scales.items():
+        if renamed.get(stem + ".lora_B.weight") is None:
             continue  # an alpha with no low-rank pair (some converters write it for every module)
-        scale = float(alpha) / int(a.shape[0])
         if scale != 1.0:
-            renamed[stem + ".lora_B.weight"] = (b.to(torch.float32) * scale).to(b.dtype)
+            # PEFT scales the whole lora_B output, its bias included
+            for key in (stem + ".lora_B.weight", stem + ".lora_B.bias"):
+                t = renamed.get(key)
+                if t is not None:
+                    renamed[key] = (t.to(torch.float32) * scale).to(t.dtype)
     if family == "anima":
         renamed = _anima_embedding(renamed)
     elif family == "moss-image":
@@ -247,6 +306,21 @@ class KronAdapter:
             setattr(parent, attr, wrapper.base_layer)
 
 
+# A Kronecker factor is never larger than the layer it builds (16384 x 16384), so a low-rank pair whose product is
+# bigger is malformed: refuse it before multiplying, as a ~400 KB pair can otherwise ask for tens of GB.
+_MAX_KRON_FACTOR_ELEMENTS = 1 << 28
+
+
+def _low_rank_product(a: Any, b: Any, stem: str) -> Any:
+    if a.dim() != 2 or b.dim() != 2 or a.shape[1] != b.shape[0]:
+        raise ValueError(f"LoKR factors {stem}_a / {stem}_b do not multiply")
+    if int(a.shape[0]) * int(b.shape[1]) > _MAX_KRON_FACTOR_ELEMENTS:
+        raise ValueError(
+            f"LoKR factor {stem} is {int(a.shape[0])} x {int(b.shape[1])}, larger than any layer"
+        )
+    return a.float() @ b.float()
+
+
 def _kron_factors(parts: dict) -> tuple[Any, Any, float]:
     """``(w1, w2, alpha_scale)`` like the reference runtime: a factor stored as a low-rank pair is its product, and
     ``alpha / rank`` applies only when one is (rank = that pair's inner size)."""
@@ -255,13 +329,13 @@ def _kron_factors(parts: dict) -> tuple[Any, Any, float]:
     dim = None
     w1 = parts.get("lokr_w1")
     if w1 is None:
-        w1 = parts["lokr_w1_a"].float() @ parts["lokr_w1_b"].float()
+        w1 = _low_rank_product(parts["lokr_w1_a"], parts["lokr_w1_b"], "lokr_w1")
         dim = int(parts["lokr_w1_b"].shape[0])
     w2 = parts.get("lokr_w2")
     if w2 is None:
         if "lokr_t2" in parts:
             raise ValueError("a LoKR convolution (lokr_t2) cannot apply to a Linear layer")
-        w2 = parts["lokr_w2_a"].float() @ parts["lokr_w2_b"].float()
+        w2 = _low_rank_product(parts["lokr_w2_a"], parts["lokr_w2_b"], "lokr_w2")
         dim = int(parts["lokr_w2_b"].shape[0])
     if w1.dim() != 2 or w2.dim() != 2:
         raise ValueError("only Linear LoKR modules are supported")
@@ -360,16 +434,60 @@ def _attach_lokr(pipe: Any, name: str, lokr: dict, family: Optional[str]) -> int
     return len(adapters)
 
 
-def _resolve_kohya_stem(pipe: Any, stem: str, family: Optional[str]) -> str:
+def _anima_unreachable(pipe: Any, paths: list, names: dict) -> set:
+    """Splits whose Anima rename names no registered submodule: ``_lokr_targets`` would raise for each.
+    One batched rename; an output collision returns nothing ruled out (every split is then tried)."""
+    import torch
+
+    try:
+        from diffusers.loaders.lora_conversion_utils import (
+            _convert_non_diffusers_anima_lora_to_diffusers,
+        )
+    except ImportError:
+        return set()
+
+    keys = ["diffusion_model." + _strip(path) + ".x" for path in paths]
+    renamed = list(_convert_non_diffusers_anima_lora_to_diffusers(dict.fromkeys(keys)))
+    if len(renamed) != len(keys):
+        return set()
+    out = set()
+    for path, name in zip(paths, renamed):
+        component, _, sub = name[: -len(".x")].partition(".")
+        if component not in names:
+            root = getattr(pipe, component, None)
+            names[component] = (
+                {n for n, _ in root.named_modules(remove_duplicate = False)}
+                if isinstance(root, torch.nn.Module)
+                else None
+            )
+        known = names[component]
+        if known is not None and sub not in known:
+            out.add(path)
+    return out
+
+
+def _resolve_kohya_stem(
+    pipe: Any,
+    stem: str,
+    family: Optional[str],
+    names: Optional[dict] = None,
+) -> str:
     """The one dotted path, of every way to re-split ``stem``'s underscores, that names a layer of this model."""
     tokens = stem.split("_")
     if len(tokens) > 16:
         raise ValueError(f"LoRA key {stem} names no layer of this model")
+    paths = [
+        tokens[0]
+        + "".join(("." if mask >> i & 1 else "_") + token for i, token in enumerate(tokens[1:]))
+        for mask in range(1 << (len(tokens) - 1))
+    ]
+    skip = (
+        _anima_unreachable(pipe, paths, {} if names is None else names) if family == "anima" else ()
+    )
     found = []
-    for mask in range(1 << (len(tokens) - 1)):
-        path = tokens[0] + "".join(
-            ("." if mask >> i & 1 else "_") + token for i, token in enumerate(tokens[1:])
-        )
+    for path in paths:
+        if path in skip:
+            continue
         try:
             _lokr_targets(pipe, path, family)
         except Exception:  # noqa: BLE001 -- this split names no layer
@@ -383,6 +501,7 @@ def _resolve_kohya_stem(pipe: Any, stem: str, family: Optional[str]) -> str:
 def _dotted_kohya_keys(pipe: Any, state: dict, family: Optional[str]) -> dict:
     out: dict = {}
     paths: dict = {}
+    names: dict = {}
     for key, value in state.items():
         prefix = next((p for p in _KOHYA_PREFIXES if key.startswith(p)), None)
         if prefix is None:
@@ -390,7 +509,7 @@ def _dotted_kohya_keys(pipe: Any, state: dict, family: Optional[str]) -> dict:
             continue
         stem, _, suffix = key[len(prefix) :].partition(".")
         if stem not in paths:
-            paths[stem] = _resolve_kohya_stem(pipe, stem, family)
+            paths[stem] = _resolve_kohya_stem(pipe, stem, family, names)
         out[f"diffusion_model.{paths[stem]}.{suffix}"] = value
     return out
 
@@ -412,6 +531,15 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
     if plain:
         # A file needing no rewrite loads by path: diffusers reads lora_alpha / rank from its metadata, not a dict.
         unchanged = not lokr and plain.keys() == raw.keys() and all(plain[k] is raw[k] for k in raw)
+        if not unchanged and (os.environ.get(REWRITE_METADATA_ENV) or "").strip().lower() not in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
+            metadata = read_lora_metadata(path)
+            if metadata is not None:
+                plain = normalize_lora(rest, family, metadata)
         # PEFT injects only into bare Linears: unwrap LoKR while it runs, then rewrap whatever sits there now.
         wrappers = _unwrap_kron(pipe)
         try:

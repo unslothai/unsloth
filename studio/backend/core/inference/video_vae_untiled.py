@@ -175,10 +175,24 @@ def _free_bytes(device: Any) -> Optional[int]:
         return None
 
 
+# torch's CPU allocator refusals: ``not enough memory`` (Windows commit limit), ``can't allocate memory`` (POSIX ENOMEM).
+_CPU_ALLOC_REFUSALS = ("not enough memory", "can't allocate memory")
+
+
 def _is_oom(exc: BaseException) -> bool:
-    """A device OOM, or the CPU allocator's ``not enough memory`` (raised e.g. on Windows commit limits)."""
     from .diffusion_batched import is_oom_error
-    return is_oom_error(exc) or "not enough memory" in str(exc).lower()
+
+    if is_oom_error(exc):
+        return True
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur).lower()
+        if any(s in msg for s in _CPU_ALLOC_REFUSALS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _in_chain(fn: Any, target: Any) -> bool:
