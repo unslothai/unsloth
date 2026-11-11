@@ -2308,6 +2308,7 @@ export function ImagesPage({
   const loadSeq = useRef(0);
   // Settles only after handleLoad finishes, since begin_load refuses a second load while one is live.
   const pendingStart = useRef<Promise<unknown> | null>(null);
+  const pendingUnload = useRef<Promise<boolean> | null>(null);
 
   // Set when the compensating unload failed, so the cancelled load is STILL running.
   const loadTrackingRestored = useRef(false);
@@ -3387,6 +3388,8 @@ export function ImagesPage({
   );
 
   const refreshStatus = useCallback(async () => {
+    // A read during teardown can still see the resident and supersede the unload response.
+    if (pendingUnload.current) await pendingUnload.current;
     const ticket = ++statusTicket.current;
     try {
       setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
@@ -3633,7 +3636,7 @@ export function ImagesPage({
             genVisibilityListener.current = null;
           }
           if (!isMounted.current) return;
-          setBusy(null);
+          setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
           void loadGallery();
           void refreshStatus();
@@ -3722,6 +3725,10 @@ export function ImagesPage({
       let inFlight = false;
       try {
         const p = await getDiffusionLoadProgress();
+        if (pendingUnload.current) {
+          setInitialLoadProbe("idle");
+          return;
+        }
         inFlight = isLoadInFlightPhase(p.phase);
         if (inFlight) {
           setBusy("loading");
@@ -3747,7 +3754,7 @@ export function ImagesPage({
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
         const g = await getGenerateProgress();
-        if (g.active) {
+        if (g.active && !pendingUnload.current) {
           runTarget.current = g.target ?? undefined;
           setBusy("generating");
           setGenStep(g);
@@ -4988,35 +4995,44 @@ export function ImagesPage({
     if (trainingCompletions > 0) setLoraRefreshKey((k) => k + 1);
   }, [trainingCompletions]);
 
-  const handleUnload = useCallback(async (): Promise<boolean> => {
+  const handleUnload = useCallback((): Promise<boolean> => {
+    if (pendingUnload.current) return pendingUnload.current;
+
     pendingRecalledGeneration.current = null;
     dropResidentState();
     loadTrackingRestored.current = false;
     setBusy("unloading");
-    try {
-      setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
-      setQuant(null);
-      // Wait for any in-flight load start to finish, compensating unload included, or the older load
-      // keeps running with no toast or cancel control.
-      const pending = pendingStart.current;
-      if (pending) {
-        try {
-          await pending;
-        } catch {
-          // Its own handler reports the failure; this only waits for the window to close.
+
+    async function unload(): Promise<boolean> {
+      try {
+        setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
+        setQuant(null);
+        // Wait for any in-flight load start to finish, compensating unload included, or the older load
+        // keeps running with no toast or cancel control.
+        const pending = pendingStart.current;
+        if (pending) {
+          try {
+            await pending;
+          } catch {
+            // Its own handler reports the failure; this only waits for the window to close.
+          }
         }
+        // Tracking RESTORED means the compensating unload failed and the load is still running.
+        return !loadTrackingRestored.current;
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to unload model");
+        void refreshStatus();
+        return false;
       }
-      // Tracking RESTORED means the compensating unload failed and the load is still running.
-      return !loadTrackingRestored.current;
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to unload model");
-      void refreshStatus();
-      return false;
-    } finally {
+    }
+
+    pendingUnload.current = unload().finally(() => {
+      pendingUnload.current = null;
       // Not an unconditional clear: a restore may have set "loading" deliberately.
       setBusy((prev) => (prev === "unloading" ? null : prev));
-    }
-  }, [refreshStatus, dropResidentState]);
+    });
+    return pendingUnload.current;
+  }, [refreshStatus, dropResidentState, setStatusIfNewest]);
 
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
@@ -5657,7 +5673,7 @@ export function ImagesPage({
       cancelRequested.current = false;
       // Await on EVERY exit: a run can change status (compile, cancelled native run), so Generate could 409.
       if (isMounted.current) await refreshStatus();
-      setBusy(null);
+      setBusy((prev) => (prev === "generating" ? null : prev));
       setGenDone(null);
       setGenStep(null);
       setStopping(false);
@@ -6256,7 +6272,8 @@ export function ImagesPage({
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
-                onEject={status?.loaded ? handleUnload : undefined}
+                loaded={busy === "unloading" ? false : undefined}
+                onEject={status?.loaded && busy !== "unloading" ? handleUnload : undefined}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
@@ -6267,6 +6284,12 @@ export function ImagesPage({
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}
               />
+            )}
+            {pageMode !== "train" && busy === "unloading" && (
+              <span role="status" className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <span aria-hidden="true"><Spinner className="size-3.5" /></span>
+                Unloading model…
+              </span>
             )}
             {pageMode !== "train" && busy === "loading" && (
               <Tooltip>
