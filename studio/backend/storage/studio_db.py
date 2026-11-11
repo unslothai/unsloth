@@ -11,7 +11,6 @@ import base64
 import binascii
 import hashlib
 import json
-import math
 import logging
 import os
 import platform
