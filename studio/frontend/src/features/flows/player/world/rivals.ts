@@ -1385,3 +1385,38 @@ export async function playTurn(
   });
   return { state: endTurn(spec, b, s, plans), calls: ai.length };
 }
+
+export interface TalkLock {
+  take(): { id: number; signal: AbortSignal };
+  release(id: number): boolean;
+  end(): void;
+}
+
+// One envoy conversation holds the world's talk pause at a time. Each request
+// gets its own token and abort signal: a newer talk or an unmount aborts the
+// old one, and a request's late `finally` only releases the lock it took.
+export function talkLock(set: (talking: boolean) => void): TalkLock {
+  let held: { id: number; ctl: AbortController } | null = null;
+  let n = 0;
+  return {
+    take() {
+      held?.ctl.abort();
+      const t = { id: ++n, ctl: new AbortController() };
+      held = t;
+      set(true);
+      return { id: t.id, signal: t.ctl.signal };
+    },
+    release(id) {
+      if (held?.id !== id) return false;
+      held = null;
+      set(false);
+      return true;
+    },
+    end() {
+      if (!held) return;
+      held.ctl.abort();
+      held = null;
+      set(false);
+    },
+  };
+}
