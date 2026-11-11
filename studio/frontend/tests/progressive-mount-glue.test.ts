@@ -346,7 +346,7 @@ test("the whole document is mounted for the readers that need it", () => {
   assert.match(print, /if \(winRef\.current != null && viewport\.clientHeight > 0\) commit\(null, true\);/);
   const key = section(GLUE, "const onKeyDown = (event: KeyboardEvent) => {", "};");
   assert.match(key, /event\.key\.toLowerCase\(\) !== "a"/);
-  assert.match(key, /closest\?\.\("input, textarea, \[contenteditable=true\]"\)\) return;/);
+  assert.match(key, /closest\?\.\(EDITABLE\)\) return;/);
   assert.match(key, /void complete\(\);/);
 });
 
@@ -375,7 +375,7 @@ test("a full mount that ends without a signal is looked at again", () => {
 
 test("a copy that runs across a spacer mounts the rows it stands in for first", () => {
   // The clipboard takes DOM text, so a copy over unmounted rows would be a short conversation.
-  const copy = section(GLUE, "const onCopy = () => {", "\n    };");
+  const copy = section(GLUE, "const onCopy = (event: ClipboardEvent) => {", "\n    };");
   assert.match(copy, /if \(winRef\.current == null\) return;/);
   assert.match(copy, /spacer\.offsetHeight > 0 && selection\.containsNode\(spacer, true\)/);
   // Synchronous: the browser reads the selection when this handler returns.
@@ -628,4 +628,10 @@ test("a relayout re-renders every spacer even when the window holds", () => {
   // The expanded settings move every row and feed the estimate, so both key the caches.
   assert.match(GLUE, /heights\.relayout\(`\$\{rowLayout\(column\)\}\\n\$\{thinking\}\\n\$\{tools\}`\)/);
   assert.match(GLUE, /metasOf\(aui\.thread\(\)\.getState\(\)\.messages as unknown as readonly ThreadMessage\[\], expanded\)/);
+});
+
+test("a copy from a field leaves the window alone", () => {
+  const copy = section(GLUE, "const onCopy = (event: ClipboardEvent) => {", "\n    };");
+  assert.match(copy, /const target = event\.target as Element \| null;\s*if \(target\?\.closest\?\.\(EDITABLE\)\) return;/);
+  assert.match(GLUE, /const EDITABLE = "input, textarea, \[contenteditable=true\]";/);
 });

@@ -361,6 +361,8 @@ function measureRows(viewport: HTMLElement, lookup: Metas, heights: RowHeights):
 // media are invisible to isPinned: while one is open, no mounted row is let go.
 const OPEN_DIALOG = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 
+const EDITABLE = "input, textarea, [contenteditable=true]";
+
 /** Every range: Firefox selects several at once with Ctrl-drag. */
 function heldSelection(viewport: HTMLElement): Range[] | null {
   const selection = document.getSelection();
@@ -947,13 +949,16 @@ function useThreadWindow(
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
       const target = event.target as Element | null;
-      if (target?.closest?.("input, textarea, [contenteditable=true]")) return;
+      if (target?.closest?.(EDITABLE)) return;
       if (viewport.clientHeight === 0 || viewport.closest("[inert]")) return;
       void complete();
     };
-    const onCopy = () => {
+    const onCopy = (event: ClipboardEvent) => {
       // A selection across a spacer would copy a short conversation: mount before it is read.
       if (winRef.current == null) return;
+      // A field copies its own text; a page selection left behind is not what is copied.
+      const target = event.target as Element | null;
+      if (target?.closest?.(EDITABLE)) return;
       const selection = document.getSelection();
       if (!selection || selection.isCollapsed) return;
       const top = topRef.current;
