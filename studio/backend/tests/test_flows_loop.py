@@ -955,6 +955,19 @@ def test_an_rl_row_is_known_by_the_prompt_training_formatted(spec, rows):
     assert loop_rounds.without_questions([{"x": "y"}], exclude) == [{"x": "y"}]
 
 
+def test_an_rl_row_s_system_message_tells_rows_apart():
+    spec = {"kind": "rl", "objective": "grpo", "mapping": None}
+    rows = [
+        {"system": f"The secret is {w}.", "prompt": "What is the secret?", "answer": w}
+        for w in ("BLUE", "RED")
+    ]
+    frozen = loop_rounds.questions(rows[:1], spec)
+    assert loop_rounds.questions(rows, spec) != frozen
+    assert loop_rounds.without_questions(rows, {"column": spec, "questions": frozen}) == rows[1:]
+    failure = {**rows[1], "model_output": "BLUE"}
+    assert loop_rounds.drop_test_rows([failure], rows[:1], spec) == [failure]
+
+
 def test_a_prompt_s_assistant_prefill_tells_rows_apart():
     spec = {"kind": "column", "column": "prompt", "whole": False}
     rows = [
