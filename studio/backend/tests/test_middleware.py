@@ -1775,6 +1775,10 @@ def test_every_write_route_is_body_capped_or_an_explicit_upload(main_module, mon
     monkeypatch.setattr(main_module, "default_request_body_limit_bytes", lambda: 1024)
     monkeypatch.setattr(main_module, "STT_AUDIO_RAW_MAX_BYTES", 1024)
     monkeypatch.setattr(main_module, "STT_AUDIO_JSON_MAX_BYTES", 1024)
+    # Flow webhooks carry their own cap, read at request time.
+    import routes.flows as flows_routes
+
+    monkeypatch.setattr(flows_routes, "WEBHOOK_MAX_BYTES", 1024)
     targets = set()
     for route in _walk_routes(main_module.app.routes):
         methods = getattr(route, "methods", None)
